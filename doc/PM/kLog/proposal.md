@@ -43,4 +43,8 @@ Graylog: 提供了日志收集、检索和展示功能，内部依然使用`Elas
 
 ![ELK](./ELK.png)
 
-`Filebeat`相当于上面的`LogProvider`，在这里如果能实现故障续传的功能，可能能去掉`kafka`。
+`Filebeat`相当于上面的`LogProvider`，`kafka`用来缓存日志。
+
+## 采用`ELK`的部署方案
+
+![ELK-kLog](./kLog-ELK.drawio.png)
