@@ -101,47 +101,6 @@
 
 5. 
 
-##### Provider接口
-
-```rust
-enum Protocol {
-    IPV4,
-    IPV6,
-    CYFS,
-}
-
-struct AddrInfo {
-    protocol: Protocol,
-    address: string,
-}
-
-struct Extend {
-   	data: HashMap<String, String>
-}
-
-enum CertType {
-    X509,
-    CYFS
-}
-
-struct Cert {
-    ty: CertType,
-    cert: Vec<u8>,
-}
-
-struct Node {
-    addr_info: Option<AddrInfo>,
-    extend: Option<Extend>,
-    cert: Option<Cert>,
-}
-
-trait Provider {
-	async fn query(&self, name: &str, ty:) -> Result<Node>;
-    async fn set_extend(&self, extend: &Extend) -> Result<()>;
-    async fn del_extend(&self, extends: Vec<string>) -> Result<()>;
-}
-```
-
 ##### 已有Provider介绍
 
 Simple DNS Provider：
@@ -172,7 +131,7 @@ ETCD Provider：
 
 该provider是从etcd中获取节点信息，主要用于提供zone内节点信息。如果要使用该provider需要解决etcd启动问题，启动了etcd之后所需数据之间从etcd中查询就行了
 
-DNS+P2P Provider（暂未实现）：
+DNS+Decentralization Provider（暂未实现）：
 
 该provider是根据zone名从外网DNS查询到Zone接入节点信息，再通过p2p的形式获取到整个zone节点信息，规则如下：
 
@@ -181,7 +140,7 @@ DNS+P2P Provider（暂未实现）：
 3. 节点之间通过raft协议维护zone内各节点信息的同步。
 5. 该provider提供nameservice的完备功能
 
-ETH+P2P Provider（暂未实现）：
+ETH+Decentralization Provider（暂未实现）：
 
 该provider是根据zone名从外网DNS查询到Zone接入节点信息，再通过p2p的形式获取到整个zone节点信息，规则如下：
 
