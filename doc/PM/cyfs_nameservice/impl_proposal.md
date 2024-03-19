@@ -1,7 +1,5 @@
 #### 主要模块
 
-NodeInfoStorage：本节点信息存储模块
-
 HttpServer：用户调用http接口
 
 NodeServer：节点ns通信服务端
@@ -11,46 +9,6 @@ NodeClient：节点ns通信客户端
 NameQuerier：根据名字查询节点信息模块，包括provider管理
 
 #### 模块定义
-
-##### NodeInfoStorage
-
-该模块主要存储节点的扩展数据
-
-```rust
-enum Scope {
-    Zone_in,
-    Zone_out,
-}
-
-struct ExtendItem {
-    extend_key: string,
-    extend_value: string,
-    is_crypto: bool,
-    scope: Scope
-}
-
-struct Extend {
-   	data: HashMap<String, ExtendItem>
-}
-
-trait NodeInfoStorageEvent {
-    async fn on_extend_change(&self) -> Result<()>;
-}
-
-struct Node {
-    name: string,
-    latest_update: u64,
-    ...
-}
-
-trait NodeInfoStorage {
-    fn add_event_listener(&self, listener: impl NodeInfoStorageEvent);
-    async fn set_extend(&self, extend: &Extend) -> Result<()>;
-    async fn del_extend(&self, extends: Vec<string>) -> Result<()>;
-    async fn add_node_info(&self, node: Node) -> Result<()>;
-    async fn get_node_info(&self, name: &str) -> Result<Node>;
-}
-```
 
 ##### NodeServer
 
@@ -79,8 +37,7 @@ trait NodeServer {
 
 // 默认支持命令
 QueryCert = 1;
-QueryExtend = 2;
-QueryCertAndExtend = 3;
+QueryName = 2;
 ```
 
 NodeClient
@@ -106,8 +63,8 @@ trait NodeClient {
 
 ```rust
 enum Protocol {
-    IPV4,
-    IPV6,
+    TCP,
+    HTTPS,
     CYFS,
 }
 
@@ -130,24 +87,23 @@ struct Cert {
     cert: Vec<u8>,
 }
 
-struct Node {
-    addr_info: Option<AddrInfo>,
+struct NameInfo {
+    addr_info: Option<Vec<AddrInfo>>,
     extend: Option<Extend>,
     cert: Option<Cert>,
 }
 
 type QueryType = u32;
-AddrInfo = 1;
-Cert = 2;
-Extend = 4;
+QueryName = 1;
+QueryCert = 2;
 
 trait Provider {
-	async fn query(&self, name: &str, ty: QueryType) -> Result<Node>;
+	async fn query(&self, name: &str, ty: QueryType) -> Result<NameInfo>;
 }
 
 trait NameQuerier {
     fn add_provider(provider: impl Provider);
-    async fn query(&self, name: &str, ty: QueryType) -> Result<Node>;
+    async fn query(&self, name: &str, ty: QueryType) -> Result<NameInfo>;
 }
 ```
 
