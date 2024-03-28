@@ -1,10 +1,10 @@
 ##### zone节点启动流程
 
 1. 读取本地配置，判断本地配置中是否存在etcd配置，如果存在则直接进入步骤4
-2. 启动nameservice服务
+2. 启动nameservice服务，并设置默认dns为nameservice
 3. 调用nameservice接口获取zone配置
 4. 根据配置判断在本地是否启动etcd，如果需要启动则启动etcd
-5. 为nameservice配置etcd并重启
+5. 为nameservice生成etcd provider以及local provider的etcd节点配置信息，并重新加载。
 6. 启动其它进程
 
 ##### 本地配置
@@ -92,12 +92,12 @@ etcd启动配置
 $ etcd --name node1 --data-dir infra0 \
   --client-cert-auth --trusted-ca-file=/path/to/ca.crt \
   --cert-file=/path/to/node1.crt --key-file=/path/to/node1.key \
-  --advertise-client-urls https://${node_ip}:2379 --listen-client-urls https://${node_ip}:2379 \
+  --advertise-client-urls https://${node_name}:2379 --listen-client-urls https://${node_name}:2379 \
   --peer-client-cert-auth --peer-trusted-ca-file=/path/to/ca.crt \
-  --initial-advertise-peer-urls=https://${node1_ip}:2380 --listen-peer-urls=https://${node_ip}:2380 \
+  --initial-advertise-peer-urls=https://${node_name}:2380 --listen-peer-urls=https://${node_name}:2380 \
   --peer-cert-file=/path/to/node1.crt --peer-key-file=/path/to/node1.key \
   --initial-cluster-token etcd-cluster \
-  --initial-cluster infra0=https://${node1_ip}:2380,infra1=https://${node2_ip}:2380,infra2=https://${node3_ip}:2380 \
+  --initial-cluster infra0=https://${node1_name}:2380,infra1=https://${node2_name}:2380,infra2=https://${node3_name}:2380 \
 ```
 
 请求配置
@@ -107,3 +107,4 @@ $ curl --cacert /path/to/ca.crt --cert /path/to/client.crt --key /path/to/client
   -L https://127.0.0.1:2379/v2/keys/foo -XPUT -d value=bar -v
 ```
 
+etcd集群都通过节点名词设置，再通过nameservice dns获取到ip地址信息。

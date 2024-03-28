@@ -91,6 +91,7 @@ struct NameInfo {
     addr_info: Option<Vec<AddrInfo>>,
     extend: Option<Extend>,
     cert: Option<Cert>,
+    ttl: Duration,
 }
 
 type QueryType = u32;
@@ -107,5 +108,9 @@ trait NameQuerier {
 }
 ```
 
+在NameQuerier中会cache查到的名字信息，用户每次查询都会优先从本地cache中查找，只有本地cache中没有找到或者过期时才会重新从provider查找。
 
+##### 配置
+
+配置中包含本节点的名字，证书，key，provider链等信息，并支持热更新配置，保证服务在配置修改时不中断。
 
