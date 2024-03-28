@@ -63,7 +63,9 @@
    }
    ```
 
-3. 
+3. DNS server接口
+
+   支持作为一个标准的dns服务器，让传统的网络程序接入。
 
 节点之间通信接口：
 
@@ -165,6 +167,28 @@ ETCD Provider：
    ```
 
    
+
+Local Provider：
+
+该provider从本地配置读取名字信息，类似于dns的host文件，配置格式如下：
+
+```json
+[{
+    "name": "service name",
+    "type": "zone|node|service"
+    "addr_info"： [{
+    	"protocol": "string，连接协议，可取值：tcp、https、cyfs",
+    	"address": "string，不同的连接协议有不同的值",
+    	"port": "端口号"
+	}],
+	"api_version": "v1,服务api版本",
+	"extend": {
+        "extend_key": {
+ 			"extend_value": "",
+ 		}
+    }
+}]
+```
 
 DNS+Decentralization Provider（暂未实现）：
 
