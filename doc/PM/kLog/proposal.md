@@ -48,3 +48,84 @@ Graylog: 提供了日志收集、检索和展示功能，内部依然使用`Elas
 ## 采用`ELK`的部署方案
 
 ![ELK-kLog](./kLog-ELK.drawio.png)
+
+# 日志场景
+
+## 系统状态
+
+1. 基础操作系统状态
+
+    - 磁盘空间
+    - 内存使用
+    - CPU 使用率
+    - IO 状态
+    - 网络状态
+    - ...
+
+    考虑用`metricbeat`收集系统日志
+
+2. `BuckyOS`系统状态
+
+    - 集群节点间的连通性
+    - `Nat`穿透服务联通性
+    - 节点时间错误
+    - ...
+
+    在日志文件中记录，由`Filebeat`收集
+
+## 其他日志
+
+    比如：开发期间调试日志
+
+    直接逐行写入日志文件，由`Filebeat`收集
+
+# 日志规范
+
+## 存储文件规范
+
+    * 所有日志文件集中存放于一个目录下: `${buckyos}/logs/`
+    * 系统状态日志文件命名规则: `.system.${type}.log`
+
+    ```
+    .system.connect.log
+    .system.time.log
+    .system.sn.log
+    ...
+    ```
+
+    * 开发调试日志文件命名规则: `.debug.${app-name}.${app-id}.${...}.log`
+
+    ```
+    .debug.my-app.abcdefg1234567890.20240328.1.log
+    .debug.my-app.abcdefg1234567890.20240328.2.log
+    ...
+    ```
+
+## 日志格式规范
+
+    1. 系统日志规范
+
+    以`JSON`格式逐行存储，其内容如下：
+
+```
+{
+    type: "connect", // what
+    timestamp: 1234567890, // when UTC时间戳
+    node: "5aSixgMZXoPywEKmauBgPTUWAKDKnbsrH9mBMJwpQeFB", // where
+    level: "info", // 错误级别，info, warn, error, fault
+    description: "connect to server success", // 附加一条描述，依据不同type，可以是一个文本，也可以是个`JSON`串
+}
+```
+
+| 场景     | type    | description                                          |
+| -------- | ------- | ---------------------------------------------------- |
+| 连通性   | connect | {remote: ${node-id}, reason: 'xxxx'}                 |
+| 系统时间 | time    | {local: ${local-time}, reference: ${Reference time}} |
+| Nat      | nat     | {sn: ${sn-id}, reason: 'xxxx'}                       |
+| ...      | ...     | ...                                                  |
+
+    2. 开发调试日志规范
+
+    直接以文本逐行写入
+
+# 接口定义
