@@ -84,16 +84,14 @@ Graylog: 提供了日志收集、检索和展示功能，内部依然使用`Elas
 ## 存储文件规范
 
     * 所有日志文件集中存放于一个目录下: `${buckyos}/logs/`
-    * 系统状态日志文件命名规则: `.system.${type}.log`
+    * 系统状态日志文件每天生成一个新的日志文件，命名规则: `.system.${date}.log`
 
     ```
-    .system.connect.log
-    .system.time.log
-    .system.sn.log
+    .system.20240325.log
     ...
     ```
 
-    * 开发调试日志文件命名规则: `.debug.${app-name}.${app-id}.${...}.log`
+    * 开发调试日志文件命名规则: `.debug.${app-name}.${app-id}.${process-id}.${...}.log`
 
     ```
     .debug.my-app.abcdefg1234567890.20240328.1.log
@@ -109,6 +107,7 @@ Graylog: 提供了日志收集、检索和展示功能，内部依然使用`Elas
 
 ```
 {
+    seq: 123, // 用于遍历的递增序号
     type: "connect", // what
     timestamp: 1234567890, // when UTC时间戳
     node: "5aSixgMZXoPywEKmauBgPTUWAKDKnbsrH9mBMJwpQeFB", // where
@@ -128,4 +127,124 @@ Graylog: 提供了日志收集、检索和展示功能，内部依然使用`Elas
 
     直接以文本逐行写入
 
-# 接口定义
+# 接口及实现示意
+
+1. 日志目录
+
+```
+interface LogConfig {
+    log_dir(): &str {
+        return "${buckyos}/logs/"
+    }
+}
+```
+
+2. 写日志
+
+\*\* 日志文件格式
+
+```
+logs + seq
+logs = [log]
+log = JSON.stringify(LogRecord) + '\n'
+seq = u64
+
+实例:
+{seq: 1, type: 'connect', timestamp: 1234567890, node: '5aSixgMZXoPywEKmauBgPTUWAKDKnbsrH9mBMJwpQeFB', level: 'info', description: 'connect to server success'}
+{seq: 2, type: 'connect', timestamp: 1234567890, node: '5aSixgMZXoPywEKmauBgPTUWAKDKnbsrH9mBMJwpQeFB', level: 'info', description: 'connect to server failed'}
+3
+```
+
+```
+    enum LogType {
+        Connect,
+        Time,
+        Nat,
+    }
+
+    enum LogLever {
+        Trace,
+        Debug,
+        Info,
+        Warn,
+        Error,
+        Fault,
+    }
+
+    struct SystemLogRecord {
+        seq: u64,
+        type: LogType,
+        timestamp: u64,
+        node: &str,
+        level: LogLever,
+        description: &str,
+    }
+
+    interface LogWriter {
+        constructor(type: &LogType): Self {
+            const node = read_node_id();
+            const next_seq = read_next_seq();
+            const log_file = open(LogConfig.log_dir() + "/" + `.system.${date}.log`);
+            Self {type, node, seq: next_seq, log_file}
+        }
+
+        async write(&self, description: &impl ToStr, level: LogLever) {
+            const record = SystemLogRecord {
+                seq: self.seq,
+                type: self.type,
+                timestamp: now(),
+                node: self.node,
+                level,
+                description: description.to_str(),
+            }
+
+            self.seq += 1;
+
+            let buffer = record.to_str().to_buffer();
+            buffer.append(self.seq);
+            self.log_file.seek(-8); // 覆盖之前的seq
+            self.log_file.append(buffer);
+        }
+    }
+```
+
+-   为了解决多进程写日志的同步问题，系统启动一个独立的服务进程来排队写入。提供`http`接口供其他进程投递日志写请求，`http`头部只用最简单的头部，`body`部分格式如下：
+
+```
+enum SystemLogHttp {
+    type: LogType,
+    timestamp: u64,
+    level: LogLever,
+    description: &str,
+}
+
+** seq和node字段由服务进程维护
+```
+
+3. 读日志
+
+主要提供按顺序遍历系统日志，以发现系统故障，由故障恢复程序自动或辅助恢复系统
+
+```
+// 日志存储器，可以选用不同的存储服务
+interface LogStorage {
+    interface NodePos {
+        node: &str,
+        seq: u64
+    }
+
+    // 读取`NodePos后续`的日志，对于不在`NodePos`列表中的节点，`seq`从0开始
+    async next(node_pos: &[NodePos], limit: u16): SystemLogRecord;
+}
+
+interface LogReader {
+    constructor(storage: &impl LogStorage): Self {
+        const node_pos = read_last_pos();
+        Self {node_pos, storage}
+    }
+
+    async next(&self, limit: u16): SystemLogRecord {
+        self.storage.next(self.node_pos, limit).await
+    }
+}
+```
