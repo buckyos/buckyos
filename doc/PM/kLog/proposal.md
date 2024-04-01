@@ -205,6 +205,30 @@ seq = u64
             self.log_file.seek(-8); // 覆盖之前的seq
             self.log_file.append(buffer);
         }
+
+        async trace(&self, description: &impl ToStr) {
+            await self.write(description, LogLever::Trace);
+        }
+
+        async debug(&self, description: &impl ToStr) {
+            await self.write(description, LogLever::Debug);
+        }
+
+        async info(&self, description: &impl ToStr) {
+            await self.write(description, LogLever::Info);
+        }
+
+        async warn(&self, description: &impl ToStr) {
+            await self.write(description, LogLever::Warn);
+        }
+
+        async error(&self, description: &impl ToStr) {
+            await self.write(description, LogLever::Error);
+        }
+
+        async fault(&self, description: &impl ToStr) {
+            await self.write(description, LogLever::Fault);
+        }
     }
 ```
 
@@ -227,6 +251,16 @@ enum SystemLogHttp {
 
 ```
 // 日志存储器，可以选用不同的存储服务
+interface GlobalLogStorage {
+    interface NodePos {
+        node: &str,
+        seq: u64
+    }
+
+    // 读取`NodePos后续`的日志，对于不在`NodePos`列表中的节点，`seq`从0开始
+    async next(node_pos: &[NodePos], limit: u16): SystemLogRecord;
+}
+
 interface LogStorage {
     interface NodePos {
         node: &str,
