@@ -81,6 +81,8 @@ Graylog: 提供了日志收集、检索和展示功能，内部依然使用`Elas
 
 # 日志规范
 
+    为日志收集组件方便地识别新增日志，所有写入的日志都不准许修改(包括修改日志文件名和修改某条日志内容)，改名后可能会被当做新增日志收集。
+
 ## 存储文件规范
 
     * 所有日志文件集中存放于一个目录下: `${buckyos}/logs/`
@@ -99,6 +101,11 @@ Graylog: 提供了日志收集、检索和展示功能，内部依然使用`Elas
     ...
     ```
 
+    * 状态文件: `.state`
+        存储一些允许过程中会更新的状态信息，比如：日志编号
+    * 配置文件：`*.cfg`
+        存储一些由开发者配置的固定信息
+
 ## 日志格式规范
 
     1. 系统日志规范
@@ -112,11 +119,11 @@ Graylog: 提供了日志收集、检索和展示功能，内部依然使用`Elas
     timestamp: 1234567890, // when UTC时间戳
     node: "5aSixgMZXoPywEKmauBgPTUWAKDKnbsrH9mBMJwpQeFB", // where
     level: "info", // 错误级别，info, warn, error, fault
-    description: "connect to server success", // 附加一条描述，依据不同type，可以是一个文本，也可以是个`JSON`串
+    content: "connect to server success", // 附加一条描述，依据不同type，可以是一个文本，也可以是个`JSON`串
 }
 ```
 
-| 场景     | type    | description                                          |
+| 场景     | type    | content                                              |
 | -------- | ------- | ---------------------------------------------------- |
 | 连通性   | connect | {remote: ${node-id}, reason: 'xxxx'}                 |
 | 系统时间 | time    | {local: ${local-time}, reference: ${Reference time}} |
@@ -144,15 +151,12 @@ interface LogConfig {
 \*\* 日志文件格式
 
 ```
-logs + seq
 logs = [log]
 log = JSON.stringify(LogRecord) + '\n'
-seq = u64
 
 实例:
-{seq: 1, type: 'connect', timestamp: 1234567890, node: '5aSixgMZXoPywEKmauBgPTUWAKDKnbsrH9mBMJwpQeFB', level: 'info', description: 'connect to server success'}
-{seq: 2, type: 'connect', timestamp: 1234567890, node: '5aSixgMZXoPywEKmauBgPTUWAKDKnbsrH9mBMJwpQeFB', level: 'info', description: 'connect to server failed'}
-3
+{seq: 1, type: 'connect', timestamp: 1234567890, node: '5aSixgMZXoPywEKmauBgPTUWAKDKnbsrH9mBMJwpQeFB', level: 'info', content: 'connect to server success'}
+{seq: 2, type: 'connect', timestamp: 1234567890, node: '5aSixgMZXoPywEKmauBgPTUWAKDKnbsrH9mBMJwpQeFB', level: 'info', content: 'connect to server failed'}
 ```
 
 ```
@@ -177,7 +181,7 @@ seq = u64
         timestamp: u64,
         node: &str,
         level: LogLever,
-        description: &str,
+        content: &str,
     }
 
     interface LogWriter {
@@ -188,14 +192,14 @@ seq = u64
             Self {type, node, seq: next_seq, log_file}
         }
 
-        async write(&self, description: &impl ToStr, level: LogLever) {
+        async write(&self, content: &impl ToStr, level: LogLever) {
             const record = SystemLogRecord {
                 seq: self.seq,
                 type: self.type,
                 timestamp: now(),
                 node: self.node,
                 level,
-                description: description.to_str(),
+                content: content.to_str(),
             }
 
             self.seq += 1;
@@ -206,28 +210,28 @@ seq = u64
             self.log_file.append(buffer);
         }
 
-        async trace(&self, description: &impl ToStr) {
-            await self.write(description, LogLever::Trace);
+        async trace(&self, content: &impl ToStr) {
+            await self.write(content, LogLever::Trace);
         }
 
-        async debug(&self, description: &impl ToStr) {
-            await self.write(description, LogLever::Debug);
+        async debug(&self, content: &impl ToStr) {
+            await self.write(content, LogLever::Debug);
         }
 
-        async info(&self, description: &impl ToStr) {
-            await self.write(description, LogLever::Info);
+        async info(&self, content: &impl ToStr) {
+            await self.write(content, LogLever::Info);
         }
 
-        async warn(&self, description: &impl ToStr) {
-            await self.write(description, LogLever::Warn);
+        async warn(&self, content: &impl ToStr) {
+            await self.write(content, LogLever::Warn);
         }
 
-        async error(&self, description: &impl ToStr) {
-            await self.write(description, LogLever::Error);
+        async error(&self, content: &impl ToStr) {
+            await self.write(content, LogLever::Error);
         }
 
-        async fault(&self, description: &impl ToStr) {
-            await self.write(description, LogLever::Fault);
+        async fault(&self, content: &impl ToStr) {
+            await self.write(content, LogLever::Fault);
         }
     }
 ```
@@ -238,11 +242,14 @@ seq = u64
 enum SystemLogHttp {
     type: LogType,
     timestamp: u64,
+    node: String,
     level: LogLever,
-    description: &str,
+    content: &str,
 }
 
-** seq和node字段由服务进程维护
+** `seq`字段由服务进程填充
+
+- 每写入一行新的日志前，都更新在`.state`的`seq`字段，以便重启后继续计数。如果`.state`文件损坏，则遍历本地系统日志的最后一行，从中找到最大的`seq`值，恢复`.state`文件。
 ```
 
 3. 读日志
