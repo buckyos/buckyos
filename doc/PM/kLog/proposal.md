@@ -131,7 +131,10 @@ Graylog: 提供了日志收集、检索和展示功能，内部依然使用`Elas
 | Nat      | nat     | {sn: ${sn-id}, reason: 'xxxx'}                       |
 | ...      | ...     | ...                                                  |
 
-    2. 开发调试日志规范
+    2. `.state`格式
+        len(4bytes) + JSON(key-value)
+
+    3. 开发调试日志规范
 
     直接以文本逐行写入
 
