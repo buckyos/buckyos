@@ -1,0 +1,64 @@
+<mxfile host="Electron" modified="2024-04-19T12:45:39.018Z" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/24.2.5 Chrome/120.0.6099.109 Electron/28.1.0 Safari/537.36" etag="EE0AaUzMKLBRZe1uE60X" version="24.2.5" type="device">
+  <diagram name="第 1 页" id="iw1MQLwF2fUcENlwePS1">
+    <mxGraphModel dx="989" dy="721" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-3" value="HTTP Protocol" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="X6rbpkI-_kWeVKyB4Uio-1" target="X6rbpkI-_kWeVKyB4Uio-2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-1" value="Client App" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="100" y="100" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="X6rbpkI-_kWeVKyB4Uio-20" target="X6rbpkI-_kWeVKyB4Uio-6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-2" value="Zone DFS Cache" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="460" y="100" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-4" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="740" y="154" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-5" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="720" y="144" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-6" value="DFS Cluster" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="134" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-8" value="轻客户端模式，必须连上DFS Cache才能工作" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="281" y="50" width="129" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-9" value="Client App" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="110" y="260" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="X6rbpkI-_kWeVKyB4Uio-10" target="X6rbpkI-_kWeVKyB4Uio-11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-10" value="DFS Lib" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="170" y="310" width="90" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="X6rbpkI-_kWeVKyB4Uio-11" target="X6rbpkI-_kWeVKyB4Uio-16">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-11" value="Local Cache" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="170" y="360" width="90" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-14" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="548" y="371" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-15" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="528" y="358" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-16" value="DFS Cluster" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="510" y="345" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-19" value="重客户端模式，可以在无法与DFS Cluster通信的情况下利用Local Cache让Client App依旧可以工作" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="290" y="230" width="220" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="X6rbpkI-_kWeVKyB4Uio-20" value="DFS Lib" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="520" y="150" width="90" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
