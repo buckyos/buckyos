@@ -151,7 +151,7 @@ View； 检索/展示日志
 
     3. 开发调试日志规范
 
-    直接以文本逐行写入
+    直接以文本逐行写入，每行应该带上时间戳
 
 # 写接口
 
@@ -170,7 +170,7 @@ interface LogConfig {
 }
 ```
 
-2. 写日志
+2. 写系统日志
 
 \*\* 日志文件格式
 
@@ -229,8 +229,7 @@ log = JSON.stringify(LogRecord) + '\n'
             self.seq += 1;
 
             let buffer = record.to_str().to_buffer();
-            buffer.append(self.seq);
-            self.log_file.seek(-8); // 覆盖之前的seq
+            buffer.append("\n");
             self.log_file.append(buffer);
         }
 
@@ -260,7 +259,7 @@ log = JSON.stringify(LogRecord) + '\n'
     }
 ```
 
--   为了解决多进程写日志的同步问题，系统启动一个独立的服务进程来排队写入。提供`http`接口供其他进程投递日志写请求，`http`头部只用最简单的头部，`body`部分格式如下：
+-   系统日志是反应系统当前状态的事件日志，应该支持能在开机状态下多种场景（事件，异常，异常恢复等）能够追加，为了解决多进程写日志的同步问题，系统启动一个独立的服务进程来排队写入。提供`http`接口供其他进程投递日志写请求，`http`头部只用最简单的头部，`body`部分格式如下：
 
 ```
 enum SystemLogHttp {
@@ -301,8 +300,22 @@ interface LogManager {
 
     }
 
+    // 创建索引库，安装APP时调用
+    async fn create_index(&self, appid: Option<String>) {
+        PUT _index_template/${appid}
+        PUT /${appid}
+        ...
+    }
+
+    // 删除索引库，卸载APP时调用
+    async fn delete_index(&self, appid: Option<String>) {
+        DELETE _index_template/${appid}
+        DELETE /${appid}
+        ...
+    }
+
     // 配置ElasticSearch服务器，控制其清理策略以释放存储空间
-    async set_config(&self, appid: Option<String>, max_size: u64, max_age: u64, max_count: u64) {
+    async fn set_config(&self, appid: Option<String>, max_size: u64, max_age: u64, max_count: u64) {
         PUT _ilm/policy/${appid}
         {
             "policy": {
@@ -336,8 +349,76 @@ interface LogManager {
 
 # 读接口
 
+主要提供按顺序遍历系统日志，以发现系统故障，由故障恢复程序自动或辅助恢复系统
+
+```
+interface NodeReadPos {
+    node: String,
+    seq: u64
+}
+
+interface LogReadOption {
+    time_range: Option<(SystemTime, SystemTime)>, // 时间区间
+    log_type: Vec<LogType>, // 日志类型，空表示查询全部类型
+    log_level: Vec<LogLevel> // 日志级别，空表示查询全部级别
+}
+
+interface LogReader {
+
+    /**
+    读取`NodeReadPos`后续的日志
+    include_new_nodes:
+        true: 对于不在`NodeReadPos`列表中的新节点，`seq`从0开始，按顺序查询集群中所有日志时使用
+        false: 不返回`NodeReadPos`列表节点以外的日志，精确查找指定节点日志时调用
+    在读取的日志记录被消费后，调用方应该保存每个节点最后读取的`seq`值，以便下次接着遍历。
+    */
+    async next(node_pos: &[NodeReadPos], limit: u16, include_new_nodes: bool, option: &LogReadOption): Array<SystemLogRecord> {}
+}
+
+```
+
 # 日志收集场景
 
 ## 收集哪些日志
 
+1. 基础操作系统状态
+
+    - 磁盘空间
+    - 内存使用
+    - CPU 使用率
+    - IO 状态
+    - 网络状态
+    - ...
+
+    考虑用`metricbeat`收集系统日志
+
+2. `BuckyOS`系统状态
+
+    - 集群节点间的连通失败/延迟和恢复
+    - `Nat`穿透服务联通失败/延迟和恢复
+    - 节点时间错误和恢复
+    - 节点角色变更
+    - 新节点加入
+    - 节点发生状态备份和恢复
+    - ...
+
+    在日志文件中记录，由`Filebeat`收集
+
+3. 其他日志
+
+    比如：开发期间调试日志
+
+    直接逐行写入日志文件，由`Filebeat`收集
+
 ## 日志应用场景
+
+1. 用户日志阅读工具，辅助诊断和修复
+    - 节点时钟同步失败，要手动修复时钟
+    - 磁盘空间不足，需要清理或者扩容
+    - 节点掉线，需要诊断物理网络
+    - ...
+2. 系统调度器通过日志诊断错误，对系统状态做出调度决策
+    - 某服务节点故障，把相关任务调度到其他节点，或执行恢复策略
+    - 节点空间不足，把存储型任务分配到其他节点
+    - 负责某角色的节点发生变更，需要复制旧节点状态
+    - ...
