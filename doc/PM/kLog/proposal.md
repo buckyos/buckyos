@@ -137,6 +137,8 @@ View； 检索/展示日志
     level: "info", // 错误级别，info, warn, error, fault
     content: "connect to server success", // 附加一条描述，依据不同type，可以是一个文本，也可以是个`JSON`串
 }
+
+* 对上述个字段分别添加索引
 ```
 
 | 场景     | type    | content                                              |
