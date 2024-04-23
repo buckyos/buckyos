@@ -1,5 +1,5 @@
 [package]
-name = "node_daemon"
+name = "backup_server"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,12 +8,10 @@ edition = "2021"
 [dependencies]
 toml = "*"
 serde = { version = "*", features = ["derive"] }
-serde_json = "*"
 log = "*"
 simplelog = "*"
 thiserror = "*"
 tokio = { version = "*", features = ["full"] }
-async-trait = "*"
-etcd_client = { path = "../etcd_client" }
-reqwest = "0.12.3"
+serde_json = "1.0"
 tide = "0.16.0"
+async-std = {version="*", features = ["attributes"]}
