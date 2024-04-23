@@ -16,15 +16,19 @@ enum NodeDaemonErrors {
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
 struct NodeIdentityConfig {
-
+    node_id : String,
+    node_pubblic_key : String,
 }
 
 struct ZoneConfig {
     etcd_version : u64,
 }
 
-struct EtcdState {
-    run_in_this_machine : bool,
+enum EtcdState {
+    Good(String),//string is best node_name have etcd for this node 
+    Error(String),//string is error message
+    NeedRunInThisMachine(String),//string is the endpoint info
+
 }
 
 fn init_log_config() {
@@ -41,10 +45,12 @@ fn init_log_config() {
 }
 
 fn load_identity_config() -> Result<NodeIdentityConfig> {
+    // load from /etc/buckyos/node_identity.toml
     unimplemented!();
 } 
 
 async fn looking_zone_config() -> Result<ZoneConfig> {
+    
     unimplemented!();
 }
 
@@ -123,26 +129,36 @@ async fn main() -> std::result::Result<(), String> {
         return String::from("check etcd by zone config failed!");
     })?;
 
-    //判断etcd的版本是否大于zone_config里的etcd版本，如果大于说明etcd的数据是新的，否则就要等待 etcd完成更新
-    if etcd_state.run_in_this_machine {
-        let etcd_data_version = get_etcd_data_version().await.map_err(|err|{
-            error!("get etcd data version failed!");
-            return String::from("get etcd data version failed!");
-        })?;
+    match etcd_state {
+        EtcdState::Good(node_name) => {
+            info!("etcd service is good, node:{} is my server.", node_name);
+        },
+        EtcdState::Error(err_msg) => {
+            error!("etcd is error, err_msg:{}", err_msg);
+            return Err(String::from("etcd is error!"));
+        },
+        EtcdState::NeedRunInThisMachine(endpoint) => {
+            info!("etcd need run in this machine, endpoint:{}", endpoint);
+            let etcd_data_version = get_etcd_data_version().await.map_err(|err|{
+                error!("get etcd data version failed!");
+                return String::from("get etcd data version failed!");
+            })?;
 
-        if etcd_data_version < zone_config.etcd_version {
-            info!("local etcd data version is old, wait for etcd restore!");
-            try_restore_etcd().await.map_err(|err|{
-                error!("try restore etcd failed!");
-                return String::from("try restore etcd failed!");
+            if etcd_data_version < zone_config.etcd_version {
+                info!("local etcd data version is old, wait for etcd restore!");
+                try_restore_etcd().await.map_err(|err|{
+                    error!("try restore etcd failed!");
+                    return String::from("try restore etcd failed!");
+                })?;
+            }
+
+            try_start_etcd().await.map_err(|err| {
+                error!("try start etcd failed!");
+                return String::from("try start etcd failed!");
             })?;
         }
-
-        try_start_etcd().await.map_err(|err| {
-            error!("try start etcd failed!");
-            return String::from("try start etcd failed!");
-        })?;
     }
+
 
     node_daemon_main_loop(zone_config).await.map_err(|err|{
         error!("node daemon main loop failed!");
