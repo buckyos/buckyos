@@ -12,3 +12,4 @@ log = "*"
 simplelog = "*"
 thiserror = "*"
 tokio = { version = "*", features = ["full"] }
+etcd_client = { path = "../etcd_client" }
