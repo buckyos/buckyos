@@ -92,9 +92,26 @@ async fn looking_zone_config(node_cfg:&NodeIdentityConfig) -> Result<ZoneConfig>
     unimplemented!();
 }
 
+async fn check_etcd_by_zone_config(config: &ZoneConfig, node_config: &NodeIdentityConfig) -> Result<EtcdState> {
+    let node_id = &node_config.node_id;
+    let local_endpoint = config
+        .etcd_servers
+        .iter()
+        .find(|&server| server.contains(node_id));
 
-async fn check_etcd_by_zone_config(config:&ZoneConfig) -> Result<EtcdState> {
-    unimplemented!();
+    if let Some(endpoint) = local_endpoint {
+        match EtcdClient::connect(endpoint).await {
+            Ok(_) => Ok(EtcdState::Good(node_id.clone())),
+            Err(_) => Ok(EtcdState::NeedRunInThisMachine(node_id.clone())),
+        }
+    } else {
+        for endpoint in &config.etcd_servers {
+            if EtcdClient::connect(endpoint).await.is_ok() {
+                return Ok(EtcdState::Good(endpoint.clone()));
+            }
+        }
+        Ok(EtcdState::Error("No etcd servers available".to_string()))
+    }
 }
 
 
@@ -182,7 +199,7 @@ async fn main() -> std::result::Result<(), String> {
     })?;
 
     //检查etcd状态
-    let etcd_state = check_etcd_by_zone_config(&zone_config)
+    let etcd_state = check_etcd_by_zone_config(&zone_config, &node_identity)
         .await
         .map_err(|err| {
             error!("check etcd by zone config failed!");
