@@ -2,26 +2,37 @@ use log::*;
 use simplelog::*;
 use std::fs::File;
 use tokio::*;
+use toml;
+use serde::Deserialize;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 enum NodeDaemonErrors {
     #[error("Failed due to reason: {0}")]
     ReasonError(String),
-    #[error("File not found: {0}")]
-    FileNotFoundError(String),
+    #[error("Config file read error: {0}")]
+    ReadConfigError(String),
+    #[error("Config parser error: {0}")]
+    ParserConfigError(String),
     // 其他错误类型
 }
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
+#[derive(Deserialize, Debug)]
 struct NodeIdentityConfig {
+    owner_zone_id : String,
     node_id : String,
     node_pubblic_key : String,
+    node_private_key : String,
 }
 
 struct ZoneConfig {
-    etcd_version : u64,
+    zone_id : String,
+    zone_public_key : String,
+    etcd_servers : Vec<String>,//etcd server endpoints
+    etcd_data_version : u64,//last backup etcd data version, 0 is not backup
+    backup_server_id : Option<String>,
 }
 
 enum EtcdState {
@@ -46,7 +57,18 @@ fn init_log_config() {
 
 fn load_identity_config() -> Result<NodeIdentityConfig> {
     // load from /etc/buckyos/node_identity.toml
-    unimplemented!();
+    let file_path = "/etc/buckyos/node_identity.toml";
+    let contents = std::fs::read_to_string(file_path).map_err(|err|{
+        error!("read node identity config failed!");
+        return NodeDaemonErrors::ReadConfigError(String::from(file_path));
+    })?;
+    
+    let config: NodeIdentityConfig = toml::from_str(&contents).map_err(|err|{
+        error!("parse node identity config failed!");
+        return NodeDaemonErrors::ParserConfigError(format!("Failed to parse NodeIdentityConfig TOML: {}", err));
+    })?;    
+
+    Ok(config)
 } 
 
 async fn looking_zone_config() -> Result<ZoneConfig> {
@@ -118,6 +140,9 @@ async fn main() -> std::result::Result<(), String> {
         String::from("load node identity config failed!")
     })?;
 
+    info!("zone_id is : {}, node_id is:{}, node_publick_key is :{}",
+        node_identity.owner_zone_id, node_identity.node_id, node_identity.node_pubblic_key);
+
     let zone_config = looking_zone_config().await.map_err(|err|{
         error!("looking zone config failed!");
         String::from("looking zone config failed!")
@@ -144,7 +169,7 @@ async fn main() -> std::result::Result<(), String> {
                 return String::from("get etcd data version failed!");
             })?;
 
-            if etcd_data_version < zone_config.etcd_version {
+            if etcd_data_version < zone_config.etcd_data_version {
                 info!("local etcd data version is old, wait for etcd restore!");
                 try_restore_etcd().await.map_err(|err|{
                     error!("try restore etcd failed!");
