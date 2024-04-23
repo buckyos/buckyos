@@ -8,3 +8,5 @@ edition = "2021"
 [dependencies]
 log = "*"
 simplelog = "*"
+thiserror = "*"
+tokio = { version = "*", features = ["full"] }
