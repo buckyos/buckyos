@@ -1,0 +1,10 @@
+[package]
+name = "node_control"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+tokio = { version = "*", features = ["full"] }
+etcd_client = { path = "../etcd_client" }
+clap = *"
