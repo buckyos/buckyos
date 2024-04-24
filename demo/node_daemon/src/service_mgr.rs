@@ -1,32 +1,38 @@
+use crate::run_item::*;
+use async_trait::async_trait;
+use serde_json::Value;
 pub struct ServiceItem {
     name: String,
     version: String,
 }
 
+#[async_trait]
 impl RunItemControl for ServiceItem {
-    async fn deploy(&self) -> Result<(), String> {
-        info!("deploy service item: {}-{}", self.name, self.version);
+    async fn deploy(&self,params:Option<&Value>) -> Result<()> {
         Ok(())
     }
 
-    async fn uninstall(&self) -> Result<(), String> {
-        info!("uninstall service item: {}-{}", self.name, self.version);
+    async fn remove(&self,params:Option<&Value>) -> Result<()> {
         Ok(())
     }
 
-    async fn start(&self) -> Result<(), String> {
-        info!("start service item: {}-{}", self.name, self.version);
+    async fn update(&self,params:Option<&Value>) -> Result<String> {
+        Ok(String::from("1.0.1"))
+    }
+
+    async fn start(&self,params:Option<&Value>) -> Result<()> {
         Ok(())
     }
 
-    async fn stop(&self) -> Result<(), String> {
-        info!("stop service item: {}-{}", self.name, self.version);
+    async fn stop(&self,params:Option<&Value>) -> Result<()> {
         Ok(())
     }
 
-    async fn update(&self) -> Result<(), String> {
-        info!("update service item: {}-{}", self.name, self.version);
-        Ok(())
+    async fn get_state(&self) -> Result<RunItemState> {
+        Ok(RunItemState::Started)
     }
 }
 
+pub struct ServiceMgr {
+    services: Vec<ServiceItem>,
+}

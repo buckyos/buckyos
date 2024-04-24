@@ -1,3 +1,6 @@
+mod run_item;
+mod service_mgr;
+
 use etcd_client::*;
 use log::*;
 use serde::Deserialize;

@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use thiserror::Error;
 #[derive(Error, Debug)]
-enum ControlRuntItemErrors {
+pub enum ControlRuntItemErrors {
     #[error("Download {0} error!")]
     DownloadError(String),
     #[error("Execute cmd {0} error:{1}")]
@@ -14,14 +14,13 @@ enum ControlRuntItemErrors {
     NetworkError(String),
 }
 
-type Result<T> = std::result::Result<T, ControlRuntItemErrors>;
+pub type Result<T> = std::result::Result<T, ControlRuntItemErrors>;
 
 pub enum RunItemState {
-    Deployed,
-    Removed,
+    Deploying,
+    NotExist,
     Started,
-    Stopped,
-    Updated,
+    Stopped(String), //version
 }
 
 #[async_trait]
