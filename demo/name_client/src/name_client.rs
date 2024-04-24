@@ -4,9 +4,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Etcd {
     pub name: String,
-    pub addr: String,
-    pub port: u16,
-    pub ad_port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ad_port: Option<u16>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
