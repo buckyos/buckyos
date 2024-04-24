@@ -30,6 +30,7 @@ impl Backup {
 
     pub async fn query_versions<Meta: FromStr>(
         &self,
+        key: &str,
         offset: ListOffset,
         limit: u64,
     ) -> Result<Vec<(u64, Meta)>, Box<dyn std::error::Error>> {
