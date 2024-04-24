@@ -4,4 +4,5 @@ resolver = "2"
 members = [
     "./node_daemon",
     "./etcd_client",
+    "./name_client",
 ]
