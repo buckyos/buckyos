@@ -14,6 +14,7 @@ use std::fs::File;
 
 use tokio::*;
 use toml;
+use name_client::NameClient;
 
 use thiserror::Error;
 #[derive(Error, Debug)]
@@ -96,11 +97,32 @@ fn load_identity_config() -> Result<NodeIdentityConfig> {
 }
 
 async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig> {
+    let name_client = NameClient::new();
+    let name_info = name_client.query(node_cfg.owner_zone_id.as_str()).await.map_err(|err|{
+        error!("query zone config failed! {}", err);
+        return NodeDaemonErrors::ReasonError("query zone config failed!".to_string());
+    })?;
+
+    let zone_config: Option<name_client::ZoneConfig> = name_info.get_extra().map_err(|err|{
+        error!("get zone config failed! {}", err);
+        return NodeDaemonErrors::ReasonError("get zone config failed!".to_string());
+    })?;
+
+    if let Some(zone_cfg) = zone_config {
+        Ok(ZoneConfig {
+            zone_id: node_cfg.node_id.clone(),
+            zone_public_key: "".to_string(),
+            etcd_servers: zone_cfg.etcds.iter().map(|v| v.addr.clone()).collect(),
+            etcd_data_version: 0,
+            backup_server_id: zone_cfg.backup_server,
+        })
+    } else {
+        Err(NodeDaemonErrors::ReasonError("zone config not found!".to_string()))
+    }
     //get name service client
     //config =  client.lookup($zone_id)
     //parser config
     //if have backup server, connect to backupserver and get backup info, get etcd_data_version
-    unimplemented!();
 }
 
 async fn check_etcd_by_zone_config(

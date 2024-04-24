@@ -7,4 +7,5 @@ members = [
 	"./backup_server",
     "./system_config",
     "./node_control",
+    "./name_client",
 ]
