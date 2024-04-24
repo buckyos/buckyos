@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 pub struct Backup {
     url: String,
@@ -25,7 +25,7 @@ impl Backup {
         chunk_file_list: &[&std::path::Path],
     ) -> Result<Box<dyn tokio::io::AsyncWrite>, Box<dyn std::error::Error>> {
         // 1. put meta
-        // 2. begin upload stream
+        // 2. upload chunk files
         unimplemented!()
     }
 
@@ -42,9 +42,10 @@ impl Backup {
         &self,
         key: &str,
         version: u64,
+        dir_path: Path,
     ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
-        // 1. get meta
-        // 2. begin download stream
+        // 1. get chunk file list
+        // 2. download chunk files to the dir_path
         unimplemented!()
     }
 }
