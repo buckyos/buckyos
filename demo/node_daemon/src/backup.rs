@@ -17,11 +17,12 @@ impl Backup {
     }
 
     // TODO: 可能还需要一个公钥作为身份标识，否则可能被恶意应用篡改
-    pub async fn create_upload_stream(
+    pub async fn create_backup(
         &self,
         key: &str,
         version: u64,
         meta: &impl ToString,
+        chunk_file_list: &[&std::path::Path],
     ) -> Result<Box<dyn tokio::io::AsyncWrite>, Box<dyn std::error::Error>> {
         // 1. put meta
         // 2. begin upload stream
@@ -37,11 +38,11 @@ impl Backup {
         unimplemented!()
     }
 
-    pub async fn create_download_stream(
+    pub async fn download_backup(
         &self,
         key: &str,
         version: u64,
-    ) -> Result<Box<dyn tokio::io::AsyncRead>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
         // 1. get meta
         // 2. begin download stream
         unimplemented!()
