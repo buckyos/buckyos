@@ -1,0 +1,9 @@
+[package]
+name = "system_config"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+etcd_client = { path = "../etcd_client" }
+tokio = { version = "*", features = ["full"] }
+
