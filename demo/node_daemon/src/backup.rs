@@ -28,19 +28,19 @@ impl Backup {
         unimplemented!()
     }
 
-    pub async fn query_versions(
+    pub async fn query_versions<Meta: FromStr>(
         &self,
         offset: ListOffset,
         limit: u64,
-    ) -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<(u64, Meta)>, Box<dyn std::error::Error>> {
         unimplemented!()
     }
 
-    pub async fn create_download_stream<Meta: FromStr>(
+    pub async fn create_download_stream(
         &self,
         key: &str,
         version: u64,
-    ) -> Result<(Box<dyn tokio::io::AsyncRead>, Meta), Box<dyn std::error::Error>> {
+    ) -> Result<Box<dyn tokio::io::AsyncRead>, Box<dyn std::error::Error>> {
         // 1. get meta
         // 2. begin download stream
         unimplemented!()
