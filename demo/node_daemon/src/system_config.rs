@@ -1,11 +1,15 @@
 use etcd_client::*;
 
 pub struct SystemConfig {
-    client: EtcdClient,
+    client: Option<EtcdClient>,
 }
 
 impl SystemConfig {
-    pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(client: Option<EtcdClient>) -> Self {
+        SystemConfig { client }
+    }
+
+    pub async fn list(&self, prefix: &str) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
         unimplemented!();
     }
 

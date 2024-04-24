@@ -8,7 +8,14 @@ pub struct ServiceItem {
 
 #[async_trait]
 impl RunItemControl for ServiceItem {
+    fn get_item_name(&self) -> String {
+        self.name.clone()
+    }
+
     async fn deploy(&self,params:Option<&Value>) -> Result<()> {
+        //media_info = env.load_pkg(&self.name)
+        //deploy_sh_file = media_info.folder + "/deploy.sh"
+        //run_cmd(deploy_sh_file)
         Ok(())
     }
 

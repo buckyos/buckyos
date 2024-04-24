@@ -1,9 +1,13 @@
 mod run_item;
 mod service_mgr;
+mod system_config;
+
+use system_config::*;
 
 use etcd_client::*;
 use log::*;
 use serde::Deserialize;
+use serde_json::error;
 use simplelog::*;
 use std::fs::File;
 
@@ -19,6 +23,8 @@ enum NodeDaemonErrors {
     ReadConfigError(String),
     #[error("Config parser error: {0}")]
     ParserConfigError(String),
+    #[error("SystemConfig Error: {0}")]
+    SystemConfigError(String),//key
     // 其他错误类型
 }
 
@@ -155,7 +161,7 @@ async fn try_restore_etcd(node_cfg:&NodeIdentityConfig,zone_cfg:&ZoneConfig)->Re
 //}
 
 
-async fn node_daemon_main_loop(config:&ZoneConfig) -> Result<()> {
+async fn node_daemon_main_loop(node_cfg:&NodeIdentityConfig,config:&ZoneConfig) -> Result<()> {
     let mut loop_step = 0;
     let mut is_running = true;
     loop {
@@ -166,6 +172,7 @@ async fn node_daemon_main_loop(config:&ZoneConfig) -> Result<()> {
         info!("node daemon main loop step:{}", loop_step);
         //etcd_client = create_etcd_client()
         //system_config.init(etcd_client)
+        let sys_cfg = SystemConfig::new(None);
         
         //try_backup_etcd_data()
         
@@ -173,6 +180,18 @@ async fn node_daemon_main_loop(config:&ZoneConfig) -> Result<()> {
         
         //cmd_config = system_config.get("")
         //execute_cmd(cmd_config) //一般是执行运维命令，类似系统备份和恢复
+        let service_cfg_key = format!("/{}/services",node_cfg.node_id);
+        let all_service_item = sys_cfg.list(&service_cfg_key).await.map_err(|err|{
+            error!("list service config failed!");
+            return NodeDaemonErrors::SystemConfigError(service_cfg_key);
+        })?;
+        for (service_name,service_cfg) in all_service_item {
+            //get service item from service_cfg
+            //query service item state
+            // if service item state is not equal to service_cfg state, do something
+        }
+
+
         //service_config = system_config.get("")
         //execute_service(service_config)
         //vm_config = system_config.get("")
@@ -241,7 +260,7 @@ async fn main() -> std::result::Result<(), String> {
     }
 
     info!("Ready, start node daemon main loop!");
-    node_daemon_main_loop(&zone_config).await.map_err(|err|{
+    node_daemon_main_loop(&node_identity,&zone_config).await.map_err(|err|{
         error!("node daemon main loop failed!");
         return String::from("node daemon main loop failed!");
     })?;
