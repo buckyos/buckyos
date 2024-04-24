@@ -46,6 +46,13 @@ struct MetaFile {
     time: SystemTime,
 }
 
+#[derive(Deserialize, Serialize)]
+struct QueryVersionReq {
+    key: String,
+    offset: i32,
+    limit: u64,
+}
+
 struct BackupFile {
     versions: Vec<BackupFileVersion>, // 按版本号升序
 }
@@ -65,7 +72,6 @@ impl BackupFileMgr {
     }
 
     pub async fn save_file(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
-        // 解析 multipart 表单
         let key = match req.header(HTTP_HEADER_KEY) {
             Some(h) => h.to_string(),
             None => {
@@ -194,7 +200,6 @@ impl BackupFileMgr {
     }
 
     pub async fn check_file(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
-        // 解析 multipart 表单
         let key = match req.header(HTTP_HEADER_KEY) {
             Some(h) => h.to_string(),
             None => {
@@ -292,9 +297,48 @@ impl BackupFileMgr {
     }
 
     pub async fn query_versions(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
-        unimplemented!();
+        let req: QueryVersionReq = req.body_json().await?;
 
-        Ok(tide::Response::new(tide::StatusCode::Ok))
+        let resp_body = {
+            let mut files_lock_guard = self.files.lock().await;
+
+            let files = files_lock_guard.get(req.key.as_str());
+
+            let versions = files.map_or(
+                Err(tide::Error::from_str(
+                    tide::StatusCode::NotFound,
+                    "not found the key",
+                )),
+                |v| Ok(v),
+            )?;
+
+            let offset = if req.offset < 0 {
+                std::cmp::max(versions.versions.len() as isize + req.offset as isize, 0) as usize
+            } else {
+                req.offset as usize
+            };
+
+            let versions = if versions.versions.len() > offset {
+                let end = std::cmp::min(versions.versions.len(), offset + req.limit as usize);
+                &versions.versions.as_slice()[offset..end]
+            } else {
+                &[]
+            };
+
+            serde_json::to_string(
+                versions
+                    .iter()
+                    .map(|v| (v.version, v.meta.clone()))
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            )?
+        };
+
+        let mut resp = tide::Response::new(tide::StatusCode::Ok);
+        resp.set_content_type("application/json");
+        resp.set_body(resp_body);
+
+        Ok(resp)
     }
 
     pub async fn download_file(&self, mut req: Request<BackupFileMgr>) -> tide::Result {

@@ -5,8 +5,8 @@ pub struct Backup {
 }
 
 pub enum ListOffset {
-    FromFirst(u64),
-    FromLast(u64),
+    FromFirst(u32),
+    FromLast(u32),
 }
 
 impl Backup {
@@ -32,7 +32,7 @@ impl Backup {
         &self,
         key: &str,
         offset: ListOffset,
-        limit: u64,
+        limit: u32,
     ) -> Result<Vec<(u64, Meta)>, Box<dyn std::error::Error>> {
         unimplemented!()
     }
