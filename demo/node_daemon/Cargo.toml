@@ -8,8 +8,10 @@ edition = "2021"
 [dependencies]
 toml = "*"
 serde = { version = "*", features = ["derive"] }
+serde_json = "*"
 log = "*"
 simplelog = "*"
 thiserror = "*"
 tokio = { version = "*", features = ["full"] }
+async-trait = "*"
 etcd_client = { path = "../etcd_client" }

@@ -3,10 +3,11 @@ use log::*;
 use serde::Deserialize;
 use simplelog::*;
 use std::fs::File;
-use thiserror::Error;
+
 use tokio::*;
 use toml;
 
+use thiserror::Error;
 #[derive(Error, Debug)]
 enum NodeDaemonErrors {
     #[error("Failed due to reason: {0}")]
