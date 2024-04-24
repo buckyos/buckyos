@@ -35,4 +35,6 @@ bucky_cli
 3. 做简单的设计即可，可以看成是一个BuckyOS的教学版本实现
 
 ## Power By AI
-在DEMO这个规模里，尝试进行AI friendly的工程配置，尽量让AI来编写更多的代码
+在DEMO这个规模里，尝试进行AI friendly的工程配置，尽量让AI来编写更多的代码。
+目前还是传统的使用ChatGPT代替Google获得示例代码，再通过Copliot来提升代码的编写效率。
+也许应该在不那么着急，且更独立的基础组件里来尝试更AI Friendly的工程配置。
