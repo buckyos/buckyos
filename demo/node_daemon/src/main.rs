@@ -1,6 +1,7 @@
 mod backup;
 mod run_item;
 mod service_mgr;
+mod pkg_mgr;
 mod system_config;
 
 use system_config::*;
