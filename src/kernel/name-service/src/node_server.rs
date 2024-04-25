@@ -87,7 +87,7 @@ impl NSCmdRegister {
                 let resp: NSResult<T> = async move {
                     tmp.handle(request.get()?).await
                 }.await;
-                let result = SerdeResult::<_, NSError>::from(resp);
+                let result = SerdeResult::from(resp);
                 NSCmdResponse::from(result)
             }
         }));
