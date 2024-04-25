@@ -1,5 +1,5 @@
-use crate::{NSError, NSErrorCode, NSResult};
-use crate::error::ns_err;
+use crate::{NSErrorCode, NSResult};
+use crate::error::{into_ns_err, ns_err};
 
 pub struct DnsTxtCodec;
 
@@ -46,9 +46,7 @@ impl DnsTxtCodec {
             }
             base64_str
         };
-        let data = base64::decode(&base64_str).map_err(|e| {
-            NSError::new(NSErrorCode::Failed, format!("Failed to decode base64: {}", e))
-        })?;
+        let data = base64::decode(&base64_str).map_err(into_ns_err!(NSErrorCode::Failed, "Failed to decode base64"))?;
         Ok(data)
     }
 }
