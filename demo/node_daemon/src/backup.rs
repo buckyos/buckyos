@@ -18,7 +18,7 @@ impl Backup {
     }
 
     // TODO: 可能还需要一个公钥作为身份标识，否则可能被恶意应用篡改
-    pub async fn create_backup(
+    pub async fn begin_backup(
         &self,
         key: &str,
         version: u64,

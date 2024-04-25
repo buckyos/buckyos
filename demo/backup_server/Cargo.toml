@@ -11,9 +11,10 @@ serde = { version = "*", features = ["derive"] }
 log = "*"
 simplelog = "*"
 thiserror = "*"
-tokio = { version = "*", features = ["full"] }
+# tokio = { version = "*", features = ["full"] }
 serde_json = "1.0"
 tide = "0.16.0"
 async-std = {version="*", features = ["attributes"]}
 sha2 = {version = '0.10.8'}
 base58 = '0.2.0'
+rusqlite = { version = '0.31.0', features = ['bundled', 'blob'] }
