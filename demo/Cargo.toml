@@ -5,7 +5,6 @@ members = [
     "./node_daemon",
     "./etcd_client",
 	"./backup_server",
-    "./system_config",
     "./node_control",
     "./name_client",
 ]

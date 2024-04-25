@@ -1,4 +1,5 @@
 use std::{path::PathBuf, str::FromStr};
+use std::path::Path;
 
 pub struct Backup {
     url: String,
@@ -42,7 +43,7 @@ impl Backup {
         &self,
         key: &str,
         version: u64,
-        dir_path: Path,
+        dir_path: &Path,
     ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
         // 1. get chunk file list
         // 2. download chunk files to the dir_path
