@@ -15,7 +15,8 @@ thiserror = "*"
 tokio = { version = "*", features = ["full"] }
 async-trait = "*"
 etcd_client = { path = "../etcd_client" }
-reqwest = "0.12.3"
-tide = "0.16.0"
+reqwest = "*"
+tide = "*"
 name_client = { path = "../name_client" }
 regex = "*"
+lazy_static = "*"

@@ -4,20 +4,22 @@ mod service_mgr;
 mod pkg_mgr;
 mod system_config;
 
-use system_config::*;
-
 use etcd_client::*;
 use log::*;
 use serde::Deserialize;
 use serde_json::error;
 use simplelog::*;
-use std::fs::File;
-
+use std::{collections::HashMap, fs::File};
 use tokio::*;
 use toml;
+
 use name_client::NameClient;
+use crate::run_item::*;
+use crate::service_mgr::*;
+use crate::system_config::*;
 
 use thiserror::Error;
+
 #[derive(Error, Debug)]
 enum NodeDaemonErrors {
     #[error("Failed due to reason: {0}")]
@@ -198,19 +200,38 @@ async fn node_daemon_main_loop(node_cfg: &NodeIdentityConfig, config: &ZoneConfi
         //etcd_client = create_etcd_client()
         //system_config.init(etcd_client)
         let sys_cfg = SystemConfig::new(None);
-
+        let node_ip = String::from("127.0.0.1");
         //try_backup_etcd_data()
 
         //try_report_node_status()
 
         //cmd_config = system_config.get("")
         //execute_cmd(cmd_config) //一般是执行运维命令，类似系统备份和恢复
+        //system config是以node_id为单位配置的
+        //以服务为单位的配置一般从name service那展开
         let service_cfg_key = format!("/{}/services", node_cfg.node_id);
         let all_service_item = sys_cfg.list(&service_cfg_key).await.map_err(|err| {
             error!("list service config failed!");
             return NodeDaemonErrors::SystemConfigError(service_cfg_key);
         })?;
+       
         for (service_name, service_cfg) in all_service_item {
+            //parse servce_cfg to json，get target state from service_cfg
+            let (service_config,_) = sys_cfg.get(&service_name.as_str()).await.unwrap();
+            let mut run_params = RunItemParams::new(node_ip.clone());
+            run_params.services_cfg = Some(service_config);
+
+            let target_state: RunItemTargetState = RunItemTargetState::Running(String::new());
+            let service_item = create_service_item_from_config(&service_cfg).await.map_err(|err|{
+                error!("create service item from config failed!");
+                return NodeDaemonErrors::SystemConfigError(service_cfg_key);
+            })?;
+            
+
+            control_run_item_to_target_state(&service_item, target_state, Some(&run_params)).await.map_err(|err|{
+                error!("control service item to target state failed!");
+                return NodeDaemonErrors::SystemConfigError(service_cfg_key);
+            })?;
             //get service item from service_cfg
             //query service item state
             // if service item state is not equal to service_cfg state, do something
