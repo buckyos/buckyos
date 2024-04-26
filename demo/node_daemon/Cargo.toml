@@ -20,3 +20,4 @@ tide = "*"
 name_client = { path = "../name_client" }
 regex = "*"
 lazy_static = "*"
+async-recursion = "*"

@@ -106,6 +106,7 @@ impl PackageEnv {
     }
 
     // install 一个包，安装时一定要有确定的版本号或者sha256值
+    #[async_recursion::async_recursion]
     pub async fn install_pkg(&self, pkg_id: &str) -> Result<()> {
         let mut pkg_id = self.parse_pkg_id(pkg_id)?;
         if self.load_pkg(&pkg_id.name).await.is_ok() {
