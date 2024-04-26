@@ -215,13 +215,13 @@ impl BackupIndexSqlite {
         let sql = r#"
             SELECT version, chunk_seq, chunk_path, hash, chunk_size
             FROM version_chunk
-            WHERE version >= ?1 AND version <= ?2
+            WHERE key = ?1 AND version >= ?2 AND version <= ?3
             ORDER BY version ASC, chunk_seq ASC
         "#;
 
         let mut stmt = self.conn.prepare(sql)?;
         let chunks = stmt
-            .query_map(rusqlite::params![min_version, max_version], |row| {
+            .query_map(rusqlite::params![key, min_version, max_version], |row| {
                 Ok((
                     row.get::<usize, u32>(0).unwrap(),
                     BackupChunk {
@@ -251,6 +251,55 @@ impl BackupIndexSqlite {
         }
 
         Ok(versions)
+    }
+
+    pub fn query_backup_version_info(
+        &self,
+        key: &str,
+        version: u32,
+    ) -> Result<BackupVersionMeta, Box<dyn Error>> {
+        let sql = r#"SELECT meta, chunk_count
+                FROM backup_version
+                WHERE key = ?1 AND version = ?2
+            "#;
+
+        let mut version_info =
+            self.conn
+                .query_row(sql, rusqlite::params![key, version], |row| {
+                    Ok(BackupVersionMeta {
+                        key: key.to_string(),
+                        version,
+                        meta: row.get(0).unwrap(),
+                        chunk_count: row.get(1).unwrap(),
+                        chunks: vec![],
+                    })
+                })?;
+
+        let sql = r#"
+            SELECT chunk_seq, chunk_path, hash, chunk_size
+            FROM version_chunk
+            WHERE key = ? 1 AND version = ?2
+        "#;
+
+        let mut stmt = self.conn.prepare(sql)?;
+        let chunks = stmt
+            .query_map(rusqlite::params![key, version], |row| {
+                Ok(BackupChunk {
+                    seq: row.get(0).unwrap(),
+                    path: row.get(1).unwrap(),
+                    hash: row.get(2).unwrap(),
+                    size: row.get(3).unwrap(),
+                })
+            })?
+            .collect::<Vec<_>>();
+
+        if chunks.len() == 0 {
+            return Ok(version_info);
+        }
+
+        version_info.chunks = chunks.into_iter().map(|ck| ck.unwrap()).collect();
+
+        Ok(version_info)
     }
 
     pub fn query_chunk(

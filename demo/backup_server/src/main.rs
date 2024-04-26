@@ -38,6 +38,12 @@ async fn query_versions(mut req: Request<BackupFileMgr>) -> tide::Result {
     backup_file_mgr.query_versions(req).await
 }
 
+async fn query_version_info(mut req: Request<BackupFileMgr>) -> tide::Result {
+    let backup_file_mgr = req.state().clone();
+
+    backup_file_mgr.query_version_info(req).await
+}
+
 #[async_std::main]
 async fn main() -> tide::Result<()> {
     let config_path = "./config.toml";
@@ -63,6 +69,7 @@ async fn main() -> tide::Result<()> {
     app.at("/new_backup").post(create_backup);
     app.at("/new_chunk").post(save_chunk);
     app.at("/query_versions").get(query_versions);
+    app.at("/version_info").get(query_version_info);
     app.at("/chunk").get(download_chunk);
 
     app.listen(format!("{}:{}", config.interface, config.port))

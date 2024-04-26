@@ -1,5 +1,3 @@
-use std::time::SystemTime;
-
 use crate::backup_index::*;
 use async_std::{
     fs::File,
@@ -15,32 +13,8 @@ use tide::Request;
 
 const HTTP_HEADER_KEY: &'static str = "BACKUP_KEY";
 const HTTP_HEADER_VERSION: &'static str = "BACKUP_VERSION";
-const HTTP_HEADER_METADATA: &'static str = "BACKUP_METADATA";
 const HTTP_HEADER_HASH: &'static str = "BACKUP_HASH";
 const HTTP_HEADER_CHUNK_SEQ: &'static str = "BACKUP_CHUNK_SEQ";
-
-#[derive(Clone)]
-enum BackupStatus {
-    Transfering,
-    Temperature,
-    Saved,
-}
-
-#[derive(Clone)]
-struct BackupFileVersion {
-    version: u64,
-    meta: String,
-    hash: String,
-    status: BackupStatus,
-    file_paths: Vec<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct MetaFile {
-    meta: String,
-    hash: String,
-    time: SystemTime,
-}
 
 #[derive(Deserialize, Serialize)]
 struct CreateBackupReq {
@@ -75,6 +49,12 @@ pub struct QueryBackupVersionResp {
 }
 
 #[derive(Deserialize, Serialize)]
+struct QueryVersionInfoReq {
+    key: String,
+    version: u32,
+}
+
+#[derive(Deserialize, Serialize)]
 struct DownloadBackupVersionReq {
     key: String,
     version: u32,
@@ -85,10 +65,6 @@ struct DownloadBackupChunkReq {
     key: String,
     version: u32,
     chunk_seq: u32,
-}
-
-struct BackupFile {
-    versions: Vec<BackupFileVersion>, // 按版本号升序
 }
 
 #[derive(Clone)]
@@ -329,6 +305,42 @@ impl BackupFileMgr {
             })
             .collect::<Vec<_>>();
         let resp_body = serde_json::to_string(resp_versions.as_slice())?;
+
+        let mut resp = tide::Response::new(tide::StatusCode::Ok);
+        resp.set_content_type("application/json");
+        resp.set_body(resp_body);
+
+        Ok(resp)
+    }
+
+    pub async fn query_version_info(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
+        let req: QueryVersionInfoReq = req.body_json().await?;
+
+        let version = self
+            .index_mgr
+            .lock()
+            .await
+            .query_backup_version_info(req.key.as_str(), req.version)
+            .map_err(|err| {
+                tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
+            })?;
+
+        let resp_version = QueryBackupVersionResp {
+            key: req.key,
+            version: req.version,
+            meta: version.meta,
+            chunk_count: version.chunk_count,
+            chunks: version
+                .chunks
+                .into_iter()
+                .map(|ck| QueryBackupVersionRespChunk {
+                    seq: ck.seq,
+                    hash: ck.hash,
+                    size: ck.size,
+                })
+                .collect(),
+        };
+        let resp_body = serde_json::to_string(&resp_version)?;
 
         let mut resp = tide::Response::new(tide::StatusCode::Ok);
         resp.set_content_type("application/json");
