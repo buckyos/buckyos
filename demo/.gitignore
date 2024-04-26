@@ -2,3 +2,4 @@
 etcd_client/target
 node_daemon/target
 target
+Cargo.lock

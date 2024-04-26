@@ -1,7 +1,7 @@
 mod backup;
+mod pkg_mgr;
 mod run_item;
 mod service_mgr;
-mod pkg_mgr;
 mod system_config;
 
 use etcd_client::*;
@@ -13,10 +13,10 @@ use std::{collections::HashMap, fs::File};
 use tokio::*;
 use toml;
 
-use name_client::NameClient;
 use crate::run_item::*;
 use crate::service_mgr::*;
 use crate::system_config::*;
+use name_client::NameClient;
 
 use thiserror::Error;
 
@@ -47,7 +47,7 @@ struct ZoneConfig {
     zone_id: String,
     zone_public_key: String,
     etcd_servers: Vec<String>, //etcd server endpoints
-    etcd_data_version: u64,    //last backup etcd data version, 0 is not backup
+    etcd_data_version: i64,    //last backup etcd data version, 0 is not backup
     backup_server_id: Option<String>,
 }
 
@@ -101,12 +101,15 @@ fn load_identity_config() -> Result<NodeIdentityConfig> {
 
 async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig> {
     let name_client = NameClient::new();
-    let name_info = name_client.query(node_cfg.owner_zone_id.as_str()).await.map_err(|err|{
-        error!("query zone config failed! {}", err);
-        return NodeDaemonErrors::ReasonError("query zone config failed!".to_string());
-    })?;
+    let name_info = name_client
+        .query(node_cfg.owner_zone_id.as_str())
+        .await
+        .map_err(|err| {
+            error!("query zone config failed! {}", err);
+            return NodeDaemonErrors::ReasonError("query zone config failed!".to_string());
+        })?;
 
-    let zone_config: Option<name_client::ZoneConfig> = name_info.get_extra().map_err(|err|{
+    let zone_config: Option<name_client::ZoneConfig> = name_info.get_extra().map_err(|err| {
         error!("get zone config failed! {}", err);
         return NodeDaemonErrors::ReasonError("get zone config failed!".to_string());
     })?;
@@ -120,7 +123,9 @@ async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig
             backup_server_id: zone_cfg.backup_server,
         })
     } else {
-        Err(NodeDaemonErrors::ReasonError("zone config not found!".to_string()))
+        Err(NodeDaemonErrors::ReasonError(
+            "zone config not found!".to_string(),
+        ))
     }
     //get name service client
     //config =  client.lookup($zone_id)
@@ -157,8 +162,24 @@ async fn check_etcd_data() -> Result<bool> {
     unimplemented!();
 }
 
-async fn get_etcd_data_version() -> Result<u64> {
-    unimplemented!();
+async fn get_etcd_data_version(zone_cfg: &ZoneConfig) -> Result<i64> {
+    // 转换 etcd_servers为 initial_cluster 字符串
+    let initial_cluster = zone_cfg
+        .etcd_servers
+        .iter()
+        .enumerate()
+        .map(|(idx, server)| format!("etcd{}={}", idx, server))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let revision = etcd_client::get_etcd_data_version(&initial_cluster)
+        .await
+        .map_err(|err| {
+            error!("get etcd data version failed!");
+            return String::from("get etcd data version failed!");
+        })
+        .unwrap();
+    Ok(revision)
 }
 
 async fn try_start_etcd() -> Result<()> {
@@ -214,23 +235,26 @@ async fn node_daemon_main_loop(node_cfg: &NodeIdentityConfig, config: &ZoneConfi
             error!("list service config failed!");
             return NodeDaemonErrors::SystemConfigError(service_cfg_key.clone());
         })?;
-       
+
         for (service_name, service_cfg) in all_service_item {
             //parse servce_cfg to json，get target state from service_cfg
-            let (service_config,_) = sys_cfg.get(&service_name.as_str()).await.unwrap();
-            let mut run_params = RunItemParams::new(node_ip.clone(),Some(service_config));
+            let (service_config, _) = sys_cfg.get(&service_name.as_str()).await.unwrap();
+            let mut run_params = RunItemParams::new(node_ip.clone(), Some(service_config));
 
             let target_state: RunItemTargetState = RunItemTargetState::Running(String::new());
-            let service_item = create_service_item_from_config(&service_cfg).await.map_err(|err|{
-                error!("create service item from config failed!");
-                return NodeDaemonErrors::SystemConfigError(service_cfg_key.clone());
-            })?;
-            
+            let service_item = create_service_item_from_config(&service_cfg)
+                .await
+                .map_err(|err| {
+                    error!("create service item from config failed!");
+                    return NodeDaemonErrors::SystemConfigError(service_cfg_key.clone());
+                })?;
 
-            control_run_item_to_target_state(&service_item, target_state, Some(&run_params)).await.map_err(|err|{
-                error!("control service item to target state failed!");
-                return NodeDaemonErrors::SystemConfigError(service_cfg_key.clone());
-            })?;
+            control_run_item_to_target_state(&service_item, target_state, Some(&run_params))
+                .await
+                .map_err(|err| {
+                    error!("control service item to target state failed!");
+                    return NodeDaemonErrors::SystemConfigError(service_cfg_key.clone());
+                })?;
             //get service item from service_cfg
             //query service item state
             // if service item state is not equal to service_cfg state, do something
@@ -285,7 +309,7 @@ async fn main() -> std::result::Result<(), String> {
         }
         EtcdState::NeedRunInThisMachine(endpoint) => {
             info!("etcd need run in this machine, endpoint:{}", endpoint);
-            let etcd_data_version = get_etcd_data_version().await.map_err(|err| {
+            let etcd_data_version = get_etcd_data_version(&zone_config).await.map_err(|err| {
                 error!("get etcd data version failed!");
                 return String::from("get etcd data version failed!");
             })?;
