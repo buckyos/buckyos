@@ -5,30 +5,12 @@ pub struct ServiceItem {
     name: String,
     version: String,
     pkg_id:String,
-
-}
-
-impl ServiceItem {
-    pub fn new(name: String, version: String, pkg_id:String) -> Self {
-        ServiceItem {
-            name,
-            version,
-            pkg_id,
-        }
-    }
-
-    pub fn get_script_path(&self,script_name:&str)->Result<String>{
-        //media_info = env.load_pkg(&self.name)
-        //script_path = media_info.folder + "/" + script_name
-        //return script_path
-        unimplemented!();
-    }
 }
 
 #[async_trait]
 impl RunItemControl for ServiceItem {
-    fn get_item_name(&self) -> String {
-        self.name.clone()
+    fn get_item_name(&self) -> Result<String> {
+        return Ok(self.name.clone());
     }
 
     async fn deploy(&self,params:Option<&RunItemParams>) -> Result<()> {
@@ -57,6 +39,7 @@ impl RunItemControl for ServiceItem {
         let scrpit_path = self.get_script_path("stop.sh");
         //先通过环境变量设置一些参数
         //run scrpit_path 参数1，参数2
+        unimplemented!();
     }
 
     async fn get_state(&self,params:Option<&RunItemParams>) -> Result<RunItemState> {
@@ -69,7 +52,7 @@ impl RunItemControl for ServiceItem {
         //先通过环境变量设置一些参数
         //run scrpit_path 参数1，参数2
         //根据返回值判断状态
-        Ok(())
+        unimplemented!()
     }
 }
 
@@ -78,4 +61,22 @@ pub async fn create_service_item_from_config(service_cfg: &str) -> Result<Servic
     //create ServiceItem from josn
     //return ServiceItem
     unimplemented!();
+}
+
+
+impl ServiceItem {
+    pub fn new(name: String, version: String, pkg_id:String) -> Self {
+        ServiceItem {
+            name,
+            version,
+            pkg_id,
+        }
+    }
+
+    pub fn get_script_path(&self,script_name:&str)->Result<String>{
+        //media_info = env.load_pkg(&self.name)
+        //script_path = media_info.folder + "/" + script_name
+        //return script_path
+        unimplemented!();
+    }
 }

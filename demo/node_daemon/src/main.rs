@@ -212,25 +212,24 @@ async fn node_daemon_main_loop(node_cfg: &NodeIdentityConfig, config: &ZoneConfi
         let service_cfg_key = format!("/{}/services", node_cfg.node_id);
         let all_service_item = sys_cfg.list(&service_cfg_key).await.map_err(|err| {
             error!("list service config failed!");
-            return NodeDaemonErrors::SystemConfigError(service_cfg_key);
+            return NodeDaemonErrors::SystemConfigError(service_cfg_key.clone());
         })?;
        
         for (service_name, service_cfg) in all_service_item {
             //parse servce_cfg to json，get target state from service_cfg
             let (service_config,_) = sys_cfg.get(&service_name.as_str()).await.unwrap();
-            let mut run_params = RunItemParams::new(node_ip.clone());
-            run_params.services_cfg = Some(service_config);
+            let mut run_params = RunItemParams::new(node_ip.clone(),Some(service_config));
 
             let target_state: RunItemTargetState = RunItemTargetState::Running(String::new());
             let service_item = create_service_item_from_config(&service_cfg).await.map_err(|err|{
                 error!("create service item from config failed!");
-                return NodeDaemonErrors::SystemConfigError(service_cfg_key);
+                return NodeDaemonErrors::SystemConfigError(service_cfg_key.clone());
             })?;
             
 
             control_run_item_to_target_state(&service_item, target_state, Some(&run_params)).await.map_err(|err|{
                 error!("control service item to target state failed!");
-                return NodeDaemonErrors::SystemConfigError(service_cfg_key);
+                return NodeDaemonErrors::SystemConfigError(service_cfg_key.clone());
             })?;
             //get service item from service_cfg
             //query service item state

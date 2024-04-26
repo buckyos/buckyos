@@ -38,17 +38,17 @@ pub struct RunItemParams {
 }
 
 impl RunItemParams {
-    pub fn new(node_ip: String) -> Self {
+    pub fn new(node_ip: String,services_cfg:Option<String>) -> Self {
         RunItemParams {
             node_ip,
-            None,
+            services_cfg,
         }
     }
 }
 
 #[async_trait]
 pub trait RunItemControl {
-    fn get_item_name(&self)->String;
+    fn get_item_name(&self)->Result<String>;
     async fn deploy(&self,params:Option<&RunItemParams>) -> Result<()>;
     async fn remove(&self,params:Option<&RunItemParams>) -> Result<()>;
     //return new version
@@ -61,27 +61,28 @@ pub trait RunItemControl {
 }
 
 pub async fn control_run_item_to_target_state(item:&dyn RunItemControl,target_state:RunItemTargetState,params:Option<&RunItemParams>)->Result<()>{
+    let item_name = item.get_item_name()?;
     match target_state {
         RunItemTargetState::Running(version)=>{
             match item.get_state(params).await? {
                 RunItemState::Started=>{
-                    debug!("{} is already running, do nothing!",item.get_item_name());
+                    debug!("{} is already running, do nothing!",item_name);
                     Ok(())
                 },
                 RunItemState::NotExist=>{
-                    warn!("{} not exist,deploy and start it!",item.get_item_name());
+                    warn!("{} not exist,deploy and start it!",item_name);
                     item.deploy(params).await?;
-                    warn!("{} deploy success,start it!",item.get_item_name());    
+                    warn!("{} deploy success,start it!",item_name);    
                     item.start(params).await?;
                     Ok(())
                 },
                 RunItemState::Stopped(_)=>{
-                    warn!("{} stopped,start it!",item.get_item_name());
+                    warn!("{} stopped,start it!",item_name);
                     item.start(params).await?;
                     Ok(())
                 },
                 RunItemState::Deploying=>{
-                    warn!("{} is deploying,wait for it!",item.get_item_name());
+                    warn!("{} is deploying,wait for it!",item_name);
                     Ok(())
                 }
             }
@@ -89,21 +90,21 @@ pub async fn control_run_item_to_target_state(item:&dyn RunItemControl,target_st
         RunItemTargetState::Stopped(version)=>{
             match item.get_state(params).await? {
                 RunItemState::Started=>{
-                    warn!("{} is running,stop it!",item.get_item_name());   
+                    warn!("{} is running,stop it!",item_name);   
                     item.stop(params).await?;
                     Ok(())
                 },
                 RunItemState::NotExist=>{
-                    warn!("{} not exist,deploy it!",item.get_item_name());
+                    warn!("{} not exist,deploy it!",item_name);
                     item.deploy(params).await?;
                     Ok(())
                 },
                 RunItemState::Stopped(_)=>{
-                    debug!("{} already stopped, do nothing!",item.get_item_name());
+                    debug!("{} already stopped, do nothing!",item_name);
                     Ok(())
                 },
                 RunItemState::Deploying=>{
-                    warn!("{} is deploying,wait for it!",item.get_item_name());
+                    warn!("{} is deploying,wait for it!",item_name);
                     Ok(())
                 }
             }
