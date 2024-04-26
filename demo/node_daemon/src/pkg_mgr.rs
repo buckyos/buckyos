@@ -1,7 +1,7 @@
-use std::path::PathBuf;
 use regex::Regex;
+use std::path::PathBuf;
 
-/* 
+/*
 pkg_id由两部分组成，包名和版本号或者sha256值。例如：
 pkg_name
 pkg_name#>0.1.4, pkg_name#>=0.1.4
@@ -17,7 +17,7 @@ pub struct PackageId {
     pub sha256: Option<String>,
 }
 
-/* 
+/*
 PackageEnv是一个包管理的环境，下载，安装，加载都在某个env下面进行
 一般来说，一个env对应一个工作目录
 一个env包含：
@@ -40,10 +40,10 @@ pub struct PackageEnv {
 }
 
 /* MediaInfo是一个包的元信息
-   包括pkg_id，
-   类型（dir or file）
-   完整路径
- */
+  包括pkg_id，
+  类型（dir or file）
+  完整路径
+*/
 pub enum MediaType {
     Dir,
     File,
@@ -87,7 +87,7 @@ impl PackageEnv {
         if let Some(version) = &pkg_id.version {
             //如果version不是以>=,<=,>,<开头，就是精确版本号
             if !version.starts_with(">") && !version.starts_with("<") {
-                full_path.push(format!("#{}",  version));
+                full_path.push(format!("#{}", version));
 
                 return self.load_with_full_path(&pkg_id, &full_path);
             }
@@ -95,7 +95,7 @@ impl PackageEnv {
 
         //如果有精确的sha256值，也可以拼接
         if let Some(sha256) = &pkg_id.sha256 {
-            full_path.push(format!("#{}",  sha256));
+            full_path.push(format!("#{}", sha256));
 
             if let Ok(media_info) = self.load_with_full_path(&pkg_id, &full_path) {
                 return Ok(media_info);
@@ -117,10 +117,11 @@ impl PackageEnv {
             if pkg_id.version.is_none() {
                 return Err(PackageSystemErrors::InstallError(
                     pkg_id.name.clone(),
-                    "No version or sha256 specified".to_string()
+                    "No version or sha256 specified".to_string(),
                 ));
             }
-            pkg_id.sha256 = self.get_sha256_from_version(&pkg_id.name, pkg_id.version.as_ref().unwrap())?;
+            pkg_id.sha256 =
+                self.get_sha256_from_version(&pkg_id.name, pkg_id.version.as_ref().unwrap())?;
         }
 
         let full_path = self.download_pkg(&pkg_id).await?;
@@ -134,6 +135,7 @@ impl PackageEnv {
             self.install_pkg(&dep).await?;
         }
 
+        Ok(())
         // TODO 创建软连接
     }
 
@@ -146,13 +148,13 @@ impl PackageEnv {
         // 如果有version，优先用version，否则用sha256
         let dest_dir = self.work_dir.join(".pkgs");
         if let Some(version) = &pkg_id.version {
-            dest_dir.join(format!("{}#{}", pkg_id.name, version))
+            Ok(dest_dir.join(format!("{}#{}", pkg_id.name, version)))
         } else if let Some(sha256) = &pkg_id.sha256 {
-            dest_dir.join(format!("{}#{}", pkg_id.name, sha256))
+            Ok(dest_dir.join(format!("{}#{}", pkg_id.name, sha256)))
         } else {
             Err(PackageSystemErrors::InstallError(
                 pkg_id.name.clone(),
-                "No version or sha256 specified".to_string()
+                "No version or sha256 specified".to_string(),
             ))
         }
     }
@@ -172,9 +174,7 @@ impl PackageEnv {
         if let Some(name_part) = parts.next() {
             name = name_part.to_string();
         } else {
-            return Err(PackageSystemErrors::ParseError(
-                pkg_id.to_string()
-            ));
+            return Err(PackageSystemErrors::ParseError(pkg_id.to_string()));
         }
 
         if let Some(version_part) = parts.next() {
@@ -189,7 +189,11 @@ impl PackageEnv {
             version = self.get_default_version(&name)?;
         }
 
-        Ok(PackageId { name, version, sha256 })
+        Ok(PackageId {
+            name,
+            version,
+            sha256,
+        })
     }
 
     pub fn get_version_from_sha256(&self, pkg_name: &str, sha256: &str) -> Result<Option<String>> {
@@ -224,7 +228,7 @@ impl PackageEnv {
         } else {
             Err(PackageSystemErrors::LoadError(
                 full_path.to_str().unwrap().to_string(),
-                "not found".to_string()
+                "not found".to_string(),
             ))
         }
     }
@@ -239,7 +243,7 @@ impl PackageEnv {
             if !version.starts_with(">") && !version.starts_with("<") {
                 return Err(PackageSystemErrors::LoadError(
                     pkg_id.name.clone(),
-                    "Invalid version expression".to_string()
+                    "Invalid version expression".to_string(),
                 ));
             }
 
@@ -251,30 +255,38 @@ impl PackageEnv {
                     ">=" => {
                         min_version = Some(cap[2].to_string());
                         inclusive_min = true;
-                    },
+                    }
                     ">" => {
                         min_version = Some(cap[2].to_string());
-                    },
+                    }
                     "<=" => {
                         max_version = Some(cap[2].to_string());
                         inclusive_max = true;
-                    },
+                    }
                     "<" => {
                         max_version = Some(cap[2].to_string());
-                    },
+                    }
                     _ => {}
                 }
             }
         }
 
         // 找到符合条件的版本
-        let matching_version = self.find_matching_version(&pkg_id.name, min_version, max_version, inclusive_min, inclusive_max)?;
-    
-        let full_path = self.work_dir.join(format!("{}#{}", pkg_id.name, matching_version));
-    
+        let matching_version = self.find_matching_version(
+            &pkg_id.name,
+            min_version,
+            max_version,
+            inclusive_min,
+            inclusive_max,
+        )?;
+
+        let full_path = self
+            .work_dir
+            .join(format!("{}#{}", pkg_id.name, matching_version));
+
         self.load_with_full_path(&pkg_id, &full_path)
     }
-    
+
     fn find_matching_version(
         &self,
         pkg_name: &str,
