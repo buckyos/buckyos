@@ -158,6 +158,7 @@ impl BackupIndexSqlite {
         offset: i32,
         limit: u32,
     ) -> Result<Vec<BackupVersionMeta>, Box<dyn Error>> {
+        let is_asc = offset >= 0;
         let (sql, offset, limit) = if offset > 0 {
             (
                 r#"SELECT version, meta, chunk_count
@@ -198,7 +199,7 @@ impl BackupIndexSqlite {
         let mut versions = vec![];
 
         for row in version_rows {
-            if offset >= 0 {
+            if is_asc {
                 versions.push(row.unwrap());
             } else {
                 versions.insert(0, row.unwrap())
@@ -275,10 +276,9 @@ impl BackupIndexSqlite {
                     })
                 })?;
 
-        let sql = r#"
-            SELECT chunk_seq, chunk_path, hash, chunk_size
+        let sql = r#"SELECT chunk_seq, chunk_path, hash, chunk_size
             FROM version_chunk
-            WHERE key = ? 1 AND version = ?2
+            WHERE key = ?1 AND version = ?2
         "#;
 
         let mut stmt = self.conn.prepare(sql)?;
@@ -292,6 +292,8 @@ impl BackupIndexSqlite {
                 })
             })?
             .collect::<Vec<_>>();
+
+        assert_eq!(chunks.len(), version_info.chunk_count as usize);
 
         if chunks.len() == 0 {
             return Ok(version_info);
@@ -311,7 +313,7 @@ impl BackupIndexSqlite {
         let sql = r#"
             SELECT chunk_path, hash, chunk_size
             FROM version_chunk
-            WHERE key = ? 1 AND version = ?2 AND chunk_seq = ?3
+            WHERE key = ?1 AND version = ?2 AND chunk_seq = ?3
         "#;
 
         let chunk =

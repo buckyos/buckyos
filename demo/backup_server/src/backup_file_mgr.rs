@@ -113,7 +113,7 @@ impl BackupFileMgr {
 
     pub async fn save_chunk(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
         let key = match req.header(HTTP_HEADER_KEY) {
-            Some(h) => h.to_string(),
+            Some(h) => h.last().to_string(),
             None => {
                 return Err(tide::Error::from_str(
                     tide::StatusCode::NotFound,
@@ -123,7 +123,7 @@ impl BackupFileMgr {
         };
 
         let version = match req.header(HTTP_HEADER_VERSION) {
-            Some(h) => u32::from_str_radix(h.to_string().as_str(), 10).map_err(|err| {
+            Some(h) => u32::from_str_radix(h.last().to_string().as_str(), 10).map_err(|err| {
                 log::error!("parse version for {} failed: {}", key, err);
                 tide::Error::from_str(
                     tide::StatusCode::BadRequest,
@@ -140,7 +140,7 @@ impl BackupFileMgr {
 
         let chunk_hash = match req.header(HTTP_HEADER_HASH) {
             Some(h) => {
-                let hash = h.to_string();
+                let hash = h.last().to_string();
                 if let Err(err) = hash.from_base58() {
                     return Err(tide::Error::from_str(
                         tide::StatusCode::BadRequest,
@@ -158,7 +158,7 @@ impl BackupFileMgr {
         };
 
         let chunk_seq = match req.header(HTTP_HEADER_CHUNK_SEQ) {
-            Some(h) => u32::from_str_radix(h.to_string().as_str(), 10).map_err(|err| {
+            Some(h) => u32::from_str_radix(h.last().to_string().as_str(), 10).map_err(|err| {
                 log::error!("parse chunk-seq for {}-{} failed: {}", key, version, err);
                 tide::Error::from_str(
                     tide::StatusCode::BadRequest,
@@ -256,20 +256,22 @@ impl BackupFileMgr {
         let file_path = Path::new(self.save_path.as_str()).join(filename.as_str());
         async_std::fs::rename(&tmp_path, &file_path).await?;
 
-        self.index_mgr
-            .lock()
-            .await
-            .insert_new_chunk(
-                key.as_str(),
-                version,
-                chunk_seq,
-                file_path.to_str().unwrap(),
-                chunk_hash.as_str(),
-                chunk_size as u32,
-            )
-            .map_err(|err| {
-                tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
-            });
+        {
+            self.index_mgr
+                .lock()
+                .await
+                .insert_new_chunk(
+                    key.as_str(),
+                    version,
+                    chunk_seq,
+                    file_path.to_str().unwrap(),
+                    chunk_hash.as_str(),
+                    chunk_size as u32,
+                )
+                .map_err(|err| {
+                    tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
+                });
+        }
 
         Ok(tide::Response::new(tide::StatusCode::Ok))
     }
@@ -277,14 +279,15 @@ impl BackupFileMgr {
     pub async fn query_versions(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
         let req: QueryVersionReq = req.body_json().await?;
 
-        let versions = self
-            .index_mgr
-            .lock()
-            .await
-            .query_backup_versions(req.key.as_str(), req.offset, req.limit)
-            .map_err(|err| {
-                tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
-            })?;
+        let versions = {
+            self.index_mgr
+                .lock()
+                .await
+                .query_backup_versions(req.key.as_str(), req.offset, req.limit)
+                .map_err(|err| {
+                    tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
+                })?
+        };
 
         let resp_versions = versions
             .into_iter()
@@ -316,14 +319,16 @@ impl BackupFileMgr {
     pub async fn query_version_info(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
         let req: QueryVersionInfoReq = req.body_json().await?;
 
-        let version = self
-            .index_mgr
-            .lock()
-            .await
-            .query_backup_version_info(req.key.as_str(), req.version)
-            .map_err(|err| {
-                tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
-            })?;
+        let version = {
+            self.index_mgr
+                .lock()
+                .await
+                .query_backup_version_info(req.key.as_str(), req.version)
+                .map_err(|err| {
+                    log::error!("query_version_info failed: {}", err);
+                    tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
+                })?
+        };
 
         let resp_version = QueryBackupVersionResp {
             key: req.key,
@@ -351,14 +356,15 @@ impl BackupFileMgr {
 
     pub async fn download_chunk(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
         let req: DownloadBackupChunkReq = req.body_json().await?;
-        let chunk = self
-            .index_mgr
-            .lock()
-            .await
-            .query_chunk(req.key.as_str(), req.version, req.chunk_seq)
-            .map_err(|err| {
-                tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
-            })?;
+        let chunk = {
+            self.index_mgr
+                .lock()
+                .await
+                .query_chunk(req.key.as_str(), req.version, req.chunk_seq)
+                .map_err(|err| {
+                    tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
+                })?
+        };
 
         // TODO: chunk太大可能很占内存
         let mut file = async_std::fs::File::open(chunk.path.as_str()).await?;

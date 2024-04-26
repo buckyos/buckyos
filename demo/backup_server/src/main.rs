@@ -16,37 +16,41 @@ struct Config {
 
 async fn create_backup(mut req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
-
+    log::info!("create_backup");
     backup_file_mgr.create_backup(req).await
 }
 
 async fn save_chunk(mut req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
 
+    log::info!("save_chunk");
     backup_file_mgr.save_chunk(req).await
 }
 
 async fn download_chunk(mut req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
 
+    log::info!("download_chunk");
     backup_file_mgr.download_chunk(req).await
 }
 
 async fn query_versions(mut req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
 
+    log::info!("query_versions");
     backup_file_mgr.query_versions(req).await
 }
 
 async fn query_version_info(mut req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
 
+    log::info!("query_version_info");
     backup_file_mgr.query_version_info(req).await
 }
 
 #[async_std::main]
 async fn main() -> tide::Result<()> {
-    let config_path = "./config.toml";
+    let config_path = "./backup_server_config.toml";
     let contents = async_std::fs::read_to_string(config_path)
         .await
         .map_err(|err| {

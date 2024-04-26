@@ -28,7 +28,7 @@ struct QueryVersionReq {
     limit: u32,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct QueryBackupVersionRespChunk {
     seq: u32,
     hash: String,
@@ -37,7 +37,7 @@ pub struct QueryBackupVersionRespChunk {
 
 // chunk_count > chunks.len(): 备份还没完成
 // chunk_count < chunks.len(): 出现错误，不可用
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct QueryBackupVersionResp {
     key: String,
     version: u32,
@@ -66,6 +66,7 @@ struct DownloadBackupChunkReq {
     chunk_seq: u32,
 }
 
+#[derive(Clone)]
 pub struct Backup {
     url: String,
 }
@@ -96,19 +97,16 @@ impl Backup {
         let client = reqwest::Client::new();
         match client
             .post(url.as_str())
-            .body(
-                serde_json::to_string(&CreateBackupReq {
-                    key: key.to_string(),
-                    version,
-                    meta: meta.to_string(),
-                    chunk_count: chunk_file_list.len() as u32,
-                })
-                .unwrap(),
-            )
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                reqwest::header::HeaderValue::from_static("application/json"),
-            )
+            .json(&CreateBackupReq {
+                key: key.to_string(),
+                version,
+                meta: meta.to_string(),
+                chunk_count: chunk_file_list.len() as u32,
+            })
+            // .header(
+            //     reqwest::header::CONTENT_TYPE,
+            //     reqwest::header::HeaderValue::from_static("application/json"),
+            // )
             .send()
             .await
         {
@@ -119,6 +117,7 @@ impl Backup {
                         url,
                         resp.status()
                     );
+
                     return Err(Box::new(resp.error_for_status().unwrap_err()));
                 } else {
                     log::trace!("send backup meta from http({}) succeeded", url);
@@ -142,7 +141,7 @@ impl Backup {
             .map_or(Ok(()), |err| err)
     }
 
-    pub async fn query_versions<Meta: FromStr>(
+    pub async fn query_versions(
         &self,
         key: &str,
         offset: ListOffset,
@@ -152,13 +151,13 @@ impl Backup {
 
         let client = reqwest::Client::new();
         match client
-            .post(url.as_str())
+            .get(url.as_str())
             .body(
                 serde_json::to_string(&QueryVersionReq {
                     key: key.to_string(),
                     offset: match offset {
                         ListOffset::FromFirst(n) => n as i32,
-                        ListOffset::FromLast(n) => -(n as i32),
+                        ListOffset::FromLast(n) => -((n + 1) as i32),
                     },
                     limit,
                 })
@@ -214,18 +213,11 @@ impl Backup {
 
         let client = reqwest::Client::new();
         let version_info = match client
-            .post(url.as_str())
-            .body(
-                serde_json::to_string(&QueryVersionInfoReq {
-                    key: key.to_string(),
-                    version,
-                })
-                .unwrap(),
-            )
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                reqwest::header::HeaderValue::from_static("application/json"),
-            )
+            .get(url.as_str())
+            .json(&QueryVersionInfoReq {
+                key: key.to_string(),
+                version,
+            })
             .send()
             .await
         {
@@ -385,7 +377,7 @@ impl Backup {
         loop {
             let client = reqwest::Client::new();
             match client
-                .post(url.as_str())
+                .get(url.as_str())
                 .body(
                     serde_json::to_string(&DownloadBackupChunkReq {
                         key: key.to_string(),
@@ -472,5 +464,234 @@ impl Backup {
 
     fn download_chunk_file_name(key: &str, version: u32, chunk_seq: u32) -> String {
         format!("{}-{}-{}.bak", key, version, chunk_seq)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::backup::{Backup, ListOffset, QueryBackupVersionRespChunk};
+    use base58::ToBase58;
+    use sha2::Digest;
+    use std::{collections::HashMap, str::FromStr};
+
+    #[tokio::test]
+    async fn test() {
+        // 1. 准备10个文件
+        let origin_path = "c:/origin";
+        let restore_path = "c:/restore";
+        tokio::fs::create_dir_all(origin_path)
+            .await
+            .expect("create origin directory failed");
+        tokio::fs::create_dir_all(restore_path)
+            .await
+            .expect("create restore directory failed");
+
+        let mut origin_chunk_infos: HashMap<
+            String,
+            HashMap<u32, (String, Vec<(String, QueryBackupVersionRespChunk)>)>,
+        > = HashMap::new();
+
+        for k in 0..2 {
+            let key = format!("key-{}", k);
+            origin_chunk_infos.insert(key.clone(), HashMap::new());
+            let mut versions = origin_chunk_infos.get_mut(&key).unwrap();
+
+            for version in 0..2 {
+                versions.insert(version, (format!("{}-{}", key, version), vec![]));
+                let mut chunks = &mut versions.get_mut(&version).unwrap().1;
+                for i in 0..version {
+                    let file_path = format!("{}/{}-{}-{}", origin_path, key, version, i);
+
+                    let mut content = key.as_bytes().to_vec();
+                    for _ in 0..(version + 1) * (i + 1) {
+                        content.push(version as u8);
+                        content.push(i as u8);
+                    }
+
+                    let mut hasher = sha2::Sha256::new();
+                    hasher.update(content.as_slice());
+                    let hash = hasher.finalize();
+                    let hash = hash.as_slice().to_base58();
+
+                    chunks.push((
+                        file_path.clone(),
+                        QueryBackupVersionRespChunk {
+                            seq: i,
+                            hash,
+                            size: content.len() as u32,
+                        },
+                    ));
+
+                    tokio::fs::write(file_path, content)
+                        .await
+                        .expect("create origin file failed");
+                }
+            }
+        }
+
+        let backup = Backup::new("http://192.168.100.120:8000");
+        let mut tasks = vec![];
+
+        for (key, versions) in origin_chunk_infos.iter() {
+            for (version, version_info) in versions.iter() {
+                let backup = backup.clone();
+                tasks.push(async move {
+                    let chunk_paths = version_info
+                        .1
+                        .iter()
+                        .map(|(path, _)| std::path::PathBuf::from(path))
+                        .collect::<Vec<_>>();
+                    let chunk_path_refs = chunk_paths
+                        .iter()
+                        .map(|p| p.as_ref())
+                        .collect::<Vec<&std::path::Path>>();
+                    backup
+                        .post_backup(key, *version, &version_info.0, chunk_path_refs.as_slice())
+                        .await
+                })
+            }
+        }
+
+        let rets = futures::future::join_all(tasks).await;
+        let err = rets.iter().find(|r| r.is_err());
+        assert!(
+            err.is_none(),
+            "backup failed {}",
+            err.unwrap().as_ref().unwrap_err()
+        );
+
+        let mut tasks = vec![];
+        for (key, versions) in origin_chunk_infos.iter() {
+            for (version, version_info) in versions.iter() {
+                let backup = backup.clone();
+                tasks.push(async move {
+                    backup
+                        .query_versions(key.as_str(), ListOffset::FromLast(10), 20)
+                        .await
+                })
+            }
+        }
+
+        let versions = futures::future::join_all(tasks).await;
+        let err = versions.iter().find(|r| r.is_err());
+        assert!(
+            err.is_none(),
+            "query versions failed {}",
+            err.unwrap().as_ref().unwrap_err().to_string()
+        );
+
+        for versions in versions {
+            let versions = versions.unwrap();
+            for version in versions {
+                let versions = origin_chunk_infos
+                    .get(version.key.as_str())
+                    .expect("key missed");
+                let (meta, chunks) = versions.get(&version.version).expect("version missed");
+                assert_eq!(
+                    meta, &version.meta,
+                    "meta mismatch, key: {}, version: {}, expect: {}, got: {}",
+                    version.key, version.version, meta, version.meta
+                );
+
+                assert_eq!(
+                    version.chunk_count,
+                    chunks.len() as u32,
+                    "chunk count mismatch, key: {}, version: {}, expect: {}, got: {}",
+                    version.key,
+                    version.version,
+                    chunks.len(),
+                    version.chunk_count
+                );
+
+                assert_eq!(
+                    version.chunk_count,
+                    version.chunks.len() as u32,
+                    "chunk count mismatch, key: {}, version: {}, chunks.len: {}, chunk_count: {}",
+                    version.key,
+                    version.version,
+                    version.chunks.len(),
+                    version.chunk_count
+                );
+
+                for i in 0..version.chunk_count as usize {
+                    let (chunk_path, expect_chunk) = chunks.get(i).expect("chunk missed");
+                    let queried_chunk = version.chunks.get(i).expect("chunk from server missed");
+                    assert_eq!(
+                        expect_chunk.seq, queried_chunk.seq,
+                        "seq mismatch, key: {}, version: {}, expect: {}, got: {}",
+                        version.key, version.version, expect_chunk.seq, queried_chunk.seq
+                    );
+                    assert_eq!(
+                        expect_chunk.hash,
+                        queried_chunk.hash,
+                        "hash mismatch, key: {}, version: {}, seq: {}, expect: {}, got: {}",
+                        version.key,
+                        version.version,
+                        queried_chunk.seq,
+                        expect_chunk.hash,
+                        queried_chunk.hash
+                    );
+                    assert_eq!(
+                        expect_chunk.size,
+                        queried_chunk.size,
+                        "hash mismatch, key: {}, version: {}, seq: {}, expect: {}, got: {}",
+                        version.key,
+                        version.version,
+                        queried_chunk.seq,
+                        expect_chunk.size,
+                        queried_chunk.size
+                    );
+                }
+            }
+        }
+
+        let mut tasks = vec![];
+        let _restore_path = std::path::PathBuf::from_str(restore_path).unwrap();
+        for (key, versions) in origin_chunk_infos.iter() {
+            for (version, version_info) in versions.iter() {
+                let backup = backup.clone();
+                let _restore_path = _restore_path.clone();
+                tasks.push(async move {
+                    backup
+                        .download_backup(key, *version, _restore_path.as_path())
+                        .await
+                        .map(|chunk_paths| (key.clone(), *version, chunk_paths))
+                })
+            }
+        }
+
+        let download_chunk_paths = futures::future::join_all(tasks).await;
+        let err = download_chunk_paths.iter().find(|r| r.is_err());
+        assert!(
+            err.is_none(),
+            "download chunk failed {}",
+            err.unwrap().as_ref().unwrap_err()
+        );
+
+        for download_chunks in download_chunk_paths {
+            let (key, version, download_chunk_paths) = download_chunks.unwrap();
+            for (chunk_seq, download_chunk_path) in download_chunk_paths.iter().enumerate() {
+                let versions = origin_chunk_infos
+                    .get(key.as_str())
+                    .expect("download key missed");
+                let (meta, chunks) = versions.get(&version).expect("download version missed");
+                let download_chunk = tokio::fs::read(download_chunk_path)
+                    .await
+                    .expect("read download chunk failed");
+
+                let mut hasher = sha2::Sha256::new();
+                hasher.update(download_chunk.as_slice());
+                let hash = hasher.finalize();
+                let hash = hash.as_slice().to_base58();
+
+                let expect_hash = chunks.get(chunk_seq).expect("download chunk missed");
+
+                assert_eq!(
+                    &hash, &expect_hash.1.hash,
+                    "download hash mismatch, expect: {}, got: {}",
+                    expect_hash.1.hash, hash
+                );
+            }
+        }
     }
 }
