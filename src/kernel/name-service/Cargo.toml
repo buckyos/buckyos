@@ -13,7 +13,7 @@ callback-trait = "0.1.2"
 async-trait = "0.1.80"
 sfo-http = "0.3.0"
 sfo-result = {version = "0.2", features = ["log", "backtrace", "serde"]}
-sfo-serde-result = "0.1.4"
+sfo-serde-result = "0.2"
 bucky-crypto = {git = "https://github.com/buckyos/bucky-crypto.git", version = "0.1.0", features = ["x509"]}
 hickory-client = { version = "0.24.1", features = ["backtrace"] }
 sfo-net-utils = "0.1.1"

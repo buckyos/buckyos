@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 mod error;
 mod name_query;
 mod node_server;

@@ -13,7 +13,7 @@ pub enum NsToolErrorCode {
 }
 
 pub type NsToolError = sfo_result::Error<NsToolErrorCode>;
-pub type NsToolResult<T> = sfo_result::Result<T>;
+pub type NsToolResult<T> = sfo_result::Result<T, NsToolErrorCode>;
 
 
 fn main() {

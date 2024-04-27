@@ -72,6 +72,7 @@ pub trait NSCmdHandler<P, T>: 'static + Sync + Send where T: for<'a> Deserialize
 pub struct NSCmdRegister {
     handlers: Mutex<HashMap<String, Pin<Arc<dyn NSCmdRawHandler>>>>,
 }
+pub type NSCmdRegisterRef = Arc<NSCmdRegister>;
 
 impl NSCmdRegister {
     pub (super) fn new() -> Self {

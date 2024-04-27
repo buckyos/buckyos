@@ -1,3 +1,5 @@
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use crate::{NSErrorCode, NSResult};
 use crate::error::{into_ns_err, ns_err};
 
@@ -5,7 +7,7 @@ pub struct DnsTxtCodec;
 
 impl DnsTxtCodec {
     pub fn encode(data: &[u8], split_len: usize) -> NSResult<Vec<String>> {
-        let base64_str = base64::encode(data);
+        let base64_str = STANDARD.encode(data);
         if base64_str.len() < split_len {
             return Ok(vec![base64_str]);
         }
@@ -46,7 +48,7 @@ impl DnsTxtCodec {
             }
             base64_str
         };
-        let data = base64::decode(&base64_str).map_err(into_ns_err!(NSErrorCode::Failed, "Failed to decode base64"))?;
+        let data = STANDARD.decode(&base64_str).map_err(into_ns_err!(NSErrorCode::Failed, "Failed to decode base64"))?;
         Ok(data)
     }
 }

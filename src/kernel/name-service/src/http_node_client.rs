@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use sfo_http::http_util::{HttpClient};
-use crate::{NSNodeClient, NSResult};
+use sfo_serde_result::SerdeResult;
+use crate::{NSError, NSErrorCode, NSNodeClient, NSResult};
+use crate::error::ns_err;
 
 pub struct HttpNSNodeClient {
     http_client: HttpClient,
@@ -15,7 +17,11 @@ impl HttpNSNodeClient {
 
 #[async_trait::async_trait]
 impl NSNodeClient for HttpNSNodeClient {
-    async fn call<'a, P: Serialize + Send + Sync, R: Deserialize<'a>>(&self, cmd_name: &str, p: P) -> NSResult<R> {
-        todo!()
+    async fn call<P: Serialize + Send + Sync, R: for<'a> Deserialize<'a> + Serialize>(&self, cmd_name: &str, p: P) -> NSResult<R> {
+        let resp: SerdeResult<R, NSError> = self.http_client.post_json(cmd_name, &p).await.map_err(|e| {
+            ns_err!(NSErrorCode::InvalidData, "Failed to call http node server: {:?}", e)
+        })?;
+
+        resp.into()
     }
 }
