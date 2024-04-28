@@ -17,7 +17,7 @@ fn take_snapshot(file_path: &str) {
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), String> {
-    let matches = Command::new("Etcd Backup Tool")
+    let matches = Command::new("buckyos node control tool")
         .version("0.1.0")
         .author("buckyos")
         .about("node control tool")
