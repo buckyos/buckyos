@@ -76,3 +76,27 @@ pub async fn get_etcd_data_version(
 
     Ok(revision)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // use std::process::Command;
+    use tokio::runtime::Runtime;
+
+    #[test]
+    fn test_connect_success() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = EtcdClient::connect("http://127.0.0.1:2379").await;
+            assert!(client.is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_get_etcd_data_version_success() {
+        let result = get_etcd_data_version("localhost:2379").await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap() > 0);
+    }
+}
