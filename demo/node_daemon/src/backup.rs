@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::os::windows::fs::MetadataExt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
-use std::{path::PathBuf, str::FromStr};
 
 use base58::ToBase58;
 use sha2::Digest;
@@ -354,8 +353,8 @@ impl Backup {
         let filename = Self::download_chunk_file_name(key, version, chunk_seq);
         let chunk_path = dir_path.join(filename.as_str());
         if chunk_path.exists() {
-            let mut file = tokio::fs::File::open(&chunk_path).await?;
-            if file.metadata().await?.file_size() as u32 == chunk_size {
+            if std::fs::metadata(&chunk_path)?.len() as u32 == chunk_size {
+                let mut file = tokio::fs::File::open(&chunk_path).await?;
                 let mut buf = vec![];
                 if file.read_to_end(&mut buf).await.is_ok() {
                     let mut hasher = sha2::Sha256::new();
