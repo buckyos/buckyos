@@ -47,10 +47,17 @@ impl EtcdClient {
     }
 }
 
-fn start_etcd(initial_cluster: &str) -> std::io::Result<Child> {
+fn start_etcd(url: &str) -> std::io::Result<Child> {
+    let name = "default";
+    let initial_cluster = format!("{}={}", name, url);
+
     Command::new("etcd")
+        .arg("--name")
+        .arg(name)
         .arg("--initial-cluster")
         .arg(initial_cluster)
+        .arg("--initial-advertise-peer-urls")
+        .arg(url)
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .spawn()
@@ -69,7 +76,8 @@ pub async fn get_etcd_data_version(
     let etcd_child = start_etcd(initial_cluster)?;
     sleep(Duration::from_secs(5)).await;
 
-    let client = EtcdClient::connect("localhost:2379").await?;
+    let client = EtcdClient::connect("http://localhost:2379").await?;
+
     let revision = client.get_revision().await?;
 
     stop_etcd(etcd_child)?;
@@ -94,7 +102,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_etcd_data_version_success() {
-        let result = get_etcd_data_version("localhost:2379").await;
+        let result = get_etcd_data_version("http://127.0.0.1:2380").await;
 
         assert!(result.is_ok());
         assert!(result.unwrap() > 0);

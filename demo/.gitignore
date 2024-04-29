@@ -1,5 +1,6 @@
 
 etcd_client/target
+etcd_client/default.etcd/
 node_daemon/target
 target
 Cargo.lock
