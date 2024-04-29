@@ -24,3 +24,4 @@ base58 = '0.2.0'
 futures = "0.3.30"
 lazy_static = "*"
 async-recursion = "*"
+version-compare = "*"
