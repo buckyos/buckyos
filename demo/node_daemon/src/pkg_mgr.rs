@@ -87,12 +87,11 @@ impl PackageEnv {
     // load 一个包，从env根目录中查找目标pkg，找到了就返回一个MediaInfo结构，env文件结构见末尾
     pub async fn load_pkg(&self, pkg_id_str: &str) -> Result<MediaInfo> {
         let pkg_id = self.parse_pkg_id(pkg_id_str)?;
-        //判断work_dir下是否存在pkg_id对应的目录
-        let mut full_path = self.work_dir.join(&pkg_id.name);
+
         if let Some(version) = &pkg_id.version {
             //如果version不是以>=,<=,>,<开头，就是精确版本号
             if !version.starts_with(">") && !version.starts_with("<") {
-                full_path.push(format!("#{}", version));
+                let full_path = self.work_dir.join(format!("{}#{}", pkg_id.name, version));
                 info!("get full path for {} -> {:?}", pkg_id_str, full_path);
 
                 return self.load_with_full_path(&pkg_id, &full_path);
@@ -101,7 +100,7 @@ impl PackageEnv {
 
         //如果有精确的sha256值，也可以拼接
         if let Some(sha256) = &pkg_id.sha256 {
-            full_path.push(format!("#{}", sha256));
+            let full_path = self.work_dir.join(format!("{}#{}", pkg_id.name, sha256));
             info!("get full path for {} -> {:?}", pkg_id_str, full_path);
 
             if let Ok(media_info) = self.load_with_full_path(&pkg_id, &full_path) {
@@ -324,7 +323,7 @@ impl PackageEnv {
 
         //遍历目录，找到所有包名匹配的目录
         let mut matching_versions: Vec<String> = Vec::new();
-        let pkgs_dir = self.work_dir.join(".pkgs");
+        let pkgs_dir = self.work_dir.clone();
         if pkgs_dir.exists() {
             for entry in pkgs_dir.read_dir().unwrap() {
                 if let Ok(entry) = entry {
@@ -375,7 +374,7 @@ impl PackageEnv {
             //在matching_versions中选择版本最高的
             if matching_versions.is_empty() {
                 return Err(PackageSystemErrors::LoadError(
-                    pkg_name.to_string(),
+                    pkg_full_name.clone(),
                     "No matching version found".to_string(),
                 ));
             } else {
@@ -403,13 +402,57 @@ mod test {
     #[tokio::test]
     async fn test_load() {
         // 获取当前文件绝对路径
-        let env_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let env: PackageEnv = PackageEnv::new(PathBuf::from(env_path));
-        let pkg_id_str = "src";
+        //let env_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let env: PackageEnv = PackageEnv::new(PathBuf::from("D:\\tmp\\test_env"));
+        let pkg_id_str = "a#1.0.1";
         let pkg_id = env.parse_pkg_id(pkg_id_str).unwrap();
         println!("parse pkg_id {} -> {:?}", pkg_id_str, pkg_id);
         let media_info = env.load_pkg(pkg_id_str).await;
         println!("load pkg_id {} -> {:?}", pkg_id_str, media_info);
         assert!(media_info.is_ok());
+
+        let pkg_id_str = "a#>1.0.1";
+        let pkg_id = env.parse_pkg_id(pkg_id_str).unwrap();
+        println!("parse pkg_id {} -> {:?}", pkg_id_str, pkg_id);
+        let media_info = env.load_pkg(pkg_id_str).await;
+        println!("load pkg_id {} -> {:?}", pkg_id_str, media_info);
+        assert!(media_info.is_ok());
+
+        let pkg_id_str = "a#<1.0.1";
+        let pkg_id = env.parse_pkg_id(pkg_id_str).unwrap();
+        println!("parse pkg_id {} -> {:?}", pkg_id_str, pkg_id);
+        let media_info = env.load_pkg(pkg_id_str).await;
+        println!("load pkg_id {} -> {:?}", pkg_id_str, media_info);
+        assert!(media_info.is_err());
+
+        let pkg_id_str = "a#>=1.0.1";
+        let pkg_id = env.parse_pkg_id(pkg_id_str).unwrap();
+        println!("parse pkg_id {} -> {:?}", pkg_id_str, pkg_id);
+        let media_info = env.load_pkg(pkg_id_str).await;
+        println!("load pkg_id {} -> {:?}", pkg_id_str, media_info);
+        assert!(media_info.is_ok());
+
+        let pkg_id_str = "a#<=1.0.1";
+        let pkg_id = env.parse_pkg_id(pkg_id_str).unwrap();
+        println!("parse pkg_id {} -> {:?}", pkg_id_str, pkg_id);
+        let media_info = env.load_pkg(pkg_id_str).await;
+        println!("load pkg_id {} -> {:?}", pkg_id_str, media_info);
+        assert!(media_info.is_ok());
+
+        let pkg_id_str = "a#>1.0.1<1.0.3";
+        let pkg_id = env.parse_pkg_id(pkg_id_str).unwrap();
+        println!("parse pkg_id {} -> {:?}", pkg_id_str, pkg_id);
+        let media_info = env.load_pkg(pkg_id_str).await;
+        println!("load pkg_id {} -> {:?}", pkg_id_str, media_info);
+        assert!(media_info.is_ok());
+
+        let pkg_id_str = "a#>1.0.2";
+        let pkg_id = env.parse_pkg_id(pkg_id_str).unwrap();
+        println!("parse pkg_id {} -> {:?}", pkg_id_str, pkg_id);
+        let media_info = env.load_pkg(pkg_id_str).await;
+        println!("load pkg_id {} -> {:?}", pkg_id_str, media_info);
+        assert!(media_info.is_err());
+
+        //assert!(media_info.is_ok());
     }
 }
