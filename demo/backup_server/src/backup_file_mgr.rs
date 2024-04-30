@@ -29,6 +29,7 @@ struct QueryVersionReq {
     key: String,
     offset: i32,
     limit: u32,
+    is_restorable_only: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -283,7 +284,12 @@ impl BackupFileMgr {
             self.index_mgr
                 .lock()
                 .await
-                .query_backup_versions(req.key.as_str(), req.offset, req.limit)
+                .query_backup_versions(
+                    req.key.as_str(),
+                    req.offset,
+                    req.limit,
+                    req.is_restorable_only,
+                )
                 .map_err(|err| {
                     tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
                 })?

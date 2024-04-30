@@ -157,15 +157,16 @@ impl BackupIndexSqlite {
         key: &str,
         offset: i32,
         limit: u32,
+        is_restorable_only: bool,
     ) -> Result<Vec<BackupVersionMeta>, Box<dyn Error>> {
         let is_asc = offset >= 0;
         let (sql, offset, limit) = if offset > 0 {
             (
                 r#"SELECT version, meta, chunk_count
                 FROM backup_version
-                WHERE key = ?1
+                WHERE key = ?1 AND (?2 OR chunk_count = (SELECT COUNT(*) FROM version_chunk WHERE version_chunk.key = backup_version.key AND version_chunk.version = backup_version.version))
                 ORDER BY version ASC
-                LIMIT ?2 OFFSET ?3
+                LIMIT ?3 OFFSET ?4
             "#,
                 offset,
                 limit,
@@ -174,9 +175,9 @@ impl BackupIndexSqlite {
             (
                 r#"SELECT version, meta, chunk_count
                 FROM backup_version
-                WHERE key = ?1
+                WHERE key = ?1 AND (?2 OR chunk_count = (SELECT COUNT(*) FROM version_chunk WHERE version_chunk.key = backup_version.key AND version_chunk.version = backup_version.version))
                 ORDER BY version DESC
-                LIMIT ?2 OFFSET ?3
+                LIMIT ?3 OFFSET ?4
             "#,
                 std::cmp::max(-offset - (limit as i32), 0),
                 std::cmp::min(-offset as u32, limit),
@@ -185,15 +186,18 @@ impl BackupIndexSqlite {
 
         let mut stmt = self.conn.prepare(sql)?;
         let version_rows = stmt
-            .query_map(rusqlite::params![key, limit, offset], |row| {
-                Ok(BackupVersionMeta {
-                    key: key.to_string(),
-                    version: row.get(0).unwrap(),
-                    meta: row.get(1).unwrap(),
-                    chunk_count: row.get(2).unwrap(),
-                    chunks: vec![],
-                })
-            })?
+            .query_map(
+                rusqlite::params![key, !is_restorable_only, limit, offset],
+                |row| {
+                    Ok(BackupVersionMeta {
+                        key: key.to_string(),
+                        version: row.get(0).unwrap(),
+                        meta: row.get(1).unwrap(),
+                        chunk_count: row.get(2).unwrap(),
+                        chunks: vec![],
+                    })
+                },
+            )?
             .collect::<Vec<_>>();
 
         let mut versions = vec![];

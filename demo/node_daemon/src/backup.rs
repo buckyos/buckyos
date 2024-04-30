@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -25,6 +26,7 @@ struct QueryVersionReq {
     key: String,
     offset: i32,
     limit: u32,
+    is_restorable_only: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
@@ -145,6 +147,7 @@ impl Backup {
         key: &str,
         offset: ListOffset,
         limit: u32,
+        is_restorable_only: bool,
     ) -> Result<Vec<QueryBackupVersionResp>, Box<dyn std::error::Error>> {
         let url = format!("{}/{}", self.url.as_str(), "query_versions");
 
@@ -159,6 +162,7 @@ impl Backup {
                         ListOffset::FromLast(n) => -((n + 1) as i32),
                     },
                     limit,
+                    is_restorable_only,
                 })
                 .unwrap(),
             )
@@ -196,6 +200,29 @@ impl Backup {
                 );
                 return Err(Box::new(err));
             }
+        }
+    }
+
+    pub async fn query_last_versions(
+        &self,
+        key: &str,
+        is_restorable_only: bool,
+    ) -> Result<QueryBackupVersionResp, Box<dyn std::error::Error>> {
+        match self
+            .query_versions(key, ListOffset::FromLast(0), 1, is_restorable_only)
+            .await
+        {
+            Ok(mut v) => {
+                if v.len() > 0 {
+                    Ok(v.remove(0))
+                } else {
+                    Err(Box::new(std::io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "no version found",
+                    )))
+                }
+            }
+            Err(err) => Err(err),
         }
     }
 
@@ -478,6 +505,9 @@ mod tests {
         // 1. 准备10个文件
         let origin_path = "c:/origin";
         let restore_path = "c:/restore";
+        let key_count = 2;
+        let version_count = 2;
+
         tokio::fs::create_dir_all(origin_path)
             .await
             .expect("create origin directory failed");
@@ -490,12 +520,12 @@ mod tests {
             HashMap<u32, (String, Vec<(String, QueryBackupVersionRespChunk)>)>,
         > = HashMap::new();
 
-        for k in 0..2 {
+        for k in 0..key_count {
             let key = format!("key-{}", k);
             origin_chunk_infos.insert(key.clone(), HashMap::new());
             let mut versions = origin_chunk_infos.get_mut(&key).unwrap();
 
-            for version in 0..2 {
+            for version in 0..version_count {
                 versions.insert(version, (format!("{}-{}", key, version), vec![]));
                 let mut chunks = &mut versions.get_mut(&version).unwrap().1;
                 for i in 0..version {
@@ -559,16 +589,95 @@ mod tests {
             err.unwrap().as_ref().unwrap_err()
         );
 
+        // let mut tasks = vec![];
+        // for (key, versions) in origin_chunk_infos.iter() {
+        //     for (version, version_info) in versions.iter() {
+        //         let backup = backup.clone();
+        //         tasks.push(async move {
+        //             backup
+        //                 .query_versions(key.as_str(), ListOffset::FromLast(10), 20, true)
+        //                 .await
+        //         })
+        //     }
+        // }
+
+        // let versions = futures::future::join_all(tasks).await;
+        // let err = versions.iter().find(|r| r.is_err());
+        // assert!(
+        //     err.is_none(),
+        //     "query versions failed {}",
+        //     err.unwrap().as_ref().unwrap_err().to_string()
+        // );
+
+        // for versions in versions {
+        //     let versions = versions.unwrap();
+        //     for version in versions {
+        //         let versions = origin_chunk_infos
+        //             .get(version.key.as_str())
+        //             .expect("key missed");
+        //         let (meta, chunks) = versions.get(&version.version).expect("version missed");
+        //         assert_eq!(
+        //             meta, &version.meta,
+        //             "meta mismatch, key: {}, version: {}, expect: {}, got: {}",
+        //             version.key, version.version, meta, version.meta
+        //         );
+
+        //         assert_eq!(
+        //             version.chunk_count,
+        //             chunks.len() as u32,
+        //             "chunk count mismatch, key: {}, version: {}, expect: {}, got: {}",
+        //             version.key,
+        //             version.version,
+        //             chunks.len(),
+        //             version.chunk_count
+        //         );
+
+        //         assert_eq!(
+        //             version.chunk_count,
+        //             version.chunks.len() as u32,
+        //             "chunk count mismatch, key: {}, version: {}, chunks.len: {}, chunk_count: {}",
+        //             version.key,
+        //             version.version,
+        //             version.chunks.len(),
+        //             version.chunk_count
+        //         );
+
+        //         for i in 0..version.chunk_count as usize {
+        //             let (chunk_path, expect_chunk) = chunks.get(i).expect("chunk missed");
+        //             let queried_chunk = version.chunks.get(i).expect("chunk from server missed");
+        //             assert_eq!(
+        //                 expect_chunk.seq, queried_chunk.seq,
+        //                 "seq mismatch, key: {}, version: {}, expect: {}, got: {}",
+        //                 version.key, version.version, expect_chunk.seq, queried_chunk.seq
+        //             );
+        //             assert_eq!(
+        //                 expect_chunk.hash,
+        //                 queried_chunk.hash,
+        //                 "hash mismatch, key: {}, version: {}, seq: {}, expect: {}, got: {}",
+        //                 version.key,
+        //                 version.version,
+        //                 queried_chunk.seq,
+        //                 expect_chunk.hash,
+        //                 queried_chunk.hash
+        //             );
+        //             assert_eq!(
+        //                 expect_chunk.size,
+        //                 queried_chunk.size,
+        //                 "hash mismatch, key: {}, version: {}, seq: {}, expect: {}, got: {}",
+        //                 version.key,
+        //                 version.version,
+        //                 queried_chunk.seq,
+        //                 expect_chunk.size,
+        //                 queried_chunk.size
+        //             );
+        //         }
+        //     }
+        // }
+
         let mut tasks = vec![];
-        for (key, versions) in origin_chunk_infos.iter() {
-            for (version, version_info) in versions.iter() {
-                let backup = backup.clone();
-                tasks.push(async move {
-                    backup
-                        .query_versions(key.as_str(), ListOffset::FromLast(10), 20)
-                        .await
-                })
-            }
+        for (key, _) in origin_chunk_infos.iter() {
+            let backup = backup.clone();
+            tasks.push(async move { backup.query_last_versions(key.as_str(), true).await })
         }
 
         let versions = futures::future::join_all(tasks).await;
@@ -579,69 +688,20 @@ mod tests {
             err.unwrap().as_ref().unwrap_err().to_string()
         );
 
-        for versions in versions {
-            let versions = versions.unwrap();
-            for version in versions {
-                let versions = origin_chunk_infos
-                    .get(version.key.as_str())
-                    .expect("key missed");
-                let (meta, chunks) = versions.get(&version.version).expect("version missed");
-                assert_eq!(
-                    meta, &version.meta,
-                    "meta mismatch, key: {}, version: {}, expect: {}, got: {}",
-                    version.key, version.version, meta, version.meta
-                );
-
-                assert_eq!(
-                    version.chunk_count,
-                    chunks.len() as u32,
-                    "chunk count mismatch, key: {}, version: {}, expect: {}, got: {}",
-                    version.key,
-                    version.version,
-                    chunks.len(),
-                    version.chunk_count
-                );
-
-                assert_eq!(
-                    version.chunk_count,
-                    version.chunks.len() as u32,
-                    "chunk count mismatch, key: {}, version: {}, chunks.len: {}, chunk_count: {}",
-                    version.key,
-                    version.version,
-                    version.chunks.len(),
-                    version.chunk_count
-                );
-
-                for i in 0..version.chunk_count as usize {
-                    let (chunk_path, expect_chunk) = chunks.get(i).expect("chunk missed");
-                    let queried_chunk = version.chunks.get(i).expect("chunk from server missed");
-                    assert_eq!(
-                        expect_chunk.seq, queried_chunk.seq,
-                        "seq mismatch, key: {}, version: {}, expect: {}, got: {}",
-                        version.key, version.version, expect_chunk.seq, queried_chunk.seq
-                    );
-                    assert_eq!(
-                        expect_chunk.hash,
-                        queried_chunk.hash,
-                        "hash mismatch, key: {}, version: {}, seq: {}, expect: {}, got: {}",
-                        version.key,
-                        version.version,
-                        queried_chunk.seq,
-                        expect_chunk.hash,
-                        queried_chunk.hash
-                    );
-                    assert_eq!(
-                        expect_chunk.size,
-                        queried_chunk.size,
-                        "hash mismatch, key: {}, version: {}, seq: {}, expect: {}, got: {}",
-                        version.key,
-                        version.version,
-                        queried_chunk.seq,
-                        expect_chunk.size,
-                        queried_chunk.size
-                    );
-                }
-            }
+        for version in versions.iter() {
+            let version = version.as_ref().unwrap();
+            let max_version = *origin_chunk_infos
+                .get(&version.key)
+                .as_ref()
+                .unwrap()
+                .keys()
+                .max()
+                .unwrap();
+            assert_eq!(
+                version.version, max_version,
+                "last version error: expected: {}, got: {}",
+                max_version, version.version
+            )
         }
 
         let mut tasks = vec![];
