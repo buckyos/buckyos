@@ -7,12 +7,14 @@ mod system_config;
 use etcd_client::*;
 use log::*;
 use serde::Deserialize;
-use serde_json::error;
+// use serde_json::error;
 use simplelog::*;
+use std::str::FromStr;
 use std::{collections::HashMap, fs::File};
-use tokio::*;
+// use tokio::*;
 use toml;
 
+use crate::backup::*;
 use crate::pkg_mgr::*;
 use crate::run_item::*;
 use crate::service_mgr::*;
@@ -188,6 +190,11 @@ async fn try_start_etcd() -> Result<()> {
 }
 
 async fn try_restore_etcd(node_cfg: &NodeIdentityConfig, zone_cfg: &ZoneConfig) -> Result<()> {
+    let backup_server_id = zone_cfg.backup_server_id.clone().unwrap();
+    let _backup = Backup::new(&backup_server_id);
+    let restore_path = "/tmp/etcd_restore";
+    let _restore_path = std::path::PathBuf::from_str(&restore_path).unwrap();
+
     //backup_server_client.open()
     //backup_info = backup_server_client.restore_meta("zone_backup")
     //backup_server_client.restore_chunk_list("etcd_data." + backup_info.etcd_data_version,local_dir)
@@ -295,7 +302,7 @@ async fn main() -> std::result::Result<(), String> {
     //检查etcd状态
     let etcd_state = check_etcd_by_zone_config(&zone_config, &node_identity)
         .await
-        .map_err(|err| {
+        .map_err(|_err| {
             error!("check etcd by zone config failed!");
             return String::from("check etcd by zone config failed!");
         })?;
@@ -310,7 +317,7 @@ async fn main() -> std::result::Result<(), String> {
         }
         EtcdState::NeedRunInThisMachine(endpoint) => {
             info!("etcd need run in this machine, endpoint:{}", endpoint);
-            let etcd_data_version = get_etcd_data_version(&zone_config).await.map_err(|err| {
+            let etcd_data_version = get_etcd_data_version(&zone_config).await.map_err(|_err| {
                 error!("get etcd data version failed!");
                 return String::from("get etcd data version failed!");
             })?;
@@ -319,13 +326,13 @@ async fn main() -> std::result::Result<(), String> {
                 info!("local etcd data version is old, wait for etcd restore!");
                 try_restore_etcd(&node_identity, &zone_config)
                     .await
-                    .map_err(|err| {
+                    .map_err(|_err| {
                         error!("try restore etcd failed!");
                         return String::from("try restore etcd failed!");
                     })?;
             }
 
-            try_start_etcd().await.map_err(|err| {
+            try_start_etcd().await.map_err(|_err| {
                 error!("try start etcd failed!");
                 return String::from("try start etcd failed!");
             })?;
