@@ -6,6 +6,7 @@ use async_std::{
     sync::{Arc, Mutex},
 };
 use base58::{FromBase58, ToBase58};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -253,7 +254,7 @@ impl BackupFileMgr {
             ));
         }
 
-        let filename = Self::filename(key.as_str(), version, chunk_seq);
+        let filename = Self::filename(key.as_str(), version, chunk_seq, chunk_hash.as_str());
         let file_path = Path::new(self.save_path.as_str()).join(filename.as_str());
         async_std::fs::rename(&tmp_path, &file_path).await?;
 
@@ -404,10 +405,20 @@ impl BackupFileMgr {
     }
 
     fn tmp_filename(key: &str, version: u32, chunk_seq: u32) -> String {
-        format!("{}-{}-{}.tmp", key, version, chunk_seq)
+        format!(
+            "{}-{}-{}.{}.{}.tmp",
+            key,
+            version,
+            chunk_seq,
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+            rand::thread_rng().gen::<u64>()
+        )
     }
 
-    fn filename(key: &str, version: u32, chunk_seq: u32) -> String {
-        format!("{}-{}-{}.bak", key, version, chunk_seq)
+    fn filename(key: &str, version: u32, chunk_seq: u32, hash: &str) -> String {
+        format!("{}-{}-{}.{}.bak", key, version, chunk_seq, hash)
     }
 }
