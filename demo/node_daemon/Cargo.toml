@@ -15,7 +15,7 @@ thiserror = "*"
 tokio = { version = "*", features = ["full"] }
 async-trait = "*"
 etcd_client = { path = "../etcd_client" }
-reqwest = {version = "*", features = ["json"]}
+reqwest = {version = "*", default-features = false, features = ["json", "rustls-tls"]}
 tide = "*"
 name_client = { path = "../name_client" }
 regex = "*"
