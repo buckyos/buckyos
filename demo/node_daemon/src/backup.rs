@@ -395,7 +395,7 @@ impl Backup {
                 }
             }
 
-            tokio::fs::remove_file(&chunk_path);
+            tokio::fs::remove_file(&chunk_path).await;
         }
 
         let url = format!("{}/{}", self.url.as_str(), "chunk");
