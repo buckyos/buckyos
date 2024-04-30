@@ -48,8 +48,33 @@ async fn query_version_info(mut req: Request<BackupFileMgr>) -> tide::Result {
     backup_file_mgr.query_version_info(req).await
 }
 
+fn init_log_config() {
+    // 创建一个日志配置对象
+    let config = simplelog::ConfigBuilder::new().build();
+
+    // 初始化日志器
+    simplelog::CombinedLogger::init(vec![
+        // 将日志输出到标准输出，例如终端
+        simplelog::TermLogger::new(
+            log::LevelFilter::Info,
+            config.clone(),
+            simplelog::TerminalMode::Mixed,
+            simplelog::ColorChoice::Auto,
+        ),
+        // 同时将日志输出到文件
+        simplelog::WriteLogger::new(
+            log::LevelFilter::Info,
+            config,
+            std::fs::File::create("backup-server.log").unwrap(),
+        ),
+    ])
+    .unwrap();
+}
+
 #[async_std::main]
 async fn main() -> tide::Result<()> {
+    init_log_config();
+
     let config_path = "./backup_server_config.toml";
     let contents = async_std::fs::read_to_string(config_path)
         .await

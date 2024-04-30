@@ -1,4 +1,4 @@
-use std::os::linux::raw::stat;
+// use std::os::linux::raw::stat;
 use std::vec;
 
 use etcd_rs::{Client, ClientConfig, Endpoint, KeyValueOp};
