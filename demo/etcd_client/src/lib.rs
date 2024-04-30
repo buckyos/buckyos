@@ -49,7 +49,6 @@ impl EtcdClient {
 }
 
 pub fn start_etcd(name: &str, url: &str) -> std::io::Result<Child> {
-    // let name = "default"; // node id?
     let initial_cluster = format!("{}={}", name, url);
 
     Command::new("etcd")
@@ -64,25 +63,19 @@ pub fn start_etcd(name: &str, url: &str) -> std::io::Result<Child> {
         .spawn()
 }
 
-fn stop_etcd(mut child: Child) -> std::io::Result<()> {
-    child.kill()?;
-    child.wait()?; // Ensure the child process terminates cleanly
-    Ok(())
-}
-
 // 获取 etcd 数据版本
 pub async fn get_etcd_data_version(
     name: &str,
     url: &str,
 ) -> Result<i64, Box<dyn std::error::Error>> {
-    let etcd_child = start_etcd(name, url)?;
+    let _etcd_child = start_etcd(name, url)?;
     sleep(Duration::from_secs(5)).await;
 
     let client = EtcdClient::connect("http://localhost:2379").await?;
 
     let revision = client.get_revision().await?;
 
-    stop_etcd(etcd_child)?;
+    stop_etcd_service()?;
 
     Ok(revision)
 }
@@ -136,7 +129,9 @@ fn stop_etcd_service() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // use std::process::Command;
+    use std::process::Command;
+    use std::thread;
+    use std::time::{Duration, Instant};
     use tokio::runtime::Runtime;
 
     #[test]
@@ -146,6 +141,40 @@ mod tests {
             let client = EtcdClient::connect("http://127.0.0.1:2379").await;
             assert!(client.is_ok());
         });
+    }
+
+    #[test]
+    fn test_start_etcd() {
+        let name = "testnode";
+        let url = "http://127.0.0.1:2380";
+
+        // 在一个新线程中启动 etcd
+        let handle = thread::spawn(move || start_etcd(name, url).expect("Failed to start etcd"));
+
+        // 等待 etcd 启动，期间输出倒计时
+        let countdown_time = 5; // 总倒计时时间（秒）
+        let start_time = Instant::now();
+        while start_time.elapsed().as_secs() < countdown_time {
+            println!(
+                "Waiting... {} seconds remaining",
+                countdown_time - start_time.elapsed().as_secs()
+            );
+            thread::sleep(Duration::from_secs(1));
+        }
+        println!("Done waiting.");
+
+        // 尝试连接到启动的 etcd 实例来验证它是否运行
+        let status = Command::new("curl")
+            .arg("-L")
+            .arg(format!("{}/v2/keys", url))
+            .output()
+            .expect("Failed to execute command");
+
+        assert!(status.status.success(), "etcd should be reachable");
+
+        // 通过 handle 获取 etcd 进程并尝试关闭它
+        let mut child = handle.join().expect("Thread panicked");
+        child.kill().expect("Failed to kill etcd process");
     }
 
     #[tokio::test]
