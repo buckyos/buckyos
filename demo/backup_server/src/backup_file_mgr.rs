@@ -117,21 +117,25 @@ impl BackupFileMgr {
         let key = match req.header(HTTP_HEADER_KEY) {
             Some(h) => h.last().to_string(),
             None => {
+                log::error!("key not found");
                 return Err(tide::Error::from_str(
                     tide::StatusCode::NotFound,
                     "Key not found",
-                ))
+                ));
             }
         };
 
         let version = match req.header(HTTP_HEADER_VERSION) {
-            Some(h) => u32::from_str_radix(h.last().to_string().as_str(), 10).map_err(|err| {
-                log::error!("parse version for {} failed: {}", key, err);
-                tide::Error::from_str(
-                    tide::StatusCode::BadRequest,
-                    "Version should integer in radix-10",
-                )
-            })?,
+            Some(h) => {
+                let version_str = h.last().to_string();
+                u32::from_str_radix(version_str.as_str(), 10).map_err(|err| {
+                    log::error!("parse version({}) for {} failed: {}", version_str, key, err);
+                    tide::Error::from_str(
+                        tide::StatusCode::BadRequest,
+                        "Version should integer in radix-10",
+                    )
+                })?
+            }
             None => {
                 return Err(tide::Error::from_str(
                     tide::StatusCode::BadRequest,
@@ -144,6 +148,13 @@ impl BackupFileMgr {
             Some(h) => {
                 let hash = h.last().to_string();
                 if let Err(err) = hash.from_base58() {
+                    log::error!(
+                        "parse hash({}) for {}-{} failed: {:?}",
+                        hash,
+                        key,
+                        version,
+                        err
+                    );
                     return Err(tide::Error::from_str(
                         tide::StatusCode::BadRequest,
                         "hash should be base58",
@@ -152,10 +163,11 @@ impl BackupFileMgr {
                 hash
             }
             None => {
+                log::error!("hash not found for {}-{}", key, version);
                 return Err(tide::Error::from_str(
                     tide::StatusCode::BadRequest,
                     "Version not found",
-                ))
+                ));
             }
         };
 
@@ -168,10 +180,11 @@ impl BackupFileMgr {
                 )
             })?,
             None => {
+                log::error!("chunk-seq not found for {}-{}", key, version);
                 return Err(tide::Error::from_str(
                     tide::StatusCode::BadRequest,
                     "Chunk-seq not found",
-                ))
+                ));
             }
         };
 
@@ -256,7 +269,17 @@ impl BackupFileMgr {
 
         let filename = Self::filename(key.as_str(), version, chunk_seq, chunk_hash.as_str());
         let file_path = Path::new(self.save_path.as_str()).join(filename.as_str());
-        async_std::fs::rename(&tmp_path, &file_path).await?;
+        async_std::fs::rename(&tmp_path, &file_path)
+            .await
+            .map_err(|err| {
+                log::error!(
+                    "rename {} to {} failed: {}",
+                    tmp_path.to_str().unwrap(),
+                    file_path.to_str().unwrap(),
+                    err
+                );
+                err
+            })?;
 
         {
             self.index_mgr
@@ -271,9 +294,17 @@ impl BackupFileMgr {
                     chunk_size as u32,
                 )
                 .map_err(|err| {
+                    log::warn!("insert_new_chunk failed: {}", err);
                     tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
                 });
         }
+
+        log::info!(
+            "save chunk successed: {}-{}, path: {}",
+            key,
+            version,
+            file_path
+        );
 
         Ok(tide::Response::new(tide::StatusCode::Ok))
     }
