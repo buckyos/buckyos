@@ -41,7 +41,7 @@ pub struct QueryBackupVersionRespChunk {
 #[derive(Deserialize, Serialize, Debug)]
 pub struct QueryBackupVersionResp {
     key: String,
-    version: u32,
+    pub version: u32,
     meta: String,
     chunk_count: u32,
 

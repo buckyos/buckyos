@@ -165,7 +165,10 @@ async fn check_etcd_data() -> Result<bool> {
     unimplemented!();
 }
 
-async fn get_etcd_data_version(zone_cfg: &ZoneConfig) -> Result<i64> {
+async fn get_etcd_data_version(
+    node_cfg: &NodeIdentityConfig,
+    zone_cfg: &ZoneConfig,
+) -> Result<i64> {
     // 转换 etcd_servers为 initial_cluster 字符串
     let initial_cluster = zone_cfg
         .etcd_servers
@@ -174,32 +177,59 @@ async fn get_etcd_data_version(zone_cfg: &ZoneConfig) -> Result<i64> {
         .map(|(idx, server)| format!("etcd{}={}", idx, server))
         .collect::<Vec<_>>()
         .join(",");
-
-    let revision = etcd_client::get_etcd_data_version(&initial_cluster)
+    let name = node_cfg.node_id.clone();
+    let revision = etcd_client::get_etcd_data_version(&name, &initial_cluster)
         .await
         .map_err(|err| {
-            error!("get etcd data version failed!");
-            return String::from("get etcd data version failed!");
+            let err_msg = format!("start_etcd! {}", err);
+            error!("{}", err_msg);
+            NodeDaemonErrors::ReasonError(err_msg.to_string())
         })
         .unwrap();
     Ok(revision)
 }
 
-async fn try_start_etcd() -> Result<()> {
-    unimplemented!();
+async fn try_start_etcd(node_cfg: &NodeIdentityConfig, zone_cfg: &ZoneConfig) -> Result<()> {
+    let initial_cluster = zone_cfg
+        .etcd_servers
+        .iter()
+        .enumerate()
+        .map(|(idx, server)| format!("etcd{}={}", idx, server))
+        .collect::<Vec<_>>()
+        .join(",");
+    let name = node_cfg.node_id.clone();
+    etcd_client::start_etcd(&name, &initial_cluster).map_err(|err| {
+        let err_msg = format!("start_etcd! {}", err);
+        error!("{}", err_msg);
+        NodeDaemonErrors::ReasonError(err_msg.to_string())
+    })?;
+
+    Ok(())
 }
 
-async fn try_restore_etcd(node_cfg: &NodeIdentityConfig, zone_cfg: &ZoneConfig) -> Result<()> {
+async fn try_restore_etcd(_node_cfg: &NodeIdentityConfig, zone_cfg: &ZoneConfig) -> Result<()> {
     let backup_server_id = zone_cfg.backup_server_id.clone().unwrap();
-    let _backup = Backup::new(&backup_server_id);
-    let restore_path = "/tmp/etcd_restore";
-    let _restore_path = std::path::PathBuf::from_str(&restore_path).unwrap();
+    let backup = Backup::new(&backup_server_id);
+    let restore = "/tmp/etcd_restore";
+    let restore_path = std::path::PathBuf::from_str(&restore).unwrap();
 
-    //backup_server_client.open()
-    //backup_info = backup_server_client.restore_meta("zone_backup")
-    //backup_server_client.restore_chunk_list("etcd_data." + backup_info.etcd_data_version,local_dir)
-    //unpack chunkdata to etcd data dir
-    unimplemented!();
+    let key = "etcd";
+    let latest = backup.query_last_versions(key, true).await.map_err(|err| {
+        let err_msg = format!("query last backup version failed! {}", err);
+        error!("{}", err_msg);
+        return NodeDaemonErrors::ReasonError(err_msg.to_string());
+    })?;
+    let version = latest.version;
+    backup
+        .download_backup(key, version, &restore_path)
+        .await
+        .unwrap();
+
+    etcd_client::try_restore_etcd(&restore, "http://127.0.0.1:1280")
+        .await
+        .unwrap();
+
+    Ok(())
 }
 
 //fn execute_docker(docker_config)   -> Result<(), Box<dyn std::error::Error>>{
@@ -317,10 +347,12 @@ async fn main() -> std::result::Result<(), String> {
         }
         EtcdState::NeedRunInThisMachine(endpoint) => {
             info!("etcd need run in this machine, endpoint:{}", endpoint);
-            let etcd_data_version = get_etcd_data_version(&zone_config).await.map_err(|_err| {
-                error!("get etcd data version failed!");
-                return String::from("get etcd data version failed!");
-            })?;
+            let etcd_data_version = get_etcd_data_version(&node_identity, &zone_config)
+                .await
+                .map_err(|_err| {
+                    error!("get etcd data version failed!");
+                    return String::from("get etcd data version failed!");
+                })?;
 
             if etcd_data_version < zone_config.etcd_data_version {
                 info!("local etcd data version is old, wait for etcd restore!");
@@ -332,10 +364,12 @@ async fn main() -> std::result::Result<(), String> {
                     })?;
             }
 
-            try_start_etcd().await.map_err(|_err| {
-                error!("try start etcd failed!");
-                return String::from("try start etcd failed!");
-            })?;
+            try_start_etcd(&node_identity, &zone_config)
+                .await
+                .map_err(|_err| {
+                    error!("try start etcd failed!");
+                    return String::from("try start etcd failed!");
+                })?;
         }
     }
 

@@ -1,3 +1,4 @@
+use std::os::linux::raw::stat;
 use std::vec;
 
 use etcd_rs::{Client, ClientConfig, Endpoint, KeyValueOp};
@@ -47,8 +48,8 @@ impl EtcdClient {
     }
 }
 
-fn start_etcd(url: &str) -> std::io::Result<Child> {
-    let name = "default";
+pub fn start_etcd(name: &str, url: &str) -> std::io::Result<Child> {
+    // let name = "default"; // node id?
     let initial_cluster = format!("{}={}", name, url);
 
     Command::new("etcd")
@@ -71,9 +72,10 @@ fn stop_etcd(mut child: Child) -> std::io::Result<()> {
 
 // 获取 etcd 数据版本
 pub async fn get_etcd_data_version(
-    initial_cluster: &str,
+    name: &str,
+    url: &str,
 ) -> Result<i64, Box<dyn std::error::Error>> {
-    let etcd_child = start_etcd(initial_cluster)?;
+    let etcd_child = start_etcd(name, url)?;
     sleep(Duration::from_secs(5)).await;
 
     let client = EtcdClient::connect("http://localhost:2379").await?;
@@ -83,6 +85,52 @@ pub async fn get_etcd_data_version(
     stop_etcd(etcd_child)?;
 
     Ok(revision)
+}
+
+pub async fn try_restore_etcd(file: &str, url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // 首先确保 etcd 服务不在运行
+    stop_etcd_service()?;
+
+    let name = "default";
+    let initial_cluster = format!("{}={}", name, url);
+
+    let status = Command::new("etcdctl")
+        .arg("snapshot")
+        .arg("restore")
+        .arg(file)
+        .arg("--name")
+        .arg(name)
+        .arg("--initial-cluster")
+        .arg(initial_cluster)
+        .arg("--initial-advertise-peer-urls")
+        .arg(url)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn();
+
+    if status.is_err() {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Failed to restore etcd snapshot",
+        )));
+    }
+    Ok(())
+}
+
+fn stop_etcd_service() -> std::io::Result<()> {
+    // 检查 etcd 进程是否运行，适当时停止它
+    let status = Command::new("pkill").arg("-f").arg("etcd").status()?;
+
+    if status.success() {
+        println!("etcd service stopped successfully.");
+    } else {
+        println!("No etcd service was running, or failed to stop.");
+    }
+
+    // 确保进程有足够的时间停止
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -102,7 +150,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_etcd_data_version_success() {
-        let result = get_etcd_data_version("http://127.0.0.1:2380").await;
+        let result = get_etcd_data_version("default", "http://127.0.0.1:2380").await;
 
         assert!(result.is_ok());
         assert!(result.unwrap() > 0);
