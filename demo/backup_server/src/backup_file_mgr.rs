@@ -12,10 +12,10 @@ use sha2::{Digest, Sha256};
 use std::error::Error;
 use tide::Request;
 
-const HTTP_HEADER_KEY: &'static str = "backup_key";
-const HTTP_HEADER_VERSION: &'static str = "backup_version";
-const HTTP_HEADER_HASH: &'static str = "backup_hash";
-const HTTP_HEADER_CHUNK_SEQ: &'static str = "backup_chunk_seq";
+const HTTP_HEADER_KEY: &'static str = "backup-key";
+const HTTP_HEADER_VERSION: &'static str = "backup-version";
+const HTTP_HEADER_HASH: &'static str = "backup-hash";
+const HTTP_HEADER_CHUNK_SEQ: &'static str = "backup-chunk-seq";
 
 #[derive(Deserialize, Serialize)]
 struct CreateBackupReq {
@@ -114,6 +114,7 @@ impl BackupFileMgr {
     }
 
     pub async fn save_chunk(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
+        log::info!("save_chunk http-headers: {:?}", req.header_names());
         let key = match req.header(HTTP_HEADER_KEY) {
             Some(h) => h.last().to_string(),
             None => {

@@ -8,10 +8,10 @@ use base58::ToBase58;
 use sha2::Digest;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const HTTP_HEADER_KEY: &'static str = "backup_key";
-const HTTP_HEADER_VERSION: &'static str = "backup_version";
-const HTTP_HEADER_HASH: &'static str = "backup_hash";
-const HTTP_HEADER_CHUNK_SEQ: &'static str = "backup_chunk_seq";
+const HTTP_HEADER_KEY: &'static str = "backup-key";
+const HTTP_HEADER_VERSION: &'static str = "backup-version";
+const HTTP_HEADER_HASH: &'static str = "backup-hash";
+const HTTP_HEADER_CHUNK_SEQ: &'static str = "backup-chunk-seq";
 
 #[derive(Deserialize, Serialize)]
 struct CreateBackupReq {
