@@ -404,6 +404,18 @@ mod test {
         // 获取当前文件绝对路径
         //let env_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let env: PackageEnv = PackageEnv::new(PathBuf::from("D:\\tmp\\test_env"));
+
+        let pkg_id_str = "a";
+        let pkg_id = env.parse_pkg_id(pkg_id_str).unwrap();
+        println!("parse pkg_id {} -> {:?}", pkg_id_str, pkg_id);
+        let media_info = env.load_pkg(pkg_id_str).await;
+        println!("load pkg_id {} -> {:?}", pkg_id_str, media_info);
+        assert!(media_info.is_ok());
+        assert!(media_info
+            .unwrap()
+            .full_path
+            .eq(&PathBuf::from("D:\\tmp\\test_env\\a#1.0.2")));
+
         let pkg_id_str = "a#1.0.1";
         let pkg_id = env.parse_pkg_id(pkg_id_str).unwrap();
         println!("parse pkg_id {} -> {:?}", pkg_id_str, pkg_id);
