@@ -12,10 +12,10 @@ use sha2::{Digest, Sha256};
 use std::error::Error;
 use tide::Request;
 
-const HTTP_HEADER_KEY: &'static str = "BACKUP_KEY";
-const HTTP_HEADER_VERSION: &'static str = "BACKUP_VERSION";
-const HTTP_HEADER_HASH: &'static str = "BACKUP_HASH";
-const HTTP_HEADER_CHUNK_SEQ: &'static str = "BACKUP_CHUNK_SEQ";
+const HTTP_HEADER_KEY: &'static str = "backup_key";
+const HTTP_HEADER_VERSION: &'static str = "backup_version";
+const HTTP_HEADER_HASH: &'static str = "backup_hash";
+const HTTP_HEADER_CHUNK_SEQ: &'static str = "backup_chunk_seq";
 
 #[derive(Deserialize, Serialize)]
 struct CreateBackupReq {
