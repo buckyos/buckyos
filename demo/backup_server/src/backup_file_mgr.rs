@@ -300,7 +300,7 @@ impl BackupFileMgr {
         }
 
         log::info!(
-            "save chunk successed: {}-{}, path: {}",
+            "save chunk successed: {}-{}, path: {:?}",
             key,
             version,
             file_path
