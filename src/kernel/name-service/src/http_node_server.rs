@@ -1,5 +1,5 @@
-use sfo_http::http_server::{Request, Response, StatusCode};
-use sfo_http::http_server::http::mime::JSON;
+use sfo_http::actix_server::{HttpServer, Request, Response};
+use sfo_http::actix_server::http::StatusCode;
 use sfo_serde_result::SerdeResult;
 use crate::{NSCmdRegisterRef, NSCmdRequest, NSCmdResponse, NSErrorCode, NSResult};
 use crate::error::{ns_err};
@@ -16,7 +16,7 @@ impl HttpNSNodeServer {
         }
     }
 
-    fn register_server(&self, app: &mut sfo_http::http_server::Server<()>) {
+    fn register_server(&self, app: &mut HttpServer<()>) {
         let register = self.register.clone();
         app.at("/ns/:cmd_name").post(move |mut req: Request<()>| {
             let register = register.clone();
@@ -37,8 +37,8 @@ impl HttpNSNodeServer {
                         Err(ns_err!(NSErrorCode::Forbid, "Cmd {} not found", cmd_name))
                     }
                 }.await;
-                let mut http_resp = Response::new(StatusCode::Ok);
-                http_resp.set_content_type(JSON);
+                let mut http_resp = Response::new(StatusCode::OK);
+                http_resp.set_content_type("application/json");
                 if let Err(e) = resp {
                     http_resp.set_body(serde_json::to_string(&SerdeResult::from(NSResult::<()>::Err(e))).unwrap());
                 } else {

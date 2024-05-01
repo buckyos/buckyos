@@ -5,6 +5,7 @@ use hickory_client::rr::{DNSClass, Name, RData, RecordType};
 use hickory_client::udp::UdpClientStream;
 use tokio::net::UdpSocket;
 use crate::{DnsTxtCodec, NameInfo, NSCmdRegister, NSError, NSErrorCode, NSProvider, NSResult};
+use crate::error::{into_ns_err, ns_err};
 
 pub struct DNSProvider {
 
@@ -22,12 +23,8 @@ impl NSProvider for DNSProvider {
     }
 
     async fn query(&self, name: &str) -> NSResult<NameInfo> {
-        let dns_list = sfo_net_utils::system_nameservers().map_err(|e| {
-            NSError::new(NSErrorCode::InvalidData, format!("Failed to get system nameservers: {}", e))
-        })?;
-        let name = Name::from_str(name).map_err(|e| {
-            NSError::new(NSErrorCode::InvalidData, format!("Failed to parse name: {}", e))
-        })?;
+        let dns_list = sfo_net_utils::system_nameservers().map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to get system nameservers"))?;
+        let name = Name::from_str(name).map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to parse name"))?;
 
         for dns in dns_list.iter().filter(|x| x.is_ipv4()) {
             let conn = UdpClientStream::<UdpSocket>::new(SocketAddr::new(dns.clone(), 53));
@@ -63,9 +60,7 @@ impl NSProvider for DNSProvider {
                     }
                     let txt = DnsTxtCodec::decode(txt_list)?;
                     let txt = String::from_utf8_lossy(txt.as_slice()).to_string();
-                    return Ok(serde_json::from_str(txt.as_str()).map_err(|e| {
-                        NSError::new(NSErrorCode::InvalidData, format!("Failed to parse txt {} err: {}", txt, e))
-                    })?);
+                    return Ok(serde_json::from_str(txt.as_str()).map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to parse txt {}", txt))?);
                 }
                 Err(e) => {
                     log::info!("Failed to query dns: {}", e);
@@ -74,7 +69,7 @@ impl NSProvider for DNSProvider {
             }
 
         }
-        Err(NSError::new(NSErrorCode::InvalidData, "Failed to query dns".to_string()))
+        Err(ns_err!(NSErrorCode::InvalidData, "Failed to query dns"))
     }
 }
 

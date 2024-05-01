@@ -9,6 +9,7 @@ mod node_client;
 mod http_node_client;
 mod dns_provider;
 mod dns_txt_codec;
+mod config;
 
 pub use error::*;
 pub use name_query::*;
@@ -17,4 +18,4 @@ pub use provider::*;
 pub use node_client::*;
 pub use dns_provider::*;
 pub use dns_txt_codec::*;
-
+pub use config::*;

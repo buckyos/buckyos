@@ -11,7 +11,7 @@ serde = "1.0.197"
 serde_json = "1.0.116"
 callback-trait = "0.1.2"
 async-trait = "0.1.80"
-sfo-http = "0.3.0"
+sfo-http = { version = "0.4", features = ['actix-web', 'openapi']}
 sfo-result = {version = "0.2", features = ["log", "backtrace", "serde"]}
 sfo-serde-result = "0.2"
 bucky-crypto = {git = "https://github.com/buckyos/bucky-crypto.git", version = "0.1.0", features = ["x509"]}
@@ -21,4 +21,4 @@ tokio = { version = "1.37.0", features = ["rt", "macros"]}
 log = "0.4.21"
 mini-moka = { version = "0.10.3", features = ["sync"]}
 base64 = "0.22.0"
-
+toml = "0.8.12"
