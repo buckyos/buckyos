@@ -62,7 +62,7 @@ fn test_dns_txt_codec() {
     chunk_list[0] = t2;
     chunk_list[2] = t;
     let data = DnsTxtCodec::decode(chunk_list).unwrap();
-
+    DnsTxtCodec::decode(vec![]).unwrap();
     let result = String::from_utf8_lossy(&data).to_string();
 
     assert_eq!(result, test);

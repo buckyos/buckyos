@@ -23,11 +23,12 @@ impl NSProvider for DNSProvider {
     }
 
     async fn query(&self, name: &str) -> NSResult<NameInfo> {
-        log::info!("start dns query {}", name);
+        log::debug!("start dns query {}", name);
         let dns_list = sfo_net_utils::system_nameservers().map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to get system nameservers"))?;
         let name = Name::from_str(name).map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to parse name"))?;
 
         for dns in dns_list.iter().filter(|x| x.is_ipv4()) {
+            log::debug!("query dns server {}", dns);
             let conn = UdpClientStream::<UdpSocket>::new(SocketAddr::new(dns.clone(), 53));
             let (mut dns_client, bg) = match AsyncClient::connect(conn).await {
                 Ok(v) => v,
@@ -58,6 +59,9 @@ impl NSProvider for DNSProvider {
 
                             }
                         }
+                    }
+                    if txt_list.len() == 0 {
+                        continue;
                     }
                     let txt = DnsTxtCodec::decode(txt_list)?;
                     let txt = String::from_utf8_lossy(txt.as_slice()).to_string();

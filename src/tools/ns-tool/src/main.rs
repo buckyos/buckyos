@@ -1,8 +1,9 @@
 use std::fs::File;
 use std::io::Read;
-use bucky_name_service::DnsTxtCodec;
+use bucky_name_service::{DnsTxtCodec, NameInfo};
 use clap::{Arg, Command, value_parser};
 use sfo_result::err as ns_err;
+use sfo_result::into_err as into_ns_err;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 pub enum NsToolErrorCode {
@@ -10,13 +11,14 @@ pub enum NsToolErrorCode {
     Failed,
     OpenFileError,
     ReadFileError,
+    QueryError,
 }
 
 pub type NsToolError = sfo_result::Error<NsToolErrorCode>;
 pub type NsToolResult<T> = sfo_result::Result<T, NsToolErrorCode>;
 
-
-fn main() {
+#[tokio::main]
+async fn main() {
     let matches = Command::new("ns-tool")
         .about("A tool for name service")
         .version("0.1.0")
@@ -35,7 +37,13 @@ fn main() {
                 .long("limit")
                 .value_parser(value_parser!(usize))
                 .default_value("1024"))
-        ).get_matches();
+        )
+        .subcommand(Command::new("query_dns")
+            .about("Query the dns configuration of the specified name")
+            .arg(Arg::new("name")
+                .help("The name of the service to be queried")
+                .required(true)))
+        .get_matches();
 
     match matches.subcommand() {
         Some(("encode", encode_matches)) => {
@@ -51,7 +59,18 @@ fn main() {
                     println!("{}", e);
                 }
             }
-        }
+        },
+        Some(("query_dns", name_matches)) => {
+            let name: &String = name_matches.get_one("name").unwrap();
+            match query(name).await {
+                Ok(name_info) => {
+                    println!("{}", serde_json::to_string_pretty(&name_info).unwrap());
+                },
+                Err(e) => {
+                    println!("{}", e);
+                }
+            }
+        },
         _ => unreachable!(),
     }
 }
@@ -78,4 +97,13 @@ fn encode_file(file: &String, txt_limit: usize) -> NsToolResult<Vec<String>> {
     })?;
 
     Ok(list)
+}
+
+async fn query(name: &str) -> NsToolResult<NameInfo> {
+    let mut query = bucky_name_service::NameQuery::new();
+    let dns_provider = bucky_name_service::DNSProvider::new();
+    query.add_provider(Box::new(dns_provider));
+
+    let name_info = query.query(name).await.map_err(into_ns_err!(NsToolErrorCode::QueryError, "Failed to query name"))?;
+    Ok(name_info)
 }
