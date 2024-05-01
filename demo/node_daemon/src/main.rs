@@ -277,7 +277,11 @@ async fn node_daemon_main_loop(node_cfg: &NodeIdentityConfig, config: &ZoneConfi
         for (service_name, service_cfg) in all_service_item {
             //parse servce_cfg to json，get target state from service_cfg
             let (service_config, _) = sys_cfg.get(&service_name.as_str()).await.unwrap();
-            let mut run_params = RunItemParams::new(node_ip.clone(), Some(service_config));
+            let mut run_params = RunItemParams::new(
+                node_cfg.node_id.clone(),
+                node_ip.clone(),
+                Some(service_config),
+            );
 
             let target_state: RunItemTargetState = RunItemTargetState::Running(String::new());
             let service_item = create_service_item_from_config(&service_cfg)

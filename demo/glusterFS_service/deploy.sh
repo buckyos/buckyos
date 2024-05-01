@@ -1,8 +1,8 @@
 #!/bin/bash
 set -x
 
-# Check if the correct number of arguments was provided
-if [ "$#" -ne 1 ]; then
+# Check if at least one argument(hostname) was provided
+if [ "$#" -lt 1 ]; then
     echo "Usage: $0 <hostname>"
     exit 1
 fi
