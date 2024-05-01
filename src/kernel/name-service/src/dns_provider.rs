@@ -23,6 +23,7 @@ impl NSProvider for DNSProvider {
     }
 
     async fn query(&self, name: &str) -> NSResult<NameInfo> {
+        log::info!("start dns query {}", name);
         let dns_list = sfo_net_utils::system_nameservers().map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to get system nameservers"))?;
         let name = Name::from_str(name).map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to parse name"))?;
 

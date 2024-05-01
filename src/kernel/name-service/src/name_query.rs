@@ -31,7 +31,10 @@ impl NameQuery {
                     self.cache.insert(name.to_string(), info.clone());
                     return Ok(info);
                 }
-                Err(_) => continue
+                Err(e) => {
+                    log::error!("query err {}", e);
+                    continue;
+                }
             }
         }
         Err(NSError::new(NSErrorCode::NotFound, format!("Name {} not found", name)))
