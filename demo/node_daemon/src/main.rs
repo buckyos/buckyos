@@ -85,7 +85,7 @@ fn init_log_config() {
 
 fn load_identity_config() -> Result<NodeIdentityConfig> {
     // load from /etc/buckyos/node_identity.toml
-    let file_path = "/etc/buckyos/node_identity.toml";
+    let file_path = "node_identity.toml";
     let contents = std::fs::read_to_string(file_path).map_err(|err| {
         error!("read node identity config failed!");
         return NodeDaemonErrors::ReadConfigError(String::from(file_path));
