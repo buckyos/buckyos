@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use log::{debug, info, warn};
 use serde_json::Value;
+use serde::{Deserialize, Serialize};
 
 use thiserror::Error;
 #[derive(Error, Debug)]
@@ -25,24 +26,28 @@ pub enum RunItemState {
     Started,
     Stopped(String), //version
 }
-
+#[derive(Serialize, Deserialize, Debug,Clone)]
 pub enum RunItemTargetState {
-    Running(String), //version
-    Stopped(String), //version
+    Running, 
+    Stopped, 
+}
+
+#[derive(Serialize, Deserialize, Debug,Clone)]
+pub struct RunItemControlOperation {
+    pub command : String,
+    pub params : Option<Vec<String>>,
 }
 
 pub struct RunItemParams {
     pub node_id: String,
     pub node_ip: String,
-    pub services_cfg: Option<String>,
 }
 
 impl RunItemParams {
-    pub fn new(node_id: String, node_ip: String, services_cfg: Option<String>) -> Self {
+    pub fn new(node_id: String, node_ip: String) -> Self {
         RunItemParams {
             node_id,
             node_ip,
-            services_cfg,
         }
     }
 }
@@ -68,7 +73,7 @@ pub async fn control_run_item_to_target_state(
 ) -> Result<()> {
     let item_name = item.get_item_name()?;
     match target_state {
-        RunItemTargetState::Running(version) => match item.get_state(params).await? {
+        RunItemTargetState::Running => match item.get_state(params).await? {
             RunItemState::Started => {
                 debug!("{} is already running, do nothing!", item_name);
                 Ok(())
@@ -90,7 +95,7 @@ pub async fn control_run_item_to_target_state(
                 Ok(())
             }
         },
-        RunItemTargetState::Stopped(version) => match item.get_state(params).await? {
+        RunItemTargetState::Stopped => match item.get_state(params).await? {
             RunItemState::Started => {
                 warn!("{} is running,stop it!", item_name);
                 item.stop(params).await?;

@@ -6,7 +6,8 @@ mod system_config;
 
 use etcd_client::*;
 use log::*;
-use serde::Deserialize;
+use serde::{Serialize,Deserialize};
+use futures::prelude::*;
 // use serde_json::error;
 use simplelog::*;
 use std::str::FromStr;
@@ -33,7 +34,6 @@ enum NodeDaemonErrors {
     ParserConfigError(String),
     #[error("SystemConfig Error: {0}")]
     SystemConfigError(String), //key
-                               // 其他错误类型
 }
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
@@ -46,6 +46,29 @@ struct NodeIdentityConfig {
     //node_private_key : String,
 }
 
+//load from SystemConfig,node的配置分为下面几个部分
+// 固定的硬件配置，一般只有硬件改变或损坏才会修改
+// 系统资源情况，（比如可用内存等），改变密度很大。这一块暂时不用etcd实现，而是用专门的监控服务保存
+// RunItem的配置。这块由调度器改变，一旦改变,node_daemon就会产生相应的控制命令
+// Task(Cmd)配置，暂时不实现
+#[derive(Serialize, Deserialize, Debug)]
+struct NodeConfig {
+    revision: u64,
+    services : HashMap<String, ServiceConfig>,
+}
+
+impl NodeConfig {
+    fn from_json_str(jons_str: &str) -> Result<Self> {
+        let node_config:std::result::Result<NodeConfig,serde_json::Error> = serde_json::from_str(jons_str);
+        if node_config.is_ok() {
+            return Ok(node_config.unwrap());
+        }
+        return Err(NodeDaemonErrors::ParserConfigError("Failed to parse NodeConfig JSON".to_string()));
+    }
+}
+
+
+#[derive(Serialize, Deserialize, Debug)]
 struct ZoneConfig {
     zone_id: String,
     //zone_public_key: String,
@@ -53,6 +76,11 @@ struct ZoneConfig {
     etcd_data_version: i64,    //last backup etcd data version, 0 is not backup
     backup_server_id: Option<String>,
 }
+
+//load from SystemConfig
+//struct ZoneInnerConfig {
+    //service configs
+//}
 
 enum EtcdState {
     Good(String),                 //string is best node_name have etcd for this node
@@ -103,6 +131,17 @@ fn load_identity_config() -> Result<NodeIdentityConfig> {
 }
 
 async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig> {
+    //如果本地文件存在则优先加载本地文件
+    let json_config_path = "zone_config.json";
+    let json_config = std::fs::read_to_string(json_config_path);
+    if json_config.is_ok() {
+        let zone_config = serde_json::from_str(&json_config.unwrap());
+        if zone_config.is_ok() {
+            warn!("load zone config from ./zone_config.json success!");
+            return Ok(zone_config.unwrap());
+        }
+    } 
+
     let name_client = NameClient::new();
     let name_info = name_client
         .query(node_cfg.owner_zone_id.as_str())
@@ -125,6 +164,8 @@ async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig
             etcd_data_version: 0,
             backup_server_id: zone_cfg.backup_server,
         })
+
+
     } else {
         Err(NodeDaemonErrors::ReasonError(
             "zone config not found!".to_string(),
@@ -144,15 +185,18 @@ async fn check_etcd_by_zone_config(
     let local_endpoint = config
         .etcd_servers
         .iter()
-        .find(|&server| server.contains(node_id));
+        .find(|&server| server.starts_with(node_id));
 
     if let Some(endpoint) = local_endpoint {
+        info!("Found etcd server in this machine:{} ,try connect to local etcd.", endpoint);
         match EtcdClient::connect(endpoint).await {
             Ok(_) => Ok(EtcdState::Good(node_id.clone())),
             Err(_) => Ok(EtcdState::NeedRunInThisMachine(node_id.clone())),
         }
     } else {
+        //TODO:应该根据node_id选择最近的一个etcd server开始尝试链接
         for endpoint in &config.etcd_servers {
+            info!("Try connect to etcd server:{}", endpoint);
             if EtcdClient::connect(endpoint).await.is_ok() {
                 return Ok(EtcdState::Good(endpoint.clone()));
             }
@@ -247,67 +291,77 @@ async fn try_restore_etcd(_node_cfg: &NodeIdentityConfig, zone_cfg: &ZoneConfig)
 //    }
 //}
 
-async fn node_daemon_main_loop(node_cfg: &NodeIdentityConfig, config: &ZoneConfig) -> Result<()> {
+async fn get_node_config(node_identity : &NodeIdentityConfig) -> Result<NodeConfig> {
+    //首先尝试加载本地文件，如果本地文件存在则返回
+    let json_config_path = "node_config.json";
+    let json_config = std::fs::read_to_string(json_config_path);
+    if json_config.is_ok() {
+        let node_config = NodeConfig::from_json_str(&json_config.unwrap());
+        if node_config.is_ok() {
+            warn!("load node config from ./node_config.json success!");
+            return node_config;
+        }
+    }
+
+    //尝试通过system_config加载，加载成功更新缓存，失败则尝试使用缓存中的数据
+
+    //无法的找到node_config,返回错误 
+    return Err(NodeDaemonErrors::ReasonError("get node config failed!".to_string()));
+}
+
+async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig) -> Result<()> {
+    //etcd_client = create_etcd_client()
+    //system_config.init(etcd_client)
+    let sys_cfg = SystemConfig::new(None);
+    let mut node_config = get_node_config(node_identity).await?;
+
+    //try_backup_etcd_data()
+    //try_report_node_status()
+
+    //cmd_config = load_node_cmd_config()
+    //execute_cmd(cmd_config) //一般是执行运维命令，类似系统备份和恢复,由node_ctl负责执行  
+
+    let service_stream = stream::iter(node_config.services);
+    service_stream.for_each_concurrent(1,|(service_name, service_cfg)| async move {
+        let target_state = service_cfg.target_state.clone();
+        control_run_item_to_target_state(&service_cfg, target_state, None)
+        .await
+        .map_err(|err| {
+            error!("control service item to target state failed!");
+            return NodeDaemonErrors::SystemConfigError(service_name.clone());
+        });        
+    }).await;
+   
+    //service_config = system_config.get("")
+    //execute_service(service_config)
+    //vm_config = system_config.get("")
+    //execute_vm(vm_config)
+    //docker_config = system_config.get("")
+    //execute_docker(docker_config)
+    Ok(())
+}
+
+async fn node_daemon_main_loop(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig) -> Result<()> {
     let mut loop_step = 0;
     let mut is_running = true;
+    
     loop {
         if is_running == false {
             break;
         }
         loop_step += 1;
         info!("node daemon main loop step:{}", loop_step);
-        //etcd_client = create_etcd_client()
-        //system_config.init(etcd_client)
-        let sys_cfg = SystemConfig::new(None);
-        let node_ip = String::from("127.0.0.1");
-        //try_backup_etcd_data()
 
-        //try_report_node_status()
-
-        //cmd_config = system_config.get("")
-        //execute_cmd(cmd_config) //一般是执行运维命令，类似系统备份和恢复
-        //system config是以node_id为单位配置的
-        //以服务为单位的配置一般从name service那展开
-        let service_cfg_key = format!("/{}/services", node_cfg.node_id);
-        let all_service_item = sys_cfg.list(&service_cfg_key).await.map_err(|err| {
-            error!("list service config failed!");
-            return NodeDaemonErrors::SystemConfigError(service_cfg_key.clone());
-        })?;
-
-        for (service_name, service_cfg) in all_service_item {
-            //parse servce_cfg to json，get target state from service_cfg
-            let (service_config, _) = sys_cfg.get(&service_name.as_str()).await.unwrap();
-            let mut run_params = RunItemParams::new(
-                node_cfg.node_id.clone(),
-                node_ip.clone(),
-                Some(service_config),
-            );
-
-            let target_state: RunItemTargetState = RunItemTargetState::Running(String::new());
-            let service_item = create_service_item_from_config(&service_cfg)
-                .await
-                .map_err(|err| {
-                    error!("create service item from config failed!");
-                    return NodeDaemonErrors::SystemConfigError(service_cfg_key.clone());
-                })?;
-
-            control_run_item_to_target_state(&service_item, target_state, Some(&run_params))
-                .await
-                .map_err(|err| {
-                    error!("control service item to target state failed!");
-                    return NodeDaemonErrors::SystemConfigError(service_cfg_key.clone());
-                })?;
-            //get service item from service_cfg
-            //query service item state
-            // if service item state is not equal to service_cfg state, do something
+        let node_main_result = node_main(node_identity, zone_config).await;
+        match(node_main_result) {
+            Ok(_) => {
+                info!("node_main success!");
+            }
+            Err(err) => {
+                error!("node_main failed! {}", err);
+                is_running = false;
+            }
         }
-
-        //service_config = system_config.get("")
-        //execute_service(service_config)
-        //vm_config = system_config.get("")
-        //execute_vm(vm_config)
-        //docker_config = system_config.get("")
-        //execute_docker(docker_config)
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
     Ok(())

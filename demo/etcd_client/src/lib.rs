@@ -6,6 +6,7 @@ use serde_json::json;
 use std::process::{Child, Command};
 use tokio::fs::write;
 use tokio::time::{sleep, Duration};
+use log::*;
 
 pub struct EtcdClient {
     pub client: Client,
@@ -16,8 +17,14 @@ impl EtcdClient {
         let endpoints: Vec<Endpoint> = vec![Endpoint::new(endpoint)];
         let config = ClientConfig::new(endpoints);
         match Client::connect(config).await {
-            Ok(client) => Ok(EtcdClient { client }),
-            Err(e) => Err(Box::new(e)),
+            Ok(client) => {
+                info!("Connected to etcd:{} success",endpoint);
+                return Ok(EtcdClient { client });
+            },
+            Err(e) => {
+                warn!("Failed to connect to etcd:{}, err:{}",endpoint, e);
+                return Err(Box::new(e));
+            }
         }
     }
 

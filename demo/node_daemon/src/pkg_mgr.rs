@@ -85,7 +85,7 @@ impl PackageEnv {
     }
 
     // load 一个包，从env根目录中查找目标pkg，找到了就返回一个MediaInfo结构，env文件结构见末尾
-    pub async fn load_pkg(&self, pkg_id_str: &str) -> Result<MediaInfo> {
+    pub async fn load_pkg(& self, pkg_id_str: &str) -> Result<MediaInfo> {
         let pkg_id = self.parse_pkg_id(pkg_id_str)?;
 
         if let Some(version) = &pkg_id.version {

@@ -7,3 +7,4 @@ edition = "2021"
 etcd-rs = "*"
 tokio = { version = "*", features = ["full"] }
 serde_json="*"
+log = "*"

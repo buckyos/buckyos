@@ -1,0 +1,5 @@
+{
+    "zone_id" : "mynode.site",
+    "etcd_servers":["etcd1","etcd2","etcd3"],
+    "etcd_data_version":0
+}
