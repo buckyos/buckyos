@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::Read;
-use bucky_name_service::{DnsTxtCodec, NameInfo};
+use bucky_name_service::{DnsTxtCodec, NameInfo, NSProvider};
 use clap::{Arg, Command, value_parser};
 use sfo_result::err as ns_err;
 use sfo_result::into_err as into_ns_err;
@@ -100,10 +100,8 @@ fn encode_file(file: &String, txt_limit: usize) -> NsToolResult<Vec<String>> {
 }
 
 async fn query(name: &str) -> NsToolResult<NameInfo> {
-    let mut query = bucky_name_service::NameQuery::new();
     let dns_provider = bucky_name_service::DNSProvider::new();
-    query.add_provider(Box::new(dns_provider));
 
-    let name_info = query.query(name).await.map_err(into_ns_err!(NsToolErrorCode::QueryError, "Failed to query name"))?;
+    let name_info = dns_provider.query(name).await.map_err(into_ns_err!(NsToolErrorCode::QueryError, "Failed to query name"))?;
     Ok(name_info)
 }

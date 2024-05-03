@@ -13,6 +13,7 @@ pub enum NSErrorCode {
     DnsTxtEncodeError,
     InvalidParam,
     Forbid,
+    DNSProtoError,
 }
 
 pub type NSError = sfo_result::Error<NSErrorCode>;
