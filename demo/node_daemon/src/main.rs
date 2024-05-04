@@ -10,6 +10,7 @@ use serde::{Serialize,Deserialize};
 use futures::prelude::*;
 // use serde_json::error;
 use simplelog::*;
+use std::fmt::format;
 use std::str::FromStr;
 use std::{collections::HashMap, fs::File};
 // use tokio::*;
@@ -132,12 +133,12 @@ fn load_identity_config() -> Result<NodeIdentityConfig> {
 
 async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig> {
     //如果本地文件存在则优先加载本地文件
-    let json_config_path = "zone_config.json";
+    let json_config_path = format!("{}_zone_config.json",node_cfg.owner_zone_id);
     let json_config = std::fs::read_to_string(json_config_path);
     if json_config.is_ok() {
         let zone_config = serde_json::from_str(&json_config.unwrap());
         if zone_config.is_ok() {
-            warn!("load zone config from ./zone_config.json success!");
+            warn!("load zone config from ./{}_zone_config.json success!",node_cfg.owner_zone_id);
             return Ok(zone_config.unwrap());
         }
     } 
@@ -293,12 +294,12 @@ async fn try_restore_etcd(_node_cfg: &NodeIdentityConfig, zone_cfg: &ZoneConfig)
 
 async fn get_node_config(node_identity : &NodeIdentityConfig) -> Result<NodeConfig> {
     //首先尝试加载本地文件，如果本地文件存在则返回
-    let json_config_path = "node_config.json";
+    let json_config_path = format!("{}_node_config.json",node_identity.node_id);
     let json_config = std::fs::read_to_string(json_config_path);
     if json_config.is_ok() {
         let node_config = NodeConfig::from_json_str(&json_config.unwrap());
         if node_config.is_ok() {
-            warn!("load node config from ./node_config.json success!");
+            warn!("load node config from ./{}_node_config.json success!",node_identity.node_id);
             return node_config;
         }
     }
@@ -324,12 +325,12 @@ async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig)
     let service_stream = stream::iter(node_config.services);
     service_stream.for_each_concurrent(1,|(service_name, service_cfg)| async move {
         let target_state = service_cfg.target_state.clone();
-        control_run_item_to_target_state(&service_cfg, target_state, None)
+        let _ = control_run_item_to_target_state(&service_cfg, target_state, None)
         .await
         .map_err(|err| {
             error!("control service item to target state failed!");
             return NodeDaemonErrors::SystemConfigError(service_name.clone());
-        });        
+        });
     }).await;
    
     //service_config = system_config.get("")

@@ -44,14 +44,14 @@ impl RunItemControl for ServiceConfig {
         }
     }
 
-    async fn remove(&self, params: Option<&RunItemParams>) -> Result<()> {
-        let env = PackageEnv::new(PathBuf::from("/buckyos/service"));
-        let media_info = env.load_pkg(&self.pkg_id).await;
-        if media_info.is_ok() {
-            self.execute_operation(&media_info.unwrap(),"remove").await?;
-        }
-        Ok(())
-    }
+    // async fn remove(&self, params: Option<&RunItemParams>) -> Result<()> {
+    //     let env = PackageEnv::new(PathBuf::from("/buckyos/service"));
+    //     let media_info = env.load_pkg(&self.pkg_id).await;
+    //     if media_info.is_ok() {
+    //         self.execute_operation(&media_info.unwrap(),"remove").await?;
+    //     }
+    //     Ok(())
+    // }
 
     async fn update(&self, params: Option<&RunItemParams>) -> Result<String> {
         

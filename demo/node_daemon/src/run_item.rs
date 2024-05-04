@@ -56,7 +56,7 @@ impl RunItemParams {
 pub trait RunItemControl {
     fn get_item_name(&self) -> Result<String>;
     async fn deploy(&self, params: Option<&RunItemParams>) -> Result<()>;
-    async fn remove(&self, params: Option<&RunItemParams>) -> Result<()>;
+    //async fn remove(&self, params: Option<&RunItemParams>) -> Result<()>;
     //return new version
     async fn update(&self, params: Option<&RunItemParams>) -> Result<String>;
 
