@@ -2,11 +2,11 @@
 use std::vec;
 
 use etcd_rs::{Client, ClientConfig, Endpoint, KeyValueOp};
+use log::*;
 use serde_json::json;
 use std::process::{Child, Command};
 use tokio::fs::write;
 use tokio::time::{sleep, Duration};
-use log::*;
 
 pub struct EtcdClient {
     pub client: Client,
@@ -18,12 +18,18 @@ impl EtcdClient {
         let config = ClientConfig::new(endpoints);
         match Client::connect(config).await {
             Ok(client) => {
-                info!("Connected to etcd:{} success",endpoint);
-                return Ok(EtcdClient { client });
-            },
+                info!("Connected to etcd:{} success", endpoint);
+
+                //  cfg.auth 这个值如果是none，connect会直接返回一个OK，所以需要一个get来验证是否真的连接成功
+                let result = client.get("tryconnect").await;
+                match result {
+                    Ok(_) => Ok(EtcdClient { client }),
+                    Err(e) => Err(Box::new(e)),
+                }
+            }
             Err(e) => {
-                warn!("Failed to connect to etcd:{}, err:{}",endpoint, e);
-                return Err(Box::new(e));
+                warn!("Failed to connect to etcd:{}, err:{}", endpoint, e);
+                Err(Box::new(e))
             }
         }
     }
@@ -145,8 +151,25 @@ mod tests {
     fn test_connect_success() {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
+            // 这里应该加个kill和start
             let client = EtcdClient::connect("http://127.0.0.1:2379").await;
             assert!(client.is_ok());
+
+            // let endpoint = "http://127.0.0.1:2379";
+            // let endpoints: Vec<Endpoint> = vec![Endpoint::new(endpoint)];
+            // let config = ClientConfig::new(endpoints);
+            // let cli = Client::connect(config).await.unwrap();
+            // let res = cli.get("connect").await.unwrap();
+        });
+    }
+
+    #[test]
+    fn test_connect_faild() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            stop_etcd_service().unwrap();
+            let client = EtcdClient::connect("http://127.0.0.1:2379").await;
+            assert!(client.is_err());
         });
     }
 
