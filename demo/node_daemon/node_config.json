@@ -1,19 +1,22 @@
 {
-    "revision" : 100,
-    "services" : {
-        "dfs" : {
-            "target_state" : "Running",
-            "pkg_id" : "frame-glusterfs",
-            "version" : "*",
-            "operations" : {
-                "status" : {
-                    "command" : "status.sh",
-                    "params" : ["--status"]
+    "revision": 100,
+    "services": {
+        "dfs": {
+            "target_state": "Running",
+            "pkg_id": "frame-glusterfs",
+            "version": "*",
+            "operations": {
+                "status": {
+                    "command": "status.sh",
+                    "params": [
+                        "--status"
+                    ]
                 },
-                
-                "start" : {
-                    "command" : "start.sh",
-                    "params" : ["--start"]
+                "start": {
+                    "command": "start.sh",
+                    "params": [
+                        "--start"
+                    ]
                 }
             }
         }
