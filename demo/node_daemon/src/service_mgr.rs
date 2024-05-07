@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -35,7 +35,7 @@ impl RunItemControl for ServiceConfig {
             self.execute_operation(&media_info.unwrap(),"deploy").await?;
             return Ok(());
         } else {
-            //TODO: 补充从env中安装pkg的流程 
+            //TODO: 补充从env中安装pkg的流程
             error!("deploy service {} error: env.install({}) error.", self.pkg_id.as_str(),self.pkg_id);
             return Err(ControlRuntItemErrors::ExecuteError(
                 format!("deploy service {} error", self.pkg_id.as_str()),
@@ -54,7 +54,7 @@ impl RunItemControl for ServiceConfig {
     // }
 
     async fn update(&self, params: Option<&RunItemParams>) -> Result<String> {
-        
+
         unimplemented!();
         //self.execute_operation("update").await?;
     }
@@ -62,7 +62,7 @@ impl RunItemControl for ServiceConfig {
     async fn start(&self, params: Option<&RunItemParams>) -> Result<()> {
         let env = PackageEnv::new(PathBuf::from("/buckyos/service"));
         let media_info = env.load_pkg(&self.pkg_id).await;
-        if media_info.is_ok() {        
+        if media_info.is_ok() {
             self.execute_operation(&media_info.unwrap(),"start").await?;
         }
         Ok(())
@@ -71,7 +71,7 @@ impl RunItemControl for ServiceConfig {
     async fn stop(&self, params: Option<&RunItemParams>) -> Result<()> {
         let env = PackageEnv::new(PathBuf::from("/buckyos/service"));
         let media_info = env.load_pkg(&self.pkg_id).await;
-        if media_info.is_ok() {  
+        if media_info.is_ok() {
             self.execute_operation(&media_info.unwrap(),"stop").await?;
         }
         Ok(())
@@ -82,7 +82,7 @@ impl RunItemControl for ServiceConfig {
         let media_info = env.load_pkg(&self.pkg_id).await;
         if media_info.is_err() {
             return Ok(RunItemState::NotExist);
-        } 
+        }
         let ret_code = self.execute_operation(&media_info.unwrap(),"status").await?;
         if ret_code == 0 {
             Ok(RunItemState::Started)
@@ -95,12 +95,12 @@ impl RunItemControl for ServiceConfig {
 }
 
 impl ServiceConfig {
-    async fn execute_operation(&self,media_info:&MediaInfo,op_name:&str) -> Result<i64> {
+    async fn execute_operation(&self, media_info: &MediaInfo, op_name: &str) -> Result<i8> {
         let op = self.operations.get(op_name);
         if op.is_none() {
             warn!("{} service execuite op {} error:  operation not found", self.pkg_id.as_str(),op_name);
             return Err(ControlRuntItemErrors::ExecuteError(
-                format!("{} service execuite op {} error", self.pkg_id.as_str(),op_name),
+                format!("{} service execuite op {} error", self.pkg_id.as_str(), op_name),
                 "deploy operation not found".to_string(),
             ));
         }
@@ -108,17 +108,17 @@ impl ServiceConfig {
         let op: &RunItemControlOperation = op.unwrap();
         let op_sh_file = media_info.full_path.join(op.command.as_str());
         //run_cmd(deploy_sh_file)
-        Self::run_shell_script_with_args(
+        let ret = Self::run_shell_script_with_args(
             op_sh_file.to_str().unwrap(),
             &op.params
-        );
-        return Ok(0);
+        )?;
+        return Ok(ret.code().unwrap_or(0) as i8);
     }
 
-    fn run_shell_script_with_args(script_path: &str, args: &Option<Vec<String>>) -> Result<()> {
-        let mut command = Command::new("sh");
+    fn run_shell_script_with_args(script_path: &str, args: &Option<Vec<String>>) -> Result<ExitStatus> {
+        let mut command = Command::new("bash");
         command.arg(script_path);
-        match(args) {
+        match (args) {
             Some(args) => {
                 for arg in args {
                     command.arg(arg);
@@ -176,7 +176,6 @@ impl ServiceConfig {
         } else {
             error!("exec script {} failed. status: {}", script_path, status);
         }
-
-        Ok(())
+        Ok(status)
     }
 }
