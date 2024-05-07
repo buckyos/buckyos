@@ -3,7 +3,7 @@ use std::vec;
 
 use etcd_rs::{Client, ClientConfig, Endpoint, KeyValueOp};
 use log::*;
-use serde_json::json;
+use serde_json::{json, value};
 use std::process::{Child, Command};
 use tokio::fs::write;
 use tokio::time::{sleep, Duration};
@@ -58,6 +58,13 @@ impl EtcdClient {
     async fn get_revision(&self) -> Result<i64, Box<dyn std::error::Error>> {
         let response = self.client.get_all().await?;
         Ok(response.header.revision())
+    }
+
+    pub async fn get(&self, key: &str) -> Result<(String, i64), Box<dyn std::error::Error>> {
+        let response = self.client.get(key).await?;
+        let revision = response.header.revision();
+        let value = response.kvs[0].value_str();
+        Ok((value.to_string(), revision))
     }
 }
 

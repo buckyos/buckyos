@@ -5,9 +5,9 @@ mod service_mgr;
 mod system_config;
 
 use etcd_client::*;
-use log::*;
-use serde::{Serialize,Deserialize};
 use futures::prelude::*;
+use log::*;
+use serde::{Deserialize, Serialize};
 // use serde_json::error;
 use simplelog::*;
 use std::fmt::format;
@@ -55,19 +55,21 @@ struct NodeIdentityConfig {
 #[derive(Serialize, Deserialize, Debug)]
 struct NodeConfig {
     revision: u64,
-    services : HashMap<String, ServiceConfig>,
+    services: HashMap<String, ServiceConfig>,
 }
 
 impl NodeConfig {
     fn from_json_str(jons_str: &str) -> Result<Self> {
-        let node_config:std::result::Result<NodeConfig,serde_json::Error> = serde_json::from_str(jons_str);
+        let node_config: std::result::Result<NodeConfig, serde_json::Error> =
+            serde_json::from_str(jons_str);
         if node_config.is_ok() {
             return Ok(node_config.unwrap());
         }
-        return Err(NodeDaemonErrors::ParserConfigError("Failed to parse NodeConfig JSON".to_string()));
+        return Err(NodeDaemonErrors::ParserConfigError(
+            "Failed to parse NodeConfig JSON".to_string(),
+        ));
     }
 }
-
 
 #[derive(Serialize, Deserialize, Debug)]
 struct ZoneConfig {
@@ -80,7 +82,7 @@ struct ZoneConfig {
 
 //load from SystemConfig
 //struct ZoneInnerConfig {
-    //service configs
+//service configs
 //}
 
 enum EtcdState {
@@ -133,15 +135,18 @@ fn load_identity_config() -> Result<NodeIdentityConfig> {
 
 async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig> {
     //如果本地文件存在则优先加载本地文件
-    let json_config_path = format!("{}_zone_config.json",node_cfg.owner_zone_id);
+    let json_config_path = format!("{}_zone_config.json", node_cfg.owner_zone_id);
     let json_config = std::fs::read_to_string(json_config_path);
     if json_config.is_ok() {
         let zone_config = serde_json::from_str(&json_config.unwrap());
         if zone_config.is_ok() {
-            warn!("load zone config from ./{}_zone_config.json success!",node_cfg.owner_zone_id);
+            warn!(
+                "load zone config from ./{}_zone_config.json success!",
+                node_cfg.owner_zone_id
+            );
             return Ok(zone_config.unwrap());
         }
-    } 
+    }
 
     let name_client = NameClient::new();
     let name_info = name_client
@@ -165,8 +170,6 @@ async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig
             etcd_data_version: 0,
             backup_server_id: zone_cfg.backup_server,
         })
-
-
     } else {
         Err(NodeDaemonErrors::ReasonError(
             "zone config not found!".to_string(),
@@ -189,7 +192,10 @@ async fn check_etcd_by_zone_config(
         .find(|&server| server.starts_with(node_id));
 
     if let Some(endpoint) = local_endpoint {
-        info!("Found etcd server in this machine:{} ,try connect to local etcd.", endpoint);
+        info!(
+            "Found etcd server in this machine:{} ,try connect to local etcd.",
+            endpoint
+        );
         match EtcdClient::connect(endpoint).await {
             Ok(_) => Ok(EtcdState::Good(node_id.clone())),
             Err(_) => Ok(EtcdState::NeedRunInThisMachine(node_id.clone())),
@@ -292,47 +298,84 @@ async fn try_restore_etcd(_node_cfg: &NodeIdentityConfig, zone_cfg: &ZoneConfig)
 //    }
 //}
 
-async fn get_node_config(node_identity : &NodeIdentityConfig) -> Result<NodeConfig> {
+async fn get_node_config(
+    node_identity: &NodeIdentityConfig,
+    sys_cfg: SystemConfig,
+) -> Result<NodeConfig> {
     //首先尝试加载本地文件，如果本地文件存在则返回
-    let json_config_path = format!("{}_node_config.json",node_identity.node_id);
+    let json_config_path = format!("{}_node_config.json", node_identity.node_id);
     let json_config = std::fs::read_to_string(json_config_path);
     if json_config.is_ok() {
         let node_config = NodeConfig::from_json_str(&json_config.unwrap());
         if node_config.is_ok() {
-            warn!("load node config from ./{}_node_config.json success!",node_identity.node_id);
+            warn!(
+                "load node config from ./{}_node_config.json success!",
+                node_identity.node_id
+            );
             return node_config;
         }
     }
 
     //尝试通过system_config加载，加载成功更新缓存，失败则尝试使用缓存中的数据
+    let sys_node_key = format!("{}_node_config", node_identity.node_id);
+    let sys_cfg_result = sys_cfg.get(&sys_node_key).await;
+    if sys_cfg_result.is_err() {
+        return Err(NodeDaemonErrors::ReasonError(
+            "get node config failed from etcd!".to_string(),
+        ));
+    }
+    let result = sys_cfg_result.as_ref().unwrap();
+    let revision = result.1 as u64;
+    let services: std::result::Result<HashMap<String, ServiceConfig>, serde_json::Error> =
+        serde_json::from_str(result.0.as_str());
+    if services.is_err() {
+        return Err(NodeDaemonErrors::ReasonError(
+            "get node config from etcd and parse failed!".to_string(),
+        ));
+    }
+    let node_config = NodeConfig {
+        revision: revision,
+        services: services.unwrap(),
+    };
+    warn!("load node config from system_config success!",);
+    return Ok(node_config);
 
-    //无法的找到node_config,返回错误 
-    return Err(NodeDaemonErrors::ReasonError("get node config failed!".to_string()));
+    // //无法的找到node_config,返回错误
+    // return Err(NodeDaemonErrors::ReasonError(
+    //     "get node config failed!".to_string(),
+    // ));
 }
 
 async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig) -> Result<()> {
     //etcd_client = create_etcd_client()
     //system_config.init(etcd_client)
-    let sys_cfg = SystemConfig::new(None);
-    let mut node_config = get_node_config(node_identity).await?;
+    let sys_cfg = SystemConfig::new(&zone_config.etcd_servers)
+        .await
+        .map_err(|_| {
+            error!("SystemConfig init failed!");
+            NodeDaemonErrors::SystemConfigError("".to_string())
+        })?;
+    let mut node_config = get_node_config(node_identity, sys_cfg).await?;
 
     //try_backup_etcd_data()
     //try_report_node_status()
 
     //cmd_config = load_node_cmd_config()
-    //execute_cmd(cmd_config) //一般是执行运维命令，类似系统备份和恢复,由node_ctl负责执行  
+    //execute_cmd(cmd_config) //一般是执行运维命令，类似系统备份和恢复,由node_ctl负责执行
 
     let service_stream = stream::iter(node_config.services);
-    service_stream.for_each_concurrent(1,|(service_name, service_cfg)| async move {
-        let target_state = service_cfg.target_state.clone();
-        let _ = control_run_item_to_target_state(&service_cfg, target_state, None)
-        .await
-        .map_err(|err| {
-            error!("control service item to target state failed!");
-            return NodeDaemonErrors::SystemConfigError(service_name.clone());
-        });
-    }).await;
-   
+    service_stream
+        .for_each_concurrent(1, |(service_name, service_cfg)| async move {
+            let target_state = service_cfg.target_state.clone();
+            let _ = control_run_item_to_target_state(&service_cfg, target_state, None)
+                .await
+                .map_err(|err| {
+                    error!("control service item to target state failed!");
+                    return NodeDaemonErrors::SystemConfigError(service_name.clone());
+                });
+        })
+        .await;
+
     //service_config = system_config.get("")
     //execute_service(service_config)
     //vm_config = system_config.get("")
@@ -342,10 +385,13 @@ async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig)
     Ok(())
 }
 
-async fn node_daemon_main_loop(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig) -> Result<()> {
+async fn node_daemon_main_loop(
+    node_identity: &NodeIdentityConfig,
+    zone_config: &ZoneConfig,
+) -> Result<()> {
     let mut loop_step = 0;
     let mut is_running = true;
-    
+
     loop {
         if is_running == false {
             break;
@@ -354,7 +400,7 @@ async fn node_daemon_main_loop(node_identity: &NodeIdentityConfig, zone_config: 
         info!("node daemon main loop step:{}", loop_step);
 
         let node_main_result = node_main(node_identity, zone_config).await;
-        match(node_main_result) {
+        match (node_main_result) {
             Ok(_) => {
                 info!("node_main success!");
             }
