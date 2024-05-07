@@ -10,10 +10,6 @@ pub enum ProviderType {
     DNS,
     #[serde(rename = "etcd")]
     ETCD,
-    #[serde(rename = "local")]
-    LOCAL,
-    #[serde(rename = "local_default")]
-    LOCAL_DEFAULT
 }
 
 #[derive(Serialize, Deserialize)]
@@ -37,24 +33,27 @@ impl ProviderConfig {
 
 #[derive(Serialize, Deserialize)]
 pub struct ETCDConfig {
-    etcd_url: String,
+    pub(crate) etcd_url: String,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct DNSConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
-    dns_server: Option<String>,
-    test_list: Vec<ETCDConfig>,
+    pub(crate) dns_server: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct NSConfig {
-    node_name: String,
+    pub(crate) node_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    zone_ca: Option<String>,
-    node_cert: String,
-    node_key: String,
-    provide_list: Vec<ProviderConfig>,
+    pub(crate) zone_ca: Option<String>,
+    pub(crate) node_cert: String,
+    pub(crate) node_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) local_info_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) default_info_path: Option<String>,
+    pub(crate) provide_list: Vec<ProviderConfig>,
 }
 
 #[cfg(test)]
@@ -69,12 +68,13 @@ mod test_config {
             zone_ca: None,
             node_cert: "cert".to_string(),
             node_key: "key".to_string(),
+            local_info_path: None,
+            default_info_path: None,
             provide_list: vec![
                 ProviderConfig {
                     ty: ProviderType::DNS,
                     config: serde_json::json!({
-                        "dns_server": "8.8.8.8",
-                        "test_list": [{"etcd_url": "test1"}, {"etcd_url": "test2"}]
+                        "dns_server": "8.8.8.8"
                         })
                 },
                 ProviderConfig {

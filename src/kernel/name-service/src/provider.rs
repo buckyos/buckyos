@@ -4,9 +4,11 @@ use crate::{NSCmdRegister, NSError, NSErrorCode, NSResult};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AddrInfo {
-    protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol: Option<String>,
     addr: String,
-    port: u16
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,9 +80,9 @@ mod test {
             ty: NameType::Zone,
             version: "1.0".to_string(),
             addrs: Some(vec![crate::AddrInfo {
-                protocol: "tcp".to_string(),
+                protocol: Some("tcp".to_string()),
                 addr: "127.0.0.77".to_string(),
-                port: 3456,
+                port: Some(3456),
             }]),
             extra: None,
             sign: None,

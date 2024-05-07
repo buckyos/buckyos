@@ -1,5 +1,5 @@
 use std::time::Duration;
-use crate::{NameInfo, NSError, NSErrorCode, NSProvider, NSResult};
+use crate::{DNSConfig, DNSProvider, ETCDConfig, ETCDProvider, LocalProvider, NameInfo, NSConfig, NSError, NSErrorCode, NSProvider, NSResult, ProviderType};
 
 
 pub struct NameQuery {

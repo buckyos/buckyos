@@ -11,12 +11,14 @@ use crate::{DnsTxtCodec, NameInfo, NSCmdRegister, NSError, NSErrorCode, NSProvid
 use crate::error::{into_ns_err, ns_err};
 
 pub struct DNSProvider {
-
+    dns_server: Option<String>,
 }
 
 impl DNSProvider {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(dns_server: Option<String>) -> Self {
+        Self {
+            dns_server,
+        }
     }
 
     fn parse_dns_response(resp: DnsResponse) -> NSResult<NameInfo> {
@@ -76,7 +78,13 @@ impl NSProvider for DNSProvider {
 
     async fn query(&self, name: &str) -> NSResult<NameInfo> {
         log::debug!("start dns query {}", name);
-        let dns_list = sfo_net_utils::system_nameservers().map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to get system nameservers"))?;
+        let dns_list = if self.dns_server.is_some() {
+            let dns = self.dns_server.as_ref().unwrap();
+            let dns = IpAddr::from_str(dns).map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to parse dns server"))?;
+            vec![dns]
+        } else {
+            sfo_net_utils::system_nameservers().map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to get system nameservers"))?
+        };
         let name = Name::from_str(name).map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to parse name"))?;
 
         for dns in dns_list.iter().filter(|x| x.is_ipv4()) {

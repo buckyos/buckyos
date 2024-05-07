@@ -14,6 +14,7 @@ pub enum NSErrorCode {
     InvalidParam,
     Forbid,
     DNSProtoError,
+    READ_LOCAL_FILE_ERROR,
 }
 
 pub type NSError = sfo_result::Error<NSErrorCode>;
