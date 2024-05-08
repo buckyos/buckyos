@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use simplelog::*;
 use std::fmt::format;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use std::{collections::HashMap, fs::File};
 // use tokio::*;
 use toml;
@@ -264,7 +266,7 @@ async fn try_restore_etcd(_node_cfg: &NodeIdentityConfig, zone_cfg: &ZoneConfig)
     let restore = "/tmp/etcd_restore";
     let restore_path = std::path::PathBuf::from_str(&restore).unwrap();
 
-    let key = "etcd";
+    let key = "system_config/etcd";
     let latest = backup.query_last_versions(key, true).await.map_err(|err| {
         let err_msg = format!("query last backup version failed! {}", err);
         error!("{}", err_msg);
@@ -281,6 +283,43 @@ async fn try_restore_etcd(_node_cfg: &NodeIdentityConfig, zone_cfg: &ZoneConfig)
         .unwrap();
 
     Ok(())
+}
+
+async fn system_config_backup(zone_config: Arc<ZoneConfig>) {
+    let zone_config = zone_config.as_ref();
+    let mut last_backup = Instant::now() - Duration::from_secs(24 * 3600); // 假设初始状态是需要立即备份
+    loop {
+        if last_backup.elapsed() >= Duration::from_secs(24 * 3600) {
+            let initial_cluster = zone_config
+                .etcd_servers
+                .iter()
+                .enumerate()
+                .map(|(idx, server)| format!("etcd{}={}", idx, server))
+                .collect::<Vec<_>>()
+                .join(",");
+            // 执行备份操作
+            let backup_file = etcd_client::backup_etcd(&initial_cluster).await.unwrap();
+            let backup_server_id = zone_config.backup_server_id.clone().unwrap();
+            let backup = Backup::new(&backup_server_id);
+            let key = "system_config/etcd";
+            let backup_file_path = std::path::Path::new(&backup_file);
+            let file_list = vec![backup_file_path];
+
+            futures::executor::block_on({
+                // 内部没有实现Send + Sync 用block 包一层
+                backup
+                    .post_backup(key, 0, &"".to_string(), &file_list)
+                    .map(|_| ())
+            });
+            info!("备份已完成");
+
+            // 更新上次备份时间
+            last_backup = Instant::now();
+        }
+
+        // 每小时检查一次是否需要备份
+        std::thread::sleep(Duration::from_secs(3600));
+    }
 }
 
 //fn execute_docker(docker_config)   -> Result<(), Box<dyn std::error::Error>>{
@@ -388,8 +427,9 @@ async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig)
 
 async fn node_daemon_main_loop(
     node_identity: &NodeIdentityConfig,
-    zone_config: &ZoneConfig,
+    zone_config: Arc<ZoneConfig>,
 ) -> Result<()> {
+    let zone_config = zone_config.as_ref();
     let mut loop_step = 0;
     let mut is_running = true;
 
@@ -479,8 +519,14 @@ async fn main() -> std::result::Result<(), String> {
         }
     }
 
+    // let node_identity = Arc::new(node_identity);
+    let zone_config = Arc::new(zone_config);
+    let zc_clone = Arc::clone(&zone_config);
+    // 创建一个新线程来处理备份逻辑
+    std::thread::spawn(move || system_config_backup(zc_clone));
+
     info!("Ready, start node daemon main loop!");
-    node_daemon_main_loop(&node_identity, &zone_config)
+    node_daemon_main_loop(&node_identity, zone_config)
         .await
         .map_err(|err| {
             error!("node daemon main loop failed!");

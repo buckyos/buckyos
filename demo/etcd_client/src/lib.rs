@@ -128,6 +128,35 @@ pub async fn try_restore_etcd(file: &str, url: &str) -> Result<(), Box<dyn std::
     Ok(())
 }
 
+// 用etcdctl 生成快照，然后传到backupservice里面去
+pub async fn backup_etcd(url: &str) -> Result<(String), Box<dyn std::error::Error>> {
+    let name = "default";
+    let initial_cluster = format!("{}={}", name, url);
+
+    let back_file = "/tmp/etcd_backup";
+    let status = Command::new("etcdctl")
+        .arg("snapshot")
+        .arg("save")
+        .arg(back_file)
+        .arg("--name")
+        .arg(name)
+        .arg("--initial-cluster")
+        .arg(initial_cluster)
+        .arg("--initial-advertise-peer-urls")
+        .arg(url)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn();
+    if status.is_err() {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Failed to restore etcd snapshot",
+        )));
+    }
+
+    Ok(back_file.to_string())
+}
+
 fn stop_etcd_service() -> std::io::Result<()> {
     // 检查 etcd 进程是否运行，适当时停止它
     let status = Command::new("pkill").arg("-f").arg("etcd").status()?;
