@@ -8,6 +8,7 @@ use base58::ToBase58;
 use sha2::Digest;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+const HTTP_HEADER_ZONEID: &'static str = "zone-id";
 const HTTP_HEADER_KEY: &'static str = "backup-key";
 const HTTP_HEADER_VERSION: &'static str = "backup-version";
 const HTTP_HEADER_HASH: &'static str = "backup-hash";
@@ -15,6 +16,7 @@ const HTTP_HEADER_CHUNK_SEQ: &'static str = "backup-chunk-seq";
 
 #[derive(Deserialize, Serialize)]
 struct CreateBackupReq {
+    zone_id: String,
     key: String,
     version: u32,
     meta: String,
@@ -23,6 +25,7 @@ struct CreateBackupReq {
 
 #[derive(Deserialize, Serialize)]
 struct QueryVersionReq {
+    zone_id: String,
     key: String,
     offset: i32,
     limit: u32,
@@ -50,18 +53,21 @@ pub struct QueryBackupVersionResp {
 
 #[derive(Deserialize, Serialize)]
 struct QueryVersionInfoReq {
+    zone_id: String,
     key: String,
     version: u32,
 }
 
 #[derive(Deserialize, Serialize)]
 struct DownloadBackupVersionReq {
+    zone_id: String,
     key: String,
     version: u32,
 }
 
 #[derive(Deserialize, Serialize)]
 struct DownloadBackupChunkReq {
+    zone_id: String,
     key: String,
     version: u32,
     chunk_seq: u32,
@@ -70,6 +76,7 @@ struct DownloadBackupChunkReq {
 #[derive(Clone)]
 pub struct Backup {
     url: String,
+    zone_id: String,
 }
 
 pub enum ListOffset {
@@ -78,10 +85,8 @@ pub enum ListOffset {
 }
 
 impl Backup {
-    pub fn new(url: &str) -> Self {
-        Self {
-            url: url.to_string(),
-        }
+    pub fn new(url: String, zone_id: String) -> Self {
+        Self { url, zone_id }
     }
 
     // TODO: 可能还需要一个公钥作为身份标识，否则可能被恶意应用篡改
@@ -99,6 +104,7 @@ impl Backup {
         match client
             .post(url.as_str())
             .json(&CreateBackupReq {
+                zone_id: self.zone_id.clone(),
                 key: key.to_string(),
                 version,
                 meta: meta.to_string(),
@@ -156,6 +162,7 @@ impl Backup {
             .get(url.as_str())
             .body(
                 serde_json::to_string(&QueryVersionReq {
+                    zone_id: self.zone_id.clone(),
                     key: key.to_string(),
                     offset: match offset {
                         ListOffset::FromFirst(n) => n as i32,
@@ -243,6 +250,7 @@ impl Backup {
             .json(&QueryVersionInfoReq {
                 key: key.to_string(),
                 version,
+                zone_id: self.zone_id.clone(),
             })
             .send()
             .await
@@ -320,6 +328,7 @@ impl Backup {
             match client
                 .post(url.as_str())
                 .body(buf.clone())
+                .header(HTTP_HEADER_ZONEID, self.zone_id.as_str())
                 .header(HTTP_HEADER_KEY, key)
                 .header(HTTP_HEADER_VERSION, version)
                 .header(HTTP_HEADER_HASH, hash.as_str())
@@ -406,6 +415,7 @@ impl Backup {
                 .get(url.as_str())
                 .body(
                     serde_json::to_string(&DownloadBackupChunkReq {
+                        zone_id: self.zone_id.clone(),
                         key: key.to_string(),
                         version,
                         chunk_seq,
@@ -558,7 +568,10 @@ mod tests {
             }
         }
 
-        let backup = Backup::new("http://47.106.164.184");
+        let backup = Backup::new(
+            "http://47.106.164.184".to_string(),
+            "test-case-zone".to_string(),
+        );
         let mut tasks = vec![];
 
         for (key, versions) in origin_chunk_infos.iter() {

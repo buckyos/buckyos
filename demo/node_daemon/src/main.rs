@@ -260,7 +260,7 @@ async fn try_start_etcd(node_cfg: &NodeIdentityConfig, zone_cfg: &ZoneConfig) ->
 
 async fn try_restore_etcd(_node_cfg: &NodeIdentityConfig, zone_cfg: &ZoneConfig) -> Result<()> {
     let backup_server_id = zone_cfg.backup_server_id.clone().unwrap();
-    let backup = Backup::new(&backup_server_id);
+    let backup = Backup::new(backup_server_id, zone_cfg.zone_id.clone());
     let restore = "/tmp/etcd_restore";
     let restore_path = std::path::PathBuf::from_str(&restore).unwrap();
 
