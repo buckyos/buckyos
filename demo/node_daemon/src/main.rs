@@ -318,6 +318,7 @@ async fn get_node_config(
 
     //尝试通过system_config加载，加载成功更新缓存，失败则尝试使用缓存中的数据
     let sys_node_key = format!("{}_node_config", node_identity.node_id);
+    // 从etcd中读取
     let sys_cfg_result = sys_cfg.get(&sys_node_key).await;
     if sys_cfg_result.is_err() {
         return Err(NodeDaemonErrors::ReasonError(
@@ -355,7 +356,7 @@ async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig)
             error!("SystemConfig init failed!");
             NodeDaemonErrors::SystemConfigError("".to_string())
         })?;
-    let mut node_config = get_node_config(node_identity, sys_cfg).await?;
+    let node_config = get_node_config(node_identity, sys_cfg).await?;
 
     //try_backup_etcd_data()
     //try_report_node_status()
@@ -400,7 +401,7 @@ async fn node_daemon_main_loop(
         info!("node daemon main loop step:{}", loop_step);
 
         let node_main_result = node_main(node_identity, zone_config).await;
-        match (node_main_result) {
+        match node_main_result {
             Ok(_) => {
                 info!("node_main success!");
             }

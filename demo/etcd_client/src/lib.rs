@@ -1,10 +1,8 @@
-// use std::os::linux::raw::stat;
-use std::vec;
-
 use etcd_rs::{Client, ClientConfig, Endpoint, KeyValueOp};
 use log::*;
-use serde_json::{json, value};
+use serde_json::json;
 use std::process::{Child, Command};
+use std::vec;
 use tokio::fs::write;
 use tokio::time::{sleep, Duration};
 
