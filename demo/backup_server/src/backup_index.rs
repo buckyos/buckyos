@@ -291,7 +291,7 @@ impl BackupIndexSqlite {
 
         let sql = r#"SELECT chunk_seq, chunk_path, hash, chunk_size
             FROM version_chunk
-            WHERE zone_id = ? 1 AND key = ?2 AND version = ?3
+            WHERE zone_id = ?1 AND key = ?2 AND version = ?3
         "#;
 
         let mut stmt = self.conn.prepare(sql)?;
