@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::error::Error;
 use tide::Request;
 
+const HTTP_HEADER_ZONEID: &'static str = "zone-id";
 const HTTP_HEADER_KEY: &'static str = "backup-key";
 const HTTP_HEADER_VERSION: &'static str = "backup-version";
 const HTTP_HEADER_HASH: &'static str = "backup-hash";
@@ -19,6 +20,7 @@ const HTTP_HEADER_CHUNK_SEQ: &'static str = "backup-chunk-seq";
 
 #[derive(Deserialize, Serialize)]
 struct CreateBackupReq {
+    zone_id: String,
     key: String,
     version: u32,
     meta: String,
@@ -27,6 +29,7 @@ struct CreateBackupReq {
 
 #[derive(Deserialize, Serialize)]
 struct QueryVersionReq {
+    zone_id: String,
     key: String,
     offset: i32,
     limit: u32,
@@ -52,18 +55,21 @@ pub struct QueryBackupVersionResp {
 
 #[derive(Deserialize, Serialize)]
 struct QueryVersionInfoReq {
+    zone_id: String,
     key: String,
     version: u32,
 }
 
 #[derive(Deserialize, Serialize)]
 struct DownloadBackupVersionReq {
+    zone_id: String,
     key: String,
     version: u32,
 }
 
 #[derive(Deserialize, Serialize)]
 struct DownloadBackupChunkReq {
+    zone_id: String,
     key: String,
     version: u32,
     chunk_seq: u32,
@@ -101,6 +107,7 @@ impl BackupFileMgr {
             .lock()
             .await
             .insert_new_backup(
+                req.zone_id.as_str(),
                 req.key.as_str(),
                 req.version,
                 req.meta.as_str(),
@@ -115,6 +122,17 @@ impl BackupFileMgr {
 
     pub async fn save_chunk(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
         log::info!("save_chunk http-headers: {:?}", req.header_names());
+        let zone_id = match req.header(HTTP_HEADER_ZONEID) {
+            Some(h) => h.last().to_string(),
+            None => {
+                log::error!("zone-id not found");
+                return Err(tide::Error::from_str(
+                    tide::StatusCode::NotFound,
+                    "zone-id not found",
+                ));
+            }
+        };
+
         let key = match req.header(HTTP_HEADER_KEY) {
             Some(h) => h.last().to_string(),
             None => {
@@ -214,7 +232,7 @@ impl BackupFileMgr {
         //     });
         // }
 
-        let filename = Self::tmp_filename(key.as_str(), version, chunk_seq);
+        let filename = Self::tmp_filename(zone_id.as_str(), key.as_str(), version, chunk_seq);
         let tmp_path = Path::new(self.save_path.as_str()).join(filename.as_str());
         let mut file = File::create(&tmp_path).await?;
         let mut writer = BufWriter::new(&mut file);
@@ -268,7 +286,13 @@ impl BackupFileMgr {
             ));
         }
 
-        let filename = Self::filename(key.as_str(), version, chunk_seq, chunk_hash.as_str());
+        let filename = Self::filename(
+            zone_id.as_str(),
+            key.as_str(),
+            version,
+            chunk_seq,
+            chunk_hash.as_str(),
+        );
         let file_path = Path::new(self.save_path.as_str()).join(filename.as_str());
         async_std::fs::rename(&tmp_path, &file_path)
             .await
@@ -287,6 +311,7 @@ impl BackupFileMgr {
                 .lock()
                 .await
                 .insert_new_chunk(
+                    zone_id.as_str(),
                     key.as_str(),
                     version,
                     chunk_seq,
@@ -318,6 +343,7 @@ impl BackupFileMgr {
                 .lock()
                 .await
                 .query_backup_versions(
+                    req.zone_id.as_str(),
                     req.key.as_str(),
                     req.offset,
                     req.limit,
@@ -362,7 +388,7 @@ impl BackupFileMgr {
             self.index_mgr
                 .lock()
                 .await
-                .query_backup_version_info(req.key.as_str(), req.version)
+                .query_backup_version_info(req.zone_id.as_str(), req.key.as_str(), req.version)
                 .map_err(|err| {
                     log::error!("query_version_info failed: {}", err);
                     tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
@@ -399,7 +425,12 @@ impl BackupFileMgr {
             self.index_mgr
                 .lock()
                 .await
-                .query_chunk(req.key.as_str(), req.version, req.chunk_seq)
+                .query_chunk(
+                    req.zone_id.as_str(),
+                    req.key.as_str(),
+                    req.version,
+                    req.chunk_seq,
+                )
                 .map_err(|err| {
                     tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
                 })?
@@ -436,9 +467,10 @@ impl BackupFileMgr {
         Ok(resp)
     }
 
-    fn tmp_filename(key: &str, version: u32, chunk_seq: u32) -> String {
+    fn tmp_filename(zone_id: &str, key: &str, version: u32, chunk_seq: u32) -> String {
         format!(
-            "{}-{}-{}.{}.{}.tmp",
+            "{}-{}-{}-{}.{}.{}.tmp",
+            zone_id,
             key,
             version,
             chunk_seq,
@@ -450,7 +482,7 @@ impl BackupFileMgr {
         )
     }
 
-    fn filename(key: &str, version: u32, chunk_seq: u32, hash: &str) -> String {
-        format!("{}-{}-{}.{}.bak", key, version, chunk_seq, hash)
+    fn filename(zone_id: &str, key: &str, version: u32, chunk_seq: u32, hash: &str) -> String {
+        format!("{}-{}-{}-{}.{}.bak", zone_id, key, version, chunk_seq, hash)
     }
 }
