@@ -300,7 +300,8 @@ async fn system_config_backup(zone_config: Arc<ZoneConfig>) {
             // 执行备份操作
             let backup_file = etcd_client::backup_etcd(&initial_cluster).await.unwrap();
             let backup_server_id = zone_config.backup_server_id.clone().unwrap();
-            let backup = Backup::new(&backup_server_id);
+            let zone_id = zone_config.zone_id.clone();
+            let backup = Backup::new(backup_server_id, zone_id);
             let key = "system_config/etcd";
             let backup_file_path = std::path::Path::new(&backup_file);
             let file_list = vec![backup_file_path];
