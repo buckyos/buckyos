@@ -16,17 +16,21 @@ impl EtcdClient {
         let config = ClientConfig::new(endpoints);
         match Client::connect(config).await {
             Ok(client) => {
-                info!("Connected to etcd:{} success", endpoint);
-
                 //  cfg.auth 这个值如果是none，connect会直接返回一个OK，所以需要一个get来验证是否真的连接成功
                 let result = client.get("tryconnect").await;
                 match result {
-                    Ok(_) => Ok(EtcdClient { client }),
-                    Err(e) => Err(Box::new(e)),
+                    Ok(_) => {
+                        info!("Connected to etcd:{} success", endpoint);
+                        Ok(EtcdClient { client })
+                    }
+                    Err(e) => {
+                        error!("Failed to connect to etcd:{}, err:{}", endpoint, e);
+                        Err(Box::new(e))
+                    }
                 }
             }
             Err(e) => {
-                warn!("Failed to connect to etcd:{}, err:{}", endpoint, e);
+                error!("Failed to connect to etcd:{}, err:{}", endpoint, e);
                 Err(Box::new(e))
             }
         }

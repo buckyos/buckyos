@@ -9,6 +9,7 @@ pub(crate) async fn check_etcd_by_zone_config(
         .etcd_servers
         .iter()
         .find(|&server| server.starts_with(node_id));
+    info!("local_endpoint:{:?}", local_endpoint);
 
     if let Some(endpoint) = local_endpoint {
         info!(

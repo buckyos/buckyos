@@ -21,7 +21,6 @@ use toml;
 
 use crate::backup::*;
 use crate::etcd_mgr::*;
-use crate::pkg_mgr::*;
 use crate::run_item::*;
 use crate::service_mgr::*;
 use crate::system_config::*;
@@ -151,6 +150,7 @@ async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig
             return Ok(zone_config.unwrap());
         }
     }
+    info!("no local zone_config found, try query from name service");
 
     let name_client = NameClient::new();
     let name_info = name_client
@@ -337,6 +337,7 @@ async fn main() -> std::result::Result<(), String> {
         error!("looking zone config failed!");
         String::from("looking zone config failed!")
     })?;
+    info!("zone config: {:?}", zone_config);
 
     //检查etcd状态
     let etcd_state = check_etcd_by_zone_config(&zone_config, &node_identity)
