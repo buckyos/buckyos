@@ -15,9 +15,9 @@ pub struct BackupVersionMeta {
     pub key: String,
     pub version: u32,
     pub meta: String,
-    pub chunk_count: u32,
+    pub is_restorable: bool,
 
-    pub chunks: Vec<BackupChunk>,
+    pub chunk_count: u32,
 }
 
 pub struct BackupIndexSqlite {
@@ -66,8 +66,8 @@ impl BackupIndexSqlite {
                     zone_id TEXT NOT NULL,
                     key TEXT NOT NULL,
                     version INTEGER NOT NULL,
-                    meta TEXT,
-                    chunk_count INTEGER,
+                    meta TEXT DEFAULT "",
+                    is_restorable TINYINT DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (zone_id, key, version)
                 );"#,
@@ -107,24 +107,47 @@ impl BackupIndexSqlite {
         zone_id: &str,
         key: &str,
         version: u32,
-        meta: &str,
-        chunk_count: u32,
     ) -> Result<(), Box<dyn Error>> {
         // 在表backup_version中插入新行
         let sql = r#"INSERT INTO backup_version (
-            zone_id, key, version, meta, chunk_count
-        ) VALUES (?1,?2,?3,?4,?5)"#;
+            zone_id, key, version
+        ) VALUES (?1,?2,?3)"#;
 
-        match self.conn.execute(
-            sql,
-            rusqlite::params![zone_id, key, version, meta, chunk_count],
-        ) {
+        match self
+            .conn
+            .execute(sql, rusqlite::params![zone_id, key, version])
+        {
             Err(err)
                 if err.sqlite_error_code() != Some(rusqlite::ErrorCode::ConstraintViolation) =>
             {
                 Err(Box::new(err))
             }
             _ => Ok(()),
+        }
+    }
+
+    pub fn commit_backup(
+        &self,
+        zone_id: &str,
+        key: &str,
+        version: u32,
+        meta: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        // 更新表backup_version中的is_restorable字段为true
+
+        // 在表backup_version中插入新行
+        let sql = r#"
+            UPDATE backup_version
+            SET is_restorable = 1, meta = ?1
+            WHERE zone_id = ?2 AND key = ?3 AND version = ?4
+        "#;
+
+        match self
+            .conn
+            .execute(sql, rusqlite::params![meta, zone_id, key, version])
+        {
+            Ok(_) => Ok(()),
+            Err(err) => Err(Box::new(err)),
         }
     }
 
@@ -167,10 +190,14 @@ impl BackupIndexSqlite {
         let is_asc = offset >= 0;
         let (sql, offset, limit) = if offset > 0 {
             (
-                r#"SELECT version, meta, chunk_count
-                FROM backup_version
-                WHERE zone_id = ?1 AND key = ?2 AND (?3 OR chunk_count = (SELECT COUNT(*) FROM version_chunk WHERE version_chunk.key = backup_version.key AND version_chunk.version = backup_version.version))
-                ORDER BY version ASC
+                r#"SELECT backup_version.version, backup_version.meta, backup_version.is_restorable, COUNT(*) AS chunk_count
+                FROM backup_version, version_chunk
+                WHERE backup_version.zone_id = version_chunk.zone_id AND 
+                    backup_version.key = version_chunk.key AND 
+                    backup_version.version = version_chunk.version AND 
+                    backup_version.zone_id = ?1 AND backup_version.key = ?2 AND (?3 OR backup_version.is_restorable = 1)
+                GROUP BY backup_version.zone_id, backup_version.key, backup_version.version
+                ORDER BY backup_version.version ASC
                 LIMIT ?4 OFFSET ?5
             "#,
                 offset,
@@ -178,10 +205,14 @@ impl BackupIndexSqlite {
             )
         } else {
             (
-                r#"SELECT version, meta, chunk_count
-                FROM backup_version
-                WHERE zone_id = ?1 AND key = ?2 AND (?3 OR chunk_count = (SELECT COUNT(*) FROM version_chunk WHERE version_chunk.key = backup_version.key AND version_chunk.version = backup_version.version))
-                ORDER BY version DESC
+                r#"SELECT backup_version.version, backup_version.meta, backup_version.is_restorable, COUNT(*) AS chunk_count
+                FROM backup_version, version_chunk
+                WHERE backup_version.zone_id = version_chunk.zone_id AND 
+                    backup_version.key = version_chunk.key AND 
+                    backup_version.version = version_chunk.version AND 
+                    backup_version.zone_id = ?1 AND backup_version.key = ?2 AND (?3 OR backup_version.is_restorable = 1)
+                GROUP BY backup_version.zone_id, backup_version.key, backup_version.version
+                ORDER BY backup_version.version DESC
                 LIMIT ?4 OFFSET ?5
             "#,
                 std::cmp::max(-offset - (limit as i32), 0),
@@ -198,8 +229,8 @@ impl BackupIndexSqlite {
                         key: key.to_string(),
                         version: row.get(0).unwrap(),
                         meta: row.get(1).unwrap(),
-                        chunk_count: row.get(2).unwrap(),
-                        chunks: vec![],
+                        is_restorable: row.get::<usize, u8>(2).unwrap() == 1,
+                        chunk_count: row.get(3).unwrap(),
                     })
                 },
             )?
@@ -215,54 +246,6 @@ impl BackupIndexSqlite {
             }
         }
 
-        if versions.len() == 0 {
-            return Ok(vec![]);
-        }
-
-        let min_version = versions.first().unwrap().version;
-        let max_version = versions.last().unwrap().version;
-
-        let sql = r#"
-            SELECT version, chunk_seq, chunk_path, hash, chunk_size
-            FROM version_chunk
-            WHERE zone_id = ?1 AND key = ?2 AND version >= ?3 AND version <= ?4
-            ORDER BY version ASC, chunk_seq ASC
-        "#;
-
-        let mut stmt = self.conn.prepare(sql)?;
-        let chunks = stmt
-            .query_map(
-                rusqlite::params![zone_id, key, min_version, max_version],
-                |row| {
-                    Ok((
-                        row.get::<usize, u32>(0).unwrap(),
-                        BackupChunk {
-                            seq: row.get(1).unwrap(),
-                            path: row.get(2).unwrap(),
-                            hash: row.get(3).unwrap(),
-                            size: row.get(4).unwrap(),
-                        },
-                    ))
-                },
-            )?
-            .collect::<Vec<_>>();
-
-        if chunks.len() == 0 {
-            return Ok(versions);
-        }
-
-        let mut chunk_index = 0;
-        for version in versions.iter_mut() {
-            for i in chunk_index..chunks.len() {
-                let (v, chunk) = chunks.get(i).unwrap().as_ref().unwrap();
-                if *v != version.version {
-                    chunk_index = i;
-                    break;
-                }
-                version.chunks.push(chunk.clone());
-            }
-        }
-
         Ok(versions)
     }
 
@@ -272,9 +255,19 @@ impl BackupIndexSqlite {
         key: &str,
         version: u32,
     ) -> Result<BackupVersionMeta, Box<dyn Error>> {
-        let sql = r#"SELECT meta, chunk_count
-                FROM backup_version
-                WHERE zone_id = ?1 AND key = ?2 AND version = ?3
+        log::info!(
+            "query_backup_version_info: zone_id={}, key={}, version={}",
+            zone_id,
+            key,
+            version
+        );
+        let sql = r#"SELECT backup_version.meta, backup_version.is_restorable, COUNT(*) AS chunk_count
+                FROM backup_version, version_chunk
+                WHERE backup_version.zone_id = version_chunk.zone_id AND 
+                    backup_version.key = version_chunk.key AND 
+                    backup_version.version = version_chunk.version AND 
+                    backup_version.zone_id = ?1 AND backup_version.key = ?2 AND backup_version.version = ?3
+                GROUP BY backup_version.zone_id, backup_version.key, backup_version.version
             "#;
 
         let mut version_info =
@@ -284,35 +277,10 @@ impl BackupIndexSqlite {
                         key: key.to_string(),
                         version,
                         meta: row.get(0).unwrap(),
-                        chunk_count: row.get(1).unwrap(),
-                        chunks: vec![],
+                        is_restorable: row.get::<usize, u8>(1).unwrap() == 1,
+                        chunk_count: row.get(2).unwrap(),
                     })
                 })?;
-
-        let sql = r#"SELECT chunk_seq, chunk_path, hash, chunk_size
-            FROM version_chunk
-            WHERE zone_id = ?1 AND key = ?2 AND version = ?3
-        "#;
-
-        let mut stmt = self.conn.prepare(sql)?;
-        let chunks = stmt
-            .query_map(rusqlite::params![zone_id, key, version], |row| {
-                Ok(BackupChunk {
-                    seq: row.get(0).unwrap(),
-                    path: row.get(1).unwrap(),
-                    hash: row.get(2).unwrap(),
-                    size: row.get(3).unwrap(),
-                })
-            })?
-            .collect::<Vec<_>>();
-
-        assert_eq!(chunks.len(), version_info.chunk_count as usize);
-
-        if chunks.len() == 0 {
-            return Ok(version_info);
-        }
-
-        version_info.chunks = chunks.into_iter().map(|ck| ck.unwrap()).collect();
 
         Ok(version_info)
     }

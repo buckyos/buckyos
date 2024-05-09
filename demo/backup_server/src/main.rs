@@ -20,6 +20,12 @@ async fn create_backup(mut req: Request<BackupFileMgr>) -> tide::Result {
     backup_file_mgr.create_backup(req).await
 }
 
+async fn commit_backup(mut req: Request<BackupFileMgr>) -> tide::Result {
+    let backup_file_mgr = req.state().clone();
+    log::info!("commite_backup");
+    backup_file_mgr.commit_backup(req).await
+}
+
 async fn save_chunk(mut req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
 
@@ -46,6 +52,13 @@ async fn query_version_info(mut req: Request<BackupFileMgr>) -> tide::Result {
 
     log::info!("query_version_info");
     backup_file_mgr.query_version_info(req).await
+}
+
+async fn query_chunk_info(mut req: Request<BackupFileMgr>) -> tide::Result {
+    let backup_file_mgr = req.state().clone();
+
+    log::info!("query_chunk_info");
+    backup_file_mgr.query_chunk_info(req).await
 }
 
 fn init_log_config() {
@@ -96,9 +109,11 @@ async fn main() -> tide::Result<()> {
     let mut app = tide::with_state(file_mgr);
 
     app.at("/new_backup").post(create_backup);
+    app.at("/commit_backup").post(commit_backup);
     app.at("/new_chunk").post(save_chunk);
     app.at("/query_versions").get(query_versions);
     app.at("/version_info").get(query_version_info);
+    app.at("/chunk_info").get(query_chunk_info);
     app.at("/chunk").get(download_chunk);
 
     app.listen(format!("{}:{}", config.interface, config.port))

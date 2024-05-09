@@ -23,6 +23,13 @@ struct CreateBackupReq {
     zone_id: String,
     key: String,
     version: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CommitBackupReq {
+    zone_id: String,
+    key: String,
+    version: u32,
     meta: String,
     chunk_count: u32,
 }
@@ -48,9 +55,8 @@ pub struct QueryBackupVersionResp {
     key: String,
     version: u32,
     meta: String,
+    is_restorable: bool,
     chunk_count: u32,
-
-    chunks: Vec<QueryBackupVersionRespChunk>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -65,6 +71,14 @@ struct DownloadBackupVersionReq {
     zone_id: String,
     key: String,
     version: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+struct QueryChunkInfoReq {
+    zone_id: String,
+    key: String,
+    version: u32,
+    chunk_seq: u32,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -94,10 +108,10 @@ impl BackupFileMgr {
 
     /**
      * {
-     *      key: &str,
-     *      version: u32,
-     *      meta: &str,
-     *      chunk_count: u32,
+     *     zone_id: &str,
+     *     key: &str,
+     *     version: u32,
+     *     meta: &str,
      * }
      */
     pub async fn create_backup(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
@@ -106,16 +120,55 @@ impl BackupFileMgr {
         self.index_mgr
             .lock()
             .await
-            .insert_new_backup(
+            .insert_new_backup(req.zone_id.as_str(), req.key.as_str(), req.version)
+            .map_err(|err| {
+                log::error!("create_backup failed: {}", err);
+                tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
+            })?;
+
+        Ok(tide::Response::new(tide::StatusCode::Ok))
+    }
+
+    pub async fn commit_backup(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
+        let req: CommitBackupReq = req.body_json().await?;
+        let index_mgr = self.index_mgr.lock().await;
+        let version_info = index_mgr
+            .query_backup_version_info(req.zone_id.as_str(), req.key.as_str(), req.version)
+            .map_err(|err| {
+                log::error!(
+                    "query_backup_version_info for commit-backup failed: {}",
+                    err
+                );
+                tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
+            })?;
+
+        if version_info.chunk_count != req.chunk_count {
+            log::error!("query_backup_version_info for commit-back chunk-count mismatch");
+            return Err(tide::Error::from_str(
+                tide::StatusCode::BadRequest,
+                "chunk count mismatch",
+            ));
+        }
+
+        if version_info.is_restorable {
+            log::error!("has commited earlier");
+            return Err(tide::Error::from_str(
+                tide::StatusCode::BadRequest,
+                "has commited earlier",
+            ));
+        }
+
+        index_mgr
+            .commit_backup(
                 req.zone_id.as_str(),
                 req.key.as_str(),
                 req.version,
                 req.meta.as_str(),
-                req.chunk_count,
             )
             .map_err(|err| {
+                log::error!("commit_backup failed: {}", err);
                 tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
-            });
+            })?;
 
         Ok(tide::Response::new(tide::StatusCode::Ok))
     }
@@ -206,31 +259,6 @@ impl BackupFileMgr {
                 ));
             }
         };
-
-        // {
-        //     let mut files_lock_guard = self.files.lock().await;
-
-        //     let files = files_lock_guard
-        //         .entry(key.clone())
-        //         .or_insert(BackupFile { versions: vec![] });
-
-        //     if let Some(last_version) = files.versions.last() {
-        //         if last_version.version >= version {
-        //             return Err(tide::Error::from_str(
-        //                 tide::StatusCode::BadRequest,
-        //                 format!("Version should be larger than {}", last_version.version),
-        //             ));
-        //         }
-        //     }
-
-        //     files.versions.push(BackupFileVersion {
-        //         version,
-        //         meta: meta.clone(),
-        //         hash: "".to_string(),
-        //         status: BackupStatus::Transfering,
-        //         file_paths: vec![],
-        //     });
-        // }
 
         let filename = Self::tmp_filename(zone_id.as_str(), key.as_str(), version, chunk_seq);
         let tmp_path = Path::new(self.save_path.as_str()).join(filename.as_str());
@@ -360,16 +388,8 @@ impl BackupFileMgr {
                 key: v.key,
                 version: v.version,
                 meta: v.meta,
+                is_restorable: v.is_restorable,
                 chunk_count: v.chunk_count,
-                chunks: v
-                    .chunks
-                    .into_iter()
-                    .map(|ck| QueryBackupVersionRespChunk {
-                        seq: ck.seq,
-                        hash: ck.hash,
-                        size: ck.size,
-                    })
-                    .collect(),
             })
             .collect::<Vec<_>>();
         let resp_body = serde_json::to_string(resp_versions.as_slice())?;
@@ -399,18 +419,43 @@ impl BackupFileMgr {
             key: req.key,
             version: req.version,
             meta: version.meta,
+            is_restorable: version.is_restorable,
             chunk_count: version.chunk_count,
-            chunks: version
-                .chunks
-                .into_iter()
-                .map(|ck| QueryBackupVersionRespChunk {
-                    seq: ck.seq,
-                    hash: ck.hash,
-                    size: ck.size,
-                })
-                .collect(),
         };
         let resp_body = serde_json::to_string(&resp_version)?;
+
+        let mut resp = tide::Response::new(tide::StatusCode::Ok);
+        resp.set_content_type("application/json");
+        resp.set_body(resp_body);
+
+        Ok(resp)
+    }
+
+    pub async fn query_chunk_info(&self, mut req: Request<BackupFileMgr>) -> tide::Result {
+        let req: QueryChunkInfoReq = req.body_json().await?;
+
+        let chunk = {
+            self.index_mgr
+                .lock()
+                .await
+                .query_chunk(
+                    req.zone_id.as_str(),
+                    req.key.as_str(),
+                    req.version,
+                    req.chunk_seq,
+                )
+                .map_err(|err| {
+                    log::error!("query_version_info failed: {}", err);
+                    tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
+                })?
+        };
+
+        let resp_chunk = QueryBackupVersionRespChunk {
+            seq: chunk.seq,
+            hash: chunk.hash,
+            size: chunk.size,
+        };
+        let resp_body = serde_json::to_string(&resp_chunk)?;
 
         let mut resp = tide::Response::new(tide::StatusCode::Ok);
         resp.set_content_type("application/json");
