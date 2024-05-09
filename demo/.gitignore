@@ -4,3 +4,4 @@ etcd_client/default.etcd/
 node_daemon/target
 target
 Cargo.lock
+docker-compose.yml
