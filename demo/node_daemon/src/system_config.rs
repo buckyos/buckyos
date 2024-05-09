@@ -12,16 +12,25 @@ impl SystemConfig {
         let config = ClientConfig::new(endpoints);
         match Client::connect(config).await {
             Ok(client) => {
-                info!("Connected to etcd:{} success", etcd_servers.join(","));
                 //  cfg.auth 这个值如果是none，connect会直接返回一个OK，所以需要一个get来验证是否真的连接成功
                 let result = client.get("tryconnect").await;
                 match result {
-                    Ok(_) => Ok(SystemConfig { client }),
-                    Err(e) => Err(Box::new(e)),
+                    Ok(_) => {
+                        info!("Connected to etcd:{} success", etcd_servers.join(","));
+                        Ok(SystemConfig { client })
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to connect to etcd:{}, err:{}",
+                            etcd_servers.join(","),
+                            e
+                        );
+                        Err(Box::new(e))
+                    }
                 }
             }
             Err(e) => {
-                warn!(
+                error!(
                     "Failed to connect to etcd:{}, err:{}",
                     etcd_servers.join(","),
                     e

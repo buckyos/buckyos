@@ -1,15 +1,28 @@
 use crate::*;
+use std::net::TcpStream;
+use std::time::Duration;
 
 pub(crate) async fn check_etcd_by_zone_config(
     config: &ZoneConfig,
     node_config: &NodeIdentityConfig,
 ) -> Result<EtcdState> {
     let node_id = &node_config.node_id;
+
+    // ping local 2379
+    let timeout = Duration::from_secs(1);
+    if TcpStream::connect_timeout(&"127.0.0.1:2379".parse().unwrap(), timeout).is_ok() {
+        info!("local etcd is running ");
+        return Ok(EtcdState::Good(node_id.clone()));
+    }
+
     let local_endpoint = config
         .etcd_servers
         .iter()
         .find(|&server| server.starts_with(node_id));
-    info!("local_endpoint:{:?}", local_endpoint);
+    info!(
+        "check local etcd, local node id {:?}, local_endpoint:{:?}",
+        node_id, local_endpoint
+    );
 
     if let Some(endpoint) = local_endpoint {
         info!(
