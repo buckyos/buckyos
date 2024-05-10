@@ -14,6 +14,7 @@ pub struct BackupChunk {
 pub struct BackupVersionMeta {
     pub key: String,
     pub version: u32,
+    pub prev_version: Option<u32>,
     pub meta: String,
     pub is_restorable: bool,
 
@@ -67,6 +68,7 @@ impl BackupIndexSqlite {
                     key TEXT NOT NULL,
                     version INTEGER NOT NULL,
                     meta TEXT DEFAULT "",
+                    prev_version INTEGER DEFAULT NULL,
                     is_restorable TINYINT DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (zone_id, key, version)
@@ -107,6 +109,7 @@ impl BackupIndexSqlite {
         zone_id: &str,
         key: &str,
         version: u32,
+        prev_version: Option<u32>,
     ) -> Result<(), Box<dyn Error>> {
         // 在表backup_version中插入新行
         let sql = r#"INSERT INTO backup_version (
@@ -190,7 +193,7 @@ impl BackupIndexSqlite {
         let is_asc = offset >= 0;
         let (sql, offset, limit) = if offset > 0 {
             (
-                r#"SELECT backup_version.version, backup_version.meta, backup_version.is_restorable, COUNT(*) AS chunk_count
+                r#"SELECT backup_version.version, backup_version.meta, backup_version.is_restorable, backup_version.prev_version, COUNT(*) AS chunk_count
                 FROM backup_version, version_chunk
                 WHERE backup_version.zone_id = version_chunk.zone_id AND 
                     backup_version.key = version_chunk.key AND 
@@ -205,7 +208,7 @@ impl BackupIndexSqlite {
             )
         } else {
             (
-                r#"SELECT backup_version.version, backup_version.meta, backup_version.is_restorable, COUNT(*) AS chunk_count
+                r#"SELECT backup_version.version, backup_version.meta, backup_version.is_restorable, backup_version.prev_version, COUNT(*) AS chunk_count
                 FROM backup_version, version_chunk
                 WHERE backup_version.zone_id = version_chunk.zone_id AND 
                     backup_version.key = version_chunk.key AND 
@@ -230,7 +233,8 @@ impl BackupIndexSqlite {
                         version: row.get(0).unwrap(),
                         meta: row.get(1).unwrap(),
                         is_restorable: row.get::<usize, u8>(2).unwrap() == 1,
-                        chunk_count: row.get(3).unwrap(),
+                        prev_version: row.get(3).unwrap(),
+                        chunk_count: row.get(4).unwrap(),
                     })
                 },
             )?
@@ -261,7 +265,7 @@ impl BackupIndexSqlite {
             key,
             version
         );
-        let sql = r#"SELECT backup_version.meta, backup_version.is_restorable, COUNT(*) AS chunk_count
+        let sql = r#"SELECT backup_version.meta, backup_version.is_restorable, backup_version.prev_version, COUNT(*) AS chunk_count
                 FROM backup_version, version_chunk
                 WHERE backup_version.zone_id = version_chunk.zone_id AND 
                     backup_version.key = version_chunk.key AND 
@@ -278,7 +282,8 @@ impl BackupIndexSqlite {
                         version,
                         meta: row.get(0).unwrap(),
                         is_restorable: row.get::<usize, u8>(1).unwrap() == 1,
-                        chunk_count: row.get(2).unwrap(),
+                        prev_version: row.get(2).unwrap(),
+                        chunk_count: row.get(3).unwrap(),
                     })
                 })?;
 

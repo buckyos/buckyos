@@ -23,6 +23,7 @@ struct CreateBackupReq {
     zone_id: String,
     key: String,
     version: u32,
+    prev_version: Option<u32>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -54,6 +55,7 @@ pub struct QueryBackupVersionRespChunk {
 pub struct QueryBackupVersionResp {
     key: String,
     version: u32,
+    prev_version: Option<u32>,
     meta: String,
     is_restorable: bool,
     chunk_count: u32,
@@ -61,13 +63,6 @@ pub struct QueryBackupVersionResp {
 
 #[derive(Deserialize, Serialize)]
 struct QueryVersionInfoReq {
-    zone_id: String,
-    key: String,
-    version: u32,
-}
-
-#[derive(Deserialize, Serialize)]
-struct DownloadBackupVersionReq {
     zone_id: String,
     key: String,
     version: u32,
@@ -120,7 +115,12 @@ impl BackupFileMgr {
         self.index_mgr
             .lock()
             .await
-            .insert_new_backup(req.zone_id.as_str(), req.key.as_str(), req.version)
+            .insert_new_backup(
+                req.zone_id.as_str(),
+                req.key.as_str(),
+                req.version,
+                req.prev_version,
+            )
             .map_err(|err| {
                 log::error!("create_backup failed: {}", err);
                 tide::Error::from_str(tide::StatusCode::InternalServerError, err.to_string())
@@ -390,6 +390,7 @@ impl BackupFileMgr {
                 meta: v.meta,
                 is_restorable: v.is_restorable,
                 chunk_count: v.chunk_count,
+                prev_version: v.prev_version,
             })
             .collect::<Vec<_>>();
         let resp_body = serde_json::to_string(resp_versions.as_slice())?;
@@ -421,6 +422,7 @@ impl BackupFileMgr {
             meta: version.meta,
             is_restorable: version.is_restorable,
             chunk_count: version.chunk_count,
+            prev_version: version.prev_version,
         };
         let resp_body = serde_json::to_string(&resp_version)?;
 

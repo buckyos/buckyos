@@ -25,6 +25,7 @@ struct CreateBackupReq {
     zone_id: String,
     key: String,
     version: u32,
+    prev_version: Option<u32>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -56,6 +57,7 @@ pub struct QueryBackupVersionRespChunk {
 pub struct QueryBackupVersionResp {
     key: String,
     pub version: u32,
+    prev_version: Option<u32>,
     meta: String,
     is_restorable: bool,
     chunk_count: u32,
@@ -74,13 +76,6 @@ struct QueryChunkInfoReq {
     key: String,
     version: u32,
     chunk_seq: u32,
-}
-
-#[derive(Deserialize, Serialize)]
-struct DownloadBackupVersionReq {
-    zone_id: String,
-    key: String,
-    version: u32,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -112,9 +107,17 @@ impl Backup {
         &self,
         key: &str,
         version: u32,
+        prev_version: Option<u32>,
         meta: &impl ToString,
         chunk_file_list: &[&std::path::Path],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if version == 0 {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "version should be greater than 0",
+            )));
+        }
+
         // 1. begin
         // 2. upload chunk files
         // 3. put meta
@@ -126,6 +129,7 @@ impl Backup {
                 zone_id: self.zone_id.clone(),
                 key: key.to_string(),
                 version,
+                prev_version,
             })
             // .header(
             //     reqwest::header::CONTENT_TYPE,
@@ -625,10 +629,10 @@ mod tests {
             origin_chunk_infos.insert(key.clone(), HashMap::new());
             let mut versions = origin_chunk_infos.get_mut(&key).unwrap();
 
-            for version in 0..version_count {
+            for version in 1..(version_count + 1) {
                 versions.insert(version, (format!("{}-{}", key, version), vec![]));
                 let mut chunks = &mut versions.get_mut(&version).unwrap().1;
-                for i in 0..(version + 1) {
+                for i in 0..version {
                     let file_path = format!("{}/{}-{}-{}", origin_path, key, version, i);
 
                     let mut content = key.as_bytes().to_vec();
@@ -679,7 +683,13 @@ mod tests {
                         .map(|p| p.as_ref())
                         .collect::<Vec<&std::path::Path>>();
                     backup
-                        .post_backup(key, *version, &version_info.0, chunk_path_refs.as_slice())
+                        .post_backup(
+                            key,
+                            *version,
+                            None,
+                            &version_info.0,
+                            chunk_path_refs.as_slice(),
+                        )
                         .await
                 })
             }

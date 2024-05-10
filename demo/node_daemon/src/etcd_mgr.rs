@@ -146,7 +146,7 @@ pub(crate) async fn system_config_backup(zone_config: Arc<ZoneConfig>) {
             futures::executor::block_on({
                 // 内部没有实现Send + Sync 用block 包一层
                 backup
-                    .post_backup(key, 0, &"".to_string(), &file_list)
+                    .post_backup(key, 0, None, &"", &file_list)
                     .map(|_| ())
             });
             info!("备份已完成");
