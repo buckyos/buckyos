@@ -663,8 +663,8 @@ mod tests {
         }
 
         let backup = Backup::new(
-            // "http://47.106.164.184".to_string(),
-            "http://192.168.100.120:8000".to_string(),
+            "http://47.106.164.184".to_string(),
+            // "http://192.168.100.120:8000".to_string(),
             "test-case-zone".to_string(),
         );
         let mut tasks = vec![];
