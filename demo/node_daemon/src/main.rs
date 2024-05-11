@@ -1,4 +1,6 @@
 mod backup;
+mod backup_task_mgr;
+mod backup_task_storage;
 mod etcd_mgr;
 mod pkg_mgr;
 mod run_item;
@@ -20,6 +22,7 @@ use std::{collections::HashMap, fs::File};
 use toml;
 
 use crate::backup::*;
+use crate::backup_task_mgr::*;
 use crate::etcd_mgr::*;
 use crate::run_item::*;
 use crate::service_mgr::*;

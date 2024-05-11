@@ -90,6 +90,7 @@ struct DownloadBackupChunkReq {
 pub struct Backup {
     url: String,
     zone_id: String,
+    storage_dir: PathBuf,
 }
 
 pub enum ListOffset {
@@ -98,8 +99,12 @@ pub enum ListOffset {
 }
 
 impl Backup {
-    pub fn new(url: String, zone_id: String) -> Self {
-        Self { url, zone_id }
+    pub fn new(url: String, zone_id: String, storage_dir: &str) -> Self {
+        Self {
+            url,
+            zone_id,
+            storage_dir: PathBuf::from(storage_dir),
+        }
     }
 
     // TODO: 可能还需要一个公钥作为身份标识，否则可能被恶意应用篡改
@@ -296,10 +301,13 @@ impl Backup {
         &self,
         key: &str,
         version: u32,
-        dir_path: &Path,
+        dir_path: Option<&Path>, // = ${storage_dir}
     ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
         // 1. get chunk file list
         // 2. download chunk files to the dir_path
+
+        // TODO: Write a record into the database as a task is executing,
+        // And continue the task when the system recovered.
 
         let url = format!("{}/{}", self.url.as_str(), "version_info");
 
@@ -340,6 +348,7 @@ impl Backup {
             }
         };
 
+        let dir_path = dir_path.unwrap_or(&self.storage_dir);
         let mut rets = futures::future::join_all(
             (0..version_info.chunk_count)
                 .map(|chunk_seq| self.download_chunk(key, version, chunk_seq, dir_path)),
@@ -661,11 +670,11 @@ mod tests {
                 }
             }
         }
-
         let backup = Backup::new(
             "http://47.106.164.184".to_string(),
             // "http://192.168.100.120:8000".to_string(),
             "test-case-zone".to_string(),
+            restore_path,
         );
         let mut tasks = vec![];
 
@@ -816,7 +825,7 @@ mod tests {
                 let _restore_path = _restore_path.clone();
                 tasks.push(async move {
                     backup
-                        .download_backup(key, *version, _restore_path.as_path())
+                        .download_backup(key, *version, Some(_restore_path.as_path()))
                         .await
                         .map(|chunk_paths| (key.clone(), *version, chunk_paths))
                 })

@@ -2,6 +2,8 @@ use crate::*;
 use std::net::TcpStream;
 use std::time::Duration;
 
+const BACKUP_STORAGE_DIR: &'static str = "/tmp/backup";
+
 pub(crate) async fn check_etcd_by_zone_config(
     config: &ZoneConfig,
     node_config: &NodeIdentityConfig,
@@ -99,7 +101,7 @@ pub(crate) async fn try_restore_etcd(
     zone_cfg: &ZoneConfig,
 ) -> Result<()> {
     let backup_server_id = zone_cfg.backup_server_id.clone().unwrap();
-    let backup = Backup::new(backup_server_id, zone_cfg.zone_id.clone());
+    let backup = Backup::new(backup_server_id, zone_cfg.zone_id.clone(), BACKUP_STORAGE_DIR);
     let restore = "/tmp/etcd_restore";
     let restore_path = std::path::PathBuf::from_str(&restore).unwrap();
 
@@ -111,7 +113,7 @@ pub(crate) async fn try_restore_etcd(
     })?;
     let version = latest.version;
     backup
-        .download_backup(key, version, &restore_path)
+        .download_backup(key, version, Some(&restore_path))
         .await
         .unwrap();
 
@@ -138,7 +140,7 @@ pub(crate) async fn system_config_backup(zone_config: Arc<ZoneConfig>) {
             let backup_file = etcd_client::backup_etcd(&initial_cluster).await.unwrap();
             let backup_server_id = zone_config.backup_server_id.clone().unwrap();
             let zone_id = zone_config.zone_id.clone();
-            let backup = Backup::new(backup_server_id, zone_id);
+            let backup = Backup::new(backup_server_id, zone_id, BACKUP_STORAGE_DIR);
             let key = "system_config/etcd";
             let backup_file_path = std::path::Path::new(&backup_file);
             let file_list = vec![backup_file_path];
