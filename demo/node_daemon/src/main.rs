@@ -255,7 +255,16 @@ async fn get_node_config(
 async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig) -> Result<()> {
     //etcd_client = create_etcd_client()
     //system_config.init(etcd_client)
-    let sys_cfg = SystemConfig::new(&zone_config.etcd_servers)
+
+    // 这里的入口只要用local的就可以了，etcd内部自己处理
+    let node_id = node_identity.node_id.clone();
+    let local_endpoint = zone_config
+        .etcd_servers
+        .iter()
+        .find(|&server| server.starts_with(&node_id))
+        .unwrap();
+    let local_endpoint = format!("http://{}:2379", local_endpoint);
+    let sys_cfg = SystemConfig::new(&vec![local_endpoint])
         .await
         .map_err(|_| {
             error!("SystemConfig init failed!");

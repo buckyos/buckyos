@@ -16,12 +16,15 @@ impl SystemConfig {
                 let result = client.get("tryconnect").await;
                 match result {
                     Ok(_) => {
-                        info!("Connected to etcd:{} success", etcd_servers.join(","));
+                        info!(
+                            "SystemConfig Connected to etcd:{} success",
+                            etcd_servers.join(",")
+                        );
                         Ok(SystemConfig { client })
                     }
                     Err(e) => {
                         error!(
-                            "Failed to connect to etcd:{}, err:{}",
+                            "SystemConfig Failed to connect to etcd:{}, err:{}",
                             etcd_servers.join(","),
                             e
                         );
@@ -50,6 +53,9 @@ impl SystemConfig {
     pub async fn get(&self, key: &str) -> Result<(String, i64), Box<dyn std::error::Error>> {
         let response = self.client.get(key).await?;
         let revision = response.header.revision();
+        if response.count == 0 {
+            return Err("Key not found".into());
+        }
         let value = response.kvs[0].value_str();
         Ok((value.to_string(), revision))
     }

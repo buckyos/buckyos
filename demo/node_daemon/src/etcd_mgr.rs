@@ -38,8 +38,9 @@ pub(crate) async fn check_etcd_by_zone_config(
     } else {
         //TODO:应该根据node_id选择最近的一个etcd server开始尝试链接
         for endpoint in &config.etcd_servers {
+            let endpoint = format!("http://{}:2379", endpoint);
             info!("Try connect to etcd server:{}", endpoint);
-            if EtcdClient::connect(endpoint).await.is_ok() {
+            if EtcdClient::connect(&endpoint).await.is_ok() {
                 return Ok(EtcdState::Good(endpoint.clone()));
             }
         }
@@ -68,6 +69,7 @@ pub(crate) async fn get_etcd_data_version(
             NodeDaemonErrors::ReasonError(err_msg.to_string())
         })
         .unwrap();
+    info!("get_etcd_data_version:{}", revision);
     Ok(revision)
 }
 
@@ -101,7 +103,11 @@ pub(crate) async fn try_restore_etcd(
     zone_cfg: &ZoneConfig,
 ) -> Result<()> {
     let backup_server_id = zone_cfg.backup_server_id.clone().unwrap();
-    let backup = Backup::new(backup_server_id, zone_cfg.zone_id.clone(), BACKUP_STORAGE_DIR);
+    let backup = Backup::new(
+        backup_server_id,
+        zone_cfg.zone_id.clone(),
+        BACKUP_STORAGE_DIR,
+    );
     let restore = "/tmp/etcd_restore";
     let restore_path = std::path::PathBuf::from_str(&restore).unwrap();
 
