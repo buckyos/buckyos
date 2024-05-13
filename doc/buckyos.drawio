@@ -1,6 +1,6 @@
-<mxfile host="Electron" modified="2024-05-07T15:41:23.871Z" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/24.2.5 Chrome/120.0.6099.109 Electron/28.1.0 Safari/537.36" etag="xFT8ujLCkiH7aFrCTi_o" version="24.2.5" type="device" pages="7">
+<mxfile host="Electron" modified="2024-05-13T08:32:59.799Z" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/24.2.5 Chrome/120.0.6099.109 Electron/28.1.0 Safari/537.36" etag="gnwIQpD_swi4j6cN7iAA" version="24.2.5" type="device" pages="7">
   <diagram name="整体拓扑图" id="p2P2LeGknYOb5AMSB5fG">
-    <mxGraphModel dx="2284" dy="2145" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2924" dy="2304" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -261,7 +261,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="iOcJLOFx5TQZdEkecl_a" name="重要的流程">
-    <mxGraphModel dx="2284" dy="1045" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2924" dy="1204" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -682,7 +682,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="Rz-CEfaY1QC__uy7RfOJ" name="系统组件图">
-    <mxGraphModel dx="2284" dy="1045" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2924" dy="1204" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -1039,7 +1039,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="1uNMX6mvBaSp4HqRDoat" name="典型拓扑图（无AI）">
-    <mxGraphModel dx="1434" dy="1045" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="1430" dy="830" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -1144,7 +1144,7 @@
         <mxCell id="WS6oFyV8QBOQ3yGkfCg_-23" value="浏览器(传统客户端）" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="880" y="1020" width="100" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="WS6oFyV8QBOQ3yGkfCg_-24" value="客户端代理gateway" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+        <mxCell id="WS6oFyV8QBOQ3yGkfCg_-24" value="127.0.0.1 客户端代理gateway" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="1060" y="1020" width="100" height="50" as="geometry" />
         </mxCell>
         <mxCell id="WS6oFyV8QBOQ3yGkfCg_-28" value="运行在内网服务器上的Service" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
@@ -1204,7 +1204,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="UoDwvhQVc-CpA6PIBRQw" name="典型企业级拓扑">
-    <mxGraphModel dx="1434" dy="1045" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="2074" dy="1204" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
