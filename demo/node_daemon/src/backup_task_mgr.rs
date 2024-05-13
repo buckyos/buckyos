@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Weak},
 };
 
@@ -17,8 +17,8 @@ use crate::backup_task_storage::{BackupChunkInfo, BackupTaskInfo};
  * let task_mgr = TaskManager::new(zone_id, url, storage_dir_path);
  *
  * let app_key = "your-unique-key";
- * let current_version = 9527; // 递增的版本号，版本号是不是可以取个类似“COMMIT POINT”的名字？
- * let prev_version = Some(9526); // 依赖前一个版本，全量版本填None
+ * let current_version = task_mgr.get_last_version(app_key).await?.version + 1; // 递增的版本号，版本号是不是可以取个类似“COMMIT POINT”的名字？
+ * let prev_version = None; // 如果是前一个版本的增量，填写Some(current_version - 1)
  * let mut meta = Some("your-app-attachment-with-the-version"); // 和该版本对应的APP自定义附加信息
  *
  * let backup_task = task_mgr.create_new_backup_task(app_key, current_version, prev_version, meta).await?;
@@ -137,16 +137,23 @@ struct BackupTaskMap {
 }
 
 pub struct TaskManager {
+    url: String,
+    zone_id: String,
+    storage_dir_path: PathBuf,
+
     tasks: Arc<Mutex<BackupTaskMap>>,
 }
 
 impl TaskManager {
-    pub fn new() -> Self {
+    pub fn new(zone_id: String, url: String, storage_dir_path: PathBuf) -> Self {
         TaskManager {
             tasks: Arc::new(Mutex::new(BackupTaskMap {
                 task_ids: HashMap::new(),
                 tasks: HashMap::new(),
             })),
+            url,
+            zone_id,
+            storage_dir_path,
         }
     }
 
@@ -154,6 +161,10 @@ impl TaskManager {
         &self,
         key: &str,
     ) -> Result<Vec<BackupTask>, Box<dyn std::error::Error>> {
+        unimplemented!("")
+    }
+
+    pub async fn get_last_version(&self) -> Result<BackupTaskInfo, Box<dyn std::error::Error>> {
         unimplemented!("")
     }
 
