@@ -1,5 +1,14 @@
 use std::{collections::HashMap, path::Path};
 
+pub enum RemoveTaskOption {
+    // remove all versions earlier than the specified version.
+    RemoveAllEarlierVersions(u32),
+    // remove all versions in the prev-versions link.
+    RemoveAllPrevVersions(u32),
+    // remove the specified version only.
+    RemoveSpecificVersions(u32),
+}
+
 pub struct BackupTask {
     files: Vec<String>,
 }
@@ -38,11 +47,9 @@ impl BackupTask {
     }
 
     // remove the task and all chunks files(if is_delete_chunk_files is true).
-    // and remove the task on the backup server if is_remove_local_only is false.
     // if the task is referenced by any follow tasks, the function will fail.
     pub async fn cancel(
         &self,
-        is_remove_local_only: bool,
         is_delete_chunk_files: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         unimplemented!()
@@ -96,6 +103,26 @@ impl TaskManager {
         &self,
         key: &str,
     ) -> Result<Vec<BackupTask>, Box<dyn std::error::Error>> {
+        unimplemented!("")
+    }
+
+    // remove the backup versions on the backup server.
+    // any version referenced by other versions not in the target versions will not be removed.
+    pub async fn remove_remote_backup(
+        &self,
+        key: &str,
+        version_option: RemoveTaskOption,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        unimplemented!("")
+    }
+
+    // remove the backup versions at local.
+    // any version referenced by other versions not in the target versions will not be removed.
+    pub async fn remove_local_backup(
+        &self,
+        key: &str,
+        version_option: RemoveTaskOption,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         unimplemented!("")
     }
 }
