@@ -519,7 +519,10 @@ impl Backup {
                     let file_hash = file_hash.as_slice().to_base58();
 
                     if (chunk_info.hash == file_hash) {
-                        return Ok(chunk_path);
+                        return Ok(
+                            std::path::PathBuf::from_str(chunk_info.relative_path.as_str())
+                                .expect("invalid path"),
+                        );
                     }
                 }
             }
@@ -877,7 +880,7 @@ mod tests {
                 let chunk_path = dir_path.join(relative_path);
                 let download_chunk = tokio::fs::read(chunk_path)
                     .await
-                    .expect("read download chunk failed");
+                    .expect(format!("read download chunk failed", chunk_path).as_str());
 
                 let mut hasher = sha2::Sha256::new();
                 hasher.update(download_chunk.as_slice());
