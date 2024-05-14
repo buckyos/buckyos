@@ -878,9 +878,9 @@ mod tests {
                     .expect("download key missed");
                 let (meta, chunks) = versions.get(&version).expect("download version missed");
                 let chunk_path = dir_path.join(relative_path);
-                let download_chunk = tokio::fs::read(chunk_path)
-                    .await
-                    .expect(format!("read download chunk to path({}) failed", chunk_path).as_str());
+                let download_chunk = tokio::fs::read(chunk_path.as_path()).await.expect(
+                    format!("read download chunk to path({:?}) failed", chunk_path).as_str(),
+                );
 
                 let mut hasher = sha2::Sha256::new();
                 hasher.update(download_chunk.as_slice());
