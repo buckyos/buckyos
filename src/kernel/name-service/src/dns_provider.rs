@@ -43,7 +43,6 @@ impl DNSProvider {
         }
 
         let txt = DnsTxtCodec::decode(txt_list)?;
-        let txt = String::from_utf8_lossy(txt.as_slice()).to_string();
         return Ok(serde_json::from_str(txt.as_str()).map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to parse txt {}", txt))?);
     }
     async fn tcp_query(dns: &IpAddr, name: &Name) -> NSResult<NameInfo> {

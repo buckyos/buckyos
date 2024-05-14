@@ -6,10 +6,9 @@ use crate::error::{into_ns_err, ns_err};
 pub struct DnsTxtCodec;
 
 impl DnsTxtCodec {
-    pub fn encode(data: &[u8], split_len: usize) -> NSResult<Vec<String>> {
-        let base64_str = STANDARD.encode(data);
-        if base64_str.len() < split_len {
-            return Ok(vec![base64_str]);
+    pub fn encode(data: &str, split_len: usize) -> NSResult<Vec<String>> {
+        if data.len() < split_len {
+            return Ok(vec![data.to_string()]);
         }
 
         let mut result = Vec::new();
@@ -19,13 +18,13 @@ impl DnsTxtCodec {
         }
         let split_len = split_len - 10;
         let mut seq = 1;
-        while start < base64_str.len() {
-            let end = if start + split_len > base64_str.len() {
-                base64_str.len()
+        while start < data.len() {
+            let end = if start + split_len > data.len() {
+                data.len()
             } else {
                 start + split_len
             };
-            let txt = &base64_str[start..end];
+            let txt = &data[start..end];
             result.push(format!("seg{:0>3}:{}", seq, txt));
             seq += 1;
             start = end;
@@ -33,22 +32,21 @@ impl DnsTxtCodec {
         Ok(result)
     }
 
-    pub fn decode(mut txts: Vec<String>) -> NSResult<Vec<u8>> {
-        let base64_str = if txts.len() == 1 {
+    pub fn decode(mut txts: Vec<String>) -> NSResult<String> {
+        let data = if txts.len() == 1 {
             txts[0].clone()
         } else {
             txts.sort();
-            let mut base64_str = String::new();
+            let mut data = String::new();
             for (seq, txt) in txts.iter().enumerate() {
                 if txt.starts_with(format!("seg{:0>3}:", seq + 1).as_str()) {
                     let mut parts = txt.split(':');
                     let _ = parts.next().unwrap();
-                    base64_str.push_str(parts.next().unwrap());
+                    data.push_str(parts.next().unwrap());
                 }
             }
-            base64_str
+            data
         };
-        let data = STANDARD.decode(&base64_str).map_err(into_ns_err!(NSErrorCode::Failed, "Failed to decode base64"))?;
         Ok(data)
     }
 }
@@ -56,14 +54,13 @@ impl DnsTxtCodec {
 #[test]
 fn test_dns_txt_codec() {
     let test = "lksjdfljaseirouasdodnfkasjdlfjwo3riuoaiusdfoajsdlfkjawleiraosduifgoasdkfjlaksdjflasdjfl";
-    let mut chunk_list = DnsTxtCodec::encode(test.as_bytes(), 20).unwrap();
+    let mut chunk_list = DnsTxtCodec::encode(test, 20).unwrap();
     let t = chunk_list[0].clone();
     let t2 = chunk_list[2].clone();
     chunk_list[0] = t2;
     chunk_list[2] = t;
-    let data = DnsTxtCodec::decode(chunk_list).unwrap();
+    let result = DnsTxtCodec::decode(chunk_list).unwrap();
     DnsTxtCodec::decode(vec![]).unwrap();
-    let result = String::from_utf8_lossy(&data).to_string();
 
     assert_eq!(result, test);
 }

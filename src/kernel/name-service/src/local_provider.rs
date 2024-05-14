@@ -26,7 +26,7 @@ impl NSProvider for LocalProvider {
             return Err(ns_err!(NSErrorCode::NotFound, "Name {} not found", name));
         }
         let content = tokio::fs::read_to_string(path.as_str()).await
-            .map_err(into_ns_err!(NSErrorCode::READ_LOCAL_FILE_ERROR, "Failed to read local file {}", path))?;
+            .map_err(into_ns_err!(NSErrorCode::ReadLocalFileError, "Failed to read local file {}", path))?;
         Ok(serde_json::from_str(content.as_str())
             .map_err(into_ns_err!(NSErrorCode::InvalidData, "Failed to parse json {}", content))?)
     }

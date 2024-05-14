@@ -92,7 +92,7 @@ fn encode_file(file: &String, txt_limit: usize) -> NsToolResult<Vec<String>> {
             contents
         }
     };
-    let list = DnsTxtCodec::encode(content.as_bytes(), txt_limit).map_err(|e| {
+    let list = DnsTxtCodec::encode(content.as_str(), txt_limit).map_err(|e| {
         ns_err!(NsToolErrorCode::Failed, "Failed to encode file: {}", e)
     })?;
 
@@ -100,7 +100,7 @@ fn encode_file(file: &String, txt_limit: usize) -> NsToolResult<Vec<String>> {
 }
 
 async fn query(name: &str) -> NsToolResult<NameInfo> {
-    let dns_provider = bucky_name_service::DNSProvider::new();
+    let dns_provider = bucky_name_service::DNSProvider::new(None);
 
     let name_info = dns_provider.query(name).await.map_err(into_ns_err!(NsToolErrorCode::QueryError, "Failed to query name"))?;
     Ok(name_info)
