@@ -149,12 +149,19 @@ pub(crate) async fn system_config_backup(zone_config: Arc<ZoneConfig>) {
             let backup = Backup::new(backup_server_id, zone_id, BACKUP_STORAGE_DIR);
             let key = "system_config/etcd";
             let backup_file_path = std::path::Path::new(&backup_file);
-            let file_list = vec![backup_file_path];
+            let dir_path = backup_file_path.parent().expect("not full path");
+            let file_name = backup_file_path
+                .file_name()
+                .expect("no file name")
+                .to_str()
+                .expect("not utf-8 file name");
+            let file_name = std::path::Path::new(file_name);
+            let file_list = vec![file_name];
 
             futures::executor::block_on({
                 // 内部没有实现Send + Sync 用block 包一层
                 backup
-                    .post_backup(key, 0, None, &"", &file_list)
+                    .post_backup(key, 0, None, &"", dir_path, &file_list)
                     .map(|_| ())
             });
             info!("备份已完成");

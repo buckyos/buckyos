@@ -8,6 +8,7 @@ pub struct BackupChunk {
     pub path: String,
     pub hash: String,
     pub size: u32,
+    pub relative_path: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -81,6 +82,7 @@ impl BackupIndexSqlite {
                     chunk_path TEXT NOT NULL,
                     hash TEXT NOT NULL,
                     chunk_size INTEGER NOT NULL,
+                    chunk_relative_path TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (zone_id, key, version, chunk_seq)
                 );"#,
@@ -163,15 +165,25 @@ impl BackupIndexSqlite {
         chunk_path: &str,
         hash: &str,
         chunk_size: u32,
+        chunk_relative_path: &str,
     ) -> Result<(), Box<dyn Error>> {
         // 在表backup_version中插入新行
         let sql = r#"INSERT INTO version_chunk (
-            zone_id, key, version, chunk_seq, chunk_path, hash, chunk_size
-        ) VALUES (?1,?2,?3,?4,?5,?6,?7)"#;
+            zone_id, key, version, chunk_seq, chunk_path, hash, chunk_size, chunk_relative_path
+        ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"#;
 
         match self.conn.execute(
             sql,
-            rusqlite::params![zone_id, key, version, chunk_seq, chunk_path, hash, chunk_size],
+            rusqlite::params![
+                zone_id,
+                key,
+                version,
+                chunk_seq,
+                chunk_path,
+                hash,
+                chunk_size,
+                chunk_relative_path
+            ],
         ) {
             Err(err)
                 if err.sqlite_error_code() != Some(rusqlite::ErrorCode::ConstraintViolation) =>
@@ -298,7 +310,7 @@ impl BackupIndexSqlite {
         chunk_seq: u32,
     ) -> Result<BackupChunk, Box<dyn Error>> {
         let sql = r#"
-            SELECT chunk_path, hash, chunk_size
+            SELECT chunk_path, hash, chunk_size, chunk_relative_path
             FROM version_chunk
             WHERE zone_id = ?1 AND key = ?2 AND version = ?3 AND chunk_seq = ?4
         "#;
@@ -312,6 +324,7 @@ impl BackupIndexSqlite {
                     path: row.get(0).unwrap(),
                     hash: row.get(1).unwrap(),
                     size: row.get(2).unwrap(),
+                    relative_path: row.get(3).unwrap(),
                 })
             },
         )?;

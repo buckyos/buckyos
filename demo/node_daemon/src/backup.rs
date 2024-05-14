@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 
 use base58::ToBase58;
@@ -13,6 +14,7 @@ const HTTP_HEADER_KEY: &'static str = "backup-key";
 const HTTP_HEADER_VERSION: &'static str = "backup-version";
 const HTTP_HEADER_HASH: &'static str = "backup-hash";
 const HTTP_HEADER_CHUNK_SEQ: &'static str = "backup-chunk-seq";
+const HTTP_HEADER_CHUNK_RELATIVE_PATH: &'static str = "backup-chunk-relative-path";
 
 /**
  * TODO:
@@ -51,6 +53,7 @@ pub struct QueryBackupVersionRespChunk {
     seq: u32,
     hash: String,
     size: u32,
+    relative_path: String,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -114,7 +117,8 @@ impl Backup {
         version: u32,
         prev_version: Option<u32>,
         meta: &impl ToString,
-        chunk_file_list: &[&std::path::Path],
+        chunk_file_dir: &std::path::Path,
+        chunk_relative_path_list: &[&std::path::Path],
     ) -> Result<(), Box<dyn std::error::Error>> {
         if version == 0 {
             return Err(Box::new(std::io::Error::new(
@@ -162,9 +166,15 @@ impl Backup {
             }
         }
 
-        let rets = futures::future::join_all(chunk_file_list.iter().enumerate().map(
-            |(chunk_seq, chunk_path)| {
-                self.upload_chunk(key, version, chunk_seq as u32, *chunk_path)
+        let rets = futures::future::join_all(chunk_relative_path_list.iter().enumerate().map(
+            |(chunk_seq, relative_path)| {
+                self.upload_chunk(
+                    key,
+                    version,
+                    chunk_seq as u32,
+                    chunk_file_dir,
+                    *relative_path,
+                )
             },
         ))
         .await;
@@ -182,7 +192,7 @@ impl Backup {
                 key: key.to_string(),
                 version,
                 meta: meta.to_string(),
-                chunk_count: chunk_file_list.len() as u32,
+                chunk_count: chunk_relative_path_list.len() as u32,
             })
             // .header(
             //     reqwest::header::CONTENT_TYPE,
@@ -302,7 +312,7 @@ impl Backup {
         key: &str,
         version: u32,
         dir_path: Option<&Path>, // = ${storage_dir}
-    ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    ) -> Result<(std::path::PathBuf, Vec<std::path::PathBuf>), Box<dyn std::error::Error>> {
         // 1. get chunk file list
         // 2. download chunk files to the dir_path
 
@@ -361,10 +371,12 @@ impl Backup {
             return Err(v.unwrap_err());
         }
 
-        Ok(rets
-            .into_iter()
-            .map(|chunk_path| chunk_path.unwrap())
-            .collect())
+        Ok((
+            dir_path.to_path_buf(),
+            rets.into_iter()
+                .map(|chunk_path| chunk_path.unwrap())
+                .collect(),
+        ))
     }
 
     async fn upload_chunk(
@@ -372,9 +384,11 @@ impl Backup {
         key: &str,
         version: u32,
         chunk_seq: u32,
-        chunk_path: &std::path::Path,
+        chunk_file_dir: &std::path::Path,
+        chunk_relative_path: &std::path::Path,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut file = tokio::fs::File::open(chunk_path).await?;
+        let chunk_full_path = chunk_file_dir.join(chunk_relative_path);
+        let mut file = tokio::fs::File::open(chunk_full_path).await?;
         let mut buf = vec![];
         file.read_to_end(&mut buf).await?;
 
@@ -395,6 +409,10 @@ impl Backup {
                 .header(HTTP_HEADER_VERSION, version)
                 .header(HTTP_HEADER_HASH, hash.as_str())
                 .header(HTTP_HEADER_CHUNK_SEQ, chunk_seq)
+                .header(
+                    HTTP_HEADER_CHUNK_RELATIVE_PATH,
+                    chunk_relative_path.display().to_string(),
+                )
                 .send()
                 .await
             {
@@ -405,7 +423,7 @@ impl Backup {
                             key,
                             version,
                             chunk_seq,
-                            chunk_path.display(),
+                            chunk_relative_path.display(),
                             url,
                             resp.status()
                         );
@@ -415,7 +433,7 @@ impl Backup {
                             key,
                             version,
                             chunk_seq,
-                            chunk_path.display(),
+                            chunk_relative_path.display(),
                             url
                         );
 
@@ -428,7 +446,7 @@ impl Backup {
                         key,
                         version,
                         chunk_seq,
-                        chunk_path.display(),
+                        chunk_relative_path.display(),
                         url,
                         err
                     );
@@ -488,8 +506,8 @@ impl Backup {
             };
         };
 
-        let filename = Self::download_chunk_file_name(key, version, chunk_seq);
-        let chunk_path = dir_path.join(filename.as_str());
+        // let filename = Self::download_chunk_file_name(key, version, chunk_seq);
+        let chunk_path = dir_path.join(chunk_info.relative_path.as_str());
         if chunk_path.exists() {
             if std::fs::metadata(&chunk_path)?.len() as u32 == chunk_info.size {
                 let mut file = tokio::fs::File::open(&chunk_path).await?;
@@ -566,7 +584,10 @@ impl Backup {
                                     {
                                         let mut file = tokio::fs::File::create(&chunk_path).await?;
                                         file.write_all(buf.as_ref()).await?;
-                                        return Ok(chunk_path);
+                                        return Ok(std::path::PathBuf::from_str(
+                                            chunk_info.relative_path.as_str(),
+                                        )
+                                        .expect("invalid path"));
                                     }
                                 }
                             }
@@ -601,9 +622,9 @@ impl Backup {
         }
     }
 
-    fn download_chunk_file_name(key: &str, version: u32, chunk_seq: u32) -> String {
-        format!("{}-{}-{}.bak", key, version, chunk_seq)
-    }
+    // fn download_chunk_file_name(key: &str, version: u32, chunk_seq: u32) -> String {
+    //     format!("{}-{}-{}.bak", key, version, chunk_seq)
+    // }
 }
 
 #[cfg(test)]
@@ -616,7 +637,7 @@ mod tests {
     #[tokio::test]
     async fn test() {
         // 1. 准备10个文件
-        let origin_path = "c:/origin";
+        let origin_path = std::path::Path::new("c:/origin");
         let restore_path = "c:/restore";
         let key_count = 2;
         let version_count = 3;
@@ -642,7 +663,8 @@ mod tests {
                 versions.insert(version, (format!("{}-{}", key, version), vec![]));
                 let mut chunks = &mut versions.get_mut(&version).unwrap().1;
                 for i in 0..version {
-                    let file_path = format!("{}/{}-{}-{}", origin_path, key, version, i);
+                    let file_name = format!("{}-{}-{}", key, version, i);
+                    let file_path = origin_path.join(file_name.as_str());
 
                     let mut content = key.as_bytes().to_vec();
                     for _ in 0..(version + 1) * (i + 1) {
@@ -656,11 +678,12 @@ mod tests {
                     let hash = hash.as_slice().to_base58();
 
                     chunks.push((
-                        file_path.clone(),
+                        file_name.clone(),
                         QueryBackupVersionRespChunk {
                             seq: i,
                             hash,
                             size: content.len() as u32,
+                            relative_path: file_name,
                         },
                     ));
 
@@ -671,8 +694,8 @@ mod tests {
             }
         }
         let backup = Backup::new(
-            "http://47.106.164.184".to_string(),
-            // "http://192.168.100.120:8000".to_string(),
+            // "http://47.106.164.184".to_string(),
+            "http://192.168.100.120:8000".to_string(),
             "test-case-zone".to_string(),
             restore_path,
         );
@@ -682,12 +705,12 @@ mod tests {
             for (version, version_info) in versions.iter() {
                 let backup = backup.clone();
                 tasks.push(async move {
-                    let chunk_paths = version_info
+                    let chunk_relative_paths = version_info
                         .1
                         .iter()
                         .map(|(path, _)| std::path::PathBuf::from(path))
                         .collect::<Vec<_>>();
-                    let chunk_path_refs = chunk_paths
+                    let chunk_path_refs = chunk_relative_paths
                         .iter()
                         .map(|p| p.as_ref())
                         .collect::<Vec<&std::path::Path>>();
@@ -697,6 +720,7 @@ mod tests {
                             *version,
                             None,
                             &version_info.0,
+                            &origin_path,
                             chunk_path_refs.as_slice(),
                         )
                         .await
@@ -841,13 +865,15 @@ mod tests {
         );
 
         for download_chunks in download_chunk_paths {
-            let (key, version, download_chunk_paths) = download_chunks.unwrap();
-            for (chunk_seq, download_chunk_path) in download_chunk_paths.iter().enumerate() {
+            let (key, version, (dir_path, download_chunk_relative_paths)) =
+                download_chunks.unwrap();
+            for (chunk_seq, relative_path) in download_chunk_relative_paths.iter().enumerate() {
                 let versions = origin_chunk_infos
                     .get(key.as_str())
                     .expect("download key missed");
                 let (meta, chunks) = versions.get(&version).expect("download version missed");
-                let download_chunk = tokio::fs::read(download_chunk_path)
+                let chunk_path = dir_path.join(relative_path);
+                let download_chunk = tokio::fs::read(chunk_path)
                     .await
                     .expect("read download chunk failed");
 

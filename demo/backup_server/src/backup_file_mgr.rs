@@ -17,6 +17,7 @@ const HTTP_HEADER_KEY: &'static str = "backup-key";
 const HTTP_HEADER_VERSION: &'static str = "backup-version";
 const HTTP_HEADER_HASH: &'static str = "backup-hash";
 const HTTP_HEADER_CHUNK_SEQ: &'static str = "backup-chunk-seq";
+const HTTP_HEADER_CHUNK_RELATIVE_PATH: &'static str = "backup-chunk-relative-path";
 
 #[derive(Deserialize, Serialize)]
 struct CreateBackupReq {
@@ -49,6 +50,7 @@ pub struct QueryBackupVersionRespChunk {
     seq: u32,
     hash: String,
     size: u32,
+    relative_path: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -260,6 +262,17 @@ impl BackupFileMgr {
             }
         };
 
+        let chunk_relative_path = match req.header(HTTP_HEADER_CHUNK_RELATIVE_PATH) {
+            Some(h) => h.last().to_string(),
+            None => {
+                log::error!("chunk-relative_path not found for {}-{}", key, version);
+                return Err(tide::Error::from_str(
+                    tide::StatusCode::BadRequest,
+                    "Chunk-seq not found",
+                ));
+            }
+        };
+
         let filename = Self::tmp_filename(zone_id.as_str(), key.as_str(), version, chunk_seq);
         let tmp_path = Path::new(self.save_path.as_str()).join(filename.as_str());
         let mut file = File::create(&tmp_path).await?;
@@ -346,6 +359,7 @@ impl BackupFileMgr {
                     file_path.to_str().unwrap(),
                     chunk_hash.as_str(),
                     chunk_size as u32,
+                    chunk_relative_path.as_str(),
                 )
                 .map_err(|err| {
                     log::warn!("insert_new_chunk failed: {}", err);
@@ -456,6 +470,7 @@ impl BackupFileMgr {
             seq: chunk.seq,
             hash: chunk.hash,
             size: chunk.size,
+            relative_path: chunk.relative_path,
         };
         let resp_body = serde_json::to_string(&resp_chunk)?;
 
