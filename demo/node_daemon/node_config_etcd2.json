@@ -1,0 +1,64 @@
+{
+    "revision": 100,
+    "services": {
+        "dfs": {
+            "target_state": "Running",
+            "pkg_id": "frame-glusterfs",
+            "version": "*",
+            "operations": {
+                "status": {
+                    "command": "status.sh",
+                    "params": [
+                        "--status"
+                    ]
+                },
+                "start": {
+                    "command": "start.sh",
+                    "params": [
+                        "etcd2",
+                        "gv0",
+                        "/data/glusterfs/gv0",
+                        "/mnt/glusterfs",
+                        "'etcd1 etcd2 gateway'"
+                    ]
+                },
+                "stop": {
+                    "command": "stop.sh",
+                    "params": [
+                        "gv0",
+                        "/mnt/glusterfs"
+                    ]
+                },
+                "deploy": {
+                    "command": "deploy.sh",
+                    "params": [
+                        "--gluster"
+                    ]
+                }
+            }
+        },
+        "smb": {
+            "target_state": "Running",
+            "pkg_id": "smb_service",
+            "version": "*",
+            "operations": {
+                "deploy": {
+                    "command": "deploy.sh",
+                    "params": [
+                        "/mnt/glusterfs"
+                    ]
+                },
+                "status": {
+                    "command": "status.sh",
+                    "params": [
+                        "--status"
+                    ]
+                },
+                "start": {
+                    "command": "start.sh",
+                    "params": []
+                }
+            }
+        }
+    }
+}
