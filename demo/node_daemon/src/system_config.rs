@@ -43,12 +43,6 @@ impl SystemConfig {
         }
     }
 
-    pub async fn list(
-        &self,
-        prefix: &str,
-    ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
-        unimplemented!();
-    }
 
     pub async fn get(&self, key: &str) -> Result<(String, i64), Box<dyn std::error::Error>> {
         let response = self.client.get(key).await?;
