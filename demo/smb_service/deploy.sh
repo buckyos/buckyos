@@ -27,7 +27,6 @@ if ! command -v smbd &> /dev/null; then
     sudo apt-get install -y samba
 fi
 
-echo "test"
 # Configure Samba for anonymous access
 sudo sed -i '/^\[global\]/a \
    map to guest = Bad User \
