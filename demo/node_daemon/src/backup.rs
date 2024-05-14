@@ -637,8 +637,10 @@ mod tests {
     #[tokio::test]
     async fn test() {
         // 1. 准备10个文件
-        let origin_path = std::path::Path::new("c:/origin");
-        let restore_path = "c:/restore";
+        // let origin_path = std::path::Path::new("c:/origin");
+        // let restore_path = "c:/restore";
+        let origin_path = std::path::Path::new("~/origin");
+        let restore_path = "~/restore";
         let key_count = 2;
         let version_count = 3;
 
