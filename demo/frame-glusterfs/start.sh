@@ -1,16 +1,17 @@
 #!/bin/bash
 
 # 配置
-GLUSTER_VOLUME=$1
-BRICK_PATH=$2
-MOUNT_POINT=$3
+HOST_NAME=$1
+GLUSTER_VOLUME=$2
+BRICK_PATH=$3
+MOUNT_POINT=$4
 # NODES 是作为一个字符串传入，内部包含所有节点，以空格分隔
 # TODO 这里更好的做法是先让节点上报到etcd，然后从etcd获取所有节点
-NODES=($4)
+NODES=($5)
 
-# Check if 4 arguments was provided
-if [ "$#" -ne 4 ]; then
-    echo "Usage: $0 GLUSTER_VOLUME BRICK_PATH MOUNT_POINT 'NODE1 NODE2 ...'"
+# Check if 5 arguments was provided
+if [ "$#" -ne 5 ]; then
+    echo "Usage: $0 HOST_NAME GLUSTER_VOLUME BRICK_PATH MOUNT_POINT 'NODE1 NODE2 ...'"
     exit 1
 fi
 
@@ -34,7 +35,7 @@ probe_peers() {
     local max_retries=50
     local delay=15
     for node in "${NODES[@]}"; do
-        if [ "$(hostname)" != "$node" ]; then
+        if [ "$HOST_NAME" != "$node" ]; then
             local success=0
             for ((i=0; i<max_retries; i++)); do
                 echo "Probing peer $node, attempt $(($i + 1))..."
@@ -76,7 +77,7 @@ wait_for_peers() {
 
 # 创建分布式卷
 create_volume() {
-    if [ "$(hostname)" == "etcd1" ]; then
+    if [ "$HOST_NAME" == "etcd1" ]; then
         wait_for_peers
         
         if ! sudo gluster volume info $GLUSTER_VOLUME >/dev/null 2>&1; then
@@ -110,25 +111,6 @@ ensure_volume_started() {
     fi
 }
 
-# 挂载 GlusterFS 卷
-mount_volume() {
-    # 等待集群就绪
-    wait_for_peers
-    # 确保挂载点存在
-    sudo mkdir -p "$MOUNT_POINT"
-    # 挂载卷
-    if ! mount | grep -q " $MOUNT_POINT "; then
-        echo "Mounting GlusterFS volume $GLUSTER_VOLUME at $MOUNT_POINT"
-        sudo mount -t glusterfs $(hostname):/$GLUSTER_VOLUME "$MOUNT_POINT"
-        # 设置所有用户可读写执行
-        sudo chown -R nobody:nogroup "$MOUNT_POINT"
-        sudo chmod -R 0777 "$MOUNT_POINT"
-        echo "GlusterFS volume $GLUSTER_VOLUME mounted at $MOUNT_POINT"
-    else
-        echo "GlusterFS volume $GLUSTER_VOLUME is already mounted at $MOUNT_POINT"
-    fi
-}
-
 # 主函数
 main() {
     ensure_glusterfs_running
@@ -138,7 +120,6 @@ main() {
     create_volume
 
     ensure_volume_started
-    mount_volume
 }
 
 main
