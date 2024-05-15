@@ -17,10 +17,10 @@ fn take_snapshot(file_path: &str) {
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), String> {
-    let matches = Command::new("buckyos node control tool")
+    let matches = Command::new("buckyos control tool")
         .version("0.1.0")
         .author("buckyos")
-        .about("node control tool")
+        .about("control tools")
         .arg(
             Arg::new("snapshot")
                 .short('s')

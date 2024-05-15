@@ -36,7 +36,7 @@ pub(crate) async fn check_etcd_by_zone_config(
             Err(_) => Ok(EtcdState::NeedRunInThisMachine(node_id.clone())),
         }
     } else {
-        //TODO:应该根据node_id选择最近的一个etcd server开始尝试链接
+        
         for endpoint in &config.etcd_servers {
             let endpoint = format!("http://{}:2379", endpoint);
             info!("Try connect to etcd server:{}", endpoint);
