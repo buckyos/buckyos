@@ -6,5 +6,7 @@ members = [
     "./etcd_client",
 	"./backup_server",
     "./node_control",
-    "./name_client", "dcfs_fuse",
+    "./name_client", 
+    "./dcfs_fuse",
+    "./gateway",
 ]
