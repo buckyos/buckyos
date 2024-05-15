@@ -1,3 +1,4 @@
+use std::error::Error;
 use etcd_rs::{Client, ClientConfig, Endpoint, KeyValueOp};
 use log::*;
 use serde_json::json;
@@ -70,16 +71,23 @@ impl EtcdClient {
     }
 }
 
-pub fn start_etcd(name: &str, url: &str) -> std::io::Result<Child> {
-    let initial_cluster = format!("{}={}", name, url);
+pub fn start_etcd(name: &str, initial_cluster: &str, cluster_token: &str) -> std::io::Result<Child> {
 
     Command::new("etcd")
         .arg("--name")
         .arg(name)
+        .arg("--listen-peer-urls")
+        .arg("http://0.0.0.0:2380")
+        .arg("--listen-client-urls")
+        .arg("http://0.0.0.0:2379")
+        .arg("--advertise-client-urls")
+        .arg(format!("http://{}:2379", name))
         .arg("--initial-cluster")
         .arg(initial_cluster)
         .arg("--initial-advertise-peer-urls")
-        .arg(url)
+        .arg(format!("http://{}:2380", name))
+        .arg("--initial-cluster-token")
+        .arg(cluster_token)
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .spawn()
@@ -89,11 +97,26 @@ pub fn start_etcd(name: &str, url: &str) -> std::io::Result<Child> {
 pub async fn get_etcd_data_version(
     name: &str,
     url: &str,
+    zone_id: &str
 ) -> Result<i64, Box<dyn std::error::Error>> {
-    let _etcd_child = start_etcd(name, url)?;
+    let _etcd_child = start_etcd(name, url, zone_id)?;
     sleep(Duration::from_secs(5)).await;
 
-    let client = EtcdClient::connect("http://localhost:2379").await?;
+    let mut count = 0;
+    let client = loop {
+        match EtcdClient::connect("http://127.0.0.1:2379").await {
+            Ok(client) => {
+                break client;
+            }
+            Err(e) => {
+                count += 1;
+                if count > 20 {
+                    return Err(e);
+                }
+                sleep(Duration::from_secs(5)).await;
+            }
+        }
+    };
 
     let revision = client.get_revision().await?;
 
@@ -217,7 +240,7 @@ mod tests {
         let url = "http://127.0.0.1:2380";
 
         // 在一个新线程中启动 etcd
-        let handle = thread::spawn(move || start_etcd(name, url).expect("Failed to start etcd"));
+        let handle = thread::spawn(move || start_etcd(name, url, "test").expect("Failed to start etcd"));
 
         // 等待 etcd 启动，期间输出倒计时
         let countdown_time = 5; // 总倒计时时间（秒）
@@ -247,7 +270,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_etcd_data_version_success() {
-        let result = get_etcd_data_version("default", "http://127.0.0.1:2380").await;
+        let result = get_etcd_data_version("default", "http://127.0.0.1:2380", "test").await;
 
         assert!(result.is_ok());
         assert!(result.unwrap() > 0);

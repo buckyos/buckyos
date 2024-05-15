@@ -56,12 +56,11 @@ pub(crate) async fn get_etcd_data_version(
     let initial_cluster = zone_cfg
         .etcd_servers
         .iter()
-        .enumerate()
-        .map(|(idx, server)| format!("etcd{}={}", idx, server))
+        .map(|server| format!("{}=http://{}:2380", server.trim_end_matches(zone_cfg.zone_id.as_str()).trim_end_matches("."), server))
         .collect::<Vec<_>>()
         .join(",");
     let name = node_cfg.node_id.clone();
-    let revision = etcd_client::get_etcd_data_version(&name, &initial_cluster)
+    let revision = etcd_client::get_etcd_data_version(&name, &initial_cluster, zone_cfg.zone_id.as_str())
         .await
         .map_err(|err| {
             let err_msg = format!("start_etcd! {}", err);
@@ -84,12 +83,11 @@ pub(crate) async fn try_start_etcd(
     let initial_cluster = zone_cfg
         .etcd_servers
         .iter()
-        .enumerate()
-        .map(|(idx, server)| format!("etcd{}={}", idx, server))
+        .map(|server| format!("{}=http://{}:2380", server.trim_end_matches(zone_cfg.zone_id.as_str()).trim_end_matches("."), server))
         .collect::<Vec<_>>()
         .join(",");
     let name = node_cfg.node_id.clone();
-    etcd_client::start_etcd(&name, &initial_cluster).map_err(|err| {
+    etcd_client::start_etcd(&name, &initial_cluster, zone_cfg.zone_id.as_str()).map_err(|err| {
         let err_msg = format!("start_etcd! {}", err);
         error!("{}", err_msg);
         NodeDaemonErrors::ReasonError(err_msg.to_string())

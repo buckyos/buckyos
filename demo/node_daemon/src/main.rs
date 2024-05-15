@@ -171,7 +171,7 @@ async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig
 
     if let Some(zone_cfg) = zone_config {
         Ok(ZoneConfig {
-            zone_id: node_cfg.node_id.clone(),
+            zone_id: node_cfg.owner_zone_id.clone(),
             //zone_public_key: "".to_string(),
             etcd_servers: zone_cfg.etcds.iter().map(|v| v.name.clone()).collect(),
             etcd_data_version: 0,
