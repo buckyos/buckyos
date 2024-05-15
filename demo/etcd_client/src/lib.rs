@@ -1,4 +1,6 @@
 use std::error::Error;
+use std::fs::DirEntry;
+use std::path::Path;
 use etcd_rs::{Client, ClientConfig, Endpoint, KeyValueOp};
 use log::*;
 use serde_json::json;
@@ -69,10 +71,24 @@ impl EtcdClient {
         let value = response.kvs[0].value_str();
         Ok((value.to_string(), revision))
     }
+
+    pub async fn set(&self, key: &str, value: &str) -> Result<i64, Box<dyn std::error::Error>> {
+        let response = self.client.put((key, value)).await?;
+        Ok(response.header.revision())
+    }
 }
 
 pub fn start_etcd(name: &str, initial_cluster: &str, cluster_token: &str) -> std::io::Result<Child> {
-
+    let etcd_data_dir = Path::new("/var/lib/etcd");
+    let cluster_state = if etcd_data_dir.exists() {
+        if Path::new(etcd_data_dir).read_dir()?.collect::<Vec<Result<DirEntry, std::io::Error>>>().len() > 0 {
+            "existing"
+        } else {
+            "new"
+        }
+    } else {
+        "new"
+    };
     Command::new("etcd")
         .arg("--name")
         .arg(name)
@@ -88,6 +104,8 @@ pub fn start_etcd(name: &str, initial_cluster: &str, cluster_token: &str) -> std
         .arg(format!("http://{}:2380", name))
         .arg("--initial-cluster-token")
         .arg(cluster_token)
+        .arg("--initial-cluster-state")
+        .arg(cluster_state)
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .spawn()
@@ -120,7 +138,7 @@ pub async fn get_etcd_data_version(
 
     let revision = client.get_revision().await?;
 
-    stop_etcd_service()?;
+    // stop_etcd_service()?;
 
     Ok(revision)
 }

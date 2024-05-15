@@ -232,8 +232,19 @@ async fn get_node_config(
     }
     let result = sys_cfg_result.as_ref().unwrap();
     let revision = result.1 as u64;
+    let config: HashMap<String, serde_json::Value> = serde_json::from_str(result.0.as_str()).map_err(|e| {
+        NodeDaemonErrors::ReasonError(
+            "get node config from etcd and parse failed!".to_string(),
+        )
+    })?;
+    let services = config.get("services");
+    if services.is_none() {
+        return Err(NodeDaemonErrors::ReasonError(
+            "get node config from etcd and parse failed!".to_string(),
+        ));
+    }
     let services: std::result::Result<HashMap<String, ServiceConfig>, serde_json::Error> =
-        serde_json::from_str(result.0.as_str());
+        serde_json::from_value(services.unwrap().clone());
     if services.is_err() {
         return Err(NodeDaemonErrors::ReasonError(
             "get node config from etcd and parse failed!".to_string(),
@@ -322,7 +333,6 @@ async fn node_daemon_main_loop(
             }
             Err(err) => {
                 error!("node_main failed! {}", err);
-                is_running = false;
             }
         }
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;

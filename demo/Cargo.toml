@@ -9,4 +9,5 @@ members = [
     "./name_client", 
     "./dcfs_fuse",
     "./gateway",
+    "./etcd_tool",
 ]

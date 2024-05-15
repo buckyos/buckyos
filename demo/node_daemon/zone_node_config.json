@@ -1,0 +1,90 @@
+{
+  "etcd1": {
+    "services": {
+      "glusterfs": {
+        "target_state": "Running",
+        "pkg_id": "glusterfs",
+        "version": "*",
+        "operations": {
+          "deploy": {
+            "command": "deploy.sh",
+            "params": []
+          },
+          "status": {
+            "command": "status.sh",
+            "params": ["--status"]
+          },
+          "start": {
+            "command": "start.sh",
+            "params": []
+          }
+        }
+      }
+    }
+  },
+  "etcd2": {
+    "services": {
+      "glusterfs": {
+        "target_state": "Running",
+        "pkg_id": "glusterfs",
+        "version": "*",
+        "operations": {
+          "deploy": {
+            "command": "deploy.sh",
+            "params": []
+          },
+          "status": {
+            "command": "status.sh",
+            "params": ["--status"]
+          },
+          "start": {
+            "command": "start.sh",
+            "params": []
+          }
+        }
+      }
+    }
+  },
+  "gateway": {
+    "services": {
+      "glusterfs": {
+        "target_state": "Running",
+        "pkg_id": "glusterfs",
+        "version": "*",
+        "operations": {
+          "deploy": {
+            "command": "deploy.sh",
+            "params": ["/mnt/glusterfs"]
+          },
+          "status": {
+            "command": "status.sh",
+            "params": ["--status"]
+          },
+          "start": {
+            "command": "start.sh",
+            "params": []
+          }
+        }
+      },
+      "samba": {
+        "target_state": "Running",
+        "pkg_id": "smb_service",
+        "version": "*",
+        "operations": {
+          "deploy": {
+            "command": "deploy.sh",
+            "params": ["/mnt/glusterfs"]
+          },
+          "status": {
+            "command": "status.sh",
+            "params": ["--status"]
+          },
+          "start": {
+            "command": "start.sh",
+            "params": []
+          }
+        }
+      }
+    }
+  }
+}
