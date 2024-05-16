@@ -52,13 +52,14 @@
         * 数据量小，优先级高，全量备份
         * 定时，手动
         * 按时间和保留版本数量清理历史版本
+        * 旧版本
 
 ```mermaid
 graph TD
-A["backup(version)"] --> B["earlier_version = find_transfering_version()"]
-B --> C{earlier_version = NULL}
-C -- Y --> E["is_success = transfer(version)"]
-C -- N --> D["cancel(earlier_version)"]
+A["backup(version_task)"] --> B["earlier_version_task = find_transfering_version_task()"]
+B --> C{earlier_version_task = NULL}
+C -- Y --> E["is_success = transfer(version_task)"]
+C -- N --> D["cancel(earlier_version_task)"]
 D --> E
 E --> F{is_success}
 F -- Y --> G[success]
@@ -74,27 +75,72 @@ H --> E
         * 手动：
             * 增量，全量
         * 只保留最新版本和其依赖版本？
-        * 备份发起时
 
 ```mermaid
 graph TD
-A["backup(version)"] --> B["earlier_version = find_transfering_version()"]
+A["backup(version_task)"] --> B["earlier_version_task = find_transfering_version_task()"]
 B --> DiscardByUser{is_discard_earlier_by_user}
 DiscardByUser -- Y --> D
-DiscardByUser -- N --> C["is_in_version_link = in_version_link(version, earlier_version)"]
-C --> is_in_version_link{is_in_version_link}
-is_in_version_link -- Y --> E["append_version_link(version, earlier_version)"]
-is_in_version_link -- N --> SuccessDelta["success_version_delta = version - get_last_success_version()"]
-SuccessDelta --> DeltaLimit{success_version_delta > limit}
-DeltaLimit -- N --> D["cancel(earlier_version)"]
+DiscardByUser -- N --> C["is_in_version_task_link = in_version_task_link(version_task, earlier_version_task)"]
+C --> is_in_version_task_link{is_in_version_task_link}
+is_in_version_task_link -- Y --> E["append_version_task_link(version_task, earlier_version_task)"]
+is_in_version_task_link -- N --> SuccessDelta["success_version_task_delta = version_task - get_last_success_version_task()"]
+SuccessDelta --> DeltaLimit{success_version_task_delta > limit}
+DeltaLimit -- N --> D["cancel(earlier_version_task)"]
 DeltaLimit -- Y --> E
 D --> B
-E --> Transfer["is_success = transfer_version_link()"]
+E --> Transfer["is_success = transfer_version_task_link()"]
 Transfer --> F{is_success}
 F -- N --> H[wait_retry]
-F -- Y --> G["clear_history_versions"]
+F -- Y --> G["clear_history_version_tasks"]
 H --> Transfer
 G --> Success
 ```
 
     3. 手动备份优先级高于定时备份
+
+    4. `Task`执行流程
+
+```mermaid
+
+graph LR
+
+Client(Client)
+
+Client -- "1. version_task = create_version_task(version_info)" --> VersionMgrServer
+Client -- "2. task.add_file(file_info)" --> VersionMgrServer
+VersionMgrServer -- "3. create_file_task(file_info)" --> FileMgrServer
+FileMgrServer --"4. file_task"--> VersionMgrServer
+VersionMgrServer -- "5. file_task" --> Client
+Client --"6. chunks = file_task.splite_chunk()"--> Client
+Client --"7. file_task.add_chunk(chunk_info)"--> FileMgrServer
+FileMgrServer --"8. create_chunk_task(chunk_info)"--> ChunkMgrServer
+ChunkMgrServer --"9. chunk_task"--> FileMgrServer
+FileMgrServer --"10. chunk_task"--> Client
+Client --"11. chunk_task.transfer()"--> ChunkMgrServer
+ChunkMgrServer --"12. chunk_task.store()"--> ChunkMgrServer
+
+VersionMgrServer(VersionMgrServer)
+FileMgrServer(FileMgrServer)
+ChunkMgrServer(ChunkMgrServer)
+
+```
+
+# 版本恢复
+
+```mermaid
+
+graph LR
+
+Client(Client)
+
+Client -- "1. version_detail = get_version_detail(version_info)" --> VersionMgrServer
+Client -- "2. file_detail = version_detail.get_file_detail()" --> FileMgrServer
+Client -- "3. chunk_content = chunk_list.download_chunk(file_detail)" --> ChunkMgrServer
+Client -- "4. file_content = combine_and_verify(chunk_content)" --> Client
+
+VersionMgrServer(VersionMgrServer)
+FileMgrServer(FileMgrServer)
+ChunkMgrServer(ChunkMgrServer)
+
+```
