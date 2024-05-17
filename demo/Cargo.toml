@@ -5,7 +5,7 @@ members = [
     "./node_daemon",
     "./etcd_client",
 	"./backup_server",
-    "./node_control",
+    "./buckycli",
     "./name_client", 
     "./dcfs_fuse",
     "./gateway",
