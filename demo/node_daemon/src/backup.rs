@@ -518,7 +518,7 @@ impl Backup {
                     let file_hash = hasher.finalize();
                     let file_hash = file_hash.as_slice().to_base58();
 
-                    if (chunk_info.hash == file_hash) {
+                    if chunk_info.hash == file_hash {
                         return Ok(
                             std::path::PathBuf::from_str(chunk_info.relative_path.as_str())
                                 .expect("invalid path"),
@@ -527,7 +527,7 @@ impl Backup {
                 }
             }
 
-            tokio::fs::remove_file(&chunk_path).await;
+            let _ = tokio::fs::remove_file(&chunk_path).await;
         }
 
         let url = format!("{}/{}", self.url.as_str(), "chunk");
