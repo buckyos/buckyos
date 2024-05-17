@@ -1,14 +1,11 @@
-use super::tcp::TcpTunnel;
-use crate::error::{GatewayError, GatewayResult};
 
-use std::sync::{Arc, Mutex};
+
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
-use tokio::sync::broadcast::error;
+
 
 #[async_trait::async_trait]
 pub trait Tunnel: Send + Unpin + AsyncRead + AsyncWrite {
-    fn split(self) -> (Box<dyn TunnelReader>, Box<dyn TunnelWriter>);
+    fn split(self: Box<Self>) -> (Box<dyn TunnelReader>, Box<dyn TunnelWriter>);
 
     /*
     async fn run_forward(&mut self, forward: String) -> GatewayResult<()> {
@@ -44,6 +41,13 @@ pub enum TunnelType {
     Tcp,
     Udp,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelSide {
+    Active,
+    Passive,
+}
+
 
 /* 
 pub struct Tunnel {

@@ -1,31 +1,62 @@
-struct PeerClient {
+use super::name::{PeerAddrType, NAME_MANAGER};
+use crate::error::*;
+use crate::tunnel::*;
+
+
+pub struct PeerClient {
     device_id: String,
-    control_tunnel: Box<dyn Tunnel>,
+    remote_device_id: String,
+    tunnel_manager: TunnelManager,
 }
 
 impl PeerClient {
-    pub async fn new(control_tunnel: Box<dyn Tunnel>) -> GatewayResult<Self> {
-        Ok(Self {
-            control_tunnel,
-        })
+    pub fn new(device_id: String, remote_device_id: String, tunnel_manager_events: TunnelManagerEventsRef) -> Self {
+        let tunnel_manager = TunnelManager::new(device_id.clone(), remote_device_id.clone());
+        tunnel_manager.bind_events(tunnel_manager_events.clone());
+
+        Self {
+            device_id,
+            remote_device_id,
+            tunnel_manager,
+        }
     }
 
-    pub async fn start(&mut self) -> GatewayResult<()> {
-        let build_pkg = ControlPackageTransceiver::read_package(&mut self.control_tunnel).await?;
-        match build_pkg.cmd {
-            ControlCommand::Build => {
-                let build_pkg = ControlPackage::from_json(&build_pkg.data)?;
-                let tunnel = TcpTunnel::new(build_pkg.id, self.control_tunnel);
-                tunnel.start().await?;
-            }
-            _ => {
-                error!("Invalid control command: {:?}", build_pkg.cmd);
-            }
+    pub async fn start(&self) -> GatewayResult<()> {
+        let local_name = NAME_MANAGER.resolve(&self.device_id).await;
+        if local_name.is_none() {
+            error!("Local peer info not found: {}", self.device_id);
+            return Err(GatewayError::PeerNotFound(self.device_id.clone()));
         }
+
+        let remote_name = NAME_MANAGER.resolve(&self.remote_device_id).await;
+        if remote_name.is_none() {
+            error!("Peer not found: {}", self.remote_device_id);
+            return Err(GatewayError::PeerNotFound(self.remote_device_id.clone()));
+        }
+
+        let local_name = local_name.unwrap();
+        let remote_name = remote_name.unwrap();
+
+        if local_name.addr_type == PeerAddrType::LAN && remote_name.addr_type == PeerAddrType::WAN {
+            self.tunnel_manager.init_control_tunnel().await?;
+        }
+
         Ok(())
     }
-}
 
-struct PeerManager {
+    pub fn remote_device_id(&self) -> &str {
+        &self.remote_device_id
+    }
 
+    pub async fn build_data_tunnel(
+        &self,
+        port: u16,
+    ) -> GatewayResult<(Box<dyn TunnelReader>, Box<dyn TunnelWriter>)> {
+        self.tunnel_manager.build_data_tunnel(port).await
+    }
+
+    // recv tunnel connection from tunnel server, need handled by tunnel manager
+    pub async fn on_new_tunnel(&self, info: TunnelInitInfo) {
+        self.tunnel_manager.on_new_tunnel(info).await
+    }
 }

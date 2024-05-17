@@ -10,6 +10,12 @@ pub enum GatewayError {
 
     #[error("Invalid data format: {0}")]
     InvalidFormat(String),
+
+    #[error("Peer not found: {0}")]
+    PeerNotFound(String),
+
+    #[error("Tunnel error: {0}")]
+    TunnelError(String),
 }
 
 pub type GatewayResult<T> = Result<T, GatewayError>;

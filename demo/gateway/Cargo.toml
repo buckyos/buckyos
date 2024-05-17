@@ -13,3 +13,4 @@ tokio = { version = "*", features = ["full"] }
 async-trait = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
+lazy_static = "*"

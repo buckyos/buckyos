@@ -1,23 +1,25 @@
-use crate::error::{GatewayError, GatewayResult};
 use super::super::server::TunnelServerEventsRef;
 use super::tunnel::TcpTunnel;
+use crate::error::*;
+use crate::tunnel::TunnelServer;
 
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio::sync::OnceCell;
 
 // tunnel server used to accept tunnel connections from clients
 #[derive(Clone)]
-struct TcpTunnelServer {
+pub struct TcpTunnelServer {
     addr: SocketAddr,
-    events: TunnelServerEventsRef,
+    events: Arc<OnceCell<TunnelServerEventsRef>>,
 }
 
 impl TcpTunnelServer {
-    pub fn new(addr: SocketAddr, events: TunnelServerEventsRef) -> Self {
+    pub fn new(addr: SocketAddr) -> Self {
         TcpTunnelServer {
             addr,
-            events,
+            events: Arc::new(OnceCell::new()),
         }
     }
 
@@ -49,7 +51,7 @@ impl TcpTunnelServer {
                     let remote = stream.peer_addr().unwrap().to_string();
                     info!("Recv tcp tunnel connection from {}", remote);
 
-                    let events = self.events.clone();
+                    let events = self.events.get().unwrap().clone();
                     tokio::spawn(async move {
                         let tunnel = TcpTunnel::new(remote.clone(), stream);
                         match events.on_new_tunnel(Box::new(tunnel)).await {
@@ -69,7 +71,23 @@ impl TcpTunnelServer {
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
-            
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl TunnelServer for TcpTunnelServer {
+    fn bind_events(&self, events: TunnelServerEventsRef) {
+        if let Err(_) = self.events.set(events) {
+            unreachable!("Error setting events for TcpTunnelServer");
+        }
+    }
+
+    async fn start(&self) -> GatewayResult<()> {
+        self.start().await
+    }
+
+    async fn stop(&self) -> GatewayResult<()> {
+        unimplemented!("stop not implemented for TcpTunnelServer")
     }
 }

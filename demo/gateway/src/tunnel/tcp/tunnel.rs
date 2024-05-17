@@ -13,6 +13,10 @@ impl TcpTunnel {
         Self { remote, stream }
     }
     
+    pub fn remote(&self) -> &String {
+        &self.remote
+    }
+
     pub async fn build(remote: String) -> GatewayResult<Self> {
         let stream = TcpStream::connect(&remote).await.map_err(|e| {
             error!("Error connecting to remote {}: {}", remote, e);
@@ -22,13 +26,17 @@ impl TcpTunnel {
         info!("Tcp tunnel connected to remote {}", remote);
         Ok(Self { remote, stream })
     }
+
+    pub fn split(self) -> (Box<dyn TunnelReader>, Box<dyn TunnelWriter>) {
+        let (reader, writer) = self.stream.into_split();
+        (Box::new(reader), Box::new(writer))
+    }
 }
 
 #[async_trait::async_trait]
 impl Tunnel for TcpTunnel {
-    fn split(self) -> (Box<dyn TunnelReader>, Box<dyn TunnelWriter>) {
-        let (reader, writer) = self.stream.into_split();
-        (Box::new(reader), Box::new(writer))
+    fn split(self: Box<Self>) -> (Box<dyn TunnelReader>, Box<dyn TunnelWriter>) {
+        TcpTunnel::split(*self)
     }
 }
 

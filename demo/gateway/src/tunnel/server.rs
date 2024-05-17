@@ -1,7 +1,7 @@
+use super::protocol::*;
+use super::tcp::TcpTunnelServer;
+use super::tunnel::{Tunnel, TunnelReader, TunnelWriter};
 use crate::error::GatewayResult;
-use super::tunnel::Tunnel;
-use super::control::*;
-
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -13,37 +13,38 @@ pub trait TunnelServerEvents: Send + Sync {
 
 pub type TunnelServerEventsRef = Arc<Box<dyn TunnelServerEvents>>;
 
-
 // tunnel server used to accept tunnel connections from clients
-#[derive(Clone)]
-struct TunnelServer {
-    addr: SocketAddr,
-}
-
-impl TunnelServer {
-    pub fn new(addr: SocketAddr) -> Self {
-        Self {
-            addr,
-        }
-    }
-}
-
-impl TunnelServer {
-   
-}
-
 #[async_trait::async_trait]
-impl TunnelServerEvents for TunnelServer {
-    async fn on_new_tunnel(&self, mut tunnel: Box<dyn Tunnel>) -> GatewayResult<()>  {
-        let build_pkg = ControlPackageTransceiver::read_package(&mut tunnel).await?;
-        match build_pkg.cmd {
-            ControlCmd::Build => {
-                todo!("Build tunnel");
-            }
-            _ => {
-                error!("Invalid control command: {:?}", build_pkg.cmd);
-            }
-        }
-        Ok(())
+pub trait TunnelServer {
+    fn bind_events(&self, events: TunnelServerEventsRef);
+    async fn start(&self) -> GatewayResult<()>;
+    async fn stop(&self) -> GatewayResult<()>;
+}
+
+pub type TunnelServerRef = Arc<Box<dyn TunnelServer>>;
+
+pub struct TunnelServerCreator {}
+
+impl TunnelServerCreator {
+    pub fn new() -> Self {
+        Self {}
     }
+
+    pub fn create_tcp_tunnel_server(addr: SocketAddr) -> TunnelServerRef {
+        let server = TcpTunnelServer::new(addr);
+        Arc::new(Box::new(server))
+    }
+
+    pub fn create_default_tcp_tunnel_server() -> TunnelServerRef {
+        let addr = "0.0.0.0:23558";
+        let addr = addr.parse().unwrap();
+        Self::create_tcp_tunnel_server(addr)
+    }
+}
+
+pub struct TunnelInitInfo {
+    pub pkg: ControlPackage,
+
+    pub tunnel_reader: Box<dyn TunnelReader>,
+    pub tunnel_writer: Box<dyn TunnelWriter>,
 }

@@ -2,12 +2,11 @@ use super::proxy::{GatewayProxy, ProxyAuth, ProxyConfig};
 use crate::error::GatewayError;
 
 use fast_socks5::{
-    server::{Authentication, Config, SimpleUserPassword, Socks5Socket},
+    server::{Config, SimpleUserPassword, Socks5Socket},
     Result,
 };
 use std::sync::Arc;
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
     net::TcpListener,
     task,
 };
