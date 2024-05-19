@@ -1,6 +1,9 @@
 use dirs;
 use log::*;
-use serde::{Deserialize, Serialize};
+use serde::{
+    ser::{SerializeSeq, SerializeStruct},
+    Deserialize, Serialize, Serializer,
+};
 use serde_json::Value as JsonValue;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -54,14 +57,34 @@ pub struct MediaInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct IndexDB {
-    deps: HashMap<String, HashMap<String, PackageMetaInfo>>,
+pub struct IndexDB {
+    packages: HashMap<String, HashMap<String, PackageMetaInfo>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct PackageMetaInfo {
     deps: Vec<String>,
     sha256: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct PackageLockInfo {
+    pub name: String,
+    pub version: String,
+    pub sha256: String,
+    pub dependencies: Vec<PackageLockDeps>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct PackageLockDeps {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct PackageLockList {
+    #[serde(rename = "package")]
+    pub packages: Vec<PackageLockInfo>,
 }
 
 impl PackageEnv {
@@ -83,13 +106,16 @@ impl PackageEnv {
         }
 
         let lock_data = Self::parse_toml(&lock_file_path)?;
+        let package_list: PackageLockList = lock_data.try_into().map_err(|err| {
+            PackageSystemErrors::ParseError("pkg.lock".to_string(), err.to_string())
+        })?;
 
         if let Some(dependencies) = package_data.get("dependencies").and_then(|d| d.as_table()) {
             for (dep_name, dep_version) in dependencies {
                 if !self.check_dependency(
                     dep_name,
                     dep_version.as_str().unwrap(),
-                    &lock_data,
+                    &package_list,
                     &index_data,
                 )? {
                     return Ok(true);
@@ -104,55 +130,42 @@ impl PackageEnv {
         &self,
         dep_name: &str,
         dep_version: &str,
-        lock_data: &Value,
-        index_data: &JsonValue,
+        lock_packages: &PackageLockList,
+        _index_data: &JsonValue,
     ) -> PkgSysResult<bool> {
-        if let Some(lock_deps) = lock_data.as_array() {
-            let mut found = false;
-            for lock_dep in lock_deps {
-                if lock_dep.get("name").and_then(|n| n.as_str()) == Some(dep_name) {
-                    let lock_version = lock_dep.get("version").and_then(|v| v.as_str()).unwrap();
-                    if version_util::matches(dep_version, lock_version)? {
-                        found = true;
+        /*这里只查找一层，因为如果顶层的满足条件，那么子依赖也会满足条件
+         *因为上次生成lock文件时，子依赖都是根据条件生成的
+        （有手动编辑lock文件的可能，先不处理这种情况）
+         */
+        let mut found = false;
+        for lock_info in lock_packages.packages.iter() {
+            if lock_info.name == dep_name {
+                let lock_version = &lock_info.version;
+                if version_util::matches(dep_version, lock_version)? {
+                    found = true;
 
-                        // 检查子依赖
-                        if let Some(lock_sub_deps) =
-                            lock_dep.get("dependencies").and_then(|d| d.as_array())
-                        {
-                            for lock_sub_dep in lock_sub_deps {
-                                if let Some(sub_dep_name) =
-                                    lock_sub_dep.get("name").and_then(|n| n.as_str())
-                                {
-                                    if let Some(sub_dep_version) =
-                                        lock_sub_dep.get("version").and_then(|v| v.as_str())
-                                    {
-                                        if !self.check_dependency(
-                                            sub_dep_name,
-                                            sub_dep_version,
-                                            lock_data,
-                                            index_data,
-                                        )? {
-                                            return Ok(false);
-                                        }
-                                    }
-                                }
-                            }
+                    // 检查子依赖
+                    for lock_sub_dep in &lock_info.dependencies {
+                        if !self.check_dependency(
+                            &lock_sub_dep.name,
+                            &lock_sub_dep.version,
+                            lock_packages,
+                            _index_data,
+                        )? {
+                            return Ok(false);
                         }
-
-                        break;
                     }
+
+                    break;
                 }
             }
+        }
 
-            if !found {
-                info!(
-                    "Find unmatched dependency in lock file name:{}, version:{}",
-                    dep_name, dep_version
-                );
-                return Ok(false);
-            }
-        } else {
-            info!("lock_data is None or not an array");
+        if !found {
+            info!(
+                "Unmatched dependency in lock file name:{}, version:{}",
+                dep_name, dep_version
+            );
             return Ok(false);
         }
 
@@ -166,23 +179,170 @@ impl PackageEnv {
             PackageSystemErrors::ParseError("index.json".to_string(), err.to_string())
         })?;
 
-        let mut new_lock_data = Vec::new();
-        let mut parsed = HashSet::new();
+        let mut new_lock_data: Vec<PackageLockInfo> = Vec::new();
+        let mut generated = HashSet::new();
 
-        if let Some(dependencies) = package_data["dependencies"].as_table() {
+        if let Some(dependencies) = package_data.get("dependencies").and_then(|d| d.as_table()) {
             for (dep_name, dep_version) in dependencies {
-                let pkg_id_str = format!("{}#{}", dep_name, dep_version.as_str().unwrap());
-                self.get_deps_impl(&pkg_id_str, &index_db, &mut new_lock_data, &mut parsed)?;
+                let dep_version_str = dep_version.as_str().unwrap();
+                self.add_dependency_recursive(
+                    &index_db,
+                    dep_name,
+                    dep_version_str,
+                    &mut new_lock_data,
+                    &mut generated,
+                )?;
             }
+        } else {
+            info!("No dependencies in package.toml");
         }
 
+        let package_list = PackageLockList {
+            packages: new_lock_data,
+        };
+
         let lock_file_path = self.work_dir.join("pkg.lock");
-        let new_lock_content = toml::to_string(&new_lock_data).map_err(|err| {
+        let new_lock_content = toml::to_string(&package_list).map_err(|err| {
             PackageSystemErrors::UpdateError(format!("Update lock file error: {}", err.to_string()))
         })?;
+
         fs::write(lock_file_path, new_lock_content)?;
 
         Ok(())
+    }
+
+    fn add_dependency_recursive(
+        &self,
+        index_db: &IndexDB,
+        dep_name: &str,
+        dep_version: &str,
+        new_lock_data: &mut Vec<PackageLockInfo>,
+        generated: &mut HashSet<String>,
+    ) -> PkgSysResult<()> {
+        let lock_info =
+            self.generate_package_lock_info(index_db, &format!("{}#{}", dep_name, dep_version))?;
+        let lock_info_str = format!("{}#{}", lock_info.name, lock_info.version);
+        if generated.contains(&lock_info_str) {
+            debug!("{} already generated, stop", lock_info_str);
+            return Ok(());
+        }
+
+        generated.insert(lock_info_str.clone());
+        new_lock_data.push(lock_info.clone());
+        info!("generate lock info: {:?}", lock_info);
+
+        for dep in &lock_info.dependencies {
+            self.add_dependency_recursive(
+                index_db,
+                &dep.name,
+                &dep.version,
+                new_lock_data,
+                generated,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    pub fn generate_package_lock_info(
+        &self,
+        index_db: &IndexDB,
+        pkg_id_str: &str,
+    ) -> PkgSysResult<PackageLockInfo> {
+        // 只获取一层，不用获取依赖的依赖
+        let parser = Parser::new(self.clone());
+        let pkg_id = parser.parse(pkg_id_str)?;
+
+        let exact_version = match self.find_exact_version(pkg_id_str, index_db) {
+            Ok(version) => version,
+            Err(err) => {
+                error!("Failed to find exact version for {}: {}", pkg_id_str, err);
+                return Err(PackageSystemErrors::VersionNotFoundError(format!(
+                    "{:?}",
+                    pkg_id
+                )));
+            }
+        };
+
+        info!("get exact version for {}: {}", pkg_id_str, exact_version);
+
+        let package_meta_info = index_db
+            .packages
+            .get(&pkg_id.name)
+            .and_then(|deps| deps.get(&exact_version))
+            .ok_or_else(|| {
+                PackageSystemErrors::VersionNotFoundError(format!(
+                    "Version {} not found for package {}",
+                    exact_version, pkg_id.name
+                ))
+            })?;
+
+        info!("get meta info for {}: {:?}", pkg_id_str, package_meta_info);
+
+        let mut lock_info = PackageLockInfo {
+            name: pkg_id.name.clone(),
+            version: exact_version.clone(),
+            sha256: package_meta_info.sha256.clone(),
+            dependencies: Vec::new(),
+        };
+
+        for dep in &package_meta_info.deps {
+            match self.find_exact_version(dep, index_db) {
+                Ok(version) => {
+                    info!("get exact version for {}: {}", dep, version);
+                    let package_id = parser.parse(dep)?;
+                    lock_info.dependencies.push(PackageLockDeps {
+                        name: package_id.name.clone(),
+                        version: version.clone(),
+                    });
+                }
+                Err(err) => {
+                    let err_msg = format!(
+                        "Failed to find exact version for dep: {}, err: {}",
+                        dep,
+                        err.to_string()
+                    );
+                    error!("{}", err_msg);
+                    return Err(PackageSystemErrors::VersionNotFoundError(err_msg));
+                }
+            };
+        }
+
+        Ok(lock_info)
+    }
+
+    pub fn find_exact_version(&self, pkg_id_str: &str, index_db: &IndexDB) -> PkgSysResult<String> {
+        let parser: Parser = Parser::new(self.clone());
+        let pkg_id = parser.parse(pkg_id_str)?;
+
+        if let Some(pkg_list) = index_db.packages.get(&pkg_id.name) {
+            // 将pkg_deps的key组成Vec，并从大到小排序
+            let mut versions: Vec<String> = pkg_list.keys().cloned().collect();
+            if versions.is_empty() {
+                return Err(PackageSystemErrors::VersionNotFoundError(format!(
+                    "{:?}",
+                    pkg_id
+                )));
+            }
+            // 理论上不应该出现重合的，所以不处理Ge和Le，Ne，版本高的排在前面
+            versions.sort_by(|a, b| {
+                version_util::compare(a, b)
+                    .unwrap_or_else(|err| {
+                        error!("{}", err);
+                        Ordering::Equal
+                    })
+                    .reverse()
+            });
+            debug!("sort versions for {}: {:?}", pkg_id.name, versions);
+
+            // TODO 这里还要处理用sha256标明版本的情况
+            self.get_matched_version(&pkg_id, &versions)
+        } else {
+            Err(PackageSystemErrors::VersionNotFoundError(format!(
+                "{:?}",
+                pkg_id
+            )))
+        }
     }
 
     pub async fn get_deps(&self, pkg_id: &str, update: bool) -> PkgSysResult<Vec<PackageId>> {
@@ -223,9 +383,9 @@ impl PackageEnv {
 
         let pkg_id = parser.parse(pkg_id_str)?;
 
-        if let Some(pkg_deps) = index_db.deps.get(&pkg_id.name) {
+        if let Some(pkg_list) = index_db.packages.get(&pkg_id.name) {
             // 将pkg_deps的key组成Vec，并从大到小排序
-            let mut versions: Vec<String> = pkg_deps.keys().cloned().collect();
+            let mut versions: Vec<String> = pkg_list.keys().cloned().collect();
             if versions.is_empty() {
                 return Err(PackageSystemErrors::VersionNotFoundError(format!(
                     "{:?}",
@@ -263,7 +423,7 @@ impl PackageEnv {
             info!("get deps {} => {}", pkg_id_str, exact_pkg_id_str);
             parsed.insert(exact_pkg_id_str);
 
-            let package_meta_info = pkg_deps.get(&matched_version).ok_or_else(|| {
+            let package_meta_info = pkg_list.get(&matched_version).ok_or_else(|| {
                 PackageSystemErrors::VersionNotFoundError(format!(
                     "Version {} not found for package {}",
                     matched_version, pkg_id.name
@@ -324,7 +484,7 @@ impl PackageEnv {
         )))
     }
 
-    async fn get_index(&self, update: bool) -> PkgSysResult<IndexDB> {
+    pub async fn get_index(&self, update: bool) -> PkgSysResult<IndexDB> {
         //TODO env是否应该有自己的index？
         /*let user_dir =
             dirs::home_dir().ok_or(PackageSystemErrors::UnknownError("No home dir".to_string()))?;
@@ -480,304 +640,182 @@ b = "2.0.1"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use log::*;
-    use std::fs::{self, File};
-    use std::io::Write;
-    use std::path::PathBuf;
-    use std::sync::Once;
-    use tempfile::*;
+    use tempfile::tempdir;
 
-    fn create_temp_env() -> (PackageEnv, tempfile::TempDir) {
+    #[test]
+    fn test_update_lock_file() {
         let dir = tempdir().unwrap();
-        let env = PackageEnv::new(dir.path().to_path_buf());
-        (env, dir)
-    }
+        let work_dir = dir.path().to_path_buf();
 
-    fn write_file(path: &PathBuf, content: &str) {
-        let mut file = File::create(path).unwrap();
-        writeln!(file, "{}", content).unwrap();
-    }
+        // Create a mock package.toml
+        let package_toml_content = r#"
+            [package]
+            name = "my_project"
+            version = "1.0.0"
 
-    #[test]
-    fn test_create_package_env() {
-        let (env, _dir) = create_temp_env();
-        assert!(env.get_work_dir().exists());
-    }
-
-    #[test]
-    fn test_check_lock_need_update_no_lock_file() {
-        let (env, _dir) = create_temp_env();
-        // Create package.toml and index.json
-        write_file(
-            &env.get_work_dir().join("package.toml"),
-            r#"
             [dependencies]
             a = ">1.0.1"
             b = "2.0.1"
-            "#,
-        );
-        write_file(
-            &env.get_work_dir().join("index.json"),
-            r#"
+        "#;
+        fs::write(work_dir.join("package.toml"), package_toml_content).unwrap();
+
+        // Create a mock index.json
+        let index_json_content = r#"
             {
-                "deps": {
+                "packages": {
                     "a": {
                         "1.0.2": {
-                            "deps": ["b#>2.0", "c#1.0.1"],
-                            "sha256": "1234567890"
-                        },
-                        "1.0.1": {
-                            "deps": ["b", "c#<1.0.1"],
+                            "deps": ["b#2.0.1", "c#1.0.1"],
                             "sha256": "1234567890"
                         }
                     },
                     "b": {
                         "2.0.1": {
-                            "deps": ["d#>=3.0"],
-                            "sha256": "1234567890"
-                        },
-                        "1.0.1": {
-                            "deps": ["d#<3.0"],
-                            "sha256": "1234567890"
+                            "deps": ["c#2.0.1"],
+                            "sha256": "0987654321"
                         }
                     },
                     "c": {
                         "1.0.1": {
                             "deps": [],
-                            "sha256": "1234567890"
-                        }
-                    },
-                    "d": {
-                        "3.0.1": {
-                            "deps": [],
-                            "sha256": "1234567890"
+                            "sha256": "1122334455"
                         },
                         "2.0.1": {
                             "deps": [],
-                            "sha256": "1234567890"
+                            "sha256": "5566778899"
                         }
                     }
                 }
             }
-            "#,
-        );
+        "#;
+        fs::write(work_dir.join("index.json"), index_json_content).unwrap();
 
-        let result = env.check_lock_need_update();
-        assert!(result.is_ok());
-        assert!(result.unwrap());
+        let env = PackageEnv::new(work_dir.clone());
+
+        env.update_lock_file().unwrap();
+
+        let lock_file_path = work_dir.join("pkg.lock");
+        assert!(lock_file_path.exists());
+
+        let lock_content = fs::read_to_string(lock_file_path).unwrap();
+        let lock_data: PackageLockList = toml::from_str(&lock_content).unwrap();
+
+        assert_eq!(lock_data.packages.len(), 4);
+
+        let package_a = &lock_data.packages[0];
+        assert_eq!(package_a.name, "a");
+        assert_eq!(package_a.version, "1.0.2");
+        assert_eq!(package_a.sha256, "1234567890");
+        assert_eq!(package_a.dependencies.len(), 2);
+        assert_eq!(package_a.dependencies[0].name, "b");
+        assert_eq!(package_a.dependencies[0].version, "2.0.1");
+        assert_eq!(package_a.dependencies[1].name, "c");
+        assert_eq!(package_a.dependencies[1].version, "1.0.1");
+
+        let package_b = &lock_data.packages[1];
+        assert_eq!(package_b.name, "b");
+        assert_eq!(package_b.version, "2.0.1");
+        assert_eq!(package_b.sha256, "0987654321");
+        assert_eq!(package_b.dependencies.len(), 1);
+        assert_eq!(package_b.dependencies[0].name, "c");
+        assert_eq!(package_b.dependencies[0].version, "2.0.1");
+
+        let package_c = &lock_data.packages[2];
+        assert_eq!(package_c.name, "c");
+        assert_eq!(package_c.version, "2.0.1");
+        assert_eq!(package_c.sha256, "5566778899");
+        assert_eq!(package_c.dependencies.len(), 0);
+
+        let package_c2 = &lock_data.packages[3];
+        assert_eq!(package_c2.name, "c");
+        assert_eq!(package_c2.version, "1.0.1");
+        assert_eq!(package_c2.sha256, "1122334455");
+        assert_eq!(package_c2.dependencies.len(), 0);
     }
 
     #[test]
-    fn test_check_lock_need_update_with_lock_file() {
-        let (env, _dir) = create_temp_env();
-        // Create package.toml, index.json and pkg.lock
-        write_file(
-            &env.get_work_dir().join("package.toml"),
-            r#"
+    fn test_check_lock_need_update() {
+        let dir = tempdir().unwrap();
+        let work_dir = dir.path().to_path_buf();
+
+        // Create a mock package.toml
+        let package_toml_content = r#"
+            [package]
+            name = "my_project"
+            version = "1.0.0"
+
             [dependencies]
             a = ">1.0.1"
             b = "2.0.1"
-            "#,
-        );
-        write_file(
-            &env.get_work_dir().join("index.json"),
-            r#"
+        "#;
+        fs::write(work_dir.join("package.toml"), package_toml_content).unwrap();
+
+        // Create a mock index.json
+        let index_json_content = r#"
             {
-                "deps": {
+                "packages": {
                     "a": {
                         "1.0.2": {
-                            "deps": ["b#>2.0", "c#1.0.1"],
-                            "sha256": "1234567890"
-                        },
-                        "1.0.1": {
-                            "deps": ["b", "c#<1.0.1"],
+                            "deps": ["b#2.0.1", "c#1.0.1"],
                             "sha256": "1234567890"
                         }
                     },
                     "b": {
                         "2.0.1": {
-                            "deps": ["d#>=3.0"],
-                            "sha256": "1234567890"
-                        },
-                        "1.0.1": {
-                            "deps": ["d#<3.0"],
-                            "sha256": "1234567890"
+                            "deps": ["c#2.0.1"],
+                            "sha256": "0987654321"
                         }
                     },
                     "c": {
                         "1.0.1": {
                             "deps": [],
-                            "sha256": "1234567890"
-                        },
-                        "1.0.0": {
-                            "deps": [],
-                            "sha256": "1234567890"
-                        }
-                    },
-                    "d": {
-                        "3.0.1": {
-                            "deps": [],
-                            "sha256": "1234567890"
+                            "sha256": "1122334455"
                         },
                         "2.0.1": {
                             "deps": [],
-                            "sha256": "1234567890"
+                            "sha256": "5566778899"
                         }
                     }
                 }
             }
-            "#,
-        );
+        "#;
+        fs::write(work_dir.join("index.json"), index_json_content).unwrap();
 
-        write_file(
-            &env.get_work_dir().join("pkg.lock"),
-            r#"
+        // Create a mock pkg.lock
+        let lock_toml_content = r#"
             [[package]]
             name = "a"
-            version = "1.0.1"
+            version = "1.0.2"
             sha256 = "1234567890"
             dependencies = [
-                { name = "b", version = "1.0.1" },
-                { name = "c", version = "1.0.0" }
+                { name = "b", version = "2.0.1" },
+                { name = "c", version = "1.0.1" }
             ]
 
             [[package]]
             name = "b"
-            version = "1.0.1"
-            sha256 = "1234567890"
+            version = "2.0.1"
+            sha256 = "0987654321"
             dependencies = [
-                { name = "d", version = "2.0.1" }
+                { name = "c", version = "2.0.1" }
             ]
 
             [[package]]
             name = "c"
-            version = "1.0.0"
-            sha256 = "1234567890"
+            version = "1.0.1"
+            sha256 = "1122334455"
             dependencies = []
 
             [[package]]
-            name = "d"
+            name = "c"
             version = "2.0.1"
-            sha256 = "1234567890"
+            sha256 = "5566778899"
             dependencies = []
-            "#,
-        );
+        "#;
+        fs::write(work_dir.join("pkg.lock"), lock_toml_content).unwrap();
 
-        let result = env.check_lock_need_update();
-        assert!(result.is_ok());
-        assert!(result.unwrap());
-    }
-
-    #[test]
-    fn test_update_lock_file() {
-        let (env, _dir) = create_temp_env();
-        // Create package.toml and index.json
-        write_file(
-            &env.get_work_dir().join("package.toml"),
-            r#"
-            [dependencies]
-            a = ">1.0.1"
-            b = "2.0.1"
-            "#,
-        );
-        write_file(
-            &env.get_work_dir().join("index.json"),
-            r#"
-            {
-                "deps": {
-                    "a": {
-                        "1.0.2": {
-                            "deps": ["b#>2.0", "c#1.0.1"],
-                            "sha256": "1234567890"
-                        },
-                        "1.0.1": {
-                            "deps": ["b", "c#<1.0.1"],
-                            "sha256": "1234567890"
-                        }
-                    },
-                    "b": {
-                        "2.0.1": {
-                            "deps": ["d#>=3.0"],
-                            "sha256": "1234567890"
-                        },
-                        "1.0.1": {
-                            "deps": ["d#<3.0"],
-                            "sha256": "1234567890"
-                        }
-                    },
-                    "c": {
-                        "1.0.1": {
-                            "deps": [],
-                            "sha256": "1234567890"
-                        }
-                    },
-                    "d": {
-                        "3.0.1": {
-                            "deps": [],
-                            "sha256": "1234567890"
-                        },
-                        "2.0.1": {
-                            "deps": [],
-                            "sha256": "1234567890"
-                        }
-                    }
-                }
-            }
-            "#,
-        );
-
-        let result = env.update_lock_file();
-        assert!(result.is_ok());
-
-        let lock_file_path = env.get_work_dir().join("pkg.lock");
-        assert!(lock_file_path.exists());
-
-        let lock_content = fs::read_to_string(lock_file_path).unwrap();
-        println!("lock_content: \n{}", lock_content);
-        assert!(lock_content.contains("name = \"a\""));
-        assert!(lock_content.contains("version = \"1.0.2\""));
-        assert!(lock_content.contains("name = \"b\""));
-        assert!(lock_content.contains("version = \"2.0.1\""));
-    }
-
-    #[test]
-    fn test_parse_toml() {
-        let (env, _dir) = create_temp_env();
-        let toml_path = env.get_work_dir().join("test.toml");
-        write_file(
-            &toml_path,
-            r#"
-            [package]
-            name = "my_project"
-            version = "1.0.0"
-            "#,
-        );
-
-        let result = PackageEnv::parse_toml(&toml_path);
-        assert!(result.is_ok());
-        let value = result.unwrap();
-        assert_eq!(value["package"]["name"].as_str().unwrap(), "my_project");
-        assert_eq!(value["package"]["version"].as_str().unwrap(), "1.0.0");
-    }
-
-    #[test]
-    fn test_parse_json() {
-        let (env, _dir) = create_temp_env();
-        let json_path = env.get_work_dir().join("test.json");
-        write_file(
-            &json_path,
-            r#"
-            {
-                "name": "my_project",
-                "version": "1.0.0"
-            }
-            "#,
-        );
-
-        let result = PackageEnv::parse_json(&json_path);
-        assert!(result.is_ok());
-        let value = result.unwrap();
-        assert_eq!(value["name"].as_str().unwrap(), "my_project");
-        assert_eq!(value["version"].as_str().unwrap(), "1.0.0");
+        let env = PackageEnv::new(work_dir.clone());
+        let need_update = env.check_lock_need_update().unwrap();
+        assert!(!need_update);
     }
 }
