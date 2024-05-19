@@ -548,7 +548,7 @@ impl PackageEnv {
 Env目录中有一个简化的index.json，记录了包的依赖关系
 index.json的简化设计：
 {
-    "deps": {
+    "packages": {
         "a": {
             "1.0.2": {
                 "deps": ["b#>2.0", "c#1.0.1"],

@@ -10,5 +10,6 @@ members = [
     "./dcfs_fuse",
     "./gateway",
     "./etcd_tool",
-    "./package_manager"
+    "./package_manager",
+    "./package_server"
 ]
