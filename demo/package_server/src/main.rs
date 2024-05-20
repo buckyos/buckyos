@@ -7,7 +7,7 @@ use hex;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json, Value};
-use sha2::{Digest, Sha256}; // 引入 sha2 crate
+use sha2::{Digest, Sha256};
 use simplelog::*;
 use std::collections::HashMap;
 use std::env;
@@ -113,7 +113,7 @@ impl FileUploadServer {
                         .build());
                 }
             }
-        } // 解锁
+        }
 
         // 检查目标文件是否已经存在
         if file_path.exists().await {
@@ -279,6 +279,75 @@ impl FileUploadServer {
         })?;
         Ok(())
     }
+
+    async fn download_file(req: Request<FileUploadServer>) -> tide::Result {
+        let package_name = req.param("package_name")?;
+        let version = req
+            .query::<HashMap<String, String>>()
+            .ok()
+            .and_then(|q| q.get("version").cloned());
+
+        let state = req.state();
+        let package_dir = Path::new(&state.save_path).join(package_name);
+
+        let (file_path, filename) = if let Some(version) = version {
+            let filename = format!("{}_{}.bkz", package_name, version);
+            (package_dir.join(&filename), filename)
+        } else {
+            // 查找最新版本
+            let mut latest_version = None;
+            let mut latest_file_path = None;
+            let mut latest_filename = None;
+
+            let _lock = state.index_mutex.lock().await;
+            let index = Self::load_index(&state.index_path).await?;
+
+            if let Some(package_entry) = index.get(package_name) {
+                for (ver, _) in package_entry {
+                    if latest_version.is_none() || ver > latest_version.as_ref().unwrap() {
+                        latest_version = Some(ver.clone());
+                        latest_filename = Some(format!("{}_{}.bkz", package_name, ver));
+                        latest_file_path =
+                            Some(package_dir.join(&latest_filename.as_ref().unwrap()));
+                    }
+                }
+            }
+
+            let file_path = latest_file_path
+                .ok_or_else(|| tide::Error::from_str(StatusCode::NotFound, "Package not found"))?;
+            let filename = latest_filename.unwrap();
+
+            (file_path, filename)
+        };
+
+        if !file_path.exists().await {
+            return Ok(Response::builder(StatusCode::NotFound)
+                .body("File not found")
+                .build());
+        }
+
+        let mut file = File::open(file_path).await.map_err(|e| {
+            let err_msg = format!("Failed to open file: {}", e);
+            error!("{}", err_msg);
+            tide::Error::from_str(StatusCode::InternalServerError, err_msg)
+        })?;
+
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).await.map_err(|e| {
+            let err_msg = format!("Failed to read file: {}", e);
+            error!("{}", err_msg);
+            tide::Error::from_str(StatusCode::InternalServerError, err_msg)
+        })?;
+
+        Ok(Response::builder(StatusCode::Ok)
+            .body(contents)
+            .content_type("application/octet-stream")
+            .header(
+                "Content-Disposition",
+                format!("attachment; filename=\"{}\"", filename),
+            )
+            .build())
+    }
 }
 
 fn main() -> tide::Result<()> {
@@ -320,6 +389,8 @@ fn main() -> tide::Result<()> {
 
         let mut app = tide::with_state(server_state);
         app.at("/upload").post(FileUploadServer::save_file);
+        app.at("/download/:package_name")
+            .get(FileUploadServer::download_file);
 
         info!("Starting server at http://{}", server_addr);
         app.listen(server_addr).await?;
