@@ -7,4 +7,6 @@ edition = "2021"
 [dependencies]
 tokio = { version = "*", features = ["full"] }
 etcd_client = { path = "../etcd_client" }
+bucky-name-service = {path = "../../src/kernel/name-service"}
 clap = "4.5.4"
+serde_json = "1.0.116"
