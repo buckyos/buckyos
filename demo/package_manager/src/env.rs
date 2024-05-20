@@ -63,7 +63,7 @@ pub struct IndexDB {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct PackageMetaInfo {
-    deps: Vec<String>,
+    deps: HashMap<String, String>,
     sha256: String,
 }
 
@@ -287,10 +287,11 @@ impl PackageEnv {
         };
 
         for dep in &package_meta_info.deps {
-            match self.find_exact_version(dep, index_db) {
+            let pkg_id_str = format!("{}#{}", dep.0, dep.1);
+            match self.find_exact_version(&pkg_id_str, index_db) {
                 Ok(version) => {
-                    info!("get exact version for {}: {}", dep, version);
-                    let package_id = parser.parse(dep)?;
+                    info!("get exact version for {}: {}", pkg_id_str, version);
+                    let package_id = parser.parse(&pkg_id_str)?;
                     lock_info.dependencies.push(PackageLockDeps {
                         name: package_id.name.clone(),
                         version: version.clone(),
@@ -299,7 +300,7 @@ impl PackageEnv {
                 Err(err) => {
                     let err_msg = format!(
                         "Failed to find exact version for dep: {}, err: {}",
-                        dep,
+                        pkg_id_str,
                         err.to_string()
                     );
                     error!("{}", err_msg);
@@ -438,7 +439,8 @@ impl PackageEnv {
 
             // 获取依赖，然后递归的获取依赖的依赖
             for dep in &package_meta_info.deps {
-                self.get_deps_impl(dep, index_db, result, parsed)?;
+                let dep_pkg_id_str = format!("{}#{}", dep.0, dep.1);
+                self.get_deps_impl(&dep_pkg_id_str, index_db, result, parsed)?;
             }
         }
 
@@ -551,38 +553,48 @@ index.json的简化设计：
     "packages": {
         "a": {
             "1.0.2": {
-                "deps": ["b#>2.0", "c#1.0.1"],
+                "deps": {
+                    "b": "2.0.1",
+                    "c": "1.0.1"
+                },
                 "sha256": "1234567890"
             },
             "1.0.1": {
-                "deps": ["b", "c#<1.0.1"],
+                "deps": {
+                    "b": "2.0.1",
+                    "c": "<1.0.1"
+                },
                 "sha256": "1234567890"
 
             }
         },
         "b": {
-            "2.0": {
-                "deps": ["d#>3.0"],
+            "2.0.1": {
+                "deps": {
+                    "d": ">3.0"
+                },
                 "sha256": "1234567890"
             },
-            "1.0": {
-                "deps": ["d#<=3.0"],
+            "1.0.1": {
+                "deps": {
+                    "d": "<=3.0"
+                },
                 "sha256": "1234567890"W
             }
         },
         "c": {
             "1.0.1": {
-                "deps": [],
+                "deps": {},
                 "sha256": "1234567890"
             }
         },
         "d": {
             "3.0.1": {
-                "deps": [],
+                "deps": {},
                 "sha256": "1234567890"
             },
             "3.0.0": {
-                "deps": [],
+                "deps": {},
                 "sha256": "1234567890"
             }
         }
@@ -665,23 +677,36 @@ mod tests {
                 "packages": {
                     "a": {
                         "1.0.2": {
-                            "deps": ["b#2.0.1", "c#1.0.1"],
+                            "deps": {
+                                "b": "2.0.1",
+                                "c": "<2.0.1"
+                            },
                             "sha256": "1234567890"
                         }
                     },
                     "b": {
                         "2.0.1": {
-                            "deps": ["c#2.0.1"],
+                            "deps": {
+                                "c": "2.0.1"
+                            },
                             "sha256": "0987654321"
                         }
                     },
                     "c": {
                         "1.0.1": {
-                            "deps": [],
+                            "deps": {
+                                "d": ">=3.0.1"
+                            },
                             "sha256": "1122334455"
                         },
                         "2.0.1": {
-                            "deps": [],
+                            "deps": {},
+                            "sha256": "5566778899"
+                        }
+                    },
+                    "d": {
+                        "3.0.1": {
+                            "deps": {},
                             "sha256": "5566778899"
                         }
                     }
@@ -700,17 +725,22 @@ mod tests {
         let lock_content = fs::read_to_string(lock_file_path).unwrap();
         let lock_data: PackageLockList = toml::from_str(&lock_content).unwrap();
 
-        assert_eq!(lock_data.packages.len(), 4);
+        assert_eq!(lock_data.packages.len(), 5);
 
         let package_a = &lock_data.packages[0];
         assert_eq!(package_a.name, "a");
         assert_eq!(package_a.version, "1.0.2");
         assert_eq!(package_a.sha256, "1234567890");
         assert_eq!(package_a.dependencies.len(), 2);
-        assert_eq!(package_a.dependencies[0].name, "b");
-        assert_eq!(package_a.dependencies[0].version, "2.0.1");
-        assert_eq!(package_a.dependencies[1].name, "c");
-        assert_eq!(package_a.dependencies[1].version, "1.0.1");
+        for dep in &package_a.dependencies {
+            if dep.name == "b" {
+                assert_eq!(dep.version, "2.0.1");
+            } else if dep.name == "c" {
+                assert_eq!(dep.version, "1.0.1");
+            } else {
+                panic!("Unexpected dependency: {:?}", dep);
+            }
+        }
 
         let package_b = &lock_data.packages[1];
         assert_eq!(package_b.name, "b");
@@ -730,7 +760,15 @@ mod tests {
         assert_eq!(package_c2.name, "c");
         assert_eq!(package_c2.version, "1.0.1");
         assert_eq!(package_c2.sha256, "1122334455");
-        assert_eq!(package_c2.dependencies.len(), 0);
+        assert_eq!(package_c2.dependencies.len(), 1);
+        assert_eq!(package_c2.dependencies[0].name, "d");
+        assert_eq!(package_c2.dependencies[0].version, "3.0.1");
+
+        let package_d = &lock_data.packages[4];
+        assert_eq!(package_d.name, "d");
+        assert_eq!(package_d.version, "3.0.1");
+        assert_eq!(package_d.sha256, "5566778899");
+        assert_eq!(package_d.dependencies.len(), 0);
     }
 
     #[test]
@@ -756,23 +794,28 @@ mod tests {
                 "packages": {
                     "a": {
                         "1.0.2": {
-                            "deps": ["b#2.0.1", "c#1.0.1"],
+                            "deps": {
+                                "b": "2.0.1",
+                                "c": "1.0.1"
+                            },
                             "sha256": "1234567890"
                         }
                     },
                     "b": {
                         "2.0.1": {
-                            "deps": ["c#2.0.1"],
+                            "deps": {
+                                "c": "2.0.1"
+                            },
                             "sha256": "0987654321"
                         }
                     },
                     "c": {
                         "1.0.1": {
-                            "deps": [],
+                            "deps": {},
                             "sha256": "1122334455"
                         },
                         "2.0.1": {
-                            "deps": [],
+                            "deps": {},
                             "sha256": "5566778899"
                         }
                     }
