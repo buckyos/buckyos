@@ -8,8 +8,17 @@ pub enum GatewayError {
     #[error("Config format error: {0}")]
     InvalidConfig(String),
 
+    #[error("Invalid parameter: {0}")]
+    InvalidParam(String),
+
     #[error("Invalid data format: {0}")]
     InvalidFormat(String),
+
+    #[error("Not supported: {0}")]
+    NotSupported(String),
+
+    #[error("Upstream not found: {0}")]
+    UpstreamNotFound(String),
 
     #[error("Peer not found: {0}")]
     PeerNotFound(String),
