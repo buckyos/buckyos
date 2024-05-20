@@ -62,7 +62,7 @@ impl UpstreamManager {
         "type": "tcp"
     }
     */
-    async fn load_block(&self, value: serde_json::Value) -> GatewayResult<()> {
+    pub fn load_block(&self, value: &serde_json::Value) -> GatewayResult<()> {
         if !value.is_object() {
             return Err(GatewayError::InvalidConfig("upstream".to_owned()));
         }
@@ -168,4 +168,8 @@ impl UpstreamManager {
 
         Ok(())
     }
+}
+
+lazy_static::lazy_static! {
+    pub static ref UPSTREAM_MANAGER: UpstreamManager = UpstreamManager::new();
 }

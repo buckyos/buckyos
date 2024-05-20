@@ -66,6 +66,10 @@ impl PeerManager {
         }
     }
 
+    pub fn device_id(&self) -> &str {
+        &self.device_id
+    }
+
     pub fn events(&self) -> &PeerManagerEventManager {
         &self.events
     }
@@ -160,4 +164,10 @@ impl TunnelManagerEvents for PeerManager {
 
         Ok(())
     }
+}
+
+
+// singleton
+lazy_static::lazy_static! {
+    pub static ref PEER_MANAGER: PeerManager = PeerManager::new("gateway".to_string());
 }

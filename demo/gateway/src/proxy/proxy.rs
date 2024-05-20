@@ -4,11 +4,13 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncRead, AsyncWrite};
 use std::sync::Arc;
 
+#[derive(Debug, Clone)]
 pub enum ProxyAuth {
     None,
     Password(String, String),
 }
 
+#[derive(Debug, Clone)]
 pub struct ProxyConfig {
     pub addr: SocketAddr,
     pub auth: ProxyAuth,

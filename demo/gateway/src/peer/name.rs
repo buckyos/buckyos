@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use crate::error::*;
@@ -8,6 +9,27 @@ use crate::error::*;
 pub enum PeerAddrType {
     WAN,
     LAN,
+}
+
+impl PeerAddrType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PeerAddrType::WAN => "wan",
+            PeerAddrType::LAN => "lan",
+        }
+    }
+}
+
+impl FromStr for PeerAddrType {
+    type Err = GatewayError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "wan" => Ok(PeerAddrType::WAN),
+            "lan" => Ok(PeerAddrType::LAN),
+            _ => Err(GatewayError::InvalidParam("type".to_owned())),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -36,7 +58,8 @@ impl NameManager {
     [
         {
             id: "device-id",
-            addr: "ip:port"
+            addr: "ip:port",
+            type: "wan/lan"
         }
     ]
      */
@@ -54,13 +77,29 @@ impl NameManager {
                 .as_str()
                 .ok_or(GatewayError::InvalidConfig("addr".to_owned()))?;
 
+            // parse addr_type as optional
+            let addr_type = item["type"]
+                .as_str()
+                .map(|s| PeerAddrType::from_str(s))
+                .transpose()
+                .map_err(|e| {
+                    let msg = format!("Error parsing addr type: {}", e);
+                    GatewayError::InvalidConfig(msg)
+                })?;
+
+
             // parse addr
             let addr = addr.parse().map_err(|e| {
                 let msg = format!("Error parsing addr {}: {}", addr, e);
                 GatewayError::InvalidConfig(msg)
             })?;
 
-            let addr_type = Self::get_addr_type(&addr);
+            let addr_type = 
+            match addr_type {
+                Some(addr_type) => addr_type,
+                None => Self::get_addr_type(&addr),
+            };
+          
             let info = NameInfo {
                 device_id: id.to_string(),
                 addr,
@@ -129,6 +168,17 @@ impl NameManager {
                 PeerAddrType::WAN
             }
         }
+    }
+
+    pub fn get_device_id(&self, addr_ip: &IpAddr) -> Option<String> {
+        let names = self.names.lock().unwrap();
+        for (device_id, info) in names.iter() {
+            if &info.addr.ip() == addr_ip {
+                return Some(device_id.clone());
+            }
+        }
+
+        None
     }
 }
 

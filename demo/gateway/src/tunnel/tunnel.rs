@@ -1,6 +1,6 @@
 
 
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 
 #[async_trait::async_trait]
@@ -48,141 +48,53 @@ pub enum TunnelSide {
     Passive,
 }
 
-
-/* 
-pub struct Tunnel {
-    id: String,
-
-    // tunnel info
-    tunnel_type: TunnelType,
-    server: String,
-    // tunnel: Arc<Mutex<Box<dyn Tunnel>>>,
-
-    // local forward address
-    forward: String,
+pub struct TunnelCombiner {
+    pub reader: Box<dyn TunnelReader>,
+    pub writer: Box<dyn TunnelWriter>,
 }
 
-impl Tunnel {
-    pub fn new(id: String, tunnel_type: TunnelType, server: String, forward: String) -> Self {
-        Self {
-            id,
-            tunnel_type,
-            server,
-            forward,
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn tunnel_type(&self) -> TunnelType {
-        self.tunnel_type
-    }
-
-    /*
-    load from json array as below
-    {
-        block: "tunnel",
-        type: "tcp",
-        id: "local-service-1",
-        server: "device-id:port"，
-        forward: "127.0.0.1:9000"
-    }
-    */
-    pub fn load(&self, json: &serde_json::Value) -> GatewayResult<Self> {
-        let id = json["id"]
-            .as_str()
-            .ok_or(GatewayError::InvalidConfig("id"))?;
-        let tunnel_type = match json["type"].as_str() {
-            Some("tcp") => TunnelType::Tcp,
-            Some("udp") => TunnelType::Udp,
-            _ => return Err(GatewayError::InvalidConfig("type")),
-        };
-        let server = json["server"]
-            .as_str()
-            .ok_or(GatewayError::InvalidConfig("server"))?;
-        let forward = json["forward"]
-            .as_str()
-            .ok_or(GatewayError::InvalidConfig("forward"))?;
-
-        Ok(Self::new(
-            id.to_string(),
-            tunnel_type,
-            server.to_string(),
-            forward.to_string(),
-        ))
-    }
-
-    pub async fn run(&self) -> GatewayResult<()> {
-        loop {
-            match self.build().await {
-                Ok(_) => {
-                    info!("Tunnel {} closed", self.id);
-                    break;
-                }
-                Err(e) => {
-                    error!("Tunnel error: {} {}", self.id, e);
-
-                    // slelp 5 seconds and try again
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn build(&self) -> GatewayResult<()> {
-        info!(
-            "now will build tunnel connection {} {} <---> {}",
-            self.id, self.forward, self.server
-        );
-
-        // try build tunnel connection
-        let (mut tunnel_reader, mut tunnel_writer) = match self.tunnel_type {
-            TunnelType::Tcp => {
-                let tunnel = TcpTunnel::build(self.server.clone()).await?;
-                tunnel.split()
-            }
-            TunnelType::Udp => {
-                unimplemented!()
-            }
-        };
-
-        // try to connect to forward address
-        let mut stream: TcpStream = TcpStream::connect(&self.forward).await.map_err(|e| {
-            error!(
-                "Error connecting to forward address {}: {}",
-                self.forward, e
-            );
-            e
-        })?;
-
-        // split tunnel and stream
-        let (mut stream_reader, mut stream_writer) = stream.split();
-
-        let tunnel_to_stream = tokio::io::copy(&mut tunnel_reader, &mut stream_writer);
-        let stream_to_tunnel = tokio::io::copy(&mut stream_reader, &mut tunnel_writer);
-
-        tokio::try_join!(tunnel_to_stream, stream_to_tunnel).map_err(|e| {
-            error!("Error running tunnel: {} {}", self.id, e);
-            e
-        })?;
-
-        Ok(())
-    }
-
-    async fn build_tunnel(&self) -> Result<Box<dyn Tunnel>, GatewayError> {
-        match self.tunnel_type {
-            TunnelType::Tcp => {
-                let tunnel = TcpTunnel::build(self.server.clone()).await?;
-                Ok(Box::new(tunnel))
-            }
-            TunnelType::Udp => {
-                unimplemented!()
-            }
-        }
+impl TunnelCombiner {
+    pub fn new(reader: Box<dyn TunnelReader>, writer: Box<dyn TunnelWriter>) -> Self {
+        Self { reader, writer }
     }
 }
-*/
+
+impl Tunnel for TunnelCombiner {
+    fn split(self: Box<Self>) -> (Box<dyn TunnelReader>, Box<dyn TunnelWriter>) {
+        (self.reader, self.writer)
+    }
+}
+
+impl AsyncRead for TunnelCombiner {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut *self.get_mut().reader).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for TunnelCombiner {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut *self.get_mut().writer).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut *self.get_mut().writer).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut *self.get_mut().writer).poll_shutdown(cx)
+    }
+}

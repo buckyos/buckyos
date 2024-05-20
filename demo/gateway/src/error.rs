@@ -5,6 +5,9 @@ pub enum GatewayError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Socks error: {0}")]
+    Socks(#[from] fast_socks5::SocksError),
+
     #[error("Config format error: {0}")]
     InvalidConfig(String),
 
