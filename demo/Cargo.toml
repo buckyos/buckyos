@@ -11,5 +11,6 @@ members = [
     "./gateway",
     "./etcd_tool",
     "./package_manager",
-    "./package_server"
+    "./package_server",
+    "./package_cli"
 ]

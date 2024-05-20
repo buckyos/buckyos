@@ -2,8 +2,9 @@ use async_std::fs::{self, File};
 use async_std::path::Path;
 use async_std::prelude::*;
 use async_std::sync::Mutex;
+use clap::{App, Arg};
 use hex;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json, Value};
 use sha2::{Digest, Sha256}; // 引入 sha2 crate
@@ -13,14 +14,15 @@ use std::env;
 use std::sync::Arc;
 use tide::{Request, Response, StatusCode};
 
-const SERVER_ADDR: &str = "127.0.0.1:3030";
+const DEFAULT_SERVER_PORT: &str = "3030";
 
 #[derive(Deserialize, Debug)]
-struct UploadMetadata {
-    package_name: String,
+struct UploadPackageMeta {
+    name: String,
     version: String,
-    deps: Vec<String>,
+    deps: HashMap<String, String>,
     author: Option<String>,
+    sha256: String,
 }
 
 #[derive(Clone)]
@@ -52,46 +54,63 @@ impl FileUploadServer {
 
     async fn save_file(mut req: Request<FileUploadServer>) -> tide::Result {
         // 获取并解析元数据头
-        let metadata_header = req.header("X-Upload-Metadata").ok_or_else(|| {
-            let err_msg = "Missing X-Upload-Metadata header";
-            error!("{}", err_msg);
-            tide::Error::from_str(StatusCode::BadRequest, err_msg)
-        })?;
-
-        let metadata: UploadMetadata = serde_json::from_str(metadata_header.last().as_str())
-            .map_err(|e| {
-                let err_msg = format!("Invalid JSON metadata: {}", e);
+        let metadata_header = match req.header("Bkz-Upload-Metadata") {
+            Some(header) => header,
+            None => {
+                let err_msg = "Missing Bkz-Upload-Metadata header";
                 error!("{}", err_msg);
-                tide::Error::from_str(StatusCode::BadRequest, err_msg)
-            })?;
+                return Ok(Response::builder(StatusCode::BadRequest)
+                    .body(err_msg)
+                    .build());
+            }
+        };
+
+        debug!("Metadata header: {:?}", metadata_header.last().as_str());
+
+        let metadata: UploadPackageMeta =
+            match serde_json::from_str(metadata_header.last().as_str()) {
+                Ok(meta) => meta,
+                Err(e) => {
+                    let err_msg = format!("Invalid JSON metadata: {}", e);
+                    error!("{}", err_msg);
+                    return Ok(Response::builder(StatusCode::BadRequest)
+                        .body(err_msg)
+                        .build());
+                }
+            };
 
         info!("Parsed JSON metadata: {:?}", metadata);
 
         // 构建文件名和路径
-        let filename = format!("{}_{}.bkz", metadata.package_name, metadata.version);
-        let package_dir = Path::new(&req.state().save_path).join(&metadata.package_name);
+        let filename = format!("{}_{}.bkz", metadata.name, metadata.version);
+        let package_dir = Path::new(&req.state().save_path).join(&metadata.name);
         let file_path = package_dir.join(&filename);
         let temp_file_path = package_dir.join(format!("{}.tmp", filename));
 
         // 先检查索引是否已有相同的包和版本
         {
             let _lock = req.state().index_mutex.lock().await; // 加锁
-            let index = Self::load_index(&req.state().index_path)
-                .await
-                .map_err(|e| {
+            let index = match Self::load_index(&req.state().index_path).await {
+                Ok(index) => index,
+                Err(e) => {
                     let err_msg = format!("Failed to load index: {}", e);
                     error!("{}", err_msg);
-                    tide::Error::from_str(StatusCode::InternalServerError, err_msg)
-                })?;
+                    return Ok(Response::builder(StatusCode::InternalServerError)
+                        .body(err_msg)
+                        .build());
+                }
+            };
 
-            if let Some(package_entry) = index.get(&metadata.package_name) {
+            if let Some(package_entry) = index.get(&metadata.name) {
                 if package_entry.contains_key(&metadata.version) {
                     let err_msg = format!(
                         "Package version already exists: {}-{}",
-                        metadata.package_name, metadata.version
+                        metadata.name, metadata.version
                     );
                     warn!("{}", err_msg);
-                    return Err(tide::Error::from_str(StatusCode::Conflict, err_msg));
+                    return Ok(Response::builder(StatusCode::Conflict)
+                        .body(err_msg)
+                        .build());
                 }
             }
         } // 解锁
@@ -100,64 +119,102 @@ impl FileUploadServer {
         if file_path.exists().await {
             let err_msg = format!("File already exists: {}", file_path.display());
             warn!("{}", err_msg);
-            return Err(tide::Error::from_str(StatusCode::Conflict, err_msg));
+            return Ok(Response::builder(StatusCode::Conflict)
+                .body(err_msg)
+                .build());
         }
 
         // 保存文件
-        fs::create_dir_all(&package_dir).await.map_err(|e| {
+        if let Err(e) = fs::create_dir_all(&package_dir).await {
             let err_msg = format!("Failed to create package directory: {}", e);
             error!("{}", err_msg);
-            tide::Error::from_str(StatusCode::InternalServerError, err_msg)
-        })?;
+            return Ok(Response::builder(StatusCode::InternalServerError)
+                .body(err_msg)
+                .build());
+        }
 
-        let mut file = File::create(&temp_file_path).await.map_err(|e| {
-            let err_msg = format!("Failed to create temp file: {}", e);
-            error!("{}", err_msg);
-            tide::Error::from_str(StatusCode::InternalServerError, err_msg)
-        })?;
-        let body = req.body_bytes().await.map_err(|e| {
-            let err_msg = format!("Failed to read request body: {}", e);
-            error!("{}", err_msg);
-            tide::Error::from_str(StatusCode::InternalServerError, err_msg)
-        })?;
+        let mut file = match File::create(&temp_file_path).await {
+            Ok(file) => file,
+            Err(e) => {
+                let err_msg = format!("Failed to create temp file: {}", e);
+                error!("{}", err_msg);
+                return Ok(Response::builder(StatusCode::InternalServerError)
+                    .body(err_msg)
+                    .build());
+            }
+        };
 
-        // 计算 SHA-256 哈希值，TODO，这里客户端还需要上传 SHA-256 值，并与计算的对比
+        let body = match req.body_bytes().await {
+            Ok(body) => body,
+            Err(e) => {
+                let err_msg = format!("Failed to read request body: {}", e);
+                error!("{}", err_msg);
+                return Ok(Response::builder(StatusCode::InternalServerError)
+                    .body(err_msg)
+                    .build());
+            }
+        };
+
+        // 计算 SHA-256 哈希值
         let mut hasher = Sha256::new();
         hasher.update(&body);
         let hash_result = hasher.finalize();
         let sha256_hash = hex::encode(hash_result);
 
-        file.write_all(&body).await.map_err(|e| {
+        // 比较客户端提供的 SHA-256 值与计算的值
+        if sha256_hash != metadata.sha256 {
+            let err_msg = format!(
+                "SHA-256 mismatch: expected {}, calculated {}",
+                metadata.sha256, sha256_hash
+            );
+            error!("{}", err_msg);
+            return Ok(Response::builder(StatusCode::BadRequest)
+                .body(err_msg)
+                .build());
+        }
+
+        if let Err(e) = file.write_all(&body).await {
             let err_msg = format!("Failed to write to temp file: {}", e);
             error!("{}", err_msg);
-            tide::Error::from_str(StatusCode::InternalServerError, err_msg)
-        })?;
-        file.sync_all().await.map_err(|e| {
+            return Ok(Response::builder(StatusCode::InternalServerError)
+                .body(err_msg)
+                .build());
+        }
+
+        if let Err(e) = file.sync_all().await {
             let err_msg = format!("Failed to sync temp file: {}", e);
             error!("{}", err_msg);
-            tide::Error::from_str(StatusCode::InternalServerError, err_msg)
-        })?;
-        fs::rename(&temp_file_path, &file_path).await.map_err(|e| {
+            return Ok(Response::builder(StatusCode::InternalServerError)
+                .body(err_msg)
+                .build());
+        }
+
+        if let Err(e) = fs::rename(&temp_file_path, &file_path).await {
             let err_msg = format!("Failed to rename temp file: {}", e);
             error!("{}", err_msg);
-            tide::Error::from_str(StatusCode::InternalServerError, err_msg)
-        })?;
+            return Ok(Response::builder(StatusCode::InternalServerError)
+                .body(err_msg)
+                .build());
+        }
 
         info!("File saved successfully: {}", filename);
 
         // 更新索引
         {
             let _lock = req.state().index_mutex.lock().await;
-            let mut index = Self::load_index(&req.state().index_path)
-                .await
-                .map_err(|e| {
+            let mut index = match Self::load_index(&req.state().index_path).await {
+                Ok(index) => index,
+                Err(e) => {
                     let err_msg = format!("Failed to load index: {}", e);
                     error!("{}", err_msg);
-                    tide::Error::from_str(StatusCode::InternalServerError, err_msg)
-                })?;
+                    return Ok(Response::builder(StatusCode::InternalServerError)
+                        .body(err_msg)
+                        .build());
+                }
+            };
 
             let package_entry = index
-                .entry(metadata.package_name.clone())
+                .entry(metadata.name.clone())
                 .or_insert_with(HashMap::new);
             let insert_value = json!({
                 "deps": metadata.deps,
@@ -167,15 +224,16 @@ impl FileUploadServer {
             package_entry.insert(metadata.version.clone(), insert_value.clone());
             info!(
                 "Index updated, add entry: {}-{}: {:?}",
-                metadata.package_name, metadata.version, insert_value
+                metadata.name, metadata.version, insert_value
             );
-            Self::save_index(&req.state().index_path, &index)
-                .await
-                .map_err(|e| {
-                    let err_msg = format!("Failed to save index: {}", e);
-                    error!("{}", err_msg);
-                    tide::Error::from_str(StatusCode::InternalServerError, err_msg)
-                })?;
+
+            if let Err(e) = Self::save_index(&req.state().index_path, &index).await {
+                let err_msg = format!("Failed to save index: {}", e);
+                error!("{}", err_msg);
+                return Ok(Response::builder(StatusCode::InternalServerError)
+                    .body(err_msg)
+                    .build());
+            }
         }
 
         Ok(Response::new(StatusCode::Ok))
@@ -226,7 +284,7 @@ impl FileUploadServer {
 fn main() -> tide::Result<()> {
     CombinedLogger::init(vec![
         TermLogger::new(
-            LevelFilter::Info,
+            LevelFilter::Debug,
             Config::default(),
             TerminalMode::Mixed,
             ColorChoice::Auto,
@@ -238,6 +296,21 @@ fn main() -> tide::Result<()> {
         ),
     ])?;
 
+    let matches = App::new("File Upload Server")
+        .version("1.0")
+        .about("A simple package upload server")
+        .arg(
+            Arg::with_name("port")
+                .long("port")
+                .value_name("PORT")
+                .help("Sets the server port")
+                .takes_value(true),
+        )
+        .get_matches();
+
+    let port = matches.value_of("port").unwrap_or(DEFAULT_SERVER_PORT);
+    let server_addr = format!("127.0.0.1:{}", port);
+
     async_std::task::block_on(async {
         let server_state = FileUploadServer::new();
         info!("Save path: {}", server_state.save_path);
@@ -248,8 +321,8 @@ fn main() -> tide::Result<()> {
         let mut app = tide::with_state(server_state);
         app.at("/upload").post(FileUploadServer::save_file);
 
-        info!("Starting server at http://{}", SERVER_ADDR);
-        app.listen(SERVER_ADDR).await?;
+        info!("Starting server at http://{}", server_addr);
+        app.listen(server_addr).await?;
         Ok(())
     })
 }
