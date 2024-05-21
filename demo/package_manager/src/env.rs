@@ -1,4 +1,5 @@
 use dirs;
+use futures::future::join_all;
 use log::*;
 use serde::{
     ser::{SerializeSeq, SerializeStruct},
@@ -8,9 +9,14 @@ use serde_json::Value as JsonValue;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tokio::sync::oneshot;
+use tokio::time::{self, Duration};
 use toml::*;
 
+use crate::downloader::{self, *};
 use crate::error::*;
 use crate::parser::*;
 use crate::version_util;
@@ -96,10 +102,79 @@ impl PackageEnv {
         &self.work_dir
     }
 
+    pub async fn build(&self, update: bool) -> PkgSysResult<()> {
+        // 检查lock文件是否需要更新
+        let need_update = self.check_lock_need_update()?;
+        if need_update || update {
+            self.update_index().await?;
+            self.update_lock_file()?;
+        }
+        let lock_file_path = self.work_dir.join("pkg.lock");
+        let lock_packages = Self::parse_toml(&lock_file_path)?;
+        let package_list: PackageLockList = lock_packages.try_into().map_err(|err| {
+            PackageSystemErrors::ParseError("pkg.lock".to_string(), err.to_string())
+        })?;
+
+        let downloader = downloader::FakeDownloader::new();
+        let mut download_futures = Vec::new();
+
+        // 调用downloader下载，并且等待所有包下载完成
+        for lock_info in package_list.packages.iter() {
+            let target_name = format!("{}-{}.bkz", lock_info.name, lock_info.version);
+            let url = format!("http://localhost:3030/download/{}", target_name);
+            let target_tmp_name = format!("{}.tmp", target_name);
+            let target_tmp_file = self.get_install_dir().join(&target_tmp_name);
+            let downloader = downloader.clone();
+
+            // 创建一个异步任务
+            let download_future = async move {
+                let task_id = downloader.download(&url, &target_tmp_file, None).await?;
+                loop {
+                    let state = downloader.get_task_state(task_id)?;
+
+                    if let Some(error) = state.error {
+                        warn!("Download {} error: {}", url, error);
+                        return Err(PackageSystemErrors::DownloadError(url, error));
+                    }
+                    if state.downloaded_size == state.total_size {
+                        break;
+                    }
+                    // 在命令行中显示进度
+                    let percentage =
+                        (state.downloaded_size as f64 / state.total_size as f64) * 100.0;
+                    print!(
+                        "\r{}: {:.2}% ({}/{})",
+                        target_name, percentage, state.downloaded_size, state.total_size
+                    );
+                    io::stdout().flush().unwrap();
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                Ok(())
+            };
+
+            download_futures.push(download_future);
+        }
+
+        // 并行等待所有下载任务完成
+        let results = join_all(download_futures).await;
+
+        // 检查所有下载结果
+        for result in results {
+            if let Err(e) = result {
+                return Err(e);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn get_install_dir(&self) -> PathBuf {
+        self.work_dir.join(".pkgs")
+    }
+
     // 检查lock文件是否符合当前package.toml的版本和依赖要求
     pub fn check_lock_need_update(&self) -> PkgSysResult<bool> {
         let package_data = Self::parse_toml(&self.work_dir.join("package.toml"))?;
-        let index_data = Self::parse_json(&self.work_dir.join("index.json"))?;
         let lock_file_path = self.work_dir.join("pkg.lock");
         if !lock_file_path.exists() {
             return Ok(true);
@@ -112,12 +187,7 @@ impl PackageEnv {
 
         if let Some(dependencies) = package_data.get("dependencies").and_then(|d| d.as_table()) {
             for (dep_name, dep_version) in dependencies {
-                if !self.check_dependency(
-                    dep_name,
-                    dep_version.as_str().unwrap(),
-                    &package_list,
-                    &index_data,
-                )? {
+                if !self.check_dependency(dep_name, dep_version.as_str().unwrap(), &package_list)? {
                     return Ok(true);
                 }
             }
@@ -131,7 +201,6 @@ impl PackageEnv {
         dep_name: &str,
         dep_version: &str,
         lock_packages: &PackageLockList,
-        _index_data: &JsonValue,
     ) -> PkgSysResult<bool> {
         /*这里只查找一层，因为如果顶层的满足条件，那么子依赖也会满足条件
          *因为上次生成lock文件时，子依赖都是根据条件生成的
@@ -150,7 +219,6 @@ impl PackageEnv {
                             &lock_sub_dep.name,
                             &lock_sub_dep.version,
                             lock_packages,
-                            _index_data,
                         )? {
                             return Ok(false);
                         }
@@ -174,10 +242,7 @@ impl PackageEnv {
 
     pub fn update_lock_file(&self) -> PkgSysResult<()> {
         let package_data = Self::parse_toml(&self.work_dir.join("package.toml"))?;
-        let index_data = Self::parse_json(&self.work_dir.join("index.json"))?;
-        let index_db: IndexDB = serde_json::from_value(index_data).map_err(|err| {
-            PackageSystemErrors::ParseError("index.json".to_string(), err.to_string())
-        })?;
+        let index_db = self.get_index()?;
 
         let mut new_lock_data: Vec<PackageLockInfo> = Vec::new();
         let mut generated = HashSet::new();
@@ -346,7 +411,7 @@ impl PackageEnv {
         }
     }
 
-    pub async fn get_deps(&self, pkg_id: &str, update: bool) -> PkgSysResult<Vec<PackageId>> {
+    pub fn get_deps(&self, pkg_id: &str) -> PkgSysResult<Vec<PackageId>> {
         /* 先看env中是否有index.db (暂时只用一个json文件代替)，如果有，直接从index.db中获取依赖关系
          * 如果没有，看看%user%/buckyos/index下是否有index.db，如果有，从中获取依赖关系
          * 如果没有，创建相应目录并且下载index.db，然后从中获取依赖关系
@@ -355,7 +420,7 @@ impl PackageEnv {
          * 实际实现时，应该解析出一个依赖树，
          * 然后递归解析，找出共有和兼容依赖，减少下载和安装次数
          */
-        let index = self.get_index(update).await?;
+        let index = self.get_index()?;
 
         let mut deps: Vec<PackageId> = vec![];
         let mut parsed = HashSet::new();
@@ -486,19 +551,19 @@ impl PackageEnv {
         )))
     }
 
-    pub async fn get_index(&self, update: bool) -> PkgSysResult<IndexDB> {
-        //TODO env是否应该有自己的index？
-        /*let user_dir =
+    pub fn get_index_path(&self) -> PkgSysResult<PathBuf> {
+        let user_dir =
             dirs::home_dir().ok_or(PackageSystemErrors::UnknownError("No home dir".to_string()))?;
-        let global_index_file = user_dir.join("buckyos/index/index.json");*/
+        let index_path = user_dir.join("buckyos/index/index.json");
 
-        let global_index_file = self.work_dir.join("index.json");
+        Ok(index_path)
+    }
 
-        if update || !global_index_file.exists() {
-            self.update_index().await?;
-        }
+    pub fn get_index(&self) -> PkgSysResult<IndexDB> {
+        //TODO env是否应该有自己的index？
+        let index_file_path = self.get_index_path()?;
 
-        let index_str = std::fs::read_to_string(global_index_file)?;
+        let index_str = std::fs::read_to_string(index_file_path)?;
         let index_db: IndexDB = serde_json::from_str(&index_str).map_err(|err| {
             PackageSystemErrors::ParseError("index.json".to_string(), err.to_string())
         })?;
@@ -509,16 +574,54 @@ impl PackageEnv {
     async fn update_index(&self) -> PkgSysResult<()> {
         //update只更新global的index，这里index只是一个文件
         //实际在实现时，index应该是一组文件，按需更新
-        /*let user_dir =
-            dirs::home_dir().ok_or(PackageSystemErrors::UnknownError("No home dir".to_string()))?;
-        //创建目录
-        let global_index_dir = user_dir.join("buckyos/index");
-        std::fs::create_dir_all(global_index_dir)?;
+        let index_file_path = self.get_index_path()?;
+        std::fs::create_dir_all(&index_file_path)?;
         //下载index.json
-        let index_url = "https://buckyos.com/index.json";
-        let index_str = reqwest::get(index_url).await?.text().await?;
-        let global_index_file = global_index_dir.join("index.json");
-        std::fs::write(global_index_file, index_str)?;*/
+        let index_url = "https://localhost:3030/package_index";
+        let temp_file = index_file_path.with_file_name("index.json.tmp");
+        let downloader = downloader::FakeDownloader::new();
+
+        // 创建一个oneshot通道
+        let (tx, rx) = oneshot::channel();
+
+        // 启动下载任务，并传递oneshot发送端到回调函数
+        downloader
+            .download(
+                index_url,
+                &temp_file,
+                Some(Box::new(move |result: DownloadResult| {
+                    let _ = tx.send(result);
+                })),
+            )
+            .await
+            .map_err(|err| {
+                PackageSystemErrors::DownloadError(index_url.to_string(), err.to_string())
+            })?;
+
+        // 等待下载完成信号
+        let download_result = rx.await.map_err(|_| {
+            PackageSystemErrors::DownloadError(
+                index_url.to_string(),
+                "Failed to receive download result".to_string(),
+            )
+        })?;
+
+        // 检查下载结果
+        match download_result.result {
+            Ok(()) => {
+                info!(
+                    "Download index.json completed. url:{}, dest file:{}",
+                    index_url,
+                    temp_file.display()
+                );
+                // 重命名临时文件为index.json
+                std::fs::rename(&temp_file, &index_file_path)?;
+            }
+            Err(e) => {
+                warn!("Download index.json failed. url:{}. err:{}", index_url, e);
+                return Err(PackageSystemErrors::DownloadError(index_url.to_string(), e));
+            }
+        }
 
         Ok(())
     }
