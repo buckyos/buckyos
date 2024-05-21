@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use rusqlite::{Connection, Result};
 
 pub struct BackupTaskInfo {
@@ -7,9 +9,13 @@ pub struct BackupTaskInfo {
     pub version: u32,
     pub prev_version: Option<u32>,
     pub meta: String,
+    pub dir_path: String,
     pub chunk_count: u32,
+    pub is_all_chunks_ready: bool,
+    pub is_all_chunks_backup_done: bool,
 }
 
+#[derive(Debug, Clone)]
 pub struct BackupChunkInfo {
     pub task_id: i64,
     pub chunk_seq: u32,
@@ -23,7 +29,7 @@ pub struct BackupTaskStorage {
 }
 
 impl BackupTaskStorage {
-    fn new_with_path(db_path: &str) -> Result<Self> {
+    pub fn new_with_path(db_path: &str) -> Result<Self> {
         let connection = Connection::open(db_path)?;
         // Create the upload_tasks table if it doesn't exist
         connection.execute(
@@ -35,6 +41,7 @@ impl BackupTaskStorage {
             prev_version INTEGER DEFAULT NULL,
             meta TEXT DEFAULT '',
             is_all_chunks_ready TINYINT DEFAULT 0,
+            dir_path TEXT NOT NULL,
             create_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             update_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (zone_id, key, version)
@@ -67,10 +74,11 @@ impl BackupTaskStorage {
         version: u32,
         prev_version: Option<u32>,
         meta: Option<&str>,
+        dir_path: &str,
     ) -> Result<i64> {
         self.connection.execute(
-            "INSERT INTO upload_tasks (zone_id, key, version, prev_version, meta) VALUES (?, ?, ?, ?, ?)",
-            rusqlite::params![zone_id, key, version, prev_version, meta],
+            "INSERT INTO upload_tasks (zone_id, key, version, prev_version, meta, dir_path) VALUES (?, ?, ?, ?, ?, ?)",
+            rusqlite::params![zone_id, key, version, prev_version, meta, dir_path],
         )?;
 
         let task_id = self.connection.last_insert_rowid();
@@ -121,10 +129,10 @@ impl BackupTaskStorage {
 
     pub fn get_incomplete_tasks(&self) -> Result<Vec<BackupTaskInfo>> {
         let mut stmt = self.connection.prepare(
-            "SELECT task_id, zone_id, key, version, prev_version, meta, COUNT(*) as chunk_count
+            "SELECT task_id, zone_id, key, version, prev_version, meta, COUNT(*) as chunk_count, dir_path
             FROM upload_tasks
             LEFT JOIN upload_chunks ON upload_tasks.task_id = upload_chunks.task_id
-            WHERE is_all_chunks_ready = 1 AND task_id NOT IN (
+            WHERE is_all_chunks_ready = 0 AND task_id NOT IN (
                 SELECT task_id FROM upload_chunks WHERE finish_at IS NULL
             )
             GROUP BY upload_tasks.task_id",
@@ -140,6 +148,9 @@ impl BackupTaskStorage {
                     prev_version: row.get(4)?,
                     meta: row.get(5)?,
                     chunk_count: row.get(6)?,
+                    dir_path: row.get(7)?,
+                    is_all_chunks_ready: false,
+                    is_all_chunks_backup_done: false,
                 })
             })?
             .collect();

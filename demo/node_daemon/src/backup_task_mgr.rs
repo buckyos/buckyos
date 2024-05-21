@@ -4,9 +4,11 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use tokio::sync::Mutex;
+use base58::ToBase58;
+use sha2::Digest;
+use tokio::{io::AsyncReadExt, sync::Mutex};
 
-use crate::backup_task_storage::{BackupChunkInfo, BackupTaskInfo};
+use crate::backup_task_storage::{BackupChunkInfo, BackupTaskInfo, BackupTaskStorage};
 
 /**
  * 一般流程：
@@ -59,6 +61,7 @@ pub enum RemoveTaskOption {
     RemoveSpecificVersions(u32),
 }
 
+#[derive(Clone)]
 pub struct BackupTask {
     mgr: Weak<TaskManager>,
     info: Arc<Mutex<BackupTaskInfo>>,
@@ -66,8 +69,108 @@ pub struct BackupTask {
 }
 
 impl BackupTask {
-    fn new(files: Vec<String>) -> BackupTask {
-        unimplemented!()
+    fn from_storage(mgr: Weak<TaskManager>, info: BackupTaskInfo) -> Self {
+        Self {
+            mgr,
+            info: Arc::new(Mutex::new(info)),
+            uploading_chunks: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    async fn create_new(
+        mgr: Weak<TaskManager>,
+        zone_id: String,
+        key: String,
+        version: u32,
+        prev_version: Option<u32>,
+        meta: Option<String>,
+        dir_path: PathBuf,
+        chunk_files: Vec<PathBuf>,
+    ) -> Result<BackupTask, Box<dyn std::error::Error>> {
+        let dir_path_str = dir_path.to_str().expect("only utf-8 for dir-path");
+        let chunk_file_info_rets =
+            futures::future::join_all(chunk_files.into_iter().enumerate().map(
+                |(chunk_seq, chunk_relative_path)| {
+                    let dir_path = dir_path.clone();
+                    async move {
+                        let chunk_full_path = dir_path.join(&chunk_relative_path);
+                        let mut file = tokio::fs::File::open(chunk_full_path).await?;
+                        let mut buf = vec![];
+                        file.read_to_end(&mut buf).await?;
+
+                        let mut hasher = sha2::Sha256::new();
+                        hasher.update(buf.as_slice());
+                        let hash = hasher.finalize();
+                        let hash = hash.as_slice().to_base58();
+
+                        Ok(BackupChunkInfo {
+                            task_id: 0,
+                            chunk_seq: chunk_seq as u32,
+                            file_path: chunk_relative_path
+                                .to_str()
+                                .expect("only utf-8 for chunk-path")
+                                .to_string(),
+                            hash,
+                            chunk_size: buf.len() as u32,
+                        })
+                    }
+                },
+            ))
+            .await;
+
+        let mut chunk_files = vec![];
+        for info in chunk_file_info_rets {
+            match info {
+                Err(err) => {
+                    log::error!("read chunk files failed: {:?}", err);
+                    return Err(err);
+                }
+                Ok(r) => chunk_files.push(r),
+            }
+        }
+
+        let storage_arc = mgr.upgrade().unwrap().storage();
+        let storage = storage_arc.lock().await;
+        let task_id = storage.insert_upload_task(
+            &zone_id,
+            &key,
+            version,
+            prev_version,
+            meta.as_ref().map(|s| s.as_str()),
+            dir_path_str,
+        )?;
+
+        for chunk_info in chunk_files.iter() {
+            storage.add_upload_chunk(
+                task_id,
+                chunk_info.chunk_seq,
+                chunk_info.file_path.as_str(),
+                chunk_info.hash.as_str(),
+                chunk_info.chunk_size,
+            )?;
+        }
+
+        let chunk_count = chunk_files.len();
+        unsafe {
+            chunk_files.set_len(std::cmp::min(chunk_count, 5));
+        }
+
+        Ok(Self {
+            mgr,
+            info: Arc::new(Mutex::new(BackupTaskInfo {
+                task_id,
+                zone_id,
+                key,
+                version,
+                prev_version,
+                meta: meta.unwrap_or("".to_string()),
+                dir_path: dir_path_str.to_string(),
+                is_all_chunks_ready: false,
+                is_all_chunks_backup_done: false,
+                chunk_count: chunk_count as u32,
+            })),
+            uploading_chunks: Arc::new(Mutex::new(chunk_files)),
+        })
     }
 
     // append new chunks to the task in order.
@@ -140,13 +243,24 @@ pub struct TaskManager {
     url: String,
     zone_id: String,
     storage_dir_path: PathBuf,
+    storage: Arc<Mutex<BackupTaskStorage>>,
 
     tasks: Arc<Mutex<BackupTaskMap>>,
 }
 
 impl TaskManager {
-    pub fn new(zone_id: String, url: String, storage_dir_path: PathBuf) -> Self {
-        TaskManager {
+    pub fn new(
+        zone_id: String,
+        url: String,
+        storage_dir_path: PathBuf,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let storage = BackupTaskStorage::new_with_path(
+            storage_dir_path
+                .to_str()
+                .expect("only utf-8 for database path."),
+        )?;
+
+        Ok(TaskManager {
             tasks: Arc::new(Mutex::new(BackupTaskMap {
                 task_ids: HashMap::new(),
                 tasks: HashMap::new(),
@@ -154,7 +268,8 @@ impl TaskManager {
             url,
             zone_id,
             storage_dir_path,
-        }
+            storage: Arc::new(Mutex::new(storage)),
+        })
     }
 
     pub async fn continue_tasks(
@@ -203,5 +318,9 @@ impl TaskManager {
         version_option: RemoveTaskOption,
     ) -> Result<(), Box<dyn std::error::Error>> {
         unimplemented!("")
+    }
+
+    fn storage(&self) -> Arc<Mutex<BackupTaskStorage>> {
+        self.storage.clone()
     }
 }

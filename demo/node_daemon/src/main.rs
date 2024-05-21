@@ -1,6 +1,6 @@
 mod backup;
-mod backup_task_mgr;
-mod backup_task_storage;
+// mod backup_task_mgr;
+// mod backup_task_storage;
 mod etcd_mgr;
 mod pkg_mgr;
 mod run_item;
@@ -22,7 +22,7 @@ use std::{collections::HashMap, fs::File};
 use toml;
 
 use crate::backup::*;
-use crate::backup_task_mgr::*;
+// use crate::backup_task_mgr::*;
 use crate::etcd_mgr::*;
 use crate::run_item::*;
 use crate::service_mgr::*;
@@ -232,11 +232,10 @@ async fn get_node_config(
     }
     let result = sys_cfg_result.as_ref().unwrap();
     let revision = result.1 as u64;
-    let config: HashMap<String, serde_json::Value> = serde_json::from_str(result.0.as_str()).map_err(|e| {
-        NodeDaemonErrors::ReasonError(
-            "get node config from etcd and parse failed!".to_string(),
-        )
-    })?;
+    let config: HashMap<String, serde_json::Value> = serde_json::from_str(result.0.as_str())
+        .map_err(|e| {
+            NodeDaemonErrors::ReasonError("get node config from etcd and parse failed!".to_string())
+        })?;
     let services = config.get("services");
     if services.is_none() {
         return Err(NodeDaemonErrors::ReasonError(
