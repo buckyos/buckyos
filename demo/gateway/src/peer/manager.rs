@@ -1,4 +1,6 @@
 use super::peer::PeerClient;
+use super::name::NameManagerRef;
+use crate::config::GlobalConfigRef;
 use crate::error::*;
 use crate::tunnel::*;
 
@@ -51,23 +53,21 @@ impl PeerManagerEventManager {
 
 #[derive(Clone)]
 pub struct PeerManager {
-    device_id: String,
+    config: GlobalConfigRef,
     peers: Arc<Mutex<HashMap<String, OnceCell<Arc<PeerClient>>>>>,
 
     events: PeerManagerEventManager,
+    name_manager: NameManagerRef,
 }
 
 impl PeerManager {
-    pub fn new(device_id: String) -> Self {
+    pub fn new(config: GlobalConfigRef, name_manager: NameManagerRef) -> Self {
         Self {
-            device_id,
+            config,
             peers: Arc::new(Mutex::new(HashMap::new())),
             events: PeerManagerEventManager::new(),
+            name_manager,
         }
-    }
-
-    pub fn device_id(&self) -> &str {
-        &self.device_id
     }
 
     pub fn events(&self) -> &PeerManagerEventManager {
@@ -98,8 +98,12 @@ impl PeerManager {
         let peer = peer
             .get_or_try_init(|| async {
                 let events = Arc::new(Box::new(self.clone()) as Box<dyn TunnelManagerEvents>);
-                let peer =
-                    PeerClient::new(self.device_id.clone(), remote_device_id.to_string(), events);
+                let peer = PeerClient::new(
+                    self.config.device_id().to_owned(),
+                    remote_device_id.to_string(),
+                    events,
+                    self.name_manager.clone(),
+                );
                 peer.start().await?;
 
                 Ok::<Arc<PeerClient>, GatewayError>(Arc::new(peer))
@@ -166,8 +170,4 @@ impl TunnelManagerEvents for PeerManager {
     }
 }
 
-
-// singleton
-lazy_static::lazy_static! {
-    pub static ref PEER_MANAGER: PeerManager = PeerManager::new("gateway".to_string());
-}
+pub type PeerManagerRef = Arc<PeerManager>;

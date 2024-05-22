@@ -1,6 +1,9 @@
 use crate::error::{GatewayError, GatewayResult};
-use crate::peer::NAME_MANAGER;
-use crate::service::UPSTREAM_MANAGER;
+use crate::peer::NameManagerRef;
+use crate::proxy::ProxyManagerRef;
+use crate::service::UpstreamManagerRef;
+
+use std::sync::Arc;
 
 /*
 "config": {
@@ -25,28 +28,72 @@ use crate::service::UPSTREAM_MANAGER;
 }]
 */
 
-pub struct ConfigLoader {}
+pub struct GlobalConfig {
+    device_id: String,
+}
 
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            device_id: "".to_owned(),
+        }
+    }
+}
+
+impl GlobalConfig {
+    pub fn device_id(&self) -> &str {
+        &self.device_id
+    }
+}
+
+pub type GlobalConfigRef = Arc<GlobalConfig>;
+
+
+pub struct ConfigLoader {
+    name_manager: NameManagerRef,
+    upstream_manager: UpstreamManagerRef,
+    proxy_manager: ProxyManagerRef,
+}
 
 impl ConfigLoader {
-    fn load_config_node(value: &serde_json::Value, block: &str) -> GatewayResult<()> {
+    pub fn new(
+        name_manager: NameManagerRef,
+        upstream_manager: UpstreamManagerRef,
+        proxy_manager: ProxyManagerRef,
+    ) -> Self {
+        Self {
+            name_manager,
+            upstream_manager,
+            proxy_manager,
+        }
+    }
+
+    pub fn load_config_node(json: &serde_json::Value) -> GatewayResult<GlobalConfigRef> {
+
+        let value = json
+            .get("config")
+            .ok_or(GatewayError::InvalidConfig("config".to_owned()))?;
+
         if !value.is_object() {
-            return Err(GatewayError::InvalidConfig(block.to_owned()));
+            return Err(GatewayError::InvalidConfig("Invalid config node type".to_owned()));
         }
 
         let device_id = value["device-id"]
             .as_str()
             .ok_or(GatewayError::InvalidConfig("device-id".to_owned()))?;
 
-        // TODO
-        Ok(())
+        let mut config = GlobalConfig::default();
+        config.device_id = device_id.to_owned();
+
+    
+        Ok(Arc::new(config))
     }
 
-    fn load_known_device(value: &serde_json::Value) -> GatewayResult<()> {
-        NAME_MANAGER.load(value)
+    fn load_known_device(&self, value: &serde_json::Value) -> GatewayResult<()> {
+        self.name_manager.load(value)
     }
 
-    fn load_service_list(value: &serde_json::Value) -> GatewayResult<()> {
+    fn load_service_list(&self, value: &serde_json::Value) -> GatewayResult<()> {
         if !value.is_array() {
             return Err(GatewayError::InvalidConfig("service".to_owned()));
         }
@@ -58,10 +105,11 @@ impl ConfigLoader {
 
             match block {
                 "upstream" => {
-                    UPSTREAM_MANAGER.load_block(item)?;
+                    self.upstream_manager.load_block(item)?;
                 }
-                "proxy" => {}
-
+                "proxy" => {
+                    self.proxy_manager.load_proxy(item)?;
+                }
                 _ => {
                     warn!("Unknown block: {}", block);
                 }
@@ -71,30 +119,26 @@ impl ConfigLoader {
         Ok(())
     }
 
-    pub fn load_str(json_str: &str) -> GatewayResult<()> {
+    pub fn load_str(&self, json_str: &str) -> GatewayResult<()> {
         let json = serde_json::from_str(json_str)
             .map_err(|_| GatewayError::InvalidConfig(json_str.to_owned()))?;
 
-        Self::load(&json)
+        self.load(&json)
     }
 
-    pub fn load(json: &serde_json::Value) -> GatewayResult<()> {
-        let config = json
-            .get("config")
-            .ok_or(GatewayError::InvalidConfig("config".to_owned()))?;
-
-        Self::load_config_node(config, "config")?;
+    pub fn load(&self, json: &serde_json::Value) -> GatewayResult<()> {
+        
 
         // load known device if exists
         let value = json.get("known_device");
         if value.is_some() {
-            Self::load_known_device(value.unwrap())?;
+            self.load_known_device(value.unwrap())?;
         }
 
         // load service list if exists
         let value = json.get("service");
         if value.is_some() {
-            Self::load_service_list(value.unwrap())?;
+            self.load_service_list(value.unwrap())?;
         }
 
         Ok(())

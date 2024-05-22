@@ -170,6 +170,4 @@ impl UpstreamManager {
     }
 }
 
-lazy_static::lazy_static! {
-    pub static ref UPSTREAM_MANAGER: UpstreamManager = UpstreamManager::new();
-}
+pub type UpstreamManagerRef = Arc<UpstreamManager>;

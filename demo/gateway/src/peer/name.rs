@@ -208,7 +208,4 @@ impl NameResolver {
     }
 }
 
-// NameManager as singleton
-lazy_static::lazy_static! {
-    pub static ref NAME_MANAGER: NameManager = NameManager::new();
-}
+pub type NameManagerRef = Arc<NameManager>;

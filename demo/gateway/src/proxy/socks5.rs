@@ -1,7 +1,7 @@
-use super::proxy::{GatewayProxy, ProxyAuth, ProxyConfig};
+use super::manager::{ProxyAuth, ProxyConfig};
 use crate::{
     error::{GatewayError, GatewayResult},
-    peer::{NAME_MANAGER, PEER_MANAGER},
+    peer::{NameManagerRef, PeerManagerRef},
     tunnel::TunnelCombiner,
 };
 
@@ -16,13 +16,19 @@ use tokio::{
 };
 
 #[derive(Clone)]
-struct Socks5Proxy {
+pub struct Socks5Proxy {
+    name_manager: NameManagerRef,
+    peer_manager: PeerManagerRef,
     config: ProxyConfig,
     socks5_config: Arc<Config<SimpleUserPassword>>,
 }
 
 impl Socks5Proxy {
-    pub fn new(config: ProxyConfig) -> Self {
+    pub fn new(
+        config: ProxyConfig,
+        name_manager: NameManagerRef,
+        peer_manager: PeerManagerRef,
+    ) -> Self {
         let socks5_config = Config::default();
 
         let socks5_config = match config.auth {
@@ -36,12 +42,14 @@ impl Socks5Proxy {
         };
 
         Socks5Proxy {
+            name_manager,
+            peer_manager,
             config,
             socks5_config: Arc::new(socks5_config),
         }
     }
 
-    pub async fn run(&self) -> GatewayResult<()> {
+    pub async fn start(&self) -> GatewayResult<()> {
         let listener = TcpListener::bind(&self.config.addr).await.map_err(|e| {
             let msg = format!("Error binding to {}: {}", self.config.addr, e);
             error!("{}", msg);
@@ -50,13 +58,28 @@ impl Socks5Proxy {
 
         info!("Listen for socks connections at {}", &self.config.addr);
 
+        let this = self.clone();
+        task::spawn(async move {
+            if let Err(e) = this.run(listener).await {
+                error!("Error running socks5 proxy: {}", e);
+            }
+        });
+
+        Ok(())
+    }
+
+    pub async fn stop(&self) -> GatewayResult<()> {
+        todo!("stop socks5 proxy");
+    }
+
+    async fn run(&self, listener: TcpListener) -> GatewayResult<()> {
         // Standard TCP loop
         loop {
             match listener.accept().await {
                 Ok((socket, addr)) => {
                     info!("Connection from {}", addr);
-                    let config = self.socks5_config.clone();
-                    if let Err(e) = Self::on_new_connection(socket, addr, config).await {
+
+                    if let Err(e) = self.on_new_connection(socket, addr).await {
                         error!("Error processing socks5 connection: {}", e);
                     }
                 }
@@ -65,16 +88,11 @@ impl Socks5Proxy {
                 }
             }
         }
-
     }
 
-    async fn on_new_connection(
-        conn: TcpStream,
-        addr: SocketAddr,
-        config: Arc<Config<SimpleUserPassword>>,
-    ) -> GatewayResult<()> {
+    async fn on_new_connection(&self, conn: TcpStream, addr: SocketAddr) -> GatewayResult<()> {
         info!("Socks5 connection from {}", addr);
-        let socket = Socks5Socket::new(conn, config);
+        let socket = Socks5Socket::new(conn, self.socks5_config.clone());
 
         match socket.upgrade_to_socks5().await {
             Ok(socket) => {
@@ -91,24 +109,23 @@ impl Socks5Proxy {
                     }
                 };
 
-                task::spawn(Self::process_socket(socket, target));
+                self.process_socket(socket, target).await
             }
             Err(err) => {
                 let msg = format!("Upgrade to socks5 error: {}", err);
                 error!("{}", msg);
-                return Err(GatewayError::Socks(err));
+                Err(GatewayError::Socks(err))
             }
         }
-
-        Ok(())
     }
 
     async fn process_socket(
+        &self,
         mut socket: fast_socks5::server::Socks5Socket<TcpStream, SimpleUserPassword>,
         target: TargetAddr,
     ) -> GatewayResult<()> {
         let (device_id, port) = match target {
-            TargetAddr::Ip(addr) => match NAME_MANAGER.get_device_id(&addr.ip()) {
+            TargetAddr::Ip(addr) => match self.name_manager.get_device_id(&addr.ip()) {
                 Some(device_id) => (device_id, addr.port()),
                 None => {
                     let msg = format!("Device not found for address: {}", addr);
@@ -119,7 +136,7 @@ impl Socks5Proxy {
             TargetAddr::Domain(domain, port) => (domain, port),
         };
 
-        let peer = PEER_MANAGER.get_or_init_peer(&device_id).await?;
+        let peer = self.peer_manager.get_or_init_peer(&device_id).await?;
 
         let (reader, writer) = peer.build_data_tunnel(port).await?;
 
