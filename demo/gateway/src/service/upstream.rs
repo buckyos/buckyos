@@ -1,4 +1,5 @@
 use crate::error::*;
+use crate::peer::{OnNewTunnelHandleResult, PeerManagerEvents, PeerManagerEventsRef};
 use crate::tunnel::DataTunnelInfo;
 
 use std::net::{IpAddr, SocketAddr};
@@ -43,6 +44,7 @@ struct UpstreamService {
 }
 
 
+#[derive(Clone)]
 pub struct UpstreamManager {
     services: Arc<Mutex<Vec<UpstreamService>>>,
 }
@@ -52,6 +54,10 @@ impl UpstreamManager {
         Self {
             services: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    pub fn clone_as_events(&self) -> PeerManagerEventsRef {
+        Arc::new(Box::new(self.clone()) as Box<dyn PeerManagerEvents>)
     }
 
     /*
@@ -111,8 +117,10 @@ impl UpstreamManager {
             return Err(GatewayError::UpstreamNotFound(msg));
         }
 
-        let service = service.unwrap();
+        self.bind_tunnel_impl(service.unwrap(), tunnel).await
+    }
 
+    async fn bind_tunnel_impl(&self, service: UpstreamService, tunnel: DataTunnelInfo) -> GatewayResult<()> {
         match service.service_type {
             UpstreamServiceType::Tcp | UpstreamServiceType::Http => {
                 tokio::spawn(Self::run_tcp_forward(tunnel, service));
@@ -167,6 +175,36 @@ impl UpstreamManager {
         );
 
         Ok(())
+    }
+}
+
+
+impl PeerManagerEvents for UpstreamManager {
+    fn on_recv_data_tunnel(&self, info: DataTunnelInfo) -> GatewayResult<OnNewTunnelHandleResult> {
+
+        let service = self.get_service(info.port);
+        if service.is_none() {
+            let msg = format!("No upstream service found for port {}", info.port);
+            info!("{}", msg);
+
+            let ret = OnNewTunnelHandleResult {
+                handled: false,
+                info: Some(info),
+            };
+    
+            return Ok(ret);
+        }
+
+        let this = self.clone();
+        tokio::spawn(async move {
+            let service = service.unwrap();
+            let _ = this.bind_tunnel_impl(service, info).await;
+        });
+
+        Ok(OnNewTunnelHandleResult {
+            handled: true,
+            info: None,
+        })
     }
 }
 

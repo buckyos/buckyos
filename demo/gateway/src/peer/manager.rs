@@ -1,5 +1,5 @@
-use super::peer::PeerClient;
 use super::name::NameManagerRef;
+use super::peer::PeerClient;
 use crate::config::GlobalConfigRef;
 use crate::error::*;
 use crate::tunnel::*;
@@ -58,20 +58,37 @@ pub struct PeerManager {
 
     events: PeerManagerEventManager,
     name_manager: NameManagerRef,
+
+    tunnel_server: TunnelServerRef,
 }
 
 impl PeerManager {
     pub fn new(config: GlobalConfigRef, name_manager: NameManagerRef) -> Self {
-        Self {
+        // TODO use config to create tunnel server
+        let tunnel_server = TunnelServerCreator::create_default_tcp_tunnel_server();
+
+        let ret = Self {
             config,
             peers: Arc::new(Mutex::new(HashMap::new())),
             events: PeerManagerEventManager::new(),
             name_manager,
-        }
+            tunnel_server,
+        };
+
+        ret.tunnel_server.bind_events(Arc::new(
+            Box::new(ret.clone()) as Box<dyn TunnelServerEvents>
+        ));
+
+        ret
     }
 
     pub fn events(&self) -> &PeerManagerEventManager {
         &self.events
+    }
+
+    pub async fn start(&self) -> GatewayResult<()> {
+        self.tunnel_server.start().await?;
+        Ok(())
     }
 
     pub fn get_peer(&self, peer_id: &str) -> Option<Arc<PeerClient>> {

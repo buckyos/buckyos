@@ -15,7 +15,7 @@ pub type TunnelServerEventsRef = Arc<Box<dyn TunnelServerEvents>>;
 
 // tunnel server used to accept tunnel connections from clients
 #[async_trait::async_trait]
-pub trait TunnelServer {
+pub trait TunnelServer: Send + Sync {
     fn bind_events(&self, events: TunnelServerEventsRef);
     async fn start(&self) -> GatewayResult<()>;
     async fn stop(&self) -> GatewayResult<()>;

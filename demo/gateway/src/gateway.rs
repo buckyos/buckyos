@@ -35,6 +35,10 @@ impl Gateway {
         );
         loader.load(json)?;
 
+        peer_manager
+            .events()
+            .bind_events(upstream_manager.clone_as_events());
+
         let ret = Self {
             config,
             upstream_manager,
@@ -47,7 +51,10 @@ impl Gateway {
     }
 
     pub async fn start(&self) -> GatewayResult<()> {
+        self.peer_manager.start().await?;
+
+        self.proxy_manager.start().await?;
+
         Ok(())
     }
-    
 }
