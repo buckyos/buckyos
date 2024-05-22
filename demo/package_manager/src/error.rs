@@ -23,6 +23,8 @@ pub enum PackageSystemErrors {
     VersionError(String),
     #[error("Update error: {0}")]
     UpdateError(String),
+    #[error("Verify error: {0}")]
+    VerifyError(String),
     #[error("Unknown Error: {0}")]
     UnknownError(String),
     #[error("IO Error: {0}")]

@@ -1,4 +1,5 @@
 use dirs;
+use flate2::read::GzDecoder;
 use futures::future::join_all;
 use log::*;
 use serde::{
@@ -6,12 +7,14 @@ use serde::{
     Deserialize, Serialize, Serializer,
 };
 use serde_json::Value as JsonValue;
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tar::Archive;
 use tokio::sync::oneshot;
 use tokio::time::{self, Duration};
 use toml::*;
@@ -114,21 +117,41 @@ impl PackageEnv {
         let package_list: PackageLockList = lock_packages.try_into().map_err(|err| {
             PackageSystemErrors::ParseError("pkg.lock".to_string(), err.to_string())
         })?;
+        let install_path = self.get_install_dir();
+        let tmp_install_path = self.get_tmp_dir();
+        std::fs::create_dir_all(&install_path)?;
+        std::fs::create_dir_all(&tmp_install_path)?;
 
         let downloader = downloader::FakeDownloader::new();
         let mut download_futures = Vec::new();
 
         // 调用downloader下载，并且等待所有包下载完成
         for lock_info in package_list.packages.iter() {
-            let target_name = format!("{}-{}.bkz", lock_info.name, lock_info.version);
+            // 如果install_path下已经有目标包，认为是已经成功安装的，不再下载
+            let target_package = format!("{}-{}", lock_info.name, lock_info.version);
+            let target_dest_file = install_path.join(&target_package);
+            if target_dest_file.exists() {
+                info!(
+                    "Package {} already installed, skip download",
+                    target_package
+                );
+                continue;
+            }
+            let target_name = format!("{}.bkz", target_package);
+            let target_install_file = install_path.join(&target_name);
+            // TODO 这里其实target_install_file存在的话也不应该下载
             let url = format!("http://localhost:3030/download/{}", target_name);
             let target_tmp_name = format!("{}.tmp", target_name);
-            let target_tmp_file = self.get_install_dir().join(&target_tmp_name);
+            let target_tmp_install_file = tmp_install_path.join(&target_tmp_name);
             let downloader = downloader.clone();
+            let lock_info_clone = lock_info.clone();
+            let install_path_clone = install_path.clone();
 
             // 创建一个异步任务
             let download_future = async move {
-                let task_id = downloader.download(&url, &target_tmp_file, None).await?;
+                let task_id = downloader
+                    .download(&url, &target_tmp_install_file, None)
+                    .await?;
                 loop {
                     let state = downloader.get_task_state(task_id)?;
 
@@ -137,7 +160,15 @@ impl PackageEnv {
                         return Err(PackageSystemErrors::DownloadError(url, error));
                     }
                     if state.downloaded_size == state.total_size {
-                        break;
+                        // 下载完成，验证文件
+                        Self::verify_package(&target_tmp_install_file, lock_info_clone.sha256)?;
+                        // 重命名文件
+                        std::fs::rename(&target_tmp_install_file, &target_install_file)?;
+                        info!("Download {} completed", target_name);
+                        // 解压文件
+                        Self::unpack(&target_install_file, &install_path_clone)?;
+
+                        return Ok(());
                     }
                     // 在命令行中显示进度
                     let percentage =
@@ -149,7 +180,6 @@ impl PackageEnv {
                     io::stdout().flush().unwrap();
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
-                Ok(())
             };
 
             download_futures.push(download_future);
@@ -161,6 +191,7 @@ impl PackageEnv {
         // 检查所有下载结果
         for result in results {
             if let Err(e) = result {
+                warn!("Download error: {}", e);
                 return Err(e);
             }
         }
@@ -168,8 +199,44 @@ impl PackageEnv {
         Ok(())
     }
 
+    fn verify_package(dest_file: &PathBuf, sha256: String) -> PkgSysResult<()> {
+        if !dest_file.exists() {
+            return Err(PackageSystemErrors::VerifyError(format!(
+                "Verify package {} failed, file not exists",
+                dest_file.display()
+            )));
+        }
+        let file_content = fs::read(dest_file)?;
+        let mut hasher = Sha256::new();
+        hasher.update(&file_content);
+        let hash_result = hasher.finalize();
+        let hash_str = format!("{:x}", hash_result);
+        if hash_str != sha256 {
+            return Err(PackageSystemErrors::VerifyError(format!(
+                "Verify package {} failed, sha256 not match, expect: {}, actual: {}",
+                dest_file.display(),
+                sha256,
+                hash_str
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn unpack(tar_gz_path: &PathBuf, target_dir: &PathBuf) -> io::Result<()> {
+        let tar_gz = std::fs::File::open(tar_gz_path)?;
+        let tar = GzDecoder::new(tar_gz);
+        let mut archive = Archive::new(tar);
+        archive.unpack(target_dir)?;
+        Ok(())
+    }
+
     pub fn get_install_dir(&self) -> PathBuf {
         self.work_dir.join(".pkgs")
+    }
+
+    fn get_tmp_dir(&self) -> PathBuf {
+        self.get_install_dir().join(".tmp")
     }
 
     // 检查lock文件是否符合当前package.toml的版本和依赖要求
