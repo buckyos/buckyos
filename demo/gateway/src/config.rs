@@ -1,3 +1,4 @@
+use crate::constants::TUNNEL_SERVER_DEFAULT_PORT;
 use crate::error::{GatewayError, GatewayResult};
 use crate::peer::NameManagerRef;
 use crate::proxy::ProxyManagerRef;
@@ -30,12 +31,14 @@ use std::sync::Arc;
 
 pub struct GlobalConfig {
     device_id: String,
+    tunnel_server_port: u16,
 }
 
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             device_id: "".to_owned(),
+            tunnel_server_port: TUNNEL_SERVER_DEFAULT_PORT,
         }
     }
 }
@@ -43,6 +46,10 @@ impl Default for GlobalConfig {
 impl GlobalConfig {
     pub fn device_id(&self) -> &str {
         &self.device_id
+    }
+
+    pub fn tunnel_server_port(&self) -> u16 {
+        self.tunnel_server_port
     }
 }
 
@@ -78,12 +85,26 @@ impl ConfigLoader {
             return Err(GatewayError::InvalidConfig("Invalid config node type".to_owned()));
         }
 
-        let device_id = value["device-id"]
+        let device_id = value["device_id"]
             .as_str()
-            .ok_or(GatewayError::InvalidConfig("device-id".to_owned()))?;
+            .ok_or(GatewayError::InvalidConfig("device_id".to_owned()))?;
+
+        let port =if let Some(v) = value.get("tunnel_server_port") {
+            let port = v
+                .as_u64()
+                .ok_or(GatewayError::InvalidConfig("tunnel_server_port".to_owned()))?;
+            if port > u16::MAX as u64 {
+                return Err(GatewayError::InvalidConfig("tunnel_server_port".to_owned()));
+            }
+
+            port as u16
+        } else {
+            TUNNEL_SERVER_DEFAULT_PORT
+        };
 
         let mut config = GlobalConfig::default();
         config.device_id = device_id.to_owned();
+        config.tunnel_server_port = port;
 
     
         Ok(Arc::new(config))

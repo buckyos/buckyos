@@ -29,6 +29,8 @@ impl TcpTunnelServer {
             e
         })?;
 
+        info!("Tcp tunnel server started at {}", self.addr);
+        
         let this = self.clone();
         tokio::spawn(async move {
             match this.run(listener).await {

@@ -35,8 +35,8 @@ impl TunnelServerCreator {
         Arc::new(Box::new(server))
     }
 
-    pub fn create_default_tcp_tunnel_server() -> TunnelServerRef {
-        let addr = "0.0.0.0:23558";
+    pub fn create_tcp_tunnel_server_on_port(port: u16) -> TunnelServerRef {
+        let addr = format!("0.0.0.0:{}", port);
         let addr = addr.parse().unwrap();
         Self::create_tcp_tunnel_server(addr)
     }

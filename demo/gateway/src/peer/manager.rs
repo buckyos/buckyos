@@ -65,7 +65,7 @@ pub struct PeerManager {
 impl PeerManager {
     pub fn new(config: GlobalConfigRef, name_manager: NameManagerRef) -> Self {
         // TODO use config to create tunnel server
-        let tunnel_server = TunnelServerCreator::create_default_tcp_tunnel_server();
+        let tunnel_server = TunnelServerCreator::create_tcp_tunnel_server_on_port(config.tunnel_server_port());
 
         let ret = Self {
             config,

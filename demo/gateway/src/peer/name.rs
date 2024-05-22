@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use crate::error::*;
+use crate::constants::TUNNEL_SERVER_DEFAULT_PORT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerAddrType {
@@ -57,8 +58,9 @@ impl NameManager {
     load names from json config as follows:
     [
         {
-            id: "device-id",
-            addr: "ip:port",
+            id: "device_id",
+            addr: "ip",
+            port: 1234,
             type: "wan/lan"
         }
     ]
@@ -73,9 +75,13 @@ impl NameManager {
             let id = item["id"]
                 .as_str()
                 .ok_or(GatewayError::InvalidConfig("id".to_owned()))?;
-            let addr = item["addr"]
+            let ip = item["addr"]
                 .as_str()
                 .ok_or(GatewayError::InvalidConfig("addr".to_owned()))?;
+
+            let port = item["port"]
+                .as_u64()
+                .unwrap_or(TUNNEL_SERVER_DEFAULT_PORT as u64) as u16;
 
             // parse addr_type as optional
             let addr_type = item["type"]
@@ -89,8 +95,9 @@ impl NameManager {
 
 
             // parse addr
+            let addr = format!("{}:{}", ip, port);
             let addr = addr.parse().map_err(|e| {
-                let msg = format!("Error parsing addr {}: {}", addr, e);
+                let msg = format!("Error parsing addr {}, {}", addr, e);
                 GatewayError::InvalidConfig(msg)
             })?;
 

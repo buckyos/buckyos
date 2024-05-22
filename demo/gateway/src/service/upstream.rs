@@ -75,7 +75,7 @@ impl UpstreamManager {
 
         let addr: IpAddr = value["addr"]
             .as_str()
-            .ok_or(GatewayError::InvalidConfig("addr".to_owned()))?
+            .ok_or(GatewayError::InvalidConfig("Invalid upstream block config: addr".to_owned()))?
             .parse()
             .map_err(|e| {
                 let msg = format!("Error parsing addr: {}", e);
@@ -83,10 +83,10 @@ impl UpstreamManager {
             })?;
         let port = value["port"]
             .as_u64()
-            .ok_or(GatewayError::InvalidConfig("port".to_owned()))? as u16;
+            .ok_or(GatewayError::InvalidConfig("Invalid upstream block config: port".to_owned()))? as u16;
         let service_type = value["type"]
             .as_str()
-            .ok_or(GatewayError::InvalidConfig("type".to_owned()))?;
+            .ok_or(GatewayError::InvalidConfig("Invalid upstream block config: type".to_owned()))?;
 
         let service_type = UpstreamServiceType::from_str(service_type)?;
 

@@ -7,13 +7,17 @@ mod peer;
 mod proxy;
 mod service;
 mod tunnel;
+mod constants;
 
 #[macro_use]
 extern crate log;
 
-use clap::{App, Arg};
+use clap::{Command, Arg};
 use error::*;
 use gateway::Gateway;
+
+//#[cfg(test)]
+mod test;
 
 async fn run(config: &str) -> GatewayResult<()> {
     let json = serde_json::from_str(config).map_err(|e| {
@@ -33,24 +37,23 @@ async fn run(config: &str) -> GatewayResult<()> {
 }
 
 fn main() {
-    let matches = App::new("Gateway service")
+    let matches = Command::new("Gateway service")
         .arg(
-            Arg::with_name("config")
+            Arg::new("config")
                 .long("config")
                 .help("config in json format")
-                .takes_value(true)
                 .required(true),
         )
         .get_matches();
 
     // Gets a value for config if supplied by user, or defaults to "default.json"
-    let config = matches.value_of("config").unwrap();
+    let config: &String = matches.get_one("config").unwrap();
     info!("Gateway config: {}", config);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     rt.block_on(async {
-        if let Err(e) = run(config).await {
+        if let Err(e) = run(&config).await {
             error!("Gateway run error: {}", e);
         }
     });
