@@ -77,21 +77,31 @@ pub trait TaskStorageQuerier: Sync {
         limit: u32,
         is_restorable_only: bool,
     ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error>>;
-
-    async fn get_check_point_strategy(
-        &self,
-        task_key: &TaskKey,
-    ) -> Result<CheckPointVersionStrategy, Box<dyn std::error::Error>>;
 }
 
 #[async_trait::async_trait]
-pub trait TaskStorage: TaskStorageQuerier + Transaction {
-    async fn update_check_point_strategy(
+pub trait TaskStorageDelete {
+    async fn delete_tasks_by_id(
+        &self,
+        task_id: &[TaskId],
+    ) -> Result<(), Box<dyn std::error::Error>>;
+}
+
+#[async_trait::async_trait]
+pub trait TaskStorageInStrategy: TaskStorageQuerier {
+    async fn prepare_clear_task_in_strategy(
         &self,
         task_key: &TaskKey,
-        strategy: CheckPointVersionStrategy,
-    ) -> Result<(), Box<dyn std::error::Error>>;
+        check_point_version: CheckPointVersion,
+        prev_check_point_version: Option<CheckPointVersion>,
+        strategy: &CheckPointVersionStrategy,
+    ) -> Result<Vec<TaskId>, Box<dyn std::error::Error>> {
+        // TODO: check strategy to clear earlier tasks.
+        Ok(())
+    }
+}
 
+pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transaction {
     async fn create_task(
         &self,
         task_key: &TaskKey,
@@ -99,6 +109,8 @@ pub trait TaskStorage: TaskStorageQuerier + Transaction {
         prev_check_point_version: Option<CheckPointVersion>,
         meta: Option<&str>,
         dir_path: &Path,
+        priority: u32,
+        is_manual: bool,
     ) -> Result<TaskId, Box<dyn std::error::Error>>;
 
     async fn add_file(
@@ -109,26 +121,6 @@ pub trait TaskStorage: TaskStorageQuerier + Transaction {
         file_size: u64,
     ) -> Result<(), Box<dyn std::error::Error>>;
 
-    async fn create_task_in_strategy(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-        prev_check_point_version: Option<CheckPointVersion>,
-        meta: Option<&str>,
-        dir_path: &Path,
-    ) -> Result<TaskId, Box<dyn std::error::Error>> {
-        let strategy = self.get_check_point_strategy(task_key).await?;
-        // TODO: check strategy to clear earlier tasks.
-        self.create_task(
-            task_key,
-            check_point_version,
-            prev_check_point_version,
-            meta,
-            dir_path,
-        )
-        .await
-    }
-
     async fn create_task_with_files(
         &self,
         task_key: &TaskKey,
@@ -137,16 +129,20 @@ pub trait TaskStorage: TaskStorageQuerier + Transaction {
         meta: Option<&str>,
         dir_path: &Path,
         files: &[FileInfo],
+        priority: u32,
+        is_manual: bool,
     ) -> Result<TaskId, Box<dyn std::error::Error>> {
         self.begin_transaction().await?;
 
         let task_id = self
-            .create_task_in_strategy(
+            .create_task(
                 &task_key,
                 check_point_version,
                 prev_check_point_version,
                 meta,
                 dir_path,
+                priority,
+                is_manual,
             )
             .await?;
 
@@ -164,9 +160,13 @@ pub trait TaskStorage: TaskStorageQuerier + Transaction {
 
         Ok(task_id)
     }
-}
 
-pub trait TaskStorageClient: TaskStorage {
+    async fn get_incomplete_tasks(
+        &self,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error>>;
+
     async fn get_incomplete_files(
         &self,
         min_file_seq: usize,
@@ -178,7 +178,7 @@ pub trait TaskStorageClient: TaskStorage {
         check_point_version: CheckPointVersion,
     ) -> Result<Option<TaskId>, Box<dyn std::error::Error>>;
 
-    async fn task_info_pushed(
+    async fn set_task_info_pushed(
         &self,
         task_key: &TaskKey,
         check_point_version: CheckPointVersion,
@@ -193,7 +193,7 @@ pub trait TaskStorageClient: TaskStorage {
         file_path: &Path,
     ) -> Result<Option<(FileServerType, String, u32)>, Box<dyn std::error::Error>>;
 
-    async fn file_info_pushed(
+    async fn set_file_info_pushed(
         &self,
         task_key: &TaskKey,
         check_point_version: CheckPointVersion,

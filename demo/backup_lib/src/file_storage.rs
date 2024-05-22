@@ -22,7 +22,7 @@ pub trait FileStorageClient: FileStorage {
         chunk_seq: u64,
     ) -> Result<Option<(ChunkServerType, String, String)>, Box<dyn std::error::Error>>;
 
-    async fn chunk_info_pushed(
+    async fn set_chunk_info_pushed(
         &self,
         file_hash: &str,
         chunk_seq: u64,

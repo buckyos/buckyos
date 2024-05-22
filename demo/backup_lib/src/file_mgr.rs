@@ -30,4 +30,9 @@ pub trait FileMgrClient {
         chunk_seq: u64,
         chunk_hash: &str,
     ) -> Result<(ChunkServerType, String), Box<dyn std::error::Error>>;
+    async fn set_chunk_uploaded(
+        &self,
+        file_hash: &str,
+        chunk_seq: u64,
+    ) -> Result<(), Box<dyn std::error::Error>>;
 }
