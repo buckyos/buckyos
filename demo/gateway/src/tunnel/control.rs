@@ -25,6 +25,16 @@ pub struct ControlTunnel {
     events: OnceCell<ControlTunnelEventsRef>,
 }
 
+impl std::fmt::Debug for ControlTunnel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ControlTunnel")
+            .field("tunnel_side", &self.tunnel_side)
+            .field("device_id", &self.device_id)
+            .field("remote_device_id", &self.remote_device_id)
+            .finish()
+    }
+}
+
 impl ControlTunnel {
     pub fn new(
         tunnel_side: TunnelSide,

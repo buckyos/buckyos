@@ -96,7 +96,7 @@ impl PeerManager {
         peers.get(peer_id).map(|peer| peer.get().unwrap().clone())
     }
 
-    pub async fn get_or_init_peer(&self, remote_device_id: &str) -> GatewayResult<Arc<PeerClient>> {
+    pub async fn get_or_init_peer(&self, remote_device_id: &str, is_active_side: bool) -> GatewayResult<Arc<PeerClient>> {
         // first check if peer is already exists
         let peer = {
             let mut peers = self.peers.lock().unwrap();
@@ -121,7 +121,10 @@ impl PeerManager {
                     events,
                     self.name_manager.clone(),
                 );
-                peer.start().await?;
+
+                if is_active_side {
+                    peer.start().await?;
+                }
 
                 Ok::<Arc<PeerClient>, GatewayError>(Arc::new(peer))
             })
@@ -138,27 +141,38 @@ impl TunnelServerEvents for PeerManager {
         let build_pkg = ControlPackageTransceiver::read_package(&mut reader).await?;
         match build_pkg.cmd {
             ControlCmd::Init => {
-                let device_id = build_pkg.device_id.clone().ok_or({
+                info!("Recv tunnel init package: {:?}", build_pkg);
+                
+                let device_id = build_pkg.device_id.clone().ok_or_else(|| {
                     let msg = format!(
                         "Invalid control package, device_id missing: {:?}",
                         build_pkg
                     );
                     error!("{}", msg);
-                    GatewayError::InvalidFormat(msg)
-                })?;
-                let peer = self.get_peer(&device_id).ok_or({
-                    let msg = format!("Peer not found: {}", device_id);
-                    error!("{}", msg);
-                    GatewayError::PeerNotFound(msg)
+                    GatewayError::InvalidParam(msg)
                 })?;
 
-                let info = TunnelInitInfo {
-                    pkg: build_pkg,
-                    tunnel_reader: Box::new(reader),
-                    tunnel_writer: Box::new(writer),
-                };
-
-                peer.on_new_tunnel(info).await;
+                match build_pkg.usage {
+                    TunnelUsage::Control => {
+                        let peer = self.get_or_init_peer(&device_id, false).await?;
+                        peer.init_with_control_tunnel(reader, writer).await;
+                    }
+                    TunnelUsage::Data => {
+                        let peer = self.get_peer(&device_id).ok_or_else(|| {
+                            let msg = format!("Peer not found: {}", device_id);
+                            error!("{}", msg);
+                            GatewayError::PeerNotFound(msg)
+                        })?;
+        
+                        let info = TunnelInitInfo {
+                            pkg: build_pkg,
+                            tunnel_reader: Box::new(reader),
+                            tunnel_writer: Box::new(writer),
+                        };
+        
+                        peer.on_new_data_tunnel(info).await;
+                    }
+                }
 
                 Ok(())
             }

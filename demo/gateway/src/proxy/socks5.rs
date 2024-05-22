@@ -136,7 +136,7 @@ impl Socks5Proxy {
             TargetAddr::Domain(domain, port) => (domain, port),
         };
 
-        let peer = self.peer_manager.get_or_init_peer(&device_id).await?;
+        let peer = self.peer_manager.get_or_init_peer(&device_id, true).await?;
 
         let (reader, writer) = peer.build_data_tunnel(port).await?;
 

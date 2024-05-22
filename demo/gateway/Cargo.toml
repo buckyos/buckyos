@@ -16,3 +16,6 @@ serde_json = "*"
 lazy_static = "*"
 clap = "*"
 env_logger = "*"
+
+[dev-dependencies]
+tokio-socks = "*"

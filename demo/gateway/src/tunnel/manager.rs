@@ -1,10 +1,10 @@
 use super::builder::TunnelBuilder;
 use super::control::{ControlTunnel, ControlTunnelEvents};
-use super::protocol::*;
 use super::server::TunnelInitInfo;
 use super::tunnel::*;
-
 use crate::error::*;
+use crate::peer::NameManagerRef;
+
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -44,6 +44,8 @@ struct TunnelWaitInfo {
 // one control tunnel, one or more data tunnel
 #[derive(Clone)]
 pub struct TunnelManager {
+    name_manager: NameManagerRef,
+
     device_id: String,
     remote_device_id: String,
     control_tunnel: Arc<Mutex<Option<ControlTunnel>>>,
@@ -55,8 +57,9 @@ pub struct TunnelManager {
 }
 
 impl TunnelManager {
-    pub fn new(device_id: String, remote_device_id: String) -> Self {
+    pub fn new(name_manager: NameManagerRef, device_id: String, remote_device_id: String) -> Self {
         Self {
+            name_manager,
             device_id,
             remote_device_id,
             control_tunnel: Arc::new(Mutex::new(None)),
@@ -72,6 +75,36 @@ impl TunnelManager {
         }
     }
 
+    // bind control tunnel on passive side
+    pub async fn bind_tunnel_control(
+        &self,
+        tunnel_reader: Box<dyn TunnelReader>,
+        tunnel_writer: Box<dyn TunnelWriter>,
+    ) {
+        let tunnel = ControlTunnel::new(
+            TunnelSide::Passive,
+            self.device_id.clone(),
+            self.remote_device_id.clone(),
+            tunnel_reader,
+            tunnel_writer,
+        );
+
+        tunnel.bind_events(Arc::new(Box::new(self.clone())));
+
+        let prev = self.control_tunnel.lock().await.replace(tunnel.clone());
+
+        // run control tunnel async
+        tokio::task::spawn(async move {
+            tunnel.run().await.unwrap_or_else(|e| {
+                error!("Control tunnel error: {}", e);
+            });
+        });
+
+        if let Some(prev) = prev {
+            warn!("Replace control tunnel: {:?}", prev);
+        }
+    }
+
     // init control on active side if needed
     pub async fn init_control_tunnel(&self) -> GatewayResult<()> {
         let mut control_tunnel = self.control_tunnel.lock().await;
@@ -79,7 +112,11 @@ impl TunnelManager {
             return Ok(());
         }
 
-        let builder = TunnelBuilder::new(self.device_id.clone(), self.remote_device_id.clone());
+        let builder = TunnelBuilder::new(
+            self.name_manager.clone(),
+            self.device_id.clone(),
+            self.remote_device_id.clone(),
+        );
         let tunnel = builder.build_control_tunnel().await?;
         tunnel.bind_events(Arc::new(Box::new(self.clone())));
 
@@ -112,8 +149,11 @@ impl TunnelManager {
 
         match side {
             TunnelSide::Active => {
-                let builder =
-                    TunnelBuilder::new(self.device_id.clone(), self.remote_device_id.clone());
+                let builder = TunnelBuilder::new(
+                    self.name_manager.clone(),
+                    self.device_id.clone(),
+                    self.remote_device_id.clone(),
+                );
                 builder.build_data_tunnel(port, seq).await
             }
             TunnelSide::Passive => {
@@ -152,11 +192,13 @@ impl TunnelManager {
         }
     }
 
+    /*
     pub async fn on_new_tunnel(&self, info: TunnelInitInfo) {
         match info.pkg.cmd {
             ControlCmd::Init => match info.pkg.usage {
                 TunnelUsage::Control => {
-                    self.on_new_control_tunnel(info.tunnel_reader, info.tunnel_writer).await;
+                    self.on_new_control_tunnel(info.tunnel_reader, info.tunnel_writer)
+                        .await;
                 }
                 TunnelUsage::Data => {
                     self.on_new_data_tunnel(
@@ -202,15 +244,16 @@ impl TunnelManager {
         assert!(control_tunnel.is_none());
         *control_tunnel = Some(tunnel);
     }
+    */
 
-    async fn on_new_data_tunnel(
+    pub async fn on_new_data_tunnel(
         &self,
-        tunnel_reader: Box<dyn TunnelReader>,
-        tunnel_writer: Box<dyn TunnelWriter>,
-        seq: u32,
-        port: u16,
+        info: TunnelInitInfo,
     ) {
-        assert!(port > 0);
+        let tunnel_reader = info.tunnel_reader;
+        let tunnel_writer = info.tunnel_writer;
+        let port = info.pkg.port.unwrap_or(0);
+        let seq = info.pkg.seq;
 
         if seq == 0 {
             if let Err(e) = self
@@ -241,7 +284,11 @@ impl TunnelManager {
 #[async_trait::async_trait]
 impl ControlTunnelEvents for TunnelManager {
     async fn on_req_data_tunnel(&self, port: u16, seq: u32) -> GatewayResult<()> {
-        let builder = TunnelBuilder::new(self.device_id.clone(), self.remote_device_id.clone());
+        let builder = TunnelBuilder::new(
+            self.name_manager.clone(),
+            self.device_id.clone(),
+            self.remote_device_id.clone(),
+        );
         let (reader, writer) = builder.build_data_tunnel(port, seq).await?;
 
         self.events

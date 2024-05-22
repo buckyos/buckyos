@@ -30,7 +30,7 @@ impl TcpTunnelServer {
         })?;
 
         info!("Tcp tunnel server started at {}", self.addr);
-        
+
         let this = self.clone();
         tokio::spawn(async move {
             match this.run(listener).await {
@@ -49,8 +49,7 @@ impl TcpTunnelServer {
     async fn run(&self, listener: TcpListener) -> GatewayResult<()> {
         loop {
             match listener.accept().await {
-                Ok((stream, _)) => {
-                    let remote = stream.peer_addr().unwrap().to_string();
+                Ok((stream, remote)) => {
                     info!("Recv tcp tunnel connection from {}", remote);
 
                     let events = self.events.get().unwrap().clone();
@@ -58,10 +57,10 @@ impl TcpTunnelServer {
                         let tunnel = TcpTunnel::new(remote.clone(), stream);
                         match events.on_new_tunnel(Box::new(tunnel)).await {
                             Ok(_) => {
-                                info!("New tunnel connection closed {}", remote);
+                                info!("Process new tunnel connection success {}", remote);
                             }
                             Err(e) => {
-                                error!("Error handling tcp tunnel connection: {} {}", e, remote);
+                                error!("Error handling tcp tunnel connection: {} {}", remote, e);
                             }
                         }
                     });

@@ -61,7 +61,7 @@ impl NameManager {
             id: "device_id",
             addr: "ip",
             port: 1234,
-            type: "wan/lan"
+            addr_type: "wan/lan"
         }
     ]
      */
@@ -84,12 +84,12 @@ impl NameManager {
                 .unwrap_or(TUNNEL_SERVER_DEFAULT_PORT as u64) as u16;
 
             // parse addr_type as optional
-            let addr_type = item["type"]
+            let addr_type = item["addr_type"]
                 .as_str()
                 .map(|s| PeerAddrType::from_str(s))
                 .transpose()
                 .map_err(|e| {
-                    let msg = format!("Error parsing addr type: {}", e);
+                    let msg = format!("Error parsing addr_type: {}", e);
                     GatewayError::InvalidConfig(msg)
                 })?;
 
@@ -149,17 +149,25 @@ impl NameManager {
         }
     }
 
-    pub async fn register(&self, device_id: String, addr: SocketAddr) {
-        let addr_type = Self::get_addr_type(&addr);
+    pub fn add(&self, device_id: String, addr: SocketAddr, addr_type: Option<PeerAddrType>) {
+        let addr_type  = match addr_type {
+            Some(addr_type) => addr_type,
+            None => Self::get_addr_type(&addr),
+        };
+
         let mut names = self.names.lock().unwrap();
-        names.insert(
+        if let Some(prev) = names.insert(
             device_id.clone(),
             NameInfo {
-                device_id,
-                addr,
+                device_id: device_id.clone(),
+                addr: addr.clone(),
                 addr_type,
             },
-        );
+        ) {
+            warn!("Device id {} already registered, update to {} -> {}", device_id, prev.addr, addr);
+        } else {
+            info!("Register device id {} to addr {}", device_id, addr);
+        }
     }
 
     fn get_addr_type(addr: &SocketAddr) -> PeerAddrType {
@@ -186,6 +194,15 @@ impl NameManager {
         }
 
         None
+    }
+
+    pub fn select_peers_by_type(&self, addr_type: PeerAddrType) -> Vec<NameInfo> {
+        let names = self.names.lock().unwrap();
+        names
+            .values()
+            .filter(|info| info.addr_type == addr_type)
+            .cloned()
+            .collect()
     }
 }
 

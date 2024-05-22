@@ -4,6 +4,7 @@ const ETCD1_CONFIG: &str = r#"
 {
     "config": {
         "device_id": "etcd1",
+        "addr_type": "lan",
         "tunnel_server_port": 23559
     },
     "known_device": [
@@ -25,7 +26,8 @@ const ETCD1_CONFIG: &str = r#"
 const GATEWAY_CONFIG: &str = r#"
 {
     "config": {
-        "device_id": "gateway"
+        "device_id": "gateway",
+        "addr_type": "wan"
     },
     "known_device": [
         {
@@ -44,7 +46,7 @@ const GATEWAY_CONFIG: &str = r#"
 }
 "#;
 
-async fn run_etcd1() {
+async fn start_gateway() {
     let config = serde_json::from_str(ETCD1_CONFIG).unwrap();
     let etcd1 = Gateway::load(&config).unwrap();
     etcd1.start().await.unwrap();
@@ -55,7 +57,14 @@ async fn run_etcd1() {
 }
 
 pub async fn main() {
-    run_etcd1().await;
+
+    /*
+    let proxy_addr = "127.0.0.1:1080".parse::<SocketAddr>()?;
+    let target_addr = "etcd1:1008".parse()?;
+
+    let stream = Socks5Stream::connect(proxy_addr, target_addr).await?;
+    let (mut reader, mut writer) = stream.split();
+    */
 }
 
 #[tokio::test]
@@ -65,5 +74,8 @@ async fn test_main() {
     env_logger::init();
     info!("Will run etcd1 and gateway...");
 
-    run_etcd1().await;
+    start_gateway().await;
+
+    // sleep 5s
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 }

@@ -1,14 +1,17 @@
 use crate::constants::TUNNEL_SERVER_DEFAULT_PORT;
 use crate::error::{GatewayError, GatewayResult};
-use crate::peer::NameManagerRef;
+use crate::peer::{NameManagerRef, PeerAddrType};
 use crate::proxy::ProxyManagerRef;
 use crate::service::UpstreamManagerRef;
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 /*
 "config": {
     "device-id": "client1",
+    "addr_type": "wan/lan",
+    "tunnel_server_port": 23558
 },
 "known_device": [{
     "id": "gateway",
@@ -31,6 +34,7 @@ use std::sync::Arc;
 
 pub struct GlobalConfig {
     device_id: String,
+    addr_type: PeerAddrType,
     tunnel_server_port: u16,
 }
 
@@ -38,6 +42,7 @@ impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             device_id: "".to_owned(),
+            addr_type: PeerAddrType::WAN,
             tunnel_server_port: TUNNEL_SERVER_DEFAULT_PORT,
         }
     }
@@ -48,6 +53,10 @@ impl GlobalConfig {
         &self.device_id
     }
 
+    pub fn addr_type(&self) -> PeerAddrType {
+        self.addr_type
+    }
+    
     pub fn tunnel_server_port(&self) -> u16 {
         self.tunnel_server_port
     }
@@ -77,6 +86,8 @@ impl ConfigLoader {
 
     pub fn load_config_node(json: &serde_json::Value) -> GatewayResult<GlobalConfigRef> {
 
+        let mut config = GlobalConfig::default();
+
         let value = json
             .get("config")
             .ok_or(GatewayError::InvalidConfig("config".to_owned()))?;
@@ -88,6 +99,15 @@ impl ConfigLoader {
         let device_id = value["device_id"]
             .as_str()
             .ok_or(GatewayError::InvalidConfig("device_id".to_owned()))?;
+
+        let addr_type  = if let Some(v) = value.get("addr_type") {
+            let addr_type = v
+                .as_str()
+                .ok_or(GatewayError::InvalidConfig("addr_type".to_owned()))?;
+            PeerAddrType::from_str(addr_type)?
+        } else {
+            config.addr_type
+        };
 
         let port =if let Some(v) = value.get("tunnel_server_port") {
             let port = v
@@ -102,8 +122,9 @@ impl ConfigLoader {
             TUNNEL_SERVER_DEFAULT_PORT
         };
 
-        let mut config = GlobalConfig::default();
+        
         config.device_id = device_id.to_owned();
+        config.addr_type = addr_type;
         config.tunnel_server_port = port;
 
     

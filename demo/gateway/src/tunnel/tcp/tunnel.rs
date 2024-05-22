@@ -1,23 +1,25 @@
+use std::net::SocketAddr;
+
 use super::super::tunnel::{Tunnel, TunnelReader, TunnelWriter};
 use crate::error::*;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 
 pub struct TcpTunnel {
-    remote: String,
+    remote: SocketAddr,
     stream: TcpStream,
 }
 
 impl TcpTunnel {
-    pub fn new(remote: String, stream: TcpStream) -> Self {
+    pub fn new(remote: SocketAddr, stream: TcpStream) -> Self {
         Self { remote, stream }
     }
     
-    pub fn remote(&self) -> &String {
+    pub fn remote(&self) -> &SocketAddr {
         &self.remote
     }
 
-    pub async fn build(remote: String) -> GatewayResult<Self> {
+    pub async fn build(remote: SocketAddr) -> GatewayResult<Self> {
         let stream = TcpStream::connect(&remote).await.map_err(|e| {
             error!("Error connecting to remote {}: {}", remote, e);
             e

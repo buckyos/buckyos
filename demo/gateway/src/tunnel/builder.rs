@@ -2,23 +2,40 @@ use super::control::ControlTunnel;
 use super::protocol::*;
 use super::tcp::TcpTunnel;
 use super::tunnel::*;
-use crate::error::GatewayResult;
+use crate::error::*;
+use crate::peer::{NameInfo, NameManagerRef };
 
 pub struct TunnelBuilder {
+    name_manager: NameManagerRef,
     device_id: String,
     remote_device_id: String,
 }
 
 impl TunnelBuilder {
-    pub fn new(device_id: String, remote_device_id: String) -> Self {
+    pub fn new(
+        name_manager: NameManagerRef,
+        device_id: String, remote_device_id: String) -> Self {
         Self {
+            name_manager,
             device_id,
             remote_device_id,
         }
     }
 
+    async fn resolve_remote(&self) -> GatewayResult<NameInfo> {
+        let remote = self.name_manager.resolve(&self.remote_device_id).await;
+        if remote.is_none() {
+            return Err(GatewayError::PeerNotFound(format!(
+                "Peer not found: {}", self.remote_device_id
+            )));
+        }
+        Ok(remote.unwrap())
+    }
+
     pub async fn build_control_tunnel(&self) -> GatewayResult<ControlTunnel> {
-        let tunnel = TcpTunnel::build(self.remote_device_id.clone()).await?;
+        let remote = self.resolve_remote().await?;
+
+        let tunnel = TcpTunnel::build(remote.addr).await?;
         let (reader, mut writer) = tunnel.split();
 
         let init_pkg = ControlPackage::new(
@@ -46,7 +63,8 @@ impl TunnelBuilder {
     ) -> GatewayResult<(Box<dyn TunnelReader>, Box<dyn TunnelWriter>)> {
         assert!(port > 0);
 
-        let tunnel = TcpTunnel::build(self.remote_device_id.clone()).await?;
+        let remote = self.resolve_remote().await?;
+        let tunnel = TcpTunnel::build(remote.addr).await?;
         let (reader, mut writer) = tunnel.split();
 
         let build_pkg = ControlPackage::new(
