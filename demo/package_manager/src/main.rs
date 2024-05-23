@@ -28,14 +28,14 @@ fn init_log_config() {
     CombinedLogger::init(vec![
         // 将日志输出到标准输出，例如终端
         TermLogger::new(
-            LevelFilter::Info,
+            LevelFilter::Debug,
             config.clone(),
             TerminalMode::Mixed,
             ColorChoice::Auto,
         ),
         // 同时将日志输出到文件
         WriteLogger::new(
-            LevelFilter::Info,
+            LevelFilter::Debug,
             config,
             std::fs::File::create("package_manager.log").unwrap(),
         ),

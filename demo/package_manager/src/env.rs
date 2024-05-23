@@ -107,7 +107,9 @@ impl PackageEnv {
 
     pub async fn build(&self, update: bool) -> PkgSysResult<()> {
         // 检查lock文件是否需要更新
+        info!("Begin build env, force update: {}", update);
         let need_update = self.check_lock_need_update()?;
+        info!("Need update lock file: {}", need_update);
         if need_update || update {
             self.update_index().await?;
             self.update_lock_file()?;
@@ -117,10 +119,10 @@ impl PackageEnv {
         let package_list: PackageLockList = lock_packages.try_into().map_err(|err| {
             PackageSystemErrors::ParseError("pkg.lock".to_string(), err.to_string())
         })?;
-        let install_path = self.get_install_dir();
-        let tmp_install_path = self.get_tmp_dir();
-        std::fs::create_dir_all(&install_path)?;
-        std::fs::create_dir_all(&tmp_install_path)?;
+        let dest_dir = self.get_install_dir();
+        let pkg_cache_dir = self.get_pkg_cache_dir();
+        std::fs::create_dir_all(&dest_dir)?;
+        std::fs::create_dir_all(&pkg_cache_dir)?;
 
         let downloader = downloader::FakeDownloader::new();
         let mut download_futures = Vec::new();
@@ -129,8 +131,8 @@ impl PackageEnv {
         for lock_info in package_list.packages.iter() {
             // 如果install_path下已经有目标包，认为是已经成功安装的，不再下载
             let target_package = format!("{}_{}", lock_info.name, lock_info.version);
-            let target_dest_file = install_path.join(&target_package);
-            if target_dest_file.exists() {
+            let target_dest_dir = dest_dir.join(&target_package);
+            if target_dest_dir.exists() {
                 info!(
                     "Package {} already installed, skip download",
                     target_package
@@ -138,22 +140,22 @@ impl PackageEnv {
                 continue;
             }
             let target_name = format!("{}.bkz", target_package);
-            let target_install_file = install_path.join(&target_name);
+            let target_pkg_file = pkg_cache_dir.join(&target_name);
             // TODO 这里其实target_install_file存在的话也不应该下载
             let url = format!(
                 "http://127.0.0.1:3030/download/{}?version={}",
                 lock_info.name, lock_info.version
             );
             let target_tmp_name = format!("{}.tmp", target_name);
-            let target_tmp_install_file = tmp_install_path.join(&target_tmp_name);
+            let target_pkg_tmp_file = pkg_cache_dir.join(&target_tmp_name);
             let downloader = downloader.clone();
             let lock_info_clone = lock_info.clone();
-            let install_path_clone = install_path.clone();
+            //let install_path_clone = install_path.clone();
 
             // 创建一个异步任务
             let download_future = async move {
                 let task_id = downloader
-                    .download(&url, &target_tmp_install_file, None)
+                    .download(&url, &target_pkg_tmp_file, None)
                     .await?;
                 loop {
                     let state = downloader.get_task_state(task_id)?;
@@ -165,12 +167,24 @@ impl PackageEnv {
                     }
                     if state.downloaded_size == state.total_size && state.total_size > 0 {
                         // 下载完成，验证文件
-                        Self::verify_package(&target_tmp_install_file, lock_info_clone.sha256)?;
+                        Self::verify_package(&target_pkg_tmp_file, lock_info_clone.sha256)?;
+                        info!("Verify {} completed", target_name);
                         // 重命名文件
-                        std::fs::rename(&target_tmp_install_file, &target_install_file)?;
+                        debug!(
+                            "Will rename {} to {}",
+                            target_pkg_tmp_file.display(),
+                            target_pkg_file.display()
+                        );
+                        std::fs::rename(&target_pkg_tmp_file, &target_pkg_file)?;
                         info!("Download {} completed", target_name);
                         // 解压文件
-                        Self::unpack(&target_install_file, &install_path_clone)?;
+                        Self::unpack(&target_pkg_file, &target_dest_dir)?;
+                        debug!(
+                            "Unpack complete: {} => {}",
+                            target_pkg_file.display(),
+                            target_dest_dir.display()
+                        );
+                        info!("Install {} completed", target_package);
 
                         return Ok(());
                     }
@@ -228,6 +242,10 @@ impl PackageEnv {
     }
 
     fn unpack(tar_gz_path: &PathBuf, target_dir: &PathBuf) -> io::Result<()> {
+        if target_dir.exists() {
+            fs::remove_dir_all(target_dir)?;
+        }
+        fs::create_dir_all(target_dir)?;
         let tar_gz = std::fs::File::open(tar_gz_path)?;
         let tar = GzDecoder::new(tar_gz);
         let mut archive = Archive::new(tar);
@@ -239,8 +257,8 @@ impl PackageEnv {
         self.work_dir.join(".pkgs")
     }
 
-    fn get_tmp_dir(&self) -> PathBuf {
-        self.get_install_dir().join(".tmp")
+    fn get_pkg_cache_dir(&self) -> PathBuf {
+        self.get_install_dir().join(".cache")
     }
 
     // 检查lock文件是否符合当前package.toml的版本和依赖要求
