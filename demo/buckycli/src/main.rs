@@ -1,3 +1,6 @@
+extern crate core;
+
+use core::fmt;
 use std::collections::HashMap;
 use clap::{Arg, Command, value_parser};
 use std::fs;
@@ -229,6 +232,11 @@ async fn main() -> std::result::Result<(), String> {
             .arg(Arg::new("name")
                 .help("The name of the service to be queried")
                 .required(true)))
+        .subcommand(Command::new("check_dns")
+            .about("Check whether the dns configuration of the specified zone name is valid")
+            .arg(Arg::new("name")
+                .help("The name of the service to be checked")
+                .required(true)))
         // .arg(
         //     Arg::new("snapshot")
         //         .short('s')
@@ -291,6 +299,21 @@ async fn main() -> std::result::Result<(), String> {
                 },
                 Err(e) => {
                     println!("{}", e);
+                }
+            }
+        },
+        Some(("check_dns", name_matches)) => {
+            let name: &String = name_matches.get_one("name").unwrap();
+            match query(name).await {
+                Ok(name_info) => {
+                    if name_info.extra.is_some() {
+                        println!("valid");
+                    } else {
+                        println!("invalid");
+                    }
+                },
+                Err(_) => {
+                    println!("invalid");
                 }
             }
         },
