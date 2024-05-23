@@ -10,17 +10,18 @@ pub struct FileInfo {
     pub file_size: u64,
 }
 
-pub trait FileStorageQuerier {}
+pub trait FileStorageQuerier: Send + Sync {}
 
 pub trait FileStorage: FileStorageQuerier {}
 
+#[async_trait::async_trait]
 pub trait FileStorageClient: FileStorage {
     // Ok((chunk-server-type, chunk-server-name, chunk-hash))
     async fn is_chunk_info_pushed(
         &self,
         file_hash: &str,
         chunk_seq: u64,
-    ) -> Result<Option<(ChunkServerType, String, String)>, Box<dyn std::error::Error>>;
+    ) -> Result<Option<(ChunkServerType, String, String)>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn set_chunk_info_pushed(
         &self,
@@ -29,5 +30,5 @@ pub trait FileStorageClient: FileStorage {
         chunk_server_type: ChunkServerType,
         server_name: &str,
         chunk_hash: &str,
-    ) -> Result<(), Box<dyn std::error::Error>>;
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }

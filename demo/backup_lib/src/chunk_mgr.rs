@@ -1,10 +1,12 @@
 use crate::{CheckPointVersion, TaskKey};
 
+#[derive(Copy, Clone)]
 pub enum ChunkServerType {}
 
 pub trait ChunkMgrServer {}
 
-pub trait ChunkMgrSelector {
+#[async_trait::async_trait]
+pub trait ChunkMgrSelector: Send + Sync {
     async fn select(
         &self,
         task_key: &TaskKey,
@@ -12,17 +14,18 @@ pub trait ChunkMgrSelector {
         file_hash: &str,
         chunk_seq: u32,
         chunk_hash: &str,
-    ) -> Result<Box<dyn ChunkMgrClient>, Box<dyn std::error::Error>>;
+    ) -> Result<Box<dyn ChunkMgrClient>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn select_by_name(
         &self,
         chunk_server_type: ChunkServerType,
         server_name: &str,
-    ) -> Result<Box<dyn ChunkMgrClient>, Box<dyn std::error::Error>>;
+    ) -> Result<Box<dyn ChunkMgrClient>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
-pub trait ChunkMgrClient {
+#[async_trait::async_trait]
+pub trait ChunkMgrClient: Send + Sync {
     fn server_type(&self) -> ChunkServerType;
     fn server_name(&self) -> &str;
-    fn upload(&self, chunk_hash: &str, chunk: &[u8]) -> Result<(), Box<dyn std::error::Error>>;
+    async fn upload(&self, chunk_hash: &str, chunk: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }

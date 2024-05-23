@@ -12,5 +12,5 @@ members = [
     "./etcd_tool",
     "./package_manager",
     "./package_server",
-    "./package_cli"
+    "./package_cli", "backup_service", "backup_lib",
 ]

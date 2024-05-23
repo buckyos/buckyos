@@ -1,9 +1,7 @@
 mod chunk_mgr;
 mod chunk_storage;
-mod chunk_storage_sqlite;
 mod file_mgr;
 mod file_storage;
-mod file_storage_sqlite;
 mod storage;
 mod task;
 mod task_mgr;
@@ -11,10 +9,8 @@ mod task_storage;
 
 pub use chunk_mgr::*;
 pub use chunk_storage::*;
-pub use chunk_storage_sqlite::*;
 pub use file_mgr::*;
 pub use file_storage::*;
-pub use file_storage_sqlite::*;
 pub use storage::*;
 pub use task::*;
 pub use task_mgr::*;

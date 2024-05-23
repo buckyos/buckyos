@@ -1,14 +1,15 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc},
 };
 
 use backup_lib::{
     CheckPointVersion, CheckPointVersionStrategy, ChunkMgrSelector, ChunkStorageClient,
-    FileMgrSelector, FileStorage, FileStorageClient, ListOffset, TaskId, TaskInfo, TaskKey,
+    FileMgrSelector, FileStorageClient, ListOffset, TaskId, TaskInfo, TaskKey,
     TaskMgrSelector, TaskStorageClient, TaskStorageQuerier,
 };
+use tokio::sync::Mutex;
 
 use crate::task::{BackupTask, BackupTaskEvent, RestoreTask, Task, TaskInner};
 
@@ -50,13 +51,13 @@ impl BackupTaskMap {
         self.tasks.remove(&task_id);
         self.task_ids
             .entry(task_key)
-            .and_modify(|v| v.remove(&version));
+            .and_modify(|v| {v.remove(&version);});
     }
 }
 
 enum BackupState {
-    Running,
-    Stopping(tokio::sync::mpsc::Sender<()>),
+    Running(tokio::sync::mpsc::Sender<BackupTaskEvent>),
+    Stopping(tokio::sync::mpsc::Sender<()>, tokio::sync::mpsc::Sender<BackupTaskEvent>),
     Stopped,
 }
 
@@ -68,8 +69,6 @@ pub(crate) struct BackupTaskMgrInner {
     file_mgr_selector: Arc<Box<dyn FileMgrSelector>>,
     chunk_mgr_selector: Arc<Box<dyn ChunkMgrSelector>>,
     running_tasks: Arc<Mutex<BackupTaskMap>>,
-    task_event_sender: tokio::sync::mpsc::Sender<BackupTaskEvent>,
-    task_event_receiver: tokio::sync::mpsc::Receiver<BackupTaskEvent>,
     state: Arc<Mutex<BackupState>>,
 }
 
@@ -98,29 +97,34 @@ impl BackupTaskMgrInner {
         self.chunk_mgr_selector.clone()
     }
 
-    pub(crate) fn task_event_sender(&self) -> Arc<Box<dyn TaskEventSender>> {
-        self.task_event_sender.clone()
+    pub(crate) fn task_event_sender(&self) -> Option<tokio::sync::mpsc::Sender<BackupTaskEvent>> {
+        let handle = tokio::runtime::Handle::current();
+        handle.block_on(async {
+            let state = self.state.lock().await;
+            match &*state {
+                BackupState::Running(sender) => Some(sender.clone()),
+                BackupState::Stopping(_, sender) => Some(sender.clone()),
+                _ => None
+            }            
+        })
     }
 
-    fn try_run(&self, backup_task: BackupTask) {
-        let mut running_tasks = self.running_tasks.lock().unwrap();
-        running_tasks.try_run(backup_task);
+    fn try_run(&self, backup_task: BackupTask) -> usize {
+        let handle = tokio::runtime::Handle::current();
+        handle.block_on(async {
+            let mut running_tasks = self.running_tasks.lock().await;
+            running_tasks.try_run(backup_task);
+            running_tasks.tasks.len()
+        })
     }
 
-    fn remove_task(&self, backup_task: &BackupTask) {
-        let mut running_tasks = self.running_tasks.lock().unwrap();
-        running_tasks.try_run(backup_task);
-    }
-
-    fn makeup_tasks(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let incomplete_tasks = self.task_storage.get_incomplete_tasks(0, 10).await?;
-        // TODO: filter by priority
-        for task in incomplete_tasks {
-            let backup_task = BackupTask::from_storage(Arc::downgrade(&self), task);
-            self.try_run(backup_task);
-        }
-
-        Ok(())
+    fn remove_task(&self, backup_task: &BackupTask) -> usize {
+        let handle = tokio::runtime::Handle::current();
+        handle.block_on(async {
+            let mut running_tasks = self.running_tasks.lock().await;
+            running_tasks.remove_task(backup_task);
+            running_tasks.tasks.len()
+        })
     }
 }
 
@@ -135,7 +139,7 @@ impl BackupTaskMgr {
         file_mgr_selector: Box<dyn FileMgrSelector>,
         chunk_mgr_selector: Box<dyn ChunkMgrSelector>,
     ) -> Self {
-        let (task_event_sender, task_event_receiver) = tokio::sync::mpsc::channel(1024);
+        // let (task_event_sender, task_event_receiver) = tokio::sync::mpsc::channel(1024);
         let task_mgr = Arc::new(BackupTaskMgrInner {
             task_storage: Arc::new(task_storage),
             file_storage: Arc::new(file_storage),
@@ -144,32 +148,34 @@ impl BackupTaskMgr {
             file_mgr_selector: Arc::new(file_mgr_selector),
             chunk_mgr_selector: Arc::new(chunk_mgr_selector),
             running_tasks: Arc::new(Mutex::new(BackupTaskMap::new())),
-            task_event_sender,
-            task_event_receiver,
             state: Arc::new(Mutex::new(BackupState::Stopped)),
         });
 
         Self(task_mgr)
     }
 
-    pub async fn start(&self) -> Result<()> {
-        let mut state = self.0.state.lock().unwrap();
-        match state {
-            BackupState::Running => return Err("BackupTaskMgr is already started".into()),
-            BackupState::Stopping(_) => {
-                return Err("BackupTaskMgr is stopping, you should wait it finish.".into())
-            }
-            BackupState::Stopped => *state = BackupState::Running,
+    pub async fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (task_event_sender, mut task_event_receiver) = tokio::sync::mpsc::channel(1024);
+
+        {
+            let mut state = self.0.state.lock().await;
+            match &*state {
+                BackupState::Running(_) => return Err("BackupTaskMgr is already started".into()),
+                BackupState::Stopping(_, _) => {
+                    return Err("BackupTaskMgr is stopping, you should wait it finish.".into())
+                }
+                BackupState::Stopped => *state = BackupState::Running(task_event_sender),
+            }            
         }
 
         let task_mgr = self.0.clone();
         // listen events from tasks
         tokio::task::spawn(async move {
             loop {
-                task_mgr.makeup_tasks().expect("todo: you can retry later");
-                if let Some(event) = task_mgr.task_event_receiver.recv().await {
+                // self.makeup_tasks().await.expect("todo: you can retry later");
+                if let Some(event) = task_event_receiver.recv().await {
                     match event {
-                        BackupTaskEvent::New(backup_task) => task_mgr.try_run(backup_task),
+                        BackupTaskEvent::New(backup_task) => {task_mgr.try_run(backup_task);},
                         BackupTaskEvent::Idle(backup_task) => {
                             task_mgr.remove_task(&backup_task);
                         }
@@ -183,14 +189,15 @@ impl BackupTaskMgr {
                             task_mgr.remove_task(&backup_task);
                         }
                         BackupTaskEvent::Stop(backup_task) => {
-                            task_mgr.remove_task(&backup_task);
-                            let state = task_mgr.state.lock().unwrap();
-                            match state {
-                                BackupState::Running => {}
-                                BackupState::Stopping(sender) => {
-                                    if task_mgr.running_tasks.lock().unwrap().tasks.is_empty() {
+                            let task_count = task_mgr.remove_task(&backup_task);
+                            let mut state = task_mgr.state.lock().await;
+                            match &*state {
+                                BackupState::Running(_) => {}
+                                BackupState::Stopping(stop_notifier, _) => {
+                                    if task_count == 0 {
+                                        let stop_notifier = stop_notifier.clone();
                                         *state = BackupState::Stopped;
-                                        sender.send(()).await;
+                                        stop_notifier.send(()).await;
                                         break;
                                     }
                                 }
@@ -207,13 +214,13 @@ impl BackupTaskMgr {
         Ok(())
     }
 
-    pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
         {
-            let mut state = self.0.state.lock().unwrap();
-            match state {
-                BackupState::Running => *state = BackupState::Stopping(sender),
-                BackupState::Stopping(_) => {
+            let mut state = self.0.state.lock().await;
+            match &*state {
+                BackupState::Running(task_event_sender) => *state = BackupState::Stopping(sender, task_event_sender.clone()),
+                BackupState::Stopping(_, _) => {
                     return Err("BackupTaskMgr is stopping, you should wait it finish.".into())
                 }
                 BackupState::Stopped => return Err("BackupTaskMgr is already stopped".into()),
@@ -234,11 +241,11 @@ impl BackupTaskMgr {
         is_discard_incomplete_versions: bool,
         priority: u32,
         is_manual: bool,
-    ) -> Result<BackupTask, Box<dyn std::error::Error>> {
+    ) -> Result<BackupTask, Box<dyn std::error::Error + Send + Sync>> {
         let mgr = Arc::downgrade(&self.0);
         let backup_task = BackupTask::create_new(
             mgr,
-            task_key,
+            task_key.clone(),
             check_point_version,
             prev_check_point_version,
             meta,
@@ -249,10 +256,10 @@ impl BackupTaskMgr {
         )
         .await?;
 
-        self.0
-            .task_event_sender
-            .send(BackupTaskEvent::New(backup_task.clone()))
-            .await?;
+        if let Some(task_event_sender) = self.0.task_event_sender() {
+            task_event_sender.send(BackupTaskEvent::New(backup_task.clone())).await?;
+        }
+            
 
         if let Ok(remote_task_server) = self.0.task_mgr_selector.select(&task_key, None).await {
             if let Ok(strategy) = remote_task_server.get_check_point_strategy(&task_key).await {
@@ -284,14 +291,14 @@ impl BackupTaskMgr {
         &self,
         task_key: &TaskKey,
         check_point_version: Option<CheckPointVersion>,
-    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
         unimplemented!()
     }
 
     pub async fn get_last_check_point_version(
         &self,
         task_key: &TaskKey,
-    ) -> Result<TaskInfo, Box<dyn std::error::Error>> {
+    ) -> Result<TaskInfo, Box<dyn std::error::Error + Send + Sync>> {
         self.0
             .task_storage
             .get_last_check_point_version(task_key, false)
@@ -303,7 +310,7 @@ impl BackupTaskMgr {
         task_key: &TaskKey,
         offset: ListOffset,
         limit: u32,
-    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
         self.0
             .task_storage
             .get_check_point_version_list(task_key, offset, limit, false)
@@ -313,15 +320,17 @@ impl BackupTaskMgr {
     pub async fn get_check_point_strategy(
         &self,
         task_key: &TaskKey,
-    ) -> Result<CheckPointVersionStrategy, Box<dyn std::error::Error>> {
-        self.0.task_storage.get_check_point_strategy(task_key).await
+    ) -> Result<CheckPointVersionStrategy, Box<dyn std::error::Error + Send + Sync>> {
+        self.0.task_mgr_selector
+            .select(task_key, None)
+            .await?.get_check_point_strategy(task_key).await
     }
 
     pub async fn update_check_point_strategy(
         &self,
         task_key: &TaskKey,
         strategy: CheckPointVersionStrategy,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.0
             .task_mgr_selector
             .select(task_key, None)
@@ -329,17 +338,28 @@ impl BackupTaskMgr {
             .update_check_point_strategy(task_key, strategy)
             .await
     }
+
+    async fn makeup_tasks(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let incomplete_tasks = self.0.task_storage.get_incomplete_tasks(0, 10).await?;
+        // TODO: filter by priority
+        for task in incomplete_tasks {
+            let backup_task = BackupTask::from_storage(Arc::downgrade(&self.0), task);
+            self.0.try_run(backup_task);
+        }
+
+        Ok(())
+    }
 }
 
 pub struct RestoreTaskMgr {
     task_storage: Box<dyn TaskStorageQuerier>,
-    file_mgr_selector: Box<dyn RestoreFileMgrSelector>,
+    file_mgr_selector: Box<dyn FileMgrSelector>,
 }
 
 impl RestoreTaskMgr {
     pub fn new(
         task_storage: Box<dyn TaskStorageQuerier>,
-        file_mgr_selector: Box<dyn RestoreFileMgrSelector>,
+        file_mgr_selector: Box<dyn FileMgrSelector>,
     ) -> Self {
         RestoreTaskMgr {
             task_storage,
@@ -352,14 +372,14 @@ impl RestoreTaskMgr {
         task_key: TaskKey,
         check_point_version: CheckPointVersion,
         dir_path: &Path,
-    ) -> Result<RestoreTask, Box<dyn std::error::Error>> {
+    ) -> Result<RestoreTask, Box<dyn std::error::Error + Send + Sync>> {
         unimplemented!()
     }
 
     pub async fn get_last_check_point_version(
         &self,
         task_key: &TaskKey,
-    ) -> Result<TaskInfo, Box<dyn std::error::Error>> {
+    ) -> Result<TaskInfo, Box<dyn std::error::Error + Send + Sync>> {
         self.task_storage
             .get_last_check_point_version(task_key, true)
             .await
@@ -370,7 +390,7 @@ impl RestoreTaskMgr {
         task_key: &TaskKey,
         offset: ListOffset,
         limit: u32,
-    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
         self.task_storage
             .get_check_point_version_list(task_key, offset, limit, true)
             .await

@@ -54,12 +54,12 @@ pub struct CheckPointVersionStrategy {
 }
 
 #[async_trait::async_trait]
-pub trait TaskStorageQuerier: Sync {
+pub trait TaskStorageQuerier: Send + Sync {
     async fn get_last_check_point_version(
         &self,
         task_key: &TaskKey,
         is_restorable_only: bool,
-    ) -> Result<TaskInfo, Box<dyn std::error::Error>>;
+    ) -> Result<TaskInfo, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn get_check_point_version_list(
         &self,
@@ -67,7 +67,7 @@ pub trait TaskStorageQuerier: Sync {
         offset: ListOffset,
         limit: u32,
         is_restorable_only: bool,
-    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error>>;
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn get_check_point_version_list_in_range(
         &self,
@@ -76,7 +76,7 @@ pub trait TaskStorageQuerier: Sync {
         max_version: Option<CheckPointVersion>,
         limit: u32,
         is_restorable_only: bool,
-    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error>>;
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]
@@ -84,7 +84,7 @@ pub trait TaskStorageDelete {
     async fn delete_tasks_by_id(
         &self,
         task_id: &[TaskId],
-    ) -> Result<(), Box<dyn std::error::Error>>;
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]
@@ -95,7 +95,7 @@ pub trait TaskStorageInStrategy: TaskStorageQuerier {
         check_point_version: CheckPointVersion,
         prev_check_point_version: Option<CheckPointVersion>,
         strategy: &CheckPointVersionStrategy,
-    ) -> Result<Vec<TaskId>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<TaskId>, Box<dyn std::error::Error + Send + Sync>> {
         // TODO: check strategy to clear earlier tasks.
         Ok(vec![])
     }
@@ -112,7 +112,7 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         dir_path: &Path,
         priority: u32,
         is_manual: bool,
-    ) -> Result<TaskId, Box<dyn std::error::Error>>;
+    ) -> Result<TaskId, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn add_file(
         &self,
@@ -120,7 +120,7 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         file_path: &Path,
         hash: &str,
         file_size: u64,
-    ) -> Result<(), Box<dyn std::error::Error>>;
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     async fn create_task_with_files(
         &self,
@@ -132,7 +132,7 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         files: &[FileInfo],
         priority: u32,
         is_manual: bool,
-    ) -> Result<TaskId, Box<dyn std::error::Error>> {
+    ) -> Result<TaskId, Box<dyn std::error::Error + Send + Sync>> {
         self.begin_transaction().await?;
 
         let task_id = self
@@ -166,25 +166,26 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         &self,
         offset: u32,
         limit: u32,
-    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error>>;
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn get_incomplete_files(
         &self,
         min_file_seq: usize,
         limit: usize,
-    ) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>>;
+    ) -> Result<Vec<FileInfo>, Box<dyn std::error::Error + Send + Sync>>;
+
     async fn is_task_info_pushed(
         &self,
         task_key: &TaskKey,
         check_point_version: CheckPointVersion,
-    ) -> Result<Option<TaskId>, Box<dyn std::error::Error>>;
+    ) -> Result<Option<TaskId>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn set_task_info_pushed(
         &self,
         task_key: &TaskKey,
         check_point_version: CheckPointVersion,
         task_id: TaskId,
-    ) -> Result<(), Box<dyn std::error::Error>>;
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     // Ok(file-server-name)
     async fn is_file_info_pushed(
@@ -192,7 +193,7 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         task_key: &TaskKey,
         check_point_version: CheckPointVersion,
         file_path: &Path,
-    ) -> Result<Option<(FileServerType, String, u32)>, Box<dyn std::error::Error>>;
+    ) -> Result<Option<(FileServerType, String, u32)>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn set_file_info_pushed(
         &self,
@@ -202,5 +203,5 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         server_type: FileServerType,
         server_name: &str,
         chunk_size: u32,
-    ) -> Result<(), Box<dyn std::error::Error>>;
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
