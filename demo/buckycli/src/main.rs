@@ -3,9 +3,12 @@ use clap::{Arg, Command, value_parser};
 use std::fs;
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 use std::process::Command as SystemCommand;
 use bucky_name_service::{DnsTxtCodec, NameInfo, NSProvider};
 use etcd_client::EtcdClient;
+
+const CONFIG_FILE: &str = "~/.buckycli/config";
 
 fn take_snapshot(file_path: &str) {
     println!("Taking snapshot and saving to {}", file_path);
@@ -93,12 +96,30 @@ async fn handle_matches(matches: clap::ArgMatches) -> std::result::Result<(), St
 
 fn save_config(zone_id: &str, private_key_path: &str) -> std::result::Result<(), String> {
     let config = format!("{}\n{}", zone_id, private_key_path);
-    fs::write("config.txt", config).map_err(|e| format!("Failed to save config: {}", e))
+    let path = Path::new(CONFIG_FILE);
+    
+    // 如果父目录不存在，创建所有必要的目录
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {format!("craete dir {} error!",parent.display())})?;
+    }
+
+    fs::write(CONFIG_FILE, config).map_err(|e| format!("Failed to save config: {}", e))
 }
 
 fn load_config() -> std::result::Result<(String, String), String> {
-    let config =
-        fs::read_to_string("config.txt").map_err(|e| format!("Failed to load config: {}", e))?;
+    let config:String;
+    let config1 = fs::read_to_string("./buckycli/config");
+    let config2 = fs::read_to_string(CONFIG_FILE);
+    if config1.is_ok(){
+        config = config1.unwrap();
+    } else {
+        if config2.is_ok(){
+            config = config2.unwrap();
+        } else {
+            return Err("Failed to load config".to_string());
+        }
+    }
+    
     let lines: Vec<&str> = config.lines().collect();
     if lines.len() != 2 {
         return Err("Invalid config format".to_string());
