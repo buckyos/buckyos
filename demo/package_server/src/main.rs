@@ -266,11 +266,16 @@ impl PackageUploadServer {
 
     async fn download_package(req: Request<PackageUploadServer>) -> tide::Result {
         let package_name = req.param("package_name")?;
-        info!("Download package: {}", package_name);
         let version = req
             .query::<HashMap<String, String>>()
             .ok()
             .and_then(|q| q.get("version").cloned());
+
+        info!(
+            "Request download package: {}, version: {}",
+            package_name,
+            &version.clone().unwrap_or("*".to_string())
+        );
 
         let state = req.state();
         let package_dir = state.save_path.join(package_name);
