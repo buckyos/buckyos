@@ -128,7 +128,7 @@ impl PackageEnv {
         // 调用downloader下载，并且等待所有包下载完成
         for lock_info in package_list.packages.iter() {
             // 如果install_path下已经有目标包，认为是已经成功安装的，不再下载
-            let target_package = format!("{}-{}", lock_info.name, lock_info.version);
+            let target_package = format!("{}_{}", lock_info.name, lock_info.version);
             let target_dest_file = install_path.join(&target_package);
             if target_dest_file.exists() {
                 info!(
@@ -140,7 +140,10 @@ impl PackageEnv {
             let target_name = format!("{}.bkz", target_package);
             let target_install_file = install_path.join(&target_name);
             // TODO 这里其实target_install_file存在的话也不应该下载
-            let url = format!("http://localhost:3030/download/{}", target_name);
+            let url = format!(
+                "http://127.0.0.1:3030/download/{}?version={}",
+                lock_info.name, lock_info.version
+            );
             let target_tmp_name = format!("{}.tmp", target_name);
             let target_tmp_install_file = tmp_install_path.join(&target_tmp_name);
             let downloader = downloader.clone();
@@ -154,12 +157,13 @@ impl PackageEnv {
                     .await?;
                 loop {
                     let state = downloader.get_task_state(task_id)?;
+                    //info!("task:{}, state:{:?}", url, state);
 
                     if let Some(error) = state.error {
                         warn!("Download {} error: {}", url, error);
                         return Err(PackageSystemErrors::DownloadError(url, error));
                     }
-                    if state.downloaded_size == state.total_size {
+                    if state.downloaded_size == state.total_size && state.total_size > 0 {
                         // 下载完成，验证文件
                         Self::verify_package(&target_tmp_install_file, lock_info_clone.sha256)?;
                         // 重命名文件
@@ -638,13 +642,15 @@ impl PackageEnv {
         Ok(index_db)
     }
 
-    async fn update_index(&self) -> PkgSysResult<()> {
+    pub async fn update_index(&self) -> PkgSysResult<()> {
         //update只更新global的index，这里index只是一个文件
         //实际在实现时，index应该是一组文件，按需更新
         let index_file_path = self.get_index_path()?;
-        std::fs::create_dir_all(&index_file_path)?;
+        if let Some(parent_dir) = index_file_path.parent() {
+            fs::create_dir_all(parent_dir)?;
+        }
         //下载index.json
-        let index_url = "https://localhost:3030/package_index";
+        let index_url = "http://127.0.0.1:3030/package_index";
         let temp_file = index_file_path.with_file_name("index.json.tmp");
         let downloader = downloader::FakeDownloader::new();
 

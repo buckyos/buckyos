@@ -11,5 +11,7 @@ log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.9"
-simplelog = "0.11"
+simplelog = "*"
 tide = "0.16"
+time = "0.3"
+chrono = "0.4"

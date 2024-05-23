@@ -14,6 +14,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 use tar::Builder;
+use time::macros::format_description;
 use toml::Value;
 
 /// 命令行接口定义
@@ -54,18 +55,26 @@ struct ServerError {
 }
 
 fn main() -> io::Result<()> {
-    // 初始化日志记录
+    let config = ConfigBuilder::new()
+        .set_location_level(LevelFilter::Info)
+        .set_time_format_custom(format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"
+        ))
+        .set_time_offset_to_local()
+        .unwrap()
+        .build();
+
     CombinedLogger::init(vec![
         TermLogger::new(
-            LevelFilter::Debug,
-            Config::default(),
+            LevelFilter::Info,
+            config.clone(),
             TerminalMode::Mixed,
             ColorChoice::Auto,
         ),
         WriteLogger::new(
-            LevelFilter::Debug,
-            Config::default(),
-            File::create("buckycli.log").unwrap(),
+            LevelFilter::Info,
+            config,
+            std::fs::File::create("package_server.log").unwrap(),
         ),
     ])
     .unwrap();

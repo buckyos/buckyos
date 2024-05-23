@@ -11,11 +11,17 @@ use log::*;
 use serde::{Deserialize, Serialize};
 use simplelog::*;
 use std::fs;
+use time::macros::format_description;
 
 fn init_log_config() {
     // 创建一个日志配置对象
     let config = ConfigBuilder::new()
         .set_location_level(LevelFilter::Info) // 设置显示文件名和行号的日志级别
+        .set_time_format_custom(format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"
+        ))
+        .set_time_offset_to_local()
+        .unwrap()
         .build();
 
     // 初始化日志器
@@ -48,9 +54,16 @@ async fn main() {
         ),
     };
 
+    //let ret = env.build(false).await;
+    //info!("build: {:?}", ret);
+
     info!("check_lock_need_update: {:?}", env.check_lock_need_update());
 
-    // let index_db = env.get_index(false).await.unwrap();
+    //let ret = env.update_index().await;
+    //info!("update_index ret: {:?}", ret);
+
+    let ret = env.build(false).await;
+    info!("build ret: {:?}", ret);
 
     // let pk_id_str = "a#1.0.1";
     // let result = env.generate_package_lock_info(&index_db, pk_id_str);
@@ -62,8 +75,8 @@ async fn main() {
 
     // info!("==>update_lock_file");
 
-    let result = env.update_lock_file();
-    info!("update_lock_file: {:?}", result);
+    // let result = env.update_lock_file();
+    // info!("update_lock_file: {:?}", result);
 
     //info!("check_lock_need_update: {:?}", env.check_lock_need_update());
 
