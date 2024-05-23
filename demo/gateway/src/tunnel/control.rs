@@ -1,6 +1,6 @@
 use super::protocol::*;
 use super::tunnel::{TunnelReader, TunnelSide, TunnelWriter};
-use crate::error::GatewayResult;
+use crate::error::{GatewayResult, GatewayError};
 
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell};
@@ -11,6 +11,9 @@ pub trait ControlTunnelEvents: Send + Sync {
 }
 
 pub type ControlTunnelEventsRef = Arc<Box<dyn ControlTunnelEvents>>;
+
+const CONTROL_TUNNEL_PING_INTERVAL: u64 = 60;
+const CONTROL_TUNNEL_PING_TIMEOUT: u64 = 60 * 5;
 
 #[derive(Clone)]
 pub struct ControlTunnel {
@@ -66,13 +69,22 @@ impl ControlTunnel {
     pub async fn run(&self) -> GatewayResult<()> {
         let mut reader = self.tunnel_reader.lock().await;
 
-        let result ;
+        let mut last_active = std::time::Instant::now();
+
+        let result;
         loop {
-            match ControlPackageTransceiver::read_package(&mut reader).await {
-                Ok(pkg) => {
+            match tokio::time::timeout(
+                tokio::time::Duration::from_secs(CONTROL_TUNNEL_PING_INTERVAL),
+                ControlPackageTransceiver::read_package(&mut reader),
+            )
+            .await
+            {
+                Ok(Ok(pkg)) => {
                     match pkg.cmd {
                         ControlCmd::Ping => {
-                            // TODO: handle ping
+                            info!("Recv ping via control tunnel: {} -> {}", self.remote_device_id, self.device_id);
+                            assert!(self.tunnel_side == TunnelSide::Passive);
+                            last_active = std::time::Instant::now();
                         }
                         ControlCmd::ReqBuild => {
                             let events = self.events.get().unwrap();
@@ -91,10 +103,29 @@ impl ControlTunnel {
                         }
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     error!("Error reading control package: {}", e);
                     result = Err(e);
                     break;
+                }
+                Err(_) => {
+                    match self.tunnel_side {
+                        TunnelSide::Active => {
+                            if let Err(e) = self.ping().await {
+                                error!("Error sending ping package via control tunnel: {}", e);
+                                result = Err(e);
+                                break;
+                            }
+                        }
+                        TunnelSide::Passive => {
+                            // check if ping timeout with 5min
+                            if last_active.elapsed().as_secs() > CONTROL_TUNNEL_PING_TIMEOUT {
+                                error!("Control tunnel ping timeout");
+                                result = Err(GatewayError::Timeout("Control tunnel ping timeout".to_string()));
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -103,16 +134,30 @@ impl ControlTunnel {
     }
 
     pub async fn req_new_data_tunnel(&self, seq: u32, port: u16) -> GatewayResult<()> {
-        info!("Requesting new data tunnel via control: remote={}, port={}, seq={}", self.remote_device_id, port, seq);
-        
+        info!(
+            "Requesting new data tunnel via control: remote={}, port={}, seq={}",
+            self.remote_device_id, port, seq
+        );
+
         let build_pkg = ControlPackage::new(
             ControlCmd::ReqBuild,
             TunnelUsage::Data,
-            Some(self.remote_device_id.clone()),
+            Some(self.device_id.clone()),
             Some(port),
             seq,
         );
         self.write_pkg(build_pkg).await
+    }
+
+    async fn ping(&self) -> GatewayResult<()> {
+        let ping_pkg = ControlPackage::new(
+            ControlCmd::Ping,
+            TunnelUsage::Control,
+            None,
+            None,
+            0,
+        );
+        self.write_pkg(ping_pkg).await
     }
 
     async fn write_pkg(&self, pkg: ControlPackage) -> GatewayResult<()> {

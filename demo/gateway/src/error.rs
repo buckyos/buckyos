@@ -28,6 +28,9 @@ pub enum GatewayError {
 
     #[error("Tunnel error: {0}")]
     TunnelError(String),
+
+    #[error("Timeout: {0}")]
+    Timeout(String),
 }
 
 pub type GatewayResult<T> = Result<T, GatewayError>;

@@ -154,5 +154,5 @@ async fn test_main() {
     test_with_socks5(1081, "gateway:1009").await;
 
     // sleep 5s
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(1000)).await;
 }
