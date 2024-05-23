@@ -150,10 +150,6 @@ impl TunnelManager {
         info!("Will build data tunnel: {} -> {}, {}", self.device_id, self.remote_device_id, port);
         assert!(port > 0);
 
-        // For the data tunnel we active build, seq should be greater than 0
-        let seq = self.get_seq();
-        assert!(seq > 0);
-
         let side = {
             match self.control_tunnel.lock().await.as_ref() {
                 Some(tunnel) => tunnel.tunnel_side(),
@@ -169,9 +165,13 @@ impl TunnelManager {
                     self.device_id.clone(),
                     self.remote_device_id.clone(),
                 );
-                builder.build_data_tunnel(port, seq).await
+                builder.build_data_tunnel(port, 0).await
             }
             TunnelSide::Passive => {
+                // For the data tunnel we build via control tunnel, seq should be greater than 0
+                let seq = self.get_seq();
+                assert!(seq > 0);
+
                 // control_tunnel should be ready
                 let control_tunnel = self.control_tunnel.lock().await.as_ref().unwrap().clone();
 

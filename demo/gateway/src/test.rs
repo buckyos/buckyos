@@ -1,9 +1,9 @@
 use crate::gateway::Gateway;
 
 use std::net::SocketAddr;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_socks::tcp::Socks5Stream;
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
 const ETCD1_CONFIG: &str = r#"
 {
@@ -24,6 +24,11 @@ const ETCD1_CONFIG: &str = r#"
         "type": "tcp",
         "addr": "127.0.0.1",
         "port": 1008
+    }, {
+        "block": "proxy",
+        "addr": "127.0.0.1",
+        "port": 1081,
+        "type": "socks5"
     }]
 }
 "#;
@@ -43,6 +48,11 @@ const GATEWAY_CONFIG: &str = r#"
         }
     ],
     "service": [{
+        "block": "upstream",
+        "type": "tcp",
+        "addr": "127.0.0.1",
+        "port": 1009
+    }, {
         "block": "proxy",
         "addr": "127.0.0.1",
         "port": 1080,
@@ -73,23 +83,40 @@ async fn start_gateway() {
     let config = serde_json::from_str(GATEWAY_CONFIG).unwrap();
     let gateway = Gateway::load(&config).unwrap();
     gateway.start().await.unwrap();
+
+    // run tcp echo server on 127.0.0.1:1009 for test
+    let listener = TcpListener::bind("127.0.0.1:1009").await.unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let (mut reader, mut writer) = socket.split();
+                tokio::io::copy(&mut reader, &mut writer).await.unwrap();
+            });
+        }
+    });
 }
 
-pub async fn test_with_socks5() {
-    let proxy_addr = "127.0.0.1:1080".parse::<SocketAddr>().unwrap();
-    let target_addr = "etcd1:1008";
+pub async fn test_with_socks5(proxy_port: u16, upstream_addr: &str) {
+    let proxy_addr = format!("127.0.0.1:{}", proxy_port)
+        .parse::<SocketAddr>()
+        .unwrap();
+    let target_addr = upstream_addr;
 
     let stream = Socks5Stream::connect(proxy_addr, target_addr)
         .await
         .unwrap();
-    info!("Connect to socks5 proxy success! proxy={}, target={}", proxy_addr, target_addr);
-    
+    info!(
+        "Connect to socks5 proxy success! proxy={}, target={}",
+        proxy_addr, target_addr
+    );
+
     let (mut reader, mut writer) = stream.into_inner().into_split();
 
     // write some bytes and then recv them back
     let data = b"hello world";
 
-    tokio::spawn(async move {
+    let read_task = tokio::spawn(async move {
         let mut buf = vec![0u8; data.len()];
         reader.read_exact(&mut buf).await.unwrap();
         assert_eq!(buf, data);
@@ -98,7 +125,13 @@ pub async fn test_with_socks5() {
     });
 
     writer.write_all(data).await.unwrap();
-    info!("Write data success!");
+    info!("Write echo data success!");
+
+    // wait for read task with timeout
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), read_task)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]
@@ -114,7 +147,11 @@ async fn test_main() {
     // sleep 5s
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    test_with_socks5().await;
+    // client -> gateway -> etcd1 -> upstream
+    test_with_socks5(1080, "etcd1:1008").await;
+
+    // client -> etcd1 -> gateway -> upstream
+    test_with_socks5(1081, "gateway:1009").await;
 
     // sleep 5s
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
