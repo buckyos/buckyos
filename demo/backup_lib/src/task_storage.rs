@@ -97,10 +97,11 @@ pub trait TaskStorageInStrategy: TaskStorageQuerier {
         strategy: &CheckPointVersionStrategy,
     ) -> Result<Vec<TaskId>, Box<dyn std::error::Error>> {
         // TODO: check strategy to clear earlier tasks.
-        Ok(())
+        Ok(vec![])
     }
 }
 
+#[async_trait::async_trait]
 pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transaction {
     async fn create_task(
         &self,

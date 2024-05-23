@@ -72,6 +72,8 @@ impl BackupTask {
         meta: Option<String>,
         dir_path: PathBuf,
         files: Vec<(PathBuf, Option<(String, u64)>)>,
+        is_manual: bool,
+        priority: u32,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let chunk_file_info_rets = futures::future::join_all(files.into_iter().enumerate().map(
             |(seq, chunk_relative_path, hash_and_size)| {
@@ -143,6 +145,8 @@ impl BackupTask {
                 meta.as_ref().map(|p| p.as_str()),
                 dir_path.as_path(),
                 files.as_slice(),
+                priority,
+                is_manual,
             )
             .await?;
 
@@ -170,7 +174,7 @@ impl BackupTask {
             Some(mgr) => mgr,
             None => {
                 log::error!("task manager has been dropped.");
-                return BackupTaskEvent::ErrorAndWillRetry(self.clone());
+                return BackupTaskEvent::ErrorAndWillRetry(self.clone(), "task manager has been dropped.".into());
             }
         };
 
@@ -185,11 +189,11 @@ impl BackupTask {
             Ok(remote_task_id) => {
                 let remote_task_mgr = match task_mgr
                     .task_mgr_selector()
-                    .select(&task_info.task_key, task_info.check_point_version)
+                    .select(&task_info.task_key, Some(task_info.check_point_version))
                     .await
                 {
                     Ok(remote_task_mgr) => remote_task_mgr,
-                    Err(_) => return BackupTaskEvent::ErrorAndWillRetry(self.clone()),
+                    Err(err) => {return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err);},
                 };
 
                 let remote_task_id = match remote_task_id {
@@ -215,18 +219,18 @@ impl BackupTask {
                                     )
                                     .await
                                 {
-                                    return BackupTaskEvent::ErrorAndWillRetry(self.clone());
+                                    return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err);
                                 }
                                 remote_task_id
                             }
-                            Err(_) => return BackupTaskEvent::ErrorAndWillRetry(self.clone()),
+                            Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err),
                         }
                     }
                 };
 
                 (remote_task_mgr, remote_task_id)
             }
-            Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone()),
+            Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err),
         };
 
         // push files
@@ -243,7 +247,7 @@ impl BackupTask {
                     }
                     files
                 }
-                Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone()),
+                Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err),
             };
 
             for file in upload_files {
@@ -280,20 +284,20 @@ impl BackupTask {
                                         .await
                                     {
                                         Ok(_) => (file_server_type, file_server_name),
-                                        Err(_) => {
+                                        Err(err) => {
                                             return BackupTaskEvent::ErrorAndWillRetry(
-                                                self.clone(),
+                                                self.clone(), err
                                             )
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    return BackupTaskEvent::ErrorAndWillRetry(self.clone())
+                                Err(err) => {
+                                    return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err)
                                 }
                             }
                         }
                     },
-                    Err(_) => return BackupTaskEvent::ErrorAndWillRetry(self.clone()),
+                    Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err),
                 };
 
                 let remote_file_server = match task_mgr
@@ -302,7 +306,7 @@ impl BackupTask {
                     .await
                 {
                     Ok(remote_file_server) => remote_file_server,
-                    Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone()),
+                    Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err),
                 };
 
                 // TODO: read the control command to test if the task should be stopped.
@@ -360,41 +364,41 @@ impl BackupTask {
                                                         Err(err) => {
                                                             return 
                                                                 BackupTaskEvent::ErrorAndWillRetry(
-                                                                    self.clone(),
-                                                                ),
+                                                                    self.clone(), err
+                                                                );
                                                             
                                                         }
                                                     }
                                                 }
                                                 Err(err) => {
                                                     return BackupTaskEvent::ErrorAndWillRetry(
-                                                        self.clone(),
+                                                        self.clone(), err
                                                     )
                                                 }
                                             }
                                         }
                                         Err(err) => {
                                             return BackupTaskEvent::ErrorAndWillRetry(
-                                                self.clone(),
+                                                self.clone(), err
                                             )
                                         }
                                     }
                                 }
                             },
                             Err(err) => {
-                                return BackupTaskEvent::ErrorAndWillRetry(self.clone())
+                                return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err)
                             }
                         };
 
                     let chunk_storage = task_mgr.chunk_storage();
-                    match chunk_storage.is_chunk_uploaded(chunk_hash.as_str()).await {
+                    match chunk_storage.is_chunk_uploaded(file.hash.as_str(), chunk_seq).await {
                         Ok(is_upload) => {
                             if is_upload {
                                 continue;
                             }
                         }
 
-                        Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone()),
+                        Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err),
                     }
 
                     let remote_chunk_server = match task_mgr
@@ -403,7 +407,7 @@ impl BackupTask {
                         .await
                     {
                         Ok(remote_chunk_server) => remote_chunk_server,
-                        Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone()),
+                        Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err),
                     };
 
                     let chunk = match chunk {
@@ -412,7 +416,7 @@ impl BackupTask {
                         {
                             Ok(chunk) => chunk,
                             Err(err) => {
-                                return BackupTaskEvent::ErrorAndWillRetry(self.clone())
+                                return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err)
                             }
                         },
                     };
@@ -421,20 +425,20 @@ impl BackupTask {
                         Ok(_) => {
                             if let Err(err) = remote_file_server.set_chunk_uploaded(file_hash.as_str(), chunk_seq).await
                             {
-                                return BackupTaskEvent::ErrorAndWillRetry(self.clone());
+                                return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err);
                             }
                             if chunk_seq == chunk_count - 1 {
                                 if let Err(err) = remote_task_mgr.set_file_uploaded(&task_info.task_key, task_info.check_point_version, file.file_path.as_path()).await
                                 {
-                                    return BackupTaskEvent::ErrorAndWillRetry(self.clone());
+                                    return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err);
                                 }
                             }
                             if let Err(err) = chunk_storage.set_chunk_uploaded(file_hash.as_str(), chunk_seq).await
                             {
-                                return BackupTaskEvent::ErrorAndWillRetry(self.clone());
+                                return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err);
                             }
                         }
-                        Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone()),
+                        Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), err),
                     }
                 }
             }
@@ -523,7 +527,7 @@ impl TaskInner for BackupTask {
                 match event {
                     BackupTaskEvent::New(_) => unreachable!(),
                     BackupTaskEvent::Idle(_) => break,
-                    BackupTaskEvent::ErrorAndWillRetry(_) => {
+                    BackupTaskEvent::ErrorAndWillRetry(_, _) => {
                         break;
                         // futures::select! {
                         //     _ = tokio::time::sleep(Duration::from_secs(1)) => {}
@@ -538,7 +542,7 @@ impl TaskInner for BackupTask {
                         //     }
                         // }
                     }
-                    BackupTaskEvent::Fail(_) => break,
+                    BackupTaskEvent::Fail(_, _) => break,
                     BackupTaskEvent::Successed(_) => break,
                     BackupTaskEvent::Stop(_) => break,
                 }
@@ -547,8 +551,10 @@ impl TaskInner for BackupTask {
     }
 
     fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
-        tokio::runtime::Handle::block_on(async || {
-            self.control.0.send(BackupTaskControl::Stop).await
+        let backup_task = self.clone();
+        let handle = tokio::runtime::Handle::current();
+        handle.block_on(async || {
+            backup_task.control.0.send(BackupTaskControl::Stop).await
         })
     }
 }

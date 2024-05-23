@@ -119,6 +119,8 @@ impl BackupTaskMgrInner {
             let backup_task = BackupTask::from_storage(Arc::downgrade(&self), task);
             self.try_run(backup_task);
         }
+
+        Ok(())
     }
 }
 
@@ -184,8 +186,7 @@ impl BackupTaskMgr {
                             task_mgr.remove_task(&backup_task);
                             let state = task_mgr.state.lock().unwrap();
                             match state {
-                                BackupState::Running => {
-                                }
+                                BackupState::Running => {}
                                 BackupState::Stopping(sender) => {
                                     if task_mgr.running_tasks.lock().unwrap().tasks.is_empty() {
                                         *state = BackupState::Stopped;
@@ -193,16 +194,20 @@ impl BackupTaskMgr {
                                         break;
                                     }
                                 }
-                                BackupState::Stopped => unreachable!("should no task running when stopped");,
+                                BackupState::Stopped => {
+                                    unreachable!("should no task running when stopped")
+                                }
                             }
                         }
                     }
                 }
             }
         });
+
+        Ok(())
     }
 
-    pub async fn stop(&self) -> Result<()> {
+    pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
         {
             let mut state = self.0.state.lock().unwrap();
@@ -227,6 +232,8 @@ impl BackupTaskMgr {
         dir_path: PathBuf,
         chunk_files: Vec<(PathBuf, Option<(String, u64)>)>,
         is_discard_incomplete_versions: bool,
+        priority: u32,
+        is_manual: bool,
     ) -> Result<BackupTask, Box<dyn std::error::Error>> {
         let mgr = Arc::downgrade(&self.0);
         let backup_task = BackupTask::create_new(
@@ -237,22 +244,38 @@ impl BackupTaskMgr {
             meta,
             dir_path,
             chunk_files,
+            priority,
+            is_manual,
         )
         .await?;
 
-        self.0.task_event_sender.send(BackupTaskEvent::New(backup_task.clone())).await?;
+        self.0
+            .task_event_sender
+            .send(BackupTaskEvent::New(backup_task.clone()))
+            .await?;
 
+        if let Ok(remote_task_server) = self.0.task_mgr_selector.select(&task_key, None).await {
+            if let Ok(strategy) = remote_task_server.get_check_point_strategy(&task_key).await {
+                if let Ok(removed_tasks) = self
+                    .0
+                    .task_storage
+                    .prepare_clear_task_in_strategy(
+                        &task_key,
+                        check_point_version,
+                        prev_check_point_version,
+                        &strategy,
+                    )
+                    .await
+                {
+                    // TODO: stop and remove the removed tasks.
 
-        if let Ok(remote_task_server) = self.0
-            .task_mgr_selector.select(task_key, None).await {
-                if let Ok(strategy) = remote_task_server.get_check_point_strategy(task_key).await {
-                    if let Ok(removed_tasks) = self.0.task_storage.prepare_clear_task_in_strategy(task_key, check_point_version, prev_check_point_version, strategy).await {
-                        // TODO: stop and remove the removed tasks.
-
-                        self.0.task_storage.delete_tasks_by_id(removed_tasks.as_slice()).await;
-                    }
+                    self.0
+                        .task_storage
+                        .delete_tasks_by_id(removed_tasks.as_slice())
+                        .await;
                 }
             }
+        }
 
         Ok(backup_task)
     }
@@ -261,7 +284,7 @@ impl BackupTaskMgr {
         &self,
         task_key: &TaskKey,
         check_point_version: Option<CheckPointVersion>,
-    ) -> Result<Vec<BackupTask>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error>> {
         unimplemented!()
     }
 
@@ -300,7 +323,9 @@ impl BackupTaskMgr {
         strategy: CheckPointVersionStrategy,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.0
-            .task_mgr_selector.select(task_key, None).await?
+            .task_mgr_selector
+            .select(task_key, None)
+            .await?
             .update_check_point_strategy(task_key, strategy)
             .await
     }
