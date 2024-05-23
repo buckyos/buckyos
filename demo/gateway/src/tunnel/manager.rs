@@ -81,6 +81,8 @@ impl TunnelManager {
         tunnel_reader: Box<dyn TunnelReader>,
         tunnel_writer: Box<dyn TunnelWriter>,
     ) {
+        info!("Bind control tunnel: {} -> {}", self.remote_device_id, self.device_id);
+
         let tunnel = ControlTunnel::new(
             TunnelSide::Passive,
             self.device_id.clone(),
@@ -132,13 +134,25 @@ impl TunnelManager {
         Ok(())
     }
 
+    fn get_seq(&self) -> u32 {
+        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
+        if seq == 0 {
+            self.next_seq.fetch_add(1, Ordering::SeqCst)
+        } else {
+            seq
+        }
+    }
+
     pub async fn build_data_tunnel(
         &self,
         port: u16,
     ) -> GatewayResult<(Box<dyn TunnelReader>, Box<dyn TunnelWriter>)> {
+        info!("Will build data tunnel: {} -> {}, {}", self.device_id, self.remote_device_id, port);
         assert!(port > 0);
 
-        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
+        // For the data tunnel we active build, seq should be greater than 0
+        let seq = self.get_seq();
+        assert!(seq > 0);
 
         let side = {
             match self.control_tunnel.lock().await.as_ref() {
@@ -146,6 +160,7 @@ impl TunnelManager {
                 None => TunnelSide::Active,
             }
         };
+
 
         match side {
             TunnelSide::Active => {
@@ -255,6 +270,8 @@ impl TunnelManager {
         let port = info.pkg.port.unwrap_or(0);
         let seq = info.pkg.seq;
 
+        info!("On new data tunnel: {} -> {}, port={}, seq={}", self.remote_device_id, self.device_id, port, seq);
+
         if seq == 0 {
             if let Err(e) = self
                 .events
@@ -284,6 +301,8 @@ impl TunnelManager {
 #[async_trait::async_trait]
 impl ControlTunnelEvents for TunnelManager {
     async fn on_req_data_tunnel(&self, port: u16, seq: u32) -> GatewayResult<()> {
+        info!("Recv req for new data tunnel: {} -> {}, port={}, seq={}", self.remote_device_id, self.device_id, port, seq);
+
         let builder = TunnelBuilder::new(
             self.name_manager.clone(),
             self.device_id.clone(),

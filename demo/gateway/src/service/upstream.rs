@@ -90,6 +90,8 @@ impl UpstreamManager {
 
         let service_type = UpstreamServiceType::from_str(service_type)?;
 
+        info!("New upstream service: {}:{} type: {}", addr, port, service_type.as_str());
+
         let service = UpstreamService {
             addr: SocketAddr::new(addr, port),
             service_type,
@@ -99,10 +101,12 @@ impl UpstreamManager {
         Ok(())
     }
 
-    fn get_service(&self, port: u16) -> Option<UpstreamService> {
+    fn get_service(&self, port: u16, service_type: UpstreamServiceType) -> Option<UpstreamService> {
         let services = self.services.lock().unwrap();
         for service in services.iter() {
-            if service.addr.port() == port {
+            // info!("Service item: {} {}", service.addr.port(), service_type.as_str());
+            if service.addr.port() == port && service.service_type == service_type {
+                // info!("Got service: {} {}", service.addr.port(), service_type.as_str());
                 return Some(service.clone());
             }
         }
@@ -111,7 +115,7 @@ impl UpstreamManager {
     }
 
     pub async fn bind_tunnel(&self, tunnel: DataTunnelInfo) -> GatewayResult<()> {
-        let service = self.get_service(tunnel.port);
+        let service = self.get_service(tunnel.port, UpstreamServiceType::Tcp);
         if service.is_none() {
             let msg = format!("No upstream service found for port {}", tunnel.port);
             return Err(GatewayError::UpstreamNotFound(msg));
@@ -181,8 +185,9 @@ impl UpstreamManager {
 
 impl PeerManagerEvents for UpstreamManager {
     fn on_recv_data_tunnel(&self, info: DataTunnelInfo) -> GatewayResult<OnNewTunnelHandleResult> {
+        info!("Will handle data tunnel for upstream manager: {}, {}", info.device_id, info.port);
 
-        let service = self.get_service(info.port);
+        let service = self.get_service(info.port, UpstreamServiceType::Tcp);
         if service.is_none() {
             let msg = format!("No upstream service found for port {}", info.port);
             info!("{}", msg);

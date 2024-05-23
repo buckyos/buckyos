@@ -3,7 +3,7 @@ use super::protocol::*;
 use super::tcp::TcpTunnel;
 use super::tunnel::*;
 use crate::error::*;
-use crate::peer::{NameInfo, NameManagerRef };
+use crate::peer::{NameInfo, NameManagerRef};
 
 pub struct TunnelBuilder {
     name_manager: NameManagerRef,
@@ -12,9 +12,7 @@ pub struct TunnelBuilder {
 }
 
 impl TunnelBuilder {
-    pub fn new(
-        name_manager: NameManagerRef,
-        device_id: String, remote_device_id: String) -> Self {
+    pub fn new(name_manager: NameManagerRef, device_id: String, remote_device_id: String) -> Self {
         Self {
             name_manager,
             device_id,
@@ -26,7 +24,8 @@ impl TunnelBuilder {
         let remote = self.name_manager.resolve(&self.remote_device_id).await;
         if remote.is_none() {
             return Err(GatewayError::PeerNotFound(format!(
-                "Peer not found: {}", self.remote_device_id
+                "Peer not found: {}",
+                self.remote_device_id
             )));
         }
         Ok(remote.unwrap())
@@ -61,6 +60,11 @@ impl TunnelBuilder {
         port: u16,
         seq: u32,
     ) -> GatewayResult<(Box<dyn TunnelReader>, Box<dyn TunnelWriter>)> {
+        info!(
+            "Will build data tunnel: {} -> {}, port={}, seq={}",
+            self.device_id, self.remote_device_id, port, seq
+        );
+
         assert!(port > 0);
 
         let remote = self.resolve_remote().await?;
@@ -70,7 +74,7 @@ impl TunnelBuilder {
         let build_pkg = ControlPackage::new(
             ControlCmd::Init,
             TunnelUsage::Data,
-            Some(self.remote_device_id.clone()),
+            Some(self.device_id.clone()),
             Some(port),
             seq,
         );

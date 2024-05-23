@@ -16,7 +16,7 @@ use clap::{Command, Arg};
 use error::*;
 use gateway::Gateway;
 
-//#[cfg(test)]
+#[cfg(test)]
 mod test;
 
 async fn run(config: &str) -> GatewayResult<()> {

@@ -54,7 +54,7 @@ impl PeerManagerEventManager {
 #[derive(Clone)]
 pub struct PeerManager {
     config: GlobalConfigRef,
-    peers: Arc<Mutex<HashMap<String, OnceCell<Arc<PeerClient>>>>>,
+    peers: Arc<Mutex<HashMap<String, Arc<OnceCell<Arc<PeerClient>>>>>>,
 
     events: PeerManagerEventManager,
     name_manager: NameManagerRef,
@@ -105,8 +105,8 @@ impl PeerManager {
                 Some(peer) => peer.clone(),
                 None => {
                     info!("Create peer client: {}", remote_device_id);
-                    let peer = OnceCell::new();
-                    peers.insert(remote_device_id.to_owned(), OnceCell::new());
+                    let peer = Arc::new(OnceCell::new());
+                    peers.insert(remote_device_id.to_owned(), peer.clone());
                     peer
                 }
             }
@@ -114,6 +114,8 @@ impl PeerManager {
 
         let peer = peer
             .get_or_try_init(|| async {
+                info!("First init peer client: {}, is_active_side {}", remote_device_id, is_active_side);
+
                 let events = Arc::new(Box::new(self.clone()) as Box<dyn TunnelManagerEvents>);
                 let peer = PeerClient::new(
                     self.config.device_id().to_owned(),

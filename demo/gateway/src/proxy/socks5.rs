@@ -4,16 +4,19 @@ use crate::{
     peer::{NameManagerRef, PeerManagerRef},
     tunnel::TunnelCombiner,
 };
+use super::util::Socks5Util;
 
 use fast_socks5::{
-    server::{Config, SimpleUserPassword, Socks5Socket},
+    server::{Config, SimpleUserPassword, Socks5Socket },
     util::target_addr::TargetAddr,
+    Socks5Command,
 };
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     task,
 };
+
 
 #[derive(Clone)]
 pub struct Socks5Proxy {
@@ -29,7 +32,11 @@ impl Socks5Proxy {
         name_manager: NameManagerRef,
         peer_manager: PeerManagerRef,
     ) -> Self {
-        let socks5_config = Config::default();
+        let mut socks5_config = Config::default();
+
+        // We should process the command and dns resolve by ourselves
+        socks5_config.set_dns_resolve(false);
+        socks5_config.set_execute_command(false);
 
         let socks5_config = match config.auth {
             ProxyAuth::None => socks5_config,
@@ -77,8 +84,6 @@ impl Socks5Proxy {
         loop {
             match listener.accept().await {
                 Ok((socket, addr)) => {
-                    info!("Connection from {}", addr);
-
                     if let Err(e) = self.on_new_connection(socket, addr).await {
                         error!("Error processing socks5 connection: {}", e);
                     }
@@ -95,7 +100,7 @@ impl Socks5Proxy {
         let socket = Socks5Socket::new(conn, self.socks5_config.clone());
 
         match socket.upgrade_to_socks5().await {
-            Ok(socket) => {
+            Ok(mut socket) => {
                 let target = match socket.target_addr() {
                     Some(target) => {
                         info!("Recv socks5 connection from {} to {}", addr, target);
@@ -109,7 +114,19 @@ impl Socks5Proxy {
                     }
                 };
 
-                self.process_socket(socket, target).await
+                let cmd = socket.cmd().as_ref().unwrap();
+                match cmd {
+                    Socks5Command::TCPConnect => {
+                        self.process_socket(socket, target.clone()).await
+                    }
+                    _ => {
+                        let msg = format!("Unsupported socks5 command: {:?}", cmd);
+                        error!("{}", msg);
+                        Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::CommandNotSupported).await
+                    }
+                }
+
+                
             }
             Err(err) => {
                 let msg = format!("Upgrade to socks5 error: {}", err);
@@ -119,11 +136,7 @@ impl Socks5Proxy {
         }
     }
 
-    async fn process_socket(
-        &self,
-        mut socket: fast_socks5::server::Socks5Socket<TcpStream, SimpleUserPassword>,
-        target: TargetAddr,
-    ) -> GatewayResult<()> {
+    async fn build_data_tunnel(&self, target: &TargetAddr) -> GatewayResult<TunnelCombiner> {
         let (device_id, port) = match target {
             TargetAddr::Ip(addr) => match self.name_manager.get_device_id(&addr.ip()) {
                 Some(device_id) => (device_id, addr.port()),
@@ -133,29 +146,49 @@ impl Socks5Proxy {
                     return Err(GatewayError::PeerNotFound(msg));
                 }
             },
-            TargetAddr::Domain(domain, port) => (domain, port),
+            TargetAddr::Domain(domain, port) => (domain.to_owned(), *port),
         };
 
         let peer = self.peer_manager.get_or_init_peer(&device_id, true).await?;
 
         let (reader, writer) = peer.build_data_tunnel(port).await?;
 
-        let mut tunnel = TunnelCombiner::new(reader, writer);
+        let tunnel = TunnelCombiner::new(reader, writer);
+
+        Ok(tunnel)
+    }
+
+    async fn process_socket(
+        &self,
+        mut socket: fast_socks5::server::Socks5Socket<TcpStream, SimpleUserPassword>,
+        target: TargetAddr,
+    ) -> GatewayResult<()> {
+        let mut tunnel = match self.build_data_tunnel(&target).await {
+            Ok(tunnel) => {
+                Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::Succeeded).await?;
+                tunnel
+            }
+            Err(e) => {
+                error!("Error building data tunnel: {}", e);
+                return Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::GeneralFailure).await;
+            }
+        };
+
 
         let (read, write) = tokio::io::copy_bidirectional(&mut tunnel, &mut socket)
             .await
             .map_err(|e| {
                 let msg = format!(
-                    "Error copying data on socks connection: {}:{}, {}",
-                    device_id, port, e
+                    "Error copying data on socks connection: {}, {}",
+                    target, e
                 );
                 error!("{}", msg);
                 GatewayError::Io(e)
             })?;
 
         info!(
-            "socks5 connection to {}:{} closed, {} bytes read, {} bytes written",
-            device_id, port, read, write
+            "socks5 connection to {} closed, {} bytes read, {} bytes written",
+            target, read, write
         );
 
         Ok(())

@@ -103,6 +103,8 @@ impl ControlTunnel {
     }
 
     pub async fn req_new_data_tunnel(&self, seq: u32, port: u16) -> GatewayResult<()> {
+        info!("Requesting new data tunnel via control: remote={}, port={}, seq={}", self.remote_device_id, port, seq);
+        
         let build_pkg = ControlPackage::new(
             ControlCmd::ReqBuild,
             TunnelUsage::Data,
