@@ -62,7 +62,7 @@ async fn main() {
     //let ret = env.update_index().await;
     //info!("update_index ret: {:?}", ret);
 
-    let ret = env.build(false).await;
+    let ret = env.build(true).await;
     info!("build ret: {:?}", ret);
 
     // let pk_id_str = "a#1.0.1";

@@ -34,6 +34,10 @@ pub mod version_util {
         >0.1.4 <0.1.6   >0.1.4 <=0.1.6  >=0.1.4 <0.1.6   >=0.1.4 <=0.1.6
         >0.1.4,<0.1.6   >0.1.4,<=0.1.6  >=0.1.4,<0.1.6  >=0.1.4, <=0.1.6
         */
+        if version_condition == "*" {
+            return Ok(true);
+        }
+
         //如果version_condition不是以> < 开头，则直接比较
         if !version_condition.starts_with('>') && !version_condition.starts_with('<') {
             //如果是以=开头，去掉等号

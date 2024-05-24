@@ -1,3 +1,4 @@
+use serde_json::error;
 use std::io;
 use thiserror::Error;
 
@@ -25,6 +26,8 @@ pub enum PackageSystemErrors {
     UpdateError(String),
     #[error("Verify error: {0}")]
     VerifyError(String),
+    #[error("File not found: {0}")]
+    FileNotFoundError(String),
     #[error("Unknown Error: {0}")]
     UnknownError(String),
     #[error("IO Error: {0}")]

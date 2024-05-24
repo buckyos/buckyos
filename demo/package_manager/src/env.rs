@@ -1,6 +1,6 @@
 use dirs;
 use flate2::read::GzDecoder;
-use futures::future::join_all;
+use futures::{future::join_all, lock};
 use log::*;
 use serde::{
     ser::{SerializeSeq, SerializeStruct},
@@ -363,6 +363,60 @@ impl PackageEnv {
         fs::write(lock_file_path, new_lock_content)?;
 
         Ok(())
+    }
+
+    // 通过lock文件获取所有package.toml中声明的直接依赖
+    pub fn get_direct_deps_with_lock(&self) -> PkgSysResult<Vec<String>> {
+        let mut result: Vec<String> = Vec::new();
+        let lock_file_path = self.work_dir.join("pkg.lock");
+        if !lock_file_path.exists() {
+            return Err(PackageSystemErrors::FileNotFoundError(
+                lock_file_path.display().to_string(),
+            ));
+        }
+        let lock_packages = Self::parse_toml(&lock_file_path)?;
+        let package_list: PackageLockList = lock_packages.try_into().map_err(|err| {
+            PackageSystemErrors::ParseError("pkg.lock".to_string(), err.to_string())
+        })?;
+
+        let deps = Self::parse_toml(&self.work_dir.join("package.toml"))?;
+
+        if let Some(dependencies) = deps.get("dependencies").and_then(|d| d.as_table()) {
+            for (dep_name, dep_version) in dependencies {
+                let mut matched_version: Option<String> = None;
+                for lock_info in package_list.packages.iter() {
+                    if lock_info.name == *dep_name
+                        && version_util::matches(dep_version.as_str().unwrap(), &lock_info.version)?
+                    {
+                        //匹配。选择版本最高的那个
+                        if let Some(version) = &matched_version {
+                            if version_util::compare(&lock_info.version, &version)?
+                                == Ordering::Greater
+                            {
+                                matched_version = Some(lock_info.version.clone());
+                            }
+                        } else {
+                            matched_version = Some(lock_info.version.clone());
+                        }
+                        info!(
+                            "Find direct deps for {}#{} => {}",
+                            dep_name, dep_version, lock_info.version
+                        );
+                    }
+                }
+                if let Some(version) = matched_version {
+                    result.push(format!("{}_{}", dep_name, version));
+                } else {
+                    return Err(PackageSystemErrors::VersionNotFoundError(format!(
+                        "{}_{}",
+                        dep_name,
+                        dep_version.as_str().unwrap()
+                    )));
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     fn add_dependency_recursive(
