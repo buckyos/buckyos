@@ -33,12 +33,12 @@ pkg.lock: 记录当前环境下已经安装的包精确信息
 
 在包安装时，需要解析pkg_id，根据pkg_id从 index_db 中获取sha256值，然后下载
 安装时，env第一级目录都是直接依赖的包，用npm举例来说，就是package.json中的dependencies，包内部依赖的包以及devDeps不会出现在这里，避免幽灵依赖
-env第一级目录中是包的软连接 和 .pkgs 目录，.pkgs目录中才是包的真实内容
-所有包的真实内容都在.pkgs的第一级目录中，第一级目录都是类似于 pkg_name#version 这样的文件夹，比如 core#1.0.3，也就是可以同时依赖同名但版本不同的包
-在安装时，会先检查是否已经安装了这个包，如果已经安装了，就不再重复安装，如果没有安装，就下载，解压到.pkgs的第一级目录，然后创建软连接
-对于包内部的依赖，也都会提升到 .pkgs 的第一级目录中去查找，避免依赖地狱
-所以理论上，.pkgs 下面的文件，最多只有2级子目录，第一级是实际的包目录，第二级是包内部依赖的软连接，而软链接又会链接到第一级目录中
-这里要考虑的问题就是删除一个包时需要做的操作，理论上 .pkgs 下面的第一级目录只要没有任何软链接指向它，就可以删除，定时删除或者按需删除也可以是一个方案
+env第一级目录中是包的软连接 和 .bkzs 目录，.bkzs目录中才是包的真实内容
+所有包的真实内容都在.bkzs的第一级目录中，第一级目录都是类似于 pkg_name#version 这样的文件夹，比如 core#1.0.3，也就是可以同时依赖同名但版本不同的包
+在安装时，会先检查是否已经安装了这个包，如果已经安装了，就不再重复安装，如果没有安装，就下载，解压到.bkzs的第一级目录，然后创建软连接
+对于包内部的依赖，也都会提升到 .bkzs 的第一级目录中去查找，避免依赖地狱
+所以理论上，.bkzs 下面的文件，最多只有2级子目录，第一级是实际的包目录，第二级是包内部依赖的软连接，而软链接又会链接到第一级目录中
+这里要考虑的问题就是删除一个包时需要做的操作，理论上 .bkzs 下面的第一级目录只要没有任何软链接指向它，就可以删除，定时删除或者按需删除也可以是一个方案
 还有在安装时如果安装失败是否要回退的问题。
  */
 #[derive(Debug, Clone)]
@@ -254,7 +254,7 @@ impl PackageEnv {
     }
 
     pub fn get_install_dir(&self) -> PathBuf {
-        self.work_dir.join(".pkgs")
+        self.work_dir.join("deps").join(".bkzs")
     }
 
     fn get_pkg_cache_dir(&self) -> PathBuf {
@@ -291,9 +291,9 @@ impl PackageEnv {
         dep_version: &str,
         lock_packages: &PackageLockList,
     ) -> PkgSysResult<bool> {
-        /*这里只查找一层，因为如果顶层的满足条件，那么子依赖也会满足条件
+        /*这里理论上只需查找一层，因为如果顶层的满足条件，那么子依赖也会满足条件
          *因为上次生成lock文件时，子依赖都是根据条件生成的
-        （有手动编辑lock文件的可能，先不处理这种情况）
+        （有手动编辑lock文件的可能，先递归查找一下吧）
          */
         let mut found = false;
         for lock_info in lock_packages.packages.iter() {
@@ -373,6 +373,20 @@ impl PackageEnv {
         new_lock_data: &mut Vec<PackageLockInfo>,
         generated: &mut HashSet<String>,
     ) -> PkgSysResult<()> {
+        //先判断new_lock_data里面是不是已经有满足条件的包了，如果有是可以兼容共用的，就不用额外添加了
+        //比如已经有指定a#2.0.3了，那么如果当前是a#>=2.0.0，哪也是满足的
+        //还是先把这段逻辑去掉，因为如果有a#*，那是应该用兼容的a#2.0.3还是说需要用最新的a#3.0.0呢？
+        /*for lock_info in new_lock_data.iter() {
+            if lock_info.name == dep_name && version_util::matches(dep_version, &lock_info.version)?
+            {
+                debug!(
+                    "{}#{} already in new_lock_data, stop",
+                    dep_name, dep_version
+                );
+                return Ok(());
+            }
+        }*/
+
         let lock_info =
             self.generate_package_lock_info(index_db, &format!("{}#{}", dep_name, dep_version))?;
         let lock_info_str = format!("{}#{}", lock_info.name, lock_info.version);
@@ -403,11 +417,11 @@ impl PackageEnv {
         index_db: &IndexDB,
         pkg_id_str: &str,
     ) -> PkgSysResult<PackageLockInfo> {
-        // 只获取一层，不用获取依赖的依赖
+        // 只获取一层，即本层和直接依赖，不用获取依赖的依赖
         let parser = Parser::new(self.clone());
         let pkg_id = parser.parse(pkg_id_str)?;
 
-        let exact_version = match self.find_exact_version(pkg_id_str, index_db) {
+        let exact_version = match self.find_exact_version(&pkg_id, index_db) {
             Ok(version) => version,
             Err(err) => {
                 error!("Failed to find exact version for {}: {}", pkg_id_str, err);
@@ -441,11 +455,12 @@ impl PackageEnv {
         };
 
         for dep in &package_meta_info.deps {
-            let pkg_id_str = format!("{}#{}", dep.0, dep.1);
-            match self.find_exact_version(&pkg_id_str, index_db) {
+            let dep_pkg_id_str = format!("{}#{}", dep.0, dep.1);
+            let dep_pkg_id = parser.parse(&dep_pkg_id_str)?;
+            match self.find_exact_version(&dep_pkg_id, index_db) {
                 Ok(version) => {
-                    info!("get exact version for {}: {}", pkg_id_str, version);
-                    let package_id = parser.parse(&pkg_id_str)?;
+                    info!("get exact version for {}: {}", dep_pkg_id_str, version);
+                    let package_id = parser.parse(&dep_pkg_id_str)?;
                     lock_info.dependencies.push(PackageLockDeps {
                         name: package_id.name.clone(),
                         version: version.clone(),
@@ -454,7 +469,7 @@ impl PackageEnv {
                 Err(err) => {
                     let err_msg = format!(
                         "Failed to find exact version for dep: {}, err: {}",
-                        pkg_id_str,
+                        dep_pkg_id_str,
                         err.to_string()
                     );
                     error!("{}", err_msg);
@@ -466,9 +481,13 @@ impl PackageEnv {
         Ok(lock_info)
     }
 
-    pub fn find_exact_version(&self, pkg_id_str: &str, index_db: &IndexDB) -> PkgSysResult<String> {
-        let parser: Parser = Parser::new(self.clone());
-        let pkg_id = parser.parse(pkg_id_str)?;
+    pub fn find_exact_version(
+        &self,
+        pkg_id: &PackageId,
+        index_db: &IndexDB,
+    ) -> PkgSysResult<String> {
+        //let parser: Parser = Parser::new(self.clone());
+        //let pkg_id = parser.parse(pkg_id_str)?;
 
         if let Some(pkg_list) = index_db.packages.get(&pkg_id.name) {
             // 将pkg_deps的key组成Vec，并从大到小排序
