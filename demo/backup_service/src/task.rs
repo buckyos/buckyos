@@ -160,8 +160,11 @@ impl BackupTask {
                 meta,
                 dir_path: dir_path,
                 is_all_files_ready: false,
-                is_all_files_done: false,
                 file_count: files.len(),
+                priority,
+                is_manual,
+                last_fail_at: None,
+                complete_file_count: 0,
             })),
             uploading_chunks: Arc::new(Mutex::new(vec![])),
             control: (sender, Arc::new(Mutex::new(receiver))),
@@ -236,7 +239,7 @@ impl BackupTask {
         // push files
         // TODO: multiple files
         loop {
-            let upload_files = match task_storage.get_incomplete_files(0, 1).await {
+            let upload_files = match task_storage.get_incomplete_files(&task_info.task_key, task_info.check_point_version, 0, 1).await {
                 Ok(files) => {
                     if files.len() == 0 {
                         if self.is_all_files_ready() {
@@ -320,7 +323,7 @@ impl BackupTask {
                     let chunk_size = std::cmp::min(chunk_size, file.file_size - offset);
                     let (chunk_server_type, chunk_server_name, chunk_hash, chunk) =
                         match file_storage
-                            .is_chunk_info_pushed(file.hash.as_str(), chunk_seq)
+                            .is_chunk_info_pushed(&task_info.task_key, task_info.check_point_version, file.file_path.as_path(), chunk_seq)
                             .await
                         {
                             Ok(chunk_server) => match chunk_server {
@@ -347,7 +350,9 @@ impl BackupTask {
                                                 Ok((chunk_server_type, chunk_server_name)) => {
                                                     match file_storage
                                                         .set_chunk_info_pushed(
-                                                            file.hash.as_str(),
+                                                            &task_info.task_key,
+                                                            task_info.check_point_version,
+                                                            file.file_path.as_path(),
                                                             chunk_seq,
                                                             chunk_server_type,
                                                             chunk_server_name.as_str(),
@@ -391,7 +396,7 @@ impl BackupTask {
                         };
 
                     let chunk_storage = task_mgr.chunk_storage();
-                    match chunk_storage.is_chunk_uploaded(file.hash.as_str(), chunk_seq).await {
+                    match chunk_storage.is_chunk_uploaded(&task_info.task_key, task_info.check_point_version, file.file_path.as_path(), chunk_seq).await {
                         Ok(is_upload) => {
                             if is_upload {
                                 continue;
@@ -433,7 +438,7 @@ impl BackupTask {
                                     return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
                                 }
                             }
-                            if let Err(err) = chunk_storage.set_chunk_uploaded(file.hash.as_str(), chunk_seq).await
+                            if let Err(err) = chunk_storage.set_chunk_uploaded(&task_info.task_key, task_info.check_point_version, file.file_path.as_path(), chunk_seq).await
                             {
                                 return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
                             }
@@ -493,7 +498,8 @@ impl Task for BackupTask {
     }
 
     fn is_all_files_done(&self) -> bool {
-        self.info.lock().unwrap().is_all_files_done
+        let info = self.info.lock().unwrap();
+        info.file_count == info.complete_file_count as usize
     }
 
     fn file_count(&self) -> usize {

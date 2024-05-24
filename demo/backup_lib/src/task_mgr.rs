@@ -3,7 +3,28 @@ use std::path::Path;
 use crate::{CheckPointVersion, CheckPointVersionStrategy, FileServerType, TaskId, TaskKey};
 
 #[derive(Copy, Clone)]
-pub enum TaskServerType {}
+pub enum TaskServerType {
+    Http = 1
+}
+
+impl TryFrom<u32> for TaskServerType {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(TaskServerType::Http),
+            _ => Err(()),
+        }
+    }
+}
+
+impl Into<u32> for TaskServerType {
+    fn into(self) -> u32 {
+        match self {
+            TaskServerType::Http => 1,
+        }
+    }
+}
 
 pub trait TaskMgrServer: Send + Sync {}
 

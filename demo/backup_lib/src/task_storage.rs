@@ -1,6 +1,5 @@
-use std::path::{Path, PathBuf};
-
-use crate::{file_storage::FileInfo, storage::Transaction, FileServerType};
+use std::path::{PathBuf};
+use std::time::SystemTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskKey(String);
@@ -11,8 +10,20 @@ impl<K: ToString> From<K> for TaskKey {
     }
 }
 
+impl TaskKey {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct CheckPointVersion(u128);
+
+impl Into<u128> for CheckPointVersion {
+    fn into(self) -> u128 {
+        self.0
+    }
+}
 
 impl From<u128> for CheckPointVersion {
     fn from(id: u128) -> Self {
@@ -29,6 +40,13 @@ impl From<u128> for TaskId {
     }
 }
 
+impl Into<u128> for TaskId {
+    fn into(self) -> u128 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum ListOffset {
     FromFirst(u32),
     FromLast(u32),
@@ -43,8 +61,11 @@ pub struct TaskInfo {
     pub meta: Option<String>,
     pub dir_path: PathBuf,
     pub is_all_files_ready: bool,
-    pub is_all_files_done: bool,
+    pub complete_file_count: usize,
     pub file_count: usize,
+    pub priority: u32,
+    pub is_manual: bool,
+    pub last_fail_at: Option<SystemTime>,
 }
 
 pub struct CheckPointVersionStrategy {
@@ -99,109 +120,4 @@ pub trait TaskStorageInStrategy: TaskStorageQuerier {
         // TODO: check strategy to clear earlier tasks.
         Ok(vec![])
     }
-}
-
-#[async_trait::async_trait]
-pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transaction {
-    async fn create_task(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-        prev_check_point_version: Option<CheckPointVersion>,
-        meta: Option<&str>,
-        dir_path: &Path,
-        priority: u32,
-        is_manual: bool,
-    ) -> Result<TaskId, Box<dyn std::error::Error + Send + Sync>>;
-
-    async fn add_file(
-        &self,
-        task_id: TaskId,
-        file_path: &Path,
-        hash: &str,
-        file_size: u64,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-
-    async fn create_task_with_files(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-        prev_check_point_version: Option<CheckPointVersion>,
-        meta: Option<&str>,
-        dir_path: &Path,
-        files: &[FileInfo],
-        priority: u32,
-        is_manual: bool,
-    ) -> Result<TaskId, Box<dyn std::error::Error + Send + Sync>> {
-        self.begin_transaction().await?;
-
-        let task_id = self
-            .create_task(
-                &task_key,
-                check_point_version,
-                prev_check_point_version,
-                meta,
-                dir_path,
-                priority,
-                is_manual,
-            )
-            .await?;
-
-        for file_info in files.iter() {
-            self.add_file(
-                task_id,
-                file_info.file_path.as_path(),
-                file_info.hash.as_str(),
-                file_info.file_size,
-            )
-            .await?;
-        }
-
-        self.commit_transaction().await?;
-
-        Ok(task_id)
-    }
-
-    async fn get_incomplete_tasks(
-        &self,
-        offset: u32,
-        limit: u32,
-    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>>;
-
-    async fn get_incomplete_files(
-        &self,
-        min_file_seq: usize,
-        limit: usize,
-    ) -> Result<Vec<FileInfo>, Box<dyn std::error::Error + Send + Sync>>;
-
-    async fn is_task_info_pushed(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-    ) -> Result<Option<TaskId>, Box<dyn std::error::Error + Send + Sync>>;
-
-    async fn set_task_info_pushed(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-        task_id: TaskId,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-
-    // Ok(file-server-name)
-    async fn is_file_info_pushed(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-        file_path: &Path,
-    ) -> Result<Option<(FileServerType, String, u32)>, Box<dyn std::error::Error + Send + Sync>>;
-
-    async fn set_file_info_pushed(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-        file_path: &Path,
-        server_type: FileServerType,
-        server_name: &str,
-        chunk_size: u32,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }

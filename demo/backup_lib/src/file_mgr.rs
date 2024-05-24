@@ -2,7 +2,28 @@ use crate::{CheckPointVersion, ChunkServerType, TaskKey};
 
 
 #[derive(Copy, Clone)]
-pub enum FileServerType {}
+pub enum FileServerType {
+    Http = 1
+}
+
+impl TryFrom<u32> for FileServerType {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(FileServerType::Http),
+            _ => Err(()),
+        }
+    }
+}
+
+impl Into<u32> for FileServerType {
+    fn into(self) -> u32 {
+        match self {
+            FileServerType::Http => 1,
+        }
+    }
+}
 
 pub trait FileMgrServer {}
 

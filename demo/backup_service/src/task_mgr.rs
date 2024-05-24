@@ -1,17 +1,17 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc},
+    sync::Arc,
 };
 
 use backup_lib::{
-    CheckPointVersion, CheckPointVersionStrategy, ChunkMgrSelector, ChunkStorageClient,
-    FileMgrSelector, FileStorageClient, ListOffset, TaskId, TaskInfo, TaskKey,
-    TaskMgrSelector, TaskStorageClient, TaskStorageQuerier,
+    CheckPointVersion, CheckPointVersionStrategy, ChunkMgrSelector,
+    FileMgrSelector, ListOffset, TaskId, TaskInfo, TaskKey,
+    TaskMgrSelector, TaskStorageQuerier,
 };
 use tokio::sync::Mutex;
 
-use crate::task::{BackupTask, BackupTaskEvent, RestoreTask, Task, TaskInner};
+use crate::{task::{BackupTask, BackupTaskEvent, RestoreTask, Task, TaskInner}, task_storage::{ChunkStorageClient, FileStorageClient, TaskStorageClient}};
 
 // TODO: config
 const MAX_RUNNING_TASK_COUNT: usize = 5;
