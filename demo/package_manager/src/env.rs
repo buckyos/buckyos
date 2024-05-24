@@ -12,7 +12,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tar::Archive;
 use tokio::sync::oneshot;
@@ -214,7 +214,7 @@ impl PackageEnv {
             }
         }
 
-        Ok(())
+        self.make_symlink_for_deps()
     }
 
     fn verify_package(dest_file: &PathBuf, sha256: String) -> PkgSysResult<()> {
@@ -253,8 +253,35 @@ impl PackageEnv {
         Ok(())
     }
 
+    fn make_symlink_for_deps(&self) -> PkgSysResult<()> {
+        // 删除deps_dir下面除.bkzs之外所有的文件和文件夹（几乎都是软链接）
+        let deps_dir = self.get_deps_dir();
+        for entry in fs::read_dir(&deps_dir)? {
+            let entry = entry?;
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                if entry_path.file_name().unwrap() != ".bkzs" {
+                    fs::remove_dir_all(&entry_path)?;
+                }
+            } else {
+                fs::remove_file(&entry_path)?;
+            }
+        }
+        let direct_deps = self.get_direct_deps_with_lock()?;
+        let install_dir = self.get_install_dir();
+        for dep in &direct_deps {
+            Self::create_symlink(&deps_dir.join(dep), &install_dir.join(dep))?;
+        }
+
+        Ok(())
+    }
+
+    pub fn get_deps_dir(&self) -> PathBuf {
+        self.work_dir.join("deps")
+    }
+
     pub fn get_install_dir(&self) -> PathBuf {
-        self.work_dir.join("deps").join(".bkzs")
+        self.get_deps_dir().join(".bkzs")
     }
 
     fn get_pkg_cache_dir(&self) -> PathBuf {
@@ -366,7 +393,7 @@ impl PackageEnv {
     }
 
     // 通过lock文件获取所有package.toml中声明的直接依赖
-    pub fn get_direct_deps_with_lock(&self) -> PkgSysResult<Vec<String>> {
+    fn get_direct_deps_with_lock(&self) -> PkgSysResult<Vec<String>> {
         let mut result: Vec<String> = Vec::new();
         let lock_file_path = self.work_dir.join("pkg.lock");
         if !lock_file_path.exists() {
@@ -810,6 +837,66 @@ impl PackageEnv {
             )
         })?;
         Ok(value)
+    }
+
+    fn create_symlink(target_path: &Path, source_path: &Path) -> PkgSysResult<()> {
+        // 如果目标路径已经存在，先删除它
+        if target_path.exists() {
+            fs::remove_file(target_path)?;
+        }
+
+        // 创建符号链接
+        #[cfg(target_family = "unix")]
+        {
+            std::os::unix::fs::symlink(source_path, target_path)?;
+        }
+
+        #[cfg(target_family = "windows")]
+        {
+            let result = if source_path.is_dir() {
+                std::os::windows::fs::symlink_dir(source_path, target_path)
+            } else {
+                std::os::windows::fs::symlink_file(source_path, target_path)
+            };
+
+            if let Err(e) = result {
+                // 如果创建符号链接失败且源路径是目录，尝试创建 junction
+                if source_path.is_dir() {
+                    match std::process::Command::new("cmd")
+                        .args(&[
+                            "/C",
+                            "mklink",
+                            "/J",
+                            target_path.to_str().unwrap(),
+                            source_path.to_str().unwrap(),
+                        ])
+                        .output()
+                    {
+                        Ok(output) => {
+                            if !output.status.success() {
+                                return Err(PackageSystemErrors::InstallError(
+                                    target_path.to_string_lossy().to_string(),
+                                    format!(
+                                        "Failed to create junction: {}",
+                                        String::from_utf8_lossy(&output.stderr)
+                                    ),
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            return Err(PackageSystemErrors::InstallError(
+                                target_path.to_string_lossy().to_string(),
+                                e.to_string(),
+                            ));
+                        }
+                    }
+                } else {
+                    return Err(e.into());
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
