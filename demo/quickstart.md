@@ -2,6 +2,9 @@
 请注意整个demo都没有做任何的身份验证，仅限于测试
 demo目前面向的是能熟练使用Linux cli和docker的高级用户 ，面向普通用户我们会提供更加友好的GUI工具来完成buckyos的部署。
 
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://cache.mynode.site/install.sh | sudo bash
+```
 
 ## 获得BuckyOS booter(node_daemon)
 方法一、 在使用时通过docker pull得到
@@ -24,8 +27,7 @@ BuckyOS的booter在启动时，需要读取保存在去中心的（非公司经�
 
 使用下面命令
 ```bash
-docker pull buckyos/buckycli
-docker run --rm buckyos/buckycli --dump_text 2an1_zone_config.json
+./buckycli encode_dns --file 2an1_zone_config.json
 ```
 会得到base58编码的文本。通过你的dns注册商的工具，新建一个text record并保存上述结果。
 
