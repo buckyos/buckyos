@@ -8,10 +8,11 @@ MOUNT_POINT=$4
 # NODES 是作为一个字符串传入，内部包含所有节点，以空格分隔
 # TODO 这里更好的做法是先让节点上报到etcd，然后从etcd获取所有节点
 NODES=($5)
+CREATE_VOLUME=($6)
 
 # Check if 5 arguments was provided
-if [ "$#" -ne 5 ]; then
-    echo "Usage: $0 HOST_NAME GLUSTER_VOLUME BRICK_PATH MOUNT_POINT 'NODE1 NODE2 ...'"
+if [ "$#" -ne 5 ] && [ "$#" -ne 6 ]; then
+    echo "Usage: $0 HOST_NAME GLUSTER_VOLUME BRICK_PATH MOUNT_POINT 'NODE1 NODE2 ...' [create_volume]"
     exit 1
 fi
 
@@ -62,7 +63,7 @@ wait_for_peers() {
     local retries=0
     while : ; do
         connected_peers=$(sudo gluster peer status | grep -c 'State: Peer in Cluster (Connected)')
-        if [ "$connected_peers" -eq $((peer_count - 1)) ]; then
+        if [ $connected_peers -eq $(peer_count) ]; then
             break
         else
             retries=$((retries+1))
@@ -77,9 +78,9 @@ wait_for_peers() {
 
 # 创建分布式卷
 create_volume() {
-    if [ "$HOST_NAME" == "etcd1" ]; then
-        wait_for_peers
-        
+    if [ "$CREATE_VOLUME" = "create_volume" ]; then
+        # wait_for_peers
+
         if ! sudo gluster volume info $GLUSTER_VOLUME >/dev/null 2>&1; then
             echo "Creating GlusterFS volume: $GLUSTER_VOLUME"
             sudo gluster volume create $GLUSTER_VOLUME transport tcp $(IFS=','; echo "${NODES[*]/%/:$BRICK_PATH}" | sed 's/,/ /g') force

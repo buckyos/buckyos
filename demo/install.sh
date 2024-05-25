@@ -46,10 +46,11 @@ main() {
 	# buckycli="/mnt/f/work/buckyos/demo/target/release/buckycli"
 	buckycli="/usr/local/bin/buckycli"
 	echo "Downloading buckycli..."
-	ensure sudo curl --progress-bar -o "$buckycli" https://cache.mynode.site/buckycli
+	ensure sudo curl -z "$buckycli" --progress-bar -o "$buckycli" https://cache.mynode.site/buckycli
 	sudo chmod +x "$buckycli"
 
 	docker_image="harbor.mynode.site:8443/library/buckyos:latest"
+# 	docker_image="buckyos:latest"
 
 	read -p "Please enter your zone name: " zone_name < /dev/tty
 
@@ -91,6 +92,16 @@ main() {
 			"1" )
 				echo "You have selected all mode."
 				create_all
+
+				wait_time=10
+				echo "Wait ${wait_time} seconds for the zone to start"
+
+				for ((i=1; i<=wait_time; i++))
+				do
+				    echo -ne "Already waited ${i} seconds\r"
+				    sleep 1
+				done
+				import_all_config
 				break;;
 			"2" )
 				echo "You have selected node mode."
@@ -156,25 +167,33 @@ create_all() {
 	ensure sudo mkdir -p "$data_path/$node_2/data"
 	ensure sudo mkdir -p "$data_path/$node_3/data"
 
+	ensure sudo mkdir -p "$data_path/$node_1/etcd"
+	ensure sudo mkdir -p "$data_path/$node_2/etcd"
+	ensure sudo mkdir -p "$data_path/$node_3/etcd"
+
 	docker_compose_template=$(cat <<- EOF
 networks:
   buckyos:
     driver: bridge
 
 services:
-  etcd1:
+  $node_1:
     image: $docker_image
     container_name: $node_1
     networks:
       - buckyos
+    ports:
+      - "139:139"
+      - "445:445"
     volumes:
       - $data_path/$node_1/node_identity.toml:/buckyos/node_identity.toml
       - $data_path/$node_1/data:/buckyos/data
+      - $data_path/$node_1/etcd:/buckyos/$node_1.etcd
     tty: true
     stdin_open: true
     restart: always
 
-  etcd2:
+  $node_2:
     image: $docker_image
     container_name: $node_2
     networks:
@@ -182,11 +201,12 @@ services:
     volumes:
       - $data_path/$node_2/node_identity.toml:/buckyos/node_identity.toml
       - $data_path/$node_2/data:/buckyos/data
+      - $data_path/$node_2/etcd:/buckyos/$node_2.etcd
     tty: true
     stdin_open: true
     restart: always
 
-  gateway:
+  $node_3:
     image: $docker_image
     container_name: $node_3
     networks:
@@ -196,6 +216,7 @@ services:
     volumes:
       - $data_path/$node_3/node_identity.toml:/buckyos/node_identity.toml
       - $data_path/$node_3/data:/buckyos/data
+      - $data_path/$node_3/etcd:/buckyos/$node_3.etcd
     tty: true
     stdin_open: true
     restart: always
@@ -216,9 +237,9 @@ EOF
     else
 	    docker network create buckyos
 	    docker pull harbor.mynode.site:8443/library/buckyos
-	    docker run --restart=always -d -v $data_path/$node_1/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_1/data":/buckyos/data --name $node_1 --network buckyos $docker_image
-	    docker run --restart=always -d -v $data_path/$node_2/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_2/data":/buckyos/data --name $node_2 --network buckyos $docker_image
-	    docker run --restart=always -d -v $data_path/$node_3/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_3/data":/buckyos/data --name $node_3 -p 2379:2379 --network buckyos $docker_image
+	    docker run --restart=always -d -v $data_path/$node_1/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_1/data":/buckyos/data -v $data_path/$node_1/etcd:/var/lib/etcd --name $node_1 -p 139:139 -p 445:445 --network buckyos $docker_image
+	    docker run --restart=always -d -v $data_path/$node_2/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_2/data":/buckyos/data -v $data_path/$node_2/etcd:/var/lib/etcd --name $node_2 --network buckyos $docker_image
+	    docker run --restart=always -d -v $data_path/$node_3/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_3/data":/buckyos/data -v $data_path/$node_3/etcd:/var/lib/etcd --name $node_3 -p 2379:2379 --network buckyos $docker_image
     fi
 }
 
@@ -247,9 +268,163 @@ create_node() {
 	ensure mkdir -p "$data_path/$cur_node"
 	create_node_identity $zone_name $cur_node "$data_path/$node_1/node_identity.toml"
 	ensure mkdir -p "$data_path/$cur_node/data"
+	ensure mkdir -p "$data_path/$cur_node/etcd"
 
 	ensure sudo docker pull $docker_image
-	ensure sudo docker run -d --init --restart=always -v "$data_path/$node_1/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data --name gateway -p 2379:2379 -p 2380:2380 $docker_image
+	ensure sudo docker run -d --init --restart=always -v "$data_path/$node_1/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/var/lib/etcd  --name gateway -p 2379:2379 -p 2380:2380 $docker_image
+}
+
+import_all_config() {
+	zone_node_config_template=$(cat <<- EOF
+{
+  "$node_1": {
+    "services": {
+      "glusterfs": {
+        "target_state": "Running",
+        "pkg_id": "glusterfs",
+        "version": "*",
+        "operations": {
+	        "status": {
+	            "command": "status.sh",
+	            "params": [
+	                "gv0",
+	                "/mnt/glusterfs"
+	            ]
+	        },
+	        "start": {
+	            "command": "start.sh",
+	            "params": [
+	                "$node_1",
+	                "gv0",
+	                "/buckyos/data",
+	                "/mnt/glusterfs",
+	                "$node_2 $node_3",
+	                "create_volume"
+	            ]
+	        },
+	        "stop": {
+	            "command": "stop.sh",
+	            "params": [
+	                "gv0",
+	                "/mnt/glusterfs"
+	            ]
+	        },
+	        "deploy": {
+	            "command": "deploy.sh",
+	            "params": [
+	                "--gluster"
+	            ]
+	        }
+        }
+      },
+     "samba": {
+       "target_state": "Running",
+       "pkg_id": "smb_service",
+       "version": "*",
+       "operations": {
+         "deploy": {
+           "command": "deploy.sh",
+           "params": ["/mnt/glusterfs"]
+         },
+         "status": {
+           "command": "status.sh",
+           "params": ["--status"]
+         },
+         "start": {
+           "command": "start.sh",
+           "params": []
+         }
+       }
+     }
+    }
+  },
+  "$node_2": {
+    "services": {
+      "glusterfs": {
+        "target_state": "Running",
+        "pkg_id": "glusterfs",
+        "version": "*",
+        "operations": {
+	        "status": {
+	            "command": "status.sh",
+	            "params": [
+	                "gv0",
+	                "/mnt/glusterfs"
+	            ]
+	        },
+	        "start": {
+	            "command": "start.sh",
+	            "params": [
+	                "$node_2",
+	                "gv0",
+	                "/buckyos/data",
+	                "/mnt/glusterfs",
+	                "$node_1 $node_3"
+	            ]
+	        },
+	        "stop": {
+	            "command": "stop.sh",
+	            "params": [
+	                "gv0",
+	                "/mnt/glusterfs"
+	            ]
+	        },
+	        "deploy": {
+	            "command": "deploy.sh",
+	            "params": [
+	                "--gluster"
+	            ]
+	        }
+        }
+      }
+    }
+  },
+  "$node_3": {
+    "services": {
+      "glusterfs": {
+        "target_state": "Running",
+        "pkg_id": "glusterfs",
+        "version": "*",
+        "operations": {
+	        "status": {
+	            "command": "status.sh",
+	            "params": [
+	                "gv0",
+	                "/mnt/glusterfs"
+	            ]
+	        },
+	        "start": {
+	            "command": "start.sh",
+	            "params": [
+	                "$node_3",
+	                "gv0",
+	                "/buckyos/data",
+	                "/mnt/glusterfs",
+	                "$node_1 $node_2"
+	            ]
+	        },
+	        "stop": {
+	            "command": "stop.sh",
+	            "params": [
+	                "gv0",
+	                "/mnt/glusterfs"
+	            ]
+	        },
+	        "deploy": {
+	            "command": "deploy.sh",
+	            "params": [
+	                "--gluster"
+	            ]
+	        }
+        }
+      }
+    }
+  }
+}
+EOF
+)
+	ensure sudo echo -e "$zone_node_config_template" > "$data_path/zone_node_config.yml"
+	ensure $buckycli import_zone_config -f "$data_path/zone_node_config.yml"
 }
 
 need_cmd() {

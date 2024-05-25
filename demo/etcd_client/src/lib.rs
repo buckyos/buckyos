@@ -79,9 +79,9 @@ impl EtcdClient {
 }
 
 pub fn start_etcd(name: &str, initial_cluster: &str, cluster_token: &str) -> std::io::Result<Child> {
-    let etcd_data_dir = Path::new("/var/lib/etcd");
+    let etcd_data_dir = std::env::current_dir().unwrap().join(format!("{}.etcd", name));
     let cluster_state = if etcd_data_dir.exists() {
-        if Path::new(etcd_data_dir).read_dir()?.collect::<Vec<Result<DirEntry, std::io::Error>>>().len() > 0 {
+        if etcd_data_dir.read_dir()?.collect::<Vec<Result<DirEntry, std::io::Error>>>().len() > 0 {
             "existing"
         } else {
             "new"
