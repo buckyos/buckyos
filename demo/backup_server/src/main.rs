@@ -7,6 +7,14 @@ mod backup_index;
 
 use backup_file_mgr::*;
 
+// new version
+mod task_mgr;
+mod task_mgr_storage;
+mod file_mgr;
+mod file_mgr_storage;
+mod chunk_mgr;
+mod chunk_mgr_storage;
+
 #[derive(Deserialize)]
 struct Config {
     save_path: String,

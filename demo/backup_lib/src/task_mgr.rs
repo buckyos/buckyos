@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::{CheckPointVersion, CheckPointVersionStrategy, FileServerType, TaskId, TaskKey};
+use crate::{CheckPointVersion, CheckPointVersionStrategy, FileId, FileServerType, TaskId, TaskKey};
 
 #[derive(Copy, Clone)]
 pub enum TaskServerType {
@@ -34,27 +34,30 @@ pub trait TaskMgrSelector: Send + Sync {
         &self,
         task_key: &TaskKey,
         check_point_version: Option<CheckPointVersion>,
-    ) -> Result<Box<dyn TaskMgrClient>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Box<dyn TaskMgr>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]
-pub trait TaskMgrClient: Send + Sync {
+pub trait TaskMgr: Send + Sync {
     fn server_type(&self) -> TaskServerType;
     fn server_name(&self) -> &str;
 
     async fn update_check_point_strategy(
         &self,
+        zone_id: &str,
         task_key: &TaskKey,
         strategy: CheckPointVersionStrategy,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     async fn get_check_point_strategy(
         &self,
+        zone_id: &str,
         task_key: &TaskKey,
     ) -> Result<CheckPointVersionStrategy, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn push_task_info(
         &self,
+        zone_id: &str,
         task_key: &TaskKey,
         check_point_version: CheckPointVersion,
         prev_check_point_version: Option<CheckPointVersion>,
@@ -69,18 +72,16 @@ pub trait TaskMgrClient: Send + Sync {
         file_path: &Path,
         hash: &str,
         file_size: u64,
-    ) -> Result<(FileServerType, String, u32), Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<(FileServerType, String, FileId, u32), Box<dyn std::error::Error + Send + Sync>>;
 
     async fn set_files_prepare_ready(
         &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
+        task_id: TaskId,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     async fn set_file_uploaded(
         &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
+        task_id: TaskId,
         file_path: &Path,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }

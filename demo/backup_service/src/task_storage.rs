@@ -1,5 +1,5 @@
 use std::path::Path;
-use backup_lib::{CheckPointVersion, ChunkServerType, ChunkStorage, FileInfo, FileServerType, FileStorageQuerier, TaskId, TaskInfo, TaskKey, TaskStorageDelete, TaskStorageInStrategy, Transaction};
+use backup_lib::{CheckPointVersion, ChunkId, ChunkServerType, ChunkStorage, FileId, FileInfo, FileServerType, FileStorageQuerier, TaskId, TaskInfo, TaskKey, TaskStorageDelete, TaskStorageInStrategy, Transaction};
 
 #[async_trait::async_trait]
 pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transaction {
@@ -97,7 +97,7 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         task_key: &TaskKey,
         check_point_version: CheckPointVersion,
         file_path: &Path,
-    ) -> Result<Option<(FileServerType, String, u32)>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Option<(FileServerType, String, FileId, u32)>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn set_file_info_pushed(
         &self,
@@ -106,6 +106,7 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         file_path: &Path,
         server_type: FileServerType,
         server_name: &str,
+        remote_file_id: FileId,
         chunk_size: u32,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
@@ -115,16 +116,14 @@ pub trait FileStorageClient: FileStorageQuerier {
     // Ok((chunk-server-type, chunk-server-name, chunk-hash))
     async fn is_chunk_info_pushed(
         &self,
-
         task_key: &TaskKey,
         version: CheckPointVersion,
         file_path: &Path,
         chunk_seq: u64,
-    ) -> Result<Option<(ChunkServerType, String, String)>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Option<(ChunkServerType, String, String, ChunkId)>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn set_chunk_info_pushed(
         &self,
-
         task_key: &TaskKey,
         version: CheckPointVersion,
         file_path: &Path,
@@ -132,6 +131,7 @@ pub trait FileStorageClient: FileStorageQuerier {
         chunk_server_type: ChunkServerType,
         server_name: &str,
         chunk_hash: &str,
+        remote_chunk_id: ChunkId,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
@@ -147,7 +147,6 @@ pub trait ChunkStorageClient: ChunkStorage {
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
     async fn set_chunk_uploaded(
         &self,
-
         task_key: &TaskKey,
         version: CheckPointVersion,
         file_path: &Path,

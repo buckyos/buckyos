@@ -2,8 +2,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use std::os::unix::ffi::OsStringExt;
+use backup_lib::{ChunkId, FileId};
 use backup_lib::{CheckPointVersion, ChunkServerType, ChunkStorage, ChunkStorageQuerier, FileInfo, FileServerType, FileStorageQuerier, ListOffset, TaskId, TaskInfo, TaskKey, TaskStorageDelete, TaskStorageInStrategy, TaskStorageQuerier, Transaction};
-use futures::future::OkInto;
 use tokio::sync::Mutex;
 
 use crate::task_storage::{ChunkStorageClient, FileStorageClient, TaskStorageClient};
@@ -52,6 +52,7 @@ impl TaskStorageSqlite {
             chunk_size INTEGER DEFAULT NULL,
             server_type TEXT DEFAULT NULL,
             server_name TEXT DEFAULT NULL,
+            remote_file_id INTEGER DEFAULT NULL,
             last_fail_at INTEGER DEFAULT NULL,
             create_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
             finish_at INTEGER DEFAULT NULL,
@@ -72,6 +73,7 @@ impl TaskStorageSqlite {
             chunk_hash TEXT NOT NULL,
             server_type TEXT DEFAULT NULL,
             server_name TEXT DEFAULT NULL,
+            remote_chunk_id INTEGER DEFAULT NULL,
             is_uploaded TINYINT DEFAULT 0,
             last_fail_at INTEGER DEFAULT NULL,
             create_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
@@ -436,11 +438,11 @@ impl TaskStorageClient for TaskStorageSqlite {
         task_key: &TaskKey,
         check_point_version: CheckPointVersion,
         file_path: &Path,
-    ) -> Result<Option<(FileServerType, String, u32)>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Option<(FileServerType, String, FileId, u32)>, Box<dyn std::error::Error + Send + Sync>> {
         // chunk_size INTEGER DEFAULT NULL,
         // server_type TEXT DEFAULT NULL,
         // server_name TEXT DEFAULT NULL,
-        let sql = "SELECT upload_files.chunk_size, upload_files.server_type, upload_files.server_name
+        let sql = "SELECT upload_files.chunk_size, upload_files.server_type, upload_files.server_name, upload_files.remote_file_id
             FROM upload_files, upload_tasks 
             WHERE upload_tasks.task_id = upload_files.task_id AND zone_id = ? AND
                 key = ? AND version = ? AND file_path = ?";
@@ -448,16 +450,18 @@ impl TaskStorageClient for TaskStorageSqlite {
         let connection = self.connection.lock().await;
 
         let mut stmt = connection.prepare(sql)?;
-        let (chunk_size, server_type, server_name) = stmt.query_row(params![self.zone_id.as_str(), task_key.as_str(), Into::<u128>::into(check_point_version) as u64, file_path.as_os_str().as_encoded_bytes()], |row| {
-            Ok((row.get::<usize, Option<u32>>(0)?, row.get::<usize, Option<u32>>(1)?, row.get::<usize, Option<String>>(2)?))
+        let (chunk_size, server_type, server_name, remote_file_id) = stmt.query_row(params![self.zone_id.as_str(), task_key.as_str(), Into::<u128>::into(check_point_version) as u64, file_path.as_os_str().as_encoded_bytes()], |row| {
+            Ok((row.get::<usize, Option<u32>>(0)?, row.get::<usize, Option<u32>>(1)?, row.get::<usize, Option<String>>(2)?, row.get::<usize, Option<u64>>(3)?))
         })?;
 
         Ok(match chunk_size {
             Some(chunk_size) => {
-                let server_type = server_type.expect("chunk-size, file-server-type, file-server-name should all exist");
+                let server_type = server_type.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
                 let server_type = FileServerType::try_from(server_type).expect("file-server-type should be valid");
-                let server_name = server_name.expect("chunk-size, file-server-type, file-server-name should all exist");
-                Some((server_type, server_name, chunk_size))},
+                let server_name = server_name.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
+                let remote_file_id = remote_file_id.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
+                Some((server_type, server_name, FileId::from(remote_file_id as u128), chunk_size))
+            },
             None => None,
         })
     }
@@ -469,12 +473,13 @@ impl TaskStorageClient for TaskStorageSqlite {
         file_path: &Path,
         server_type: FileServerType,
         server_name: &str,
+        remote_file_id: FileId,
         chunk_size: u32,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let sql = "UPDATE upload_files SET chunk_size = ?, server_type = ?, server_name = ? WHERE task_id IN (SELECT task_id FROM upload_tasks WHERE key = ? AND version = ? AND zone_id = ?) AND file_path = ?";
+        let sql = "UPDATE upload_files SET chunk_size = ?, server_type = ?, server_name = ?, remote_file_id = ? WHERE task_id IN (SELECT task_id FROM upload_tasks WHERE key = ? AND version = ? AND zone_id = ?) AND file_path = ?";
         
         let connection = self.connection.lock().await;
-        connection.execute(sql, params![chunk_size, Into::<u32>::into(server_type), server_name, task_key.as_str(), Into::<u128>::into(check_point_version) as u64, self.zone_id.as_str(), file_path.as_os_str().as_encoded_bytes()])?;
+        connection.execute(sql, params![chunk_size, Into::<u32>::into(server_type), server_name, Into::<u128>::into(remote_file_id) as u64, task_key.as_str(), Into::<u128>::into(check_point_version) as u64, self.zone_id.as_str(), file_path.as_os_str().as_encoded_bytes()])?;
 
         Ok(())
     }
@@ -507,9 +512,9 @@ impl FileStorageClient for TaskStorageSqlite {
         version: CheckPointVersion,
         file_path: &Path,
         chunk_seq: u64,
-    ) -> Result<Option<(ChunkServerType, String, String)>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Option<(ChunkServerType, String, String, ChunkId)>, Box<dyn std::error::Error + Send + Sync>> {
 
-        let sql = "SELECT upload_chunks.server_type, upload_chunks.server_name, upload_chunks.chunk_hash
+        let sql = "SELECT upload_chunks.server_type, upload_chunks.server_name, upload_chunks.chunk_hash, upload_chunks.remote_chunk_id
             FROM upload_chunks, upload_files, upload_tasks
             WHERE upload_tasks.task_id = upload_files.task_id AND upload_tasks.task_id = upload_chunks.task_id
                 AND upload_files.file_seq = upload_chunks.file_seq
@@ -520,16 +525,17 @@ impl FileStorageClient for TaskStorageSqlite {
                 AND upload_chunks.chunk_seq = ?";
         let connection = self.connection.lock().await;
         let mut stmt = connection.prepare(sql)?;
-        let (server_type, server_name, chunk_hash) = stmt.query_row(params![self.zone_id.as_str(), task_key.as_str(), Into::<u128>::into(version) as u64, file_path.as_os_str().as_encoded_bytes(), chunk_seq], |row| {
-            Ok((row.get::<usize, Option<u32>>(0)?, row.get::<usize, Option<String>>(1)?, row.get::<usize, Option<String>>(2)?))
+        let (server_type, server_name, chunk_hash, remote_chunk_id) = stmt.query_row(params![self.zone_id.as_str(), task_key.as_str(), Into::<u128>::into(version) as u64, file_path.as_os_str().as_encoded_bytes(), chunk_seq], |row| {
+            Ok((row.get::<usize, Option<u32>>(0)?, row.get::<usize, Option<String>>(1)?, row.get::<usize, Option<String>>(2)?, row.get::<usize, Option<u64>>(3)?))
         })?;
 
         Ok(match chunk_hash {
             Some(chunk_hash) => {
-                let server_type = server_type.expect("chunk-size, file-server-type, file-server-name should all exist");
+                let server_type = server_type.expect("chunk-size, file-server-type, file-server-name, remote-chunk-id should all exist");
                 let server_type = ChunkServerType::try_from(server_type).expect("file-server-type should be valid");
-                let server_name = server_name.expect("chunk-size, file-server-type, file-server-name should all exist");
-                Some((server_type, server_name, chunk_hash))},
+                let server_name = server_name.expect("chunk-size, file-server-type, file-server-name, remote-chunk-id should all exist");
+                let remote_chunk_id = remote_chunk_id.expect("chunk-size, file-server-type, file-server-name, remote-chunk-id should all exist");
+                Some((server_type, server_name, chunk_hash, ChunkId::from(remote_chunk_id as u128)))},
             None => None,
         })
     }
@@ -543,9 +549,10 @@ impl FileStorageClient for TaskStorageSqlite {
         chunk_server_type: ChunkServerType,
         server_name: &str,
         chunk_hash: &str,
+        remote_chunk_id: ChunkId,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let sql = "UPDATE upload_chunks 
-            SET server_type = ?, server_name = ?, chunk_hash = ? 
+            SET server_type = ?, server_name = ?, chunk_hash = ?, remote_chunk_id = ?
             WHERE chunk_seq = ?
                 AND EXISTS (
                     SELECT 1
@@ -561,7 +568,7 @@ impl FileStorageClient for TaskStorageSqlite {
             ";
             
         let connection = self.connection.lock().await;
-        connection.execute(sql, params![Into::<u32>::into(chunk_server_type), server_name, chunk_hash, chunk_seq, file_path.as_os_str().as_encoded_bytes(), task_key.as_str(), Into::<u128>::into(version) as u64, self.zone_id.as_str()])?;
+        connection.execute(sql, params![Into::<u32>::into(chunk_server_type), server_name, chunk_hash, Into::<u128>::into(remote_chunk_id) as u64, chunk_seq, file_path.as_os_str().as_encoded_bytes(), task_key.as_str(), Into::<u128>::into(version) as u64, self.zone_id.as_str()])?;
 
         Ok(())
     }

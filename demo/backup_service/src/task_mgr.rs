@@ -62,6 +62,7 @@ enum BackupState {
 }
 
 pub(crate) struct BackupTaskMgrInner {
+    zone_id: String,
     task_storage: Arc<Box<dyn TaskStorageClient>>,
     file_storage: Arc<Box<dyn FileStorageClient>>,
     chunk_storage: Arc<Box<dyn ChunkStorageClient>>,
@@ -73,6 +74,10 @@ pub(crate) struct BackupTaskMgrInner {
 }
 
 impl BackupTaskMgrInner {
+    pub(crate) fn zone_id(&self) -> &str {
+        self.zone_id.as_str()
+    }
+
     pub(crate) fn task_storage(&self) -> Arc<Box<dyn TaskStorageClient>> {
         self.task_storage.clone()
     }
@@ -132,6 +137,7 @@ pub struct BackupTaskMgr(Arc<BackupTaskMgrInner>);
 
 impl BackupTaskMgr {
     pub fn new(
+        zone_id: String,
         task_storage: Box<dyn TaskStorageClient>,
         file_storage: Box<dyn FileStorageClient>,
         chunk_storage: Box<dyn ChunkStorageClient>,
@@ -149,6 +155,7 @@ impl BackupTaskMgr {
             chunk_mgr_selector: Arc::new(chunk_mgr_selector),
             running_tasks: Arc::new(Mutex::new(BackupTaskMap::new())),
             state: Arc::new(Mutex::new(BackupState::Stopped)),
+            zone_id,
         });
 
         Self(task_mgr)
@@ -262,7 +269,7 @@ impl BackupTaskMgr {
             
 
         if let Ok(remote_task_server) = self.0.task_mgr_selector.select(&task_key, None).await {
-            if let Ok(strategy) = remote_task_server.get_check_point_strategy(&task_key).await {
+            if let Ok(strategy) = remote_task_server.get_check_point_strategy(self.0.zone_id.as_str(), &task_key).await {
                 if let Ok(removed_tasks) = self
                     .0
                     .task_storage
@@ -299,6 +306,7 @@ impl BackupTaskMgr {
         &self,
         task_key: &TaskKey,
     ) -> Result<TaskInfo, Box<dyn std::error::Error + Send + Sync>> {
+        // TODO: 到task-mgr服务器上获取，返回最大版本号
         self.0
             .task_storage
             .get_last_check_point_version(task_key, false)
@@ -323,7 +331,7 @@ impl BackupTaskMgr {
     ) -> Result<CheckPointVersionStrategy, Box<dyn std::error::Error + Send + Sync>> {
         self.0.task_mgr_selector
             .select(task_key, None)
-            .await?.get_check_point_strategy(task_key).await
+            .await?.get_check_point_strategy(self.0.zone_id.as_str(), task_key).await
     }
 
     pub async fn update_check_point_strategy(
@@ -335,7 +343,7 @@ impl BackupTaskMgr {
             .task_mgr_selector
             .select(task_key, None)
             .await?
-            .update_check_point_strategy(task_key, strategy)
+            .update_check_point_strategy(self.0.zone_id.as_str(), task_key, strategy)
             .await
     }
 
@@ -391,6 +399,7 @@ impl RestoreTaskMgr {
         offset: ListOffset,
         limit: u32,
     ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
+        // TODO: 到task-mgr服务器上获取
         self.task_storage
             .get_check_point_version_list(task_key, offset, limit, true)
             .await

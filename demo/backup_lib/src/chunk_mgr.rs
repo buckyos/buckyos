@@ -24,7 +24,18 @@ impl Into<u32> for ChunkServerType {
     }
 }
 
-pub trait ChunkMgrServer {}
+#[async_trait::async_trait]
+pub trait ChunkMgrServer {
+    async fn add_chunk(
+        &self,
+        file_server_type: ChunkServerType,
+        file_server_name: &str,
+        file_hash: &str,
+        chunk_seq: u32,
+        chunk_hash: &str,
+        chunk_size: u64,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
 
 #[async_trait::async_trait]
 pub trait ChunkMgrSelector: Send + Sync {
@@ -35,17 +46,17 @@ pub trait ChunkMgrSelector: Send + Sync {
         file_hash: &str,
         chunk_seq: u32,
         chunk_hash: &str,
-    ) -> Result<Box<dyn ChunkMgrClient>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Box<dyn ChunkMgr>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn select_by_name(
         &self,
         chunk_server_type: ChunkServerType,
         server_name: &str,
-    ) -> Result<Box<dyn ChunkMgrClient>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Box<dyn ChunkMgr>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]
-pub trait ChunkMgrClient: Send + Sync {
+pub trait ChunkMgr: Send + Sync {
     fn server_type(&self) -> ChunkServerType;
     fn server_name(&self) -> &str;
     async fn upload(&self, chunk_hash: &str, chunk: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;

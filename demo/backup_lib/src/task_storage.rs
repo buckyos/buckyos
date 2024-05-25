@@ -1,5 +1,6 @@
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::time::SystemTime;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskKey(String);
@@ -68,10 +69,21 @@ pub struct TaskInfo {
     pub last_fail_at: Option<SystemTime>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
 pub struct CheckPointVersionStrategy {
     reserve_history_limit: u32,
     continuous_abort_incomplete_limit: u32,
     continuous_abort_seconds_limit: u32,
+}
+
+impl Default for CheckPointVersionStrategy {
+    fn default() -> Self {
+        CheckPointVersionStrategy {
+            reserve_history_limit: 1,
+            continuous_abort_incomplete_limit: 3,
+            continuous_abort_seconds_limit: 3600 * 24 * 7, // 1 week
+        }
+    }
 }
 
 #[async_trait::async_trait]

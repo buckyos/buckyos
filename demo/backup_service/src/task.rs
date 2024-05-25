@@ -204,6 +204,7 @@ impl BackupTask {
                     None => {
                         match remote_task_mgr
                             .push_task_info(
+                                task_mgr.zone_id(),
                                 &task_info.task_key,
                                 task_info.check_point_version,
                                 task_info.prev_check_point_version,
@@ -254,7 +255,7 @@ impl BackupTask {
             };
 
             for file in upload_files {
-                let (file_server_type, file_server_name, chunk_size) = match task_storage
+                let (file_server_type, file_server_name, remote_file_id, chunk_size) = match task_storage
                     .is_file_info_pushed(
                         &task_info.task_key,
                         task_info.check_point_version,
@@ -274,7 +275,7 @@ impl BackupTask {
                                 )
                                 .await
                             {
-                                Ok((file_server_type, file_server_name, chunk_size)) => {
+                                Ok((file_server_type, file_server_name, remote_file_id, chunk_size)) => {
                                     match task_storage
                                         .set_file_info_pushed(
                                             &task_info.task_key,
@@ -282,11 +283,12 @@ impl BackupTask {
                                             file.file_path.as_path(),
                                             file_server_type,
                                             file_server_name.as_str(),
+                                            remote_file_id,
                                             chunk_size,
                                         )
                                         .await
                                     {
-                                        Ok(_) => (file_server_type, file_server_name, chunk_size),
+                                        Ok(_) => (file_server_type, file_server_name, remote_file_id, chunk_size),
                                         Err(err) => {
                                             return BackupTaskEvent::ErrorAndWillRetry(
                                                 self.clone(), Arc::new(err)
@@ -321,14 +323,14 @@ impl BackupTask {
                 for chunk_seq in 0..chunk_count {
                     let offset = chunk_seq * chunk_size;
                     let chunk_size = std::cmp::min(chunk_size, file.file_size - offset);
-                    let (chunk_server_type, chunk_server_name, chunk_hash, chunk) =
+                    let (chunk_server_type, chunk_server_name, chunk_hash, chunk, remote_chunk_id) =
                         match file_storage
                             .is_chunk_info_pushed(&task_info.task_key, task_info.check_point_version, file.file_path.as_path(), chunk_seq)
                             .await
                         {
                             Ok(chunk_server) => match chunk_server {
-                                Some((chunk_server_type, chunk_server_name, chunk_hash)) => {
-                                    (chunk_server_type, chunk_server_name, chunk_hash, None)
+                                Some((chunk_server_type, chunk_server_name, chunk_hash, remote_chunk_id)) => {
+                                    (chunk_server_type, chunk_server_name, chunk_hash, None, remote_chunk_id)
                                 }
                                 None => {
                                     match read_file_from(file_path.as_path(), offset, chunk_size)
@@ -341,13 +343,13 @@ impl BackupTask {
                                             let hash = hash.as_slice().to_base58();
                                             match remote_file_server
                                                 .add_chunk(
-                                                    file.hash.as_str(),
+                                                    remote_file_id,
                                                     chunk_seq,
                                                     hash.as_str(),
                                                 )
                                                 .await
                                             {
-                                                Ok((chunk_server_type, chunk_server_name)) => {
+                                                Ok((chunk_server_type, chunk_server_name, remote_chunk_id)) => {
                                                     match file_storage
                                                         .set_chunk_info_pushed(
                                                             &task_info.task_key,
@@ -357,6 +359,7 @@ impl BackupTask {
                                                             chunk_server_type,
                                                             chunk_server_name.as_str(),
                                                             hash.as_str(),
+                                                            remote_chunk_id,
                                                         )
                                                         .await
                                                     {
@@ -365,6 +368,7 @@ impl BackupTask {
                                                             chunk_server_name,
                                                             hash,
                                                             Some(chunk),
+                                                            remote_chunk_id,
                                                         ),
                                                         Err(err) => {
                                                             return 
@@ -428,12 +432,15 @@ impl BackupTask {
 
                     match remote_chunk_server.upload(chunk_hash.as_str(), chunk.as_slice()).await {
                         Ok(_) => {
-                            if let Err(err) = remote_file_server.set_chunk_uploaded(file.hash.as_str(), chunk_seq).await
+                            if let Err(err) = remote_file_server.set_chunk_uploaded(remote_file_id, chunk_seq).await
                             {
                                 return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
                             }
                             if chunk_seq == chunk_count - 1 {
-                                if let Err(err) = remote_task_mgr.set_file_uploaded(&task_info.task_key, task_info.check_point_version, file.file_path.as_path()).await
+                                if let Err(err) = remote_task_mgr.set_file_uploaded(
+                                    remote_task_id,
+                                    file.file_path.as_path()
+                                ).await
                                 {
                                     return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
                                 }
