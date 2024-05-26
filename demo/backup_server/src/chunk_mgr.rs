@@ -53,7 +53,7 @@ impl backup_lib::ChunkMgr for ChunkMgr {
                 let tmp_path = self.tmp_dir.join(chunk_hash);
                 async_std::fs::write(&tmp_path, chunk).await?;
                 let save_path = self.save_dir.join(chunk_hash);
-                self.storage.lock().await.update_chunk_save_path(chunk_id, save_path.as_path())?;
+                self.storage.lock().await.update_chunk_save_path(chunk_hash, save_path.as_path())?;
                 async_std::fs::rename(&tmp_path, &save_path).await?;
                 Ok(())
             }
