@@ -41,7 +41,7 @@ main() {
 	    echo "Docker has installed."
 	fi
 
-	sudo apt-get install curl jq -y
+	sudo apt-get install curl jq fuse -y
 
 	# buckycli="/mnt/f/work/buckyos/demo/target/release/buckycli"
 	buckycli="/usr/local/bin/buckycli"
@@ -166,6 +166,9 @@ create_all() {
 	ensure sudo mkdir -p "$data_path/$node_1/data"
 	ensure sudo mkdir -p "$data_path/$node_2/data"
 	ensure sudo mkdir -p "$data_path/$node_3/data"
+	ensure sudo mkdir -p "$data_path/$node_1/data/gv0"
+	ensure sudo mkdir -p "$data_path/$node_2/data/gv0"
+	ensure sudo mkdir -p "$data_path/$node_3/data/gv0"
 
 	ensure sudo mkdir -p "$data_path/$node_1/etcd"
 	ensure sudo mkdir -p "$data_path/$node_2/etcd"
@@ -182,6 +185,12 @@ services:
     container_name: $node_1
     networks:
       - buckyos
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
     ports:
       - "139:139"
       - "445:445"
@@ -198,6 +207,12 @@ services:
     container_name: $node_2
     networks:
       - buckyos
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
     volumes:
       - $data_path/$node_2/node_identity.toml:/buckyos/node_identity.toml
       - $data_path/$node_2/data:/buckyos/data
@@ -211,6 +226,12 @@ services:
     container_name: $node_3
     networks:
       - buckyos
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
     ports:
       - "2379:2379"
     volumes:
@@ -237,9 +258,9 @@ EOF
     else
 	    docker network create buckyos
 	    docker pull harbor.mynode.site:8443/library/buckyos
-	    docker run --restart=always -d -v $data_path/$node_1/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_1/data":/buckyos/data -v $data_path/$node_1/etcd:/var/lib/etcd --name $node_1 -p 139:139 -p 445:445 --network buckyos $docker_image
-	    docker run --restart=always -d -v $data_path/$node_2/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_2/data":/buckyos/data -v $data_path/$node_2/etcd:/var/lib/etcd --name $node_2 --network buckyos $docker_image
-	    docker run --restart=always -d -v $data_path/$node_3/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_3/data":/buckyos/data -v $data_path/$node_3/etcd:/var/lib/etcd --name $node_3 -p 2379:2379 --network buckyos $docker_image
+	    docker run --restart=always -d --device /dev/fuse -v $data_path/$node_1/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_1/data":/buckyos/data -v $data_path/$node_1/etcd:/var/lib/etcd --name $node_1 -p 139:139 -p 445:445 --network buckyos $docker_image
+	    docker run --restart=always -d --device /dev/fuse -v $data_path/$node_2/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_2/data":/buckyos/data -v $data_path/$node_2/etcd:/var/lib/etcd --name $node_2 --network buckyos $docker_image
+	    docker run --restart=always -d --device /dev/fuse -v $data_path/$node_3/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_3/data":/buckyos/data -v $data_path/$node_3/etcd:/var/lib/etcd --name $node_3 -p 2379:2379 --network buckyos $docker_image
     fi
 }
 
@@ -268,6 +289,7 @@ create_node() {
 	ensure mkdir -p "$data_path/$cur_node"
 	create_node_identity $zone_name $cur_node "$data_path/$node_1/node_identity.toml"
 	ensure mkdir -p "$data_path/$cur_node/data"
+	ensure mkdir -p "$data_path/$cur_node/data/gv0"
 	ensure mkdir -p "$data_path/$cur_node/etcd"
 
 	ensure sudo docker pull $docker_image
@@ -296,7 +318,7 @@ import_all_config() {
 	            "params": [
 	                "$node_1",
 	                "gv0",
-	                "/buckyos/data",
+	                "/buckyos/data/gv0",
 	                "/mnt/glusterfs",
 	                "$node_2 $node_3",
 	                "create_volume"
@@ -357,7 +379,7 @@ import_all_config() {
 	            "params": [
 	                "$node_2",
 	                "gv0",
-	                "/buckyos/data",
+	                "/buckyos/data/gv0",
 	                "/mnt/glusterfs",
 	                "$node_1 $node_3"
 	            ]
@@ -398,7 +420,7 @@ import_all_config() {
 	            "params": [
 	                "$node_3",
 	                "gv0",
-	                "/buckyos/data",
+	                "/buckyos/data/gv0",
 	                "/mnt/glusterfs",
 	                "$node_1 $node_2"
 	            ]

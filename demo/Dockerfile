@@ -11,6 +11,7 @@ RUN apt update; \
     chmod +x /usr/bin/systemctl; \
     sudo apt-get install -y glusterfs-server; \
     sudo apt-get install -y samba; \
+    sudo apt-get install -y fuse; \
     apt clean;
 
 EXPOSE 2379 2380 139

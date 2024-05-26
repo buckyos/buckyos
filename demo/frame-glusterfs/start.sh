@@ -63,7 +63,8 @@ wait_for_peers() {
     local retries=0
     while : ; do
         connected_peers=$(sudo gluster peer status | grep -c 'State: Peer in Cluster (Connected)')
-        if [ $connected_peers -eq $(peer_count) ]; then
+        echo "Connected peers: $connected_peers"
+        if [ $connected_peers -eq $peer_count ]; then
             break
         else
             retries=$((retries+1))
@@ -79,11 +80,11 @@ wait_for_peers() {
 # 创建分布式卷
 create_volume() {
     if [ "$CREATE_VOLUME" = "create_volume" ]; then
-        # wait_for_peers
+        wait_for_peers
 
         if ! sudo gluster volume info $GLUSTER_VOLUME >/dev/null 2>&1; then
             echo "Creating GlusterFS volume: $GLUSTER_VOLUME"
-            sudo gluster volume create $GLUSTER_VOLUME transport tcp $(IFS=','; echo "${NODES[*]/%/:$BRICK_PATH}" | sed 's/,/ /g') force
+            sudo gluster volume create $GLUSTER_VOLUME replica 3 transport tcp $HOST_NAME:$BRICK_PATH $(IFS=','; echo "${NODES[*]/%/:$BRICK_PATH}" | sed 's/,/ /g') force
             sudo gluster volume start $GLUSTER_VOLUME
             echo "GlusterFS volume $GLUSTER_VOLUME created and started."
         else
@@ -121,6 +122,9 @@ main() {
     create_volume
 
     ensure_volume_started
+
+    mkdir -p "$MOUNT_POINT"
+    mount -t glusterfs $HOST_NAME:/$GLUSTER_VOLUME "$MOUNT_POINT"
 }
 
 main
