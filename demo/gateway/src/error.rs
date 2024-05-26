@@ -31,6 +31,9 @@ pub enum GatewayError {
 
     #[error("Timeout: {0}")]
     Timeout(String),
+
+    #[error("Invalid state: {0}")]
+    InvalidState(String),
 }
 
 pub type GatewayResult<T> = Result<T, GatewayError>;

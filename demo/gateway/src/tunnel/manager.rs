@@ -5,6 +5,7 @@ use super::tunnel::*;
 use crate::error::*;
 use crate::peer::NameManagerRef;
 
+use serde_json::error;
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -41,6 +42,10 @@ struct TunnelWaitInfo {
     tunnel_writer: Option<Box<dyn TunnelWriter>>,
 }
 
+struct ControlTunnelInfo {
+    tunnel: ControlTunnel,
+    abort_handle: tokio::task::JoinHandle<()>,
+}
 // one control tunnel, one or more data tunnel
 #[derive(Clone)]
 pub struct TunnelManager {
@@ -48,7 +53,7 @@ pub struct TunnelManager {
 
     device_id: String,
     remote_device_id: String,
-    control_tunnel: Arc<Mutex<Option<ControlTunnel>>>,
+    control_tunnel: Arc<Mutex<Option<ControlTunnelInfo>>>,
     next_seq: Arc<AtomicU32>,
 
     waiter: Arc<Mutex<HashMap<u32, TunnelWaitInfo>>>,
@@ -75,13 +80,54 @@ impl TunnelManager {
         }
     }
 
+    async fn on_control_tunnel_finished(&self) {
+        let control_tunnel = self.control_tunnel.lock().await.take();
+        assert!(control_tunnel.is_some());
+
+        let control_tunnel = control_tunnel.unwrap();
+        if control_tunnel.tunnel.tunnel_side() == TunnelSide::Active {
+            self.init_control_tunnel().await.unwrap_or_else(|e| {
+                error!("Error on init control tunnel: {}", e);
+            });
+        } else {
+            // wait for new control tunnel build on active side
+        }
+    }
+
+    fn start_control_tunnel(&self, tunnel: ControlTunnel) -> tokio::task::JoinHandle<()> {
+        let this = self.clone();
+        let abort_handle = tokio::task::spawn(async move {
+            match tunnel.run().await {
+                Ok(_) => {
+                    info!(
+                        "Control tunnel finished: {} -> {}",
+                        this.device_id, this.remote_device_id
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "Control tunnel error: {} -> {}, {}",
+                        this.device_id, this.remote_device_id, e
+                    );
+                }
+            }
+
+            this.on_control_tunnel_finished().await;
+        });
+
+        abort_handle
+    }
+
     // bind control tunnel on passive side
     pub async fn bind_tunnel_control(
         &self,
         tunnel_reader: Box<dyn TunnelReader>,
         tunnel_writer: Box<dyn TunnelWriter>,
     ) {
-        info!("Bind control tunnel: {} -> {}", self.remote_device_id, self.device_id);
+        info!(
+            "Bind control tunnel: {} -> {}",
+            self.remote_device_id, self.device_id
+        );
 
         let tunnel = ControlTunnel::new(
             TunnelSide::Passive,
@@ -93,25 +139,27 @@ impl TunnelManager {
 
         tunnel.bind_events(Arc::new(Box::new(self.clone())));
 
-        let prev = self.control_tunnel.lock().await.replace(tunnel.clone());
-
         // run control tunnel async
-        tokio::task::spawn(async move {
-            tunnel.run().await.unwrap_or_else(|e| {
-                error!("Control tunnel error: {}", e);
-            });
-        });
+        let abort_handle = self.start_control_tunnel(tunnel.clone());
+
+        let info = ControlTunnelInfo {
+            tunnel,
+            abort_handle,
+        };
+
+        let prev = self.control_tunnel.lock().await.replace(info);
 
         if let Some(prev) = prev {
-            warn!("Replace control tunnel: {:?}", prev);
+            warn!("Replace control tunnel: {:?}, now will abort", prev.tunnel);
+            prev.abort_handle.abort();
         }
     }
 
-    // init control on active side if needed
+    // Init control on active side if needed
     pub async fn init_control_tunnel(&self) -> GatewayResult<()> {
-        let mut control_tunnel = self.control_tunnel.lock().await;
-        if control_tunnel.is_some() {
-            return Ok(());
+        {
+            let control_tunnel = self.control_tunnel.lock().await;
+            assert!(control_tunnel.is_none());
         }
 
         let builder = TunnelBuilder::new(
@@ -122,14 +170,20 @@ impl TunnelManager {
         let tunnel = builder.build_control_tunnel().await?;
         tunnel.bind_events(Arc::new(Box::new(self.clone())));
 
-        *control_tunnel = Some(tunnel.clone());
-
         // run control tunnel async
-        tokio::task::spawn(async move {
-            tunnel.run().await.unwrap_or_else(|e| {
-                error!("Control tunnel error: {}", e);
-            });
-        });
+        let abort_handle = self.start_control_tunnel(tunnel.clone());
+
+        let info = ControlTunnelInfo {
+            tunnel,
+            abort_handle,
+        };
+
+        let prev = self.control_tunnel.lock().await.replace(info);
+
+        if let Some(prev) = prev {
+            warn!("Replace control tunnel: {:?}, now will abort", prev.tunnel);
+            prev.abort_handle.abort();
+        }
 
         Ok(())
     }
@@ -147,16 +201,18 @@ impl TunnelManager {
         &self,
         port: u16,
     ) -> GatewayResult<(Box<dyn TunnelReader>, Box<dyn TunnelWriter>)> {
-        info!("Will build data tunnel: {} -> {}, {}", self.device_id, self.remote_device_id, port);
+        info!(
+            "Will build data tunnel: {} -> {}, {}",
+            self.device_id, self.remote_device_id, port
+        );
         assert!(port > 0);
 
         let side = {
             match self.control_tunnel.lock().await.as_ref() {
-                Some(tunnel) => tunnel.tunnel_side(),
+                Some(info) => info.tunnel.tunnel_side(),
                 None => TunnelSide::Active,
             }
         };
-
 
         match side {
             TunnelSide::Active => {
@@ -173,7 +229,19 @@ impl TunnelManager {
                 assert!(seq > 0);
 
                 // control_tunnel should be ready
-                let control_tunnel = self.control_tunnel.lock().await.as_ref().unwrap().clone();
+                let control_tunnel = {
+                    let info = self.control_tunnel.lock().await;
+                    if info.is_none() {
+                        let msg = format!(
+                            "Control tunnel not ready {} -> {}",
+                            self.device_id, self.remote_device_id
+                        );
+                        error!("{}", msg);
+                        return Err(GatewayError::InvalidState(msg.to_string()));
+                    }
+
+                    info.as_ref().unwrap().tunnel.clone()
+                };
 
                 // first create new waiter for incoming tunnel
                 let notify = Arc::new(Notify::new());
@@ -261,16 +329,16 @@ impl TunnelManager {
     }
     */
 
-    pub async fn on_new_data_tunnel(
-        &self,
-        info: TunnelInitInfo,
-    ) {
+    pub async fn on_new_data_tunnel(&self, info: TunnelInitInfo) {
         let tunnel_reader = info.tunnel_reader;
         let tunnel_writer = info.tunnel_writer;
         let port = info.pkg.port.unwrap_or(0);
         let seq = info.pkg.seq;
 
-        info!("On new data tunnel: {} -> {}, port={}, seq={}", self.remote_device_id, self.device_id, port, seq);
+        info!(
+            "On new data tunnel: {} -> {}, port={}, seq={}",
+            self.remote_device_id, self.device_id, port, seq
+        );
 
         if seq == 0 {
             if let Err(e) = self
@@ -301,7 +369,10 @@ impl TunnelManager {
 #[async_trait::async_trait]
 impl ControlTunnelEvents for TunnelManager {
     async fn on_req_data_tunnel(&self, port: u16, seq: u32) -> GatewayResult<()> {
-        info!("Recv req for new data tunnel: {} -> {}, port={}, seq={}", self.remote_device_id, self.device_id, port, seq);
+        info!(
+            "Recv req for new data tunnel: {} -> {}, port={}, seq={}",
+            self.remote_device_id, self.device_id, port, seq
+        );
 
         let builder = TunnelBuilder::new(
             self.name_manager.clone(),
