@@ -27,18 +27,18 @@ impl Into<u32> for FileServerType {
 
 #[async_trait::async_trait]
 pub trait FileMgrServer: FileMgr {
-    // Ok((file-server-type, file-server-name, file-id, chunk-size))
+    // Ok((file-id, chunk-size))
     async fn add_file(
         &self,
         task_server_type: TaskServerType,
         task_server_name: &str,
         file_hash: &str,
         file_size: u64,
-    ) -> Result<(FileServerType, String, FileId, u32), Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<(FileId, u32), Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]
-pub trait FileMgrSelector: Send + Sync {
+pub trait FileMgrServerSelector: Send + Sync {
     async fn select(
         &self,
         task_key: &TaskKey,
@@ -50,7 +50,7 @@ pub trait FileMgrSelector: Send + Sync {
         &self,
         file_server_type: FileServerType,
         server_name: &str,
-    ) -> Result<Box<dyn FileMgr>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Box<dyn FileMgrServer>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]
@@ -62,10 +62,20 @@ pub trait FileMgr: Send + Sync {
         file_id: FileId,
         chunk_seq: u64,
         chunk_hash: &str,
+        chunk_size: u32,
     ) -> Result<(ChunkServerType, String, ChunkId), Box<dyn std::error::Error + Send + Sync>>;
     async fn set_chunk_uploaded(
         &self,
         file_id: FileId,
         chunk_seq: u64,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+
+#[async_trait::async_trait]
+pub trait FileMgrSelector: Send + Sync {
+    async fn select_by_name(
+        &self,
+        file_server_type: FileServerType,
+        server_name: &str,
+    ) -> Result<Box<dyn FileMgr>, Box<dyn std::error::Error + Send + Sync>>;
 }

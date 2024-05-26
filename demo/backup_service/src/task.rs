@@ -346,6 +346,7 @@ impl BackupTask {
                                                     remote_file_id,
                                                     chunk_seq,
                                                     hash.as_str(),
+                                                    chunk_size as u32,
                                                 )
                                                 .await
                                             {

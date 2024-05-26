@@ -1,0 +1,65 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use backup_lib::{ChunkId, ChunkServerType, FileServerType};
+use tokio::sync::Mutex;
+
+use crate::chunk_mgr_storage::ChunkStorageSqlite;
+
+pub(crate) struct ChunkMgr {
+    storage: Arc<Mutex<ChunkStorageSqlite>>,
+    save_dir: PathBuf,
+    tmp_dir: PathBuf,
+}
+
+impl ChunkMgr {
+    pub(crate) fn new(storage: ChunkStorageSqlite, save_dir: PathBuf, tmp_dir: PathBuf) -> Self {
+        Self { storage: Arc::new(Mutex::new(storage)), save_dir, tmp_dir }
+    }
+}
+
+#[async_trait::async_trait]
+impl backup_lib::ChunkMgrServer for ChunkMgr {
+    async fn add_chunk(
+        &self,
+        file_server_type: FileServerType,
+        file_server_name: &str,
+        chunk_hash: &str,
+        chunk_size: u32,
+    ) -> Result<ChunkId, Box<dyn std::error::Error + Send + Sync>> {
+        self.storage.lock().await.insert_chunk(file_server_type, file_server_name, chunk_hash, chunk_size)
+    }
+}
+
+#[async_trait::async_trait]
+impl backup_lib::ChunkMgr for ChunkMgr {
+    fn server_type(&self) -> ChunkServerType {
+        ChunkServerType::Http
+    }
+    fn server_name(&self) -> &str {
+        "TODO: demo-chunk-server-name"
+    }
+    async fn upload(&self, chunk_hash: &str, chunk: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let chunk_info = self.storage.lock().await.query_chunk_by_hash(chunk_hash)?;
+        match chunk_info {
+            Some((chunk_id, chunk_size, save_path)) => {
+                if chunk.len() as u32 != chunk_size {
+                    return Err("chunk size not match".into());
+                }
+
+                if let Some(save_path) = save_path {
+                    return Ok(())
+                }
+
+                let tmp_path = self.tmp_dir.join(chunk_hash);
+                async_std::fs::write(&tmp_path, chunk).await?;
+                let save_path = self.save_dir.join(chunk_hash);
+                self.storage.lock().await.update_chunk_save_path(chunk_id, save_path.as_path())?;
+                async_std::fs::rename(&tmp_path, &save_path).await?;
+                Ok(())
+            }
+            None => {
+                return Err("chunk not found".into());
+            }
+        }
+    }
+}

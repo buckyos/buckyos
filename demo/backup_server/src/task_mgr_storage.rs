@@ -48,9 +48,9 @@ impl TaskStorageSqlite {
             "CREATE TABLE files (
                 file_hash TEXT NOT NULL PRIMARY KEY,
                 file_size INTEGER NOT NULL,
+                file_server_type TEXT  NOT NULL,
+                file_server_name TEXT  NOT NULL,
                 chunk_size INTEGER DEFAULT NULL,
-                file_server_type TEXT DEFAULT NULL,
-                file_server_name TEXT DEFAULT NULL,
                 remote_file_id INTEGER DEFAULT NULL,
                 is_uploaded TINYINT DEFAULT 0,
                 create_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
@@ -153,20 +153,24 @@ impl TaskStorageSqlite {
         file_path: &Path,
         file_hash: &str,
         file_size: u64,
-    ) -> Result<Option<(FileServerType, String, FileId, u32)>, Box<dyn std::error::Error + Send + Sync>> {
+        file_server_type: FileServerType,
+        file_server_name: &str,
+    ) -> Result<(FileServerType, String, Option<(FileId, u32)>), Box<dyn std::error::Error + Send + Sync>> {
         let tx = self.connection.transaction()?;
 
         let result = tx.query_row(
-            "INSERT INTO files (file_hash, file_size)
-             VALUES (?, ?)
+            "INSERT INTO files (file_hash, file_size, file_server_type, file_server_name)
+             VALUES (?, ?, ?, ?)
              ON CONFLICT (file_hash) DO NOTHING
              RETURNING chunk_size, file_server_type, file_server_name, remote_file_id",
             params![
                 file_hash,
                 file_size,
+                Into::<u32>::into(file_server_type),
+                file_server_name,
             ],
             |row| {
-                Ok(None)
+                Ok((file_server_type, file_server_name.to_string(), None))
             }
         );
         
@@ -186,21 +190,19 @@ impl TaskStorageSqlite {
                 let query = "SELECT chunk_size, file_server_type, file_server_name, remote_file_id FROM files WHERE file_hash = ?";
                 let mut stmt = self.connection.prepare(query)?;
                 let result = stmt.query_row(params![file_hash], |row| {
-                    Ok((row.get::<usize, Option<u32>>(0)?, row.get::<usize, Option<u32>>(1)?, row.get::<usize, Option<String>>(2)?, row.get::<usize, Option<u64>>(3)?))
+                    Ok((row.get::<usize, Option<u32>>(0)?, row.get::<usize, u32>(1)?, row.get::<usize, String>(2)?, row.get::<usize, Option<u64>>(3)?))
                 });
                 match result {
                     Ok((chunk_size, server_type, server_name, remote_file_id)) => {
                         if let Some(chunk_size) = chunk_size {
-                            let server_type = server_type.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
                             let server_type = FileServerType::try_from(server_type).expect("file-server-type should be valid");
-                            let server_name = server_name.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
                             let remote_file_id = remote_file_id.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
-                            Ok(Some((server_type, server_name, FileId::from(remote_file_id as u128), chunk_size)))
+                            Ok((server_type, server_name, Some((FileId::from(remote_file_id as u128), chunk_size))))
                         } else {
-                            Ok(None)
+                            Ok((file_server_type, file_server_name.to_string(), None))
                         }
                     },
-                    Err(err) => Ok(None),
+                    Err(err) => Ok((file_server_type, file_server_name.to_string(), None)),
                 }
             },
             Err(err) => Err(Box::new(err)),
@@ -210,20 +212,30 @@ impl TaskStorageSqlite {
     pub fn update_file_info(
         &mut self,
         file_hash: &str,
-        file_server_type: FileServerType,
-        file_server_name: &str,
         chunk_size: u32,
         remote_file_id: FileId,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let query = "UPDATE files SET chunk_size = ?, file_server_type = ?, file_server_name = ?, remote_file_id = ? WHERE file_hash = ?";
+        let query = "UPDATE files SET chunk_size = ?, remote_file_id = ? WHERE file_hash = ?";
         let mut stmt = self.connection.prepare(query)?;
         stmt.execute(params![
             chunk_size,
-            Into::<u32>::into(file_server_type),
-            file_server_name,
             Into::<u128>::into(remote_file_id) as u64,
             file_hash,
         ])?;
+        Ok(())
+    }
+
+    pub fn update_all_files_ready(&mut self, task_id: TaskId) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let query = "UPDATE tasks SET is_all_files_ready = 1 WHERE task_id = ?";
+        let mut stmt = self.connection.prepare(query)?;
+        stmt.execute(params![Into::<u128>::into(task_id) as u64])?;
+        Ok(())
+    }
+
+    pub fn update_file_uploaded(&mut self, task_id: TaskId, file_path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let query = "UPDATE files SET is_uploaded = 1 WHERE EXISTS (SELECT 1 FROM task_files WHERE task_id = ? AND file_path = ? AND files.file_hash = task_files.file_hash)";
+        let mut stmt = self.connection.prepare(query)?;
+        stmt.execute(params![Into::<u128>::into(task_id) as u64, file_path.as_os_str().as_encoded_bytes()])?;
         Ok(())
     }
 }

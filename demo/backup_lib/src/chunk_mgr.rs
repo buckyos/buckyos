@@ -1,4 +1,4 @@
-use crate::{CheckPointVersion, TaskKey};
+use crate::{CheckPointVersion, ChunkId, FileServerType, TaskKey};
 
 #[derive(Copy, Clone)]
 pub enum ChunkServerType {
@@ -25,34 +25,30 @@ impl Into<u32> for ChunkServerType {
 }
 
 #[async_trait::async_trait]
-pub trait ChunkMgrServer {
+pub trait ChunkMgrServer: ChunkMgr {
     async fn add_chunk(
         &self,
-        file_server_type: ChunkServerType,
+        file_server_type: FileServerType,
         file_server_name: &str,
-        file_hash: &str,
-        chunk_seq: u32,
         chunk_hash: &str,
-        chunk_size: u64,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+        chunk_size: u32,
+    ) -> Result<ChunkId, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]
-pub trait ChunkMgrSelector: Send + Sync {
+pub trait ChunkMgrServerSelector: Send + Sync {
     async fn select(
         &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
         file_hash: &str,
-        chunk_seq: u32,
+        chunk_seq: u64,
         chunk_hash: &str,
-    ) -> Result<Box<dyn ChunkMgr>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Box<dyn ChunkMgrServer>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn select_by_name(
         &self,
         chunk_server_type: ChunkServerType,
         server_name: &str,
-    ) -> Result<Box<dyn ChunkMgr>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Box<dyn ChunkMgrServer>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]
@@ -60,4 +56,13 @@ pub trait ChunkMgr: Send + Sync {
     fn server_type(&self) -> ChunkServerType;
     fn server_name(&self) -> &str;
     async fn upload(&self, chunk_hash: &str, chunk: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+
+#[async_trait::async_trait]
+pub trait ChunkMgrSelector: Send + Sync {
+    async fn select_by_name(
+        &self,
+        chunk_server_type: ChunkServerType,
+        server_name: &str,
+    ) -> Result<Box<dyn ChunkMgr>, Box<dyn std::error::Error + Send + Sync>>;
 }

@@ -7,11 +7,11 @@ use crate::task_mgr_storage::TaskStorageSqlite;
 
 pub(crate) struct TaskMgr {
     storage: Arc<Mutex<TaskStorageSqlite>>,
-    file_mgr_selector: Arc<dyn backup_lib::FileMgrSelector>,
+    file_mgr_selector: Arc<dyn backup_lib::FileMgrServerSelector>,
 }
 
 impl TaskMgr {
-    pub(crate) fn new(storage: TaskStorageSqlite, file_mgr_selector: Arc<dyn backup_lib::FileMgrSelector>) -> Self {
+    pub(crate) fn new(storage: TaskStorageSqlite, file_mgr_selector: Arc<dyn backup_lib::FileMgrServerSelector>) -> Self {
         Self { storage: Arc::new(Mutex::new(storage)), file_mgr_selector }
     }    
 }
@@ -68,18 +68,19 @@ impl backup_lib::TaskMgr for TaskMgr {
         file_size: u64,
     ) -> Result<(FileServerType, String, FileId, u32), Box<dyn std::error::Error + Send + Sync>> {
         let mut storage = self.storage.lock().await;
-        let remote_server = storage.insert_task_file(task_id, file_path, hash, file_size)?;
         let task_info = storage.query_task_info_without_files(task_id)?.unwrap();
-        match remote_server {
-            Some((file_server_type, file_server_name, file_id, chunk_size)) => {
+        let file_mgr = self.file_mgr_selector.select(&task_info.task_key, task_info.check_point_version, hash).await?;
+        let (file_server_type, file_server_name, remote_file_info) = storage.insert_task_file(task_id, file_path, hash, file_size, file_mgr.server_type(), file_mgr.server_name())?;
+        match remote_file_info {
+            Some((file_id, chunk_size)) => {
                 Ok((file_server_type, file_server_name, file_id, chunk_size))
             },
             None => {
-                let file_mgr = self.file_mgr_selector.select(&task_info.task_key, task_info.check_point_version, hash).await?;
-                let (file_server_type, file_server_name, file_id, chunk_size) = file_mgr.add_file(self.server_type(), self.server_name(), hash, file_size).await?;
+                let file_mgr = self.file_mgr_selector.select_by_name(file_server_type, file_server_name.as_str()).await?;
+                let (file_id, chunk_size) = file_mgr.add_file(self.server_type(), self.server_name(), hash, file_size).await?;
                 
                 let mut storage = self.storage.lock().await;
-                storage.update_file_info(hash, file_server_type, file_server_name.as_str(), chunk_size, file_id)?;
+                storage.update_file_info(hash, chunk_size, file_id)?;
                 Ok((file_server_type, file_server_name, file_id, chunk_size))
             }
         }
@@ -89,7 +90,8 @@ impl backup_lib::TaskMgr for TaskMgr {
         &self,
         task_id: TaskId,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        unimplemented!()
+        let mut storage = self.storage.lock().await;
+        storage.update_all_files_ready(task_id)
     }
 
     async fn set_file_uploaded(
@@ -97,6 +99,7 @@ impl backup_lib::TaskMgr for TaskMgr {
         task_id: TaskId,
         file_path: &Path,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        unimplemented!()
+        let mut storage = self.storage.lock().await;
+        storage.update_file_uploaded(task_id, file_path)
     }
 }
