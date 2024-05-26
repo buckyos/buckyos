@@ -41,7 +41,7 @@ main() {
 	    echo "Docker has installed."
 	fi
 
-	sudo apt-get install curl jq fuse -y
+	sudo apt-get install curl jq fuse dnsutils -y
 
 	# buckycli="/mnt/f/work/buckyos/demo/target/release/buckycli"
 	buckycli="/usr/local/bin/buckycli"
@@ -106,6 +106,16 @@ main() {
 			"2" )
 				echo "You have selected node mode."
 				create_node
+
+				wait_time=10
+				echo "Wait ${wait_time} seconds for the zone to start"
+
+				for ((i=1; i<=wait_time; i++))
+				do
+				    echo -ne "Already waited ${i} seconds\r"
+				    sleep 1
+				done
+				import_all_config
 				break;;
 			* ) echo "Please answer 1 or 2.";;
 		esac
@@ -293,7 +303,7 @@ create_node() {
 	ensure mkdir -p "$data_path/$cur_node/etcd"
 
 	ensure sudo docker pull $docker_image
-	ensure sudo docker run -d --init --restart=always -v "$data_path/$node_1/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/var/lib/etcd  --name gateway -p 2379:2379 -p 2380:2380 $docker_image
+	ensure sudo docker run -d --device /dev/fuse --init --restart=always -v "$data_path/$node_1/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/var/lib/etcd  --name $cur_node -p 2379:2379 -p 2380:2380 $docker_image
 }
 
 import_all_config() {
@@ -345,8 +355,7 @@ import_all_config() {
        "version": "*",
        "operations": {
          "deploy": {
-           "command": "deploy.sh",
-           "params": ["/mnt/glusterfs"]
+           "command": "deploy.sh"
          },
          "status": {
            "command": "status.sh",
@@ -354,7 +363,7 @@ import_all_config() {
          },
          "start": {
            "command": "start.sh",
-           "params": []
+           "params": ["/mnt/glusterfs"]
          }
        }
      }
