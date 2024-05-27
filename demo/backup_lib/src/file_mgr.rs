@@ -1,5 +1,5 @@
 use std::path::Path;
-use crate::{CheckPointVersion, ChunkId, ChunkServerType, FileId, TaskKey, TaskServerType};
+use crate::{CheckPointVersion, ChunkId, ChunkInfo, ChunkServerType, FileId, TaskKey, TaskServerType};
 
 #[derive(Copy, Clone)]
 pub enum FileServerType {
@@ -57,6 +57,7 @@ pub trait FileMgrServerSelector: Send + Sync {
 pub trait FileMgr: Send + Sync {
     fn server_type(&self) -> FileServerType;
     fn server_name(&self) -> &str;
+
     async fn add_chunk(
         &self,
         file_id: FileId,
@@ -64,11 +65,14 @@ pub trait FileMgr: Send + Sync {
         chunk_hash: &str,
         chunk_size: u32,
     ) -> Result<(ChunkServerType, String, ChunkId), Box<dyn std::error::Error + Send + Sync>>;
+
     async fn set_chunk_uploaded(
         &self,
         file_id: FileId,
         chunk_seq: u64,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_chunk_info(&self, file_id: FileId, chunk_seq: u64) -> Result<Option<ChunkInfo>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]

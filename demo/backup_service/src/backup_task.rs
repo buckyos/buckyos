@@ -1,15 +1,33 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, Weak}
+    sync::{Arc, Mutex, Weak},
+    time::SystemTime,
 };
 
 use base58::ToBase58;
 use sha2::Digest;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use backup_lib::{CheckPointVersion, ChunkInfo, FileInfo, TaskId, TaskInfo, TaskKey};
+use backup_lib::{CheckPointVersion, ChunkInfo, FileInfo, TaskId, TaskInfo as TaskInfoServer, TaskKey};
 
 use crate::task_mgr::BackupTaskMgrInner;
+
+
+#[derive(Clone)]
+pub struct TaskInfo {
+    pub task_id: TaskId,
+    pub task_key: TaskKey,
+    pub check_point_version: CheckPointVersion,
+    pub prev_check_point_version: Option<CheckPointVersion>,
+    pub meta: Option<String>,
+    pub dir_path: PathBuf,
+    pub is_all_files_ready: bool,
+    pub complete_file_count: usize,
+    pub file_count: usize,
+    pub priority: u32,
+    pub is_manual: bool,
+    pub last_fail_at: Option<SystemTime>,
+}
 
 #[derive(Clone)]
 pub(crate) enum BackupTaskEvent {
@@ -83,10 +101,11 @@ impl BackupTask {
                     match hash_and_size {
                         Some((hash, file_size)) => Ok(FileInfo {
                             task_id: TaskId::from(0),
-                            file_seq: Some(seq as u32),
+                            file_seq: seq as u64,
                             file_path: chunk_relative_path,
                             hash,
                             file_size,
+                            file_server: None,
                         }),
                         None => {
                             // TODO: read by chunks
@@ -103,10 +122,11 @@ impl BackupTask {
 
                             Ok(FileInfo {
                                 task_id: TaskId::from(0),
-                                file_seq: Some(seq as u32),
+                                file_seq: seq as u64,
                                 file_path: chunk_relative_path,
                                 hash,
                                 file_size,
+                                file_server: None,
                             })
                         }
                     }
@@ -269,6 +289,7 @@ impl BackupTask {
                             match remote_task_mgr
                                 .add_file(
                                     remote_task_id,
+                                    file.file_seq,
                                     file.file_path.as_path(),
                                     file.hash.as_str(),
                                     file.file_size,
@@ -457,6 +478,11 @@ impl BackupTask {
             }
         }
     }
+
+    // [path, Option<(hash, file-size)>]
+    pub(crate) async fn add_files(&self, files: Vec<(PathBuf, Option<(String, u64)>)>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        unimplemented!()
+    }
 }
 
 async fn read_file_from(
@@ -579,7 +605,3 @@ impl TaskInner for BackupTask {
         })
     }
 }
-
-pub struct RestoreTask {}
-
-// impl Task for RestoreTask {}

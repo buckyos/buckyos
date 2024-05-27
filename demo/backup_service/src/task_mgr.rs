@@ -6,12 +6,12 @@ use std::{
 
 use backup_lib::{
     CheckPointVersion, CheckPointVersionStrategy, ChunkMgrSelector,
-    FileMgrSelector, ListOffset, TaskId, TaskInfo, TaskKey,
+    FileMgrSelector, ListOffset, TaskId, TaskInfo as TaskInfoServer, TaskKey,
     TaskMgrSelector, TaskStorageQuerier,
 };
 use tokio::sync::Mutex;
 
-use crate::{task::{BackupTask, BackupTaskEvent, RestoreTask, Task, TaskInner}, task_storage::{ChunkStorageClient, FileStorageClient, TaskStorageClient}};
+use crate::{backup_task::{BackupTask, BackupTaskEvent, Task, TaskInfo, TaskInner}, restore_task::RestoreTask, task_storage::{ChunkStorageClient, FileStorageClient, TaskStorageClient}};
 
 // TODO: config
 const MAX_RUNNING_TASK_COUNT: usize = 5;
@@ -305,12 +305,44 @@ impl BackupTaskMgr {
     pub async fn get_last_check_point_version(
         &self,
         task_key: &TaskKey,
-    ) -> Result<TaskInfo, Box<dyn std::error::Error + Send + Sync>> {
-        // TODO: 到task-mgr服务器上获取，返回最大版本号
-        self.0
-            .task_storage
-            .get_last_check_point_version(task_key, false)
-            .await
+    ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut task_infos = self.0.task_mgr_selector
+            .select(task_key, None)
+            .await?
+            .get_check_point_version_list(self.0.zone_id.as_str(), task_key, ListOffset::FromLast(0), 1, false)
+            .await?;
+
+        let task_info_server = task_infos.get(0);
+        let server_version = task_info_server.map_or(0, |info| Into::<u128>::into(info.check_point_version));
+
+        let task_info_local = TaskStorageClient::get_last_check_point_version(self.0
+            .task_storage.as_ref().as_ref(), task_key, false)
+            .await?;
+
+        let local_version = task_info_local.as_ref().map_or(0, |info| Into::<u128>::into(info.check_point_version));
+        if local_version >= server_version {
+            if local_version == 0 {
+                Ok(None)
+            } else {
+                Ok(task_info_local)
+            }
+        } else {
+            let info_server = task_infos.remove(0);
+            Ok(Some(TaskInfo {
+                task_id: info_server.task_id,
+                task_key: info_server.task_key,
+                check_point_version: info_server.check_point_version,
+                prev_check_point_version: info_server.prev_check_point_version,
+                meta: info_server.meta,
+                dir_path: info_server.dir_path,
+                priority: 0,
+                is_manual: false,
+                is_all_files_ready: info_server.is_all_files_ready,
+                complete_file_count: info_server.complete_file_count,
+                file_count: info_server.file_count,
+                last_fail_at: None,
+            }))
+        }
     }
 
     pub async fn get_check_point_version_list(
@@ -319,10 +351,11 @@ impl BackupTaskMgr {
         offset: ListOffset,
         limit: u32,
     ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
-        self.0
-            .task_storage
-            .get_check_point_version_list(task_key, offset, limit, false)
-            .await
+        // TODO: 到task-mgr服务器上获取
+        
+        TaskStorageClient::get_check_point_version_list(self.0
+            .task_storage.as_ref().as_ref(), task_key, offset, limit, false)
+        .await
     }
 
     pub async fn get_check_point_strategy(
@@ -359,20 +392,49 @@ impl BackupTaskMgr {
     }
 }
 
-pub struct RestoreTaskMgr {
-    task_storage: Box<dyn TaskStorageQuerier>,
-    file_mgr_selector: Box<dyn FileMgrSelector>,
+pub struct RestoreTaskMgrInner {
+    zone_id: String,
+    task_storage: Arc<Box<dyn TaskStorageQuerier>>,
+    task_mgr_selector: Arc<Box<dyn TaskMgrSelector>>,
+    file_mgr_selector: Arc<Box<dyn FileMgrSelector>>,
+    chunk_mgr_selector: Arc<Box<dyn ChunkMgrSelector>>,
 }
+
+impl RestoreTaskMgrInner {
+    pub(crate) fn zone_id(&self) -> &str {
+        self.zone_id.as_str()
+    }
+
+    pub(crate) fn task_mgr_selector(&self) -> Arc<Box<dyn TaskMgrSelector>> {
+        self.task_mgr_selector.clone()
+    }
+
+    pub(crate) fn file_mgr_selector(&self) -> Arc<Box<dyn FileMgrSelector>> {
+        self.file_mgr_selector.clone()
+    }
+
+    pub(crate) fn chunk_mgr_selector(&self) -> Arc<Box<dyn ChunkMgrSelector>> {
+        self.chunk_mgr_selector.clone()
+    }
+}
+
+pub struct RestoreTaskMgr(Arc<RestoreTaskMgrInner>);
 
 impl RestoreTaskMgr {
     pub fn new(
+        zone_id: String,
         task_storage: Box<dyn TaskStorageQuerier>,
+        task_mgr_selector: Box<dyn TaskMgrSelector>,
         file_mgr_selector: Box<dyn FileMgrSelector>,
+        chunk_mgr_selector: Box<dyn ChunkMgrSelector>,
     ) -> Self {
-        RestoreTaskMgr {
-            task_storage,
-            file_mgr_selector,
-        }
+        RestoreTaskMgr(Arc::new(RestoreTaskMgrInner {
+            task_storage: Arc::new(task_storage),
+            task_mgr_selector: Arc::new(task_mgr_selector),
+            file_mgr_selector: Arc::new(file_mgr_selector),
+            chunk_mgr_selector: Arc::new(chunk_mgr_selector),
+            zone_id,
+        }))
     }
 
     pub async fn restore(
@@ -381,16 +443,53 @@ impl RestoreTaskMgr {
         check_point_version: CheckPointVersion,
         dir_path: &Path,
     ) -> Result<RestoreTask, Box<dyn std::error::Error + Send + Sync>> {
-        unimplemented!()
+        let task_mgr_server = self.0.task_mgr_selector.select(&task_key, Some(check_point_version)).await?;
+        let task_info = task_mgr_server.get_check_point_version(self.0.zone_id.as_str(), &task_key, check_point_version).await?;
+        
+        match task_info {
+            Some(task_info) => {
+                let restore_task = RestoreTask::create_new(
+                    Arc::downgrade(&self.0),
+                    task_mgr_server,
+                    task_info,
+                    dir_path.to_path_buf(),
+                )
+                .await?;
+                Ok(restore_task)
+            }
+            None => Err("task not found".into()),
+        }
     }
 
     pub async fn get_last_check_point_version(
         &self,
         task_key: &TaskKey,
-    ) -> Result<TaskInfo, Box<dyn std::error::Error + Send + Sync>> {
-        self.task_storage
-            .get_last_check_point_version(task_key, true)
-            .await
+    ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut task_infos = self.0.task_mgr_selector
+            .select(task_key, None)
+            .await?
+            .get_check_point_version_list(self.0.zone_id.as_str(), task_key, ListOffset::FromLast(0), 1, true)
+            .await?;
+
+        if task_infos.len() > 0 {
+            let info_server = task_infos.remove(0);
+            Ok(Some(TaskInfo {
+                task_id: info_server.task_id,
+                task_key: info_server.task_key,
+                check_point_version: info_server.check_point_version,
+                prev_check_point_version: info_server.prev_check_point_version,
+                meta: info_server.meta,
+                dir_path: info_server.dir_path,
+                priority: 0,
+                is_manual: false,
+                is_all_files_ready: info_server.is_all_files_ready,
+                complete_file_count: info_server.complete_file_count,
+                file_count: info_server.file_count,
+                last_fail_at: None,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn get_check_point_version_list(
@@ -400,8 +499,24 @@ impl RestoreTaskMgr {
         limit: u32,
     ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
         // TODO: 到task-mgr服务器上获取
-        self.task_storage
-            .get_check_point_version_list(task_key, offset, limit, true)
-            .await
+        let task_infos = self.0.task_mgr_selector
+            .select(task_key, None)
+            .await?
+            .get_check_point_version_list(self.0.zone_id.as_str(), task_key, offset, limit, true)
+            .await?;
+        Ok(task_infos.into_iter().map(|info| TaskInfo {
+            task_id: info.task_id,
+            task_key: info.task_key,
+            check_point_version: info.check_point_version,
+            prev_check_point_version: info.prev_check_point_version,
+            meta: info.meta,
+            dir_path: info.dir_path,
+            priority: 0,
+            is_manual: false,
+            is_all_files_ready: info.is_all_files_ready,
+            complete_file_count: info.complete_file_count,
+            file_count: info.file_count,
+            last_fail_at: None,
+        }).collect())
     }
 }

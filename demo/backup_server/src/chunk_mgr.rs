@@ -39,6 +39,7 @@ impl backup_lib::ChunkMgr for ChunkMgr {
         "TODO: demo-chunk-server-name"
     }
     async fn upload(&self, chunk_hash: &str, chunk: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // TODO: check chunk size and hash
         let chunk_info = self.storage.lock().await.query_chunk_by_hash(chunk_hash)?;
         match chunk_info {
             Some((chunk_id, chunk_size, save_path)) => {
@@ -61,5 +62,9 @@ impl backup_lib::ChunkMgr for ChunkMgr {
                 return Err("chunk not found".into());
             }
         }
+    }
+
+    async fn download(&self, chunk_id: ChunkId) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        unimplemented!()
     }
 }

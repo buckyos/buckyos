@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use backup_lib::{CheckPointVersion, CheckPointVersionStrategy, FileId, FileServerType, TaskId, TaskKey, TaskServerType};
+use backup_lib::{CheckPointVersion, CheckPointVersionStrategy, FileId, FileInfo, FileServerType, ListOffset, TaskId, TaskInfo, TaskKey, TaskServerType};
 
 use crate::task_mgr_storage::TaskStorageSqlite;
 
@@ -63,6 +63,7 @@ impl backup_lib::TaskMgr for TaskMgr {
     async fn add_file(
         &self,
         task_id: TaskId,
+        file_seq: u64,
         file_path: &Path,
         hash: &str,
         file_size: u64,
@@ -70,7 +71,7 @@ impl backup_lib::TaskMgr for TaskMgr {
         let mut storage = self.storage.lock().await;
         let task_info = storage.query_task_info_without_files(task_id)?.unwrap();
         let file_mgr = self.file_mgr_selector.select(&task_info.task_key, task_info.check_point_version, hash).await?;
-        let (file_server_type, file_server_name, remote_file_info) = storage.insert_task_file(task_id, file_path, hash, file_size, file_mgr.server_type(), file_mgr.server_name())?;
+        let (file_server_type, file_server_name, remote_file_info) = storage.insert_task_file(task_id, file_seq, file_path, hash, file_size, file_mgr.server_type(), file_mgr.server_name())?;
         match remote_file_info {
             Some((file_id, chunk_size)) => {
                 Ok((file_server_type, file_server_name, file_id, chunk_size))
@@ -101,5 +102,34 @@ impl backup_lib::TaskMgr for TaskMgr {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut storage = self.storage.lock().await;
         storage.update_file_uploaded(task_id, file_path)
+    }
+
+    async fn get_check_point_version_list(
+        &self,
+        zone_id: &str,
+        task_key: &TaskKey,
+        offset: ListOffset,
+        limit: u32,
+        is_restorable_only: bool,
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
+        self.storage.lock().await.get_check_point_version_list(zone_id, task_key, offset, limit, is_restorable_only)
+    }
+
+    async fn get_check_point_version(
+        &self,
+        zone_id: &str,
+        task_key: &TaskKey,
+        check_point_version: CheckPointVersion,
+    ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
+        self.storage.lock().await.get_check_point_version(zone_id, task_key, check_point_version)
+    }
+
+    async fn get_file_info(
+        &self,
+        zone_id: &str,
+        task_id: TaskId,
+        file_seq: u64,
+    ) -> Result<Option<FileInfo>, Box<dyn std::error::Error + Send + Sync>> {
+        self.storage.lock().await.get_file_info(zone_id, task_id, file_seq)
     }
 }

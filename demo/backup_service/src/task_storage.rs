@@ -1,5 +1,7 @@
 use std::path::Path;
-use backup_lib::{CheckPointVersion, ChunkId, ChunkServerType, ChunkStorage, FileId, FileInfo, FileServerType, FileStorageQuerier, TaskId, TaskInfo, TaskKey, TaskStorageDelete, TaskStorageInStrategy, Transaction};
+use backup_lib::{CheckPointVersion, ChunkId, ChunkServerType, ChunkStorage, FileId, FileInfo, FileServerType, FileStorageQuerier, ListOffset, TaskId, TaskKey, TaskStorageDelete, TaskStorageInStrategy, Transaction};
+
+use crate::backup_task::TaskInfo;
 
 #[async_trait::async_trait]
 pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transaction {
@@ -109,6 +111,29 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         remote_file_id: FileId,
         chunk_size: u32,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_last_check_point_version(
+        &self,
+        task_key: &TaskKey,
+        is_restorable_only: bool,
+    ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_check_point_version_list(
+        &self,
+        task_key: &TaskKey,
+        offset: ListOffset,
+        limit: u32,
+        is_restorable_only: bool,
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_check_point_version_list_in_range(
+        &self,
+        task_key: &TaskKey,
+        min_version: Option<CheckPointVersion>,
+        max_version: Option<CheckPointVersion>,
+        limit: u32,
+        is_restorable_only: bool,
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]

@@ -1,3 +1,5 @@
+use crate::ChunkServerType;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct ChunkId(u128);
 
@@ -13,7 +15,11 @@ impl Into<u128> for ChunkId {
     }
 }
 
-pub struct ChunkInfo {}
+pub struct ChunkInfo {
+    pub hash: String,
+    pub chunk_size: u32,
+    pub chunk_server: Option<(ChunkServerType, String, ChunkId)>,
+}
 
 pub trait ChunkStorageQuerier: Send + Sync {}
 pub trait ChunkStorage: ChunkStorageQuerier {}

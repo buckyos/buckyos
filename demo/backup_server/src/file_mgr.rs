@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
-use backup_lib::{ChunkId, ChunkServerType, FileId, FileServerType, TaskServerType};
+use backup_lib::{ChunkId, ChunkInfo, ChunkServerType, FileId, FileServerType, TaskServerType};
 use tokio::sync::Mutex;
 
 use crate::file_mgr_storage::FileStorageSqlite;
@@ -74,5 +74,9 @@ impl backup_lib::FileMgr for FileMgr {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut storage = self.storage.lock().await;
         storage.set_chunk_uploaded(file_id, chunk_seq)
+    }
+
+    async fn get_chunk_info(&self, file_id: FileId, chunk_seq: u64) -> Result<Option<ChunkInfo>, Box<dyn std::error::Error + Send + Sync>> {
+        unimplemented!()
     }
 }

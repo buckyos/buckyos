@@ -64,9 +64,6 @@ pub struct TaskInfo {
     pub is_all_files_ready: bool,
     pub complete_file_count: usize,
     pub file_count: usize,
-    pub priority: u32,
-    pub is_manual: bool,
-    pub last_fail_at: Option<SystemTime>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -92,7 +89,7 @@ pub trait TaskStorageQuerier: Send + Sync {
         &self,
         task_key: &TaskKey,
         is_restorable_only: bool,
-    ) -> Result<TaskInfo, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn get_check_point_version_list(
         &self,

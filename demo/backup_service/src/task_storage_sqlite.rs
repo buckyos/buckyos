@@ -3,9 +3,10 @@ use std::sync::Arc;
 
 use std::os::unix::ffi::OsStringExt;
 use backup_lib::{ChunkId, FileId};
-use backup_lib::{CheckPointVersion, ChunkServerType, ChunkStorage, ChunkStorageQuerier, FileInfo, FileServerType, FileStorageQuerier, ListOffset, TaskId, TaskInfo, TaskKey, TaskStorageDelete, TaskStorageInStrategy, TaskStorageQuerier, Transaction};
+use backup_lib::{CheckPointVersion, ChunkServerType, ChunkStorage, ChunkStorageQuerier, FileInfo, FileServerType, FileStorageQuerier, ListOffset, TaskId, TaskKey, TaskStorageDelete, TaskStorageInStrategy, TaskStorageQuerier, Transaction, TaskInfo as TaskInfoServer};
 use tokio::sync::Mutex;
 
+use crate::backup_task::TaskInfo;
 use crate::task_storage::{ChunkStorageClient, FileStorageClient, TaskStorageClient};
 use rusqlite::Connection;
 use rusqlite::params;
@@ -107,7 +108,264 @@ impl TaskStorageQuerier for TaskStorageSqlite {
         &self,
         task_key: &TaskKey,
         is_restorable_only: bool,
-    ) -> Result<TaskInfo, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Option<TaskInfoServer>, Box<dyn std::error::Error + Send + Sync>> {
+        let task_info = TaskStorageClient::get_last_check_point_version(self, task_key, is_restorable_only).await?;
+        Ok(task_info.map(|t| TaskInfoServer {
+            task_id: t.task_id,
+            task_key: t.task_key,
+            check_point_version: t.check_point_version,
+            prev_check_point_version: t.prev_check_point_version,
+            meta: t.meta,
+            dir_path: t.dir_path,
+            is_all_files_ready: t.is_all_files_ready,
+            complete_file_count: t.complete_file_count,
+            file_count: t.file_count,
+        }))
+    }
+
+    async fn get_check_point_version_list(
+        &self,
+        task_key: &TaskKey,
+        offset: ListOffset,
+        limit: u32,
+        is_restorable_only: bool,
+    ) -> Result<Vec<TaskInfoServer>, Box<dyn std::error::Error + Send + Sync>> {
+        let task_infos = TaskStorageClient::get_check_point_version_list(self, task_key, offset, limit, is_restorable_only).await?;
+        Ok(task_infos.into_iter().map(|t| TaskInfoServer {
+            task_id: t.task_id,
+            task_key: t.task_key,
+            check_point_version: t.check_point_version,
+            prev_check_point_version: t.prev_check_point_version,
+            meta: t.meta,
+            dir_path: t.dir_path,
+            is_all_files_ready: t.is_all_files_ready,
+            complete_file_count: t.complete_file_count,
+            file_count: t.file_count,
+        }).collect())
+    }
+
+    async fn get_check_point_version_list_in_range(
+        &self,
+        task_key: &TaskKey,
+        min_version: Option<CheckPointVersion>,
+        max_version: Option<CheckPointVersion>,
+        limit: u32,
+        is_restorable_only: bool,
+    ) -> Result<Vec<TaskInfoServer>, Box<dyn std::error::Error + Send + Sync>> {
+        
+        let task_infos = TaskStorageClient::get_check_point_version_list_in_range(self, task_key, min_version, max_version, limit, is_restorable_only).await?;
+        Ok(task_infos.into_iter().map(|t| TaskInfoServer {
+            task_id: t.task_id,
+            task_key: t.task_key,
+            check_point_version: t.check_point_version,
+            prev_check_point_version: t.prev_check_point_version,
+            meta: t.meta,
+            dir_path: t.dir_path,
+            is_all_files_ready: t.is_all_files_ready,
+            complete_file_count: t.complete_file_count,
+            file_count: t.file_count,
+        }).collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl TaskStorageClient for TaskStorageSqlite {
+    async fn create_task(
+        &self,
+        task_key: &TaskKey,
+        check_point_version: CheckPointVersion,
+        prev_check_point_version: Option<CheckPointVersion>,
+        meta: Option<&str>,
+        dir_path: &Path,
+        priority: u32,
+        is_manual: bool,
+    ) -> Result<TaskId, Box<dyn std::error::Error + Send + Sync>> {
+        let mut connection = self.connection.lock().await;
+        let sql = "INSERT INTO upload_tasks (zone_id, key, version, prev_version, meta, dir_path, priority, is_manual) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        connection.execute(sql, params![
+            self.zone_id.as_str(),
+            task_key.as_str(),
+            Into::<u128>::into(check_point_version) as u64,
+            prev_check_point_version.map(|v| Into::<u128>::into(v) as u64),
+            meta,
+            dir_path.as_os_str().as_encoded_bytes(),
+            priority,
+            is_manual as u8,
+        ])?;
+
+        let task_id = connection.last_insert_rowid();
+        Ok(TaskId::from(task_id as u128))
+    }
+
+    async fn add_file(
+        &self,
+        task_id: TaskId,
+        file_path: &Path,
+        hash: &str,
+        file_size: u64,
+        file_seq: u32,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut connection = self.connection.lock().await;
+        let sql = "INSERT INTO upload_files (task_id, file_seq, file_path, file_hash, file_size) VALUES (?, ?, ?, ?, ?)";
+        connection.execute(sql, params![
+            Into::<u128>::into(task_id) as u64,
+            file_seq,
+            file_path.as_os_str().as_encoded_bytes(),
+            hash,
+            file_size,
+        ])?;
+
+        Ok(())
+    }
+
+    async fn get_incomplete_tasks(
+        &self,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
+        let sql = "SELECT *, 
+            (SELECT COUNT(*) FROM upload_files WHERE upload_files.task_id = upload_tasks.task_id AND 
+                (upload_files.chunk_size IS NOT NULL AND upload_files.file_size <= upload_files.chunk_size * (SELECT COUNT(*) FROM upload_chunks WHERE upload_chunks.task_id = upload_files.task_id AND upload_chunks.file_seq = upload_files.file_seq AND upload_chunks.is_uploaded = 1))
+            ) AS completed_files,
+            (SELECT COUNT(*) FROM upload_files WHERE upload_files.task_id = upload_tasks.task_id) AS total_files
+            FROM upload_tasks
+            WHERE zone_id = ? AND 
+                (is_all_files_ready = 0 OR completed_files < total_files)
+            ORDER BY version DESC LIMIT ? OFFSET ?";
+
+        let connection = self.connection.lock().await;
+        let mut stmt = connection.prepare(sql)?;
+
+        let task_infos = stmt.query_map(params![self.zone_id.as_str(), limit, offset], |row| {
+            Ok(TaskInfo {
+                task_id: TaskId::from(row.get::<&str, u64>("task_id")? as u128),
+                task_key: TaskKey::from(row.get::<&str, String>("key")?),
+                check_point_version: CheckPointVersion::from(row.get::<&str, u64>("version")? as u128),
+                prev_check_point_version: row.get::<&str, Option<u64>>("prev_version")?.map(|v| CheckPointVersion::from(v as u128)),
+                meta: row.get("meta")?,
+                dir_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(row.get::<&str, Vec<u8>>("dir_path")?)),
+                is_all_files_ready: row.get("is_all_files_ready")?,
+                complete_file_count: row.get("completed_files")?,
+                file_count: row.get("total_files")?,
+                priority: row.get("priority")?,
+                is_manual: row.get::<&str, u8>("is_manual")? == 1,
+                last_fail_at: row.get::<&str, Option<u32>>("last_fail_at")?.map(|utc| std::time::UNIX_EPOCH + std::time::Duration::from_secs(utc as u64)),
+            })
+        })?.map(|t| t.unwrap()).collect::<Vec<_>>();
+
+        Ok(task_infos)
+    }
+
+    async fn get_incomplete_files(
+        &self,
+        task_key: &TaskKey,
+        version: CheckPointVersion,
+        min_file_seq: usize,
+        limit: usize,
+    ) -> Result<Vec<FileInfo>, Box<dyn std::error::Error + Send + Sync>> {
+        let sql = "SELECT task_id, file_path, file_hash, file_size, file_seq
+            FROM upload_files
+            WHERE file_seq >= ? AND task_id IN (SELECT task_id FROM upload_tasks WHERE key = ? AND version = ? AND zone_id = ?) AND
+                (
+                    chunk_size IS NULL OR
+                    file_size > chunk_size * (SELECT COUNT(*) FROM upload_chunks WHERE upload_chunks.task_id = upload_files.task_id AND upload_chunks.file_seq = upload_files.file_seq AND upload_chunks.is_uploaded = 1)
+                )
+            ORDER BY file_seq ASC
+            LIMIT ?";
+        let connection = self.connection.lock().await;
+        let mut stmt = connection.prepare(sql)?;
+        let file_infos = stmt.query_map(params![min_file_seq, task_key.as_str(), Into::<u128>::into(version) as u64, self.zone_id.as_str(), limit], |row| {
+            Ok(FileInfo {
+                task_id: TaskId::from(row.get::<&str, u64>("task_id")? as u128),
+                file_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(row.get::<&str, Vec<u8>>("file_path")?)),
+                hash: row.get("file_hash")?,
+                file_size: row.get("file_size")?,
+                file_seq: row.get("file_seq")?,
+                file_server: None,
+            })
+        })?.map(|f| f.unwrap()).collect::<Vec<_>>();
+        Ok(file_infos)
+    }
+
+    async fn is_task_info_pushed(
+        &self,
+        task_key: &TaskKey,
+        check_point_version: CheckPointVersion,
+    ) -> Result<Option<TaskId>, Box<dyn std::error::Error + Send + Sync>> {
+        let sql = "SELECT remote_task_id FROM upload_tasks WHERE key = ? AND version = ? AND zone_id = ?";
+        let connection = self.connection.lock().await;
+        let mut stmt = connection.prepare(sql)?;
+        let remote_task_id: Option<u64> = stmt.query_row(params![task_key.as_str(), Into::<u128>::into(check_point_version) as u64, self.zone_id.as_str()], |row| row.get(0))?;
+        Ok(remote_task_id.map(|id| TaskId::from(id as u128)))
+    }
+
+    async fn set_task_info_pushed(
+        &self,
+        task_key: &TaskKey,
+        check_point_version: CheckPointVersion,
+        remote_task_id: TaskId,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let sql = "UPDATE upload_tasks SET remote_task_id = ? WHERE key = ? AND version = ? AND zone_id = ?";
+        let connection = self.connection.lock().await;
+        connection.execute(sql, params![Into::<u128>::into(remote_task_id) as u64, task_key.as_str(), Into::<u128>::into(check_point_version) as u64, self.zone_id.as_str()])?;
+        Ok(())
+    }
+
+    async fn is_file_info_pushed(
+        &self,
+        task_key: &TaskKey,
+        check_point_version: CheckPointVersion,
+        file_path: &Path,
+    ) -> Result<Option<(FileServerType, String, FileId, u32)>, Box<dyn std::error::Error + Send + Sync>> {
+        // chunk_size INTEGER DEFAULT NULL,
+        // server_type TEXT DEFAULT NULL,
+        // server_name TEXT DEFAULT NULL,
+        let sql = "SELECT upload_files.chunk_size, upload_files.server_type, upload_files.server_name, upload_files.remote_file_id
+            FROM upload_files, upload_tasks 
+            WHERE upload_tasks.task_id = upload_files.task_id AND zone_id = ? AND
+                key = ? AND version = ? AND file_path = ?";
+
+        let connection = self.connection.lock().await;
+
+        let mut stmt = connection.prepare(sql)?;
+        let (chunk_size, server_type, server_name, remote_file_id) = stmt.query_row(params![self.zone_id.as_str(), task_key.as_str(), Into::<u128>::into(check_point_version) as u64, file_path.as_os_str().as_encoded_bytes()], |row| {
+            Ok((row.get::<usize, Option<u32>>(0)?, row.get::<usize, Option<u32>>(1)?, row.get::<usize, Option<String>>(2)?, row.get::<usize, Option<u64>>(3)?))
+        })?;
+
+        Ok(match chunk_size {
+            Some(chunk_size) => {
+                let server_type = server_type.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
+                let server_type = FileServerType::try_from(server_type).expect("file-server-type should be valid");
+                let server_name = server_name.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
+                let remote_file_id = remote_file_id.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
+                Some((server_type, server_name, FileId::from(remote_file_id as u128), chunk_size))
+            },
+            None => None,
+        })
+    }
+
+    async fn set_file_info_pushed(
+        &self,
+        task_key: &TaskKey,
+        check_point_version: CheckPointVersion,
+        file_path: &Path,
+        server_type: FileServerType,
+        server_name: &str,
+        remote_file_id: FileId,
+        chunk_size: u32,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let sql = "UPDATE upload_files SET chunk_size = ?, server_type = ?, server_name = ?, remote_file_id = ? WHERE task_id IN (SELECT task_id FROM upload_tasks WHERE key = ? AND version = ? AND zone_id = ?) AND file_path = ?";
+        
+        let connection = self.connection.lock().await;
+        connection.execute(sql, params![chunk_size, Into::<u32>::into(server_type), server_name, Into::<u128>::into(remote_file_id) as u64, task_key.as_str(), Into::<u128>::into(check_point_version) as u64, self.zone_id.as_str(), file_path.as_os_str().as_encoded_bytes()])?;
+
+        Ok(())
+    }
+    async fn get_last_check_point_version(
+        &self,
+        task_key: &TaskKey,
+        is_restorable_only: bool,
+    ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
         /**
          * is_restorable_only = true 有几个条件:
          * 1. is_all_files_ready = 1
@@ -158,9 +416,9 @@ impl TaskStorageQuerier for TaskStorageSqlite {
         })?.map(|t| t.unwrap()).collect::<Vec<_>>();
 
         if task_infos.len() > 0 {
-            Ok(task_infos.remove(0))
+            Ok(Some(task_infos.remove(0)))
         } else {
-            Err("Task not found".into())
+            Ok(None)
         }
     }
 
@@ -288,200 +546,6 @@ impl TaskStorageQuerier for TaskStorageSqlite {
         })?.map(|t| t.unwrap()).collect::<Vec<_>>();
 
         Ok(task_infos)
-    }
-}
-
-#[async_trait::async_trait]
-impl TaskStorageClient for TaskStorageSqlite {
-    async fn create_task(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-        prev_check_point_version: Option<CheckPointVersion>,
-        meta: Option<&str>,
-        dir_path: &Path,
-        priority: u32,
-        is_manual: bool,
-    ) -> Result<TaskId, Box<dyn std::error::Error + Send + Sync>> {
-        let mut connection = self.connection.lock().await;
-        let sql = "INSERT INTO upload_tasks (zone_id, key, version, prev_version, meta, dir_path, priority, is_manual) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-        connection.execute(sql, params![
-            self.zone_id.as_str(),
-            task_key.as_str(),
-            Into::<u128>::into(check_point_version) as u64,
-            prev_check_point_version.map(|v| Into::<u128>::into(v) as u64),
-            meta,
-            dir_path.as_os_str().as_encoded_bytes(),
-            priority,
-            is_manual as u8,
-        ])?;
-
-        let task_id = connection.last_insert_rowid();
-        Ok(TaskId::from(task_id as u128))
-    }
-
-    async fn add_file(
-        &self,
-        task_id: TaskId,
-        file_path: &Path,
-        hash: &str,
-        file_size: u64,
-        file_seq: u32,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut connection = self.connection.lock().await;
-        let sql = "INSERT INTO upload_files (task_id, file_seq, file_path, file_hash, file_size) VALUES (?, ?, ?, ?, ?)";
-        connection.execute(sql, params![
-            Into::<u128>::into(task_id) as u64,
-            file_seq,
-            file_path.as_os_str().as_encoded_bytes(),
-            hash,
-            file_size,
-        ])?;
-
-        Ok(())
-    }
-
-    async fn get_incomplete_tasks(
-        &self,
-        offset: u32,
-        limit: u32,
-    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
-        let sql = "SELECT *, 
-            (SELECT COUNT(*) FROM upload_files WHERE upload_files.task_id = upload_tasks.task_id AND 
-                (upload_files.chunk_size IS NOT NULL AND upload_files.file_size <= upload_files.chunk_size * (SELECT COUNT(*) FROM upload_chunks WHERE upload_chunks.task_id = upload_files.task_id AND upload_chunks.file_seq = upload_files.file_seq AND upload_chunks.is_uploaded = 1))
-            ) AS completed_files,
-            (SELECT COUNT(*) FROM upload_files WHERE upload_files.task_id = upload_tasks.task_id) AS total_files
-            FROM upload_tasks
-            WHERE zone_id = ? AND 
-                (is_all_files_ready = 0 OR completed_files < total_files)
-            ORDER BY version DESC LIMIT ? OFFSET ?";
-
-        let connection = self.connection.lock().await;
-        let mut stmt = connection.prepare(sql)?;
-
-        let task_infos = stmt.query_map(params![self.zone_id.as_str(), limit, offset], |row| {
-            Ok(TaskInfo {
-                task_id: TaskId::from(row.get::<&str, u64>("task_id")? as u128),
-                task_key: TaskKey::from(row.get::<&str, String>("key")?),
-                check_point_version: CheckPointVersion::from(row.get::<&str, u64>("version")? as u128),
-                prev_check_point_version: row.get::<&str, Option<u64>>("prev_version")?.map(|v| CheckPointVersion::from(v as u128)),
-                meta: row.get("meta")?,
-                dir_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(row.get::<&str, Vec<u8>>("dir_path")?)),
-                is_all_files_ready: row.get("is_all_files_ready")?,
-                complete_file_count: row.get("completed_files")?,
-                file_count: row.get("total_files")?,
-                priority: row.get("priority")?,
-                is_manual: row.get::<&str, u8>("is_manual")? == 1,
-                last_fail_at: row.get::<&str, Option<u32>>("last_fail_at")?.map(|utc| std::time::UNIX_EPOCH + std::time::Duration::from_secs(utc as u64)),
-            })
-        })?.map(|t| t.unwrap()).collect::<Vec<_>>();
-
-        Ok(task_infos)
-    }
-
-    async fn get_incomplete_files(
-        &self,
-        task_key: &TaskKey,
-        version: CheckPointVersion,
-        min_file_seq: usize,
-        limit: usize,
-    ) -> Result<Vec<FileInfo>, Box<dyn std::error::Error + Send + Sync>> {
-        let sql = "SELECT task_id, file_path, file_hash, file_size, file_seq
-            FROM upload_files
-            WHERE file_seq >= ? AND task_id IN (SELECT task_id FROM upload_tasks WHERE key = ? AND version = ? AND zone_id = ?) AND
-                (
-                    chunk_size IS NULL OR
-                    file_size > chunk_size * (SELECT COUNT(*) FROM upload_chunks WHERE upload_chunks.task_id = upload_files.task_id AND upload_chunks.file_seq = upload_files.file_seq AND upload_chunks.is_uploaded = 1)
-                )
-            ORDER BY file_seq ASC
-            LIMIT ?";
-        let connection = self.connection.lock().await;
-        let mut stmt = connection.prepare(sql)?;
-        let file_infos = stmt.query_map(params![min_file_seq, task_key.as_str(), Into::<u128>::into(version) as u64, self.zone_id.as_str(), limit], |row| {
-            Ok(FileInfo {
-                task_id: TaskId::from(row.get::<&str, u64>("task_id")? as u128),
-                file_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(row.get::<&str, Vec<u8>>("file_path")?)),
-                hash: row.get("file_hash")?,
-                file_size: row.get("file_size")?,
-                file_seq: row.get("file_seq")?,
-            })
-        })?.map(|f| f.unwrap()).collect::<Vec<_>>();
-        Ok(file_infos)
-    }
-
-    async fn is_task_info_pushed(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-    ) -> Result<Option<TaskId>, Box<dyn std::error::Error + Send + Sync>> {
-        let sql = "SELECT remote_task_id FROM upload_tasks WHERE key = ? AND version = ? AND zone_id = ?";
-        let connection = self.connection.lock().await;
-        let mut stmt = connection.prepare(sql)?;
-        let remote_task_id: Option<u64> = stmt.query_row(params![task_key.as_str(), Into::<u128>::into(check_point_version) as u64, self.zone_id.as_str()], |row| row.get(0))?;
-        Ok(remote_task_id.map(|id| TaskId::from(id as u128)))
-    }
-
-    async fn set_task_info_pushed(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-        remote_task_id: TaskId,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let sql = "UPDATE upload_tasks SET remote_task_id = ? WHERE key = ? AND version = ? AND zone_id = ?";
-        let connection = self.connection.lock().await;
-        connection.execute(sql, params![Into::<u128>::into(remote_task_id) as u64, task_key.as_str(), Into::<u128>::into(check_point_version) as u64, self.zone_id.as_str()])?;
-        Ok(())
-    }
-
-    async fn is_file_info_pushed(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-        file_path: &Path,
-    ) -> Result<Option<(FileServerType, String, FileId, u32)>, Box<dyn std::error::Error + Send + Sync>> {
-        // chunk_size INTEGER DEFAULT NULL,
-        // server_type TEXT DEFAULT NULL,
-        // server_name TEXT DEFAULT NULL,
-        let sql = "SELECT upload_files.chunk_size, upload_files.server_type, upload_files.server_name, upload_files.remote_file_id
-            FROM upload_files, upload_tasks 
-            WHERE upload_tasks.task_id = upload_files.task_id AND zone_id = ? AND
-                key = ? AND version = ? AND file_path = ?";
-
-        let connection = self.connection.lock().await;
-
-        let mut stmt = connection.prepare(sql)?;
-        let (chunk_size, server_type, server_name, remote_file_id) = stmt.query_row(params![self.zone_id.as_str(), task_key.as_str(), Into::<u128>::into(check_point_version) as u64, file_path.as_os_str().as_encoded_bytes()], |row| {
-            Ok((row.get::<usize, Option<u32>>(0)?, row.get::<usize, Option<u32>>(1)?, row.get::<usize, Option<String>>(2)?, row.get::<usize, Option<u64>>(3)?))
-        })?;
-
-        Ok(match chunk_size {
-            Some(chunk_size) => {
-                let server_type = server_type.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
-                let server_type = FileServerType::try_from(server_type).expect("file-server-type should be valid");
-                let server_name = server_name.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
-                let remote_file_id = remote_file_id.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
-                Some((server_type, server_name, FileId::from(remote_file_id as u128), chunk_size))
-            },
-            None => None,
-        })
-    }
-
-    async fn set_file_info_pushed(
-        &self,
-        task_key: &TaskKey,
-        check_point_version: CheckPointVersion,
-        file_path: &Path,
-        server_type: FileServerType,
-        server_name: &str,
-        remote_file_id: FileId,
-        chunk_size: u32,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let sql = "UPDATE upload_files SET chunk_size = ?, server_type = ?, server_name = ?, remote_file_id = ? WHERE task_id IN (SELECT task_id FROM upload_tasks WHERE key = ? AND version = ? AND zone_id = ?) AND file_path = ?";
-        
-        let connection = self.connection.lock().await;
-        connection.execute(sql, params![chunk_size, Into::<u32>::into(server_type), server_name, Into::<u128>::into(remote_file_id) as u64, task_key.as_str(), Into::<u128>::into(check_point_version) as u64, self.zone_id.as_str(), file_path.as_os_str().as_encoded_bytes()])?;
-
-        Ok(())
     }
 }
 

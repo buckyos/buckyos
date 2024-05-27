@@ -56,6 +56,7 @@ pub trait ChunkMgr: Send + Sync {
     fn server_type(&self) -> ChunkServerType;
     fn server_name(&self) -> &str;
     async fn upload(&self, chunk_hash: &str, chunk: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn download(&self, chunk_id: ChunkId) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]

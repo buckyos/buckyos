@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::{CheckPointVersion, CheckPointVersionStrategy, FileId, FileServerType, TaskId, TaskKey};
+use crate::{CheckPointVersion, CheckPointVersionStrategy, FileId, FileInfo, FileServerType, ListOffset, TaskId, TaskInfo, TaskKey};
 
 #[derive(Copy, Clone)]
 pub enum TaskServerType {
@@ -69,6 +69,7 @@ pub trait TaskMgr: Send + Sync {
     async fn add_file(
         &self,
         task_id: TaskId,
+        file_seq: u64,
         file_path: &Path,
         hash: &str,
         file_size: u64,
@@ -84,4 +85,27 @@ pub trait TaskMgr: Send + Sync {
         task_id: TaskId,
         file_path: &Path,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_check_point_version_list(
+        &self,
+        zone_id: &str,
+        task_key: &TaskKey,
+        offset: ListOffset,
+        limit: u32,
+        is_restorable_only: bool,
+    ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_check_point_version(
+        &self,
+        zone_id: &str,
+        task_key: &TaskKey,
+        check_point_version: CheckPointVersion,
+    ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_file_info(
+        &self,
+        zone_id: &str,
+        task_id: TaskId,
+        file_seq: u64,
+    ) -> Result<Option<FileInfo>, Box<dyn std::error::Error + Send + Sync>>;
 }
