@@ -5,7 +5,6 @@ use super::tunnel::*;
 use crate::error::*;
 use crate::peer::NameManagerRef;
 
-use serde_json::error;
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU32, Ordering},

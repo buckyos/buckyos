@@ -1,12 +1,10 @@
-use super::forward::{ForwardProxyProtocol, ForwardProxyConfig, TcpForwardProxy};
+use super::forward::{ForwardProxyConfig, ForwardProxyProtocol, TcpForwardProxy};
 use super::socks5::{ProxyAuth, ProxyConfig, Socks5Proxy};
 use crate::error::{GatewayError, GatewayResult};
 use crate::peer::{NameManagerRef, PeerManagerRef};
 
-use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-
 
 pub struct ProxyManager {
     name_manager: NameManagerRef,
@@ -39,7 +37,7 @@ impl ProxyManager {
         }
     }
 
-    or 
+    or
 
     {
         block: "proxy",
@@ -53,23 +51,39 @@ impl ProxyManager {
         let proxy_type = json["type"].as_str().unwrap();
         match proxy_type {
             "socks5" => {
-                let addr = json["addr"].as_str().unwrap();
-                let port = json["port"].as_u64().unwrap() as u16;
+                let addr = json["addr"]
+                    .as_str()
+                    .ok_or(GatewayError::InvalidConfig("addr".to_owned()))?;
+                let port = json["port"]
+                    .as_u64()
+                    .ok_or(GatewayError::InvalidConfig("port".to_owned()))?
+                    as u16;
                 let addr = format!("{}:{}", addr, port);
-                let addr = addr.parse().unwrap();
+                let addr = addr.parse().map_err(|e| {
+                    let msg = format!("Error parsing addr: {}, {}", addr, e);
+                    error!("{}", msg);
+                    GatewayError::InvalidConfig(msg)
+                })?;
 
                 let auth = if let Some(auth) = json.get("auth") {
                     if !auth.is_object() {
                         return Err(GatewayError::InvalidConfig("auth".to_owned()));
                     }
 
-                    match json["auth"]["type"].as_str().unwrap() {
+                    let auth_type = auth["type"]
+                        .as_str()
+                        .ok_or(GatewayError::InvalidConfig("auth.type".to_owned()))?;
+                    match auth_type {
                         "password" => {
                             let username = json["auth"]["username"].as_str().unwrap();
                             let password = json["auth"]["password"].as_str().unwrap();
                             ProxyAuth::Password(username.to_owned(), password.to_owned())
                         }
-                        _ => ProxyAuth::None,
+                        _ => {
+                            let msg = format!("Unknown auth type: {}", auth_type);
+                            error!("{}", msg);
+                            return Err(GatewayError::InvalidConfig(msg));
+                        }
                     }
                 } else {
                     ProxyAuth::None
@@ -80,13 +94,27 @@ impl ProxyManager {
                 self.add_socks5_proxy(config);
             }
             "forward" => {
-                let protocol = json["protocol"].as_str().unwrap();
-                let addr = json["addr"].as_str().unwrap();
-                let addr = addr.parse().unwrap();
-                let target_device = json["target_device"].as_str().unwrap();
-                let target_port = json["target_port"].as_u64().unwrap() as u16;
+                let protocol = json["protocol"]
+                    .as_str()
+                    .ok_or(GatewayError::InvalidConfig("protocol".to_owned()))?;
+                let addr = json["addr"]
+                    .as_str()
+                    .ok_or(GatewayError::InvalidConfig("addr".to_owned()))?;
+                let addr = addr.parse().map_err(|e| {
+                    let msg = format!("Error parsing addr: {}, {}", addr, e);
+                    error!("{}", msg);
+                    GatewayError::InvalidConfig(msg)
+                })?;
 
-                let protocol = ForwardProxyProtocol::from_str(protocol).unwrap();
+                let target_device = json["target_device"]
+                    .as_str()
+                    .ok_or(GatewayError::InvalidConfig("target_device".to_owned()))?;
+                let target_port = json["target_port"]
+                    .as_u64()
+                    .ok_or(GatewayError::InvalidConfig("target_port".to_owned()))?
+                    as u16;
+
+                let protocol = ForwardProxyProtocol::from_str(protocol)?;
                 match protocol {
                     ForwardProxyProtocol::Tcp => {
                         let config = ForwardProxyConfig {
@@ -117,7 +145,8 @@ impl ProxyManager {
     }
 
     fn add_tcp_forward_proxy(&self, config: ForwardProxyConfig) {
-        let proxy = TcpForwardProxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
+        let proxy =
+            TcpForwardProxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
         self.tcp_forward_proxy.lock().unwrap().push(proxy);
     }
 
