@@ -1,4 +1,3 @@
-use super::manager::{ProxyAuth, ProxyConfig};
 use crate::{
     error::{GatewayError, GatewayResult},
     peer::{NameManagerRef, PeerManagerRef},
@@ -17,6 +16,17 @@ use tokio::{
     task,
 };
 
+#[derive(Debug, Clone)]
+pub enum ProxyAuth {
+    None,
+    Password(String, String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ProxyConfig {
+    pub addr: SocketAddr,
+    pub auth: ProxyAuth,
+}
 
 #[derive(Clone)]
 pub struct Socks5Proxy {

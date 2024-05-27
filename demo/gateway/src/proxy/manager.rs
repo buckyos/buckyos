@@ -1,26 +1,18 @@
-use super::socks5::Socks5Proxy;
+use super::forward::{ForwardProxyProtocol, ForwardProxyConfig, TcpForwardProxy};
+use super::socks5::{ProxyAuth, ProxyConfig, Socks5Proxy};
 use crate::error::{GatewayError, GatewayResult};
 use crate::peer::{NameManagerRef, PeerManagerRef};
 
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Clone)]
-pub enum ProxyAuth {
-    None,
-    Password(String, String),
-}
-
-#[derive(Debug, Clone)]
-pub struct ProxyConfig {
-    pub addr: SocketAddr,
-    pub auth: ProxyAuth,
-}
 
 pub struct ProxyManager {
     name_manager: NameManagerRef,
     peer_manager: PeerManagerRef,
     socks5_proxy: Arc<Mutex<Vec<Socks5Proxy>>>,
+    tcp_forward_proxy: Arc<Mutex<Vec<TcpForwardProxy>>>,
 }
 
 impl ProxyManager {
@@ -29,6 +21,7 @@ impl ProxyManager {
             name_manager,
             peer_manager,
             socks5_proxy: Arc::new(Mutex::new(Vec::new())),
+            tcp_forward_proxy: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -44,7 +37,17 @@ impl ProxyManager {
             username: "user",
             password: "password"
         }
-    },
+    }
+
+    or 
+
+    {
+        block: "proxy",
+        type: "forward",
+        protocol: "tcp",
+        target_device: "device_id",
+        target_port: 8000,
+    }
      */
     pub fn load_proxy(&self, json: &serde_json::Value) -> GatewayResult<()> {
         let proxy_type = json["type"].as_str().unwrap();
@@ -76,6 +79,30 @@ impl ProxyManager {
 
                 self.add_socks5_proxy(config);
             }
+            "forward" => {
+                let protocol = json["protocol"].as_str().unwrap();
+                let addr = json["addr"].as_str().unwrap();
+                let addr = addr.parse().unwrap();
+                let target_device = json["target_device"].as_str().unwrap();
+                let target_port = json["target_port"].as_u64().unwrap() as u16;
+
+                let protocol = ForwardProxyProtocol::from_str(protocol).unwrap();
+                match protocol {
+                    ForwardProxyProtocol::Tcp => {
+                        let config = ForwardProxyConfig {
+                            protocol,
+                            addr,
+                            target_device: target_device.to_owned(),
+                            target_port,
+                        };
+
+                        self.add_tcp_forward_proxy(config);
+                    }
+                    ForwardProxyProtocol::Udp => {
+                        unimplemented!("UDP forward proxy not implemented yet");
+                    }
+                }
+            }
             _ => {
                 warn!("Unknown proxy type: {}", proxy_type);
             }
@@ -89,8 +116,20 @@ impl ProxyManager {
         self.socks5_proxy.lock().unwrap().push(proxy);
     }
 
+    fn add_tcp_forward_proxy(&self, config: ForwardProxyConfig) {
+        let proxy = TcpForwardProxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
+        self.tcp_forward_proxy.lock().unwrap().push(proxy);
+    }
+
     pub async fn start(&self) -> GatewayResult<()> {
         let proxy_list = self.socks5_proxy.lock().unwrap().clone();
+        for proxy in &proxy_list {
+            if let Err(e) = proxy.start().await {
+                return Err(e);
+            }
+        }
+
+        let proxy_list = self.tcp_forward_proxy.lock().unwrap().clone();
         for proxy in &proxy_list {
             if let Err(e) = proxy.start().await {
                 return Err(e);
