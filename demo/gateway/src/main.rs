@@ -8,6 +8,7 @@ mod peer;
 mod proxy;
 mod service;
 mod tunnel;
+mod log_util;
 
 #[macro_use]
 extern crate log;
@@ -50,6 +51,8 @@ fn load_config_from_args(matches: &clap::ArgMatches) -> GatewayResult<String> {
     }
 }
 
+
+
 fn main() {
     let matches = Command::new("Gateway service")
         .arg(
@@ -72,9 +75,12 @@ fn main() {
         .get_matches();
 
     // init log
-    std::env::set_var("RUST_LOG", "info");
-    env_logger::init();
-    
+    if let Err(e) = log_util::init_logging() {
+        error!("Error initializing logging: {}", e);
+        // TODO WHAT should we do here?
+        // std::process::exit(1);
+    }
+
     // Gets a value for config if supplied by user, or defaults to "default.json"
     let config: String = load_config_from_args(&matches)
         .map_err(|e| {
