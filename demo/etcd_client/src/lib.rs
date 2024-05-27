@@ -1,13 +1,14 @@
 use std::error::Error;
 use std::fs::DirEntry;
 use std::path::Path;
-use etcd_rs::{Client, ClientConfig, Endpoint, KeyValueOp};
+use etcd_rs::{Client, ClientConfig, ClusterOp, Endpoint, KeyValueOp};
 use log::*;
 use serde_json::json;
 use std::process::{Child, Command};
 use std::vec;
 use tokio::fs::write;
 use tokio::time::{sleep, Duration};
+pub use etcd_rs::Member;
 
 pub struct EtcdClient {
     pub client: Client,
@@ -75,6 +76,11 @@ impl EtcdClient {
     pub async fn set(&self, key: &str, value: &str) -> Result<i64, Box<dyn std::error::Error>> {
         let response = self.client.put((key, value)).await?;
         Ok(response.header.revision())
+    }
+
+    pub async fn members(&self) -> Result<Vec<Member>, Box<dyn std::error::Error>> {
+        let response = self.client.member_list().await?;
+        Ok(response.members)
     }
 }
 

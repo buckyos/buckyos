@@ -100,7 +100,7 @@ async fn handle_matches(matches: clap::ArgMatches) -> std::result::Result<(), St
 fn save_config(zone_id: &str, private_key_path: &str) -> std::result::Result<(), String> {
     let config = format!("{}\n{}", zone_id, private_key_path);
     let path = Path::new(CONFIG_FILE);
-    
+
     // 如果父目录不存在，创建所有必要的目录
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| {format!("craete dir {} error!",parent.display())})?;
@@ -122,7 +122,7 @@ fn load_config() -> std::result::Result<(String, String), String> {
             return Err("Failed to load config".to_string());
         }
     }
-    
+
     let lines: Vec<&str> = config.lines().collect();
     if lines.len() != 2 {
         return Err("Invalid config format".to_string());
@@ -173,6 +173,17 @@ async fn import_node_config(file_path: &str, etcd: &str) -> Result<(), String> {
     Ok(())
 }
 
+async fn is_etcd_cluster_running(etcd: &str) -> Result<bool, String> {
+    let etcd_client = EtcdClient::connect(etcd).await.map_err(|_e| "connect etcd error".to_string())?;
+    let members = etcd_client.members().await.map_err(|_e| "get etcd members error".to_string())?;
+    for member in members.iter() {
+        if member.client_urls.is_empty() || member.peer_urls.is_empty() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 #[tokio::main]
 async fn main() -> std::result::Result<(), String> {
     let matches = Command::new("buckyos control tool")
@@ -206,6 +217,15 @@ async fn main() -> std::result::Result<(), String> {
                 .required(true)
                 .short('f')
                 .long("file"))
+            .arg(Arg::new("etcd")
+                .help("The etcd server")
+                .required(false)
+                .short('e')
+                .long("etcd")
+                .default_value("http://127.0.0.1:2379"))
+        )
+        .subcommand(Command::new("check_etcd_cluster")
+            .about("Check whether the etcd cluster is running")
             .arg(Arg::new("etcd")
                 .help("The etcd server")
                 .required(false)
@@ -322,6 +342,21 @@ async fn main() -> std::result::Result<(), String> {
             let etcd: &String = encode_matches.get_one("etcd").unwrap();
             if let Err(e) = import_node_config(file, etcd).await {
                 println!("{}", e);
+            }
+        },
+        Some(("check_etcd_cluster", encode_matches)) => {
+            let etcd: &String = encode_matches.get_one("etcd").unwrap();
+            match is_etcd_cluster_running(etcd).await {
+                Ok(running) => {
+                    if running {
+                        println!("The etcd cluster is healthy");
+                    } else {
+                        println!("The etcd cluster is unhealthy");
+                    }
+                },
+                Err(e) => {
+                    println!("{}", e);
+                }
             }
         },
         _ => unreachable!(),

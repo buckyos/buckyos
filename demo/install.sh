@@ -107,14 +107,8 @@ main() {
 				echo "You have selected node mode."
 				create_node
 
-				wait_time=10
-				echo "Wait ${wait_time} seconds for the zone to start"
+				ensure_etcd_cluster_health
 
-				for ((i=1; i<=wait_time; i++))
-				do
-				    echo -ne "Already waited ${i} seconds\r"
-				    sleep 1
-				done
 				import_all_config
 				break;;
 			* ) echo "Please answer 1 or 2.";;
@@ -122,6 +116,7 @@ main() {
 	done
 
 }
+
 create_zone_cfg() {
 	zone_cfg_template="{
                            "extra": {
@@ -257,20 +252,20 @@ EOF
 
 	if sudo docker compose version >/dev/null 2>&1; then
 		current_dir=$(pwd)
-		ensure cd "$data_path"
+		ensure sudo cd "$data_path"
 		ensure sudo docker compose up -d
-		ensure cd "$current_dir"
+		ensure sudo cd "$current_dir"
     elif sudo docker-compose --version >/dev/null 2>&1; then
 		current_dir=$(pwd)
-		ensure cd "$data_path"
+		ensure sudo cd "$data_path"
 		ensure sudo docker-compose up -d
-		ensure cd "$current_dir"
+		ensure sudo cd "$current_dir"
     else
-	    docker network create buckyos
-	    docker pull harbor.mynode.site:8443/library/buckyos
-	    docker run --restart=always -d --device /dev/fuse -v $data_path/$node_1/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_1/data":/buckyos/data -v $data_path/$node_1/etcd:/var/lib/etcd --name $node_1 -p 139:139 -p 445:445 --network buckyos $docker_image
-	    docker run --restart=always -d --device /dev/fuse -v $data_path/$node_2/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_2/data":/buckyos/data -v $data_path/$node_2/etcd:/var/lib/etcd --name $node_2 --network buckyos $docker_image
-	    docker run --restart=always -d --device /dev/fuse -v $data_path/$node_3/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_3/data":/buckyos/data -v $data_path/$node_3/etcd:/var/lib/etcd --name $node_3 -p 2379:2379 --network buckyos $docker_image
+	    sudo docker network create buckyos
+	    sudo docker pull harbor.mynode.site:8443/library/buckyos
+	    sudo docker run --restart=always -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined -v $data_path/$node_1/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_1/data":/buckyos/data -v $data_path/$node_1/etcd:/buckyos/$node_1.etcd --name $node_1 -p 139:139 -p 445:445 --network buckyos $docker_image
+	    sudo docker run --restart=always -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined -v $data_path/$node_2/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_2/data":/buckyos/data -v $data_path/$node_2/etcd:/buckyos/$node_2.etcd --name $node_2 --network buckyos $docker_image
+	    sudo docker run --restart=always -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined -v $data_path/$node_3/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_3/data":/buckyos/data -v $data_path/$node_3/etcd:/buckyos/$node_3.etcd --name $node_3 -p 2379:2379 --network buckyos $docker_image
     fi
 }
 
@@ -288,7 +283,7 @@ create_node() {
 	while true; do
 		read -p "Please enter data path: " data_path < /dev/tty
 		data_path=$(eval echo "$data_path")
-		if mkdir -p "$data_path" ; then
+		if sudo mkdir -p "$data_path" ; then
 			echo "The data path is $data_path."
 			break
 		else
@@ -296,14 +291,14 @@ create_node() {
 		fi
 	done
 
-	ensure mkdir -p "$data_path/$cur_node"
-	create_node_identity $zone_name $cur_node "$data_path/$node_1/node_identity.toml"
-	ensure mkdir -p "$data_path/$cur_node/data"
-	ensure mkdir -p "$data_path/$cur_node/data/gv0"
-	ensure mkdir -p "$data_path/$cur_node/etcd"
+	ensure sudo mkdir -p "$data_path/$cur_node"
+	create_node_identity $zone_name $cur_node "$data_path/$cur_node/node_identity.toml"
+	ensure sudo mkdir -p "$data_path/$cur_node/data"
+	ensure sudo mkdir -p "$data_path/$cur_node/data/gv0"
+	ensure sudo mkdir -p "$data_path/$cur_node/etcd"
 
 	ensure sudo docker pull $docker_image
-	ensure sudo docker run -d --device /dev/fuse --init --restart=always -v "$data_path/$node_1/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/var/lib/etcd  --name $cur_node -p 2379:2379 -p 2380:2380 $docker_image
+	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-60999:49152-60999 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
 }
 
 import_all_config() {
@@ -456,6 +451,19 @@ EOF
 )
 	ensure sudo echo -e "$zone_node_config_template" > "$data_path/zone_node_config.yml"
 	ensure $buckycli import_zone_config -f "$data_path/zone_node_config.yml"
+}
+
+ensure_etcd_cluster_health() {
+	while true; do
+		cluster_status=$($buckycli check_etcd_cluster)
+		if [ "$cluster_status" = "The etcd cluster is healthy" ]; then
+			echo "The etcd cluster is healthy."
+			break
+		else
+			echo "The etcd cluster is unhealthy.Please check the other two node statuses."
+			sleep 1
+		fi
+	done
 }
 
 need_cmd() {
