@@ -10,3 +10,9 @@ etcd_client = { path = "../etcd_client" }
 bucky-name-service = {path = "../../src/kernel/name-service"}
 clap = "4.5.4"
 serde_json = "1.0.116"
+vergen = { version = "8.0.0", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }
+
+
+[build-dependencies]
+vergen = { version = "8.0.0", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }
+anyhow = "1.0.86"
