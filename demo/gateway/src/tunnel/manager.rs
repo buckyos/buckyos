@@ -85,15 +85,13 @@ impl TunnelManager {
 
         let control_tunnel = control_tunnel.unwrap();
         if control_tunnel.tunnel.tunnel_side() == TunnelSide::Active {
-            self.init_control_tunnel().await.unwrap_or_else(|e| {
-                error!("Error on init control tunnel: {}", e);
-            });
+            self.start_control_tunnel();
         } else {
             // wait for new control tunnel build on active side
         }
     }
 
-    fn start_control_tunnel(&self, tunnel: ControlTunnel) -> tokio::task::JoinHandle<()> {
+    fn run_control_tunnel(&self, tunnel: ControlTunnel) -> tokio::task::JoinHandle<()> {
         let this = self.clone();
         let abort_handle = tokio::task::spawn(async move {
             match tunnel.run().await {
@@ -139,7 +137,7 @@ impl TunnelManager {
         tunnel.bind_events(Arc::new(Box::new(self.clone())));
 
         // run control tunnel async
-        let abort_handle = self.start_control_tunnel(tunnel.clone());
+        let abort_handle = self.run_control_tunnel(tunnel.clone());
 
         let info = ControlTunnelInfo {
             tunnel,
@@ -152,6 +150,22 @@ impl TunnelManager {
             warn!("Replace control tunnel: {:?}, now will abort", prev.tunnel);
             prev.abort_handle.abort();
         }
+    }
+
+    // Start control tunnel on active side
+    pub fn start_control_tunnel(&self) {
+        let this = self.clone();
+        tokio::task::spawn(async move {
+            loop {
+                if let Err(e) = this.init_control_tunnel().await {
+                    error!("Error on init control tunnel, now will retry later: {} -> {}, {}", this.device_id, this.remote_device_id, e);
+    
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                } else {
+                    break;
+                }
+            }
+        });
     }
 
     // Init control on active side if needed
@@ -170,7 +184,7 @@ impl TunnelManager {
         tunnel.bind_events(Arc::new(Box::new(self.clone())));
 
         // run control tunnel async
-        let abort_handle = self.start_control_tunnel(tunnel.clone());
+        let abort_handle = self.run_control_tunnel(tunnel.clone());
 
         let info = ControlTunnelInfo {
             tunnel,
