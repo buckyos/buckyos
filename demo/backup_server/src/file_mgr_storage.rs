@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::os::unix::ffi::OsStringExt;
-use backup_lib::{CheckPointVersion, ChunkId, ChunkServerType, FileId, FileServerType, TaskId, TaskInfo, TaskKey, TaskServerType};
+use backup_lib::{CheckPointVersion, ChunkId, ChunkInfo, ChunkServerType, FileId, FileServerType, TaskId, TaskInfo, TaskKey, TaskServerType};
 use rusqlite::{params, Connection, Result};
 
 pub struct FileStorageSqlite {
@@ -28,6 +28,7 @@ impl FileStorageSqlite {
                 file_hash TEXT NOT NULL,
                 chunk_seq INTEGER NOT NULL,
                 chunk_hash TEXT NOT NULL,
+                chunk_size INTEGER NOT NULL,
                 is_uploaded TINYINT DEFAULT 0,
                 FOREIGN KEY (chunk_hash) REFERENCES chunks (chunk_hash),
                 PRIMARY KEY (file_hash, chunk_seq)
@@ -109,6 +110,7 @@ impl FileStorageSqlite {
         file_hash: &str,
         chunk_seq: u64,
         chunk_hash: &str,
+        chunk_size: u32,
         chunk_server_type: ChunkServerType,
         chunk_server_name: &str,
     ) -> Result<(ChunkServerType, String, Option<ChunkId>), Box<dyn std::error::Error + Send + Sync>> {
@@ -131,9 +133,9 @@ impl FileStorageSqlite {
         
         // Insert into "file_chunks" table
         tx.execute(
-            "INSERT INTO file_chunks (file_hash, chunk_seq, chunk_hash)
-             VALUES (?, ?, ?)
-             ON CONFLICT (file_hash, chunk_seq) DO NOTHING",
+            "INSERT INTO file_chunks (file_hash, chunk_seq, chunk_hash, chunk_size)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT (file_hash, chunk_seq, chunk_size) DO NOTHING",
             params![file_hash, chunk_seq, chunk_hash],
         )?;
         
@@ -185,5 +187,36 @@ impl FileStorageSqlite {
             params![chunk_seq, Into::<u128>::into(file_id) as u64],
         )?;
         Ok(())
+    }
+
+    pub fn get_chunk_info(
+        &mut self,
+        file_id: FileId,
+        chunk_seq: u64,
+    ) -> Result<Option<ChunkInfo>, Box<dyn std::error::Error + Send + Sync>> {
+        let query = "SELECT chunks.chunk_server_type, chunks.chunk_server_name, chunks.remote_chunk_id, file_chunks.chunk_hash, file_chunks.chunk_size
+                     FROM chunks
+                     INNER JOIN file_chunks ON chunks.chunk_hash = file_chunks.chunk_hash
+                     INNER JOIN files ON file_chunks.file_hash = files.file_hash
+                     WHERE files.file_id = ? AND file_chunks.chunk_seq = ?";
+        let mut stmt = self.connection.prepare(query)?;
+        let result = stmt.query_row(params![Into::<u128>::into(file_id) as u64, chunk_seq], |row| {
+            let chunk_server_type = ChunkServerType::try_from(row.get::<usize, u32>(0)?).expect("Invalid chunk_server_type");
+            let chunk_server_name = row.get::<usize, String>(1)?;
+            let remote_chunk_id = row.get::<usize, Option<u64>>(2)?.map(|v| ChunkId::from(v as u128));
+            let chunk_hash = row.get::<usize, String>(3)?;
+            let chunk_size = row.get::<usize, u32>(4)?;
+
+            Ok(ChunkInfo {
+                hash: chunk_hash,
+                chunk_size,
+                chunk_server: Some((chunk_server_type, chunk_server_name, remote_chunk_id)),
+            })
+        });
+        match result {
+            Ok(ret) => Ok(Some(ret)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(Box::new(err)),
+        }
     }
 }

@@ -80,9 +80,13 @@ impl RestoreTask {
                 }
 
                 let chunk_server = chunk_info.chunk_server.unwrap();
+                if chunk_server.2.is_none() {
+                    return Err("chunk id not found".into());
+                }
+
                 let chunk_mgr_server = task_mgr.chunk_mgr_selector().select_by_name(chunk_server.0, chunk_server.1.as_str()).await?;
 
-                let chunk_id = chunk_server.2;
+                let chunk_id = chunk_server.2.unwrap();
                 let chunk = chunk_mgr_server.download(chunk_id).await?;
 
                 // TODO: check chunk size and hash

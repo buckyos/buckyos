@@ -65,6 +65,23 @@ impl backup_lib::ChunkMgr for ChunkMgr {
     }
 
     async fn download(&self, chunk_id: ChunkId) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        unimplemented!()
+        let info = self.storage.lock().await.get_chunk_by_id(chunk_id)?;
+        match info {
+            Some((chunk_hash, chunk_size, save_path)) => {
+                match save_path {
+                    Some(save_path) => {
+                        let chunk = async_std::fs::read(save_path).await?;
+                        // TODO: check chunk size and hash
+                        Ok(chunk)
+                    }
+                    None => {
+                        Err("chunk not saved".into())
+                    }
+                }
+            }
+            None => {
+                Err("chunk not found".into())
+            }
+        }
     }
 }

@@ -49,9 +49,9 @@ impl backup_lib::FileMgr for FileMgr {
         chunk_size: u32,
     ) -> Result<(ChunkServerType, String, ChunkId), Box<dyn std::error::Error + Send + Sync>> {
         let mut storage = self.storage.lock().await;
-        let (task_server_type, task_sever_name, file_hash, file_size, chunk_size) = storage.get_file_by_id(file_id)?.unwrap();
+        let (task_server_type, task_sever_name, file_hash, file_size, _chunk_size) = storage.get_file_by_id(file_id)?.unwrap();
         let chunk_mgr = self.chunk_mgr_selector.select(file_hash.as_str(), chunk_seq, chunk_hash).await?;
-        let (chunk_server_type, chunk_server_name, remote_chunk_info) = storage.insert_file_chunk(file_hash.as_str(), chunk_seq, chunk_hash, chunk_mgr.server_type(), chunk_mgr.server_name())?;
+        let (chunk_server_type, chunk_server_name, remote_chunk_info) = storage.insert_file_chunk(file_hash.as_str(), chunk_seq, chunk_hash, chunk_size, chunk_mgr.server_type(), chunk_mgr.server_name())?;
         match remote_chunk_info {
             Some(remote_chunk_id) => {
                 Ok((chunk_server_type, chunk_server_name, remote_chunk_id))
@@ -77,6 +77,7 @@ impl backup_lib::FileMgr for FileMgr {
     }
 
     async fn get_chunk_info(&self, file_id: FileId, chunk_seq: u64) -> Result<Option<ChunkInfo>, Box<dyn std::error::Error + Send + Sync>> {
-        unimplemented!()
+        let mut storage = self.storage.lock().await;
+        storage.get_chunk_info(file_id, chunk_seq)
     }
 }

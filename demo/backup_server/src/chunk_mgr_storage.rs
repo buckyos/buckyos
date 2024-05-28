@@ -132,4 +132,24 @@ impl ChunkStorageSqlite {
         )?;
         Ok(())
     }
+
+    pub fn get_chunk_by_id(
+        &self,
+        chunk_id: ChunkId,
+    ) -> Result<Option<(String, u32, Option<PathBuf>)>, Box<dyn std::error::Error + Send + Sync>> {
+        let query = "SELECT chunk_hash, chunk_size, save_path FROM chunks WHERE chunk_id = ?";
+        let mut stmt = self.connection.prepare(query)?;
+        let result = stmt.query_row(params![Into::<u128>::into(chunk_id) as u64], |row| {
+            Ok((
+                row.get::<usize, String>(0)?,
+                row.get::<usize, u32>(1)?,
+                row.get::<usize, Option<Vec<u8>>>(2)?.map(|v| PathBuf::from(std::ffi::OsString::from_vec(v))),
+            ))
+        });
+        match result {
+            Ok(chunk_info) => Ok(Some(chunk_info)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(Box::new(err)),
+        }
+    }
 }

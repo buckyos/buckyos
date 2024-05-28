@@ -18,7 +18,7 @@ impl Into<u128> for ChunkId {
 pub struct ChunkInfo {
     pub hash: String,
     pub chunk_size: u32,
-    pub chunk_server: Option<(ChunkServerType, String, ChunkId)>,
+    pub chunk_server: Option<(ChunkServerType, String, Option<ChunkId>)>,
 }
 
 pub trait ChunkStorageQuerier: Send + Sync {}

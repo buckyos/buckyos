@@ -264,6 +264,7 @@ impl BackupTask {
                 Ok(files) => {
                     if files.len() == 0 {
                         if self.is_all_files_ready() {
+                            // TODO: remove task from storage
                             return BackupTaskEvent::Successed(self.clone());
                         } else {
                             return BackupTaskEvent::Idle(self.clone());
@@ -471,6 +472,8 @@ impl BackupTask {
                             {
                                 return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
                             }
+
+                            tokio::fs::remove_file(file.file_path.as_path()).await;
                         }
                         Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err)),
                     }
