@@ -9,12 +9,12 @@ use std::str::FromStr;
 
 #[derive(Debug)]
 pub struct SimpleServerError {
-    state_code: warp::http::StatusCode,
+    state_code: u16,
     message: String,
 }
 
 impl SimpleServerError {
-    pub fn new(state_code: warp::http::StatusCode, message: String) -> Self {
+    pub fn new(state_code: u16, message: String) -> Self {
         SimpleServerError { state_code, message }
     }
 }
@@ -158,7 +158,7 @@ impl TaskMgrHttpServer {
         task_mgr
             .update_check_point_strategy(&zone_id, &task_key, strategy)
             .await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         Ok(warp::reply::json(&UpdateCheckPointStrategyResponse))
     }
@@ -173,7 +173,7 @@ impl TaskMgrHttpServer {
         let strategy = task_mgr
             .get_check_point_strategy(&zone_id, &task_key)
             .await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         let response = GetCheckPointStrategyResponse { strategy };
 
@@ -200,7 +200,7 @@ impl TaskMgrHttpServer {
                 request.dir_path.as_path(),
             )
             .await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         let response = PushTaskInfoResponse { task_id };
 
@@ -219,7 +219,7 @@ impl TaskMgrHttpServer {
         let response = task_mgr
             .add_file(task_id, file_seq, request.file_path.as_path(), hash.as_str(), file_size)
             .await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         let add_file_response = AddFileInTaskResponse {
             file_server_type: response.0,
@@ -239,7 +239,7 @@ impl TaskMgrHttpServer {
         task_mgr
             .set_files_prepare_ready(task_id)
             .await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         Ok(warp::reply::json(&SetFilesPrepareReadyResponse))
     }
@@ -252,7 +252,7 @@ impl TaskMgrHttpServer {
         task_mgr
             .set_file_uploaded(task_id, request.file_path.as_path())
             .await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         Ok(warp::reply::json(&SetFileUploadedResponse))
     }
@@ -269,7 +269,7 @@ impl TaskMgrHttpServer {
         let task_info_list = task_mgr
             .get_check_point_version_list(&zone_id, &task_key, offset, limit, is_restorable_only)
             .await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
         let response = GetCheckPointVersionListResponse { task_info_list };
         Ok(warp::reply::json(&response))
     }
@@ -284,7 +284,7 @@ impl TaskMgrHttpServer {
         let task_info = task_mgr
             .get_check_point_version(&zone_id, &task_key, check_point_version)
             .await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
         let response = GetCheckPointVersionResponse { task_info };
         Ok(warp::reply::json(&response))
     }
@@ -299,7 +299,7 @@ impl TaskMgrHttpServer {
         let file_info = task_mgr
             .get_file_info(&zone_id, task_id, file_seq)
             .await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
         let response = GetFileInfoResponse { file_info };
         Ok(warp::reply::json(&response))
     }
@@ -459,7 +459,7 @@ impl TaskMgr for TaskMgrHttpClient {
         if response.status().is_success() {
             Ok(())
         } else {
-            let state_code = response.status();
+            let state_code = response.status().into();
             let error_message = response.text().await?;
             Err(Box::new(SimpleServerError::new(
                 state_code,
@@ -488,7 +488,7 @@ impl TaskMgr for TaskMgrHttpClient {
             let response_body: GetCheckPointStrategyResponse = response.json().await?;
             Ok(response_body.strategy)
         } else {
-            let state_code = response.status();
+            let state_code = response.status().into();
             let error_message = response.text().await?;
             Err(Box::new(SimpleServerError::new(
                 state_code,
@@ -525,7 +525,7 @@ impl TaskMgr for TaskMgrHttpClient {
             let response_body: PushTaskInfoResponse = response.json().await?;
             Ok(response_body.task_id)
         } else {
-            let state_code = response.status();
+            let state_code = response.status().into();
             let error_message = response.text().await?;
             Err(Box::new(SimpleServerError::new(
                 state_code,
@@ -565,7 +565,7 @@ impl TaskMgr for TaskMgrHttpClient {
                 .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)?;
             Ok((add_file_response.file_server_type, add_file_response.file_server_name, add_file_response.file_id, add_file_response.chunk_size))
         } else {
-            let state_code = response.status();
+            let state_code = response.status().into();
             let error_message = response.text().await.unwrap_or_else(|_| "".to_string());
             Err(Box::new(SimpleServerError::new(
                 state_code,
@@ -591,7 +591,7 @@ impl TaskMgr for TaskMgrHttpClient {
         if response.status().is_success() {
             Ok(())
         } else {
-            let state_code = response.status();
+            let state_code = response.status().into();
             let error_message = response.text().await.unwrap_or_else(|_| "".to_string());
             Err(Box::new(SimpleServerError::new(
                 state_code,
@@ -621,7 +621,7 @@ impl TaskMgr for TaskMgrHttpClient {
         if response.status().is_success() {
             Ok(())
         } else {
-            let state_code = response.status();
+            let state_code = response.status().into();
             let error_message = response.text().await.unwrap_or_else(|_| "".to_string());
             Err(Box::new(SimpleServerError::new(
                 state_code,
@@ -661,7 +661,7 @@ impl TaskMgr for TaskMgrHttpClient {
                 .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)?;
             Ok(response.task_info_list)
         } else {
-            let state_code = response.status();
+            let state_code = response.status().into();
             let error_message = response.text().await.unwrap_or_else(|_| "".to_string());
             Err(Box::new(SimpleServerError::new(
                 state_code,
@@ -697,7 +697,7 @@ impl TaskMgr for TaskMgrHttpClient {
                 .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)?;
             Ok(response.task_info)
         } else {
-            let state_code = response.status();
+            let state_code = response.status().into();
             let error_message = response.text().await.unwrap_or_else(|_| "".to_string());
             Err(Box::new(SimpleServerError::new(
                 state_code,
@@ -733,7 +733,7 @@ impl TaskMgr for TaskMgrHttpClient {
                 .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)?;
             Ok(response.file_info)
         } else {
-            let state_code = response.status();
+            let state_code = response.status().into();
             let error_message = response.text().await.unwrap_or_else(|_| "".to_string());
             Err(Box::new(SimpleServerError::new(
                 state_code,
@@ -744,7 +744,7 @@ impl TaskMgr for TaskMgrHttpClient {
 }
 
 impl TaskMgrServer for TaskMgrHttpClient {
-    
+
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -808,7 +808,7 @@ impl FileMgrHttpServer {
             &request.task_server_name,
             &request.file_hash,
             request.file_size,
-        ).await.map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+        ).await.map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         let response = AddFileResponse {
             file_id,
@@ -824,7 +824,7 @@ impl FileMgrHttpServer {
             request.chunk_seq,
             &request.chunk_hash,
             request.chunk_size,
-        ).await.map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+        ).await.map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         let response = AddChunkInFileResponse {
             chunk_server_type,
@@ -838,7 +838,7 @@ impl FileMgrHttpServer {
     async fn set_chunk_uploaded_handler(request: SetChunkUploadedRequest, file_mgr: Arc<Box<dyn FileMgrServer>>) -> Result<impl Reply, warp::Rejection> {
         file_mgr.set_chunk_uploaded(request.file_id, request.chunk_seq)
             .await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         Ok(warp::reply())
     }
@@ -846,7 +846,7 @@ impl FileMgrHttpServer {
     async fn get_chunk_info_handler(request: GetChunkInfoRequest, file_mgr: Arc<Box<dyn FileMgrServer>>) -> Result<impl Reply, warp::Rejection> {
         let chunk_info = file_mgr.get_chunk_info(request.file_id, request.chunk_seq)
             .await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         let response = GetChunkInfoResponse {
             chunk_info,
@@ -1035,7 +1035,7 @@ impl ChunkMgrHttpServer {
 
         // Call ChunkMgrServer interface
         let chunk_id = chunk_mgr.add_chunk(file_server_type, &file_server_name, &chunk_hash, chunk_size).await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         // Convert ChunkMgrServer response to HTTP response
         let response = AddChunkResponse {
@@ -1048,7 +1048,7 @@ impl ChunkMgrHttpServer {
     async fn upload_handler(chunk_hash: String, chunk: warp::hyper::body::Bytes, chunk_mgr: Arc<Box<dyn ChunkMgrServer>>) -> Result<impl Reply, warp::Rejection> {
         // Call ChunkMgr interface
         chunk_mgr.upload(chunk_hash.as_str(), chunk.as_ref()).await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         // Convert ChunkMgr response to HTTP response
 
@@ -1061,7 +1061,7 @@ impl ChunkMgrHttpServer {
 
         // Call ChunkMgr interface
         let chunk_data = chunk_mgr.download(chunk_id).await
-            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())))?;
+            .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
         // Convert ChunkMgr response to HTTP response
 
