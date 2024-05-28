@@ -1,8 +1,10 @@
 use std::path::Path;
-
+use std::sync::Arc;
 use crate::{CheckPointVersion, CheckPointVersionStrategy, FileId, FileInfo, FileServerType, ListOffset, TaskId, TaskInfo, TaskKey};
+use serde::{Deserialize, Serialize};
+use warp::{Filter, Rejection, Reply};
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum TaskServerType {
     Http = 1
 }
@@ -26,7 +28,7 @@ impl Into<u32> for TaskServerType {
     }
 }
 
-pub trait TaskMgrServer: Send + Sync {}
+pub trait TaskMgrServer: TaskMgr + Send + Sync {}
 
 #[async_trait::async_trait]
 pub trait TaskMgrSelector: Send + Sync {

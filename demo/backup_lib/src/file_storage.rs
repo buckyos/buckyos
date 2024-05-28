@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::{task_storage::TaskId, CheckPointVersion, ChunkServerType, FileServerType, TaskKey};
+use serde::{Serialize, Deserialize};
 
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct FileId(u128);
 
 impl From<u128> for FileId {
@@ -18,7 +19,7 @@ impl Into<u128> for FileId {
     }
 }
 
-
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
     pub file_seq: u64,
     pub task_id: TaskId,

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TaskKey(String);
 
 impl<K: ToString> From<K> for TaskKey {
@@ -17,7 +17,7 @@ impl TaskKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CheckPointVersion(u128);
 
 impl Into<u128> for CheckPointVersion {
@@ -32,7 +32,7 @@ impl From<u128> for CheckPointVersion {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TaskId(u128);
 
 impl From<u128> for TaskId {
@@ -47,13 +47,13 @@ impl Into<u128> for TaskId {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum ListOffset {
     FromFirst(u32),
     FromLast(u32),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskInfo {
     pub task_id: TaskId,
     pub task_key: TaskKey,
@@ -66,7 +66,7 @@ pub struct TaskInfo {
     pub file_count: usize,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CheckPointVersionStrategy {
     reserve_history_limit: u32,
     continuous_abort_incomplete_limit: u32,

@@ -1,7 +1,8 @@
-use std::path::Path;
 use crate::{CheckPointVersion, ChunkId, ChunkInfo, ChunkServerType, FileId, TaskKey, TaskServerType};
+use std::convert::TryFrom;
+use serde::{Serialize, Deserialize};
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum FileServerType {
     Http = 1
 }

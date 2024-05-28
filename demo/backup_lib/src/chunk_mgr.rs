@@ -1,6 +1,7 @@
-use crate::{CheckPointVersion, ChunkId, FileServerType, TaskKey};
+use crate::{ChunkId, FileServerType};
+use serde::{Serialize, Deserialize};
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum ChunkServerType {
     Http = 1
 }
