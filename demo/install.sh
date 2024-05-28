@@ -269,14 +269,47 @@ EOF
     fi
 }
 
+ips=""
+ip_mode=""
 create_node() {
+	local local_node=""
+	ensure_node_dns $node_1
+	local node_1_ips=$ips
+	local node_1_ip_mode=$ip_mode
+	if [ -z "$local_node"]; then
+		local_node=$(is_local_host $node_1 $node_1_ips)
+	fi
+	ensure_node_dns $node_2
+	local node_2_ips=$ips
+	local node_2_ip_mode=$ip_mode
+	if [ -z "$local_node"]; then
+		local_node=$(is_local_host $node_2 $node_2_ips)
+	fi
+	ensure_node_dns $node_3
+	local node_3_ips=$ips
+	local node_3_ip_mode=$ip_mode
+	if [ -z "$local_node"]; then
+		local_node=$(is_local_host $node_3 $node_3_ips)
+	fi
+
 	while true; do
-		read -p "Please enter node_name[$node_1/$node_2/$node_3]: " cur_node < /dev/tty
+		if [ "$local_node" == "" ]; then
+			read -p "Please enter node_name[$node_1/$node_2/$node_3]: " cur_node < /dev/tty
+		else
+			read -p "Please enter node_name[$local_node]: " cur_node < /dev/tty
+			if [ -z "$cur_node"]; then
+				cur_node=$local_node
+			fi
+		fi
 		if [ "$cur_node" = "$node_1" ] || [ "$cur_node" = "$node_2" ] || [ "$cur_node" = "$node_3" ]; then
 			echo "The node name is $cur_node."
 			break
 		else
-			echo "The node name must be one of the following[$node_1/$node_2/$node_3]."
+			if [ -z "$local_node" ]; then
+				echo "The node name must be one of the following[$node_1/$node_2/$node_3]."
+			else
+				echo "The node name must be $local_node."
+			fi
 		fi
 	done
 
@@ -297,8 +330,77 @@ create_node() {
 	ensure sudo mkdir -p "$data_path/$cur_node/data/gv0"
 	ensure sudo mkdir -p "$data_path/$cur_node/etcd"
 
+	local node_1_host=""
+	if [[ "$node_1_ip_mode" == "manual" && "$cur_node" != "$node_1" ]]; then
+		local ip_list=($node_1_ips)
+	    node_1_host="--add-host $node_1:${ip_list[0]}"
+	fi
+	local node_2_host=""
+	if [[ "$node_2_ip_mode" == "manual" && "$cur_node" != "$node_2" ]]; then
+		local ip_list=($node_2_ips)
+	    node_2_host="--add-host $node_2:${ip_list[0]}"
+	fi
+	local node_3_host=""
+	if [[ "$node_3_ip_mode" == "manual" && "$cur_node" != "$node_3" ]]; then
+		local ip_list=($node_3_ips)
+	    node_3_host="--add-host $node_3:${ip_list[0]}"
+	fi
 	ensure sudo docker pull $docker_image
-	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-60999:49152-60999 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
+# 	echo "sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-60999:49152-60999 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image"
+	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-60999:49152-60999 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
+}
+
+ensure_node_dns() {
+	local node_name=$1
+	echo "Checking the domain $node_name IP Address..."
+	ip_mode="dns"
+	ips=$(nslookup $node_name | grep 'Address:' | tail -n +2 | awk '{print $2}')
+	if [ -z "$ips" ]; then
+		while true; do
+			read -p "The domain $node_name can't resolve IP address.Do you want to configure dns or enter the ip address manually?[dns(d)/manual(m)]: " dns_mode < /dev/tty
+			case $dns_mode in
+				"dns" | "d" )
+					while true; do
+						ips=$(nslookup $node_name | grep 'Address:' | tail -n +2 | awk '{print $2}')
+						if [ -z "$ips" ]; then
+				            echo "The domain $node_name is not configured with DNS."
+				        else
+				            break
+				        fi
+					done
+					break;;
+				"manual" | "m")
+					while true; do
+						read -p "Please enter an IP address: " ip < /dev/tty
+
+		                if is_valid_ip "$ip"; then
+		                    ips=$ip
+		                    break
+		                else
+		                    echo "The IP address $ip is invalid."
+		                fi
+					done
+					ip_mode="manual"
+					break;;
+				* ) echo "Please answer dns or manual.";;
+			esac
+		done
+	fi
+}
+
+is_local_host() {
+	local node_name=$1
+	local domain_ips=($2)
+	local local_ips=($(hostname -I))
+	for domain_ip in "${domain_ips[@]}"; do
+		for local_ip in "${local_ips[@]}"; do
+			if [ "$domain_ip" = "$local_ip" ]; then
+				echo "$node_name"
+				return
+			fi
+		done
+	done
+	echo ""
 }
 
 import_all_config() {
@@ -488,6 +590,27 @@ ensure() {
 # as part of error handling.
 ignore() {
     "$@"
+}
+
+is_valid_ip() {
+    local ip=$1
+    local valid_ip_regex="^([0-9]{1,3}\.){3}[0-9]{1,3}$"
+
+    if [[ $ip =~ $valid_ip_regex ]]; then
+        # Split the IP address into its components
+        IFS='.' read -r -a octets <<< "$ip"
+
+        # Check each octet to ensure it is between 0 and 255
+        for octet in "${octets[@]}"; do
+            if (( octet < 0 || octet > 255 )); then
+                return 1
+            fi
+        done
+
+        return 0
+    else
+        return 1
+    fi
 }
 
 main "$@" || exit 1
