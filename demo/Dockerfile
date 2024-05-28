@@ -10,11 +10,13 @@ RUN apt update; \
     wget -O /usr/bin/systemctl https://raw.githubusercontent.com/gdraheim/docker-systemctl-replacement/master/files/docker/systemctl3.py; \
     chmod +x /usr/bin/systemctl; \
     sudo apt-get install -y glusterfs-server; \
+    sed -i '/option base-port/ c\    option base-port 49152' /etc/glusterfs/glusterd.vol; \
+    sed -i '/option max-port/ c\    option max-port 49162' /etc/glusterfs/glusterd.vol; \
     sudo apt-get install -y samba; \
     sudo apt-get install -y fuse; \
     apt clean;
 
-EXPOSE 2379 2380 139
+EXPOSE 2379 2380 139 445 49152-49162
 
 ADD target/release/node_daemon /usr/local/bin/
 COPY smb_service/ "/buckyos/service/smb_service#0.1.0/"
