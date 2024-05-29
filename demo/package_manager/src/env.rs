@@ -223,6 +223,76 @@ impl PackageEnv {
         //self.make_symlink_for_deps()
     }
 
+    // load 一个包，从env的依赖根目录中查找目标pkg，找到了就返回一个MediaInfo结构
+    pub async fn load(&self, pkg_id_str: &str) -> PkgSysResult<MediaInfo> {
+        let parser = Parser::new(self.clone());
+        let pkg_id = parser.parse(pkg_id_str)?;
+
+        // 先解析lock文件，获取所有的包信息
+        let lock_file_path = self.work_dir.join("pkg.lock");
+        if !lock_file_path.exists() {
+            return Err(PackageSystemErrors::LoadError(
+                pkg_id_str.to_owned(),
+                "pkg.lock not found".to_string(),
+            ));
+        }
+
+        let lock_data = Self::parse_toml(&lock_file_path)?;
+        let package_list: PackageLockList = lock_data.try_into().map_err(|err| {
+            PackageSystemErrors::ParseError("pkg.lock".to_string(), err.to_string())
+        })?;
+
+        let mut target_pkg = None;
+        let all_version = "*".to_string();
+        // 在package_list中查找符合条件的包
+        for lock_info in package_list.packages.iter() {
+            if lock_info.name == pkg_id.name {
+                if let Some(sha256) = &pkg_id.sha256 {
+                    if sha256 == &lock_info.sha256 {
+                        target_pkg = Some(format!("{}_{}", lock_info.name, lock_info.version));
+                        break;
+                    }
+                } else {
+                    if version_util::matches(
+                        &pkg_id.version.as_ref().unwrap_or(&all_version),
+                        &lock_info.version,
+                    )? {
+                        target_pkg = Some(format!("{}_{}", lock_info.name, lock_info.version));
+                        break;
+                    }
+                }
+            }
+        }
+
+        match target_pkg {
+            Some(target_pkg) => {
+                let target_path = self.get_install_dir().join(&target_pkg);
+                if target_path.exists() {
+                    let media_type = if target_path.is_dir() {
+                        MediaType::Dir
+                    } else {
+                        MediaType::File
+                    };
+
+                    Ok(MediaInfo {
+                        pkg_id,
+                        full_path: target_path,
+                        media_type,
+                    })
+                } else {
+                    Err(PackageSystemErrors::LoadError(
+                        pkg_id_str.to_owned(),
+                        format!("Package file not found: {}", target_path.display()),
+                    ))
+                }
+            }
+            None => Err(PackageSystemErrors::LoadError(
+                pkg_id_str.to_owned(),
+                "No matched package found".to_string(),
+            )),
+        }
+    }
+
     fn verify_package(dest_file: &PathBuf, sha256: String) -> PkgSysResult<()> {
         if !dest_file.exists() {
             return Err(PackageSystemErrors::VerifyError(format!(

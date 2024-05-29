@@ -64,6 +64,12 @@ async fn main() {
     let ret = env.build(true).await;
     info!("build ret: {:?}", ret);
 
+    let ret = env.load("a#1.0.1").await;
+    info!("load a#1.0.1 ret: {:?}", ret);
+
+    let ret = env.load("a#>1.0.1").await;
+    info!("load a#1.0.1 ret: {:?}", ret);
+
     // let pk_id_str = "a#1.0.1";
     // let result = env.generate_package_lock_info(&index_db, pk_id_str);
 
