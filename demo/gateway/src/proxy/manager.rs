@@ -96,10 +96,16 @@ impl ProxyManager {
             "forward" => {
                 let protocol = json["protocol"]
                     .as_str()
-                    .ok_or(GatewayError::InvalidConfig("protocol".to_owned()))?;
+                    .unwrap_or(ForwardProxyProtocol::Tcp.as_str());
+
                 let addr = json["addr"]
                     .as_str()
                     .ok_or(GatewayError::InvalidConfig("addr".to_owned()))?;
+                let port = json["port"]
+                    .as_u64()
+                    .ok_or(GatewayError::InvalidConfig("port".to_owned()))?
+                    as u16;
+                let addr = format!("{}:{}", addr, port);
                 let addr = addr.parse().map_err(|e| {
                     let msg = format!("Error parsing addr: {}, {}", addr, e);
                     error!("{}", msg);
