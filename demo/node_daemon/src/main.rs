@@ -153,7 +153,7 @@ async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig
             return Ok(zone_config.unwrap());
         }
     }
-    info!("no local zone_config found, try query from name service");
+    info!("no local zone_config file found, try query from name service");
 
     let name_client = NameClient::new();
     let name_info = name_client
@@ -263,17 +263,16 @@ async fn get_node_config(
 }
 
 async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig) -> Result<()> {
-    //etcd_client = create_etcd_client()
-    //system_config.init(etcd_client)
-
-    // 这里的入口只要用local的就可以了，etcd内部自己处理
+    // node_id对应的上，就用nodeid作为访问方式，对应不上就直接连local的etcd
     let node_id = node_identity.node_id.clone();
     let local_endpoint = zone_config
         .etcd_servers
         .iter()
         .find(|&server| server.starts_with(&node_id))
-        .unwrap();
-    let local_endpoint = format!("http://{}:2379", local_endpoint);
+        .map_or_else(
+            || "http://127.0.0.1:2379".to_string(),
+            |endpoint| format!("http://{}:2379", endpoint),
+        );
     let sys_cfg = SystemConfig::new(&vec![local_endpoint])
         .await
         .map_err(|_| {

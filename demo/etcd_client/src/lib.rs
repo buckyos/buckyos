@@ -1,14 +1,12 @@
-use std::error::Error;
-use std::fs::DirEntry;
-use std::path::Path;
+pub use etcd_rs::Member;
 use etcd_rs::{Client, ClientConfig, ClusterOp, Endpoint, KeyValueOp};
 use log::*;
 use serde_json::json;
+use std::fs::DirEntry;
 use std::process::{Child, Command};
 use std::vec;
 use tokio::fs::write;
 use tokio::time::{sleep, Duration};
-pub use etcd_rs::Member;
 
 pub struct EtcdClient {
     pub client: Client,
@@ -84,10 +82,21 @@ impl EtcdClient {
     }
 }
 
-pub fn start_etcd(name: &str, initial_cluster: &str, cluster_token: &str) -> std::io::Result<Child> {
-    let etcd_data_dir = std::env::current_dir().unwrap().join(format!("{}.etcd", name));
+pub fn start_etcd(
+    name: &str,
+    initial_cluster: &str,
+    cluster_token: &str,
+) -> std::io::Result<Child> {
+    let etcd_data_dir = std::env::current_dir()
+        .unwrap()
+        .join(format!("{}.etcd", name));
     let cluster_state = if etcd_data_dir.exists() {
-        if etcd_data_dir.read_dir()?.collect::<Vec<Result<DirEntry, std::io::Error>>>().len() > 0 {
+        if etcd_data_dir
+            .read_dir()?
+            .collect::<Vec<Result<DirEntry, std::io::Error>>>()
+            .len()
+            > 0
+        {
             "existing"
         } else {
             "new"
@@ -121,7 +130,7 @@ pub fn start_etcd(name: &str, initial_cluster: &str, cluster_token: &str) -> std
 pub async fn get_etcd_data_version(
     name: &str,
     url: &str,
-    zone_id: &str
+    zone_id: &str,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let _etcd_child = start_etcd(name, url, zone_id)?;
     sleep(Duration::from_secs(5)).await;
@@ -180,7 +189,7 @@ pub async fn try_restore_etcd(file: &str, url: &str) -> Result<(), Box<dyn std::
 }
 
 // 用etcdctl 生成快照，然后传到backupservice里面去
-pub async fn backup_etcd(url: &str) -> Result<(String), Box<dyn std::error::Error>> {
+pub async fn backup_etcd(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     let name = "default";
     let initial_cluster = format!("{}={}", name, url);
 
@@ -264,7 +273,8 @@ mod tests {
         let url = "http://127.0.0.1:2380";
 
         // 在一个新线程中启动 etcd
-        let handle = thread::spawn(move || start_etcd(name, url, "test").expect("Failed to start etcd"));
+        let handle =
+            thread::spawn(move || start_etcd(name, url, "test").expect("Failed to start etcd"));
 
         // 等待 etcd 启动，期间输出倒计时
         let countdown_time = 5; // 总倒计时时间（秒）
