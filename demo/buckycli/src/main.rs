@@ -1,7 +1,7 @@
 extern crate core;
 
 use bucky_name_service::{DnsTxtCodec, NSProvider, NameInfo};
-use clap::{value_parser, Arg, Command};
+use clap::{value_parser, Arg, ArgMatches, Command};
 use etcd_client::EtcdClient;
 use std::collections::HashMap;
 use std::fs;
@@ -117,22 +117,41 @@ async fn query(name: &str) -> Result<NameInfo, String> {
 }
 
 // 将本地配置写入etcd
-async fn write_config(file_path: &str, key: &str, etcd: &str) -> Result<(), String> {
-    let data = fs::read_to_string(file_path);
-    if data.is_err() {
-        return Err("read file error".to_string());
+async fn write_config(encode_matches: &ArgMatches) -> Result<(), String> {
+    let file_path: Option<&String> = encode_matches.get_one("file");
+    let value: Option<&String> = encode_matches.get_one("value");
+
+    let key: &String = encode_matches.get_one("key").unwrap();
+    let etcd: &String = encode_matches.get_one("etcd").unwrap();
+
+    // 确保 `value` 和 `file` 参数至少有一个
+    if value.is_none() && file_path.is_none() {
+        return Err("Either value or file parameter must be provided".to_string());
     }
+
+    // 确定使用的数据
+    let data = if let Some(val) = value {
+        val.clone()
+    } else if let Some(path) = file_path {
+        match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(_) => return Err("Read file error".to_string()),
+        }
+    } else {
+        unreachable!("One of value or file must be present");
+    };
 
     let etcd_client = EtcdClient::connect(etcd).await;
     if etcd_client.is_err() {
         return Err("connect etcd error".to_string());
     }
 
-    let result = etcd_client.unwrap().set(&key, data.unwrap().as_str()).await;
+    let result = etcd_client.unwrap().set(&key, data.as_str()).await;
     if result.is_err() {
         return Err("put etcd error".to_string());
     }
 
+    println!("write config  to key[{}] success", key);
     Ok(())
 }
 
@@ -227,7 +246,7 @@ async fn main() -> std::result::Result<(), String> {
                 .arg(
                     Arg::new("file")
                         .help("The file to import")
-                        .required(true)
+                        .required(false)
                         .short('f')
                         .long("file"),
                 )
@@ -238,10 +257,15 @@ async fn main() -> std::result::Result<(), String> {
                         .long("key"),
                 )
                 .arg(
-                    Arg::new("etcd")
-                        .help("The etcd server")
+                    Arg::new("value")
+                        .help("Etcd key name")
                         .required(false)
-                        .short('e')
+                        .long("value"),
+                )
+                .arg(
+                    Arg::new("etcd")
+                        .help("The etcd endpoint")
+                        .required(false)
                         .long("etcd")
                         .default_value("http://127.0.0.1:2379"),
                 ),
@@ -397,13 +421,9 @@ async fn main() -> std::result::Result<(), String> {
             }
         }
         Some(("write_config", encode_matches)) => {
-            let file: &String = encode_matches.get_one("file").unwrap();
-            let key: &String = encode_matches.get_one("key").unwrap();
-            let etcd: &String = encode_matches.get_one("etcd").unwrap();
-            if let Err(e) = write_config(file, key, etcd).await {
+            if let Err(e) = write_config(encode_matches).await {
                 println!("{}", e);
             }
-            println!("write config file {} to key[{}] success", file, key);
         }
         Some(("check_etcd_cluster", encode_matches)) => {
             let etcd: &String = encode_matches.get_one("etcd").unwrap();
