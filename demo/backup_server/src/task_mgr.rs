@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use backup_lib::{CheckPointVersion, CheckPointVersionStrategy, FileId, FileInfo, FileServerType, ListOffset, TaskId, TaskInfo, TaskKey, TaskServerType};
+use backup_lib::{CheckPointVersion, CheckPointVersionStrategy, FileId, FileInfo, FileServerType, ListOffset, TaskId, TaskInfo, TaskKey, TaskMgrServer, TaskServerType};
 
 use crate::task_mgr_storage::TaskStorageSqlite;
 
@@ -133,3 +133,5 @@ impl backup_lib::TaskMgr for TaskMgr {
         self.storage.lock().await.get_file_info(zone_id, task_id, file_seq)
     }
 }
+
+impl TaskMgrServer for TaskMgr {}

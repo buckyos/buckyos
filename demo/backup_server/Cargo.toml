@@ -21,3 +21,4 @@ rusqlite = { version = '0.31.0', features = ['bundled', 'blob'] }
 rand = "*"
 async-trait = '0.1.80'
 backup_lib = { path = "../backup_lib", version = "0.1.0"}
+warp = { version = "*" }

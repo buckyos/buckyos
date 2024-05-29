@@ -1,4 +1,4 @@
-use crate::{task_mgr, CheckPointVersion, CheckPointVersionStrategy, ChunkId, ChunkInfo, ChunkMgr, ChunkMgrServer, ChunkServerType, FileId, FileInfo, FileMgr, FileMgrServer, FileServerType, ListOffset, TaskId, TaskInfo, TaskKey, TaskMgr, TaskMgrServer, TaskServerType};
+use crate::{task_mgr, CheckPointVersion, CheckPointVersionStrategy, ChunkId, ChunkInfo, ChunkMgr, ChunkMgrSelector, ChunkMgrServer, ChunkMgrServerSelector, ChunkServerType, FileId, FileInfo, FileMgr, FileMgrSelector, FileMgrServer, FileMgrServerSelector, FileServerType, ListOffset, TaskId, TaskInfo, TaskKey, TaskMgr, TaskMgrSelector, TaskMgrServer, TaskServerType};
 use std::sync::Arc;
 use warp::{Filter, Reply};
 use serde::{Serialize, Deserialize};
@@ -143,7 +143,7 @@ pub struct TaskMgrHttpServer {
 }
 
 impl TaskMgrHttpServer {
-    fn new(task_mgr: Box<dyn TaskMgrServer>) -> Self {
+    pub fn new(task_mgr: Box<dyn TaskMgrServer>) -> Self {
         TaskMgrHttpServer { task_mgr: Arc::new(task_mgr) }
     }
 
@@ -747,6 +747,49 @@ impl TaskMgrServer for TaskMgrHttpClient {
 
 }
 
+pub struct SimpleTaskMgrSelector {
+    server_name: String,
+}
+
+impl SimpleTaskMgrSelector {
+    pub fn new(server_name: &str) -> Self {
+        SimpleTaskMgrSelector {
+            server_name: server_name.to_string(),
+        }
+    }
+}
+
+// #[async_trait::async_trait]
+// impl TaskMgrServerSelector for SimpleTaskMgrSelector {
+//     async fn select(
+//         &self,
+//         task_key: &TaskKey,
+//         check_point_version: CheckPointVersion,
+//         file_hash: &str,
+//     ) -> Result<Box<dyn TaskMgrServer>, Box<dyn std::error::Error + Send + Sync>> {
+//         Ok(Box::new(ChunkMgrHttpClient::new(self.server_name.clone())))
+//     }
+
+//     async fn select_by_name(
+//         &self,
+//         file_server_type: TaskServerType,
+//         server_name: &str,
+//     ) -> Result<Box<dyn TaskMgrServer>, Box<dyn std::error::Error + Send + Sync>> {
+//         Ok(Box::new(TaskMgrHttpClient::new(server_name.to_string())))
+//     }
+// }
+
+#[async_trait::async_trait]
+impl TaskMgrSelector for SimpleTaskMgrSelector {
+    async fn select(
+        &self,
+        task_key: &TaskKey,
+        check_point_version: Option<CheckPointVersion>,
+    ) -> Result<Box<dyn TaskMgr>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Box::new(TaskMgrHttpClient::new(self.server_name.as_str())))
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct AddFileRequest {
     task_server_type: TaskServerType,
@@ -798,7 +841,7 @@ pub struct FileMgrHttpServer {
 }
 
 impl FileMgrHttpServer {
-    fn new(file_mgr: Box<dyn FileMgrServer>) -> Self {
+    pub fn new(file_mgr: Box<dyn FileMgrServer>) -> Self {
         FileMgrHttpServer { file_mgr: Arc::new(file_mgr) }
     }
 
@@ -997,6 +1040,49 @@ impl FileMgr for FileMgrHttpClient {
     }
 }
 
+pub struct SimpleFileMgrSelector {
+    server_name: String,
+}
+
+impl SimpleFileMgrSelector {
+    pub fn new(server_name: &str) -> Self {
+        SimpleFileMgrSelector {
+            server_name: server_name.to_string(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl FileMgrServerSelector for SimpleFileMgrSelector {
+    async fn select(
+        &self,
+        task_key: &TaskKey,
+        check_point_version: CheckPointVersion,
+        file_hash: &str,
+    ) -> Result<Box<dyn FileMgrServer>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Box::new(FileMgrHttpClient::new(self.server_name.clone())))
+    }
+
+    async fn select_by_name(
+        &self,
+        file_server_type: FileServerType,
+        server_name: &str,
+    ) -> Result<Box<dyn FileMgrServer>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Box::new(FileMgrHttpClient::new(server_name.to_string())))
+    }
+}
+
+#[async_trait::async_trait]
+impl FileMgrSelector for SimpleFileMgrSelector {
+    async fn select_by_name(
+        &self,
+        file_server_type: FileServerType,
+        server_name: &str,
+    ) -> Result<Box<dyn FileMgr>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Box::new(FileMgrHttpClient::new(server_name.to_string())))
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct AddChunkRequest {
     file_server_type: FileServerType,
@@ -1180,5 +1266,48 @@ impl ChunkMgr for ChunkMgrHttpClient {
         let response = self.client.post(&url).json(&request).send().await?;
         let chunk = response.bytes().await?.to_vec();
         Ok(chunk)
+    }
+}
+
+pub struct SimpleChunkMgrSelector {
+    server_name: String,
+}
+
+impl SimpleChunkMgrSelector {
+    pub fn new(server_name: &str) -> Self {
+        SimpleChunkMgrSelector {
+            server_name: server_name.to_string(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ChunkMgrServerSelector for SimpleChunkMgrSelector {
+    async fn select(
+        &self,
+        file_hash: &str,
+        chunk_seq: u64,
+        chunk_hash: &str,
+    ) -> Result<Box<dyn ChunkMgrServer>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Box::new(ChunkMgrHttpClient::new(self.server_name.clone())))
+    }
+
+    async fn select_by_name(
+        &self,
+        chunk_server_type: ChunkServerType,
+        server_name: &str,
+    ) -> Result<Box<dyn ChunkMgrServer>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Box::new(ChunkMgrHttpClient::new(server_name.to_string())))
+    }
+}
+
+#[async_trait::async_trait]
+impl ChunkMgrSelector for SimpleChunkMgrSelector {
+    async fn select_by_name(
+        &self,
+        chunk_server_type: ChunkServerType,
+        server_name: &str,
+    ) -> Result<Box<dyn ChunkMgr>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Box::new(ChunkMgrHttpClient::new(server_name.to_string())))
     }
 }
