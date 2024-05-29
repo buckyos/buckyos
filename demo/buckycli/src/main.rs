@@ -116,6 +116,26 @@ async fn query(name: &str) -> Result<NameInfo, String> {
     Ok(name_info)
 }
 
+// 将本地配置写入etcd
+async fn write_config(file_path: &str, key: &str, etcd: &str) -> Result<(), String> {
+    let data = fs::read_to_string(file_path);
+    if data.is_err() {
+        return Err("read file error".to_string());
+    }
+
+    let etcd_client = EtcdClient::connect(etcd).await;
+    if etcd_client.is_err() {
+        return Err("connect etcd error".to_string());
+    }
+
+    let result = etcd_client.unwrap().set(&key, data.unwrap().as_str()).await;
+    if result.is_err() {
+        return Err("put etcd error".to_string());
+    }
+
+    Ok(())
+}
+
 async fn import_node_config(file_path: &str, etcd: &str) -> Result<(), String> {
     let file = tokio::fs::read(file_path)
         .await
@@ -132,7 +152,6 @@ async fn import_node_config(file_path: &str, etcd: &str) -> Result<(), String> {
             .await
             .map_err(|_e| "put etcd error".to_string())?;
     }
-
     Ok(())
 }
 
@@ -192,6 +211,31 @@ async fn main() -> std::result::Result<(), String> {
                         .required(true)
                         .short('f')
                         .long("file"),
+                )
+                .arg(
+                    Arg::new("etcd")
+                        .help("The etcd server")
+                        .required(false)
+                        .short('e')
+                        .long("etcd")
+                        .default_value("http://127.0.0.1:2379"),
+                ),
+        )
+        .subcommand(
+            Command::new("write_config")
+                .about("Import the zone configuration")
+                .arg(
+                    Arg::new("file")
+                        .help("The file to import")
+                        .required(true)
+                        .short('f')
+                        .long("file"),
+                )
+                .arg(
+                    Arg::new("key")
+                        .help("Etcd key name")
+                        .required(true)
+                        .long("key"),
                 )
                 .arg(
                     Arg::new("etcd")
@@ -351,6 +395,15 @@ async fn main() -> std::result::Result<(), String> {
             if let Err(e) = import_node_config(file, etcd).await {
                 println!("{}", e);
             }
+        }
+        Some(("write_config", encode_matches)) => {
+            let file: &String = encode_matches.get_one("file").unwrap();
+            let key: &String = encode_matches.get_one("key").unwrap();
+            let etcd: &String = encode_matches.get_one("etcd").unwrap();
+            if let Err(e) = write_config(file, key, etcd).await {
+                println!("{}", e);
+            }
+            println!("write config file {} to key[{}] success", file, key);
         }
         Some(("check_etcd_cluster", encode_matches)) => {
             let etcd: &String = encode_matches.get_one("etcd").unwrap();
