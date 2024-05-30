@@ -9,6 +9,7 @@ mod proxy;
 mod service;
 mod tunnel;
 mod log_util;
+mod endpoint;
 
 #[macro_use]
 extern crate log;

@@ -14,11 +14,9 @@ simplelog = "*"
 thiserror = "*"
 tokio = { version = "*", features = ["full"] }
 async-trait = "*"
-etcd_client = { path = "../etcd_client" }
 etcd-rs = "*"
 reqwest = {version = "*", default-features = false, features = ["json", "rustls-tls"]}
 tide = "*"
-name_client = { path = "../name_client" }
 regex = "*"
 sha2 = {version = '0.10.8'}
 base58 = '0.2.0'
@@ -27,3 +25,8 @@ lazy_static = "*"
 async-recursion = "*"
 version-compare = "*"
 rusqlite = { version = '0.31.0', features = ['bundled', 'blob'] }
+
+
+etcd_client = { path = "../etcd_client" }
+name_client = { path = "../name_client" }
+gateway = { path = "../gateway"}

@@ -28,6 +28,7 @@ use crate::run_item::*;
 use crate::service_mgr::*;
 use crate::system_config::*;
 use name_client::NameClient;
+use gateway::DeviceEndPoint;
 
 use thiserror::Error;
 
@@ -262,6 +263,49 @@ async fn get_node_config(
     // ));
 }
 
+//start gateway for etcd cluster
+async fn start_gateway_by_zone_config(zone_config: &ZoneConfig,current_node_id:&str) -> Result<()> {
+    //get gateway config from zone_config
+    let mut have_wan_node = false;
+    let mut have_lan_node = false;
+    let mut this_node_is_lan = false;
+    let mut lan_nodes = vec![];
+    let mut wan_nodes = vec![];
+    for etcd_server in zone_config.etcd_servers.iter() {
+        let server_ep = DeviceEndPoint::from_str(etcd_server).map_err(|err| {return NodeDaemonErrors::ParserConfigError(err)})?;
+        if server_ep.nat_id.is_some() {
+            if server_ep.device_name == current_node_id {
+                this_node_is_lan = true;
+            } else {
+                lan_nodes.push(server_ep);
+            }
+            have_lan_node = true;
+        } else {
+            if server_ep.device_name == current_node_id {
+                this_node_is_lan = false;
+            } else {
+                wan_nodes.push(server_ep);
+            }
+            have_wan_node = true;
+        }
+    }
+
+    if have_wan_node == have_lan_node {
+        if this_node_is_lan {
+            //TODO:start gateway, and register on WAN nodes and start passive port forward
+            warn!("start gateway, and register on WAN nodes and start passive port forward")
+        } else {
+            //TODO:start gateway, and start port forward to LAN nodes
+            warn!("start gateway, and start port forward to LAN nodes")
+        }
+  
+    } else {
+        warn!("all node in some NAT, no gateway needed!");
+    }
+    
+    Ok(())
+}
+
 async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig) -> Result<()> {
     // node_id对应的上，就用nodeid作为访问方式，对应不上就直接连local的etcd
     let node_id = node_identity.node_id.clone();
@@ -358,6 +402,14 @@ async fn main() -> std::result::Result<(), String> {
         String::from("looking zone config failed!")
     })?;
     info!("zone config: {:?}", zone_config);
+
+    start_gateway_by_zone_config(&zone_config,&node_identity.node_id.as_str())
+        .await
+        .map_err(|err| {
+            error!("start gateway by zone config failed!");
+            return String::from("start gateway by zone config failed!");
+        })?;
+
 
     //检查etcd状态
     let etcd_state = check_etcd_by_zone_config(&zone_config, &node_identity)
