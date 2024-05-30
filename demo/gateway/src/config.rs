@@ -33,9 +33,9 @@ use std::sync::Arc;
 */
 
 pub struct GlobalConfig {
-    device_id: String,
-    addr_type: PeerAddrType,
-    tunnel_server_port: u16,
+    pub device_id: String,
+    pub addr_type: PeerAddrType,
+    pub tunnel_server_port: u16,
 }
 
 impl Default for GlobalConfig {

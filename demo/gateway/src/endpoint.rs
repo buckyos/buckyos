@@ -17,9 +17,9 @@ impl DeviceEndPoint {
         let mut parts = s.split('@');
         let device_name = parts.next().unwrap().to_string();
         let mut port = None;
-        let mut protocol = None;
+        let mut protocol ;
         let mut nat_id = None;
-        if let Some(device_name) = device_name.strip_prefix("tcp://") {
+        if let Some(_device_name) = device_name.strip_prefix("tcp://") {
             protocol = Some(Protocol::TCP);
         } else {
             protocol = Some(Protocol::TCP);

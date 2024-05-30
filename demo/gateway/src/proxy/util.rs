@@ -4,7 +4,7 @@ use fast_socks5::ReplyError;
 use std::net::SocketAddr;
 use tokio::io::AsyncWriteExt;
 
-use crate::GatewayResult;
+use crate::error::GatewayResult;
 
 pub struct Socks5Util {}
 
