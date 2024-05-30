@@ -13,7 +13,7 @@
     ],
     "service": [{
         "block": "upstream",
-        "type": "tcp",
+        "protocol": "tcp",
         "addr": "127.0.0.1",
         "port": 1008
     }, {

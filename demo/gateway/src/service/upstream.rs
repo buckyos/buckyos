@@ -8,30 +8,30 @@ use std::sync::{Arc, Mutex};
 use tokio::net::TcpStream;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpstreamServiceType {
+pub enum UpstreamServiceProtocol {
     Tcp,
     Udp,
     Http,
 }
 
-impl UpstreamServiceType {
+impl UpstreamServiceProtocol {
     pub fn as_str(&self) -> &'static str {
         match self {
-            UpstreamServiceType::Tcp => "tcp",
-            UpstreamServiceType::Udp => "udp",
-            UpstreamServiceType::Http => "http",
+            UpstreamServiceProtocol::Tcp => "tcp",
+            UpstreamServiceProtocol::Udp => "udp",
+            UpstreamServiceProtocol::Http => "http",
         }
     }
 }
 
-impl FromStr for UpstreamServiceType {
+impl FromStr for UpstreamServiceProtocol {
     type Err = GatewayError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "tcp" => Ok(UpstreamServiceType::Tcp),
-            "udp" => Ok(UpstreamServiceType::Udp),
-            "http" => Ok(UpstreamServiceType::Http),
+            "tcp" => Ok(UpstreamServiceProtocol::Tcp),
+            "udp" => Ok(UpstreamServiceProtocol::Udp),
+            "http" => Ok(UpstreamServiceProtocol::Http),
             _ => Err(GatewayError::InvalidParam("type".to_owned())),
         }
     }
@@ -40,7 +40,7 @@ impl FromStr for UpstreamServiceType {
 #[derive(Clone, Debug)]
 struct UpstreamService {
     addr: SocketAddr,
-    service_type: UpstreamServiceType,
+    protocol: UpstreamServiceProtocol,
 }
 
 #[derive(Clone)]
@@ -85,34 +85,40 @@ impl UpstreamManager {
         let port = value["port"].as_u64().ok_or(GatewayError::InvalidConfig(
             "Invalid upstream block config: port".to_owned(),
         ))? as u16;
-        let service_type = value["type"].as_str().ok_or(GatewayError::InvalidConfig(
-            "Invalid upstream block config: type".to_owned(),
-        ))?;
+        let protocol = value["protocol"]
+            .as_str()
+            .ok_or(GatewayError::InvalidConfig(
+                "Invalid upstream block config: type".to_owned(),
+            ))?;
 
-        let service_type = UpstreamServiceType::from_str(service_type)?;
+        let protocol = UpstreamServiceProtocol::from_str(protocol)?;
 
         info!(
             "New upstream service: {}:{} type: {}",
             addr,
             port,
-            service_type.as_str()
+            protocol.as_str()
         );
 
         let service = UpstreamService {
             addr: SocketAddr::new(addr, port),
-            service_type,
+            protocol,
         };
         self.services.lock().unwrap().push(service);
 
         Ok(())
     }
 
-    fn get_service(&self, port: u16, service_type: UpstreamServiceType) -> Option<UpstreamService> {
+    fn get_service(
+        &self,
+        port: u16,
+        protocol: UpstreamServiceProtocol,
+    ) -> Option<UpstreamService> {
         let services = self.services.lock().unwrap();
         for service in services.iter() {
-            // info!("Service item: {} {}", service.addr.port(), service_type.as_str());
-            if service.addr.port() == port && service.service_type == service_type {
-                // info!("Got service: {} {}", service.addr.port(), service_type.as_str());
+            // info!("Service item: {} {}", service.addr.port(), protocol.as_str());
+            if service.addr.port() == port && service.protocol == protocol {
+                // info!("Got service: {} {}", service.addr.port(), protocol.as_str());
                 return Some(service.clone());
             }
         }
@@ -121,7 +127,7 @@ impl UpstreamManager {
     }
 
     pub async fn bind_tunnel(&self, tunnel: DataTunnelInfo) -> GatewayResult<()> {
-        let service = self.get_service(tunnel.port, UpstreamServiceType::Tcp);
+        let service = self.get_service(tunnel.port, UpstreamServiceProtocol::Tcp);
         if service.is_none() {
             let msg = format!("No upstream service found for port {}", tunnel.port);
             return Err(GatewayError::UpstreamNotFound(msg));
@@ -135,11 +141,11 @@ impl UpstreamManager {
         service: UpstreamService,
         tunnel: DataTunnelInfo,
     ) -> GatewayResult<()> {
-        match service.service_type {
-            UpstreamServiceType::Tcp | UpstreamServiceType::Http => {
+        match service.protocol {
+            UpstreamServiceProtocol::Tcp | UpstreamServiceProtocol::Http => {
                 tokio::spawn(Self::run_tcp_forward(tunnel, service));
             }
-            UpstreamServiceType::Udp => {
+            UpstreamServiceProtocol::Udp => {
                 let msg = format!("Udp tunnel not supported yet {}", tunnel.port);
                 error!("{}", msg);
                 return Err(GatewayError::NotSupported(msg));
@@ -212,7 +218,7 @@ impl PeerManagerEvents for UpstreamManager {
             info.device_id, info.port
         );
 
-        let service = self.get_service(info.port, UpstreamServiceType::Tcp);
+        let service = self.get_service(info.port, UpstreamServiceProtocol::Tcp);
         if service.is_none() {
             let msg = format!("No upstream service found for port {}", info.port);
             info!("{}", msg);

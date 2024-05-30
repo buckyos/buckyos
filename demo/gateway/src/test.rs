@@ -1,8 +1,9 @@
 use crate::gateway::Gateway;
 
 use std::net::SocketAddr;
+use std::ptr::read;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio_socks::tcp::Socks5Stream;
 
 const ETCD1_CONFIG: &str = r#"
@@ -21,7 +22,7 @@ const ETCD1_CONFIG: &str = r#"
     ],
     "service": [{
         "block": "upstream",
-        "type": "tcp",
+        "protocol": "tcp",
         "addr": "127.0.0.1",
         "port": 1008
     }, {
@@ -49,7 +50,7 @@ const GATEWAY_CONFIG: &str = r#"
     ],
     "service": [{
         "block": "upstream",
-        "type": "tcp",
+        "protocol": "tcp",
         "addr": "127.0.0.1",
         "port": 1009
     }, {
@@ -57,6 +58,14 @@ const GATEWAY_CONFIG: &str = r#"
         "addr": "127.0.0.1",
         "port": 1080,
         "type": "socks5"
+    }, {
+        "block": "proxy",
+        "type": "forward",
+        "protocol": "tcp",
+        "addr": "127.0.0.1",
+        "port": 1088,
+        "target_device": "etcd1",
+        "target_port": 1008
     }]
 }
 "#;
@@ -96,6 +105,7 @@ async fn start_gateway() {
         }
     });
 }
+
 
 pub async fn test_with_socks5(proxy_port: u16, upstream_addr: &str) {
     let proxy_addr = format!("127.0.0.1:{}", proxy_port)
