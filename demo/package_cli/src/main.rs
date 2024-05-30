@@ -17,6 +17,8 @@ use tar::Builder;
 use time::macros::format_description;
 use toml::Value;
 
+const PACKAGE_UPLOAD_URL: &str = "http://47.106.164.184/package/upload";
+
 /// 命令行接口定义
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -36,7 +38,7 @@ enum Commands {
         #[arg(long, default_value = ".")]
         path: String,
         #[arg(long)]
-        server: String,
+        server: Option<String>,
     },
 }
 
@@ -87,7 +89,8 @@ fn main() -> io::Result<()> {
         }
         Commands::Publish { path, server } => {
             pack(&path)?;
-            publish(&path, &server)?;
+            let server_url = server.as_deref().unwrap_or(PACKAGE_UPLOAD_URL);
+            publish(&path, server_url)?;
         }
     }
 

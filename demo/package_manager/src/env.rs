@@ -24,6 +24,8 @@ use crate::error::*;
 use crate::parser::*;
 use crate::version_util;
 
+const PACKAGE_SERVICE_ADDR: &str = "http://47.106.164.184";
+
 /*
 PackageEnv是一个包管理的环境，下载，安装，加载都在某个env下面进行
 一般来说，一个env对应一个工作目录
@@ -146,8 +148,8 @@ impl PackageEnv {
             let target_pkg_file = pkg_cache_dir.join(&target_name);
             // TODO 这里其实target_install_file存在的话也不应该下载
             let url = format!(
-                "http://127.0.0.1:3030/download/{}?version={}",
-                lock_info.name, lock_info.version
+                "{}/package/download/{}?version={}",
+                PACKAGE_SERVICE_ADDR, lock_info.name, lock_info.version
             );
             let target_tmp_name = format!("{}.tmp", target_name);
             let target_pkg_tmp_file = pkg_cache_dir.join(&target_tmp_name);
@@ -844,7 +846,7 @@ impl PackageEnv {
             fs::create_dir_all(parent_dir)?;
         }
         //下载index.json
-        let index_url = "http://127.0.0.1:3030/package_index";
+        let index_url = format!("{}/package/index", PACKAGE_SERVICE_ADDR);
         let temp_file = index_file_path.with_file_name("index.json.tmp");
         let downloader = downloader::FakeDownloader::new();
 
@@ -854,7 +856,7 @@ impl PackageEnv {
         // 启动下载任务，并传递oneshot发送端到回调函数
         downloader
             .download(
-                index_url,
+                &index_url,
                 &temp_file,
                 Some(Box::new(move |result: DownloadResult| {
                     let _ = tx.send(result);
