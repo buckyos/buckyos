@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tide::{Request, Response, StatusCode};
 use time::macros::format_description;
 
-const DEFAULT_SERVER_PORT: &str = "3030";
+const DEFAULT_SERVER_PORT: &str = "13030";
 
 #[derive(Deserialize, Debug)]
 struct UploadPackageMeta {
@@ -459,8 +459,7 @@ fn main() -> tide::Result<()> {
         app.at("/upload").post(PackageUploadServer::save_package);
         app.at("/download/:package_name")
             .get(PackageUploadServer::download_package);
-        app.at("/package_index")
-            .get(PackageUploadServer::download_index);
+        app.at("/index").get(PackageUploadServer::download_index);
 
         info!("Starting server at http://{}", server_addr);
         app.listen(server_addr).await?;
