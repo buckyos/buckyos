@@ -1,5 +1,4 @@
 use rand::Rng;
-use tokio::task::JoinHandle;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -30,6 +29,20 @@ fn generate_random_array() -> [u8; 1024] {
     data
 }
 
+async fn read_echo_data(mut reader: tokio::net::tcp::OwnedReadHalf, data: &[u8]) -> TestResult<()> {
+    let mut buf = vec![0u8; data.len()];
+    reader.read_exact(&mut buf).await.map_err(|e| {
+        let msg = format!("Error reading from echo server: {}", e);
+        error!("{}", msg);
+        TestError::Io(e)
+    })?;
+    assert_eq!(buf, data);
+
+    info!("Read echo data success!");
+
+    Ok(())
+}
+
 pub async fn echo_with_socks5(proxy_port: u16, upstream_addr: &str) -> TestResult<()> {
     info!("Will echo via socks5 proxy, proxy_port={}, upstream_addr={}", proxy_port, upstream_addr);
 
@@ -52,24 +65,11 @@ pub async fn echo_with_socks5(proxy_port: u16, upstream_addr: &str) -> TestResul
         proxy_addr, target_addr
     );
 
-    let (mut reader, mut writer) = stream.into_inner().into_split();
+    let (reader, mut writer) = stream.into_inner().into_split();
 
     // write random bytes and then recv them back
     // let data = b"hello world";
     let data = generate_random_array();
-
-    let read_task: JoinHandle<TestResult<()>> = tokio::spawn(async move {
-        let mut buf = vec![0u8; data.len()];
-        reader.read_exact(&mut buf).await.map_err(|e| {
-            let msg = format!("Error reading from socks5 proxy: {}", e);
-            error!("{}", msg);
-            TestError::Io(e)
-        })?;
-        assert_eq!(buf, data);
-
-        info!("Read echo data success!");
-        Ok(())
-    });
 
     writer.write_all(&data).await.map_err(|e| {
         let msg = format!("Error writing to socks5 proxy: {}", e);
@@ -77,52 +77,75 @@ pub async fn echo_with_socks5(proxy_port: u16, upstream_addr: &str) -> TestResul
         e
     })?;
 
-    info!("Write echo data success!");
+    info!("Write echo data via socks5 proxy success!");
 
     // wait for read task with timeout
-    match tokio::time::timeout(tokio::time::Duration::from_secs(5), read_task)
+    match tokio::time::timeout(tokio::time::Duration::from_secs(5), read_echo_data(reader, &data))
         .await {
-        Ok(Ok(_)) => Ok(()),
+        Ok(Ok(_)) => {
+            info!("Test socks5 echo success!");
+            Ok(())
+        }
         Ok(Err(e)) => {
-            error!("Error in read task: {}", e);
+            error!("Error in socks5 echo read task: {}", e);
             Err(TestError::Failed)
         }
         Err(e) => {
-            let msg = format!("Timeout waiting for read task: {}", e);
+            let msg = format!("Timeout waiting for socks5 echo read task: {}", e);
             error!("{}", msg);
             Err(TestError::Timeout(msg.to_owned()))
         }
     }
 }
 
-pub async fn echo_with_forward(forward_addr: &str) {
+pub async fn echo_with_forward(forward_addr: &str) -> TestResult<()> {
     info!("Will echo via forward proxy, forward_addr={}", forward_addr);
 
     let addr = forward_addr
         .parse::<SocketAddr>()
         .expect("Invalid forward address");
 
-    let stream = TcpStream::connect(addr).await.unwrap();
+    let stream = TcpStream::connect(addr).await.map_err(|e| {
+        let msg = format!("Error connecting to forward proxy: {}", e);
+        error!("{}", msg);
+        TestError::Io(e)
+    })?;
 
-    let (mut reader, mut writer) = stream.into_split();
+    let (reader, mut writer) = stream.into_split();
     // write random bytes and then recv them back
     // let data = b"hello world";
     let data = generate_random_array();
 
-    let read_task = tokio::spawn(async move {
-        let mut buf = vec![0u8; data.len()];
-        reader.read_exact(&mut buf).await.unwrap();
-        assert_eq!(buf, data);
+    writer.write_all(&data).await.map_err(|e| {
+        let msg = format!("Error writing to forward proxy: {}", e);
+        error!("{}", msg);
+        e
+    })?;
 
-        info!("Read echo data success!");
-    });
+    info!("Write echo data via forward proxy success!");
 
-    writer.write_all(&data).await.unwrap();
-    info!("Write echo data success!");
+    writer.shutdown().await.map_err(|e| {
+        let msg = format!("Error shutting down forward proxy writer: {}", e);
+        error!("{}", msg);
+        e
+    })?;
 
     // wait for read task with timeout
-    tokio::time::timeout(tokio::time::Duration::from_secs(5), read_task)
+    match tokio::time::timeout(tokio::time::Duration::from_secs(5), read_echo_data(reader, &data))
         .await
-        .unwrap()
-        .unwrap();
+        {
+            Ok(Ok(_)) => {
+                info!("Test forward echo success!");
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                error!("Error in forward echo read task: {}", e);
+                Err(TestError::Failed)
+            }
+            Err(e) => {
+                let msg = format!("Timeout waiting for forward echo read task: {}", e);
+                error!("{}", msg);
+                Err(TestError::Timeout(msg.to_owned()))
+            }
+        }
 }

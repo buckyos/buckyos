@@ -29,7 +29,7 @@ fn start_echo_loop_with_socks5_to_etcd1() {
 fn start_echo_loop_with_forward_to_etcd1() {
     tokio::spawn(async move {
         loop {
-            crate::util::echo_with_forward("127.0.0.1:1088").await;
+            let _ = crate::util::echo_with_forward("127.0.0.1:1088").await;
 
             // sleep 5s
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -41,7 +41,7 @@ pub async fn run() {
     start_echo_server().await;
 
     // client -> gateway -> etcd1 -> upstream
-    start_echo_loop_with_socks5_to_etcd1();
+    // start_echo_loop_with_socks5_to_etcd1();
 
     // client -> gateway -> etcd1 -> upstream
     start_echo_loop_with_forward_to_etcd1();
