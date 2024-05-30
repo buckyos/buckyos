@@ -93,9 +93,12 @@ impl TcpForwardProxy {
         loop {
             match listener.accept().await {
                 Ok((socket, addr)) => {
-                    if let Err(e) = self.on_new_connection(socket, addr).await {
-                        error!("Error processing socks5 connection: {}", e);
-                    }
+                    let this = self.clone();
+                    tokio::task::spawn(async move {
+                        if let Err(e) = this.on_new_connection(socket, addr).await {
+                            error!("Error processing socks5 connection: {}", e);
+                        }
+                    });
                 }
                 Err(err) => {
                     error!("Error accepting connection: {}", err);
@@ -106,7 +109,7 @@ impl TcpForwardProxy {
 
     async fn on_new_connection(&self, mut conn: TcpStream, addr: SocketAddr) -> GatewayResult<()> {
         info!(
-            "Tcp forward connection from {} to {}:{}",
+            "Recv tcp forward connection from {} to {}:{}",
             addr, self.config.target_device, self.config.target_port
         );
 
@@ -121,7 +124,7 @@ impl TcpForwardProxy {
             }
         };
 
-        let (read, write) = tokio::io::copy_bidirectional(&mut tunnel, &mut conn)
+        let (read, write) = tokio::io::copy_bidirectional(&mut conn, &mut tunnel)
             .await
             .map_err(|e| {
                 let msg = format!(

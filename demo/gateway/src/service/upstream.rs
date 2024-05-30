@@ -1,6 +1,6 @@
 use crate::error::*;
 use crate::peer::{OnNewTunnelHandleResult, PeerManagerEvents, PeerManagerEventsRef};
-use crate::tunnel::DataTunnelInfo;
+use crate::tunnel::{DataTunnelInfo, TunnelCombiner};
 
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
@@ -43,7 +43,6 @@ struct UpstreamService {
     service_type: UpstreamServiceType,
 }
 
-
 #[derive(Clone)]
 pub struct UpstreamManager {
     services: Arc<Mutex<Vec<UpstreamService>>>,
@@ -75,22 +74,29 @@ impl UpstreamManager {
 
         let addr: IpAddr = value["addr"]
             .as_str()
-            .ok_or(GatewayError::InvalidConfig("Invalid upstream block config: addr".to_owned()))?
+            .ok_or(GatewayError::InvalidConfig(
+                "Invalid upstream block config: addr".to_owned(),
+            ))?
             .parse()
             .map_err(|e| {
                 let msg = format!("Error parsing addr: {}", e);
                 GatewayError::InvalidConfig(msg)
             })?;
-        let port = value["port"]
-            .as_u64()
-            .ok_or(GatewayError::InvalidConfig("Invalid upstream block config: port".to_owned()))? as u16;
-        let service_type = value["type"]
-            .as_str()
-            .ok_or(GatewayError::InvalidConfig("Invalid upstream block config: type".to_owned()))?;
+        let port = value["port"].as_u64().ok_or(GatewayError::InvalidConfig(
+            "Invalid upstream block config: port".to_owned(),
+        ))? as u16;
+        let service_type = value["type"].as_str().ok_or(GatewayError::InvalidConfig(
+            "Invalid upstream block config: type".to_owned(),
+        ))?;
 
         let service_type = UpstreamServiceType::from_str(service_type)?;
 
-        info!("New upstream service: {}:{} type: {}", addr, port, service_type.as_str());
+        info!(
+            "New upstream service: {}:{} type: {}",
+            addr,
+            port,
+            service_type.as_str()
+        );
 
         let service = UpstreamService {
             addr: SocketAddr::new(addr, port),
@@ -124,7 +130,11 @@ impl UpstreamManager {
         self.bind_tunnel_impl(service.unwrap(), tunnel).await
     }
 
-    async fn bind_tunnel_impl(&self, service: UpstreamService, tunnel: DataTunnelInfo) -> GatewayResult<()> {
+    async fn bind_tunnel_impl(
+        &self,
+        service: UpstreamService,
+        tunnel: DataTunnelInfo,
+    ) -> GatewayResult<()> {
         match service.service_type {
             UpstreamServiceType::Tcp | UpstreamServiceType::Http => {
                 tokio::spawn(Self::run_tcp_forward(tunnel, service));
@@ -140,7 +150,7 @@ impl UpstreamManager {
     }
 
     async fn run_tcp_forward(
-        mut tunnel: DataTunnelInfo,
+        tunnel: DataTunnelInfo,
         service: UpstreamService,
     ) -> GatewayResult<()> {
         // first create tcp stream to upstream service
@@ -158,8 +168,20 @@ impl UpstreamManager {
             tunnel.port, service.addr
         );
 
-        let (mut reader, mut writer) = stream.split();
+        let mut btunnel = TunnelCombiner::new(tunnel.tunnel_reader, tunnel.tunnel_writer);
 
+        let (read, write) = tokio::io::copy_bidirectional(&mut btunnel, &mut stream)
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "Error forward tunnel to upstream service: {} {}",
+                    service.addr, e
+                );
+                error!("{}", msg);
+                GatewayError::Io(e)
+            })?;
+
+        /*
         // bind reader and writer to tunnel.tunnel_writer and tunnel.tunnel_reader
         let stream_to_tunnel = tokio::io::copy(&mut reader, &mut tunnel.tunnel_writer);
         let tunnel_to_stream = tokio::io::copy(&mut tunnel.tunnel_reader, &mut writer);
@@ -172,20 +194,23 @@ impl UpstreamManager {
             error!("{}", msg);
             GatewayError::Io(e)
         })?;
+        */
 
         info!(
-            "Tunnel {} bound to upstream service {} finished",
-            tunnel.port, service.addr
+            "Tunnel {} bound to upstream service {} finished, {} bytes read, {} bytes written",
+            tunnel.port, service.addr, read, write
         );
 
         Ok(())
     }
 }
 
-
 impl PeerManagerEvents for UpstreamManager {
     fn on_recv_data_tunnel(&self, info: DataTunnelInfo) -> GatewayResult<OnNewTunnelHandleResult> {
-        info!("Will handle data tunnel for upstream manager: {}, {}", info.device_id, info.port);
+        info!(
+            "Will handle data tunnel for upstream manager: {}, {}",
+            info.device_id, info.port
+        );
 
         let service = self.get_service(info.port, UpstreamServiceType::Tcp);
         if service.is_none() {
@@ -196,7 +221,7 @@ impl PeerManagerEvents for UpstreamManager {
                 handled: false,
                 info: Some(info),
             };
-    
+
             return Ok(ret);
         }
 
