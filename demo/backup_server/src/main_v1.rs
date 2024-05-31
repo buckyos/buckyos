@@ -2,7 +2,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use backup_lib::{TaskMgrHttpServer, SimpleTaskMgrSelector, FileMgrHttpServer, SimpleFileMgrSelector, ChunkMgrHttpServer, SimpleChunkMgrSelector};
 
-use crate::{chunk_mgr::{self, ChunkMgr}, chunk_mgr_storage::ChunkStorageSqlite, file_mgr::{self, FileMgr}, file_mgr_storage::FileStorageSqlite, task_mgr::{self, TaskMgr}, task_mgr_storage::TaskStorageSqlite};
+use crate::{chunk_mgr::ChunkMgr, chunk_mgr_storage::ChunkStorageSqlite, file_mgr::FileMgr, file_mgr_storage::FileStorageSqlite, task_mgr::TaskMgr, task_mgr_storage::TaskStorageSqlite};
 use warp::Filter;
 
 #[derive(Deserialize)]
@@ -10,6 +10,7 @@ struct Config {
     save_path: String,
     interface: String,
     port: u16,
+    access_url: String,
 }
 
 fn init_log_config() {
@@ -55,8 +56,6 @@ pub async fn main_v1() -> tide::Result<()> {
         })
         .unwrap();
 
-    let base_url = format!("http://{}:{}", config.interface, config.port);
-
     let data_path = format!("{}/data", config.save_path);
     let tmp_path = format!("{}/tmp", config.save_path);
     let task_mgr_db_path = format!("{}/task_mgr.db", config.save_path);
@@ -70,9 +69,9 @@ pub async fn main_v1() -> tide::Result<()> {
     let file_storage = FileStorageSqlite::new_with_path(file_mgr_db_path.as_str()).expect("create file storage failed");
     let chunk_storage = ChunkStorageSqlite::new_with_path(chunk_mgr_db_path.as_str()).expect("create chunk storage failed");
 
-    let chunk_mgr_selector = SimpleChunkMgrSelector::new(base_url.as_str());
-    let file_mgr_selector = SimpleFileMgrSelector::new(base_url.as_str());
-    let task_mgr_selector = SimpleTaskMgrSelector::new(base_url.as_str());
+    let chunk_mgr_selector = SimpleChunkMgrSelector::new(config.access_url.as_str());
+    let file_mgr_selector = SimpleFileMgrSelector::new(config.access_url.as_str());
+    let task_mgr_selector = SimpleTaskMgrSelector::new(config.access_url.as_str());
 
     let chunk_mgr = ChunkMgr::new(chunk_storage, std::path::PathBuf::from(data_path.clone()), std::path::PathBuf::from(tmp_path.clone()));
     let file_mgr = FileMgr::new(file_storage, std::sync::Arc::new(chunk_mgr_selector));
