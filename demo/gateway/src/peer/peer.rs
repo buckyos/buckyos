@@ -60,7 +60,7 @@ impl PeerClient {
         let local_name = local_name.unwrap();
         let remote_name = remote_name.unwrap();
 
-        if local_name.addr_type == PeerAddrType::LAN && remote_name.addr_type == PeerAddrType::WAN {
+        if local_name.addr_type.unwrap() == PeerAddrType::LAN && remote_name.addr_type.unwrap() == PeerAddrType::WAN {
             self.tunnel_manager.start_control_tunnel();
         }
 

@@ -34,7 +34,7 @@ impl TunnelBuilder {
     pub async fn build_control_tunnel(&self) -> GatewayResult<ControlTunnel> {
         let remote = self.resolve_remote().await?;
 
-        let tunnel = TcpTunnel::build(remote.addr).await?;
+        let tunnel = TcpTunnel::build(remote.addr().unwrap()).await?;
         let (reader, mut writer) = tunnel.split();
 
         let init_pkg = ControlPackage::new(
@@ -68,7 +68,7 @@ impl TunnelBuilder {
         assert!(port > 0);
 
         let remote = self.resolve_remote().await?;
-        let tunnel = TcpTunnel::build(remote.addr).await?;
+        let tunnel = TcpTunnel::build(remote.addr().unwrap()).await?;
         let (reader, mut writer) = tunnel.split();
 
         let build_pkg = ControlPackage::new(
