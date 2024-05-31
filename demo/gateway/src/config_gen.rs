@@ -42,9 +42,9 @@ use std::str::FromStr;
 */
 pub struct KnownDevice {
     pub id: String,
-    pub addr: String,
-    pub port: u16,
-    pub addr_type: PeerAddrType,
+    pub addr: Option<String>,
+    pub port: Option<u16>,
+    pub addr_type: Option<PeerAddrType>,
 
 }
 
@@ -94,20 +94,19 @@ impl ConfigGen {
         }
     }
 
-    pub fn add_device(&mut self, id: impl Into<String>, addr: impl Into<String>, mut port: u16, addr_type: PeerAddrType) {
-        let addr = addr.into();
-        assert!(IpAddr::from_str(&addr).is_ok());
-
-        if port == 0 {
-            port = TUNNEL_SERVER_DEFAULT_PORT;
-        }
+    pub fn add_device(&mut self, id: impl Into<String>, addr: Option<String>, port: Option<u16>, addr_type: Option<PeerAddrType>) {
+        let addr = addr.map(|a| {
+            assert!(IpAddr::from_str(&a).is_ok());
+            a
+        });
+    
 
         let id = id.into();
         assert!(self.known_device.iter().find(|d| d.id == id).is_none());
 
         self.known_device.push(KnownDevice {
             id,
-            addr: addr.into(),
+            addr,
             port,
             addr_type,
         })
@@ -117,7 +116,6 @@ impl ConfigGen {
         let addr = addr.into();
         assert!(IpAddr::from_str(&addr).is_ok());
         assert!(port > 0);
-        assert!(self.known_device.iter().find(|d| d.addr == addr && d.port == port).is_none());
 
         self.socks5_proxy.push(Socks5Proxy {
             addr,
@@ -130,7 +128,6 @@ impl ConfigGen {
         assert!(IpAddr::from_str(&addr).is_ok());
         assert!(port > 0);
         assert!(target_port > 0);
-        assert!(self.known_device.iter().find(|d| d.addr == addr && d.port == port).is_none());
 
         self.forward_proxy.push(ForwardProxy {
             protocol: protocol.into(),
@@ -154,45 +151,67 @@ impl ConfigGen {
     }
 
     pub fn gen(&self) -> String {
+        
+        let mut config = serde_json::Map::new();
+        config.insert("device_id".to_owned(), serde_json::Value::String(self.config.device_id.clone()));
+        config.insert("addr_type".to_owned(), serde_json::Value::String(self.config.addr_type.as_str().to_owned()));
+        config.insert("tunnel_server_port".to_owned(), serde_json::Value::Number(serde_json::Number::from(self.config.tunnel_server_port)));
+
+        let mut known_device = Vec::new();
+        for d in &self.known_device {
+            let mut item: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+            item.insert("id".to_owned(), serde_json::Value::String(d.id.clone()));
+            if let Some(addr) = &d.addr {
+                item.insert("addr".to_owned(), serde_json::Value::String(addr.clone()));
+            }
+            if let Some(port) = d.port {
+                item.insert("port".to_owned(), serde_json::Value::Number(serde_json::Number::from(port)));
+            }
+            if let Some(addr_type) = &d.addr_type {
+                item.insert("addr_type".to_owned(), serde_json::Value::String(addr_type.as_str().to_owned()));
+            }
+
+            known_device.push(serde_json::Value::Object(item));
+        }
+
+        let mut service = Vec::new();
+        for s in &self.upstream_service {
+            let mut item = serde_json::Map::new();
+            item.insert("block".to_owned(), serde_json::Value::String("upstream".to_owned()));
+            item.insert("protocol".to_owned(), serde_json::Value::String(s.protocol.clone()));
+            item.insert("addr".to_owned(), serde_json::Value::String(s.addr.clone()));
+            item.insert("port".to_owned(), serde_json::Value::Number(serde_json::Number::from(s.port)));
+
+            service.push(serde_json::Value::Object(item));
+        }
+
+        for s in &self.socks5_proxy {
+            let mut item = serde_json::Map::new();
+            item.insert("block".to_owned(), serde_json::Value::String("proxy".to_owned()));
+            item.insert("addr".to_owned(), serde_json::Value::String(s.addr.clone()));
+            item.insert("port".to_owned(), serde_json::Value::Number(serde_json::Number::from(s.port)));
+            item.insert("type".to_owned(), serde_json::Value::String("socks5".to_owned()));
+
+            service.push(serde_json::Value::Object(item));
+        }
+
+        for s in &self.forward_proxy {
+            let mut item = serde_json::Map::new();
+            item.insert("block".to_owned(), serde_json::Value::String("proxy".to_owned()));
+            item.insert("type".to_owned(), serde_json::Value::String("forward".to_owned()));
+            item.insert("protocol".to_owned(), serde_json::Value::String(s.protocol.clone()));
+            item.insert("addr".to_owned(), serde_json::Value::String(s.addr.clone()));
+            item.insert("port".to_owned(), serde_json::Value::Number(serde_json::Number::from(s.port)));
+            item.insert("target_device".to_owned(), serde_json::Value::String(s.target_device.clone()));
+            item.insert("target_port".to_owned(), serde_json::Value::Number(serde_json::Number::from(s.target_port)));
+
+            service.push(serde_json::Value::Object(item));
+        }
+
         let config = serde_json::json!({
-            "config": {
-                "device_id": self.config.device_id,
-                "addr_type": self.config.addr_type.as_str(),
-                "tunnel_server_port": self.config.tunnel_server_port,
-            },
-            "known_device": self.known_device.iter().map(|d| {
-                serde_json::json!({
-                    "id": d.id,
-                    "addr": d.addr,
-                    "port": d.port,
-                    "addr_type": d.addr_type.as_str(),
-                })
-            }).collect::<Vec<_>>(),
-            "service": self.upstream_service.iter().map(|s| {
-                serde_json::json!({
-                    "block": "upstream",
-                    "protocol": s.protocol,
-                    "addr": s.addr,
-                    "port": s.port,
-                })
-            }).chain(self.socks5_proxy.iter().map(|s| {
-                serde_json::json!({
-                    "block": "proxy",
-                    "addr": s.addr,
-                    "port": s.port,
-                    "type": "socks5",
-                })
-            })).chain(self.forward_proxy.iter().map(|s| {
-                serde_json::json!({
-                    "block": "proxy",
-                    "type": "forward",
-                    "protocol": s.protocol,
-                    "addr": s.addr,
-                    "port": s.port,
-                    "target_device": s.target_device,
-                    "target_port": s.target_port,
-                })
-            })).collect::<Vec<_>>(),
+            "config": config,
+            "known_device": known_device,
+            "service": service,
         });
 
         config.to_string()
@@ -209,7 +228,9 @@ pub mod tests {
         env_logger::init();
 
         let mut config_gen = ConfigGen::new("gateway", PeerAddrType::WAN, 0);
-        config_gen.add_device("etcd1", "192.169.100.110", 0, PeerAddrType::WAN);
+        config_gen.add_device("etcd1", Some("192.169.100.110".to_owned()), Some(0), Some(PeerAddrType::WAN));
+        config_gen.add_device("etcd2", None, Some(1000), None);
+        config_gen.add_device("etcd3", None, None, Some(PeerAddrType::LAN));
 
         config_gen.add_socks5_proxy("127.0.0.1", 1080);
         config_gen.add_forward_proxy("tcp", "127.0.0.1", 1088, "etcd1", 1008);
