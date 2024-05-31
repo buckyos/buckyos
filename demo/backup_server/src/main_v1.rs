@@ -57,10 +57,14 @@ pub async fn main_v1() -> tide::Result<()> {
 
     let base_url = format!("http://{}:{}", config.interface, config.port);
 
+    let data_path = format!("{}/data", config.save_path);
     let tmp_path = format!("{}/tmp", config.save_path);
-    let task_mgr_db_path = format!("{}-task_mgr.db", config.save_path);
-    let file_mgr_db_path = format!("{}-file_mgr.db", config.save_path);
-    let chunk_mgr_db_path = format!("{}-chunk_mgr.db", config.save_path);
+    let task_mgr_db_path = format!("{}/task_mgr.db", config.save_path);
+    let file_mgr_db_path = format!("{}/file_mgr.db", config.save_path);
+    let chunk_mgr_db_path = format!("{}/chunk_mgr.db", config.save_path);
+
+    tokio::fs::create_dir_all(tmp_path.clone()).await.expect("create tmp path failed");
+    tokio::fs::create_dir_all(data_path.clone()).await.expect("create tmp path failed");
 
     let task_storage = TaskStorageSqlite::new_with_path(task_mgr_db_path.as_str()).expect("create task storage failed");
     let file_storage = FileStorageSqlite::new_with_path(file_mgr_db_path.as_str()).expect("create file storage failed");
@@ -70,15 +74,27 @@ pub async fn main_v1() -> tide::Result<()> {
     let file_mgr_selector = SimpleFileMgrSelector::new(base_url.as_str());
     let task_mgr_selector = SimpleTaskMgrSelector::new(base_url.as_str());
 
-    let chunk_mgr = ChunkMgr::new(chunk_storage, std::path::PathBuf::from(config.save_path.clone()), std::path::PathBuf::from(tmp_path.clone()));
+    let chunk_mgr = ChunkMgr::new(chunk_storage, std::path::PathBuf::from(data_path.clone()), std::path::PathBuf::from(tmp_path.clone()));
     let file_mgr = FileMgr::new(file_storage, std::sync::Arc::new(chunk_mgr_selector));
     let task_mgr = TaskMgr::new(task_storage, std::sync::Arc::new(file_mgr_selector));
 
     let task_mgr_http = TaskMgrHttpServer::routes(Arc::new(Box::new(task_mgr)));
     let file_mgr_http = FileMgrHttpServer::routes(Arc::new(Box::new(file_mgr)));
     let chunk_mgr_http = ChunkMgrHttpServer::routes(Arc::new(Box::new(chunk_mgr)));
+    
+    let log_middleware = warp::log::custom(|info| {
+        log::info!("{} {} {}", info.method(), info.path(), info.status());
+    });
 
-    let routes = task_mgr_http.or(file_mgr_http).or(chunk_mgr_http);
+    let routes = task_mgr_http.or(file_mgr_http).or(chunk_mgr_http).recover(|err: warp::Rejection| async move {
+        log::error!("Failed to match route: {:?}", err);
+        Ok::<_, warp::Rejection>(warp::reply::with_status(
+            "Not Found",
+            warp::http::StatusCode::NOT_FOUND,
+        ))
+    })
+    .with(log_middleware);
+
 
     let addr = format!("{}:{}", config.interface, config.port);
     let socket_addr: std::net::SocketAddr = addr.parse().expect("Invalid address format");

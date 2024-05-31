@@ -9,12 +9,12 @@ pub struct FileStorageSqlite {
 
 impl FileStorageSqlite {
     pub(crate) fn new_with_path(db_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-
+        log::info!("will open sqlite db: {}", db_path);
         let connection = Connection::open(db_path)?;
         connection.execute(
             "CREATE TABLE IF NOT EXISTS files (
                 file_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_server_type TEXT NOT NULL,
+                task_server_type INTEGER NOT NULL,
                 task_server_name TEXT NOT NULL,
                 file_hash TEXT NOT NULL,
                 file_size INTEGER NOT NULL,
@@ -38,9 +38,9 @@ impl FileStorageSqlite {
         connection.execute(
             "CREATE TABLE IF NOT EXISTS chunks (
                 chunk_hash TEXT NOT NULL PRIMARY KEY,
-                chunk_server_type TEXT NOT NULL,
+                chunk_server_type INTEGER NOT NULL,
                 chunk_server_name TEXT NOT NULL,
-                remote_chunk_id INTEGER DEFAULT NULL,
+                remote_chunk_id INTEGER DEFAULT NULL
             )",
             [],
         )?;
@@ -135,8 +135,8 @@ impl FileStorageSqlite {
         tx.execute(
             "INSERT INTO file_chunks (file_hash, chunk_seq, chunk_hash, chunk_size)
              VALUES (?, ?, ?, ?)
-             ON CONFLICT (file_hash, chunk_seq, chunk_size) DO NOTHING",
-            params![file_hash, chunk_seq, chunk_hash],
+             ON CONFLICT (file_hash, chunk_seq) DO NOTHING",
+            params![file_hash, chunk_seq, chunk_hash, chunk_size],
         )?;
         
         tx.commit()?;

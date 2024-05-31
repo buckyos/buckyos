@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use backup_lib::{CheckPointVersion, ChunkInfo, FileInfo, TaskId, TaskInfo as TaskInfoServer, TaskKey};
 
-use crate::task_mgr::BackupTaskMgrInner;
+use crate::{task_mgr::BackupTaskMgrInner, task_storage::FilesReadyState};
 
 
 #[derive(Clone)]
@@ -21,7 +21,7 @@ pub struct TaskInfo {
     pub prev_check_point_version: Option<CheckPointVersion>,
     pub meta: Option<String>,
     pub dir_path: PathBuf,
-    pub is_all_files_ready: bool,
+    pub is_all_files_ready: FilesReadyState,
     pub complete_file_count: usize,
     pub file_count: usize,
     pub priority: u32,
@@ -50,14 +50,15 @@ pub trait Task {
     fn prev_check_point_version(&self) -> Option<CheckPointVersion>;
     fn meta(&self) -> Option<String>;
     fn dir_path(&self) -> PathBuf;
-    fn is_all_files_ready(&self) -> bool;
+    fn is_all_files_ready(&self) -> FilesReadyState;
     fn is_all_files_done(&self) -> bool;
     fn file_count(&self) -> usize;
 }
 
+#[async_trait::async_trait]
 pub(crate) trait TaskInner {
-    fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[derive(Clone)]
@@ -108,8 +109,9 @@ impl BackupTask {
                             file_server: None,
                         }),
                         None => {
-                            // TODO: read by chunks
+                            // TODO: read by files
                             let chunk_full_path = dir_path.join(&chunk_relative_path);
+                            log::debug!("will read chunk file: {:?}, dir-path: {:?}, relative_path: {:?}", chunk_full_path, dir_path, chunk_relative_path);
                             let mut file = tokio::fs::File::open(chunk_full_path).await?;
                             let file_size = file.metadata().await?.len();
                             let mut buf = vec![];
@@ -157,6 +159,8 @@ impl BackupTask {
             )?
             .task_storage();
 
+        log::debug!("will create task with files: {:?}", files.len());
+
         let task_id = task_storage
             .create_task_with_files(
                 &task_key,
@@ -170,6 +174,8 @@ impl BackupTask {
             )
             .await?;
 
+        log::debug!("task created: {:?}", task_id);
+
         Ok(Self {
             mgr,
             info: Arc::new(Mutex::new(TaskInfo {
@@ -179,7 +185,7 @@ impl BackupTask {
                 prev_check_point_version,
                 meta,
                 dir_path: dir_path,
-                is_all_files_ready: false,
+                is_all_files_ready: FilesReadyState::NotReady,
                 file_count: files.len(),
                 priority,
                 is_manual,
@@ -193,6 +199,8 @@ impl BackupTask {
 
     // TODO: error handling
     async fn run_once(&self) -> BackupTaskEvent {
+        log::debug!("try to run task: {:?}", self.task_id());
+
         let task_mgr = match self.mgr.upgrade() {
             Some(mgr) => mgr,
             None => {
@@ -257,17 +265,31 @@ impl BackupTask {
             Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err)),
         };
 
+        log::info!("task info pushed: {:?} => {:?}", task_info.task_id, remote_task_id);
+
         // push files
         // TODO: multiple files
         loop {
             let upload_files = match task_storage.get_incomplete_files(&task_info.task_key, task_info.check_point_version, 0, 1).await {
                 Ok(files) => {
                     if files.len() == 0 {
-                        if self.is_all_files_ready() {
-                            // TODO: remove task from storage
-                            return BackupTaskEvent::Successed(self.clone());
-                        } else {
-                            return BackupTaskEvent::Idle(self.clone());
+                        match self.is_all_files_ready() {
+                            FilesReadyState::NotReady => return BackupTaskEvent::Idle(self.clone()),
+                            FilesReadyState::Ready => {
+                                match remote_task_mgr.set_files_prepare_ready(remote_task_id).await {
+                                    Ok(_) => {
+                                        match task_storage.set_files_prepare_ready(task_info.task_id, FilesReadyState::RemoteReady).await  {
+                                            Ok(_) => {
+                                                // TODO: remove task from storage
+                                                return BackupTaskEvent::Successed(self.clone());
+                                            }
+                                            Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err))
+                                        }
+                                    }
+                                    Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err))
+                                }
+                            },
+                            FilesReadyState::RemoteReady => return BackupTaskEvent::Successed(self.clone()),
                         }
                     }
                     files
@@ -312,6 +334,7 @@ impl BackupTask {
                                     {
                                         Ok(_) => (file_server_type, file_server_name, remote_file_id, chunk_size),
                                         Err(err) => {
+                                            log::error!("set file info pushed failed: {:?}", err);
                                             return BackupTaskEvent::ErrorAndWillRetry(
                                                 self.clone(), Arc::new(err)
                                             )
@@ -319,12 +342,16 @@ impl BackupTask {
                                     }
                                 }
                                 Err(err) => {
+                                    log::error!("add file to remote server failed: {:?}", err);
                                     return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err))
                                 }
                             }
                         }
                     },
-                    Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err)),
+                    Err(err) => {
+                        log::error!("is file info pushed failed: {:?}", err);
+                        return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
+                    },
                 };
 
                 let remote_file_server = match task_mgr
@@ -333,7 +360,10 @@ impl BackupTask {
                     .await
                 {
                     Ok(remote_file_server) => remote_file_server,
-                    Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err)),
+                    Err(err) => {
+                        log::error!("select file server failed: {:?}", err);
+                        return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
+                    },
                 };
 
                 // TODO: read the control command to test if the task should be stopped.
@@ -394,6 +424,7 @@ impl BackupTask {
                                                             remote_chunk_id,
                                                         ),
                                                         Err(err) => {
+                                                            log::error!("set chunk info pushed failed: {:?}", err);
                                                             return 
                                                                 BackupTaskEvent::ErrorAndWillRetry(
                                                                     self.clone(), Arc::new(err)
@@ -403,6 +434,7 @@ impl BackupTask {
                                                     }
                                                 }
                                                 Err(err) => {
+                                                    log::error!("add chunk to remote server failed: {:?}", err);
                                                     return BackupTaskEvent::ErrorAndWillRetry(
                                                         self.clone(), Arc::new(err)
                                                     )
@@ -410,6 +442,7 @@ impl BackupTask {
                                             }
                                         }
                                         Err(err) => {
+                                            log::error!("read chunk file failed: {:?}", err);
                                             return BackupTaskEvent::ErrorAndWillRetry(
                                                 self.clone(), Arc::new(err)
                                             )
@@ -418,6 +451,7 @@ impl BackupTask {
                                 }
                             },
                             Err(err) => {
+                                log::error!("is chunk info pushed failed: {:?}", err);
                                 return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err))
                             }
                         };
@@ -430,7 +464,10 @@ impl BackupTask {
                             }
                         }
 
-                        Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err)),
+                        Err(err) => {
+                            log::error!("is chunk uploaded failed: {:?}", err);
+                            return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
+                        },
                     }
 
                     let remote_chunk_server = match task_mgr
@@ -439,7 +476,10 @@ impl BackupTask {
                         .await
                     {
                         Ok(remote_chunk_server) => remote_chunk_server,
-                        Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err)),
+                        Err(err) => {
+                            log::error!("select chunk server failed: {:?}", err);
+                            return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
+                        },
                     };
 
                     let chunk = match chunk {
@@ -448,6 +488,7 @@ impl BackupTask {
                         {
                             Ok(chunk) => chunk,
                             Err(err) => {
+                                log::error!("read chunk file failed: {:?}", err);
                                 return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err))
                             }
                         },
@@ -457,6 +498,7 @@ impl BackupTask {
                         Ok(_) => {
                             if let Err(err) = remote_file_server.set_chunk_uploaded(remote_file_id, chunk_seq).await
                             {
+                                log::error!("set chunk uploaded failed: {:?}", err);
                                 return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
                             }
                             if chunk_seq == chunk_count - 1 {
@@ -465,17 +507,21 @@ impl BackupTask {
                                     file.file_path.as_path()
                                 ).await
                                 {
+                                    log::error!("set file uploaded failed: {:?}", err);
                                     return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
                                 }
                             }
-                            if let Err(err) = chunk_storage.set_chunk_uploaded(&task_info.task_key, task_info.check_point_version, file.file_path.as_path(), chunk_seq).await
-                            {
+                            if let Err(err) = chunk_storage.set_chunk_uploaded(&task_info.task_key, task_info.check_point_version, file.file_path.as_path(), chunk_seq).await {
+                                log::error!("set chunk uploaded failed: {:?}", err);
                                 return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
                             }
 
                             tokio::fs::remove_file(file.file_path.as_path()).await;
                         }
-                        Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err)),
+                        Err(err) => {
+                            log::error!("upload chunk failed: {:?}", err);
+                            return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
+                        },
                     }
                 }
             }
@@ -530,7 +576,7 @@ impl Task for BackupTask {
         self.info.lock().unwrap().dir_path.clone()
     }
 
-    fn is_all_files_ready(&self) -> bool {
+    fn is_all_files_ready(&self) -> FilesReadyState {
         self.info.lock().unwrap().is_all_files_ready
     }
 
@@ -544,8 +590,9 @@ impl Task for BackupTask {
     }
 }
 
+#[async_trait::async_trait]
 impl TaskInner for BackupTask {
-    fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let backup_task = self.clone();
         tokio::task::spawn(async move {
             loop {
@@ -562,7 +609,7 @@ impl TaskInner for BackupTask {
                 let state = backup_task.run_once().await;
                 log::info!("task successed: {:?}", backup_task.task_id());
                 
-                if let Some(task_event_sender) = task_mgr.task_event_sender() {
+                if let Some(task_event_sender) = task_mgr.task_event_sender().await {
                     task_event_sender.send(state.clone())
                     .await
                     .expect("todo: channel overflow");
@@ -581,7 +628,7 @@ impl TaskInner for BackupTask {
                         //     control = backup_task.control.1.recv() => {
                         //         match control {
                         //             Some(BackupTaskControl::Stop) => {
-                        //                 task_mgr.task_event_sender().send(BackupTaskEvent::Stop(backup_task)).await;
+                        //                 task_mgr.task_event_sender().await.send(BackupTaskEvent::Stop(backup_task)).await;
                         //                 break
                         //             },
                         //             None => continue,
@@ -599,12 +646,8 @@ impl TaskInner for BackupTask {
         Ok(())
     }
 
-    fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let backup_task = self.clone();
-        let handle = tokio::runtime::Handle::current();
-        handle.block_on(async {
-            backup_task.control.0.send(BackupTaskControl::Stop).await?;
-            Ok(())
-        })
+    async fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.control.0.send(BackupTaskControl::Stop).await?;
+        Ok(())
     }
 }

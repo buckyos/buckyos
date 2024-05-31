@@ -9,6 +9,7 @@ pub struct TaskStorageSqlite {
 
 impl TaskStorageSqlite {
     pub(crate) fn new_with_path(db_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        log::info!("will open sqlite db: {}", db_path);
         let connection = Connection::open(db_path)?;
 
         // Create the "tasks" table
@@ -22,51 +23,51 @@ impl TaskStorageSqlite {
                 meta TEXT DEFAULT '',
                 is_all_files_ready TINYINT DEFAULT 0,
                 dir_path BLOB NOT NULL,
-                create_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
-                update_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
+                create_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
+                update_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
                 UNIQUE (zone_id, key, version)
-            ",
+            )",
             [],
         )?;
 
         // Create the "task-files" table
         connection.execute(
-            "CREATE TABLE task_files (
+            "CREATE TABLE IF NOT EXISTS task_files (
                 task_id INTEGER NOT NULL,
                 file_seq INTEGER NOT NULL,
                 file_path BLOB NOT NULL,
                 file_hash TEXT NOT NULL,
-                create_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
+                create_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
                 FOREIGN KEY (task_id) REFERENCES tasks (task_id),
                 FOREIGN KEY (file_hash) REFERENCES files (file_hash),
-                PRIMARY KEY (task_id, file_path),
+                PRIMARY KEY (task_id, file_path)
             )",
             [],
         )?;
 
         // Create the "files" table
         connection.execute(
-            "CREATE TABLE files (
+            "CREATE TABLE IF NOT EXISTS files (
                 file_hash TEXT NOT NULL PRIMARY KEY,
                 file_size INTEGER NOT NULL,
-                file_server_type TEXT  NOT NULL,
+                file_server_type INTEGER  NOT NULL,
                 file_server_name TEXT  NOT NULL,
                 chunk_size INTEGER DEFAULT NULL,
                 remote_file_id INTEGER DEFAULT NULL,
                 is_uploaded TINYINT DEFAULT 0,
-                create_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
-                finish_at INTEGER DEFAULT NULL,
+                create_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
+                finish_at INTEGER DEFAULT NULL
             )",
             [],
         )?;
 
         connection.execute(
-            "CREATE TABLE strategy (
+            "CREATE TABLE IF NOT EXISTS strategy (
                 zone_id TEXT NOT NULL,
                 key TEXT NOT NULL,
                 strategy TEXT NOT NULL,
-                create_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
-                update_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
+                create_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
+                update_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
                 PRIMARY KEY (zone_id, key)
             )",
             [],
@@ -178,7 +179,7 @@ impl TaskStorageSqlite {
             "INSERT INTO task_files (task_id, file_path, file_seq, file_hash)
              VALUES (?, ?, ?, ?)
              ON CONFLICT (task_id, file_path) DO NOTHING",
-            params![Into::<u128>::into(task_id) as u64, file_seq, file_path.as_os_str().as_encoded_bytes(), file_hash],
+            params![Into::<u128>::into(task_id) as u64, file_path.as_os_str().as_encoded_bytes(), file_seq, file_hash],
         )?;
         
         tx.commit()?;
@@ -233,6 +234,7 @@ impl TaskStorageSqlite {
 
     pub fn update_file_uploaded(&mut self, task_id: TaskId, file_path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let query = "UPDATE files SET is_uploaded = 1 WHERE EXISTS (SELECT 1 FROM task_files WHERE task_id = ? AND file_path = ? AND files.file_hash = task_files.file_hash)";
+        log::info!("update_file_uploaded: task_id: {:?}, file_path: {:?}, sql: {}", task_id, file_path, query);
         let mut stmt = self.connection.prepare(query)?;
         stmt.execute(params![Into::<u128>::into(task_id) as u64, file_path.as_os_str().as_encoded_bytes()])?;
         Ok(())
@@ -259,8 +261,8 @@ impl TaskStorageSqlite {
                 (
                     "ORDER BY tasks.version DESC
                     LIMIT ? OFFSET ?",
-                    (std::cmp::max((offset as i32) - (limit as i32), 0) as u32),
-                    std::cmp::min(offset, limit),
+                    (std::cmp::max(((offset + 1) as i32) - (limit as i32), 0) as u32),
+                    std::cmp::min(offset + 1, limit),
                 )
             },
         };
@@ -286,6 +288,9 @@ impl TaskStorageSqlite {
         };
 
         let sql = format!("{} {}", sql, ord_sql);
+
+        log::info!("sql: {}, zone_id: {}, task_key: {}, limit: {}, offset: {}", sql, zone_id, task_key.as_str(), limit, offset);
+
         let mut stmt = self.connection.prepare(sql.as_str())?;
 
         let task_infos = stmt.query_map(params![zone_id, task_key.as_str(), limit, offset], |row| {
@@ -348,12 +353,12 @@ impl TaskStorageSqlite {
         task_id: TaskId,
         file_seq: u64,
     ) -> Result<Option<FileInfo>, Box<dyn std::error::Error + Send + Sync>> {
-        let sql = "SELECT file_path, file_hash, file_size, file_server_type, file_server_name, remote_file_id, chunk_size
+        let sql = "SELECT file_path, task_files.file_hash, file_size, file_server_type, file_server_name, remote_file_id, chunk_size
                    FROM task_files
                    JOIN files ON task_files.file_hash = files.file_hash
                    WHERE task_files.task_id = ? AND task_files.file_seq = ?";
         let mut stmt = self.connection.prepare(sql)?;
-        let file_info = stmt.query_row((zone_id, Into::<u128>::into(task_id) as u64, file_seq), |row| {
+        let file_info = stmt.query_row((Into::<u128>::into(task_id) as u64, file_seq), |row| {
             let file_server_type = row.get::<&str, u32>("file_server_type")?;
             let file_server_name = row.get::<&str, String>("file_server_name")?;
             let remote_file_id = row.get::<&str, Option<u64>>("remote_file_id")?;

@@ -3,6 +3,36 @@ use backup_lib::{CheckPointVersion, ChunkId, ChunkServerType, ChunkStorage, File
 
 use crate::backup_task::TaskInfo;
 
+#[derive(Copy, Clone)]
+pub enum FilesReadyState {
+    NotReady = 0,
+    Ready = 1,
+    RemoteReady = 2,
+}
+
+impl std::convert::TryFrom<u32> for FilesReadyState {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(FilesReadyState::NotReady),
+            1 => Ok(FilesReadyState::Ready),
+            2 => Ok(FilesReadyState::RemoteReady),
+            _ => Err(()),
+        }
+    }
+}
+
+impl Into<u32> for FilesReadyState {
+    fn into(self) -> u32 {
+        match self {
+            FilesReadyState::NotReady => 0,
+            FilesReadyState::Ready => 1,
+            FilesReadyState::RemoteReady => 2,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transaction {
     async fn create_task(
@@ -24,6 +54,8 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         file_size: u64,
         file_seq: u32
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn set_files_prepare_ready(&self, task_id: TaskId, state: FilesReadyState) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     async fn create_task_with_files(
         &self,

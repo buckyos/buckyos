@@ -9,11 +9,11 @@ pub struct ChunkStorageSqlite {
 
 impl ChunkStorageSqlite {
     pub(crate) fn new_with_path(db_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-
+        log::info!("will open sqlite db: {}", db_path);
         let connection = Connection::open(db_path)?;
         connection.execute(
             "CREATE TABLE IF NOT EXISTS file_chunks (
-                file_server_type TEXT NOT NULL,
+                file_server_type INTEGER NOT NULL,
                 file_server_name TEXT NOT NULL,
                 chunk_hash TEXT NOT NULL,
                 FOREIGN KEY (chunk_hash) REFERENCES chunks (chunk_hash),
@@ -23,10 +23,11 @@ impl ChunkStorageSqlite {
         )?;
         connection.execute(
             "CREATE TABLE IF NOT EXISTS chunks (
-                chunk_id INTEGER AUTOINCREMENT,
-                chunk_hash TEXT NOT NULL PRIMARY KEY,
+                chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chunk_hash TEXT NOT NULL,
                 chunk_size INTEGER NOT NULL,
                 save_path BLOB DEFAULT NULL,
+                UNIQUE(chunk_hash)
             )",
             [],
         )?;

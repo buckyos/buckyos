@@ -249,6 +249,7 @@ impl TaskMgrHttpServer {
         task_mgr: Arc<Box<dyn TaskMgrServer>>,
     ) -> Result<impl Reply, warp::Rejection> {
         let task_id = request.task_id;
+        log::info!("set_file_uploaded: task_id={:?}, file_path={:?}", task_id, request.file_path.as_path());
         task_mgr
             .set_file_uploaded(task_id, request.file_path.as_path())
             .await
@@ -311,9 +312,10 @@ impl TaskMgrHttpServer {
     pub fn routes(
         task_mgr: Arc<Box<dyn TaskMgrServer>>,
     ) -> impl Filter<Extract = impl Reply, Error = warp::Rejection> + Clone {
+        
         let update_check_point_strategy_route = {
             let task_mgr = task_mgr.clone();
-            warp::path!("update_check_point_strategy")
+            warp::path!("task-mgr" / "update-check-point-strategy")
             .and(warp::post())
             .and(warp::body::json())
             .and_then(move |request: UpdateCheckPointStrategyRequest| {
@@ -322,7 +324,8 @@ impl TaskMgrHttpServer {
         };
 
         let get_check_point_strategy_route = {
-            let task_mgr = task_mgr.clone();warp::path!("get_check_point_strategy")
+            let task_mgr = task_mgr.clone();
+            warp::path!("task-mgr" / "get-check-point-strategy")
             .and(warp::post())
             .and(warp::body::json())
             .and_then(move |request: GetCheckPointStrategyRequest| {
@@ -331,7 +334,8 @@ impl TaskMgrHttpServer {
         };
 
         let push_task_info_route = {
-            let task_mgr = task_mgr.clone();warp::path!("push_task_info")
+            let task_mgr = task_mgr.clone();
+            warp::path!("task-mgr" / "push-task-info")
             .and(warp::post())
             .and(warp::body::json())
             .and_then(move |request: PushTaskInfoRequest| {
@@ -340,7 +344,7 @@ impl TaskMgrHttpServer {
         };
         let add_file_route = {
             let task_mgr = task_mgr.clone();
-            warp::path!("add_file")
+            warp::path!("task-mgr" / "add-file")
                 .and(warp::post())
                 .and(warp::body::json())
                 .and_then(move |request: AddFileInTaskRequest| {
@@ -350,7 +354,7 @@ impl TaskMgrHttpServer {
 
         let set_files_prepare_ready_route = {
             let task_mgr = task_mgr.clone();
-            warp::path!("set_files_prepare_ready")
+            warp::path!("task-mgr" / "set-files-prepare-ready")
                 .and(warp::post())
                 .and(warp::body::json())
                 .and_then(move |request: SetFilesPrepareReadyRequest| {
@@ -360,7 +364,7 @@ impl TaskMgrHttpServer {
 
         let set_file_uploaded_route = {
             let task_mgr = task_mgr.clone();
-            warp::path!("set_file_uploaded")
+            warp::path!("task-mgr" / "set-file-uploaded")
                 .and(warp::post())
                 .and(warp::body::json())
                 .and_then(move |request: SetFileUploadedRequest| {
@@ -370,7 +374,7 @@ impl TaskMgrHttpServer {
 
         let get_check_point_version_list_route = {
             let task_mgr = task_mgr.clone();
-            warp::path!("get_check_point_version_list")
+            warp::path!("task-mgr" / "get-check-point-version-list")
                 .and(warp::post())
                 .and(warp::body::json())
                 .and_then(move |request: GetCheckPointVersionListRequest| {
@@ -380,7 +384,7 @@ impl TaskMgrHttpServer {
 
         let get_check_point_version_route = {
             let task_mgr = task_mgr.clone();
-            warp::path!("get_check_point_version")
+            warp::path!("task-mgr" / "get-check-point-version")
                 .and(warp::post())
                 .and(warp::body::json())
                 .and_then(move |request: GetCheckPointVersionRequest| {
@@ -390,7 +394,7 @@ impl TaskMgrHttpServer {
 
         let get_file_info_route = {
             let task_mgr = task_mgr.clone();
-            warp::path!("get_file_info")
+            warp::path!("task-mgr" / "get-file-info")
                 .and(warp::post())
                 .and(warp::body::json())
                 .and_then(move |request: GetFileInfoRequest| {
@@ -398,18 +402,17 @@ impl TaskMgrHttpServer {
                 })
         };
 
-        warp::path!("task-mgr").and(update_check_point_strategy_route
-            .or(get_check_point_strategy_route)
-            .or(push_task_info_route)
-            .or(add_file_route)
-            .or(set_files_prepare_ready_route)
-            .or(set_file_uploaded_route)
-            .or(get_check_point_version_list_route)
-            .or(get_check_point_version_route)
-            .or(get_file_info_route)
-            // Combine with routes for the remaining methods
-            // ...
-        )
+        update_check_point_strategy_route
+        .or(get_check_point_strategy_route)
+        .or(push_task_info_route)
+        .or(add_file_route)
+        .or(set_files_prepare_ready_route)
+        .or(set_file_uploaded_route)
+        .or(get_check_point_version_list_route)
+        .or(get_check_point_version_route)
+        .or(get_file_info_route)
+        // Combine with routes for the remaining methods
+        // ...
     }
 
 }
@@ -563,6 +566,8 @@ impl TaskMgr for TaskMgrHttpClient {
                 .json::<AddFileInTaskResponse>()
                 .await
                 .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)?;
+            
+            log::info!("add_file: file_server_type={:?}, file_server_name={:?}, file_id={:?}, chunk_size={}", add_file_response.file_server_type, add_file_response.file_server_name, add_file_response.file_id, add_file_response.chunk_size);
             Ok((add_file_response.file_server_type, add_file_response.file_server_name, add_file_response.file_id, add_file_response.chunk_size))
         } else {
             let state_code = response.status().into();
@@ -610,6 +615,9 @@ impl TaskMgr for TaskMgrHttpClient {
             task_id,
             file_path: std::path::PathBuf::from(file_path),
         };
+
+        log::info!("set_file_uploaded: task_id={:?}, file_path={:?}", task_id, file_path);
+
         let client = Client::new();
         let response = client
             .post(&url)
@@ -747,6 +755,7 @@ impl TaskMgrServer for TaskMgrHttpClient {
 
 }
 
+#[derive(Clone)]
 pub struct SimpleTaskMgrSelector {
     server_name: String,
 }
@@ -883,7 +892,7 @@ impl FileMgrHttpServer {
             .await
             .map_err(|err| warp::reject::custom(SimpleServerError::new(warp::http::StatusCode::INTERNAL_SERVER_ERROR.into(), err.to_string())))?;
 
-        Ok(warp::reply())
+        Ok(warp::reply::json(&()))
     }
 
     async fn get_chunk_info_handler(request: GetChunkInfoRequest, file_mgr: Arc<Box<dyn FileMgrServer>>) -> Result<impl Reply, warp::Rejection> {
@@ -901,7 +910,7 @@ impl FileMgrHttpServer {
     pub fn routes(file_mgr: Arc<Box<dyn FileMgrServer>>) -> impl Filter<Extract = impl Reply, Error = warp::Rejection> + Clone {
         let add_file = {
             let file_mgr = file_mgr.clone();
-            warp::path("add_file")
+            warp::path!("file-mgr" / "add-file")
             .and(warp::post())
             .and(warp::body::json())
             .and_then(move |request: AddFileRequest| Self::add_file_handler(request, file_mgr.clone()))
@@ -909,7 +918,7 @@ impl FileMgrHttpServer {
 
         let add_chunk = {
             let file_mgr = file_mgr.clone();
-            warp::path("add_chunk")
+            warp::path!("file-mgr" / "add-chunk")
             .and(warp::post())
             .and(warp::body::json())
             .and_then(move |request: AddChunkInFileRequest| Self::add_chunk_handler(request, file_mgr.clone()))
@@ -917,7 +926,7 @@ impl FileMgrHttpServer {
 
         let set_chunk_uploaded = {
             let file_mgr = file_mgr.clone();
-            warp::path("set_chunk_uploaded")
+            warp::path!("file-mgr" / "set-chunk-uploaded")
             .and(warp::post())
             .and(warp::body::json())
             .and_then(move |request: SetChunkUploadedRequest| Self::set_chunk_uploaded_handler(request, file_mgr.clone()))
@@ -925,13 +934,13 @@ impl FileMgrHttpServer {
 
         let get_chunk_info = {
             let file_mgr = file_mgr.clone();
-            warp::path("get_chunk_info")
+            warp::path!("file-mgr" / "get-chunk-info")
             .and(warp::post())
             .and(warp::body::json())
             .and_then(move |request: GetChunkInfoRequest| Self::get_chunk_info_handler(request, file_mgr.clone()))
         };
 
-        warp::path("file-mgr").and(add_file.or(add_chunk).or(set_chunk_uploaded).or(get_chunk_info))
+        add_file.or(add_chunk).or(set_chunk_uploaded).or(get_chunk_info)
     }
 }
 
@@ -952,7 +961,7 @@ impl FileMgrHttpClient {
     where
         T: serde::de::DeserializeOwned,
     {
-        let url = format!("{}//file-mgr{}", self.base_url, path);
+        let url = format!("{}/file-mgr{}", self.base_url, path);
         let response = self.client.post(&url).json(&body).send().await?;
         let response_body: String = response.text().await?;
         let result = serde_json::from_str(&response_body)?;
@@ -975,9 +984,10 @@ impl FileMgrServer for FileMgrHttpClient {
             "file_hash": file_hash,
             "file_size": file_size,
         });
-        let response: serde_json::Value = self.send_request("/add_file", request_body).await?;
+        let response: serde_json::Value = self.send_request("/add-file", request_body).await?;
         let file_id = FileId::from(response["file_id"].as_u64().ok_or("Invalid file_id")? as u128);
         let chunk_size = response["chunk_size"].as_u64().ok_or("Invalid chunk_size")? as u32;
+        log::info!("add_file: file_id={:?}, chunk_size={}", file_id, chunk_size);
         Ok((file_id, chunk_size))
     }
 }
@@ -997,11 +1007,12 @@ impl FileMgr for FileMgrHttpClient {
             "chunk_hash": chunk_hash,
             "chunk_size": chunk_size,
         });
-        let response: serde_json::Value = self.send_request("/add_chunk", request_body).await?;
-        let chunk_server_type = ChunkServerType::try_from(response["chunk_server_type"].as_u64().ok_or("Invalid chunk_server_type")? as u32).expect("Invalid chunk_server_type");
-        let chunk_server_name = response["chunk_server_name"].as_str().ok_or("Invalid chunk_server_name")?;
-        let chunk_id = ChunkId::from(response["chunk_id"].as_u64().ok_or("Invalid chunk_id")? as u128);
-        Ok((chunk_server_type, chunk_server_name.to_string(), chunk_id))
+        let response: serde_json::Value = self.send_request("/add-chunk", request_body).await?;
+        log::info!("add_chunk: response={:?}", response);
+        let response = serde_json::from_value::<AddChunkInFileResponse>(response)?;
+        // let chunk_server_name = response["chunk_server_name"].as_str().ok_or("Invalid chunk_server_name")?;
+        // let chunk_id = ChunkId::from(response["chunk_id"].as_u64().ok_or("Invalid chunk_id")? as u128);
+        Ok((response.chunk_server_type, response.chunk_server_name.to_string(), response.chunk_id))
     }
 
     async fn set_chunk_uploaded(
@@ -1013,7 +1024,7 @@ impl FileMgr for FileMgrHttpClient {
             "file_id": file_id,
             "chunk_seq": chunk_seq,
         });
-        self.send_request::<()>("/set_chunk_uploaded", request_body).await?;
+        self.send_request::<()>("/set-chunk-uploaded", request_body).await?;
         Ok(())
     }
 
@@ -1026,7 +1037,7 @@ impl FileMgr for FileMgrHttpClient {
             "file_id": file_id,
             "chunk_seq": chunk_seq,
         });
-        let response: serde_json::Value = self.send_request("/get_chunk_info", request_body).await?;
+        let response: serde_json::Value = self.send_request("/get-chunk-info", request_body).await?;
         let chunk_info = response["chunk_info"].as_object().map(|obj| serde_json::from_value(serde_json::Value::Object(obj.clone()))).transpose()?;
         Ok(chunk_info)
     }
@@ -1040,6 +1051,7 @@ impl FileMgr for FileMgrHttpClient {
     }
 }
 
+#[derive(Clone)]
 pub struct SimpleFileMgrSelector {
     server_name: String,
 }
@@ -1157,15 +1169,14 @@ impl ChunkMgrHttpServer {
     pub fn routes(chunk_mgr: Arc<Box<dyn ChunkMgrServer>>) -> impl Filter<Extract = impl Reply, Error = warp::Rejection> + Clone {
         let add_chunk = {
             let chunk_mgr = chunk_mgr.clone();
-            warp::path("add_chunk")
+            warp::path!("chunk-mgr" / "add-chunk")
             .and(warp::post())
             .and(warp::body::json())
             .and_then(move |request: AddChunkRequest| Self::add_chunk_handler(request, chunk_mgr.clone()))
         };
         let upload = {
             let chunk_mgr = chunk_mgr.clone();
-            warp::path("upload")
-                .and(warp::path::param::<String>())
+            warp::path!("chunk-mgr" / "upload" / String)
                 .and(warp::post())
                 .and(warp::body::bytes())
                 .and_then(move |chunk_hash, chunk| Self::upload_handler(chunk_hash, chunk, chunk_mgr.clone()))
@@ -1173,13 +1184,13 @@ impl ChunkMgrHttpServer {
 
         let download = {
             let chunk_mgr = chunk_mgr.clone();
-            warp::path("download")
+            warp::path!("chunk-mgr" / "download")
             .and(warp::post())
             .and(warp::body::json())
             .and_then(move |request: DownloadRequest| Self::download_handler(request, chunk_mgr.clone()))
         };
 
-        warp::path("chunk-mgr").and(add_chunk.or(upload).or(download))
+        add_chunk.or(upload).or(download)
     }
 }
 
@@ -1225,7 +1236,7 @@ impl ChunkMgrServer for ChunkMgrHttpClient {
         };
 
         let body = serde_json::to_value(request)?;
-        let response: AddChunkResponse = self.send_request("/add_chunk", body).await?;
+        let response: AddChunkResponse = self.send_request("/add-chunk", body).await?;
 
         Ok(response.chunk_id)
     }
@@ -1269,6 +1280,7 @@ impl ChunkMgr for ChunkMgrHttpClient {
     }
 }
 
+#[derive(Clone)]
 pub struct SimpleChunkMgrSelector {
     server_name: String,
 }

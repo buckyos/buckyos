@@ -7,9 +7,10 @@ use backup_lib::{CheckPointVersion, ChunkServerType, ChunkStorage, ChunkStorageQ
 use tokio::sync::Mutex;
 
 use crate::backup_task::TaskInfo;
-use crate::task_storage::{ChunkStorageClient, FileStorageClient, TaskStorageClient};
+use crate::task_storage::{ChunkStorageClient, FileStorageClient, FilesReadyState, TaskStorageClient};
 use rusqlite::Connection;
 use rusqlite::params;
+use std::convert::Into; // Add this line to import the Into trait
 
 pub struct TaskStorageSqlite {
     zone_id: String,
@@ -35,8 +36,8 @@ impl TaskStorageSqlite {
             is_all_files_ready TINYINT DEFAULT 0,
             dir_path BLOB NOT NULL,
             last_fail_at INTEGER DEFAULT NULL,
-            create_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
-            update_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
+            create_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
+            update_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
             UNIQUE (zone_id, key, version)
             )",
             [],
@@ -55,7 +56,7 @@ impl TaskStorageSqlite {
             server_name TEXT DEFAULT NULL,
             remote_file_id INTEGER DEFAULT NULL,
             last_fail_at INTEGER DEFAULT NULL,
-            create_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
+            create_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
             finish_at INTEGER DEFAULT NULL,
             FOREIGN KEY (task_id) REFERENCES upload_tasks (task_id),
             PRIMARY KEY (task_id, file_seq),
@@ -77,7 +78,7 @@ impl TaskStorageSqlite {
             remote_chunk_id INTEGER DEFAULT NULL,
             is_uploaded TINYINT DEFAULT 0,
             last_fail_at INTEGER DEFAULT NULL,
-            create_at INTEGER DEFAULT STRFTIME('%S', 'NOW'),
+            create_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
             finish_at INTEGER DEFAULT NULL,
             FOREIGN KEY (task_id, file_seq) REFERENCES upload_files (task_id, file_seq),
             PRIMARY KEY (task_id, file_seq, chunk_seq)
@@ -117,7 +118,7 @@ impl TaskStorageQuerier for TaskStorageSqlite {
             prev_check_point_version: t.prev_check_point_version,
             meta: t.meta,
             dir_path: t.dir_path,
-            is_all_files_ready: t.is_all_files_ready,
+            is_all_files_ready: if let FilesReadyState::RemoteReady = t.is_all_files_ready {true} else {false},
             complete_file_count: t.complete_file_count,
             file_count: t.file_count,
         }))
@@ -138,7 +139,7 @@ impl TaskStorageQuerier for TaskStorageSqlite {
             prev_check_point_version: t.prev_check_point_version,
             meta: t.meta,
             dir_path: t.dir_path,
-            is_all_files_ready: t.is_all_files_ready,
+            is_all_files_ready: if let FilesReadyState::RemoteReady = t.is_all_files_ready {true} else {false},
             complete_file_count: t.complete_file_count,
             file_count: t.file_count,
         }).collect())
@@ -161,7 +162,7 @@ impl TaskStorageQuerier for TaskStorageSqlite {
             prev_check_point_version: t.prev_check_point_version,
             meta: t.meta,
             dir_path: t.dir_path,
-            is_all_files_ready: t.is_all_files_ready,
+            is_all_files_ready: if let FilesReadyState::RemoteReady = t.is_all_files_ready {true} else {false},
             complete_file_count: t.complete_file_count,
             file_count: t.file_count,
         }).collect())
@@ -218,6 +219,13 @@ impl TaskStorageClient for TaskStorageSqlite {
         Ok(())
     }
 
+    async fn set_files_prepare_ready(&self, task_id: TaskId, state: FilesReadyState) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let sql = "UPDATE upload_tasks SET is_all_files_ready = ? WHERE task_id = ? AND zone_id = ? AND is_all_files_ready < ?";
+        let connection = self.connection.lock().await;
+        connection.execute(sql, params![Into::<u32>::into(state), Into::<u128>::into(task_id) as u64, self.zone_id.as_str(), Into::<u32>::into(state)])?;
+        Ok(())
+    }
+
     async fn get_incomplete_tasks(
         &self,
         offset: u32,
@@ -230,7 +238,7 @@ impl TaskStorageClient for TaskStorageSqlite {
             (SELECT COUNT(*) FROM upload_files WHERE upload_files.task_id = upload_tasks.task_id) AS total_files
             FROM upload_tasks
             WHERE zone_id = ? AND 
-                (is_all_files_ready = 0 OR completed_files < total_files)
+                (is_all_files_ready <> 2 OR completed_files < total_files)
             ORDER BY version DESC LIMIT ? OFFSET ?";
 
         let connection = self.connection.lock().await;
@@ -244,7 +252,7 @@ impl TaskStorageClient for TaskStorageSqlite {
                 prev_check_point_version: row.get::<&str, Option<u64>>("prev_version")?.map(|v| CheckPointVersion::from(v as u128)),
                 meta: row.get("meta")?,
                 dir_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(row.get::<&str, Vec<u8>>("dir_path")?)),
-                is_all_files_ready: row.get("is_all_files_ready")?,
+                is_all_files_ready: FilesReadyState::try_from(row.get::<&str, u32>("is_all_files_ready")?).expect("is_all_files_ready should be valid"),
                 complete_file_count: row.get("completed_files")?,
                 file_count: row.get("total_files")?,
                 priority: row.get("priority")?,
@@ -368,7 +376,7 @@ impl TaskStorageClient for TaskStorageSqlite {
     ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
         /**
          * is_restorable_only = true 有几个条件:
-         * 1. is_all_files_ready = 1
+         * 1. is_all_files_ready = 2
          * 2. 每个相关文件的所有chunk都已经上传:
          *   - 文件关联所有chunk的is_uploaded都为true
          *   - 文件关联chunk数 * 文件chunk大小(chunk_size) >= 文件大小(file_size)
@@ -381,7 +389,7 @@ impl TaskStorageClient for TaskStorageSqlite {
             ) AS completed_files,
             (SELECT COUNT(*) FROM upload_files WHERE upload_files.task_id = upload_tasks.task_id) AS total_files
             FROM upload_tasks
-            WHERE zone_id = ? AND key = ? AND is_all_files_ready = 1 
+            WHERE zone_id = ? AND key = ? AND is_all_files_ready = 2 
                 AND 
                 completed_files = total_files
             ORDER BY version DESC LIMIT 1"
@@ -406,7 +414,7 @@ impl TaskStorageClient for TaskStorageSqlite {
                 prev_check_point_version: row.get::<&str, Option<u64>>("prev_version")?.map(|v| CheckPointVersion::from(v as u128)),
                 meta: row.get("meta")?,
                 dir_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(row.get::<&str, Vec<u8>>("dir_path")?)),
-                is_all_files_ready: row.get("is_all_files_ready")?,
+                is_all_files_ready: FilesReadyState::try_from(row.get::<&str, u32>("is_all_files_ready")?).expect("is_all_files_ready should be valid"),
                 complete_file_count: row.get("completed_files")?,
                 file_count: row.get("total_files")?,
                 priority: row.get("priority")?,
@@ -455,7 +463,7 @@ impl TaskStorageClient for TaskStorageSqlite {
             ) AS completed_files,
             (SELECT COUNT(*) FROM upload_files WHERE upload_files.task_id = upload_tasks.task_id) AS total_files
             FROM upload_tasks
-            WHERE zone_id = ? AND key = ? AND is_all_files_ready = 1 
+            WHERE zone_id = ? AND key = ? AND is_all_files_ready = 2 
                 AND 
                 completed_files = total_files"
         } else {
@@ -480,7 +488,7 @@ impl TaskStorageClient for TaskStorageSqlite {
                 prev_check_point_version: row.get::<&str, Option<u64>>("prev_version")?.map(|v| CheckPointVersion::from(v as u128)),
                 meta: row.get("meta")?,
                 dir_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(row.get::<&str, Vec<u8>>("dir_path")?)),
-                is_all_files_ready: row.get("is_all_files_ready")?,
+                is_all_files_ready: FilesReadyState::try_from(row.get::<&str, u32>("is_all_files_ready")?).expect("is_all_files_ready should be valid"),
                 complete_file_count: row.get("completed_files")?,
                 file_count: row.get("total_files")?,
                 priority: row.get("priority")?,
@@ -510,7 +518,7 @@ impl TaskStorageClient for TaskStorageSqlite {
             ) AS completed_files,
             (SELECT COUNT(*) FROM upload_files WHERE upload_files.task_id = upload_tasks.task_id) AS total_files
             FROM upload_tasks
-            WHERE zone_id = ? AND key = ? AND version >=? AND version <=? AND is_all_files_ready = 1 
+            WHERE zone_id = ? AND key = ? AND version >=? AND version <=? AND is_all_files_ready = 2 
                 AND 
                 completed_files = total_files
             ORDER BY version DESC LIMIT ?"
@@ -536,7 +544,7 @@ impl TaskStorageClient for TaskStorageSqlite {
                 prev_check_point_version: row.get::<&str, Option<u64>>("prev_version")?.map(|v| CheckPointVersion::from(v as u128)),
                 meta: row.get("meta")?,
                 dir_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(row.get::<&str, Vec<u8>>("dir_path")?)),
-                is_all_files_ready: row.get("is_all_files_ready")?,
+                is_all_files_ready: FilesReadyState::try_from(row.get::<&str, u32>("is_all_files_ready")?).expect("is_all_files_ready should be valid"),
                 complete_file_count: row.get("completed_files")?,
                 file_count: row.get("total_files")?,
                 priority: row.get("priority")?,
@@ -555,7 +563,8 @@ impl TaskStorageDelete for TaskStorageSqlite {
         &self,
         task_id: &[TaskId],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        unimplemented!()
+        // unimplemented!()
+        Ok(())
     }
 }
 
@@ -589,9 +598,15 @@ impl FileStorageClient for TaskStorageSqlite {
                 AND upload_chunks.chunk_seq = ?";
         let connection = self.connection.lock().await;
         let mut stmt = connection.prepare(sql)?;
-        let (server_type, server_name, chunk_hash, remote_chunk_id) = stmt.query_row(params![self.zone_id.as_str(), task_key.as_str(), Into::<u128>::into(version) as u64, file_path.as_os_str().as_encoded_bytes(), chunk_seq], |row| {
+        let mut rows = stmt.query_map(params![self.zone_id.as_str(), task_key.as_str(), Into::<u128>::into(version) as u64, file_path.as_os_str().as_encoded_bytes(), chunk_seq], |row| {
             Ok((row.get::<usize, Option<u32>>(0)?, row.get::<usize, Option<String>>(1)?, row.get::<usize, Option<String>>(2)?, row.get::<usize, Option<u64>>(3)?))
-        })?;
+        })?.collect::<Vec<_>,>();
+
+        if rows.len() == 0 {
+            return Ok(None);
+        }
+
+        let (server_type, server_name, chunk_hash, remote_chunk_id) = rows.remove(0)?;
 
         Ok(match chunk_hash {
             Some(chunk_hash) => {
@@ -615,24 +630,50 @@ impl FileStorageClient for TaskStorageSqlite {
         chunk_hash: &str,
         remote_chunk_id: ChunkId,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let sql = "UPDATE upload_chunks 
-            SET server_type = ?, server_name = ?, chunk_hash = ?, remote_chunk_id = ?
-            WHERE chunk_seq = ?
-                AND EXISTS (
-                    SELECT 1
-                    FROM upload_files
-                    JOIN upload_tasks ON upload_files.task_id = upload_tasks.task_id
-                    WHERE upload_files.file_path = ? 
-                    AND upload_tasks.key = ? 
-                    AND upload_tasks.version = ? 
-                    AND upload_tasks.zone_id = ?
-                    AND upload_chunks.task_id = upload_files.task_id
-                    AND upload_chunks.file_seq = upload_files.file_seq
-                )
-            ";
-            
+        let sql = "INSERT INTO upload_chunks (task_id, file_seq, chunk_seq, server_type, server_name, chunk_hash, remote_chunk_id)
+            SELECT upload_files.task_id, upload_files.file_seq, ?, ?, ?, ?, ?
+            FROM upload_files
+            JOIN upload_tasks ON upload_files.task_id = upload_tasks.task_id
+            WHERE upload_files.file_path = ? 
+            AND upload_tasks.key = ? 
+            AND upload_tasks.version = ? 
+            AND upload_tasks.zone_id = ?
+            ON CONFLICT (task_id, file_seq, chunk_seq) DO UPDATE
+            SET server_type = ?, server_name = ?, chunk_hash = ?, remote_chunk_id = ?";
+
         let connection = self.connection.lock().await;
-        connection.execute(sql, params![Into::<u32>::into(chunk_server_type), server_name, chunk_hash, Into::<u128>::into(remote_chunk_id) as u64, chunk_seq, file_path.as_os_str().as_encoded_bytes(), task_key.as_str(), Into::<u128>::into(version) as u64, self.zone_id.as_str()])?;
+        connection.execute(sql, params![
+            chunk_seq,
+            Into::<u32>::into(chunk_server_type),
+            server_name,
+            chunk_hash,
+            Into::<u128>::into(remote_chunk_id) as u64,
+            file_path.as_os_str().as_encoded_bytes(),
+            task_key.as_str(),
+            Into::<u128>::into(version) as u64,
+            self.zone_id.as_str(),
+            Into::<u32>::into(chunk_server_type),
+            server_name,
+            chunk_hash,
+            Into::<u128>::into(remote_chunk_id) as u64,
+        ])?;
+        // let sql = "UPDATE upload_chunks 
+        //     SET server_type = ?, server_name = ?, chunk_hash = ?, remote_chunk_id = ?
+        //     WHERE chunk_seq = ?
+        //         AND EXISTS (
+        //             SELECT 1
+        //             FROM upload_files
+        //             JOIN upload_tasks ON upload_files.task_id = upload_tasks.task_id
+        //             WHERE upload_files.file_path = ? 
+        //             AND upload_tasks.key = ? 
+        //             AND upload_tasks.version = ? 
+        //             AND upload_tasks.zone_id = ?
+        //             AND upload_chunks.task_id = upload_files.task_id
+        //             AND upload_chunks.file_seq = upload_files.file_seq
+        //         )
+        //     ";
+            
+        // connection.execute(sql, params![Into::<u32>::into(chunk_server_type), server_name, chunk_hash, Into::<u128>::into(remote_chunk_id) as u64, chunk_seq, file_path.as_os_str().as_encoded_bytes(), task_key.as_str(), Into::<u128>::into(version) as u64, self.zone_id.as_str()])?;
 
         Ok(())
     }

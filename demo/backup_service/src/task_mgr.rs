@@ -9,9 +9,10 @@ use backup_lib::{
     FileMgrSelector, ListOffset, TaskId, TaskInfo as TaskInfoServer, TaskKey,
     TaskMgrSelector, TaskStorageQuerier,
 };
+use rusqlite::Result;
 use tokio::sync::Mutex;
 
-use crate::{backup_task::{BackupTask, BackupTaskEvent, Task, TaskInfo, TaskInner}, restore_task::RestoreTask, task_storage::{ChunkStorageClient, FileStorageClient, TaskStorageClient}};
+use crate::{backup_task::{BackupTask, BackupTaskEvent, Task, TaskInfo, TaskInner}, restore_task::RestoreTask, task_storage::{ChunkStorageClient, FileStorageClient, FilesReadyState, TaskStorageClient}};
 
 // TODO: config
 const MAX_RUNNING_TASK_COUNT: usize = 5;
@@ -29,7 +30,7 @@ impl BackupTaskMap {
         }
     }
 
-    fn try_run(&mut self, backup_task: BackupTask) {
+    async fn try_run(&mut self, backup_task: BackupTask) {
         if self.tasks.len() < MAX_RUNNING_TASK_COUNT {
             let task_key = backup_task.task_key();
             let task_id = backup_task.task_id();
@@ -40,7 +41,7 @@ impl BackupTaskMap {
                 .or_insert_with(HashMap::new)
                 .insert(version, task_id);
 
-            backup_task.start();
+            backup_task.start().await;
         }
     }
 
@@ -63,9 +64,9 @@ enum BackupState {
 
 pub(crate) struct BackupTaskMgrInner {
     zone_id: String,
-    task_storage: Arc<Box<dyn TaskStorageClient>>,
-    file_storage: Arc<Box<dyn FileStorageClient>>,
-    chunk_storage: Arc<Box<dyn ChunkStorageClient>>,
+    task_storage: Arc<dyn TaskStorageClient>,
+    file_storage: Arc<dyn FileStorageClient>,
+    chunk_storage: Arc<dyn ChunkStorageClient>,
     task_mgr_selector: Arc<Box<dyn TaskMgrSelector>>,
     file_mgr_selector: Arc<Box<dyn FileMgrSelector>>,
     chunk_mgr_selector: Arc<Box<dyn ChunkMgrSelector>>,
@@ -78,15 +79,15 @@ impl BackupTaskMgrInner {
         self.zone_id.as_str()
     }
 
-    pub(crate) fn task_storage(&self) -> Arc<Box<dyn TaskStorageClient>> {
+    pub(crate) fn task_storage(&self) -> Arc<dyn TaskStorageClient> {
         self.task_storage.clone()
     }
 
-    pub(crate) fn file_storage(&self) -> Arc<Box<dyn FileStorageClient>> {
+    pub(crate) fn file_storage(&self) -> Arc<dyn FileStorageClient> {
         self.file_storage.clone()
     }
 
-    pub(crate) fn chunk_storage(&self) -> Arc<Box<dyn ChunkStorageClient>> {
+    pub(crate) fn chunk_storage(&self) -> Arc<dyn ChunkStorageClient> {
         self.chunk_storage.clone()
     }
 
@@ -102,54 +103,46 @@ impl BackupTaskMgrInner {
         self.chunk_mgr_selector.clone()
     }
 
-    pub(crate) fn task_event_sender(&self) -> Option<tokio::sync::mpsc::Sender<BackupTaskEvent>> {
-        let handle = tokio::runtime::Handle::current();
-        handle.block_on(async {
-            let state = self.state.lock().await;
-            match &*state {
-                BackupState::Running(sender) => Some(sender.clone()),
-                BackupState::Stopping(_, sender) => Some(sender.clone()),
-                _ => None
-            }            
-        })
+    pub(crate) async fn task_event_sender(&self) -> Option<tokio::sync::mpsc::Sender<BackupTaskEvent>> {
+        let state = self.state.lock().await;
+        match &*state {
+            BackupState::Running(sender) => Some(sender.clone()),
+            BackupState::Stopping(_, sender) => Some(sender.clone()),
+            _ => None
+        }
     }
 
-    fn try_run(&self, backup_task: BackupTask) -> usize {
-        let handle = tokio::runtime::Handle::current();
-        handle.block_on(async {
-            let mut running_tasks = self.running_tasks.lock().await;
-            running_tasks.try_run(backup_task);
-            running_tasks.tasks.len()
-        })
+    async fn try_run(&self, backup_task: BackupTask) -> usize {
+        let mut running_tasks = self.running_tasks.lock().await;
+        running_tasks.try_run(backup_task).await;
+        running_tasks.tasks.len()
     }
 
-    fn remove_task(&self, backup_task: &BackupTask) -> usize {
-        let handle = tokio::runtime::Handle::current();
-        handle.block_on(async {
-            let mut running_tasks = self.running_tasks.lock().await;
-            running_tasks.remove_task(backup_task);
-            running_tasks.tasks.len()
-        })
+    async fn remove_task(&self, backup_task: &BackupTask) -> usize {
+        let mut running_tasks = self.running_tasks.lock().await;
+        running_tasks.remove_task(backup_task);
+        running_tasks.tasks.len()
     }
 }
 
+#[derive(Clone)]
 pub struct BackupTaskMgr(Arc<BackupTaskMgrInner>);
 
 impl BackupTaskMgr {
     pub fn new(
         zone_id: String,
-        task_storage: Box<dyn TaskStorageClient>,
-        file_storage: Box<dyn FileStorageClient>,
-        chunk_storage: Box<dyn ChunkStorageClient>,
+        task_storage: Arc<dyn TaskStorageClient>,
+        file_storage: Arc<dyn FileStorageClient>,
+        chunk_storage: Arc<dyn ChunkStorageClient>,
         task_mgr_selector: Box<dyn TaskMgrSelector>,
         file_mgr_selector: Box<dyn FileMgrSelector>,
         chunk_mgr_selector: Box<dyn ChunkMgrSelector>,
     ) -> Self {
         // let (task_event_sender, task_event_receiver) = tokio::sync::mpsc::channel(1024);
         let task_mgr = Arc::new(BackupTaskMgrInner {
-            task_storage: Arc::new(task_storage),
-            file_storage: Arc::new(file_storage),
-            chunk_storage: Arc::new(chunk_storage),
+            task_storage,
+            file_storage,
+            chunk_storage,
             task_mgr_selector: Arc::new(task_mgr_selector),
             file_mgr_selector: Arc::new(file_mgr_selector),
             chunk_mgr_selector: Arc::new(chunk_mgr_selector),
@@ -175,29 +168,33 @@ impl BackupTaskMgr {
             }            
         }
 
-        let task_mgr = self.0.clone();
+        let task_mgr = self.clone();
+        let task_mgr_inner = self.0.clone();
         // listen events from tasks
         tokio::task::spawn(async move {
             loop {
-                // self.makeup_tasks().await.expect("todo: you can retry later");
+                task_mgr.makeup_tasks().await.expect("todo: you can retry later");
                 if let Some(event) = task_event_receiver.recv().await {
                     match event {
-                        BackupTaskEvent::New(backup_task) => {task_mgr.try_run(backup_task);},
+                        BackupTaskEvent::New(backup_task) => {
+                            log::info!("new task: {:?}, try run it.", backup_task.task_id());
+                            task_mgr_inner.try_run(backup_task).await;
+                        },
                         BackupTaskEvent::Idle(backup_task) => {
-                            task_mgr.remove_task(&backup_task);
+                            task_mgr_inner.remove_task(&backup_task);
                         }
                         BackupTaskEvent::ErrorAndWillRetry(backup_task, err) => {
-                            task_mgr.remove_task(&backup_task);
+                            task_mgr_inner.remove_task(&backup_task);
                         }
                         BackupTaskEvent::Fail(backup_task, err) => {
-                            task_mgr.remove_task(&backup_task);
+                            task_mgr_inner.remove_task(&backup_task);
                         }
                         BackupTaskEvent::Successed(backup_task) => {
-                            task_mgr.remove_task(&backup_task);
+                            task_mgr_inner.remove_task(&backup_task);
                         }
                         BackupTaskEvent::Stop(backup_task) => {
-                            let task_count = task_mgr.remove_task(&backup_task);
-                            let mut state = task_mgr.state.lock().await;
+                            let task_count = task_mgr_inner.remove_task(&backup_task).await;
+                            let mut state = task_mgr_inner.state.lock().await;
                             match &*state {
                                 BackupState::Running(_) => {}
                                 BackupState::Stopping(stop_notifier, _) => {
@@ -263,7 +260,7 @@ impl BackupTaskMgr {
         )
         .await?;
 
-        if let Some(task_event_sender) = self.0.task_event_sender() {
+        if let Some(task_event_sender) = self.0.task_event_sender().await {
             task_event_sender.send(BackupTaskEvent::New(backup_task.clone())).await?;
         }
             
@@ -294,6 +291,10 @@ impl BackupTaskMgr {
         Ok(backup_task)
     }
 
+    pub async fn all_files_has_prepare_ready(&self, task_id: TaskId) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.0.task_storage.set_files_prepare_ready(task_id, FilesReadyState::Ready).await
+    }
+
     pub async fn get_tasks(
         &self,
         task_key: &TaskKey,
@@ -316,7 +317,7 @@ impl BackupTaskMgr {
         let server_version = task_info_server.map_or(0, |info| Into::<u128>::into(info.check_point_version));
 
         let task_info_local = TaskStorageClient::get_last_check_point_version(self.0
-            .task_storage.as_ref().as_ref(), task_key, false)
+            .task_storage.as_ref(), task_key, false)
             .await?;
 
         let local_version = task_info_local.as_ref().map_or(0, |info| Into::<u128>::into(info.check_point_version));
@@ -337,7 +338,7 @@ impl BackupTaskMgr {
                 dir_path: info_server.dir_path,
                 priority: 0,
                 is_manual: false,
-                is_all_files_ready: info_server.is_all_files_ready,
+                is_all_files_ready: if info_server.is_all_files_ready {FilesReadyState::RemoteReady} else {FilesReadyState::NotReady},
                 complete_file_count: info_server.complete_file_count,
                 file_count: info_server.file_count,
                 last_fail_at: None,
@@ -354,7 +355,7 @@ impl BackupTaskMgr {
         // TODO: 到task-mgr服务器上获取
         
         TaskStorageClient::get_check_point_version_list(self.0
-            .task_storage.as_ref().as_ref(), task_key, offset, limit, false)
+            .task_storage.as_ref(), task_key, offset, limit, false)
         .await
     }
 
@@ -385,7 +386,7 @@ impl BackupTaskMgr {
         // TODO: filter by priority
         for task in incomplete_tasks {
             let backup_task = BackupTask::from_storage(Arc::downgrade(&self.0), task);
-            self.0.try_run(backup_task);
+            self.0.try_run(backup_task).await;
         }
 
         Ok(())
@@ -394,7 +395,7 @@ impl BackupTaskMgr {
 
 pub struct RestoreTaskMgrInner {
     zone_id: String,
-    task_storage: Arc<Box<dyn TaskStorageQuerier>>,
+    task_storage: Arc<dyn TaskStorageQuerier>,
     task_mgr_selector: Arc<Box<dyn TaskMgrSelector>>,
     file_mgr_selector: Arc<Box<dyn FileMgrSelector>>,
     chunk_mgr_selector: Arc<Box<dyn ChunkMgrSelector>>,
@@ -423,13 +424,13 @@ pub struct RestoreTaskMgr(Arc<RestoreTaskMgrInner>);
 impl RestoreTaskMgr {
     pub fn new(
         zone_id: String,
-        task_storage: Box<dyn TaskStorageQuerier>,
+        task_storage: Arc<dyn TaskStorageQuerier>,
         task_mgr_selector: Box<dyn TaskMgrSelector>,
         file_mgr_selector: Box<dyn FileMgrSelector>,
         chunk_mgr_selector: Box<dyn ChunkMgrSelector>,
     ) -> Self {
         RestoreTaskMgr(Arc::new(RestoreTaskMgrInner {
-            task_storage: Arc::new(task_storage),
+            task_storage,
             task_mgr_selector: Arc::new(task_mgr_selector),
             file_mgr_selector: Arc::new(file_mgr_selector),
             chunk_mgr_selector: Arc::new(chunk_mgr_selector),
@@ -455,6 +456,7 @@ impl RestoreTaskMgr {
                     dir_path.to_path_buf(),
                 )
                 .await?;
+                restore_task.start().await?;
                 Ok(restore_task)
             }
             None => Err("task not found".into()),
@@ -482,7 +484,7 @@ impl RestoreTaskMgr {
                 dir_path: info_server.dir_path,
                 priority: 0,
                 is_manual: false,
-                is_all_files_ready: info_server.is_all_files_ready,
+                is_all_files_ready: if info_server.is_all_files_ready {FilesReadyState::RemoteReady} else {FilesReadyState::NotReady},
                 complete_file_count: info_server.complete_file_count,
                 file_count: info_server.file_count,
                 last_fail_at: None,
@@ -513,7 +515,7 @@ impl RestoreTaskMgr {
             dir_path: info.dir_path,
             priority: 0,
             is_manual: false,
-            is_all_files_ready: info.is_all_files_ready,
+            is_all_files_ready: if info.is_all_files_ready {FilesReadyState::RemoteReady} else {FilesReadyState::NotReady},
             complete_file_count: info.complete_file_count,
             file_count: info.file_count,
             last_fail_at: None,

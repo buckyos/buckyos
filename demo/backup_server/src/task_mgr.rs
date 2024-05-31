@@ -68,10 +68,13 @@ impl backup_lib::TaskMgr for TaskMgr {
         hash: &str,
         file_size: u64,
     ) -> Result<(FileServerType, String, FileId, u32), Box<dyn std::error::Error + Send + Sync>> {
-        let mut storage = self.storage.lock().await;
-        let task_info = storage.query_task_info_without_files(task_id)?.unwrap();
-        let file_mgr = self.file_mgr_selector.select(&task_info.task_key, task_info.check_point_version, hash).await?;
-        let (file_server_type, file_server_name, remote_file_info) = storage.insert_task_file(task_id, file_seq, file_path, hash, file_size, file_mgr.server_type(), file_mgr.server_name())?;
+        let (file_server_type, file_server_name, remote_file_info) = {
+            let mut storage = self.storage.lock().await;
+            let task_info = storage.query_task_info_without_files(task_id)?.unwrap();
+            let file_mgr = self.file_mgr_selector.select(&task_info.task_key, task_info.check_point_version, hash).await?;
+            storage.insert_task_file(task_id, file_seq, file_path, hash, file_size, file_mgr.server_type(), file_mgr.server_name())?
+        };
+
         match remote_file_info {
             Some((file_id, chunk_size)) => {
                 Ok((file_server_type, file_server_name, file_id, chunk_size))

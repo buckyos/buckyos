@@ -52,10 +52,12 @@ impl backup_lib::ChunkMgr for ChunkMgr {
                 }
 
                 let tmp_path = self.tmp_dir.join(chunk_hash);
-                async_std::fs::write(&tmp_path, chunk).await?;
+                tokio::fs::write(&tmp_path, chunk).await?;
                 let save_path = self.save_dir.join(chunk_hash);
                 self.storage.lock().await.update_chunk_save_path(chunk_hash, save_path.as_path())?;
-                async_std::fs::rename(&tmp_path, &save_path).await?;
+                tokio::fs::copy(&tmp_path, &save_path).await?;
+                tokio::fs::remove_file(&tmp_path).await;
+
                 Ok(())
             }
             None => {
@@ -70,7 +72,7 @@ impl backup_lib::ChunkMgr for ChunkMgr {
             Some((chunk_hash, chunk_size, save_path)) => {
                 match save_path {
                     Some(save_path) => {
-                        let chunk = async_std::fs::read(save_path).await?;
+                        let chunk = tokio::fs::read(save_path).await?;
                         // TODO: check chunk size and hash
                         Ok(chunk)
                     }

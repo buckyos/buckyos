@@ -16,7 +16,7 @@ use main_v1::main_v1;
 
 const is_v0: bool = false;
 
-#[async_std::main]
+#[tokio::main]
 async fn main() {
     if is_v0 {
         main_v0().await.unwrap();

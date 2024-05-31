@@ -16,6 +16,7 @@ impl FileMgr {
     }
 
     pub(crate) fn chunk_size(&self) -> u32 {
+        // TODO: read from config
         1024 * 1024 * 16
     }
 }
@@ -48,10 +49,13 @@ impl backup_lib::FileMgr for FileMgr {
         chunk_hash: &str,
         chunk_size: u32,
     ) -> Result<(ChunkServerType, String, ChunkId), Box<dyn std::error::Error + Send + Sync>> {
-        let mut storage = self.storage.lock().await;
-        let (task_server_type, task_sever_name, file_hash, file_size, _chunk_size) = storage.get_file_by_id(file_id)?.unwrap();
-        let chunk_mgr = self.chunk_mgr_selector.select(file_hash.as_str(), chunk_seq, chunk_hash).await?;
-        let (chunk_server_type, chunk_server_name, remote_chunk_info) = storage.insert_file_chunk(file_hash.as_str(), chunk_seq, chunk_hash, chunk_size, chunk_mgr.server_type(), chunk_mgr.server_name())?;
+        let (chunk_server_type, chunk_server_name, remote_chunk_info) = {
+            let mut storage = self.storage.lock().await;
+            let (task_server_type, task_sever_name, file_hash, file_size, _chunk_size) = storage.get_file_by_id(file_id)?.unwrap();
+            let chunk_mgr = self.chunk_mgr_selector.select(file_hash.as_str(), chunk_seq, chunk_hash).await?;
+            storage.insert_file_chunk(file_hash.as_str(), chunk_seq, chunk_hash, chunk_size, chunk_mgr.server_type(), chunk_mgr.server_name())?
+        };
+
         match remote_chunk_info {
             Some(remote_chunk_id) => {
                 Ok((chunk_server_type, chunk_server_name, remote_chunk_id))
