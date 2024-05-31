@@ -347,6 +347,10 @@ async fn start_gateway_by_zone_config(
         );
     }
 
+    let cmd = gateway_config.gen();
+    info!("Gateway config: {}", cmd);
+
+    // Try start gateway
     if have_wan_node == have_lan_node {
         if this_node_is_lan {
             //TODO:start gateway, and register on WAN nodes and start passive port forward
