@@ -16,3 +16,4 @@ extern crate log;
 
 pub use config_gen::*;
 pub use endpoint::*;
+pub use peer::PeerAddrType;

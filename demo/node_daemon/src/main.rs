@@ -273,6 +273,7 @@ async fn start_gateway_by_zone_config(
     let mut have_wan_node = false;
     let mut have_lan_node = false;
     let mut this_node_is_lan = false;
+    let mut this_node = None;
     let mut lan_nodes = vec![];
     let mut wan_nodes = vec![];
     for etcd_server in zone_config.etcd_servers.iter() {
@@ -281,6 +282,9 @@ async fn start_gateway_by_zone_config(
         if server_ep.nat_id.is_some() {
             if server_ep.device_name == current_node_id {
                 this_node_is_lan = true;
+
+                assert!(this_node.is_none());
+                this_node = Some(server_ep);
             } else {
                 lan_nodes.push(server_ep);
             }
@@ -288,11 +292,59 @@ async fn start_gateway_by_zone_config(
         } else {
             if server_ep.device_name == current_node_id {
                 this_node_is_lan = false;
+
+                assert!(this_node.is_none());
+                this_node = Some(server_ep);
             } else {
                 wan_nodes.push(server_ep);
             }
             have_wan_node = true;
         }
+    }
+
+    // gen gateway config now
+    assert!(this_node.is_some());
+    let this_node = this_node.unwrap();
+
+    // Add current node config at first
+    let mut gateway_config = gateway::ConfigGen::new(
+        current_node_id,
+        if this_node_is_lan {
+            gateway::PeerAddrType::LAN
+        } else {
+            gateway::PeerAddrType::WAN
+        },
+        0,
+    );
+
+    // Add etcd service as upstream
+    let etcd_port = this_node.port.unwrap();
+    gateway_config.add_upstream_service("tcp", "127.0.0.1", etcd_port);
+
+    // Add other nodes etcd service via tcp forward proxy
+    for lan_node in lan_nodes {
+        let etcd_port = lan_node.port.unwrap();
+
+        gateway_config.add_device(&lan_node.device_name, None, None, Some(gateway::PeerAddrType::LAN));
+        gateway_config.add_forward_proxy(
+            "tcp",
+            "127.0.0.1",
+            etcd_port,
+            lan_node.device_name,
+            etcd_port,
+        );
+    }
+    for wan_node in wan_nodes {
+        let etcd_port = wan_node.port.unwrap();
+
+        gateway_config.add_device(&wan_node.device_name, None, None, Some(gateway::PeerAddrType::WAN));
+        gateway_config.add_forward_proxy(
+            "tcp",
+            "127.0.0.1",
+            etcd_port,
+            wan_node.device_name,
+            etcd_port,
+        );
     }
 
     if have_wan_node == have_lan_node {
