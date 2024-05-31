@@ -1,6 +1,6 @@
 use crate::*;
 use std::net::TcpStream;
-use std::time::Duration;
+use tokio::time::{sleep, Duration};
 
 const BACKUP_STORAGE_DIR: &'static str = "/tmp/backup";
 
@@ -36,9 +36,7 @@ pub(crate) async fn check_etcd_by_zone_config(
             Err(_) => Ok(EtcdState::NeedRunInThisMachine(node_id.clone())),
         }
     } else {
-        
         for endpoint in &config.etcd_servers {
-            let endpoint = format!("http://{}:2379", endpoint);
             info!("Try connect to etcd server:{}", endpoint);
             if EtcdClient::connect(&endpoint).await.is_ok() {
                 return Ok(EtcdState::Good(endpoint.clone()));
@@ -56,11 +54,30 @@ pub(crate) async fn get_etcd_data_version(
     let initial_cluster = zone_cfg
         .etcd_servers
         .iter()
-        .map(|server| format!("{}=http://{}:2380", server.trim_end_matches(zone_cfg.zone_id.as_str()).trim_end_matches("."), server))
+        .map(|server| {
+            let parts: Vec<&str> = server.split(":").collect();
+            if parts.len() <= 2 {
+                error!("etcd server format error:{}", server);
+            }
+            let machine = parts[0];
+            let port = parts[1];
+            format!("{}=http://{}:{}", machine, machine, port)
+        })
         .collect::<Vec<_>>()
         .join(",");
+    info!("etcd initial_cluster:{}", initial_cluster);
+
     let name = node_cfg.node_id.clone();
-    let revision = etcd_client::get_etcd_data_version(&name, &initial_cluster, zone_cfg.zone_id.as_str())
+    start_etcd(name.clone().as_str(), &initial_cluster, &zone_cfg.zone_id)
+        .map_err(|err| {
+            let err_msg = format!("start_etcd! {}", err);
+            error!("{}", err_msg);
+            NodeDaemonErrors::ReasonError(err_msg.to_string())
+        })
+        .unwrap();
+    sleep(Duration::from_secs(2)).await;
+
+    let revision = etcd_client::get_etcd_data_version()
         .await
         .map_err(|err| {
             let err_msg = format!("start_etcd! {}", err);
@@ -83,7 +100,15 @@ pub(crate) async fn try_start_etcd(
     let initial_cluster = zone_cfg
         .etcd_servers
         .iter()
-        .map(|server| format!("{}=http://{}:2380", server.trim_end_matches(zone_cfg.zone_id.as_str()).trim_end_matches("."), server))
+        .map(|server| {
+            format!(
+                "{}=http://{}:2380",
+                server
+                    .trim_end_matches(zone_cfg.zone_id.as_str())
+                    .trim_end_matches("."),
+                server
+            )
+        })
         .collect::<Vec<_>>()
         .join(",");
     let name = node_cfg.node_id.clone();
