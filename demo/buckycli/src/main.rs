@@ -1,4 +1,7 @@
 extern crate core;
+mod package_cmd;
+
+use package_cmd::*;
 
 use bucky_name_service::{DnsTxtCodec, NSProvider, NameInfo};
 use clap::{value_parser, Arg, ArgMatches, Command};
@@ -319,6 +322,30 @@ async fn main() -> std::result::Result<(), String> {
                         .required(true),
                 ),
         )
+        .subcommand(
+            Command::new("pack_package")
+                .about("Pack a dir as a bucky package(.bkz)")
+                .arg(
+                    Arg::new("path")
+                        .help("Specifies the dir path to pack")
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("publish_package")
+                .about("Pack a dir to bucky package(.bkz) and publish it to repo server")
+                .arg(
+                    Arg::new("path")
+                        .help("Specifies the dir path to pack")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("repo")
+                        .help("Specifies the repo server address")
+                        .required(false)
+                        .default_value("http://47.106.164.184/package/upload"),
+                ),
+        )
         // .arg(
         //     Arg::new("snapshot")
         //         .short('s')
@@ -437,6 +464,39 @@ async fn main() -> std::result::Result<(), String> {
                 }
                 Err(e) => {
                     println!("{}", e);
+                }
+            }
+        }
+        Some(("pack_package", encode_matches)) => {
+            let path: &String = encode_matches.get_one("path").unwrap();
+
+            match pack(path).await {
+                Ok(_) => {
+                    println!("Package created successfully");
+                }
+                Err(e) => {
+                    eprintln!("Failed to pack package: {}", e);
+                }
+            }
+        }
+        Some(("publish_package", encode_matches)) => {
+            let path: &String = encode_matches.get_one("path").unwrap();
+            let repo: &String = encode_matches.get_one("repo").unwrap();
+
+            match pack(path).await {
+                Ok(_) => {
+                    println!("Package created successfully");
+                    match publish(path, repo).await {
+                        Ok(_) => {
+                            println!("Package published successfully");
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to publish package: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to pack package: {}", e);
                 }
             }
         }
