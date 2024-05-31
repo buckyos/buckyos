@@ -1,8 +1,80 @@
 use crate::*;
-use std::net::TcpStream;
+use std::{net::TcpStream, thread};
 use tokio::time::{sleep, Duration};
 
 const BACKUP_STORAGE_DIR: &'static str = "/tmp/backup";
+
+// pub struct EtcdManager {
+//     machine: String,
+//     client_port: i32,
+//     peer_port: i32,
+// }
+
+// impl EtcdManager {
+//     fn new(config: &ZoneConfig, node_config: &NodeIdentityConfig) -> Self {
+//         let machine = node_config.node_id.clone();
+//         let local_endpoint = config
+//             .etcd_servers
+//             .iter()
+//             .find(|&server| server.starts_with(&machine));
+
+//         let parts: Vec<&str> = local_endpoint.unwrap().split(":").collect();
+//         let client_port = parts[1].to_string();
+//         let client_port = client_port.parse().unwrap();
+//         let peer_port = client_port + 1;
+
+//         Self {
+//             machine: machine,
+//             client_port,
+//             peer_port,
+//         }
+//     }
+
+//     pub async fn check_etcd_by_zone_config(self) -> Result<EtcdState> {
+//         let node_id = &self.machine;
+
+//         let timeout = Duration::from_secs(1);
+//         if TcpStream::connect_timeout(
+//             &format!("127.0.0.1:{}", self.client_port).parse().unwrap(),
+//             timeout,
+//         )
+//         .is_ok()
+//         {
+//             info!("local etcd is running ");
+//             return Ok(EtcdState::Good(node_id.clone()));
+//         }
+
+//         let local_endpoint = format!("{}:{}", self.machine, self.client_port);
+//     }
+// }
+
+pub(crate) fn parse_etcd_url(server: String) -> Result<(String, String)> {
+    let parts: Vec<&str> = server.split(":").collect();
+    if parts.len() < 2 {
+        error!("etcd server format error:{}", server);
+        return Ok((String::from(""), String::from("")));
+    }
+    let machine = parts[0];
+    let client_port: i32 = parts[1].parse().unwrap();
+    let peer_port = client_port + 1;
+
+    let client_url = format!("http://{}:{}", machine, client_port);
+    let peer_url = format!("http://{}:{}", machine, peer_port);
+
+    Ok((client_url, peer_url))
+}
+
+pub(crate) fn parse_initial_cluster(etcd_servers: Vec<String>) -> String {
+    etcd_servers
+        .iter()
+        .map(|server| {
+            let result = parse_etcd_url(server.to_string()).unwrap();
+            let peer_url = result.1;
+            format!("{}={}", server, peer_url)
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 pub(crate) async fn check_etcd_by_zone_config(
     config: &ZoneConfig,
@@ -11,27 +83,29 @@ pub(crate) async fn check_etcd_by_zone_config(
     let node_id = &node_config.node_id;
 
     // ping local 2379
-    let timeout = Duration::from_secs(1);
-    if TcpStream::connect_timeout(&"127.0.0.1:2379".parse().unwrap(), timeout).is_ok() {
-        info!("local etcd is running ");
-        return Ok(EtcdState::Good(node_id.clone()));
-    }
+    // let timeout = Duration::from_secs(1);
+    // if TcpStream::connect_timeout(&"127.0.0.1:2379".parse().unwrap(), timeout).is_ok() {
+    //     info!("local etcd is running ");
+    //     return Ok(EtcdState::Good(node_id.clone()));
+    // }
 
-    let local_endpoint = config
+    let local_server = config
         .etcd_servers
         .iter()
         .find(|&server| server.starts_with(node_id));
     info!(
         "check local etcd, local node id {:?}, local_endpoint:{:?}",
-        node_id, local_endpoint
+        node_id, local_server
     );
 
-    if let Some(endpoint) = local_endpoint {
+    if let Some(local_server) = local_server {
+        let result = parse_etcd_url(local_server.to_string()).unwrap();
+        let endpoint = result.0;
         info!(
-            "Found etcd server in this machine:{} ,try connect to local etcd.",
+            "Found etcd server should run on this machine:{} ,try connect to local etcd.",
             endpoint
         );
-        match EtcdClient::connect(endpoint).await {
+        match EtcdClient::connect(&endpoint).await {
             Ok(_) => Ok(EtcdState::Good(node_id.clone())),
             Err(_) => Ok(EtcdState::NeedRunInThisMachine(node_id.clone())),
         }
@@ -50,32 +124,18 @@ pub(crate) async fn get_etcd_data_version(
     node_cfg: &NodeIdentityConfig,
     zone_cfg: &ZoneConfig,
 ) -> Result<i64> {
-    // 转换 etcd_servers为 initial_cluster 字符串
-    let initial_cluster = zone_cfg
-        .etcd_servers
-        .iter()
-        .map(|server| {
-            let parts: Vec<&str> = server.split(":").collect();
-            if parts.len() <= 2 {
-                error!("etcd server format error:{}", server);
-            }
-            let machine = parts[0];
-            let port = parts[1];
-            format!("{}=http://{}:{}", machine, machine, port)
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    info!("etcd initial_cluster:{}", initial_cluster);
-
     let name = node_cfg.node_id.clone();
-    start_etcd(name.clone().as_str(), &initial_cluster, &zone_cfg.zone_id)
+    let zone = zone_cfg.zone_id.clone();
+    let initial_cluster = parse_initial_cluster(zone_cfg.etcd_servers.clone());
+
+    etcd_client::start_etcd(&name, &initial_cluster, &zone)
         .map_err(|err| {
             let err_msg = format!("start_etcd! {}", err);
             error!("{}", err_msg);
             NodeDaemonErrors::ReasonError(err_msg.to_string())
         })
         .unwrap();
-    sleep(Duration::from_secs(2)).await;
+    sleep(Duration::from_secs(1)).await;
 
     let revision = etcd_client::get_etcd_data_version()
         .await
@@ -97,21 +157,9 @@ pub(crate) async fn try_start_etcd(
     node_cfg: &NodeIdentityConfig,
     zone_cfg: &ZoneConfig,
 ) -> Result<()> {
-    let initial_cluster = zone_cfg
-        .etcd_servers
-        .iter()
-        .map(|server| {
-            format!(
-                "{}=http://{}:2380",
-                server
-                    .trim_end_matches(zone_cfg.zone_id.as_str())
-                    .trim_end_matches("."),
-                server
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
     let name = node_cfg.node_id.clone();
+    let initial_cluster = parse_initial_cluster(zone_cfg.etcd_servers.clone());
+
     etcd_client::start_etcd(&name, &initial_cluster, zone_cfg.zone_id.as_str()).map_err(|err| {
         let err_msg = format!("start_etcd! {}", err);
         error!("{}", err_msg);

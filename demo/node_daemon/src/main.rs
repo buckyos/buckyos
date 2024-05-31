@@ -27,8 +27,8 @@ use crate::etcd_mgr::*;
 use crate::run_item::*;
 use crate::service_mgr::*;
 use crate::system_config::*;
-use name_client::NameClient;
 use gateway::DeviceEndPoint;
+use name_client::NameClient;
 
 use thiserror::Error;
 
@@ -264,7 +264,10 @@ async fn get_node_config(
 }
 
 //start gateway for etcd cluster
-async fn start_gateway_by_zone_config(zone_config: &ZoneConfig,current_node_id:&str) -> Result<()> {
+async fn start_gateway_by_zone_config(
+    zone_config: &ZoneConfig,
+    current_node_id: &str,
+) -> Result<()> {
     //get gateway config from zone_config
     let mut have_wan_node = false;
     let mut have_lan_node = false;
@@ -272,7 +275,8 @@ async fn start_gateway_by_zone_config(zone_config: &ZoneConfig,current_node_id:&
     let mut lan_nodes = vec![];
     let mut wan_nodes = vec![];
     for etcd_server in zone_config.etcd_servers.iter() {
-        let server_ep = DeviceEndPoint::from_str(etcd_server).map_err(|err| {return NodeDaemonErrors::ParserConfigError(err)})?;
+        let server_ep = DeviceEndPoint::from_str(etcd_server)
+            .map_err(|err| return NodeDaemonErrors::ParserConfigError(err))?;
         if server_ep.nat_id.is_some() {
             if server_ep.device_name == current_node_id {
                 this_node_is_lan = true;
@@ -298,11 +302,10 @@ async fn start_gateway_by_zone_config(zone_config: &ZoneConfig,current_node_id:&
             //TODO:start gateway, and start port forward to LAN nodes
             warn!("start gateway, and start port forward to LAN nodes")
         }
-  
     } else {
         warn!("all node in some NAT, no gateway needed!");
     }
-    
+
     Ok(())
 }
 
@@ -315,8 +318,11 @@ async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig)
         .find(|&server| server.starts_with(&node_id))
         .map_or_else(
             || "http://127.0.0.1:2379".to_string(),
-            |endpoint| format!("http://{}:2379", endpoint),
+            |server| parse_etcd_url(server.to_string()).unwrap().0,
         );
+
+    info!("node_main local_endpoint:{}", local_endpoint);
+
     let sys_cfg = SystemConfig::new(&vec![local_endpoint])
         .await
         .map_err(|_| {
@@ -337,7 +343,7 @@ async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig)
             let target_state = service_cfg.target_state.clone();
             let _ = control_run_item_to_target_state(&service_cfg, target_state, None)
                 .await
-                .map_err(|err| {
+                .map_err(|_err| {
                     error!("control service item to target state failed!");
                     return NodeDaemonErrors::SystemConfigError(service_name.clone());
                 });
@@ -403,13 +409,12 @@ async fn main() -> std::result::Result<(), String> {
     })?;
     info!("zone config: {:?}", zone_config);
 
-    start_gateway_by_zone_config(&zone_config,&node_identity.node_id.as_str())
+    start_gateway_by_zone_config(&zone_config, &node_identity.node_id.as_str())
         .await
         .map_err(|err| {
             error!("start gateway by zone config failed!");
             return String::from("start gateway by zone config failed!");
         })?;
-
 
     //检查etcd状态
     let etcd_state = check_etcd_by_zone_config(&zone_config, &node_identity)

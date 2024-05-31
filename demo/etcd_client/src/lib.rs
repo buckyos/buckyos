@@ -124,8 +124,8 @@ pub fn start_etcd(
         .arg(cluster_token)
         .arg("--initial-cluster-state")
         .arg(cluster_state)
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
+        // .stdout(std::process::Stdio::inherit())
+        // .stderr(std::process::Stdio::inherit())
         .spawn()
 }
 
