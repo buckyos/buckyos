@@ -222,8 +222,9 @@ async fn get_node_config(
         }
     }
 
+    // key: nodes/$node_id
     //尝试通过system_config加载，加载成功更新缓存，失败则尝试使用缓存中的数据
-    let sys_node_key = format!("{}_node_config", node_identity.node_id);
+    let sys_node_key = format!("nodes/{}", node_identity.node_id);
     // 从etcd中读取
     let sys_cfg_result = sys_cfg.get(&sys_node_key).await;
     if sys_cfg_result.is_err() {
