@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+#![allow(unused)]
+
+
 mod backup;
 // mod backup_task_mgr;
 // mod backup_task_storage;
@@ -125,12 +129,12 @@ fn load_identity_config() -> Result<NodeIdentityConfig> {
     // load from /etc/buckyos/node_identity.toml
     let file_path = "node_identity.toml";
     let contents = std::fs::read_to_string(file_path).map_err(|err| {
-        error!("read node identity config failed!");
+        error!("read node identity config failed! {}",err);
         return NodeDaemonErrors::ReadConfigError(String::from(file_path));
     })?;
 
     let config: NodeIdentityConfig = toml::from_str(&contents).map_err(|err| {
-        error!("parse node identity config failed!");
+        error!("parse node identity config failed! {}",err);
         return NodeDaemonErrors::ParserConfigError(format!(
             "Failed to parse NodeIdentityConfig TOML: {}",
             err
@@ -451,7 +455,7 @@ async fn main() -> std::result::Result<(), String> {
     info!("node_dameon start...");
 
     let node_identity = load_identity_config().map_err(|err| {
-        error!("load node identity config failed!");
+        error!("load node identity config failed! {}",err);
         String::from("load node identity config failed!")
     })?;
 
@@ -461,7 +465,7 @@ async fn main() -> std::result::Result<(), String> {
     );
 
     let zone_config = looking_zone_config(&node_identity).await.map_err(|err| {
-        error!("looking zone config failed!");
+        error!("looking zone config failed! {}",err);
         String::from("looking zone config failed!")
     })?;
     info!("zone config: {:?}", zone_config);
@@ -469,7 +473,7 @@ async fn main() -> std::result::Result<(), String> {
     start_gateway_by_zone_config(&zone_config, &node_identity.node_id.as_str())
         .await
         .map_err(|err| {
-            error!("start gateway by zone config failed!");
+            error!("start gateway by zone config failed!,{}",err);
             return String::from("start gateway by zone config failed!");
         })?;
 
@@ -527,7 +531,7 @@ async fn main() -> std::result::Result<(), String> {
     node_daemon_main_loop(&node_identity, zone_config)
         .await
         .map_err(|err| {
-            error!("node daemon main loop failed!");
+            error!("node daemon main loop failed! {}",err);
             return String::from("node daemon main loop failed!");
         })?;
 

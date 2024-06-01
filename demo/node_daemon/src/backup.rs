@@ -468,7 +468,7 @@ impl Backup {
 
         let chunk_info = loop {
             let client = reqwest::Client::new();
-            let version_info = match client
+            let _ = match client
                 .get(url.as_str())
                 .json(&QueryChunkInfoReq {
                     key: key.to_string(),
