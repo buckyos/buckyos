@@ -2,9 +2,10 @@ use crate::error::*;
 use crate::peer::{NameManager, PeerManager};
 use crate::tunnel::TunnelCombiner;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::{net::SocketAddr, str::FromStr};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForwardProxyProtocol {
@@ -34,10 +35,72 @@ impl FromStr for ForwardProxyProtocol {
 }
 
 pub struct ForwardProxyConfig {
+    pub id: String,
     pub protocol: ForwardProxyProtocol,
     pub addr: SocketAddr,
     pub target_device: String,
     pub target_port: u16,
+}
+
+impl ForwardProxyConfig {
+    pub fn load(config: &serde_json::Value) -> GatewayResult<Self> {
+        if !config.is_object() {
+            return Err(GatewayError::InvalidConfig("proxy".to_owned()));
+        }
+
+        let id = config["id"]
+            .as_str()
+            .ok_or(GatewayError::InvalidConfig(
+                "Invalid proxy block config: id".to_owned(),
+            ))?
+            .to_owned();
+        if id.is_empty() {
+            return Err(GatewayError::InvalidConfig(
+                "Invalid proxy block config: id".to_owned(),
+            ));
+        }
+
+        let protocol = config["protocol"]
+            .as_str()
+            .ok_or(GatewayError::InvalidConfig(
+                "Invalid proxy block config: protocol".to_owned(),
+            ))?
+            .parse::<ForwardProxyProtocol>()?;
+
+        let addr = config["addr"]
+            .as_str()
+            .ok_or(GatewayError::InvalidConfig("addr".to_owned()))?;
+        let port = config["port"]
+            .as_u64()
+            .ok_or(GatewayError::InvalidConfig("port".to_owned()))? as u16;
+        let addr = format!("{}:{}", addr, port);
+        let addr = addr.parse().map_err(|e| {
+            let msg = format!("Error parsing addr: {}, {}", addr, e);
+            error!("{}", msg);
+            GatewayError::InvalidConfig(msg)
+        })?;
+
+        let target_device = config["target_device"]
+            .as_str()
+            .ok_or(GatewayError::InvalidConfig(
+                "Invalid proxy block config: target_device".to_owned(),
+            ))?
+            .to_owned();
+
+        let target_port = config["target_port"]
+            .as_u64()
+            .ok_or(GatewayError::InvalidConfig(
+                "Invalid proxy block config: target_port".to_owned(),
+            ))? as u16;
+
+        Ok(Self {
+            id,
+            protocol,
+            addr,
+            target_device,
+            target_port,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -45,6 +108,9 @@ pub struct TcpForwardProxy {
     name_manager: Arc<NameManager>,
     peer_manager: Arc<PeerManager>,
     config: Arc<ForwardProxyConfig>,
+
+    // Use to stop the proxy running task
+    task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl TcpForwardProxy {
@@ -59,7 +125,12 @@ impl TcpForwardProxy {
             name_manager,
             peer_manager,
             config: Arc::new(config),
+            task: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.config.id
     }
 
     pub async fn start(&self) -> GatewayResult<()> {
@@ -70,16 +141,31 @@ impl TcpForwardProxy {
         })?;
 
         info!(
-            "Listen for tcp forward connections at {}",
-            &self.config.addr
+            "Listen for tcp forward connections at {}, {}",
+            &self.config.addr, self.config.id
         );
 
         let this = self.clone();
-        tokio::task::spawn(async move {
+        let task = tokio::task::spawn(async move {
             if let Err(e) = this.run(listener).await {
                 error!("Error running socks5 proxy: {}", e);
             }
         });
+
+        let prev;
+        {
+            let mut slot = self.task.lock().unwrap();
+            prev = slot.take();
+            *slot = Some(task);
+        }
+
+        if let Some(prev) = prev {
+            warn!(
+                "Previous tcp forward proxy task still running, aborting now: {}",
+                self.config.id
+            );
+            prev.abort();
+        }
 
         Ok(())
     }

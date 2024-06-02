@@ -1,12 +1,12 @@
+use super::util::Socks5Util;
 use crate::{
     error::{GatewayError, GatewayResult},
     peer::{NameManagerRef, PeerManagerRef},
     tunnel::TunnelCombiner,
 };
-use super::util::Socks5Util;
 
 use fast_socks5::{
-    server::{Config, SimpleUserPassword, Socks5Socket },
+    server::{Config, SimpleUserPassword, Socks5Socket},
     util::target_addr::TargetAddr,
     Socks5Command,
 };
@@ -24,10 +24,63 @@ pub enum ProxyAuth {
 
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
+    pub id: String,
     pub addr: SocketAddr,
     pub auth: ProxyAuth,
 }
 
+impl ProxyConfig {
+    pub fn load(config: &serde_json::Value) -> GatewayResult<Self> {
+        let id = config["id"].as_str().ok_or_else(|| {
+            let msg = "Missing id in socks5 proxy config".to_owned();
+            error!("{}", msg);
+            GatewayError::InvalidConfig(msg)
+        })?;
+
+        let addr = config["addr"]
+            .as_str()
+            .ok_or(GatewayError::InvalidConfig("addr".to_owned()))?;
+        let port = config["port"]
+            .as_u64()
+            .ok_or(GatewayError::InvalidConfig("port".to_owned()))? as u16;
+        let addr = format!("{}:{}", addr, port);
+        let addr = addr.parse().map_err(|e| {
+            let msg = format!("Error parsing addr: {}, {}", addr, e);
+            error!("{}", msg);
+            GatewayError::InvalidConfig(msg)
+        })?;
+
+        let auth = if let Some(auth) = config.get("auth") {
+            if !auth.is_object() {
+                return Err(GatewayError::InvalidConfig("auth".to_owned()));
+            }
+
+            let auth_type = auth["type"]
+                .as_str()
+                .ok_or(GatewayError::InvalidConfig("auth.type".to_owned()))?;
+            match auth_type {
+                "password" => {
+                    let username = auth["username"].as_str().unwrap();
+                    let password = auth["password"].as_str().unwrap();
+                    ProxyAuth::Password(username.to_owned(), password.to_owned())
+                }
+                _ => {
+                    let msg = format!("Unknown auth type: {}", auth_type);
+                    error!("{}", msg);
+                    return Err(GatewayError::InvalidConfig(msg));
+                }
+            }
+        } else {
+            ProxyAuth::None
+        };
+
+        Ok(ProxyConfig {
+            id: id.to_owned(),
+            addr,
+            auth,
+        })
+    }
+}
 #[derive(Clone)]
 pub struct Socks5Proxy {
     name_manager: NameManagerRef,
@@ -66,6 +119,10 @@ impl Socks5Proxy {
         }
     }
 
+    pub fn id(&self) -> &str {
+        &self.config.id
+    }
+    
     pub async fn start(&self) -> GatewayResult<()> {
         let listener = TcpListener::bind(&self.config.addr).await.map_err(|e| {
             let msg = format!("Error binding to {}: {}", self.config.addr, e);
@@ -126,17 +183,17 @@ impl Socks5Proxy {
 
                 let cmd = socket.cmd().as_ref().unwrap();
                 match cmd {
-                    Socks5Command::TCPConnect => {
-                        self.process_socket(socket, target.clone()).await
-                    }
+                    Socks5Command::TCPConnect => self.process_socket(socket, target.clone()).await,
                     _ => {
                         let msg = format!("Unsupported socks5 command: {:?}", cmd);
                         error!("{}", msg);
-                        Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::CommandNotSupported).await
+                        Socks5Util::reply_error(
+                            &mut socket,
+                            fast_socks5::ReplyError::CommandNotSupported,
+                        )
+                        .await
                     }
                 }
-
-                
             }
             Err(err) => {
                 let msg = format!("Upgrade to socks5 error: {}", err);
@@ -180,18 +237,18 @@ impl Socks5Proxy {
             }
             Err(e) => {
                 error!("Error building data tunnel: {}", e);
-                return Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::GeneralFailure).await;
+                return Socks5Util::reply_error(
+                    &mut socket,
+                    fast_socks5::ReplyError::GeneralFailure,
+                )
+                .await;
             }
         };
-
 
         let (read, write) = tokio::io::copy_bidirectional(&mut tunnel, &mut socket)
             .await
             .map_err(|e| {
-                let msg = format!(
-                    "Error copying data on socks connection: {}, {}",
-                    target, e
-                );
+                let msg = format!("Error copying data on socks connection: {}, {}", target, e);
                 error!("{}", msg);
                 GatewayError::Io(e)
             })?;

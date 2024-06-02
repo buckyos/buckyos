@@ -39,37 +39,31 @@ impl FromStr for UpstreamServiceProtocol {
 
 #[derive(Clone, Debug)]
 struct UpstreamService {
+    id: String,
     addr: SocketAddr,
     protocol: UpstreamServiceProtocol,
 }
 
-#[derive(Clone)]
-pub struct UpstreamManager {
-    services: Arc<Mutex<Vec<UpstreamService>>>,
-}
-
-impl UpstreamManager {
-    pub fn new() -> Self {
-        Self {
-            services: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    pub fn clone_as_events(&self) -> PeerManagerEventsRef {
-        Arc::new(Box::new(self.clone()) as Box<dyn PeerManagerEvents>)
-    }
-
-    /*
-    {
-        "block": "upstream",
-        "addr": "127.0.0.1",
-        "port": 2000,
-        "type": "tcp"
-    }
-    */
-    pub fn load_block(&self, value: &serde_json::Value) -> GatewayResult<()> {
+impl UpstreamService {
+    fn load(value: &serde_json::Value) -> GatewayResult<Self> {
         if !value.is_object() {
             return Err(GatewayError::InvalidConfig("upstream".to_owned()));
+        }
+
+        let id = value["id"]
+            .as_str()
+            .ok_or(GatewayError::InvalidConfig(
+                "Invalid upstream block config: id".to_owned(),
+            ))?
+            .to_owned();
+        if id.is_empty() {
+            let msg = format!(
+                "Invalid upstream block config: id, {}",
+                serde_json::to_string(value).unwrap()
+            );
+            warn!("{}", msg);
+
+            return Err(GatewayError::InvalidConfig(msg));
         }
 
         let addr: IpAddr = value["addr"]
@@ -100,20 +94,80 @@ impl UpstreamManager {
             protocol.as_str()
         );
 
-        let service = UpstreamService {
+        Ok(Self {
+            id,
             addr: SocketAddr::new(addr, port),
             protocol,
-        };
-        self.services.lock().unwrap().push(service);
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct UpstreamManager {
+    services: Arc<Mutex<Vec<UpstreamService>>>,
+}
+
+impl UpstreamManager {
+    pub fn new() -> Self {
+        Self {
+            services: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn clone_as_events(&self) -> PeerManagerEventsRef {
+        Arc::new(Box::new(self.clone()) as Box<dyn PeerManagerEvents>)
+    }
+
+    /*
+    {
+        "block": "upstream",
+        "addr": "127.0.0.1",
+        "port": 2000,
+        "type": "tcp"
+    }
+    */
+    pub fn load_block(&self, value: &serde_json::Value) -> GatewayResult<()> {
+        let service = UpstreamService::load(value)?;
+
+        // check if service already exists
+        let mut services = self.services.lock().unwrap();
+        for s in services.iter() {
+            if s.id == service.id {
+                let msg = format!("Upstream service already exists: {}", service.id);
+                warn!("{}", msg);
+                return Err(GatewayError::InvalidConfig(msg));
+            }
+        }
+
+        info!("New upstream service: {:?}", service);
+
+        services.push(service);
 
         Ok(())
     }
 
-    fn get_service(
-        &self,
-        port: u16,
-        protocol: UpstreamServiceProtocol,
-    ) -> Option<UpstreamService> {
+    pub fn remove(&self, id: &str) -> GatewayResult<()> {
+        let mut services = self.services.lock().unwrap();
+        let mut found = false;
+        services.retain(|s| {
+            if s.id == id {
+                found = true;
+                false
+            } else {
+                true
+            }
+        });
+
+        if !found {
+            let msg = format!("Upstream service not found: {}", id);
+            warn!("{}", msg);
+            return Err(GatewayError::UpstreamNotFound(msg));
+        }
+
+        Ok(())
+    }
+
+    fn get_service(&self, port: u16, protocol: UpstreamServiceProtocol) -> Option<UpstreamService> {
         let services = self.services.lock().unwrap();
         for service in services.iter() {
             // info!("Service item: {} {}", service.addr.port(), protocol.as_str());

@@ -1,10 +1,14 @@
 use super::forward::{ForwardProxyConfig, ForwardProxyProtocol, TcpForwardProxy};
-use super::socks5::{ProxyAuth, ProxyConfig, Socks5Proxy};
+use super::socks5::{ProxyConfig, Socks5Proxy};
 use crate::error::{GatewayError, GatewayResult};
 use crate::peer::{NameManagerRef, PeerManagerRef};
 
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+
+enum ProxyService {
+    Socks5(Socks5Proxy),
+    TcpForward(TcpForwardProxy),
+}
 
 pub struct ProxyManager {
     name_manager: NameManagerRef,
@@ -27,6 +31,7 @@ impl ProxyManager {
     load proxy from json config node as follows:
     {
         block: "proxy",
+        id: "proxy_id",
         type: "socks5",
         addr: "127.0.0.1",
         port: 8000,
@@ -41,6 +46,7 @@ impl ProxyManager {
 
     {
         block: "proxy",
+        id: "proxy_id",
         type: "forward",
         protocol: "tcp",
         target_device: "device_id",
@@ -51,86 +57,15 @@ impl ProxyManager {
         let proxy_type = json["type"].as_str().unwrap();
         match proxy_type {
             "socks5" => {
-                let addr = json["addr"]
-                    .as_str()
-                    .ok_or(GatewayError::InvalidConfig("addr".to_owned()))?;
-                let port = json["port"]
-                    .as_u64()
-                    .ok_or(GatewayError::InvalidConfig("port".to_owned()))?
-                    as u16;
-                let addr = format!("{}:{}", addr, port);
-                let addr = addr.parse().map_err(|e| {
-                    let msg = format!("Error parsing addr: {}, {}", addr, e);
-                    error!("{}", msg);
-                    GatewayError::InvalidConfig(msg)
-                })?;
+                let config = ProxyConfig::load(json)?;
 
-                let auth = if let Some(auth) = json.get("auth") {
-                    if !auth.is_object() {
-                        return Err(GatewayError::InvalidConfig("auth".to_owned()));
-                    }
-
-                    let auth_type = auth["type"]
-                        .as_str()
-                        .ok_or(GatewayError::InvalidConfig("auth.type".to_owned()))?;
-                    match auth_type {
-                        "password" => {
-                            let username = json["auth"]["username"].as_str().unwrap();
-                            let password = json["auth"]["password"].as_str().unwrap();
-                            ProxyAuth::Password(username.to_owned(), password.to_owned())
-                        }
-                        _ => {
-                            let msg = format!("Unknown auth type: {}", auth_type);
-                            error!("{}", msg);
-                            return Err(GatewayError::InvalidConfig(msg));
-                        }
-                    }
-                } else {
-                    ProxyAuth::None
-                };
-
-                let config = ProxyConfig { addr, auth };
-
-                self.add_socks5_proxy(config);
+                self.add_socks5_proxy(config)?;
             }
             "forward" => {
-                let protocol = json["protocol"]
-                    .as_str()
-                    .unwrap_or(ForwardProxyProtocol::Tcp.as_str());
-
-                let addr = json["addr"]
-                    .as_str()
-                    .ok_or(GatewayError::InvalidConfig("addr".to_owned()))?;
-                let port = json["port"]
-                    .as_u64()
-                    .ok_or(GatewayError::InvalidConfig("port".to_owned()))?
-                    as u16;
-                let addr = format!("{}:{}", addr, port);
-                let addr = addr.parse().map_err(|e| {
-                    let msg = format!("Error parsing addr: {}, {}", addr, e);
-                    error!("{}", msg);
-                    GatewayError::InvalidConfig(msg)
-                })?;
-
-                let target_device = json["target_device"]
-                    .as_str()
-                    .ok_or(GatewayError::InvalidConfig("target_device".to_owned()))?;
-                let target_port = json["target_port"]
-                    .as_u64()
-                    .ok_or(GatewayError::InvalidConfig("target_port".to_owned()))?
-                    as u16;
-
-                let protocol = ForwardProxyProtocol::from_str(protocol)?;
-                match protocol {
+                let service = ForwardProxyConfig::load(json)?;
+                match service.protocol {
                     ForwardProxyProtocol::Tcp => {
-                        let config = ForwardProxyConfig {
-                            protocol,
-                            addr,
-                            target_device: target_device.to_owned(),
-                            target_port,
-                        };
-
-                        self.add_tcp_forward_proxy(config);
+                        self.add_tcp_forward_proxy(service);
                     }
                     ForwardProxyProtocol::Udp => {
                         unimplemented!("UDP forward proxy not implemented yet");
@@ -145,15 +80,63 @@ impl ProxyManager {
         Ok(())
     }
 
-    fn add_socks5_proxy(&self, config: ProxyConfig) {
+    fn get_proxy(&self, id: &str) -> Option<ProxyService> {
+        {
+            let socks_proxys = self.socks5_proxy.lock().unwrap();
+            for p in &*socks_proxys {
+                if p.id() == id {
+                    return Some(ProxyService::Socks5(p.clone()));
+                }
+            }
+        }
+
+        {
+            let forward_proxys = self.tcp_forward_proxy.lock().unwrap();
+            for p in &*forward_proxys {
+                if p.id() == id {
+                    return Some(ProxyService::TcpForward(p.clone()));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn check_exist(&self, id: &str) -> bool {
+        self.get_proxy(id).is_some()
+    }
+
+    fn add_socks5_proxy(&self, config: ProxyConfig) -> GatewayResult<()> {
+        let mut socks_proxys = self.socks5_proxy.lock().unwrap();
+
+        // Check id duplication
+        if self.check_exist(&config.id) {
+            let msg = format!("Duplicated socks5 proxy id: {}", config.id);
+            warn!("{}", msg);
+            return Err(GatewayError::AlreadyExists(msg.to_owned()));
+        }
+
         let proxy = Socks5Proxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
-        self.socks5_proxy.lock().unwrap().push(proxy);
+        socks_proxys.push(proxy);
+
+        Ok(())
     }
 
     fn add_tcp_forward_proxy(&self, config: ForwardProxyConfig) {
+        let mut forward_proxys = self.tcp_forward_proxy.lock().unwrap();
+
+        // Check id duplication
+        for p in &*forward_proxys {
+            if p.id() == config.id {
+                let msg = format!("Duplicated forward proxy id: {}", config.id);
+                warn!("{}", msg);
+                return;
+            }
+        }
+
         let proxy =
             TcpForwardProxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
-        self.tcp_forward_proxy.lock().unwrap().push(proxy);
+        forward_proxys.push(proxy);
     }
 
     pub async fn start(&self) -> GatewayResult<()> {

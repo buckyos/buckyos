@@ -34,6 +34,9 @@ pub enum GatewayError {
 
     #[error("Invalid state: {0}")]
     InvalidState(String),
+
+    #[error("Already exists: {0}")]
+    AlreadyExists(String),
 }
 
 pub type GatewayResult<T> = Result<T, GatewayError>;
