@@ -1,54 +1,13 @@
 use crate::*;
+use backup_lib::{
+    CheckPointVersion, SimpleChunkMgrSelector, SimpleFileMgrSelector, SimpleTaskMgrSelector,
+    TaskKey,
+};
 use std::{net::TcpStream, thread};
-use backup_lib::{CheckPointVersion, SimpleChunkMgrSelector, SimpleFileMgrSelector, SimpleTaskMgrSelector, TaskKey};
 use tokio::time::{sleep, Duration};
 
 const BACKUP_STORAGE_DIR: &'static str = "/tmp/backup";
 const ETCD_BACKUP_TASK_KEY: &str = "backup.etcd";
-
-// pub struct EtcdManager {
-//     machine: String,
-//     client_port: i32,
-//     peer_port: i32,
-// }
-
-// impl EtcdManager {
-//     fn new(config: &ZoneConfig, node_config: &NodeIdentityConfig) -> Self {
-//         let machine = node_config.node_id.clone();
-//         let local_endpoint = config
-//             .etcd_servers
-//             .iter()
-//             .find(|&server| server.starts_with(&machine));
-
-//         let parts: Vec<&str> = local_endpoint.unwrap().split(":").collect();
-//         let client_port = parts[1].to_string();
-//         let client_port = client_port.parse().unwrap();
-//         let peer_port = client_port + 1;
-
-//         Self {
-//             machine: machine,
-//             client_port,
-//             peer_port,
-//         }
-//     }
-
-//     pub async fn check_etcd_by_zone_config(self) -> Result<EtcdState> {
-//         let node_id = &self.machine;
-
-//         let timeout = Duration::from_secs(1);
-//         if TcpStream::connect_timeout(
-//             &format!("127.0.0.1:{}", self.client_port).parse().unwrap(),
-//             timeout,
-//         )
-//         .is_ok()
-//         {
-//             info!("local etcd is running ");
-//             return Ok(EtcdState::Good(node_id.clone()));
-//         }
-
-//         let local_endpoint = format!("{}:{}", self.machine, self.client_port);
-//     }
-// }
 
 pub(crate) fn parse_etcd_url(server: String) -> Result<(String, String)> {
     let parts: Vec<&str> = server.split(":").collect();
@@ -176,7 +135,8 @@ pub(crate) async fn try_restore_etcd(
     zone_cfg: &ZoneConfig,
 ) -> Result<()> {
     let task_key = TaskKey::from(ETCD_BACKUP_TASK_KEY);
-    let chunk_mgr_selector = SimpleChunkMgrSelector::new(zone_cfg.backup_server_id.as_ref().unwrap());
+    let chunk_mgr_selector =
+        SimpleChunkMgrSelector::new(zone_cfg.backup_server_id.as_ref().unwrap());
     let file_mgr_selector = SimpleFileMgrSelector::new(zone_cfg.backup_server_id.as_ref().unwrap());
     let task_mgr_selector = SimpleTaskMgrSelector::new(zone_cfg.backup_server_id.as_ref().unwrap());
 
@@ -184,34 +144,54 @@ pub(crate) async fn try_restore_etcd(
         zone_cfg.zone_id.clone(),
         Box::new(task_mgr_selector),
         Box::new(file_mgr_selector),
-        Box::new(chunk_mgr_selector)
+        Box::new(chunk_mgr_selector),
     );
 
     let restore = "/tmp/etcd_restore";
     let restore_path = std::path::PathBuf::from_str(&restore).unwrap();
-    tokio::fs::create_dir_all(restore_path.as_path()).await.expect("Failed to create directory for restore");
+    tokio::fs::create_dir_all(restore_path.as_path())
+        .await
+        .expect("Failed to create directory for restore");
 
-    let last_version_task = restore_task_mgr.get_last_check_point_version(&task_key).await.map_err(|err| {
-        let err_msg = format!("get last check point version failed! {}", err);
-        error!("{}", err_msg);
-        return NodeDaemonErrors::ReasonError(err_msg.to_string());
-    })?;
-    let last_version_task = last_version_task.map_or(Err(NodeDaemonErrors::ReasonError("no backup found".to_string())), |t| Ok(t))?;
+    let last_version_task = restore_task_mgr
+        .get_last_check_point_version(&task_key)
+        .await
+        .map_err(|err| {
+            let err_msg = format!("get last check point version failed! {}", err);
+            error!("{}", err_msg);
+            return NodeDaemonErrors::ReasonError(err_msg.to_string());
+        })?;
+    let last_version_task = last_version_task.map_or(
+        Err(NodeDaemonErrors::ReasonError("no backup found".to_string())),
+        |t| Ok(t),
+    )?;
 
-    let mut files = restore_task_mgr.restore(task_key, last_version_task.check_point_version, restore_path.as_path()).await.map_err(|err| {
-        let err_msg = format!("restore failed! {}", err);
-        error!("{}", err_msg);
-        return NodeDaemonErrors::ReasonError(err_msg.to_string());
-    })?;
+    let mut files = restore_task_mgr
+        .restore(
+            task_key,
+            last_version_task.check_point_version,
+            restore_path.as_path(),
+        )
+        .await
+        .map_err(|err| {
+            let err_msg = format!("restore failed! {}", err);
+            error!("{}", err_msg);
+            return NodeDaemonErrors::ReasonError(err_msg.to_string());
+        })?;
 
     if files.len() == 0 {
-        return Err(NodeDaemonErrors::ReasonError("no file restored".to_string()));
+        return Err(NodeDaemonErrors::ReasonError(
+            "no file restored".to_string(),
+        ));
     }
 
     let file_path = restore_path.join(files.remove(0));
-    etcd_client::try_restore_etcd(file_path.to_str().expect("need utf-8 path for restore"), "http://127.0.0.1:1280")
-        .await
-        .unwrap();
+    etcd_client::try_restore_etcd(
+        file_path.to_str().expect("need utf-8 path for restore"),
+        "http://127.0.0.1:1280",
+    )
+    .await
+    .unwrap();
 
     Ok(())
 }
