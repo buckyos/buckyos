@@ -30,3 +30,5 @@ rusqlite = { version = '0.31.0', features = ['bundled', 'blob'] }
 etcd_client = { path = "../etcd_client" }
 name_client = { path = "../name_client" }
 gateway = { path = "../gateway"}
+backup_service = {path = "../backup_service"}
+backup_lib = {path = "../backup_lib"}

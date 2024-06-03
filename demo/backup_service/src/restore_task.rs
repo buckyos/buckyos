@@ -31,8 +31,9 @@ impl RestoreTask {
         })
     }
 
-    pub(crate) async fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub(crate) async fn start(&self) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
         let task_mgr = self.mgr.upgrade().ok_or("mgr is dropped")?;
+        let mut files = Vec::new();
 
         for file_seq in 0..self.task_info.file_count {
             let file_info = self.task_mgr_server
@@ -92,8 +93,10 @@ impl RestoreTask {
                 // TODO: check chunk size and hash
                 file.write_all(chunk.as_slice()).await?;
             }
+
+            files.push(file_info.file_path);
         }
 
-        Ok(())
+        Ok(files)
     }
 }

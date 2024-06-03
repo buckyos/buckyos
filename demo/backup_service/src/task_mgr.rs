@@ -241,7 +241,7 @@ impl BackupTaskMgr {
         prev_check_point_version: Option<CheckPointVersion>,
         meta: Option<String>,
         dir_path: PathBuf,
-        chunk_files: Vec<(PathBuf, Option<(String, u64)>)>,
+        files: Vec<(PathBuf, Option<(String, u64)>)>, // (relative_file_path, (file-hash, file-size))
         is_discard_incomplete_versions: bool,
         priority: u32,
         is_manual: bool,
@@ -254,7 +254,7 @@ impl BackupTaskMgr {
             prev_check_point_version,
             meta,
             dir_path,
-            chunk_files,
+            files,
             priority,
             is_manual,
         )
@@ -395,7 +395,6 @@ impl BackupTaskMgr {
 
 pub struct RestoreTaskMgrInner {
     zone_id: String,
-    task_storage: Arc<dyn TaskStorageQuerier>,
     task_mgr_selector: Arc<Box<dyn TaskMgrSelector>>,
     file_mgr_selector: Arc<Box<dyn FileMgrSelector>>,
     chunk_mgr_selector: Arc<Box<dyn ChunkMgrSelector>>,
@@ -424,13 +423,11 @@ pub struct RestoreTaskMgr(Arc<RestoreTaskMgrInner>);
 impl RestoreTaskMgr {
     pub fn new(
         zone_id: String,
-        task_storage: Arc<dyn TaskStorageQuerier>,
         task_mgr_selector: Box<dyn TaskMgrSelector>,
         file_mgr_selector: Box<dyn FileMgrSelector>,
         chunk_mgr_selector: Box<dyn ChunkMgrSelector>,
     ) -> Self {
         RestoreTaskMgr(Arc::new(RestoreTaskMgrInner {
-            task_storage,
             task_mgr_selector: Arc::new(task_mgr_selector),
             file_mgr_selector: Arc::new(file_mgr_selector),
             chunk_mgr_selector: Arc::new(chunk_mgr_selector),
@@ -443,7 +440,7 @@ impl RestoreTaskMgr {
         task_key: TaskKey,
         check_point_version: CheckPointVersion,
         dir_path: &Path,
-    ) -> Result<RestoreTask, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
         let task_mgr_server = self.0.task_mgr_selector.select(&task_key, Some(check_point_version)).await?;
         let task_info = task_mgr_server.get_check_point_version(self.0.zone_id.as_str(), &task_key, check_point_version).await?;
         
@@ -456,8 +453,8 @@ impl RestoreTaskMgr {
                     dir_path.to_path_buf(),
                 )
                 .await?;
-                restore_task.start().await?;
-                Ok(restore_task)
+                let files = restore_task.start().await?;
+                Ok(files)
             }
             None => Err("task not found".into()),
         }

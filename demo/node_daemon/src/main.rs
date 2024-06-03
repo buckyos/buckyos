@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused)]
 
-
-mod backup;
+// mod backup;
 // mod backup_task_mgr;
 // mod backup_task_storage;
 mod etcd_mgr;
@@ -25,7 +24,7 @@ use std::{collections::HashMap, fs::File};
 // use tokio::*;
 use toml;
 
-use crate::backup::*;
+// use crate::backup::*;
 // use crate::backup_task_mgr::*;
 use crate::etcd_mgr::*;
 use crate::run_item::*;
@@ -525,7 +524,7 @@ async fn main() -> std::result::Result<(), String> {
     let zone_config = Arc::new(zone_config);
     let zc_clone = Arc::clone(&zone_config);
     // 创建一个新线程来处理备份逻辑
-    std::thread::spawn(move || system_config_backup(zc_clone));
+    // std::thread::spawn(move || system_config_backup(zc_clone));
 
     info!("Ready, start node daemon main loop!");
     node_daemon_main_loop(&node_identity, zone_config)

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::ops::{Add, Sub};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TaskKey(String);
@@ -28,6 +29,22 @@ impl Into<u128> for CheckPointVersion {
 impl From<u128> for CheckPointVersion {
     fn from(id: u128) -> Self {
         CheckPointVersion(id)
+    }
+}
+
+impl Add<u128> for CheckPointVersion {
+    type Output = CheckPointVersion;
+
+    fn add(self, rhs: u128) -> Self::Output {
+        CheckPointVersion(self.0 + rhs)
+    }
+}
+
+impl Sub<u128> for CheckPointVersion {
+    type Output = CheckPointVersion;
+
+    fn sub(self, rhs: u128) -> Self::Output {
+        CheckPointVersion(self.0 - rhs)
     }
 }
 
