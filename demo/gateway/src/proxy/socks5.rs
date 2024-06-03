@@ -10,10 +10,11 @@ use fast_socks5::{
     util::target_addr::TargetAddr,
     Socks5Command,
 };
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::{Arc, Mutex}};
 use tokio::{
     net::{TcpListener, TcpStream},
     task,
+    task::JoinHandle,
 };
 
 #[derive(Debug, Clone)]
@@ -81,12 +82,17 @@ impl ProxyConfig {
         })
     }
 }
+
+
 #[derive(Clone)]
 pub struct Socks5Proxy {
     name_manager: NameManagerRef,
     peer_manager: PeerManagerRef,
     config: ProxyConfig,
     socks5_config: Arc<Config<SimpleUserPassword>>,
+
+    // Use to stop the proxy
+    task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl Socks5Proxy {
@@ -116,6 +122,7 @@ impl Socks5Proxy {
             peer_manager,
             config,
             socks5_config: Arc::new(socks5_config),
+            task: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -133,17 +140,38 @@ impl Socks5Proxy {
         info!("Listen for socks connections at {}", &self.config.addr);
 
         let this = self.clone();
-        task::spawn(async move {
+        let proxy_task = task::spawn(async move {
             if let Err(e) = this.run(listener).await {
                 error!("Error running socks5 proxy: {}", e);
             }
         });
 
+        let prev;
+        {
+            let mut slot = self.task.lock().unwrap();
+            prev = slot.replace(proxy_task);
+        }
+
+        if let Some(prev) = prev {
+            warn!("Previous socks5 proxy task still running, aborting now: {}", self.config.id);
+            prev.abort();
+        }
+
         Ok(())
     }
 
-    pub async fn stop(&self) -> GatewayResult<()> {
-        todo!("stop socks5 proxy");
+    pub fn stop(&self) {
+        let task = {
+            let mut slot = self.task.lock().unwrap();
+            slot.take()
+        };
+
+        if let Some(task) = task {
+            task.abort();
+            info!("Socks5 proxy task stopped: {}", self.config.id);
+        } else {
+            warn!("Socks5 proxy task not running: {}", self.config.id);
+        }
     }
 
     async fn run(&self, listener: TcpListener) -> GatewayResult<()> {

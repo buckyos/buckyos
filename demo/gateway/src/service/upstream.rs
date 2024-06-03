@@ -38,14 +38,14 @@ impl FromStr for UpstreamServiceProtocol {
 }
 
 #[derive(Clone, Debug)]
-struct UpstreamService {
+pub struct UpstreamService {
     id: String,
     addr: SocketAddr,
     protocol: UpstreamServiceProtocol,
 }
 
 impl UpstreamService {
-    fn load(value: &serde_json::Value) -> GatewayResult<Self> {
+    pub fn load(value: &serde_json::Value) -> GatewayResult<Self> {
         if !value.is_object() {
             return Err(GatewayError::InvalidConfig("upstream".to_owned()));
         }
@@ -118,6 +118,21 @@ impl UpstreamManager {
         Arc::new(Box::new(self.clone()) as Box<dyn PeerManagerEvents>)
     }
 
+    pub fn get_service(&self, id: &str) -> Option<UpstreamService> {
+        let services = self.services.lock().unwrap();
+        for service in services.iter() {
+            if service.id == id {
+                return Some(service.clone());
+            }
+        }
+
+        None
+    }
+
+    pub fn is_service_exist(&self, id: &str) -> bool {
+        self.get_service(id).is_some()
+    }
+
     /*
     {
         "block": "upstream",
@@ -136,6 +151,23 @@ impl UpstreamManager {
                 let msg = format!("Upstream service already exists: {}", service.id);
                 warn!("{}", msg);
                 return Err(GatewayError::InvalidConfig(msg));
+            }
+        }
+
+        info!("New upstream service: {:?}", service);
+
+        services.push(service);
+
+        Ok(())
+    }
+
+    pub fn add(&self, service: UpstreamService) -> GatewayResult<()> {
+        let mut services = self.services.lock().unwrap();
+        for s in services.iter() {
+            if s.id == service.id {
+                let msg = format!("Upstream service already exists: {}", service.id);
+                warn!("{}", msg);
+                return Err(GatewayError::AlreadyExists(msg));
             }
         }
 
@@ -167,7 +199,7 @@ impl UpstreamManager {
         Ok(())
     }
 
-    fn get_service(&self, port: u16, protocol: UpstreamServiceProtocol) -> Option<UpstreamService> {
+    fn find_service(&self, port: u16, protocol: UpstreamServiceProtocol) -> Option<UpstreamService> {
         let services = self.services.lock().unwrap();
         for service in services.iter() {
             // info!("Service item: {} {}", service.addr.port(), protocol.as_str());
@@ -181,7 +213,7 @@ impl UpstreamManager {
     }
 
     pub async fn bind_tunnel(&self, tunnel: DataTunnelInfo) -> GatewayResult<()> {
-        let service = self.get_service(tunnel.port, UpstreamServiceProtocol::Tcp);
+        let service = self.find_service(tunnel.port, UpstreamServiceProtocol::Tcp);
         if service.is_none() {
             let msg = format!("No upstream service found for port {}", tunnel.port);
             return Err(GatewayError::UpstreamNotFound(msg));
@@ -272,7 +304,7 @@ impl PeerManagerEvents for UpstreamManager {
             info.device_id, info.port
         );
 
-        let service = self.get_service(info.port, UpstreamServiceProtocol::Tcp);
+        let service = self.find_service(info.port, UpstreamServiceProtocol::Tcp);
         if service.is_none() {
             let msg = format!("No upstream service found for port {}", info.port);
             info!("{}", msg);

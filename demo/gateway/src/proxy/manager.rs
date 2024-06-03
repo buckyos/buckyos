@@ -58,14 +58,20 @@ impl ProxyManager {
         match proxy_type {
             "socks5" => {
                 let config = ProxyConfig::load(json)?;
-
-                self.add_socks5_proxy(config)?;
+                let proxy =
+                    Socks5Proxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
+                self.add_socks5_proxy(proxy)?;
             }
             "forward" => {
-                let service = ForwardProxyConfig::load(json)?;
-                match service.protocol {
+                let config = ForwardProxyConfig::load(json)?;
+                match config.protocol {
                     ForwardProxyProtocol::Tcp => {
-                        self.add_tcp_forward_proxy(service);
+                        let proxy = TcpForwardProxy::new(
+                            config,
+                            self.name_manager.clone(),
+                            self.peer_manager.clone(),
+                        );
+                        self.add_tcp_forward_proxy(proxy)?;
                     }
                     ForwardProxyProtocol::Udp => {
                         unimplemented!("UDP forward proxy not implemented yet");
@@ -106,37 +112,74 @@ impl ProxyManager {
         self.get_proxy(id).is_some()
     }
 
-    fn add_socks5_proxy(&self, config: ProxyConfig) -> GatewayResult<()> {
+    pub async fn create_socks5_proxy(&self, config: ProxyConfig) -> GatewayResult<()> {
+        let proxy = Socks5Proxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
+        proxy.start().await?;
+
         let mut socks_proxys = self.socks5_proxy.lock().unwrap();
 
         // Check id duplication
-        if self.check_exist(&config.id) {
-            let msg = format!("Duplicated socks5 proxy id: {}", config.id);
+        if self.check_exist(proxy.id()) {
+            proxy.stop();
+
+            let msg = format!("Duplicated socks5 proxy id: {}", proxy.id());
             warn!("{}", msg);
             return Err(GatewayError::AlreadyExists(msg.to_owned()));
         }
 
-        let proxy = Socks5Proxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
         socks_proxys.push(proxy);
 
         Ok(())
     }
 
-    fn add_tcp_forward_proxy(&self, config: ForwardProxyConfig) {
+    pub async fn create_tcp_forward_proxy(&self, config: ForwardProxyConfig) -> GatewayResult<()> {
+        let proxy = TcpForwardProxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
+        proxy.start().await?;
+
         let mut forward_proxys = self.tcp_forward_proxy.lock().unwrap();
 
         // Check id duplication
-        for p in &*forward_proxys {
-            if p.id() == config.id {
-                let msg = format!("Duplicated forward proxy id: {}", config.id);
-                warn!("{}", msg);
-                return;
-            }
+        if self.check_exist(proxy.id()) {
+            proxy.stop();
+
+            let msg = format!("Duplicated tcp forward proxy id: {}", proxy.id());
+            warn!("{}", msg);
+            return Err(GatewayError::AlreadyExists(msg.to_owned()));
         }
 
-        let proxy =
-            TcpForwardProxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
         forward_proxys.push(proxy);
+
+        Ok(())
+    }
+
+    fn add_socks5_proxy(&self, proxy: Socks5Proxy) -> GatewayResult<()> {
+        let mut socks_proxys = self.socks5_proxy.lock().unwrap();
+
+        // Check id duplication
+        if self.check_exist(proxy.id()) {
+            let msg = format!("Duplicated socks5 proxy id: {}", proxy.id());
+            warn!("{}", msg);
+            return Err(GatewayError::AlreadyExists(msg.to_owned()));
+        }
+
+        socks_proxys.push(proxy);
+
+        Ok(())
+    }
+
+    fn add_tcp_forward_proxy(&self, proxy: TcpForwardProxy) -> GatewayResult<()> {
+        let mut forward_proxys = self.tcp_forward_proxy.lock().unwrap();
+
+        // Check id duplication
+        if self.check_exist(proxy.id()) {
+            let msg = format!("Duplicated tcp forward proxy id: {}", proxy.id());
+            warn!("{}", msg);
+            return Err(GatewayError::AlreadyExists(msg.to_owned()));
+        }
+
+        forward_proxys.push(proxy);
+
+        Ok(())
     }
 
     pub async fn start(&self) -> GatewayResult<()> {
@@ -157,12 +200,15 @@ impl ProxyManager {
         Ok(())
     }
 
-    pub async fn stop(&self) -> GatewayResult<()> {
+    pub fn stop(&self) -> GatewayResult<()> {
         let proxy_list = self.socks5_proxy.lock().unwrap().clone();
         for proxy in &proxy_list {
-            if let Err(e) = proxy.stop().await {
-                return Err(e);
-            }
+            proxy.stop();
+        }
+
+        let proxy_list = self.tcp_forward_proxy.lock().unwrap().clone();
+        for proxy in &proxy_list {
+            proxy.stop();
         }
 
         Ok(())

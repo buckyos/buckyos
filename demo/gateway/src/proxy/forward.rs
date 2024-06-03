@@ -170,8 +170,18 @@ impl TcpForwardProxy {
         Ok(())
     }
 
-    pub async fn stop(&self) -> GatewayResult<()> {
-        todo!("Stop tcp forward proxy");
+    pub fn stop(&self) {
+        let task = {
+            let mut slot = self.task.lock().unwrap();
+            slot.take()
+        };
+
+        if let Some(task) = task {
+            task.abort();
+            info!("Tcp forward proxy task stopped: {}", self.config.id);
+        } else {
+            warn!("Tcp forward proxy task not running: {}", self.config.id);
+        }
     }
 
     async fn run(&self, listener: TcpListener) -> GatewayResult<()> {
