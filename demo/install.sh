@@ -1,5 +1,25 @@
 #! /bin/bash
 
+etcd_cfg_pattern="^([a-zA-Z0-9.-]+):?([0-9]*)@?(N0)?$"
+
+zone_cfg_mode="dns"
+zone_name=""
+node_1=""
+etcd_1_port=""
+etcd_1_net=""
+node_2=""
+etcd_2_port=""
+etcd_2_net=""
+node_3=""
+etcd_3_port=""
+etcd_3_net=""
+
+# buckycli="/mnt/f/work/buckyos/demo/target/release/buckycli"
+buckycli="/usr/local/bin/buckycli"
+
+docker_image="harbor.mynode.site:8443/library/buckyos:latest"
+# docker_image="buckyos:latest"
+
 main() {
 	# 获取操作系统信息
 	if [ -f /etc/os-release ]; then
@@ -43,132 +63,83 @@ main() {
 
 	sudo apt-get install curl jq fuse dnsutils -y
 
-	# buckycli="/mnt/f/work/buckyos/demo/target/release/buckycli"
-	buckycli="/usr/local/bin/buckycli"
 	echo "Downloading buckycli..."
 	ensure sudo curl -z "$buckycli" --progress-bar -o "$buckycli" https://cache.mynode.site/buckycli
 	sudo chmod +x "$buckycli"
 
-	docker_image="harbor.mynode.site:8443/library/buckyos:latest"
-# 	docker_image="buckyos:latest"
-
-	read -p "Please enter your zone name: " zone_name < /dev/tty
-	zone_cfg_mode="dns"
-	zone_cfg_check=$($buckycli check_dns $zone_name)
-	case $zone_cfg_check in
-		"valid" )
-			echo "The zone config is valid."
-			zone_cfg=$($buckycli query_dns $zone_name)
-			node_1=$(jq -r -n --argjson zone_cfg "$zone_cfg" '$zone_cfg.extra.etcds[0].name')
-			node_2=$(jq -r -n --argjson zone_cfg "$zone_cfg" '$zone_cfg.extra.etcds[1].name')
-			node_3=$(jq -r -n --argjson zone_cfg "$zone_cfg" '$zone_cfg.extra.etcds[2].name')
-			echo "The name of node 1 is $node_1."
-			echo "The name of node 2 is $node_2."
-			echo "The name of node 3 is $node_3."
-			;;
-		"invalid")
-			echo "Zone configuration on DNS is not available."
-			read -p "Please enter the name of node 1 [default: etcd1]: " node_1 < /dev/tty
-			read -p "Please enter the name of node 2 [default: etcd2]: " node_2 < /dev/tty
-			read -p "Please enter the name of node 3 [default: gateway]: " node_3 < /dev/tty
-			if [ -z "$node_1" ]; then
-				node_1="etcd1"
-			fi
-			if [ -z "$node_2" ]; then
-				node_2="etcd2"
-			fi
-			if [ -z "$node_3" ]; then
-				node_3="gateway"
-			fi
-
-			while true; do
-				read -p "Configure zone to dns or place it locally.[dns(d)/local(l)] [default: local]: " zone_mode < /dev/tty
-				if [ -z $zone_mode ]; then
-					zone_mode="local"
-				fi
-				case $zone_mode in
-					"dns" | "d" )
-						echo "You have selected dns mode."
-						while true; do
-							zone_cfg=$(create_zone_dns_cfg $zone_name $node_1 $node_2 $node_3)
-							echo $zone_cfg > /tmp/zone_cfg.json
-							$buckycli encode_dns -f /tmp/zone_cfg.json
-							encoded_cfg=$($buckycli encode_dns -f /tmp/zone_cfg.json)
-							echo "Please set the following content as the dns txt record of the domain name:"
-							echo $encoded_cfg
-
-							zone_cfg_check=$($buckycli check_dns $zone_name)
-
-							case $zone_cfg_check in
-								"valid" )
-									echo "The zone config is valid."
-									zone_cfg=$($buckycli query_dns $zone_name)
-									node_1=$(jq -r -n --argjson zone_cfg "$zone_cfg" '$zone_cfg.extra.etcds[0].name')
-									node_2=$(jq -r -n --argjson zone_cfg "$zone_cfg" '$zone_cfg.extra.etcds[1].name')
-									node_3=$(jq -r -n --argjson zone_cfg "$zone_cfg" '$zone_cfg.extra.etcds[2].name')
-									echo "The name of node 1 is $node_1."
-									echo "The name of node 2 is $node_2."
-									echo "The name of node 3 is $node_3."
-									break;;
-								"invalid" )
-									echo "The zone name is invalid.Please set the following content as the dns txt record of the domain name:"
-									echo $encoded_cfg
-									break;;
-								* ) echo "Unknown error."
-									exit 1;;
-							esac
-						done
-						zone_cfg_mode="dns"
-						break
-						;;
-					"local" | "l" )
-						echo "You have selected local mode."
-						zone_cfg_mode="local"
-						break
-						;;
-					* ) echo "Please answer dns or local.";;
-				esac
-			done
-			;;
-		* ) echo "Unknown error."
-			exit 1;;
-	esac
-
 	while true; do
 		echo "Please select the installation mode:"
 		echo "1. All nodes are running on the current machine."
-		echo "2. Each node is running on a separate machine."
-		read -p "Please enter the installation mode[1/2] [default: 1]: " install_mode < /dev/tty
+		echo "2. Each node is running on a separate machine.Nodes can be connected to each other."
+		echo "3. Each node is running on a separate machine.One WAN node, two LAN nodes."
+		read -p "Please enter the installation mode[1/2/3] [default: 1]: " install_mode < /dev/tty
 		if [ -z $install_mode ]; then
 			install_mode="1"
 		fi
 		case $install_mode in
 			"1" )
-				echo "You have selected all mode."
-				create_all
-
-				wait_time=10
-				echo "Wait ${wait_time} seconds for the zone to start"
-
-				for ((i=1; i<=wait_time; i++))
-				do
-				    echo -ne "Already waited ${i} seconds\r"
-				    sleep 1
-				done
-				import_all_config
+				create_all_in_one_mode
 				break;;
 			"2" )
-				echo "You have selected node mode."
-				create_node
-
-				ensure_etcd_cluster_health
-
-				import_all_config
+				create_interworking_network_mode
 				break;;
-			* ) echo "Please answer 1 or 2.";;
+			"3" )
+				create_wan_2_lan_mode
+				break;;
+			* ) echo "Please answer 1 or 2 or 3.";;
 		esac
 	done
 
+
+}
+
+create_all_in_one_mode() {
+	echo "You have selected all in one mode."
+	ensure_create_zone_cfg
+	create_all
+
+	wait_time=10
+	echo "Wait ${wait_time} seconds for the zone to start"
+
+	for ((i=1; i<=wait_time; i++))
+	do
+	    echo -ne "Already waited ${i} seconds\r"
+	    sleep 1
+	done
+	import_all_config
+}
+
+create_interworking_network_mode() {
+	echo "You have selected interworking network mode."
+	ensure_create_zone_cfg
+	create_node
+
+	ensure_etcd_cluster_health
+
+	import_all_config
+}
+
+create_wan_2_lan_mode() {
+	echo "You have selected One WAN node two LAN nodes mode."
+	ensure_create_wan_2_lan_zone_cfg
+	create_wan_2_lan_node
+
+	ensure_etcd_cluster_health
+
+	import_all_config
+}
+
+create_etcd_item() {
+	local node=$1
+	local etcd_port=""
+	if [ -z "$2" ]; then
+		etcd_port=":$2"
+	fi
+	local etcd_net=""
+	if [ "$3" == "lan" ]; then
+		etcd_net="@N0"
+	fi
+	echo "$node$etcd_port$etcd_net"
 }
 
 create_zone_dns_cfg() {
@@ -209,12 +180,263 @@ EOF
 }
 
 create_node_identity() {
-	node_identity_template=$(cat <<- EOF
+	local node_identity_template=$(cat <<- EOF
 	owner_zone_id = "$1"
 	node_id = "$2"
 	EOF
 	)
 	sudo echo -e "$node_identity_template" > "$3"
+}
+
+get_etcd_info_from_dns() {
+	zone_cfg=$($buckycli query_dns $zone_name)
+	local etcd_node_1=$(jq -r -n --argjson zone_cfg "$zone_cfg" '$zone_cfg.extra.etcds[0].name')
+	local etcd_node_2=$(jq -r -n --argjson zone_cfg "$zone_cfg" '$zone_cfg.extra.etcds[1].name')
+	local etcd_node_3=$(jq -r -n --argjson zone_cfg "$zone_cfg" '$zone_cfg.extra.etcds[2].name')
+	if [[ "$etcd_node_1" =~ $etcd_cfg_pattern ]]; then
+		node_1=${BASH_REMATCH[1]}
+		etcd_1_port=${BASH_REMATCH[2]}
+		etcd_1_net=${BASH_REMATCH[3]}
+	fi
+	if [[ "$etcd_node_2" =~ $etcd_cfg_pattern ]]; then
+		node_2=${BASH_REMATCH[1]}
+		etcd_2_port=${BASH_REMATCH[2]}
+		etcd_2_net=${BASH_REMATCH[3]}
+	fi
+	if [[ "$etcd_node_3" =~ $etcd_cfg_pattern ]]; then
+		node_3=${BASH_REMATCH[1]}
+		etcd_3_port=${BASH_REMATCH[2]}
+		etcd_3_net=${BASH_REMATCH[3]}
+	fi
+}
+
+ensure_create_zone_cfg() {
+	read -p "Please enter your zone name: " zone_name < /dev/tty
+	local zone_cfg_check=$($buckycli check_dns $zone_name)
+	case $zone_cfg_check in
+		"valid" )
+			get_etcd_info_from_dns
+			if [ -z "$node_1" ] || [ -z "$node_2" ] || [ -z "$node_3" ] || [ -n "$etcd_1_port" ] || [ -n "$etcd_1_net" ] || [ -n "$etcd_2_port" ] || [ -n "$etcd_2_net" ] || [ -n "$etcd_3_port" ] || [ -n "$etcd_3_net" ]; then
+				echo "The dns zone config is invalid,please delete and start again."
+				exit 1
+			fi
+			echo "The zone config is valid."
+			echo "The name of node 1 is $node_1."
+			echo "The name of node 2 is $node_2."
+			echo "The name of node 3 is $node_3."
+			;;
+		"invalid")
+			echo "Zone configuration on DNS is not available."
+			read -p "Please enter the name of node 1 [default: etcd1]: " node_1 < /dev/tty
+			read -p "Please enter the name of node 2 [default: etcd2]: " node_2 < /dev/tty
+			read -p "Please enter the name of node 3 [default: gateway]: " node_3 < /dev/tty
+			if [ -z "$node_1" ]; then
+				node_1="etcd1"
+			fi
+			if [ -z "$node_2" ]; then
+				node_2="etcd2"
+			fi
+			if [ -z "$node_3" ]; then
+				node_3="gateway"
+			fi
+
+			while true; do
+				read -p "Configure zone to dns or place it locally.[dns(d)/local(l)] [default: local]: " zone_mode < /dev/tty
+				if [ -z $zone_mode ]; then
+					zone_mode="local"
+				fi
+				case $zone_mode in
+					"dns" | "d" )
+						echo "You have selected dns mode."
+						while true; do
+							zone_cfg=$(create_zone_dns_cfg $zone_name $node_1 $node_2 $node_3)
+							echo $zone_cfg > /tmp/zone_cfg.json
+							$buckycli encode_dns -f /tmp/zone_cfg.json
+							encoded_cfg=$($buckycli encode_dns -f /tmp/zone_cfg.json)
+							echo "Please set the following content as the dns txt record of the domain name:"
+							echo $encoded_cfg
+
+							zone_cfg_check=$($buckycli check_dns $zone_name)
+
+							case $zone_cfg_check in
+								"valid" )
+									get_etcd_info_from_dns
+									if [ -z "$node_1" ] || [ -z "$node_2" ] || [ -z "$node_3" ] || [[ -n "$etcd_1_port" ]] || [[ -n "$etcd_1_net" ]] || [[ -n "$etcd_2_port" ]] || [[ -n "$etcd_2_net" ]] || [[ -n "$etcd_3_port" ]] || [[ -n "$etcd_3_net" ]]; then
+										echo "The dns zone config is invalid,please delete and start again."
+										exit 1
+									fi
+									echo "The zone config is valid."
+									echo "The name of node 1 is $node_1."
+									echo "The name of node 2 is $node_2."
+									echo "The name of node 3 is $node_3."
+									break;;
+								"invalid" )
+									echo "The zone name is invalid.Please set the following content as the dns txt record of the domain name:"
+									echo $encoded_cfg
+									break;;
+								* ) echo "Unknown error."
+									exit 1;;
+							esac
+						done
+						zone_cfg_mode="dns"
+						break
+						;;
+					"local" | "l" )
+						echo "You have selected local mode."
+						zone_cfg_mode="local"
+						break
+						;;
+					* ) echo "Please answer dns or local.";;
+				esac
+			done
+			;;
+		* ) echo "Unknown error."
+			exit 1;;
+	esac
+}
+
+check_wan_2_lan_zone_cfg() {
+	local lan_node_count=0
+	local wan_node_count=0
+	if [ "$etcd_1_net" == "N0" ]; then
+		lan_node_count=$((lan_node_count+1))
+	elif [ "$etcd_1_net" == "" ]; then
+		wan_node_count=$((wan_node_count+1))
+	fi
+
+	if [ "$etcd_2_net" == "N0" ]; then
+		lan_node_count=$((lan_node_count+1))
+	elif [ "$etcd_2_net" == "" ]; then
+		wan_node_count=$((wan_node_count+1))
+	fi
+
+	if [ "$etcd_3_net" == "N0" ]; then
+		lan_node_count=$((lan_node_count+1))
+	elif [ "$etcd_3_net" == "" ]; then
+		wan_node_count=$((wan_node_count+1))
+	fi
+
+	if [ $lan_node_count -ne 2 ] || [ $wan_node_count -ne 1 ]; then
+		echo "The zone configuration is invalid,please delete and start again."
+		exit 1
+	fi
+}
+
+ensure_create_wan_2_lan_zone_cfg() {
+	read -p "Please enter your zone name: " zone_name < /dev/tty
+	local zone_cfg_check=$($buckycli check_dns $zone_name)
+	case $zone_cfg_check in
+		"valid" )
+			get_etcd_info_from_dns
+			check_wan_2_lan_zone_cfg
+			echo "The zone config is valid."
+			echo "The name of node 1 is $node_1."
+			echo "The name of node 2 is $node_2."
+			echo "The name of node 3 is $node_3."
+			;;
+		"invalid")
+			echo "Zone configuration on DNS is not available."
+			read -p "Please enter the name of node 1 [default: etcd1]: " node_1 < /dev/tty
+			if [ -z "$node_1" ]; then
+				node_1="etcd1"
+			fi
+			while true; do
+				read -p "Please enter the net mode of $node_1.[lan/wan] [default: lan]: " etcd_1_net < /dev/tty
+				if [ -z "$etcd_1_net" ]; then
+					etcd_1_net="lan"
+				fi
+				if [ "$etcd_1_net" != "lan" ] && [ "$etcd_1_net" != "wan" ]; then
+					echo "Please answer lan or wan."
+				else
+					break
+				fi
+			done
+			etcd_1_port="12379"
+			read -p "Please enter the name of node 2 [default: etcd2]: " node_2 < /dev/tty
+			if [ -z "$node_2" ]; then
+				node_2="etcd2"
+			fi
+			while true; do
+				read -p "Please enter the net mode of $node_2.[lan/wan] [default: lan]: " etcd_2_net < /dev/tty
+				if [ -z "$etcd_2_net" ]; then
+					etcd_2_net="lan"
+				fi
+				if [ "$etcd_2_net" != "lan" ] && [ "$etcd_2_net" != "wan" ]; then
+					echo "Please answer lan or wan."
+				else
+					break
+				fi
+			done
+			etcd_2_port="12379"
+			read -p "Please enter the name of node 3 [default: gateway]: " node_3 < /dev/tty
+			if [ -z "$node_3" ]; then
+				node_3="gateway"
+			fi
+			while true; do
+				read -p "Please enter the net mode of $node_3.[lan/wan] [default: wan]: " etcd_3_net < /dev/tty
+				if [ -z "$etcd_3_net" ]; then
+					etcd_3_net="wan"
+				fi
+				if [ "$etcd_3_net" != "lan" ] && [ "$etcd_3_net" != "wan" ]; then
+					echo "Please answer lan or wan."
+				else
+					break
+				fi
+			done
+
+			while true; do
+				read -p "Configure zone to dns or place it locally.[dns(d)/local(l)] [default: local]: " zone_mode < /dev/tty
+				if [ -z $zone_mode ]; then
+					zone_mode="local"
+				fi
+				case $zone_mode in
+					"dns" | "d" )
+						echo "You have selected dns mode."
+						while true; do
+							local node_item_1=$(create_etcd_item $node_1 $etcd_1_port $etcd_1_net)
+							local node_item_2=$(create_etcd_item $node_2 $etcd_2_port $etcd_2_net)
+							local node_item_3=$(create_etcd_item $node_3 $etcd_3_port $etcd_3_net)
+							zone_cfg=$(create_zone_dns_cfg $zone_name $node_item_1 $node_item_2 $node_item_3)
+							echo $zone_cfg > /tmp/zone_cfg.json
+							$buckycli encode_dns -f /tmp/zone_cfg.json
+							encoded_cfg=$($buckycli encode_dns -f /tmp/zone_cfg.json)
+							echo "Please set the following content as the dns txt record of the domain name:"
+							echo $encoded_cfg
+
+							zone_cfg_check=$($buckycli check_dns $zone_name)
+
+							case $zone_cfg_check in
+								"valid" )
+									get_etcd_info_from_dns
+									check_wan_2_lan_zone_cfg
+									echo "The zone config is valid."
+									echo "The name of node 1 is $node_1."
+									echo "The name of node 2 is $node_2."
+									echo "The name of node 3 is $node_3."
+									break;;
+								"invalid" )
+									echo "The zone name is invalid.Please set the following content as the dns txt record of the domain name:"
+									echo $encoded_cfg
+									break;;
+								* ) echo "Unknown error."
+									exit 1;;
+							esac
+						done
+						zone_cfg_mode="dns"
+						break
+						;;
+					"local" | "l" )
+						echo "You have selected local mode."
+						zone_cfg_mode="local"
+						break
+						;;
+					* ) echo "Please answer dns or local.";;
+				esac
+			done
+			;;
+		* ) echo "Unknown error."
+			exit 1;;
+	esac
 }
 
 create_all() {
@@ -443,6 +665,108 @@ create_node() {
 	ensure sudo docker pull $docker_image
  	#echo "sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image"
 	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
+}
+
+create_wan_2_lan_node() {
+	local local_node=""
+	local node_1_ips="127.0.0.1"
+	local node_1_ip_mode="manual"
+	if [ "$etcd_1_net" == "wan" ]; then
+		ensure_node_dns $node_1
+		node_1_ips=$ips
+		node_1_ip_mode=$ip_mode
+		if [ -z "$local_node" ]; then
+			local_node=$(is_local_host $node_1 $node_1_ips)
+		fi
+	fi
+	local node_2_ips="127.0.0.1"
+	local node_2_ip_mode="manual"
+	if [ "$etcd_2_net" == "wan" ]; then
+		ensure_node_dns $node_2
+		node_2_ips=$ips
+		node_2_ip_mode=$ip_mode
+		if [ -z "$local_node" ]; then
+			local_node=$(is_local_host $node_2 $node_2_ips)
+		fi
+	fi
+	local node_3_ips="127.0.0.1"
+	local node_3_ip_mode="manual"
+	if [ "$etcd_3_net" == "wan" ]; then
+		ensure_node_dns $node_3
+		node_3_ips=$ips
+		node_3_ip_mode=$ip_mode
+		if [ -z "$local_node" ]; then
+			local_node=$(is_local_host $node_3 $node_3_ips)
+		fi
+	fi
+
+	while true; do
+		if [ "$local_node" == "" ]; then
+			read -p "Please enter node_name[$node_1/$node_2/$node_3]: " cur_node < /dev/tty
+		else
+			read -p "Please enter node_name[default: $local_node]: " cur_node < /dev/tty
+			if [ -z "$cur_node"]; then
+				cur_node=$local_node
+			fi
+		fi
+		if [ "$cur_node" = "$node_1" ] || [ "$cur_node" = "$node_2" ] || [ "$cur_node" = "$node_3" ]; then
+			echo "The node name is $cur_node."
+			break
+		else
+			if [ -z "$local_node" ]; then
+				echo "The node name must be one of the following[$node_1/$node_2/$node_3]."
+			else
+				echo "The node name must be $local_node."
+			fi
+		fi
+	done
+
+	while true; do
+		read -p "Please enter data path [default: ~/buckyos]: " data_path < /dev/tty
+		if [ -z $data_path ]; then
+			data_path="~/buckyos"
+		fi
+		data_path=$(eval echo "$data_path")
+		if sudo mkdir -p "$data_path" ; then
+			echo "The data path is $data_path."
+			break
+		else
+			echo "The data path is invalid."
+		fi
+	done
+
+	ensure sudo mkdir -p "$data_path/$cur_node"
+	create_node_identity $zone_name $cur_node "$data_path/$cur_node/node_identity.toml"
+	ensure sudo mkdir -p "$data_path/$cur_node/data"
+	ensure sudo mkdir -p "$data_path/$cur_node/data/gv0"
+	ensure sudo mkdir -p "$data_path/$cur_node/etcd"
+
+	local zone_local_cfg=""
+	if [ "$zone_cfg_mode" = "local" ]; then
+		local zone_cfg=$(create_zone_local_cfg $zone_name $node_1 $node_2 $node_3)
+		ensure sudo echo -e "$zone_cfg" > "$data_path/zone_local_cfg.json"
+
+		zone_local_cfg="-v $data_path/zone_local_cfg.json:/buckyos/${zone_name}_zone_config.json"
+	fi
+
+	local node_1_host=""
+	if [[ "$node_1_ip_mode" == "manual" && "$cur_node" != "$node_1" ]]; then
+		local ip_list=($node_1_ips)
+	    node_1_host="--add-host $node_1:${ip_list[0]}"
+	fi
+	local node_2_host=""
+	if [[ "$node_2_ip_mode" == "manual" && "$cur_node" != "$node_2" ]]; then
+		local ip_list=($node_2_ips)
+	    node_2_host="--add-host $node_2:${ip_list[0]}"
+	fi
+	local node_3_host=""
+	if [[ "$node_3_ip_mode" == "manual" && "$cur_node" != "$node_3" ]]; then
+		local ip_list=($node_3_ips)
+	    node_3_host="--add-host $node_3:${ip_list[0]}"
+	fi
+	ensure sudo docker pull $docker_image
+ 	echo "sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image"
+# 	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
 }
 
 ensure_node_dns() {
