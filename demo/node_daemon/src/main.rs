@@ -322,7 +322,7 @@ async fn start_gateway_by_zone_config(
 
     // Add etcd service as upstream
     let etcd_port = this_node.port.unwrap();
-    gateway_config.add_upstream_service("tcp", "127.0.0.1", etcd_port);
+    gateway_config.add_upstream_service("etcd", "tcp", "127.0.0.1", etcd_port);
 
     // Add other nodes etcd service via tcp forward proxy
     for lan_node in lan_nodes {
@@ -330,6 +330,7 @@ async fn start_gateway_by_zone_config(
 
         gateway_config.add_device(&lan_node.device_name, None, None, Some(gateway::PeerAddrType::LAN));
         gateway_config.add_forward_proxy(
+            format!("{}-etcd", lan_node.device_name),
             "tcp",
             "127.0.0.1",
             etcd_port,
@@ -342,6 +343,7 @@ async fn start_gateway_by_zone_config(
 
         gateway_config.add_device(&wan_node.device_name, None, None, Some(gateway::PeerAddrType::WAN));
         gateway_config.add_forward_proxy(
+            format!("{}-etcd", wan_node.device_name),
             "tcp",
             "127.0.0.1",
             etcd_port,

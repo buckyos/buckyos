@@ -49,17 +49,20 @@ pub struct KnownDevice {
 }
 
 pub struct UpstreamService {
+    pub id: String,
     pub addr: String,
     pub protocol: String,
     pub port: u16,
 }
 
 pub struct Socks5Proxy {
+    pub id: String,
     pub addr: String,
     pub port: u16,
 }
 
 pub struct ForwardProxy {
+    pub id: String,
     pub protocol: String,
     pub addr: String,
     pub port: u16,
@@ -112,24 +115,32 @@ impl ConfigGen {
         })
     }
 
-    pub fn add_socks5_proxy(&mut self, addr: impl Into<String>, port: u16) {
+    pub fn add_socks5_proxy(&mut self, id: impl Into<String>,  addr: impl Into<String>, port: u16) {
+        let id = id.into();
+        assert!(id.len() > 0);
+
         let addr = addr.into();
         assert!(IpAddr::from_str(&addr).is_ok());
         assert!(port > 0);
 
         self.socks5_proxy.push(Socks5Proxy {
+            id,
             addr,
             port,
         })
     }
 
-    pub fn add_forward_proxy(&mut self, protocol: impl Into<String>, addr: impl Into<String>, port: u16, target_device: impl Into<String>, target_port: u16) {
+    pub fn add_forward_proxy(&mut self, id: impl Into<String>, protocol: impl Into<String>, addr: impl Into<String>, port: u16, target_device: impl Into<String>, target_port: u16) {
+        let id = id.into();
+        assert!(id.len() > 0);
+
         let addr = addr.into();
         assert!(IpAddr::from_str(&addr).is_ok());
         assert!(port > 0);
         assert!(target_port > 0);
 
         self.forward_proxy.push(ForwardProxy {
+            id,
             protocol: protocol.into(),
             addr,
             port,
@@ -138,12 +149,16 @@ impl ConfigGen {
         })
     }
 
-    pub fn add_upstream_service(&mut self, protocol: impl Into<String>, addr: impl Into<String>, port: u16) {
+    pub fn add_upstream_service(&mut self, id: impl Into<String>, protocol: impl Into<String>, addr: impl Into<String>, port: u16) {
+        let id = id.into();
+        assert!(id.len() > 0);
+
         let addr = addr.into();
         assert!(IpAddr::from_str(&addr).is_ok());
         assert!(port > 0);
 
         self.upstream_service.push(UpstreamService {
+            id,
             addr,
             protocol: protocol.into(),
             port,
@@ -178,6 +193,7 @@ impl ConfigGen {
         for s in &self.upstream_service {
             let mut item = serde_json::Map::new();
             item.insert("block".to_owned(), serde_json::Value::String("upstream".to_owned()));
+            item.insert("id".to_owned(), serde_json::Value::String(s.id.clone()));
             item.insert("protocol".to_owned(), serde_json::Value::String(s.protocol.clone()));
             item.insert("addr".to_owned(), serde_json::Value::String(s.addr.clone()));
             item.insert("port".to_owned(), serde_json::Value::Number(serde_json::Number::from(s.port)));
@@ -188,6 +204,7 @@ impl ConfigGen {
         for s in &self.socks5_proxy {
             let mut item = serde_json::Map::new();
             item.insert("block".to_owned(), serde_json::Value::String("proxy".to_owned()));
+            item.insert("id".to_owned(), serde_json::Value::String(s.id.clone()));
             item.insert("addr".to_owned(), serde_json::Value::String(s.addr.clone()));
             item.insert("port".to_owned(), serde_json::Value::Number(serde_json::Number::from(s.port)));
             item.insert("type".to_owned(), serde_json::Value::String("socks5".to_owned()));
@@ -198,6 +215,7 @@ impl ConfigGen {
         for s in &self.forward_proxy {
             let mut item = serde_json::Map::new();
             item.insert("block".to_owned(), serde_json::Value::String("proxy".to_owned()));
+            item.insert("id".to_owned(), serde_json::Value::String(s.id.clone()));
             item.insert("type".to_owned(), serde_json::Value::String("forward".to_owned()));
             item.insert("protocol".to_owned(), serde_json::Value::String(s.protocol.clone()));
             item.insert("addr".to_owned(), serde_json::Value::String(s.addr.clone()));
@@ -232,9 +250,9 @@ pub mod tests {
         config_gen.add_device("etcd2", None, Some(1000), None);
         config_gen.add_device("etcd3", None, None, Some(PeerAddrType::LAN));
 
-        config_gen.add_socks5_proxy("127.0.0.1", 1080);
-        config_gen.add_forward_proxy("tcp", "127.0.0.1", 1088, "etcd1", 1008);
-        config_gen.add_upstream_service("tcp", "127.0.0.1", 1009);
+        config_gen.add_socks5_proxy("socks5", "127.0.0.1", 1080);
+        config_gen.add_forward_proxy("forward", "tcp", "127.0.0.1", 1088, "etcd1", 1008);
+        config_gen.add_upstream_service("local", "tcp", "127.0.0.1", 1009);
 
         let config = config_gen.gen();
         info!("{}", config);
