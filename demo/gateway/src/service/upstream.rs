@@ -199,7 +199,11 @@ impl UpstreamManager {
         Ok(())
     }
 
-    fn find_service(&self, port: u16, protocol: UpstreamServiceProtocol) -> Option<UpstreamService> {
+    fn find_service(
+        &self,
+        port: u16,
+        protocol: UpstreamServiceProtocol,
+    ) -> Option<UpstreamService> {
         let services = self.services.lock().unwrap();
         for service in services.iter() {
             // info!("Service item: {} {}", service.addr.port(), protocol.as_str());

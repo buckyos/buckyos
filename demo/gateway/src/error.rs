@@ -37,6 +37,9 @@ pub enum GatewayError {
 
     #[error("Already exists: {0}")]
     AlreadyExists(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
 }
 
 pub type GatewayResult<T> = Result<T, GatewayError>;

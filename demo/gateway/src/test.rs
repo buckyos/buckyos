@@ -21,11 +21,13 @@ const ETCD1_CONFIG: &str = r#"
     ],
     "service": [{
         "block": "upstream",
+        "id": "etcd_echo_server",
         "protocol": "tcp",
         "addr": "127.0.0.1",
         "port": 1008
     }, {
         "block": "proxy",
+        "id": "socks5",
         "addr": "127.0.0.1",
         "port": 1081,
         "type": "socks5"
@@ -49,16 +51,19 @@ const GATEWAY_CONFIG: &str = r#"
     ],
     "service": [{
         "block": "upstream",
+        "id": "echo_server",
         "protocol": "tcp",
         "addr": "127.0.0.1",
         "port": 1009
     }, {
         "block": "proxy",
+        "id": "socks5",
         "addr": "127.0.0.1",
         "port": 1080,
         "type": "socks5"
     }, {
         "block": "proxy",
+        "id": "etcd1_forward",
         "type": "forward",
         "protocol": "tcp",
         "addr": "127.0.0.1",

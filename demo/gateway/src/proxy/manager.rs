@@ -133,7 +133,8 @@ impl ProxyManager {
     }
 
     pub async fn create_tcp_forward_proxy(&self, config: ForwardProxyConfig) -> GatewayResult<()> {
-        let proxy = TcpForwardProxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
+        let proxy =
+            TcpForwardProxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
         proxy.start().await?;
 
         let mut forward_proxys = self.tcp_forward_proxy.lock().unwrap();
@@ -180,6 +181,50 @@ impl ProxyManager {
         forward_proxys.push(proxy);
 
         Ok(())
+    }
+
+    // Stop and remove proxy by id
+    pub fn remove_proxy(&self, id: &str) -> GatewayResult<()> {
+        let mut found = false;
+
+        {
+            let mut socks_proxys = self.socks5_proxy.lock().unwrap();
+            socks_proxys.retain(|p| {
+                if p.id() == id {
+                    p.stop();
+                    found = true;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+
+        if found {
+            return Ok(());
+        }
+
+        {
+            let mut forward_proxys = self.tcp_forward_proxy.lock().unwrap();
+
+            forward_proxys.retain(|p| {
+                if p.id() == id {
+                    p.stop();
+                    found = true;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+
+        if found {
+            return Ok(());
+        }
+
+        let msg = format!("Proxy not found: {}", id);
+        warn!("{}", msg);
+        Err(GatewayError::NotFound(msg.to_owned()))
     }
 
     pub async fn start(&self) -> GatewayResult<()> {

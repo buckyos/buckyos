@@ -18,6 +18,7 @@ clap = "*"
 env_logger = "*"
 fern = "*"
 chrono = "*"
+tokio-util = "*"
 
 [dev-dependencies]
 tokio-socks = "*"
