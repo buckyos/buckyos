@@ -9,6 +9,16 @@ use tokio::time::{sleep, Duration};
 const BACKUP_STORAGE_DIR: &'static str = "/tmp/backup";
 const ETCD_BACKUP_TASK_KEY: &str = "backup.etcd";
 
+macro_rules! handle_error {
+    ($prefix:expr) => {{
+        move |err| {
+            let err_msg = format!("{} {}", $prefix, err);
+            error!("{}", err_msg);
+            NodeDaemonErrors::ReasonError(err_msg.to_string())
+        }
+    }};
+}
+
 pub(crate) fn parse_etcd_url(server: String) -> Result<(String, String)> {
     let parts: Vec<&str> = server.split(":").collect();
     if parts.len() < 2 {
@@ -90,21 +100,12 @@ pub(crate) async fn get_etcd_data_version(
     let initial_cluster = parse_initial_cluster(zone_cfg.etcd_servers.clone());
 
     etcd_client::start_etcd(&name, &initial_cluster, &zone)
-        .map_err(|err| {
-            let err_msg = format!("start_etcd! {}", err);
-            error!("{}", err_msg);
-            NodeDaemonErrors::ReasonError(err_msg.to_string())
-        })
-        .unwrap();
+        .map_err(handle_error!("start_etcd failed!"))?;
     sleep(Duration::from_secs(1)).await;
 
     let revision = etcd_client::get_etcd_data_version()
         .await
-        .map_err(|err| {
-            let err_msg = format!("start_etcd! {}", err);
-            error!("{}", err_msg);
-            NodeDaemonErrors::ReasonError(err_msg.to_string())
-        })
+        .map_err(handle_error!("get_etcd_data_version failed!"))
         .unwrap();
     info!("get_etcd_data_version:{}", revision);
     Ok(revision)
@@ -121,12 +122,8 @@ pub(crate) async fn try_start_etcd(
     let name = node_cfg.node_id.clone();
     let initial_cluster = parse_initial_cluster(zone_cfg.etcd_servers.clone());
 
-    etcd_client::start_etcd(&name, &initial_cluster, zone_cfg.zone_id.as_str()).map_err(|err| {
-        let err_msg = format!("start_etcd! {}", err);
-        error!("{}", err_msg);
-        NodeDaemonErrors::ReasonError(err_msg.to_string())
-    })?;
-
+    etcd_client::start_etcd(&name, &initial_cluster, zone_cfg.zone_id.as_str())
+        .map_err(handle_error!("try start etcd failed"))?;
     Ok(())
 }
 
@@ -192,6 +189,41 @@ pub(crate) async fn try_restore_etcd(
     )
     .await
     .unwrap();
+
+    Ok(())
+}
+
+// try_report_node_status 上报node信息
+// 1 读取 nodelist
+//     没有 nodelist这个key，就插入nodelist值是<nodeid>
+//     如果有nodelist这个key，就检查并更新nodelist
+pub(crate) async fn try_report_node_status(
+    node_cfg: &NodeIdentityConfig,
+    system_config: SystemConfig,
+) -> Result<()> {
+    let key = "nodelist";
+    let value = node_cfg.node_id.to_string().clone();
+    let response = system_config
+        .get(key)
+        .await
+        .map_err(handle_error!("system_config get nodelist failed!"))?;
+
+    if response.0.is_empty() {
+        system_config
+            .put(key, &value)
+            .await
+            .map_err(handle_error!("system_config put nodelist failed!"))?;
+    } else {
+        let mut nodelist = response.0.split(",").collect::<Vec<_>>();
+        if !nodelist.contains(&value.as_str()) {
+            nodelist.push(&value);
+            let new_value = nodelist.join(",");
+            system_config
+                .put(key, &new_value)
+                .await
+                .map_err(handle_error!("system_config put nodelist failed!"))?;
+        }
+    }
 
     Ok(())
 }
