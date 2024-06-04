@@ -153,11 +153,9 @@ pub(crate) async fn try_restore_etcd(
     let last_version_task = restore_task_mgr
         .get_last_check_point_version(&task_key)
         .await
-        .map_err(|err| {
-            let err_msg = format!("get last check point version failed! {}", err);
-            error!("{}", err_msg);
-            return NodeDaemonErrors::ReasonError(err_msg.to_string());
-        })?;
+        .map_err(handle_error!(
+            "try_restore_etcd get_last_check_point_version failed"
+        ))?;
     let last_version_task = last_version_task.map_or(
         Err(NodeDaemonErrors::ReasonError("no backup found".to_string())),
         |t| Ok(t),
@@ -170,11 +168,7 @@ pub(crate) async fn try_restore_etcd(
             restore_path.as_path(),
         )
         .await
-        .map_err(|err| {
-            let err_msg = format!("restore failed! {}", err);
-            error!("{}", err_msg);
-            return NodeDaemonErrors::ReasonError(err_msg.to_string());
-        })?;
+        .map_err(handle_error!("etcd restore failed"))?;
 
     if files.len() == 0 {
         return Err(NodeDaemonErrors::ReasonError(
@@ -197,6 +191,9 @@ pub(crate) async fn try_restore_etcd(
 // 1 读取 nodelist
 //     没有 nodelist这个key，就插入nodelist值是<nodeid>
 //     如果有nodelist这个key，就检查并更新nodelist
+// 2读取 nodes[nodeid]
+//    更新latest, 更新ip
+//    更新 nodes[nodeid]
 pub(crate) async fn try_report_node_status(
     node_cfg: &NodeIdentityConfig,
     system_config: SystemConfig,
@@ -224,6 +221,18 @@ pub(crate) async fn try_report_node_status(
                 .map_err(handle_error!("system_config put nodelist failed!"))?;
         }
     }
+
+    let node_key = format!("nodes[{}]", node_cfg.node_id);
+    let node_ip = "";
+    let node_value = format!(
+        r#"{{"latest":{},"ip":"{}"}}"#,
+        chrono::Local::now().timestamp(),
+        node_ip
+    );
+    system_config
+        .put(&node_key, &node_value)
+        .await
+        .map_err(handle_error!("system_config put nodes/<nodeid> failed!"))?;
 
     Ok(())
 }

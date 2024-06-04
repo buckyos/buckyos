@@ -25,6 +25,7 @@ lazy_static = "*"
 async-recursion = "*"
 version-compare = "*"
 rusqlite = { version = '0.31.0', features = ['bundled', 'blob'] }
+chrono = "0.4"
 
 
 etcd_client = { path = "../etcd_client" }
