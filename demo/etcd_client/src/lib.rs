@@ -2,7 +2,7 @@ pub use etcd_rs::Member;
 use etcd_rs::{Client, ClientConfig, ClusterOp, Endpoint, KeyValueOp};
 use log::*;
 use serde_json::json;
-use std::fs::DirEntry;
+// use std::fs::DirEntry;
 use std::process::{Child, Command};
 use std::vec;
 use tokio::fs::write;
@@ -88,23 +88,33 @@ pub fn start_etcd(
     initial_cluster: &str,
     cluster_token: &str,
 ) -> std::io::Result<Child> {
+    // TODO
+    // 每次重新启动node daemon都应该，直接删除这个目录。
+    // 否则受损的etcd会触发cluster ID mismatch的问题
+    // 应该从backup那里拿到并恢复
     let etcd_data_dir = std::env::current_dir()
         .unwrap()
         .join(format!("{}.etcd", name));
-    let cluster_state = if etcd_data_dir.exists() {
-        if etcd_data_dir
-            .read_dir()?
-            .collect::<Vec<Result<DirEntry, std::io::Error>>>()
-            .len()
-            > 0
-        {
-            "existing"
-        } else {
-            "new"
-        }
-    } else {
-        "new"
-    };
+
+    if etcd_data_dir.exists() {
+        std::fs::remove_dir_all(&etcd_data_dir)?;
+    }
+    // let cluster_state = if etcd_data_dir.exists() {
+    //     if etcd_data_dir
+    //         .read_dir()?
+    //         .collect::<Vec<Result<DirEntry, std::io::Error>>>()
+    //         .len()
+    //         > 0
+    //     {
+    //         "existing"
+    //     } else {
+    //         "new"
+    //     }
+    // } else {
+    //     "new"
+    // };
+
+    let cluster_state = "new";
     info!("cluster state: {}; machine name: {}", cluster_state, name);
 
     Command::new("etcd")

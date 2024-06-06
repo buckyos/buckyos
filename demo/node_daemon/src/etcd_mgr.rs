@@ -3,6 +3,7 @@ use backup_lib::{
     CheckPointVersion, SimpleChunkMgrSelector, SimpleFileMgrSelector, SimpleTaskMgrSelector,
     TaskKey,
 };
+use std::sync::Arc;
 use std::{net::TcpStream, thread};
 use tokio::time::{sleep, Duration};
 
@@ -196,7 +197,7 @@ pub(crate) async fn try_restore_etcd(
 //    更新 nodes[nodeid]
 pub(crate) async fn try_report_node_status(
     node_cfg: &NodeIdentityConfig,
-    system_config: SystemConfig,
+    system_config: Arc<&SystemConfig>,
 ) -> Result<()> {
     let key = "nodelist";
     let value = node_cfg.node_id.to_string().clone();
@@ -234,6 +235,7 @@ pub(crate) async fn try_report_node_status(
         .await
         .map_err(handle_error!("system_config put nodes/<nodeid> failed!"))?;
 
+    info!("report node status success");
     Ok(())
 }
 

@@ -128,12 +128,12 @@ fn load_identity_config() -> Result<NodeIdentityConfig> {
     // load from /etc/buckyos/node_identity.toml
     let file_path = "node_identity.toml";
     let contents = std::fs::read_to_string(file_path).map_err(|err| {
-        error!("read node identity config failed! {}",err);
+        error!("read node identity config failed! {}", err);
         return NodeDaemonErrors::ReadConfigError(String::from(file_path));
     })?;
 
     let config: NodeIdentityConfig = toml::from_str(&contents).map_err(|err| {
-        error!("parse node identity config failed! {}",err);
+        error!("parse node identity config failed! {}", err);
         return NodeDaemonErrors::ParserConfigError(format!(
             "Failed to parse NodeIdentityConfig TOML: {}",
             err
@@ -209,7 +209,7 @@ async fn looking_zone_config(node_cfg: &NodeIdentityConfig) -> Result<ZoneConfig
 
 async fn get_node_config(
     node_identity: &NodeIdentityConfig,
-    sys_cfg: SystemConfig,
+    sys_cfg: Arc<&SystemConfig>,
 ) -> Result<NodeConfig> {
     //首先尝试加载本地文件，如果本地文件存在则返回
     let json_config_path = format!("{}_node_config.json", node_identity.node_id);
@@ -328,7 +328,12 @@ async fn start_gateway_by_zone_config(
     for lan_node in lan_nodes {
         let etcd_port = lan_node.port.unwrap();
 
-        gateway_config.add_device(&lan_node.device_name, None, None, Some(gateway::PeerAddrType::LAN));
+        gateway_config.add_device(
+            &lan_node.device_name,
+            None,
+            None,
+            Some(gateway::PeerAddrType::LAN),
+        );
         gateway_config.add_forward_proxy(
             format!("{}-etcd", lan_node.device_name),
             "tcp",
@@ -341,7 +346,12 @@ async fn start_gateway_by_zone_config(
     for wan_node in wan_nodes {
         let etcd_port = wan_node.port.unwrap();
 
-        gateway_config.add_device(&wan_node.device_name, None, None, Some(gateway::PeerAddrType::WAN));
+        gateway_config.add_device(
+            &wan_node.device_name,
+            None,
+            None,
+            Some(gateway::PeerAddrType::WAN),
+        );
         gateway_config.add_forward_proxy(
             format!("{}-etcd", wan_node.device_name),
             "tcp",
@@ -391,10 +401,11 @@ async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig)
             error!("SystemConfig init failed!");
             NodeDaemonErrors::SystemConfigError("".to_string())
         })?;
-    let node_config = get_node_config(node_identity, sys_cfg).await?;
+    let sys_cfg = Arc::new(&sys_cfg);
+    let node_config = get_node_config(node_identity, Arc::clone(&sys_cfg)).await?;
 
     //try_backup_etcd_data()
-    //try_report_node_status()
+    etcd_mgr::try_report_node_status(node_identity, Arc::clone(&sys_cfg));
 
     //cmd_config = load_node_cmd_config()
     //execute_cmd(cmd_config) //一般是执行运维命令，类似系统备份和恢复,由node_ctl负责执行
@@ -456,7 +467,7 @@ async fn main() -> std::result::Result<(), String> {
     info!("node_dameon start...");
 
     let node_identity = load_identity_config().map_err(|err| {
-        error!("load node identity config failed! {}",err);
+        error!("load node identity config failed! {}", err);
         String::from("load node identity config failed!")
     })?;
 
@@ -466,7 +477,7 @@ async fn main() -> std::result::Result<(), String> {
     );
 
     let zone_config = looking_zone_config(&node_identity).await.map_err(|err| {
-        error!("looking zone config failed! {}",err);
+        error!("looking zone config failed! {}", err);
         String::from("looking zone config failed!")
     })?;
     info!("zone config: {:?}", zone_config);
@@ -474,7 +485,7 @@ async fn main() -> std::result::Result<(), String> {
     start_gateway_by_zone_config(&zone_config, &node_identity.node_id.as_str())
         .await
         .map_err(|err| {
-            error!("start gateway by zone config failed!,{}",err);
+            error!("start gateway by zone config failed!,{}", err);
             return String::from("start gateway by zone config failed!");
         })?;
 
@@ -532,7 +543,7 @@ async fn main() -> std::result::Result<(), String> {
     node_daemon_main_loop(&node_identity, zone_config)
         .await
         .map_err(|err| {
-            error!("node daemon main loop failed! {}",err);
+            error!("node daemon main loop failed! {}", err);
             return String::from("node daemon main loop failed!");
         })?;
 
