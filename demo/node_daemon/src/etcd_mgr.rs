@@ -20,11 +20,13 @@ macro_rules! handle_error {
     }};
 }
 
-pub(crate) fn parse_etcd_url(server: String) -> Result<(String, String)> {
+pub(crate) fn parse_etcd_url(server: String) -> Result<(String, String, String)> {
     let parts: Vec<&str> = server.split(":").collect();
     if parts.len() < 2 {
         error!("etcd server format error:{}", server);
-        return Ok((String::from(""), String::from("")));
+        return Err(NodeDaemonErrors::ReasonError(
+            "etcd server format error".to_string(),
+        ));
     }
     let machine = parts[0];
     let client_port: i32 = parts[1].parse().unwrap();
@@ -33,7 +35,11 @@ pub(crate) fn parse_etcd_url(server: String) -> Result<(String, String)> {
     let client_url = format!("http://{}:{}", machine, client_port);
     let peer_url = format!("http://{}:{}", machine, peer_port);
 
-    Ok((client_url, peer_url))
+    // --initial-cluster 参数应该是：
+    // m1=http://m1:2380,m2=http://m2:2380,m3=http://m3:2380
+    let cluster_url = format!("{}=http://{}:{}", machine, machine, peer_port);
+
+    Ok((client_url, peer_url, cluster_url))
 }
 
 pub(crate) fn parse_initial_cluster(etcd_servers: Vec<String>) -> String {
@@ -41,8 +47,7 @@ pub(crate) fn parse_initial_cluster(etcd_servers: Vec<String>) -> String {
         .iter()
         .map(|server| {
             let result = parse_etcd_url(server.to_string()).unwrap();
-            let peer_url = result.1;
-            format!("{}={}", server, peer_url)
+            result.2
         })
         .collect::<Vec<_>>()
         .join(",")
