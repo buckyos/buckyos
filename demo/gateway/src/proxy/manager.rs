@@ -119,7 +119,7 @@ impl ProxyManager {
         let mut socks_proxys = self.socks5_proxy.lock().unwrap();
 
         // Check id duplication
-        if self.check_exist(proxy.id()) {
+        if socks_proxys.iter().any(|p| p.id() == proxy.id()) {
             proxy.stop();
 
             let msg = format!("Duplicated socks5 proxy id: {}", proxy.id());
@@ -140,7 +140,7 @@ impl ProxyManager {
         let mut forward_proxys = self.tcp_forward_proxy.lock().unwrap();
 
         // Check id duplication
-        if self.check_exist(proxy.id()) {
+        if forward_proxys.iter().any(|p| p.id() == proxy.id()) {
             proxy.stop();
 
             let msg = format!("Duplicated tcp forward proxy id: {}", proxy.id());
@@ -157,11 +157,13 @@ impl ProxyManager {
         let mut socks_proxys = self.socks5_proxy.lock().unwrap();
 
         // Check id duplication
-        if self.check_exist(proxy.id()) {
+        if socks_proxys.iter().any(|p| p.id() == proxy.id()) {
             let msg = format!("Duplicated socks5 proxy id: {}", proxy.id());
             warn!("{}", msg);
             return Err(GatewayError::AlreadyExists(msg.to_owned()));
         }
+
+        info!("New socks5 proxy: {}, {}", proxy.id(), proxy.addr());
 
         socks_proxys.push(proxy);
 
@@ -172,11 +174,13 @@ impl ProxyManager {
         let mut forward_proxys = self.tcp_forward_proxy.lock().unwrap();
 
         // Check id duplication
-        if self.check_exist(proxy.id()) {
+        if forward_proxys.iter().any(|p| p.id() == proxy.id()) {
             let msg = format!("Duplicated tcp forward proxy id: {}", proxy.id());
             warn!("{}", msg);
             return Err(GatewayError::AlreadyExists(msg.to_owned()));
         }
+
+        info!("New tcp forward proxy: {:?}", proxy.config());
 
         forward_proxys.push(proxy);
 

@@ -117,7 +117,7 @@ impl Socks5Proxy {
             }
         };
 
-        Socks5Proxy {
+        Self {
             name_manager,
             peer_manager,
             config,
