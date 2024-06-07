@@ -34,6 +34,7 @@ impl FromStr for ForwardProxyProtocol {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ForwardProxyConfig {
     pub id: String,
     pub protocol: ForwardProxyProtocol,
@@ -131,6 +132,10 @@ impl TcpForwardProxy {
 
     pub fn id(&self) -> &str {
         &self.config.id
+    }
+
+    pub fn config(&self) -> &ForwardProxyConfig {
+        &self.config
     }
 
     pub async fn start(&self) -> GatewayResult<()> {

@@ -10,7 +10,7 @@ mod service;
 mod tunnel;
 mod log_util;
 mod endpoint;
-// mod interface;
+mod interface;
 
 #[macro_use]
 extern crate log;
@@ -33,6 +33,10 @@ async fn run(config: &str) -> GatewayResult<()> {
 
     gateway.start().await?;
 
+    // Start http interface
+    let interface = interface::GatewayInterface::new(gateway.upstream_manager(), gateway.proxy_manager());
+    interface.start().await?;
+    
     // sleep forever
     let _ = tokio::signal::ctrl_c().await;
 

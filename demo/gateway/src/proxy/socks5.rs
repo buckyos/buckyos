@@ -129,6 +129,10 @@ impl Socks5Proxy {
     pub fn id(&self) -> &str {
         &self.config.id
     }
+
+    pub fn addr(&self) -> &SocketAddr {
+        &self.config.addr
+    }
     
     pub async fn start(&self) -> GatewayResult<()> {
         let listener = TcpListener::bind(&self.config.addr).await.map_err(|e| {

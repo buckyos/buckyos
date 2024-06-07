@@ -68,6 +68,14 @@ impl Gateway {
         Ok(ret)
     }
 
+    pub fn upstream_manager(&self) -> UpstreamManagerRef {
+        self.upstream_manager.clone()
+    }
+
+    pub fn proxy_manager(&self) -> ProxyManagerRef {
+        self.proxy_manager.clone()
+    }
+    
     pub async fn start(&self) -> GatewayResult<()> {
         self.peer_manager.start().await?;
 

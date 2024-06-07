@@ -10,6 +10,7 @@ mod peer;
 mod proxy;
 mod service;
 mod tunnel;
+mod interface;
 
 #[macro_use]
 extern crate log;

@@ -43,3 +43,20 @@ pub enum GatewayError {
 }
 
 pub type GatewayResult<T> = Result<T, GatewayError>;
+
+pub fn error_to_status_code(e: &GatewayError) -> http::StatusCode {
+    match e {
+        GatewayError::InvalidConfig(_) => http::StatusCode::BAD_REQUEST,
+        GatewayError::InvalidParam(_) => http::StatusCode::BAD_REQUEST,
+        GatewayError::InvalidFormat(_) => http::StatusCode::BAD_REQUEST,
+        GatewayError::NotSupported(_) => http::StatusCode::NOT_IMPLEMENTED,
+        GatewayError::UpstreamNotFound(_) => http::StatusCode::NOT_FOUND,
+        GatewayError::PeerNotFound(_) => http::StatusCode::NOT_FOUND,
+        GatewayError::TunnelError(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
+        GatewayError::Timeout(_) => http::StatusCode::REQUEST_TIMEOUT,
+        GatewayError::InvalidState(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
+        GatewayError::AlreadyExists(_) => http::StatusCode::CONFLICT,
+        GatewayError::NotFound(_) => http::StatusCode::NOT_FOUND,
+        _ => http::StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
