@@ -1,8 +1,7 @@
 use super::name::NameManagerRef;
 use super::peer::PeerClient;
-use crate::config::GlobalConfigRef;
-use crate::error::*;
 use crate::tunnel::*;
+use gateway_lib::*;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -65,7 +64,8 @@ pub struct PeerManager {
 impl PeerManager {
     pub fn new(config: GlobalConfigRef, name_manager: NameManagerRef) -> Self {
         // TODO use config to create tunnel server
-        let tunnel_server = TunnelServerCreator::create_tcp_tunnel_server_on_port(config.tunnel_server_port());
+        let tunnel_server =
+            TunnelServerCreator::create_tcp_tunnel_server_on_port(config.tunnel_server_port());
 
         let ret = Self {
             config,
@@ -96,7 +96,11 @@ impl PeerManager {
         peers.get(peer_id).map(|peer| peer.get().unwrap().clone())
     }
 
-    pub async fn get_or_init_peer(&self, remote_device_id: &str, is_active_side: bool) -> GatewayResult<Arc<PeerClient>> {
+    pub async fn get_or_init_peer(
+        &self,
+        remote_device_id: &str,
+        is_active_side: bool,
+    ) -> GatewayResult<Arc<PeerClient>> {
         // first check if peer is already exists
         let peer = {
             let mut peers = self.peers.lock().unwrap();
@@ -114,7 +118,10 @@ impl PeerManager {
 
         let peer = peer
             .get_or_try_init(|| async {
-                info!("First init peer client: {}, is_active_side {}", remote_device_id, is_active_side);
+                info!(
+                    "First init peer client: {}, is_active_side {}",
+                    remote_device_id, is_active_side
+                );
 
                 let events = Arc::new(Box::new(self.clone()) as Box<dyn TunnelManagerEvents>);
                 let peer = PeerClient::new(
@@ -144,7 +151,7 @@ impl TunnelServerEvents for PeerManager {
         match build_pkg.cmd {
             ControlCmd::Init => {
                 info!("Recv tunnel init package: {:?}", build_pkg);
-                
+
                 let device_id = build_pkg.device_id.clone().ok_or_else(|| {
                     let msg = format!(
                         "Invalid control package, device_id missing: {:?}",
@@ -165,13 +172,13 @@ impl TunnelServerEvents for PeerManager {
                             error!("{}", msg);
                             GatewayError::PeerNotFound(msg)
                         })?;
-        
+
                         let info = TunnelInitInfo {
                             pkg: build_pkg,
                             tunnel_reader: Box::new(reader),
                             tunnel_writer: Box::new(writer),
                         };
-        
+
                         peer.on_new_data_tunnel(info).await;
                     }
                 }

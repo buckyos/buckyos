@@ -1,16 +1,19 @@
 use super::util::Socks5Util;
 use crate::{
-    error::{GatewayError, GatewayResult},
     peer::{NameManagerRef, PeerManagerRef},
     tunnel::TunnelCombiner,
 };
+use gateway_lib::*;
 
 use fast_socks5::{
     server::{Config, SimpleUserPassword, Socks5Socket},
     util::target_addr::TargetAddr,
     Socks5Command,
 };
-use std::{net::SocketAddr, sync::{Arc, Mutex}};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 use tokio::{
     net::{TcpListener, TcpStream},
     task,
@@ -83,7 +86,6 @@ impl ProxyConfig {
     }
 }
 
-
 #[derive(Clone)]
 pub struct Socks5Proxy {
     name_manager: NameManagerRef,
@@ -133,7 +135,7 @@ impl Socks5Proxy {
     pub fn addr(&self) -> &SocketAddr {
         &self.config.addr
     }
-    
+
     pub async fn start(&self) -> GatewayResult<()> {
         let listener = TcpListener::bind(&self.config.addr).await.map_err(|e| {
             let msg = format!("Error binding to {}: {}", self.config.addr, e);
@@ -157,7 +159,10 @@ impl Socks5Proxy {
         }
 
         if let Some(prev) = prev {
-            warn!("Previous socks5 proxy task still running, aborting now: {}", self.config.id);
+            warn!(
+                "Previous socks5 proxy task still running, aborting now: {}",
+                self.config.id
+            );
             prev.abort();
         }
 

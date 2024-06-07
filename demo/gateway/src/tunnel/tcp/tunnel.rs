@@ -1,9 +1,9 @@
-use std::net::SocketAddr;
-
 use super::super::tunnel::{Tunnel, TunnelReader, TunnelWriter};
-use crate::error::*;
+use gateway_lib::*;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
+
+use std::net::SocketAddr;
 
 pub struct TcpTunnel {
     remote: SocketAddr,
@@ -14,7 +14,7 @@ impl TcpTunnel {
     pub fn new(remote: SocketAddr, stream: TcpStream) -> Self {
         Self { remote, stream }
     }
-    
+
     pub fn remote(&self) -> &SocketAddr {
         &self.remote
     }
@@ -77,4 +77,3 @@ impl AsyncWrite for TcpTunnel {
         std::pin::Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
     }
 }
-

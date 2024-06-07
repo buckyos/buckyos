@@ -1,4 +1,4 @@
-use crate::error::*;
+use gateway_lib::*;
 use crate::peer::{OnNewTunnelHandleResult, PeerManagerEvents, PeerManagerEventsRef};
 use crate::tunnel::{DataTunnelInfo, TunnelCombiner};
 

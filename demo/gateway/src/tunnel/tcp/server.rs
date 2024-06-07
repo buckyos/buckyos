@@ -1,7 +1,7 @@
 use super::super::server::TunnelServerEventsRef;
 use super::tunnel::TcpTunnel;
-use crate::error::*;
 use crate::tunnel::TunnelServer;
+use gateway_lib::*;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

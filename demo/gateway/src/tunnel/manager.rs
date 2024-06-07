@@ -2,8 +2,8 @@ use super::builder::TunnelBuilder;
 use super::control::{ControlTunnel, ControlTunnelEvents};
 use super::server::TunnelInitInfo;
 use super::tunnel::*;
-use crate::error::*;
 use crate::peer::NameManagerRef;
+use gateway_lib::*;
 
 use std::collections::HashMap;
 use std::sync::{
@@ -158,8 +158,11 @@ impl TunnelManager {
         tokio::task::spawn(async move {
             loop {
                 if let Err(e) = this.init_control_tunnel().await {
-                    error!("Error on init control tunnel, now will retry later: {} -> {}, {}", this.device_id, this.remote_device_id, e);
-    
+                    error!(
+                        "Error on init control tunnel, now will retry later: {} -> {}, {}",
+                        this.device_id, this.remote_device_id, e
+                    );
+
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 } else {
                     break;

@@ -1,4 +1,4 @@
-use crate::error::*;
+use gateway_lib::*;
 use crate::peer::{NameManager, PeerManager};
 use crate::tunnel::TunnelCombiner;
 

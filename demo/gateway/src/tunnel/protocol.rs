@@ -33,7 +33,7 @@ seq: uint
 */
 
 use super::{TunnelReader, TunnelWriter};
-use crate::error::*;
+use gateway_lib::*;
 
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;

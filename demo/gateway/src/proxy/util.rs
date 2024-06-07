@@ -1,10 +1,10 @@
+use gateway_lib::*;
+
 use fast_socks5::consts;
 use fast_socks5::server::{SimpleUserPassword, Socks5Socket};
 use fast_socks5::ReplyError;
 use std::net::SocketAddr;
 use tokio::io::AsyncWriteExt;
-
-use crate::error::GatewayResult;
 
 pub struct Socks5Util {}
 

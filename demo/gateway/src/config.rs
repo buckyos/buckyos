@@ -1,69 +1,10 @@
-use crate::constants::TUNNEL_SERVER_DEFAULT_PORT;
-use crate::error::{GatewayError, GatewayResult};
-use crate::peer::{NameManagerRef, PeerAddrType};
+use crate::peer::NameManagerRef;
 use crate::proxy::ProxyManagerRef;
 use crate::service::UpstreamManagerRef;
+use gateway_lib::*;
 
 use std::str::FromStr;
 use std::sync::Arc;
-
-/*
-"config": {
-    "device-id": "client1",
-    "addr_type": "wan/lan",
-    "tunnel_server_port": 23558
-},
-"known_device": [{
-    "id": "gateway",
-    "addr": "1.2.3.4:8000",
-    "addr_type": "wan"
-}],
-"service":
-[{
-    "block": "upstream",
-    "addr": "127.0.0.1",
-    "port": 2000,
-    "type": "tcp"
-}, {
-    "block": "upstream",
-    "addr": "127.0.0.1",
-    "port": 2001,
-    "type": "http",
-}]
-*/
-
-pub struct GlobalConfig {
-    pub device_id: String,
-    pub addr_type: PeerAddrType,
-    pub tunnel_server_port: u16,
-}
-
-impl Default for GlobalConfig {
-    fn default() -> Self {
-        Self {
-            device_id: "".to_owned(),
-            addr_type: PeerAddrType::WAN,
-            tunnel_server_port: TUNNEL_SERVER_DEFAULT_PORT,
-        }
-    }
-}
-
-impl GlobalConfig {
-    pub fn device_id(&self) -> &str {
-        &self.device_id
-    }
-
-    pub fn addr_type(&self) -> PeerAddrType {
-        self.addr_type
-    }
-    
-    pub fn tunnel_server_port(&self) -> u16 {
-        self.tunnel_server_port
-    }
-}
-
-pub type GlobalConfigRef = Arc<GlobalConfig>;
-
 
 pub struct ConfigLoader {
     name_manager: NameManagerRef,
@@ -85,7 +26,6 @@ impl ConfigLoader {
     }
 
     pub fn load_config_node(json: &serde_json::Value) -> GatewayResult<GlobalConfigRef> {
-
         let mut config = GlobalConfig::default();
 
         let value = json
@@ -93,14 +33,16 @@ impl ConfigLoader {
             .ok_or(GatewayError::InvalidConfig("config".to_owned()))?;
 
         if !value.is_object() {
-            return Err(GatewayError::InvalidConfig("Invalid config node type".to_owned()));
+            return Err(GatewayError::InvalidConfig(
+                "Invalid config node type".to_owned(),
+            ));
         }
 
         let device_id = value["device_id"]
             .as_str()
             .ok_or(GatewayError::InvalidConfig("device_id".to_owned()))?;
 
-        let addr_type  = if let Some(v) = value.get("addr_type") {
+        let addr_type = if let Some(v) = value.get("addr_type") {
             let addr_type = v
                 .as_str()
                 .ok_or(GatewayError::InvalidConfig("addr_type".to_owned()))?;
@@ -109,7 +51,7 @@ impl ConfigLoader {
             config.addr_type
         };
 
-        let port =if let Some(v) = value.get("tunnel_server_port") {
+        let port = if let Some(v) = value.get("tunnel_server_port") {
             let port = v
                 .as_u64()
                 .ok_or(GatewayError::InvalidConfig("tunnel_server_port".to_owned()))?;
@@ -122,12 +64,10 @@ impl ConfigLoader {
             TUNNEL_SERVER_DEFAULT_PORT
         };
 
-        
         config.device_id = device_id.to_owned();
         config.addr_type = addr_type;
         config.tunnel_server_port = port;
 
-    
         Ok(Arc::new(config))
     }
 
@@ -169,8 +109,6 @@ impl ConfigLoader {
     }
 
     pub fn load(&self, json: &serde_json::Value) -> GatewayResult<()> {
-        
-
         // load known device if exists
         let value = json.get("known_device");
         if value.is_some() {

@@ -30,7 +30,7 @@ use crate::etcd_mgr::*;
 use crate::run_item::*;
 use crate::service_mgr::*;
 use crate::system_config::*;
-use gateway::DeviceEndPoint;
+use gateway_lib::DeviceEndPoint;
 use name_client::NameClient;
 
 use thiserror::Error;
@@ -310,12 +310,12 @@ async fn start_gateway_by_zone_config(
     let this_node = this_node.unwrap();
 
     // Add current node config at first
-    let mut gateway_config = gateway::ConfigGen::new(
+    let mut gateway_config = gateway_lib::ConfigGen::new(
         current_node_id,
         if this_node_is_lan {
-            gateway::PeerAddrType::LAN
+            gateway_lib::PeerAddrType::LAN
         } else {
-            gateway::PeerAddrType::WAN
+            gateway_lib::PeerAddrType::WAN
         },
         0,
     );
@@ -328,12 +328,7 @@ async fn start_gateway_by_zone_config(
     for lan_node in lan_nodes {
         let etcd_port = lan_node.port.unwrap();
 
-        gateway_config.add_device(
-            &lan_node.device_name,
-            None,
-            None,
-            Some(gateway::PeerAddrType::LAN),
-        );
+        gateway_config.add_device(&lan_node.device_name, None, None, Some(gateway_lib::PeerAddrType::LAN));
         gateway_config.add_forward_proxy(
             format!("{}-etcd", lan_node.device_name),
             "tcp",
@@ -346,12 +341,7 @@ async fn start_gateway_by_zone_config(
     for wan_node in wan_nodes {
         let etcd_port = wan_node.port.unwrap();
 
-        gateway_config.add_device(
-            &wan_node.device_name,
-            None,
-            None,
-            Some(gateway::PeerAddrType::WAN),
-        );
+        gateway_config.add_device(&wan_node.device_name, None, None, Some(gateway_lib::PeerAddrType::WAN));
         gateway_config.add_forward_proxy(
             format!("{}-etcd", wan_node.device_name),
             "tcp",

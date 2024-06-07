@@ -1,7 +1,6 @@
-use crate::error::{GatewayError, GatewayResult};
+use gateway_lib::*;
 use crate::proxy::{ForwardProxyConfig, ProxyConfig, ProxyManagerRef};
 use crate::service::{UpstreamManagerRef, UpstreamService};
-use crate::constants::HTTP_INTERFACE_DEFAULT_PORT;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -162,7 +161,7 @@ impl GatewayInterface {
                 resp
             }
             Err(e) => {
-                let status = crate::error::error_to_status_code(&e);
+                let status = gateway_lib::error_to_status_code(&e);
 
                 let msg = format!("{}", e);
                 let reply = format!("{{\"ret\": \"failed\", \"msg\": \"{}\"}}", msg);

@@ -1,8 +1,8 @@
-use crate::config::{ConfigLoader, GlobalConfigRef};
-use crate::error::*;
-use crate::peer::{NameManager, NameManagerRef, PeerAddrType, PeerManager, PeerManagerRef};
+use crate::config::ConfigLoader;
+use crate::peer::{NameManager, NameManagerRef, PeerManager, PeerManagerRef};
 use crate::proxy::{ProxyManager, ProxyManagerRef};
 use crate::service::{UpstreamManager, UpstreamManagerRef};
+use gateway_lib::*;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -75,7 +75,7 @@ impl Gateway {
     pub fn proxy_manager(&self) -> ProxyManagerRef {
         self.proxy_manager.clone()
     }
-    
+
     pub async fn start(&self) -> GatewayResult<()> {
         self.peer_manager.start().await?;
 

@@ -1,6 +1,6 @@
 use super::protocol::*;
 use super::tunnel::{TunnelReader, TunnelSide, TunnelWriter};
-use crate::error::{GatewayResult, GatewayError};
+use gateway_lib::*;
 
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell};
@@ -79,30 +79,31 @@ impl ControlTunnel {
             )
             .await
             {
-                Ok(Ok(pkg)) => {
-                    match pkg.cmd {
-                        ControlCmd::Ping => {
-                            info!("Recv ping via control tunnel: {} -> {}", self.remote_device_id, self.device_id);
-                            assert!(self.tunnel_side == TunnelSide::Passive);
-                            last_active = std::time::Instant::now();
-                        }
-                        ControlCmd::ReqBuild => {
-                            let events = self.events.get().unwrap();
-                            let ret = events
-                                .on_req_data_tunnel(pkg.port.unwrap_or(0), pkg.seq)
-                                .await;
+                Ok(Ok(pkg)) => match pkg.cmd {
+                    ControlCmd::Ping => {
+                        info!(
+                            "Recv ping via control tunnel: {} -> {}",
+                            self.remote_device_id, self.device_id
+                        );
+                        assert!(self.tunnel_side == TunnelSide::Passive);
+                        last_active = std::time::Instant::now();
+                    }
+                    ControlCmd::ReqBuild => {
+                        let events = self.events.get().unwrap();
+                        let ret = events
+                            .on_req_data_tunnel(pkg.port.unwrap_or(0), pkg.seq)
+                            .await;
 
-                            if let Err(e) = ret {
-                                error!("Error on new data tunnel: {}", e);
-                                result = Err(e);
-                                break;
-                            }
-                        }
-                        _ => {
-                            error!("Invalid control command: {:?}", pkg.cmd);
+                        if let Err(e) = ret {
+                            error!("Error on new data tunnel: {}", e);
+                            result = Err(e);
+                            break;
                         }
                     }
-                }
+                    _ => {
+                        error!("Invalid control command: {:?}", pkg.cmd);
+                    }
+                },
                 Ok(Err(e)) => {
                     error!("Error reading control package: {}", e);
                     result = Err(e);
@@ -121,7 +122,9 @@ impl ControlTunnel {
                             // check if ping timeout with 5min
                             if last_active.elapsed().as_secs() > CONTROL_TUNNEL_PING_TIMEOUT {
                                 error!("Control tunnel ping timeout");
-                                result = Err(GatewayError::Timeout("Control tunnel ping timeout".to_string()));
+                                result = Err(GatewayError::Timeout(
+                                    "Control tunnel ping timeout".to_string(),
+                                ));
                                 break;
                             }
                         }
@@ -150,13 +153,7 @@ impl ControlTunnel {
     }
 
     async fn ping(&self) -> GatewayResult<()> {
-        let ping_pkg = ControlPackage::new(
-            ControlCmd::Ping,
-            TunnelUsage::Control,
-            None,
-            None,
-            0,
-        );
+        let ping_pkg = ControlPackage::new(ControlCmd::Ping, TunnelUsage::Control, None, None, 0);
         self.write_pkg(ping_pkg).await
     }
 

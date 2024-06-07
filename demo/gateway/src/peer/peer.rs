@@ -1,6 +1,5 @@
 use super::name::NameManagerRef;
-use super::name::PeerAddrType;
-use crate::error::*;
+use gateway_lib::*;
 use crate::tunnel::*;
 
 pub struct PeerClient {

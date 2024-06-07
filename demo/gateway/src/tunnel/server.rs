@@ -1,7 +1,7 @@
 use super::protocol::*;
 use super::tcp::TcpTunnelServer;
 use super::tunnel::{Tunnel, TunnelReader, TunnelWriter};
-use crate::error::GatewayResult;
+use gateway_lib::*;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

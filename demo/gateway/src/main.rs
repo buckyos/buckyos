@@ -1,23 +1,20 @@
 #![allow(dead_code)]
 
 mod config;
-mod constants;
-mod error;
 mod gateway;
 mod peer;
 mod proxy;
 mod service;
 mod tunnel;
 mod log_util;
-mod endpoint;
 mod interface;
 
 #[macro_use]
 extern crate log;
 
 use clap::{Arg, ArgGroup, Command};
-use error::*;
 use gateway::Gateway;
+use gateway_lib::*;
 
 #[cfg(test)]
 mod test;
@@ -36,7 +33,7 @@ async fn run(config: &str) -> GatewayResult<()> {
     // Start http interface
     let interface = interface::GatewayInterface::new(gateway.upstream_manager(), gateway.proxy_manager());
     interface.start().await?;
-    
+
     // sleep forever
     let _ = tokio::signal::ctrl_c().await;
 

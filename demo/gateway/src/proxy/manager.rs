@@ -1,7 +1,7 @@
 use super::forward::{ForwardProxyConfig, ForwardProxyProtocol, TcpForwardProxy};
 use super::socks5::{ProxyConfig, Socks5Proxy};
-use crate::error::{GatewayError, GatewayResult};
 use crate::peer::{NameManagerRef, PeerManagerRef};
+use gateway_lib::*;
 
 use std::sync::{Arc, Mutex};
 

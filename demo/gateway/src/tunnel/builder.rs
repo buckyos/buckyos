@@ -2,8 +2,8 @@ use super::control::ControlTunnel;
 use super::protocol::*;
 use super::tcp::TcpTunnel;
 use super::tunnel::*;
-use crate::error::*;
 use crate::peer::{NameInfo, NameManagerRef};
+use gateway_lib::*;
 
 pub struct TunnelBuilder {
     name_manager: NameManagerRef,
