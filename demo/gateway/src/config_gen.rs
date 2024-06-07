@@ -45,7 +45,6 @@ pub struct KnownDevice {
     pub addr: Option<String>,
     pub port: Option<u16>,
     pub addr_type: Option<PeerAddrType>,
-
 }
 
 pub struct UpstreamService {

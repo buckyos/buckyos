@@ -1,6 +1,7 @@
 use crate::error::{GatewayError, GatewayResult};
 use crate::proxy::{ForwardProxyConfig, ProxyConfig, ProxyManagerRef};
 use crate::service::{UpstreamManagerRef, UpstreamService};
+use crate::constants::HTTP_INTERFACE_DEFAULT_PORT;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -16,7 +17,8 @@ pub struct GatewayInterface {
 
 impl GatewayInterface {
     pub fn new(upstream_manager: UpstreamManagerRef, proxy_manager: ProxyManagerRef) -> Self {
-        let addr = "127.0.0.1:23008".parse().unwrap();
+        let addr = format!("127.0.0.1:{}", HTTP_INTERFACE_DEFAULT_PORT);
+        let addr = addr.parse().unwrap();
 
         Self {
             upstream_manager,
@@ -176,7 +178,7 @@ impl GatewayInterface {
         let this = std::sync::Arc::new(self.clone());
         let service_filter = warp::any().map(move || this.clone());
 
-        let add_upstream_route = warp::path("service/upstream")
+        let add_upstream_route = warp::path!("service" / "upstream")
             .and(warp::post())
             .and(warp::body::json())
             .and(service_filter.clone())
@@ -187,7 +189,7 @@ impl GatewayInterface {
                 },
             );
 
-        let remove_upstream_route = warp::path("service/upstream")
+        let remove_upstream_route = warp::path!("service" / "upstream")
             .and(warp::delete())
             .and(warp::body::json())
             .and(service_filter.clone())
@@ -196,7 +198,7 @@ impl GatewayInterface {
                 Self::ret_to_response(ret)
             });
 
-        let add_socks5_proxy_route = warp::path("service/proxy/socks5")
+        let add_socks5_proxy_route = warp::path!("service" / "proxy" / "socks5")
             .and(warp::post())
             .and(warp::body::json())
             .and(service_filter.clone())
@@ -207,7 +209,7 @@ impl GatewayInterface {
                 },
             );
 
-        let add_forward_proxy_route = warp::path("service/proxy/forward")
+        let add_forward_proxy_route = warp::path!("service" / "proxy" / "forward")
             .and(warp::post())
             .and(warp::body::json())
             .and(service_filter.clone())
@@ -218,7 +220,7 @@ impl GatewayInterface {
                 },
             );
 
-        let remove_proxy_route = warp::path("service/proxy")
+        let remove_proxy_route = warp::path!("service" / "proxy")
             .and(warp::delete())
             .and(warp::body::json())
             .and(service_filter.clone())
@@ -247,7 +249,5 @@ impl GatewayInterface {
         tokio::spawn(server);
 
         Ok(())
-
-       
     }
 }
