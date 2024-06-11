@@ -60,7 +60,8 @@ impl UpstreamService {
         let protocol = UpstreamServiceProtocol::from_str(protocol)?;
 
         info!(
-            "New upstream service: {}:{} type: {}",
+            "New upstream service: {}, {}:{} type: {}",
+            id,
             addr,
             port,
             protocol.as_str()
@@ -167,6 +168,8 @@ impl UpstreamManager {
             warn!("{}", msg);
             return Err(GatewayError::UpstreamNotFound(msg));
         }
+
+        info!("Upstream service removed: {}", id);
 
         Ok(())
     }

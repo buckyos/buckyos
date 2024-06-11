@@ -205,6 +205,8 @@ impl ProxyManager {
         }
 
         if found {
+            info!("Socks5 proxy removed: {}", id);
+
             return Ok(());
         }
 
@@ -223,11 +225,14 @@ impl ProxyManager {
         }
 
         if found {
+            info!("Tcp forward proxy removed: {}", id);
+
             return Ok(());
         }
 
         let msg = format!("Proxy not found: {}", id);
         warn!("{}", msg);
+
         Err(GatewayError::NotFound(msg.to_owned()))
     }
 

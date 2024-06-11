@@ -14,3 +14,6 @@ http = "*"
 serde_json = "*"
 reqwest = { version = "*", features = ["json"] }
 anyhow = "*"
+
+[dev-dependencies]
+env_logger = "*"

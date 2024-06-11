@@ -78,6 +78,17 @@ pub struct AddSocks5ProxyRequest {
     pub r#type: String,
 }
 
+impl AddSocks5ProxyRequest {
+    pub fn new(id: impl Into<String>, addr: IpAddr, port: u16) -> Self {
+        Self {
+            id: id.into(),
+            addr,
+            port,
+            r#type: "socks5".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct DeleteSocks5ProxyRequest {
     pub id: String,
@@ -92,6 +103,27 @@ pub struct AddForwardProxyRequest {
     pub target_device: String,
     pub target_port: u16,
     pub r#type: String,
+}
+
+impl AddForwardProxyRequest {
+    pub fn new(
+        id: impl Into<String>,
+        addr: IpAddr,
+        port: u16,
+        protocol: ForwardProxyProtocol,
+        target_device: impl Into<String>,
+        target_port: u16,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            addr,
+            port,
+            protocol,
+            target_device: target_device.into(),
+            target_port,
+            r#type: "forward".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -187,7 +219,7 @@ impl GatewayStub {
     }
 
     pub async fn delete_socks5_proxy(&self, req: DeleteSocks5ProxyRequest) -> GatewayResult<()> {
-        let url = format!("{}/service/proxy/socks5", self.base_url);
+        let url = format!("{}/service/proxy", self.base_url);
         let resp = self
             .client
             .delete(&url)
@@ -221,7 +253,7 @@ impl GatewayStub {
     }
 
     pub async fn delete_forward_proxy(&self, req: DeleteForwardProxyRequest) -> GatewayResult<()> {
-        let url = format!("{}/service/proxy/forward", self.base_url);
+        let url = format!("{}/service/proxy", self.base_url);
         let resp = self
             .client
             .delete(&url)
@@ -235,5 +267,81 @@ impl GatewayStub {
             })?;
 
         Self::on_response(resp).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_gateway_stub() {
+        std::env::set_var("RUST_LOG", "info");
+        env_logger::init();
+
+        let stub = GatewayStub::default();
+
+        let req = AddUpstreamRequest {
+            id: "test".to_string(),
+            protocol: UpstreamServiceProtocol::Tcp,
+            addr: "127.0.0.1".parse().unwrap(),
+            port: 2000,
+        };
+
+        let resp = stub.add_upstream(req).await;
+        assert!(resp.is_ok());
+
+        info!("Test add_upstream success");
+
+        let req = DeleteUpstreamRequest {
+            id: "test".to_string(),
+        };
+        let resp = stub.delete_upstream(req).await;
+        assert!(resp.is_ok());
+
+        info!("Test delete_upstream success");
+
+        // socks5
+        let req = AddSocks5ProxyRequest::new("test_socks5", "127.0.0.1".parse().unwrap(), 2001);
+
+        let resp = stub.add_socks5_proxy(req).await;
+        assert!(resp.is_ok());
+
+        info!("Test add_socks5_proxy success");
+
+        // Sleep 5s
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        let req = DeleteSocks5ProxyRequest {
+            id: "test_socks5".to_string(),
+        };
+        let resp = stub.delete_socks5_proxy(req).await;
+        assert!(resp.is_ok());
+
+        info!("Test delete_socks5_proxy success");
+
+        // forward
+        let req = AddForwardProxyRequest::new(
+            "test_forward",
+            "127.0.0.1".parse().unwrap(),
+            2003,
+            ForwardProxyProtocol::Tcp,
+            "device_id",
+            2003,
+        );
+
+        let resp = stub.add_forward_proxy(req).await;
+        assert!(resp.is_ok());
+
+        info!("Test add_forward_proxy success");
+
+        // Sleep 5s
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        let req = DeleteForwardProxyRequest {
+            id: "test_forward".to_string(),
+        };
+        let resp = stub.delete_forward_proxy(req).await;
+        assert!(resp.is_ok());
     }
 }
