@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 use backup_lib::{ChunkId, ChunkInfo, ChunkServerType, FileId, FileServerType, TaskServerType};
 use tokio::sync::Mutex;
@@ -51,7 +50,7 @@ impl backup_lib::FileMgr for FileMgr {
     ) -> Result<(ChunkServerType, String, ChunkId), Box<dyn std::error::Error + Send + Sync>> {
         let (chunk_server_type, chunk_server_name, remote_chunk_info) = {
             let mut storage = self.storage.lock().await;
-            let (task_server_type, task_sever_name, file_hash, file_size, _chunk_size) = storage.get_file_by_id(file_id)?.unwrap();
+            let (_todo_task_server_type, _todo_task_sever_name, file_hash, _todo_file_size, _chunk_size) = storage.get_file_by_id(file_id)?.unwrap();
             let chunk_mgr = self.chunk_mgr_selector.select(file_hash.as_str(), chunk_seq, chunk_hash).await?;
             storage.insert_file_chunk(file_hash.as_str(), chunk_seq, chunk_hash, chunk_size, chunk_mgr.server_type(), chunk_mgr.server_name())?
         };

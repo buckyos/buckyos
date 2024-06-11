@@ -8,7 +8,7 @@ use base58::ToBase58;
 use sha2::Digest;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use backup_lib::{CheckPointVersion, ChunkInfo, FileInfo, TaskId, TaskInfo as TaskInfoServer, TaskKey};
+use backup_lib::{CheckPointVersion, ChunkInfo, FileInfo, TaskId, TaskKey};
 
 use crate::{task_mgr::BackupTaskMgrInner, task_storage::FilesReadyState};
 
@@ -69,7 +69,7 @@ pub struct BackupTask {
         tokio::sync::mpsc::Sender<BackupTaskControl>,
         Arc<Mutex<tokio::sync::mpsc::Receiver<BackupTaskControl>>>,
     ),
-    uploading_chunks: Arc<Mutex<Vec<ChunkInfo>>>,
+    _todo_uploading_chunks: Arc<Mutex<Vec<ChunkInfo>>>,
 }
 
 impl BackupTask {
@@ -78,7 +78,7 @@ impl BackupTask {
         Self {
             mgr,
             info: Arc::new(Mutex::new(info)),
-            uploading_chunks: Arc::new(Mutex::new(Vec::new())),
+            _todo_uploading_chunks: Arc::new(Mutex::new(Vec::new())),
             control: (sender, Arc::new(Mutex::new(receiver))),
         }
     }
@@ -192,7 +192,7 @@ impl BackupTask {
                 last_fail_at: None,
                 complete_file_count: 0,
             })),
-            uploading_chunks: Arc::new(Mutex::new(vec![])),
+            _todo_uploading_chunks: Arc::new(Mutex::new(vec![])),
             control: (sender, Arc::new(Mutex::new(receiver))),
         })
     }
@@ -375,7 +375,7 @@ impl BackupTask {
                 for chunk_seq in 0..chunk_count {
                     let offset = chunk_seq * chunk_size;
                     let chunk_size = std::cmp::min(chunk_size, file.file_size - offset);
-                    let (chunk_server_type, chunk_server_name, chunk_hash, chunk, remote_chunk_id) =
+                    let (chunk_server_type, chunk_server_name, chunk_hash, chunk, _todo_remote_chunk_id) =
                         match file_storage
                             .is_chunk_info_pushed(&task_info.task_key, task_info.check_point_version, file.file_path.as_path(), chunk_seq)
                             .await
@@ -516,7 +516,7 @@ impl BackupTask {
                                 return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
                             }
 
-                            tokio::fs::remove_file(file.file_path.as_path()).await;
+                            let _todo_ = tokio::fs::remove_file(file.file_path.as_path()).await;
                         }
                         Err(err) => {
                             log::error!("upload chunk failed: {:?}", err);
@@ -529,7 +529,7 @@ impl BackupTask {
     }
 
     // [path, Option<(hash, file-size)>]
-    pub(crate) async fn add_files(&self, files: Vec<(PathBuf, Option<(String, u64)>)>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub(crate) async fn add_files(&self, _todo_files: Vec<(PathBuf, Option<(String, u64)>)>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         unimplemented!()
     }
 }

@@ -1,11 +1,10 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, Weak},
-    time::SystemTime,
+    sync::Weak,
 };
 use tokio::io::AsyncWriteExt; // Import the AsyncWriteExt trait
 
-use backup_lib::{CheckPointVersion, TaskInfo, TaskKey};
+use backup_lib::TaskInfo;
 
 use crate::task_mgr::RestoreTaskMgrInner;
 

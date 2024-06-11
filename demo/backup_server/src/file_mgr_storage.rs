@@ -1,6 +1,4 @@
-use std::path::{Path, PathBuf};
-use std::os::unix::ffi::OsStringExt;
-use backup_lib::{CheckPointVersion, ChunkId, ChunkInfo, ChunkServerType, FileId, FileServerType, TaskId, TaskInfo, TaskKey, TaskServerType};
+use backup_lib::{ChunkId, ChunkInfo, ChunkServerType, FileId, TaskServerType};
 use rusqlite::{params, Connection, Result};
 
 pub struct FileStorageSqlite {
@@ -126,7 +124,7 @@ impl FileStorageSqlite {
                 Into::<u32>::into(chunk_server_type),
                 chunk_server_name,
             ],
-            |row| {
+            |_todo_row| {
                 Ok((chunk_server_type, chunk_server_name.to_string(), None))
             }
         );
@@ -158,7 +156,7 @@ impl FileStorageSqlite {
                             Ok((server_type, server_name.to_string(), None))
                         }
                     },
-                    Err(err) => Ok((chunk_server_type, chunk_server_name.to_string(), None)),
+                    Err(_todo_err) => Ok((chunk_server_type, chunk_server_name.to_string(), None)),
                 }
             },
             Err(err) => Err(Box::new(err)),

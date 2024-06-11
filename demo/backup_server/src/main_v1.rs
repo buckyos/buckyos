@@ -71,7 +71,7 @@ pub async fn main_v1() -> tide::Result<()> {
 
     let chunk_mgr_selector = SimpleChunkMgrSelector::new(config.access_url.as_str());
     let file_mgr_selector = SimpleFileMgrSelector::new(config.access_url.as_str());
-    let task_mgr_selector = SimpleTaskMgrSelector::new(config.access_url.as_str());
+    let _todo_task_mgr_selector = SimpleTaskMgrSelector::new(config.access_url.as_str());
 
     let chunk_mgr = ChunkMgr::new(chunk_storage, std::path::PathBuf::from(data_path.clone()), std::path::PathBuf::from(tmp_path.clone()));
     let file_mgr = FileMgr::new(file_storage, std::sync::Arc::new(chunk_mgr_selector));

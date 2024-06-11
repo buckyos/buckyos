@@ -169,7 +169,7 @@ impl TaskStorageSqlite {
                 Into::<u32>::into(file_server_type),
                 file_server_name,
             ],
-            |row| {
+            |_todo_row| {
                 Ok((file_server_type, file_server_name.to_string(), None))
             }
         );
@@ -202,7 +202,7 @@ impl TaskStorageSqlite {
                             Ok((file_server_type, file_server_name.to_string(), None))
                         }
                     },
-                    Err(err) => Ok((file_server_type, file_server_name.to_string(), None)),
+                    Err(_todo_err) => Ok((file_server_type, file_server_name.to_string(), None)),
                 }
             },
             Err(err) => Err(Box::new(err)),
@@ -349,7 +349,7 @@ impl TaskStorageSqlite {
 
     pub fn get_file_info(
         &self,
-        zone_id: &str,
+        _todo_zone_id: &str,
         task_id: TaskId,
         file_seq: u64,
     ) -> Result<Option<FileInfo>, Box<dyn std::error::Error + Send + Sync>> {

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::os::unix::ffi::OsStringExt;
-use backup_lib::{CheckPointVersion, ChunkId, ChunkServerType, FileId, FileServerType, TaskId, TaskInfo, TaskKey, TaskServerType};
+use backup_lib::{ChunkId, FileServerType};
 use rusqlite::{params, Connection, Result};
 
 pub struct ChunkStorageSqlite {
@@ -90,17 +90,17 @@ impl ChunkStorageSqlite {
         }
     }
 
-    pub fn update_chunk(
-        &mut self,
-        chunk_hash: &str,
-        save_path: &Path,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.connection.execute(
-            "UPDATE chunks SET save_path = ? WHERE chunk_hash = ?",
-            params![save_path.as_os_str().as_encoded_bytes(), chunk_hash],
-        )?;
-        Ok(())
-    }
+    // pub fn update_chunk(
+    //     &mut self,
+    //     chunk_hash: &str,
+    //     save_path: &Path,
+    // ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    //     self.connection.execute(
+    //         "UPDATE chunks SET save_path = ? WHERE chunk_hash = ?",
+    //         params![save_path.as_os_str().as_encoded_bytes(), chunk_hash],
+    //     )?;
+    //     Ok(())
+    // }
 
     pub fn query_chunk_by_hash(
         &self,

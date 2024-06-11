@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use backup_lib::{CheckPointVersion, SimpleChunkMgrSelector, SimpleFileMgrSelector, SimpleTaskMgrSelector, TaskKey};
 use rusqlite::Result;
-use task_mgr::{BackupTaskMgr, RestoreTaskMgr};
+use task_mgr::BackupTaskMgr;
 use backup_task::Task;
 use task_storage::FilesReadyState;
 use std::env;
@@ -105,7 +105,7 @@ async fn main() {
 
     let etcd_backup_task = tokio::task::spawn(backup_etcd_process(args.etcd_servers.clone(), backup_task_mgr.clone()));
     
-    tokio::join!(etcd_backup_task);
+    let _todo_ = tokio::join!(etcd_backup_task);
 }
 
 async fn backup_etcd_process(etcd_servers: String, backup_task_mgr: BackupTaskMgr) {

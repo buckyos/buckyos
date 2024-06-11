@@ -319,7 +319,7 @@ impl BackupFileMgr {
                 hash
             );
 
-            async_std::fs::remove_file(&tmp_path).await;
+            let _todo = async_std::fs::remove_file(&tmp_path).await;
 
             return Err(tide::Error::from_str(
                 tide::StatusCode::BadRequest,
@@ -348,7 +348,7 @@ impl BackupFileMgr {
             })?;
 
         {
-            self.index_mgr
+            let _todo = self.index_mgr
                 .lock()
                 .await
                 .insert_new_chunk(

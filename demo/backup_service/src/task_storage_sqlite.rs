@@ -181,7 +181,7 @@ impl TaskStorageClient for TaskStorageSqlite {
         priority: u32,
         is_manual: bool,
     ) -> Result<TaskId, Box<dyn std::error::Error + Send + Sync>> {
-        let mut connection = self.connection.lock().await;
+        let connection = self.connection.lock().await;
         let sql = "INSERT INTO upload_tasks (zone_id, key, version, prev_version, meta, dir_path, priority, is_manual) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
         connection.execute(sql, params![
             self.zone_id.as_str(),
@@ -206,7 +206,7 @@ impl TaskStorageClient for TaskStorageSqlite {
         file_size: u64,
         file_seq: u32,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut connection = self.connection.lock().await;
+        let connection = self.connection.lock().await;
         let sql = "INSERT INTO upload_files (task_id, file_seq, file_path, file_hash, file_size) VALUES (?, ?, ?, ?, ?)";
         connection.execute(sql, params![
             Into::<u128>::into(task_id) as u64,
@@ -374,13 +374,11 @@ impl TaskStorageClient for TaskStorageSqlite {
         task_key: &TaskKey,
         is_restorable_only: bool,
     ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
-        /**
-         * is_restorable_only = true 有几个条件:
-         * 1. is_all_files_ready = 2
-         * 2. 每个相关文件的所有chunk都已经上传:
-         *   - 文件关联所有chunk的is_uploaded都为true
-         *   - 文件关联chunk数 * 文件chunk大小(chunk_size) >= 文件大小(file_size)
-         * */ 
+        // is_restorable_only = true 有几个条件:
+        //     1. is_all_files_ready = 2
+        //     2. 每个相关文件的所有chunk都已经上传:
+        //         - 文件关联所有chunk的is_uploaded都为true
+        //         - 文件关联chunk数 * 文件chunk大小(chunk_size) >= 文件大小(file_size)
 
         let sql = if is_restorable_only {
             "SELECT *, 
@@ -561,7 +559,7 @@ impl TaskStorageClient for TaskStorageSqlite {
 impl TaskStorageDelete for TaskStorageSqlite {
     async fn delete_tasks_by_id(
         &self,
-        task_id: &[TaskId],
+        _todo_task_id: &[TaskId],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // unimplemented!()
         Ok(())

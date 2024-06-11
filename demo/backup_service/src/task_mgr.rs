@@ -41,7 +41,7 @@ impl BackupTaskMap {
                 .or_insert_with(HashMap::new)
                 .insert(version, task_id);
 
-            backup_task.start().await;
+            let _todo_ = backup_task.start().await;
         }
     }
 
@@ -181,16 +181,16 @@ impl BackupTaskMgr {
                             task_mgr_inner.try_run(backup_task).await;
                         },
                         BackupTaskEvent::Idle(backup_task) => {
-                            task_mgr_inner.remove_task(&backup_task);
+                            task_mgr_inner.remove_task(&backup_task).await;
                         }
-                        BackupTaskEvent::ErrorAndWillRetry(backup_task, err) => {
-                            task_mgr_inner.remove_task(&backup_task);
+                        BackupTaskEvent::ErrorAndWillRetry(backup_task, _todo_err) => {
+                            task_mgr_inner.remove_task(&backup_task).await;
                         }
-                        BackupTaskEvent::Fail(backup_task, err) => {
-                            task_mgr_inner.remove_task(&backup_task);
+                        BackupTaskEvent::Fail(backup_task, _todo_err) => {
+                            task_mgr_inner.remove_task(&backup_task).await;
                         }
                         BackupTaskEvent::Successed(backup_task) => {
-                            task_mgr_inner.remove_task(&backup_task);
+                            task_mgr_inner.remove_task(&backup_task).await;
                         }
                         BackupTaskEvent::Stop(backup_task) => {
                             let task_count = task_mgr_inner.remove_task(&backup_task).await;
@@ -201,7 +201,7 @@ impl BackupTaskMgr {
                                     if task_count == 0 {
                                         let stop_notifier = stop_notifier.clone();
                                         *state = BackupState::Stopped;
-                                        stop_notifier.send(()).await;
+                                        let _todo_ = stop_notifier.send(()).await;
                                         break;
                                     }
                                 }
@@ -242,7 +242,7 @@ impl BackupTaskMgr {
         meta: Option<String>,
         dir_path: PathBuf,
         files: Vec<(PathBuf, Option<(String, u64)>)>, // (relative_file_path, (file-hash, file-size))
-        is_discard_incomplete_versions: bool,
+        _todo_is_discard_incomplete_versions: bool,
         priority: u32,
         is_manual: bool,
     ) -> Result<BackupTask, Box<dyn std::error::Error + Send + Sync>> {
@@ -280,7 +280,7 @@ impl BackupTaskMgr {
                 {
                     // TODO: stop and remove the removed tasks.
 
-                    self.0
+                    let _todo_ = self.0
                         .task_storage
                         .delete_tasks_by_id(removed_tasks.as_slice())
                         .await;

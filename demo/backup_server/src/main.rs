@@ -14,11 +14,11 @@ mod chunk_mgr_storage;
 use main_v0::main_v0;
 use main_v1::main_v1;
 
-const is_v0: bool = false;
+const IS_V0: bool = false;
 
 #[tokio::main]
 async fn main() {
-    if is_v0 {
+    if IS_V0 {
         main_v0().await.unwrap();
     } else {
         main_v1().await.unwrap();

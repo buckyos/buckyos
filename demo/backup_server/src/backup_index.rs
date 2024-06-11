@@ -111,7 +111,7 @@ impl BackupIndexSqlite {
         zone_id: &str,
         key: &str,
         version: u32,
-        prev_version: Option<u32>,
+        _todo_prev_version: Option<u32>,
     ) -> Result<(), Box<dyn Error>> {
         // 在表backup_version中插入新行
         let sql = r#"INSERT INTO backup_version (
@@ -286,7 +286,7 @@ impl BackupIndexSqlite {
                 GROUP BY backup_version.zone_id, backup_version.key, backup_version.version
             "#;
 
-        let mut version_info =
+        let version_info =
             self.conn
                 .query_row(sql, rusqlite::params![zone_id, key, version], |row| {
                     Ok(BackupVersionMeta {

@@ -11,47 +11,47 @@ struct Config {
     port: u16,
 }
 
-async fn create_backup(mut req: Request<BackupFileMgr>) -> tide::Result {
+async fn create_backup(req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
     log::info!("create_backup");
     backup_file_mgr.create_backup(req).await
 }
 
-async fn commit_backup(mut req: Request<BackupFileMgr>) -> tide::Result {
+async fn commit_backup(req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
     log::info!("commite_backup");
     backup_file_mgr.commit_backup(req).await
 }
 
-async fn save_chunk(mut req: Request<BackupFileMgr>) -> tide::Result {
+async fn save_chunk(req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
 
     log::info!("save_chunk");
     backup_file_mgr.save_chunk(req).await
 }
 
-async fn download_chunk(mut req: Request<BackupFileMgr>) -> tide::Result {
+async fn download_chunk(req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
 
     log::info!("download_chunk");
     backup_file_mgr.download_chunk(req).await
 }
 
-async fn query_versions(mut req: Request<BackupFileMgr>) -> tide::Result {
+async fn query_versions(req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
 
     log::info!("query_versions");
     backup_file_mgr.query_versions(req).await
 }
 
-async fn query_version_info(mut req: Request<BackupFileMgr>) -> tide::Result {
+async fn query_version_info(req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
 
     log::info!("query_version_info");
     backup_file_mgr.query_version_info(req).await
 }
 
-async fn query_chunk_info(mut req: Request<BackupFileMgr>) -> tide::Result {
+async fn query_chunk_info(req: Request<BackupFileMgr>) -> tide::Result {
     let backup_file_mgr = req.state().clone();
 
     log::info!("query_chunk_info");
@@ -112,7 +112,7 @@ pub async fn main_v0() -> tide::Result<()> {
     app.at("/chunk_info").get(query_chunk_info);
     app.at("/chunk").get(download_chunk);
 
-    app.listen(format!("{}:{}", config.interface, config.port))
+    let _todo = app.listen(format!("{}:{}", config.interface, config.port))
         .await
         .map_err(|err| {
             log::error!("listen failed: {}", err);

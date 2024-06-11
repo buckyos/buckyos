@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use backup_lib::{ChunkId, ChunkServerType, FileServerType};
 use tokio::sync::Mutex;
@@ -42,12 +42,12 @@ impl backup_lib::ChunkMgr for ChunkMgr {
         // TODO: check chunk size and hash
         let chunk_info = self.storage.lock().await.query_chunk_by_hash(chunk_hash)?;
         match chunk_info {
-            Some((chunk_id, chunk_size, save_path)) => {
+            Some((_todo_chunk_id, chunk_size, save_path)) => {
                 if chunk.len() as u32 != chunk_size {
                     return Err("chunk size not match".into());
                 }
 
-                if let Some(save_path) = save_path {
+                if let Some(_todo_save_path) = save_path {
                     return Ok(())
                 }
 
@@ -55,8 +55,8 @@ impl backup_lib::ChunkMgr for ChunkMgr {
                 tokio::fs::write(&tmp_path, chunk).await?;
                 let save_path = self.save_dir.join(chunk_hash);
                 self.storage.lock().await.update_chunk_save_path(chunk_hash, save_path.as_path())?;
-                tokio::fs::copy(&tmp_path, &save_path).await?;
-                tokio::fs::remove_file(&tmp_path).await;
+                let _todo = tokio::fs::copy(&tmp_path, &save_path).await?;
+                let _todo = tokio::fs::remove_file(&tmp_path).await;
 
                 Ok(())
             }
@@ -69,7 +69,7 @@ impl backup_lib::ChunkMgr for ChunkMgr {
     async fn download(&self, chunk_id: ChunkId) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let info = self.storage.lock().await.get_chunk_by_id(chunk_id)?;
         match info {
-            Some((chunk_hash, chunk_size, save_path)) => {
+            Some((_todo_chunk_hash, _todo_chunk_size, save_path)) => {
                 match save_path {
                     Some(save_path) => {
                         let chunk = tokio::fs::read(save_path).await?;
