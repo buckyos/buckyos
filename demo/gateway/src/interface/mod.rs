@@ -1,6 +1,6 @@
 
 /*
-Register services via http protocol
+Add/Remove services via http protocol
 
 /service/upstream
 /service/proxy/socks5

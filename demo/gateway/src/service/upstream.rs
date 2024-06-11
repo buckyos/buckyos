@@ -7,35 +7,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpStream;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpstreamServiceProtocol {
-    Tcp,
-    Udp,
-    Http,
-}
 
-impl UpstreamServiceProtocol {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            UpstreamServiceProtocol::Tcp => "tcp",
-            UpstreamServiceProtocol::Udp => "udp",
-            UpstreamServiceProtocol::Http => "http",
-        }
-    }
-}
-
-impl FromStr for UpstreamServiceProtocol {
-    type Err = GatewayError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "tcp" => Ok(UpstreamServiceProtocol::Tcp),
-            "udp" => Ok(UpstreamServiceProtocol::Udp),
-            "http" => Ok(UpstreamServiceProtocol::Http),
-            _ => Err(GatewayError::InvalidParam("type".to_owned())),
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct UpstreamService {

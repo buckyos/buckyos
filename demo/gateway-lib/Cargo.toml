@@ -12,3 +12,5 @@ async-trait = "*"
 serde = { version = "*", features = ["derive"] }
 http = "*"
 serde_json = "*"
+reqwest = { version = "*", features = ["json"] }
+anyhow = "*"

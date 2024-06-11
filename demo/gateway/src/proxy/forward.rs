@@ -1,38 +1,11 @@
-use gateway_lib::*;
 use crate::peer::{NameManager, PeerManager};
 use crate::tunnel::TunnelCombiner;
+use gateway_lib::*;
 
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::{net::SocketAddr, str::FromStr};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ForwardProxyProtocol {
-    Tcp,
-    Udp,
-}
-
-impl ForwardProxyProtocol {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ForwardProxyProtocol::Tcp => "tcp",
-            ForwardProxyProtocol::Udp => "udp",
-        }
-    }
-}
-
-impl FromStr for ForwardProxyProtocol {
-    type Err = GatewayError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "tcp" => Ok(ForwardProxyProtocol::Tcp),
-            "udp" => Ok(ForwardProxyProtocol::Udp),
-            _ => Err(GatewayError::InvalidConfig("proxy-type".to_owned())),
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct ForwardProxyConfig {

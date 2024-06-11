@@ -1,4 +1,4 @@
-use super::forward::{ForwardProxyConfig, ForwardProxyProtocol, TcpForwardProxy};
+use super::forward::{ForwardProxyConfig, TcpForwardProxy};
 use super::socks5::{ProxyConfig, Socks5Proxy};
 use crate::peer::{NameManagerRef, PeerManagerRef};
 use gateway_lib::*;
