@@ -2,7 +2,7 @@ pub use etcd_rs::Member;
 use etcd_rs::{Client, ClientConfig, ClusterOp, Endpoint, KeyValueOp};
 use log::*;
 use serde_json::json;
-// use std::fs::DirEntry;
+use std::fs::DirEntry;
 use std::process::{Child, Command};
 use std::vec;
 use tokio::fs::write;
@@ -96,25 +96,24 @@ pub fn start_etcd(
         .unwrap()
         .join(format!("{}.etcd", name));
 
-    if etcd_data_dir.exists() {
-        std::fs::remove_dir_all(&etcd_data_dir)?;
-    }
-    // let cluster_state = if etcd_data_dir.exists() {
-    //     if etcd_data_dir
-    //         .read_dir()?
-    //         .collect::<Vec<Result<DirEntry, std::io::Error>>>()
-    //         .len()
-    //         > 0
-    //     {
-    //         "existing"
-    //     } else {
-    //         "new"
-    //     }
-    // } else {
-    //     "new"
-    // };
-
-    let cluster_state = "new";
+    // if etcd_data_dir.exists() {
+    //     std::fs::remove_dir_all(&etcd_data_dir)?;
+    // }
+    let cluster_state = if etcd_data_dir.exists() {
+        if etcd_data_dir
+            .read_dir()?
+            .collect::<Vec<Result<DirEntry, std::io::Error>>>()
+            .len()
+            > 0
+        {
+            "existing"
+        } else {
+            "new"
+        }
+    } else {
+        "new"
+    };
+    // let cluster_state = "new";
     info!("cluster state: {}; machine name: {}", cluster_state, name);
 
     Command::new("etcd")
@@ -134,6 +133,8 @@ pub fn start_etcd(
         .arg(cluster_token)
         .arg("--initial-cluster-state")
         .arg(cluster_state)
+        .arg("--log-outputs")
+        .arg(format!("/var/log/etcd.{}.log", name))
         // .stdout(std::process::Stdio::inherit())
         // .stderr(std::process::Stdio::inherit())
         .spawn()
