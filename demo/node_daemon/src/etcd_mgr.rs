@@ -109,6 +109,14 @@ pub(crate) async fn get_etcd_data_version(
         .map_err(handle_error!("start_etcd failed!"))?;
     sleep(Duration::from_secs(1)).await;
 
+    // etcd要在cluster配置的所有节点都就绪后才能正常工作
+    if !etcd_client::check_etcd_health(&name) {
+        error!("etcd is not healthy");
+        return Err(NodeDaemonErrors::ReasonError(
+            "etcd is not healthy".to_string(),
+        ));
+    }
+
     let revision = etcd_client::get_etcd_data_version()
         .await
         .map_err(handle_error!("get_etcd_data_version failed!"))

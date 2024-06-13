@@ -1,7 +1,9 @@
 pub use etcd_rs::Member;
 use etcd_rs::{Client, ClientConfig, ClusterOp, Endpoint, KeyValueOp};
 use log::*;
+
 use serde_json::json;
+use serde_json::Value;
 use std::fs::DirEntry;
 use std::process::{Child, Command};
 use std::vec;
@@ -138,6 +140,29 @@ pub fn start_etcd(
         // .stdout(std::process::Stdio::inherit())
         // .stderr(std::process::Stdio::inherit())
         .spawn()
+}
+
+pub fn check_etcd_health(name: &str) -> bool {
+    let timeout = 3;
+    let url = format!("http://{}:2379/health", name);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(timeout)) // 设置请求超时时间为2秒
+        .build()
+        .expect("Failed to build HTTP client");
+
+    for _ in 0..10 {
+        let response = client.get(&url).send();
+        info!("Checking etcd health: {:?}", response);
+        if let Ok(resp) = response {
+            if let Ok(json) = resp.json::<Value>() {
+                if json["health"] == "true" {
+                    return true;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    false
 }
 
 // 获取 etcd 数据版本

@@ -496,11 +496,14 @@ async fn main() -> std::result::Result<(), String> {
             return Err(String::from("etcd is error!"));
         }
         EtcdState::NeedRunInThisMachine(endpoint) => {
-            info!("etcd need run in this machine, endpoint:{}", endpoint);
+            info!(
+                "etcd need run in this machine, endpoint:{}. try to get config version",
+                endpoint
+            );
             let etcd_data_version = etcd_mgr::get_etcd_data_version(&node_identity, &zone_config)
                 .await
-                .map_err(|_err| {
-                    error!("get etcd data version failed!");
+                .map_err(|err| {
+                    error!("get etcd data version {}", err);
                     return String::from("get etcd data version failed!");
                 })?;
 
