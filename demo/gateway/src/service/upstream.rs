@@ -73,6 +73,17 @@ impl UpstreamService {
             protocol,
         })
     }
+
+    pub fn dump(&self) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        obj.insert("block".to_owned(), "upstream".into());
+        obj.insert("id".to_owned(), serde_json::Value::String(self.id.clone()));
+        obj.insert("addr".to_owned(), serde_json::Value::String(self.addr.ip().to_string()));
+        obj.insert("port".to_owned(), serde_json::Value::Number(serde_json::Number::from(self.addr.port())));
+        obj.insert("protocol".to_owned(), serde_json::Value::String(self.protocol.as_str().to_owned()));
+
+        serde_json::Value::Object(obj)
+    }
 }
 
 #[derive(Clone)]
@@ -132,6 +143,16 @@ impl UpstreamManager {
         services.push(service);
 
         Ok(())
+    }
+
+    pub fn dump(&self) -> Vec<serde_json::Value> {
+        let services = self.services.lock().unwrap();
+        let mut arr = Vec::new();
+        for service in services.iter() {
+            arr.push(service.dump());
+        }
+
+        arr
     }
 
     pub fn add(&self, service: UpstreamService) -> GatewayResult<()> {

@@ -75,6 +75,18 @@ impl ForwardProxyConfig {
             target_port,
         })
     }
+
+    pub fn dump(&self) -> serde_json::Value {
+        let mut config = serde_json::Map::new();
+        config.insert("block".to_owned(), "proxy".into());
+        config.insert("id".to_owned(), self.id.clone().into());
+        config.insert("protocol".to_owned(), self.protocol.to_string().into());
+        config.insert("addr".to_owned(), self.addr.to_string().into());
+        config.insert("target_device".to_owned(), self.target_device.clone().into());
+        config.insert("target_port".to_owned(), self.target_port.into());
+        config.into()
+    }
+
 }
 
 #[derive(Clone)]
@@ -111,6 +123,10 @@ impl TcpForwardProxy {
         &self.config
     }
 
+    pub fn dump(&self) -> serde_json::Value {
+        self.config.dump()
+    }
+    
     pub async fn start(&self) -> GatewayResult<()> {
         let listener = TcpListener::bind(&self.config.addr).await.map_err(|e| {
             let msg = format!("Error binding to {}: {}", self.config.addr, e);

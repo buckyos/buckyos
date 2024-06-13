@@ -84,6 +84,31 @@ impl ProxyConfig {
             auth,
         })
     }
+
+    pub fn dump(&self) -> serde_json::Value {
+        let mut config = serde_json::Map::new();
+        config.insert("block".to_owned(), "proxy".into());
+        config.insert("id".to_owned(), self.id.clone().into());
+        config.insert("addr".to_owned(), self.addr.ip().to_string().into());
+        config.insert("port".to_owned(), self.addr.port().into());
+
+        let auth = match &self.auth {
+            ProxyAuth::None => serde_json::Value::Null,
+            ProxyAuth::Password(username, password) => {
+                let mut auth = serde_json::Map::new();
+                auth.insert("type".to_owned(), "password".into());
+                auth.insert("username".to_owned(), username.clone().into());
+                auth.insert("password".to_owned(), password.clone().into());
+                auth.into()
+            }
+        };
+
+        if auth != serde_json::Value::Null {
+            config.insert("auth".to_owned(), auth);
+        }
+
+        config.into()
+    }
 }
 
 #[derive(Clone)]
@@ -136,6 +161,10 @@ impl Socks5Proxy {
         &self.config.addr
     }
 
+    pub fn dump(&self) -> serde_json::Value {
+        self.config.dump()
+    }
+    
     pub async fn start(&self) -> GatewayResult<()> {
         let listener = TcpListener::bind(&self.config.addr).await.map_err(|e| {
             let msg = format!("Error binding to {}: {}", self.config.addr, e);

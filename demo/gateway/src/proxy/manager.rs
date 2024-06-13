@@ -267,6 +267,26 @@ impl ProxyManager {
 
         Ok(())
     }
+
+    pub fn dump(&self) -> Vec<serde_json::Value> {
+        let mut proxies = Vec::new();
+
+        {
+            let socks_proxys = self.socks5_proxy.lock().unwrap();
+            for p in &*socks_proxys {
+                proxies.push(p.dump());
+            }
+        }
+
+        {
+            let forward_proxys = self.tcp_forward_proxy.lock().unwrap();
+            for p in &*forward_proxys {
+                proxies.push(p.dump());
+            }
+        }
+
+        proxies
+    }
 }
 
 pub type ProxyManagerRef = Arc<ProxyManager>;
