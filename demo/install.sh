@@ -14,11 +14,29 @@ node_3=""
 etcd_3_port=""
 etcd_3_net=""
 
-# buckycli="/mnt/f/work/buckyos/demo/target/release/buckycli"
-buckycli="/usr/local/bin/buckycli"
+# Check if --cli parameter is provided
+if [[ "$@" == *"--cli"* ]]; then
+	# Extract the value of --cli parameter
+	buckycli=$(echo "$@" | grep -oP "(?<=--cli=)[^ ]+" | head -1)
+	buckycli_use_local=true
+else
+	# Set default value for buckycli
+	# buckycli="/mnt/f/work/buckyos/demo/target/release/buckycli"
+	buckycli="/usr/local/bin/buckycli"
+	buckycli_use_local=false
+fi
 
-docker_image="harbor.mynode.site:8443/library/buckyos:latest"
-# docker_image="buckyos:latest"
+# Check if --docker_image parameter is provided
+if [[ "$@" == *"--docker_image"* ]]; then
+	# Extract the value of --docker_image parameter
+	docker_image=$(echo "$@" | grep -oP "(?<=--docker_image=)[^ ]+" | head -1)
+	docker_use_local=true
+else
+	# Set default value for docker_image
+	docker_image="harbor.mynode.site:8443/library/buckyos:latest"
+	# docker_image="buckyos:latest"
+	docker_use_local=false
+fi
 
 main() {
 	# 获取操作系统信息
@@ -63,8 +81,11 @@ main() {
 
 	sudo apt-get install curl jq fuse dnsutils -y
 
-	echo "Downloading buckycli..."
-	ensure sudo curl -z "$buckycli" --progress-bar -o "$buckycli" https://cache.mynode.site/buckycli
+	if [ "$buckycli_use_local" = false ]; then
+		echo "Downloading buckycli..."
+		ensure sudo curl -z "$buckycli" --progress-bar -o "$buckycli" https://cache.mynode.site/buckycli
+	fi
+	
 	sudo chmod +x "$buckycli"
 
 	while true; do
@@ -568,10 +589,12 @@ EOF
 		ensure cd "$current_dir"
     else
 	    sudo docker network create buckyos
-	    sudo docker pull harbor.mynode.site:8443/library/buckyos
-	    sudo docker run --restart=always -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined $zone_local_cfg2 -v $data_path/$node_1/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_1/data":/buckyos/data -v $data_path/$node_1/etcd:/buckyos/$node_1.etcd --name $node_1 -p 139:139 -p 445:445 --network buckyos $docker_image
-	    sudo docker run --restart=always -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined $zone_local_cfg2 -v $data_path/$node_2/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_2/data":/buckyos/data -v $data_path/$node_2/etcd:/buckyos/$node_2.etcd --name $node_2 --network buckyos $docker_image
-	    sudo docker run --restart=always -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined $zone_local_cfg2 -v $data_path/$node_3/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_3/data":/buckyos/data -v $data_path/$node_3/etcd:/buckyos/$node_3.etcd --name $node_3 -p 2379:2379 --network buckyos $docker_image
+		if [ "$docker_use_local" = false ]; then
+			sudo docker pull harbor.mynode.site:8443/library/buckyos
+		fi
+		sudo docker run --restart=always -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined $zone_local_cfg2 -v $data_path/$node_1/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_1/data":/buckyos/data -v $data_path/$node_1/etcd:/buckyos/$node_1.etcd --name $node_1 -p 139:139 -p 445:445 --network buckyos $docker_image
+		sudo docker run --restart=always -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined $zone_local_cfg2 -v $data_path/$node_2/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_2/data":/buckyos/data -v $data_path/$node_2/etcd:/buckyos/$node_2.etcd --name $node_2 --network buckyos $docker_image
+		sudo docker run --restart=always -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined $zone_local_cfg2 -v $data_path/$node_3/node_identity.toml:/buckyos/node_identity.toml -v "$data_path/$node_3/data":/buckyos/data -v $data_path/$node_3/etcd:/buckyos/$node_3.etcd --name $node_3 -p 2379:2379 --network buckyos $docker_image
     fi
 }
 
@@ -662,7 +685,10 @@ create_node() {
 		local ip_list=($node_3_ips)
 	    node_3_host="--add-host $node_3:${ip_list[0]}"
 	fi
-	ensure sudo docker pull $docker_image
+	if [ "$docker_use_local" = false ]; then
+		ensure sudo docker pull $docker_image
+	fi
+
  	#echo "sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image"
 	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
 }
@@ -764,7 +790,10 @@ create_wan_2_lan_node() {
 		local ip_list=($node_3_ips)
 	    node_3_host="--add-host $node_3:${ip_list[0]}"
 	fi
-	ensure sudo docker pull $docker_image
+	
+	if [ "$docker_use_local" = false ]; then
+		ensure sudo docker pull $docker_image
+	fi
  	echo "sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image"
 # 	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
 }
@@ -883,6 +912,28 @@ import_all_config() {
          "start": {
            "command": "start.sh",
            "params": ["/mnt/glusterfs"]
+         }
+       }
+     },
+	 "backup_service": {
+       "target_state": "Running",
+       "pkg_id": "backup_service",
+       "version": "*",
+       "operations": {
+         "deploy": {
+           "command": "deploy.sh",
+           "params": [
+           ]
+         },
+         "status": {
+           "command": "status.sh",
+           "params": [
+              "--status"
+            ]
+         },
+         "start": {
+           "command": "start.sh",
+           "params": []
          }
        }
      }

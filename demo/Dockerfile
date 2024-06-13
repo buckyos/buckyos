@@ -21,6 +21,8 @@ EXPOSE 2379 2380 139 445 49152-49162
 ADD target/release/node_daemon /usr/local/bin/
 COPY smb_service/ "/buckyos/service/smb_service#0.1.0/"
 COPY frame-glusterfs/ "/buckyos/service/glusterfs#0.1.0/"
+COPY backup_service/script/ "/buckyos/service/backup_service#0.1.0/"
+COPY target/release/backup_service "/buckyos/service/backup_service#0.1.0/"
 
 WORKDIR /buckyos
 
