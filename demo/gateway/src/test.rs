@@ -76,7 +76,7 @@ const GATEWAY_CONFIG: &str = r#"
 
 async fn start_etcd1() {
     let config = serde_json::from_str(ETCD1_CONFIG).unwrap();
-    let etcd1 = Gateway::load(&config).unwrap();
+    let etcd1 = Gateway::load(&config).await.unwrap();
     etcd1.start().await.unwrap();
 
     // run tcp echo server on 127.0.0.1:1008 for test
@@ -94,7 +94,7 @@ async fn start_etcd1() {
 
 async fn start_gateway() {
     let config = serde_json::from_str(GATEWAY_CONFIG).unwrap();
-    let gateway = Gateway::load(&config).unwrap();
+    let gateway = Gateway::load(&config).await.unwrap();
     gateway.start().await.unwrap();
 
     // run tcp echo server on 127.0.0.1:1009 for test

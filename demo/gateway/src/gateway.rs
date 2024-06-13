@@ -2,6 +2,7 @@ use crate::config::ConfigLoader;
 use crate::peer::{NameManager, NameManagerRef, PeerManager, PeerManagerRef};
 use crate::proxy::{ProxyManager, ProxyManagerRef};
 use crate::service::{UpstreamManager, UpstreamManagerRef};
+use crate::storage::{ConfigStorageRef, default_file_storage, ConfigStorage};
 use gateway_lib::*;
 
 use std::net::SocketAddr;
@@ -13,10 +14,12 @@ pub struct Gateway {
     proxy_manager: ProxyManagerRef,
     name_manager: NameManagerRef,
     peer_manager: PeerManagerRef,
+
+    storage: ConfigStorageRef,
 }
 
 impl Gateway {
-    pub fn load(json: &serde_json::Value) -> GatewayResult<Self> {
+    pub async fn load(json: &serde_json::Value) -> GatewayResult<Self> {
         let config = ConfigLoader::load_config_node(json)?;
 
         let name_manager = Arc::new(NameManager::new());
@@ -44,6 +47,12 @@ impl Gateway {
         );
         loader.load(json)?;
 
+        // Init config storage
+        let local_storage = default_file_storage();
+        let storage = ConfigStorage::new(local_storage, name_manager.clone(), upstream_manager.clone(), proxy_manager.clone());
+        let storage = Arc::new(storage);
+        storage.load().await?;
+
         peer_manager
             .events()
             .bind_events(upstream_manager.clone_as_events());
@@ -63,6 +72,8 @@ impl Gateway {
             proxy_manager,
             name_manager,
             peer_manager,
+
+            storage,
         };
 
         Ok(ret)

@@ -8,6 +8,7 @@ mod service;
 mod tunnel;
 mod log_util;
 mod interface;
+mod storage;
 
 #[macro_use]
 extern crate log;
@@ -26,7 +27,7 @@ async fn run(config: &str) -> GatewayResult<()> {
         GatewayError::InvalidConfig(msg)
     })?;
 
-    let gateway = Gateway::load(&json)?;
+    let gateway = Gateway::load(&json).await?;
 
     gateway.start().await?;
 
