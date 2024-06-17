@@ -8,7 +8,7 @@ pub mod version_util {
     use super::*;
 
     pub fn compare(a: &str, b: &str) -> PkgSysResult<Ordering> {
-        cmp_to_ordering(version_compare(a, b).map_err(|err| {
+        cmp_to_ordering(version_compare(a, b).map_err(|_| {
             PackageSystemErrors::VersionError(format!("Version compare error: {} {}", a, b))
         })?)
     }

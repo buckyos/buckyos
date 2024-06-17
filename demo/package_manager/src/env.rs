@@ -1,11 +1,8 @@
 use dirs;
 use flate2::read::GzDecoder;
-use futures::{future::join_all, lock};
+use futures::future::join_all;
 use log::*;
-use serde::{
-    ser::{SerializeSeq, SerializeStruct},
-    Deserialize, Serialize, Serializer,
-};
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
@@ -13,10 +10,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use tar::Archive;
 use tokio::sync::oneshot;
-use tokio::time::{self, Duration};
+use tokio::time::Duration;
 use toml::*;
 
 use crate::downloader::{self, *};
@@ -101,6 +97,7 @@ pub struct PackageLockList {
     pub packages: Vec<PackageLockInfo>,
 }
 
+#[allow(dead_code)]
 impl PackageEnv {
     pub fn new(work_dir: PathBuf) -> Self {
         PackageEnv { work_dir }

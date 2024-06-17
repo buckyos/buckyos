@@ -84,7 +84,7 @@ impl Downloader for FakeDownloader {
             let client = Client::new();
             let start_time = Instant::now();
 
-            let result = match client.get(&url).send().await {
+            let _result = match client.get(&url).send().await {
                 Ok(resp) => {
                     if resp.status().is_success() {
                         let total_size = resp.content_length().unwrap_or(0);

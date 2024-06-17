@@ -28,7 +28,7 @@ impl Parser {
     }
 
     pub fn parse(&self, pkg_id: &str) -> PkgSysResult<PackageId> {
-        let mut name = String::new();
+        let name;
         let mut version = None;
         let mut sha256 = None;
 
@@ -57,29 +57,5 @@ impl Parser {
             version,
             sha256,
         })
-    }
-
-    pub fn get_version_from_sha256(
-        &self,
-        pkg_name: &str,
-        sha256: &str,
-    ) -> PkgSysResult<Option<String>> {
-        // TODO 查询index_db
-        Ok(None)
-    }
-
-    pub fn get_sha256_from_version(
-        &self,
-        pkg_name: &str,
-        version: &str,
-    ) -> PkgSysResult<Option<String>> {
-        // TODO 查询index_db
-        Ok(None)
-    }
-
-    pub fn get_default_version(&self, pkg_name: &str) -> PkgSysResult<Option<String>> {
-        // TODO 查询package.lock中存在的版本
-        // 或者查询index_db，默认获取index_db中最新的？
-        Ok(None)
     }
 }

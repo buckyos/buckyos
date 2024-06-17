@@ -4,11 +4,8 @@ mod error;
 mod parser;
 mod version_util;
 
-use env::*;
 use log::*;
-use serde::{Deserialize, Serialize};
 use simplelog::*;
-use std::fs;
 use time::macros::format_description;
 
 fn init_log_config() {
