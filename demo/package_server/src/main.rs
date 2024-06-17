@@ -1,12 +1,11 @@
-use async_std::fs::{self, File, OpenOptions};
+use async_std::fs::{self, File};
 use async_std::path::{Path, PathBuf};
 use async_std::prelude::*;
-use async_std::sync::{Mutex, RwLock};
+use async_std::sync::RwLock;
 use clap::{App, Arg};
 use hex;
-use log::{debug, error, info, warn};
+use log::*;
 use serde::{Deserialize, Serialize};
-use serde_json::{self, json, Value};
 use sha2::{Digest, Sha256};
 use simplelog::*;
 use std::collections::HashMap;
@@ -22,6 +21,7 @@ struct UploadPackageMeta {
     name: String,
     version: String,
     deps: HashMap<String, String>,
+    #[allow(dead_code)]
     author: Option<String>,
     sha256: String,
 }
