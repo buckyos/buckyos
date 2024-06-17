@@ -2,13 +2,13 @@
 
 mod config;
 mod gateway;
+mod interface;
+mod log_util;
 mod peer;
 mod proxy;
 mod service;
-mod tunnel;
-mod log_util;
-mod interface;
 mod storage;
+mod tunnel;
 
 #[macro_use]
 extern crate log;
@@ -32,7 +32,11 @@ async fn run(config: &str) -> GatewayResult<()> {
     gateway.start().await?;
 
     // Start http interface
-    let interface = interface::GatewayInterface::new(gateway.upstream_manager(), gateway.proxy_manager());
+    let interface = interface::GatewayInterface::new(
+        gateway.upstream_manager(),
+        gateway.proxy_manager(),
+        gateway.config_storage(),
+    );
     interface.start().await?;
 
     // sleep forever
@@ -54,8 +58,6 @@ fn load_config_from_args(matches: &clap::ArgMatches) -> GatewayResult<String> {
         })
     }
 }
-
-
 
 fn main() {
     let matches = Command::new("Gateway service")

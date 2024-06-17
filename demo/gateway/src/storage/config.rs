@@ -5,7 +5,7 @@ use crate::proxy::ProxyManagerRef;
 use crate::service::UpstreamManagerRef;
 use gateway_lib::*;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct ConfigStorage {
     storage: StorageRef,
@@ -13,6 +13,8 @@ pub struct ConfigStorage {
     name_manager: NameManagerRef,
     upstream_manager: UpstreamManagerRef,
     proxy_manager: ProxyManagerRef,
+
+    current_value: Mutex<Option<serde_json::Value>>,
 }
 
 pub type ConfigStorageRef = Arc<ConfigStorage>;
@@ -29,7 +31,16 @@ impl ConfigStorage {
             name_manager,
             upstream_manager,
             proxy_manager,
+
+            current_value: Mutex::new(None),
         }
+    }
+
+    pub fn notify_config_change(self: &Arc<Self>) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let _ = this.save().await;
+        });
     }
 
     pub async fn save(&self) -> GatewayResult<()> {
@@ -41,7 +52,23 @@ impl ConfigStorage {
             "service": service_list,
         });
 
+        // Check if the config is changed
+        {
+            let current_value = self.current_value.lock().unwrap();
+            if let Some(ref value) = *current_value {
+                if value == &json {
+                    return Ok(());
+                }
+            }
+        }
+
         self.storage.save(&json).await?;
+
+        // Update current value
+        {
+            let mut current_value = self.current_value.lock().unwrap();
+            *current_value = Some(json);
+        }
 
         info!("Save config success");
 
@@ -63,6 +90,11 @@ impl ConfigStorage {
         );
 
         loader.load(&json)?;
+
+        {
+            let mut current_value = self.current_value.lock().unwrap();
+            *current_value = Some(json);
+        }
 
         Ok(())
     }

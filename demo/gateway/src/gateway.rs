@@ -87,6 +87,10 @@ impl Gateway {
         self.proxy_manager.clone()
     }
 
+    pub fn config_storage(&self) -> ConfigStorageRef {
+        self.storage.clone()
+    }
+    
     pub async fn start(&self) -> GatewayResult<()> {
         self.peer_manager.start().await?;
 

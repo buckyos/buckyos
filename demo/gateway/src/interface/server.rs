@@ -1,6 +1,7 @@
 use gateway_lib::*;
 use crate::proxy::{ForwardProxyConfig, ProxyConfig, ProxyManagerRef};
 use crate::service::{UpstreamManagerRef, UpstreamService};
+use crate::storage::ConfigStorageRef;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -12,10 +13,12 @@ pub struct GatewayInterface {
     proxy_manager: ProxyManagerRef,
 
     addr: SocketAddr,
+
+    config_storage: ConfigStorageRef,
 }
 
 impl GatewayInterface {
-    pub fn new(upstream_manager: UpstreamManagerRef, proxy_manager: ProxyManagerRef) -> Self {
+    pub fn new(upstream_manager: UpstreamManagerRef, proxy_manager: ProxyManagerRef, config_storage: ConfigStorageRef) -> Self {
         let addr = format!("127.0.0.1:{}", HTTP_INTERFACE_DEFAULT_PORT);
         let addr = addr.parse().unwrap();
 
@@ -24,13 +27,19 @@ impl GatewayInterface {
             proxy_manager,
 
             addr,
+
+            config_storage,
         }
     }
 
     async fn on_add_upstream(&self, body: serde_json::Value) -> GatewayResult<()> {
         let service: UpstreamService = UpstreamService::load(&body)?;
 
-        self.upstream_manager.add(service)
+        self.upstream_manager.add(service)?;
+
+        self.config_storage.notify_config_change();
+
+        Ok(())
     }
 
     async fn on_remove_upstream(&self, body: serde_json::Value) -> GatewayResult<()> {
@@ -38,19 +47,31 @@ impl GatewayInterface {
             GatewayError::InvalidConfig("Invalid request id not found".to_owned())
         })?;
 
-        self.upstream_manager.remove(id)
+        self.upstream_manager.remove(id)?;
+
+        self.config_storage.notify_config_change();
+
+        Ok(())
     }
 
     async fn on_add_sock5_proxy(&self, body: serde_json::Value) -> GatewayResult<()> {
         let config = ProxyConfig::load(&body)?;
 
-        self.proxy_manager.create_socks5_proxy(config).await
+        self.proxy_manager.create_socks5_proxy(config).await?;
+
+        self.config_storage.notify_config_change();
+
+        Ok(())
     }
 
     async fn on_add_forward_proxy(&self, body: serde_json::Value) -> GatewayResult<()> {
         let config = ForwardProxyConfig::load(&body)?;
 
-        self.proxy_manager.create_tcp_forward_proxy(config).await
+        self.proxy_manager.create_tcp_forward_proxy(config).await?;
+
+        self.config_storage.notify_config_change();
+
+        Ok(())
     }
 
     async fn on_remove_proxy(&self, body: serde_json::Value) -> GatewayResult<()> {
@@ -58,7 +79,11 @@ impl GatewayInterface {
             GatewayError::InvalidConfig("Invalid request id not found".to_owned())
         })?;
 
-        self.proxy_manager.remove_proxy(id)
+        self.proxy_manager.remove_proxy(id)?;
+
+        self.config_storage.notify_config_change();
+
+        Ok(())
     }
 
     fn ret_to_response(ret: GatewayResult<()>) -> warp::reply::Response {
