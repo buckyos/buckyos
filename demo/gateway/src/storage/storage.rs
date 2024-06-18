@@ -53,6 +53,8 @@ impl Storage for FileStorage {
             return Ok(None);
         }
 
+        info!("Config file loaded from local storage: {}, {}", self.local_file.display(), content);
+
         let config = serde_json::from_str(&content).map_err(|e| {
             let msg = format!(
                 "Error parsing config file {}: {}",

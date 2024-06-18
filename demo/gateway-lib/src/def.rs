@@ -112,3 +112,10 @@ impl<'de> Deserialize<'de> for ForwardProxyProtocol {
             .map_err(|e| serde::de::Error::custom(format!("Invalid ForwardProxyProtocol: {}", e)))
     }
 }
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSource {
+    Config,
+    Dynamic,
+}

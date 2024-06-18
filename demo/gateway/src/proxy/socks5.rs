@@ -31,10 +31,12 @@ pub struct ProxyConfig {
     pub id: String,
     pub addr: SocketAddr,
     pub auth: ProxyAuth,
+
+    pub source: ConfigSource,
 }
 
 impl ProxyConfig {
-    pub fn load(config: &serde_json::Value) -> GatewayResult<Self> {
+    pub fn load(config: &serde_json::Value, source: Option<ConfigSource>) -> GatewayResult<Self> {
         let id = config["id"].as_str().ok_or_else(|| {
             let msg = "Missing id in socks5 proxy config".to_owned();
             error!("{}", msg);
@@ -82,12 +84,15 @@ impl ProxyConfig {
             id: id.to_owned(),
             addr,
             auth,
+
+            source: source.unwrap_or(ConfigSource::Config),
         })
     }
 
     pub fn dump(&self) -> serde_json::Value {
         let mut config = serde_json::Map::new();
         config.insert("block".to_owned(), "proxy".into());
+        config.insert("type".to_owned(), "socks5".into());
         config.insert("id".to_owned(), self.id.clone().into());
         config.insert("addr".to_owned(), self.addr.ip().to_string().into());
         config.insert("port".to_owned(), self.addr.port().into());
@@ -159,6 +164,10 @@ impl Socks5Proxy {
 
     pub fn addr(&self) -> &SocketAddr {
         &self.config.addr
+    }
+
+    pub fn source(&self) -> ConfigSource {
+        self.config.source
     }
 
     pub fn dump(&self) -> serde_json::Value {

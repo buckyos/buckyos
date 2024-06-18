@@ -14,10 +14,12 @@ pub struct ForwardProxyConfig {
     pub addr: SocketAddr,
     pub target_device: String,
     pub target_port: u16,
+
+    pub source: ConfigSource,
 }
 
 impl ForwardProxyConfig {
-    pub fn load(config: &serde_json::Value) -> GatewayResult<Self> {
+    pub fn load(config: &serde_json::Value, source: Option<ConfigSource>) -> GatewayResult<Self> {
         if !config.is_object() {
             return Err(GatewayError::InvalidConfig("proxy".to_owned()));
         }
@@ -73,12 +75,15 @@ impl ForwardProxyConfig {
             addr,
             target_device,
             target_port,
+
+            source: source.unwrap_or(ConfigSource::Config),
         })
     }
 
     pub fn dump(&self) -> serde_json::Value {
         let mut config = serde_json::Map::new();
         config.insert("block".to_owned(), "proxy".into());
+        config.insert("type".to_owned(), "forward".into());
         config.insert("id".to_owned(), self.id.clone().into());
         config.insert("protocol".to_owned(), self.protocol.to_string().into());
         config.insert("addr".to_owned(), self.addr.to_string().into());
@@ -121,6 +126,10 @@ impl TcpForwardProxy {
 
     pub fn config(&self) -> &ForwardProxyConfig {
         &self.config
+    }
+
+    pub fn source(&self) -> ConfigSource {
+        self.config.source
     }
 
     pub fn dump(&self) -> serde_json::Value {

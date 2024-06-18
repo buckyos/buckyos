@@ -14,10 +14,16 @@ pub struct UpstreamService {
     id: String,
     addr: SocketAddr,
     protocol: UpstreamServiceProtocol,
+
+    source: ConfigSource,
 }
 
 impl UpstreamService {
-    pub fn load(value: &serde_json::Value) -> GatewayResult<Self> {
+    pub fn source(&self) -> ConfigSource {
+        self.source
+    }
+
+    pub fn load(value: &serde_json::Value, source: Option<ConfigSource>) -> GatewayResult<Self> {
         if !value.is_object() {
             return Err(GatewayError::InvalidConfig("upstream".to_owned()));
         }
@@ -71,6 +77,7 @@ impl UpstreamService {
             id,
             addr: SocketAddr::new(addr, port),
             protocol,
+            source: source.unwrap_or(ConfigSource::Config),
         })
     }
 
@@ -126,7 +133,7 @@ impl UpstreamManager {
     }
     */
     pub fn load_block(&self, value: &serde_json::Value) -> GatewayResult<()> {
-        let service = UpstreamService::load(value)?;
+        let service = UpstreamService::load(value, None)?;
 
         // check if service already exists
         let mut services = self.services.lock().unwrap();
@@ -145,11 +152,14 @@ impl UpstreamManager {
         Ok(())
     }
 
+    // Only dump dynamic config
     pub fn dump(&self) -> Vec<serde_json::Value> {
         let services = self.services.lock().unwrap();
         let mut arr = Vec::new();
         for service in services.iter() {
-            arr.push(service.dump());
+            if service.source == ConfigSource::Dynamic {
+                arr.push(service.dump());
+            }
         }
 
         arr

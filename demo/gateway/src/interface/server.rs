@@ -33,7 +33,7 @@ impl GatewayInterface {
     }
 
     async fn on_add_upstream(&self, body: serde_json::Value) -> GatewayResult<()> {
-        let service: UpstreamService = UpstreamService::load(&body)?;
+        let service: UpstreamService = UpstreamService::load(&body, Some(ConfigSource::Dynamic))?;
 
         self.upstream_manager.add(service)?;
 
@@ -55,7 +55,7 @@ impl GatewayInterface {
     }
 
     async fn on_add_sock5_proxy(&self, body: serde_json::Value) -> GatewayResult<()> {
-        let config = ProxyConfig::load(&body)?;
+        let config = ProxyConfig::load(&body, Some(ConfigSource::Dynamic))?;
 
         self.proxy_manager.create_socks5_proxy(config).await?;
 
@@ -65,7 +65,7 @@ impl GatewayInterface {
     }
 
     async fn on_add_forward_proxy(&self, body: serde_json::Value) -> GatewayResult<()> {
-        let config = ForwardProxyConfig::load(&body)?;
+        let config = ForwardProxyConfig::load(&body, Some(ConfigSource::Dynamic))?;
 
         self.proxy_manager.create_tcp_forward_proxy(config).await?;
 

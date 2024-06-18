@@ -57,13 +57,13 @@ impl ProxyManager {
         let proxy_type = json["type"].as_str().unwrap();
         match proxy_type {
             "socks5" => {
-                let config = ProxyConfig::load(json)?;
+                let config = ProxyConfig::load(json, None)?;
                 let proxy =
                     Socks5Proxy::new(config, self.name_manager.clone(), self.peer_manager.clone());
                 self.add_socks5_proxy(proxy)?;
             }
             "forward" => {
-                let config = ForwardProxyConfig::load(json)?;
+                let config = ForwardProxyConfig::load(json, None)?;
                 match config.protocol {
                     ForwardProxyProtocol::Tcp => {
                         let proxy = TcpForwardProxy::new(
@@ -274,14 +274,18 @@ impl ProxyManager {
         {
             let socks_proxys = self.socks5_proxy.lock().unwrap();
             for p in &*socks_proxys {
-                proxies.push(p.dump());
+                if p.source() == ConfigSource::Dynamic {
+                    proxies.push(p.dump());
+                }
             }
         }
 
         {
             let forward_proxys = self.tcp_forward_proxy.lock().unwrap();
             for p in &*forward_proxys {
-                proxies.push(p.dump());
+                if p.source() == ConfigSource::Dynamic{
+                    proxies.push(p.dump());    
+                }
             }
         }
 
