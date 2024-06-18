@@ -5,14 +5,17 @@ use std::{
 };
 
 use backup_lib::{
-    CheckPointVersion, CheckPointVersionStrategy, ChunkMgrSelector,
-    FileMgrSelector, ListOffset, TaskId, TaskInfo as TaskInfoServer, TaskKey,
-    TaskMgrSelector, TaskStorageQuerier,
+    CheckPointVersion, CheckPointVersionStrategy, ChunkMgrSelector, FileMgrSelector, ListOffset,
+    TaskId, TaskInfo as TaskInfoServer, TaskKey, TaskMgrSelector, TaskStorageQuerier,
 };
 use rusqlite::Result;
 use tokio::sync::Mutex;
 
-use crate::{backup_task::{BackupTask, BackupTaskEvent, Task, TaskInfo, TaskInner}, restore_task::RestoreTask, task_storage::{ChunkStorageClient, FileStorageClient, FilesReadyState, TaskStorageClient}};
+use crate::{
+    backup_task::{BackupTask, BackupTaskEvent, Task, TaskInfo, TaskInner},
+    restore_task::RestoreTask,
+    task_storage::{ChunkStorageClient, FileStorageClient, FilesReadyState, TaskStorageClient},
+};
 
 // TODO: config
 const MAX_RUNNING_TASK_COUNT: usize = 5;
@@ -50,15 +53,18 @@ impl BackupTaskMap {
         let task_id = backup_task.task_id();
         let version = backup_task.check_point_version();
         self.tasks.remove(&task_id);
-        self.task_ids
-            .entry(task_key)
-            .and_modify(|v| {v.remove(&version);});
+        self.task_ids.entry(task_key).and_modify(|v| {
+            v.remove(&version);
+        });
     }
 }
 
 enum BackupState {
     Running(tokio::sync::mpsc::Sender<BackupTaskEvent>),
-    Stopping(tokio::sync::mpsc::Sender<()>, tokio::sync::mpsc::Sender<BackupTaskEvent>),
+    Stopping(
+        tokio::sync::mpsc::Sender<()>,
+        tokio::sync::mpsc::Sender<BackupTaskEvent>,
+    ),
     Stopped,
 }
 
@@ -103,12 +109,14 @@ impl BackupTaskMgrInner {
         self.chunk_mgr_selector.clone()
     }
 
-    pub(crate) async fn task_event_sender(&self) -> Option<tokio::sync::mpsc::Sender<BackupTaskEvent>> {
+    pub(crate) async fn task_event_sender(
+        &self,
+    ) -> Option<tokio::sync::mpsc::Sender<BackupTaskEvent>> {
         let state = self.state.lock().await;
         match &*state {
             BackupState::Running(sender) => Some(sender.clone()),
             BackupState::Stopping(_, sender) => Some(sender.clone()),
-            _ => None
+            _ => None,
         }
     }
 
@@ -165,7 +173,7 @@ impl BackupTaskMgr {
                     return Err("BackupTaskMgr is stopping, you should wait it finish.".into())
                 }
                 BackupState::Stopped => *state = BackupState::Running(task_event_sender),
-            }            
+            }
         }
 
         let task_mgr = self.clone();
@@ -173,13 +181,16 @@ impl BackupTaskMgr {
         // listen events from tasks
         tokio::task::spawn(async move {
             loop {
-                task_mgr.makeup_tasks().await.expect("todo: you can retry later");
+                task_mgr
+                    .makeup_tasks()
+                    .await
+                    .expect("todo: you can retry later");
                 if let Some(event) = task_event_receiver.recv().await {
                     match event {
                         BackupTaskEvent::New(backup_task) => {
                             log::info!("new task: {:?}, try run it.", backup_task.task_id());
                             task_mgr_inner.try_run(backup_task).await;
-                        },
+                        }
                         BackupTaskEvent::Idle(backup_task) => {
                             task_mgr_inner.remove_task(&backup_task).await;
                         }
@@ -223,7 +234,9 @@ impl BackupTaskMgr {
         {
             let mut state = self.0.state.lock().await;
             match &*state {
-                BackupState::Running(task_event_sender) => *state = BackupState::Stopping(sender, task_event_sender.clone()),
+                BackupState::Running(task_event_sender) => {
+                    *state = BackupState::Stopping(sender, task_event_sender.clone())
+                }
                 BackupState::Stopping(_, _) => {
                     return Err("BackupTaskMgr is stopping, you should wait it finish.".into())
                 }
@@ -261,12 +274,16 @@ impl BackupTaskMgr {
         .await?;
 
         if let Some(task_event_sender) = self.0.task_event_sender().await {
-            task_event_sender.send(BackupTaskEvent::New(backup_task.clone())).await?;
+            task_event_sender
+                .send(BackupTaskEvent::New(backup_task.clone()))
+                .await?;
         }
-            
 
         if let Ok(remote_task_server) = self.0.task_mgr_selector.select(&task_key, None).await {
-            if let Ok(strategy) = remote_task_server.get_check_point_strategy(self.0.zone_id.as_str(), &task_key).await {
+            if let Ok(strategy) = remote_task_server
+                .get_check_point_strategy(self.0.zone_id.as_str(), &task_key)
+                .await
+            {
                 if let Ok(removed_tasks) = self
                     .0
                     .task_storage
@@ -280,7 +297,8 @@ impl BackupTaskMgr {
                 {
                     // TODO: stop and remove the removed tasks.
 
-                    let _todo_ = self.0
+                    let _todo_ = self
+                        .0
                         .task_storage
                         .delete_tasks_by_id(removed_tasks.as_slice())
                         .await;
@@ -291,8 +309,14 @@ impl BackupTaskMgr {
         Ok(backup_task)
     }
 
-    pub async fn all_files_has_prepare_ready(&self, task_id: TaskId) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.0.task_storage.set_files_prepare_ready(task_id, FilesReadyState::Ready).await
+    pub async fn all_files_has_prepare_ready(
+        &self,
+        task_id: TaskId,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.0
+            .task_storage
+            .set_files_prepare_ready(task_id, FilesReadyState::Ready)
+            .await
     }
 
     pub async fn get_tasks(
@@ -307,20 +331,34 @@ impl BackupTaskMgr {
         &self,
         task_key: &TaskKey,
     ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut task_infos = self.0.task_mgr_selector
+        let mut task_infos = self
+            .0
+            .task_mgr_selector
             .select(task_key, None)
             .await?
-            .get_check_point_version_list(self.0.zone_id.as_str(), task_key, ListOffset::FromLast(0), 1, false)
+            .get_check_point_version_list(
+                self.0.zone_id.as_str(),
+                task_key,
+                ListOffset::FromLast(0),
+                1,
+                false,
+            )
             .await?;
 
         let task_info_server = task_infos.get(0);
-        let server_version = task_info_server.map_or(0, |info| Into::<u128>::into(info.check_point_version));
+        let server_version =
+            task_info_server.map_or(0, |info| Into::<u128>::into(info.check_point_version));
 
-        let task_info_local = TaskStorageClient::get_last_check_point_version(self.0
-            .task_storage.as_ref(), task_key, false)
-            .await?;
+        let task_info_local = TaskStorageClient::get_last_check_point_version(
+            self.0.task_storage.as_ref(),
+            task_key,
+            false,
+        )
+        .await?;
 
-        let local_version = task_info_local.as_ref().map_or(0, |info| Into::<u128>::into(info.check_point_version));
+        let local_version = task_info_local
+            .as_ref()
+            .map_or(0, |info| Into::<u128>::into(info.check_point_version));
         if local_version >= server_version {
             if local_version == 0 {
                 Ok(None)
@@ -338,10 +376,15 @@ impl BackupTaskMgr {
                 dir_path: info_server.dir_path,
                 priority: 0,
                 is_manual: false,
-                is_all_files_ready: if info_server.is_all_files_ready {FilesReadyState::RemoteReady} else {FilesReadyState::NotReady},
+                is_all_files_ready: if info_server.is_all_files_ready {
+                    FilesReadyState::RemoteReady
+                } else {
+                    FilesReadyState::NotReady
+                },
                 complete_file_count: info_server.complete_file_count,
                 file_count: info_server.file_count,
                 last_fail_at: None,
+                create_time: info_server.create_time,
             }))
         }
     }
@@ -353,9 +396,14 @@ impl BackupTaskMgr {
         limit: u32,
     ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
         // TODO: 到task-mgr服务器上获取
-        
-        TaskStorageClient::get_check_point_version_list(self.0
-            .task_storage.as_ref(), task_key, offset, limit, false)
+
+        TaskStorageClient::get_check_point_version_list(
+            self.0.task_storage.as_ref(),
+            task_key,
+            offset,
+            limit,
+            false,
+        )
         .await
     }
 
@@ -363,9 +411,12 @@ impl BackupTaskMgr {
         &self,
         task_key: &TaskKey,
     ) -> Result<CheckPointVersionStrategy, Box<dyn std::error::Error + Send + Sync>> {
-        self.0.task_mgr_selector
+        self.0
+            .task_mgr_selector
             .select(task_key, None)
-            .await?.get_check_point_strategy(self.0.zone_id.as_str(), task_key).await
+            .await?
+            .get_check_point_strategy(self.0.zone_id.as_str(), task_key)
+            .await
     }
 
     pub async fn update_check_point_strategy(
@@ -441,9 +492,15 @@ impl RestoreTaskMgr {
         check_point_version: CheckPointVersion,
         dir_path: &Path,
     ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
-        let task_mgr_server = self.0.task_mgr_selector.select(&task_key, Some(check_point_version)).await?;
-        let task_info = task_mgr_server.get_check_point_version(self.0.zone_id.as_str(), &task_key, check_point_version).await?;
-        
+        let task_mgr_server = self
+            .0
+            .task_mgr_selector
+            .select(&task_key, Some(check_point_version))
+            .await?;
+        let task_info = task_mgr_server
+            .get_check_point_version(self.0.zone_id.as_str(), &task_key, check_point_version)
+            .await?;
+
         match task_info {
             Some(task_info) => {
                 let restore_task = RestoreTask::create_new(
@@ -464,10 +521,18 @@ impl RestoreTaskMgr {
         &self,
         task_key: &TaskKey,
     ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut task_infos = self.0.task_mgr_selector
+        let mut task_infos = self
+            .0
+            .task_mgr_selector
             .select(task_key, None)
             .await?
-            .get_check_point_version_list(self.0.zone_id.as_str(), task_key, ListOffset::FromLast(0), 1, true)
+            .get_check_point_version_list(
+                self.0.zone_id.as_str(),
+                task_key,
+                ListOffset::FromLast(0),
+                1,
+                true,
+            )
             .await?;
 
         if task_infos.len() > 0 {
@@ -481,10 +546,15 @@ impl RestoreTaskMgr {
                 dir_path: info_server.dir_path,
                 priority: 0,
                 is_manual: false,
-                is_all_files_ready: if info_server.is_all_files_ready {FilesReadyState::RemoteReady} else {FilesReadyState::NotReady},
+                is_all_files_ready: if info_server.is_all_files_ready {
+                    FilesReadyState::RemoteReady
+                } else {
+                    FilesReadyState::NotReady
+                },
                 complete_file_count: info_server.complete_file_count,
                 file_count: info_server.file_count,
                 last_fail_at: None,
+                create_time: info_server.create_time,
             }))
         } else {
             Ok(None)
@@ -498,24 +568,34 @@ impl RestoreTaskMgr {
         limit: u32,
     ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
         // TODO: 到task-mgr服务器上获取
-        let task_infos = self.0.task_mgr_selector
+        let task_infos = self
+            .0
+            .task_mgr_selector
             .select(task_key, None)
             .await?
             .get_check_point_version_list(self.0.zone_id.as_str(), task_key, offset, limit, true)
             .await?;
-        Ok(task_infos.into_iter().map(|info| TaskInfo {
-            task_id: info.task_id,
-            task_key: info.task_key,
-            check_point_version: info.check_point_version,
-            prev_check_point_version: info.prev_check_point_version,
-            meta: info.meta,
-            dir_path: info.dir_path,
-            priority: 0,
-            is_manual: false,
-            is_all_files_ready: if info.is_all_files_ready {FilesReadyState::RemoteReady} else {FilesReadyState::NotReady},
-            complete_file_count: info.complete_file_count,
-            file_count: info.file_count,
-            last_fail_at: None,
-        }).collect())
+        Ok(task_infos
+            .into_iter()
+            .map(|info| TaskInfo {
+                task_id: info.task_id,
+                task_key: info.task_key,
+                check_point_version: info.check_point_version,
+                prev_check_point_version: info.prev_check_point_version,
+                meta: info.meta,
+                dir_path: info.dir_path,
+                priority: 0,
+                is_manual: false,
+                is_all_files_ready: if info.is_all_files_ready {
+                    FilesReadyState::RemoteReady
+                } else {
+                    FilesReadyState::NotReady
+                },
+                complete_file_count: info.complete_file_count,
+                file_count: info.file_count,
+                last_fail_at: None,
+                create_time: info.create_time,
+            })
+            .collect())
     }
 }

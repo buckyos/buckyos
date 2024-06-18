@@ -27,6 +27,7 @@ pub struct TaskInfo {
     pub priority: u32,
     pub is_manual: bool,
     pub last_fail_at: Option<SystemTime>,
+    pub create_time: SystemTime,
 }
 
 #[derive(Clone)]
@@ -191,6 +192,7 @@ impl BackupTask {
                 is_manual,
                 last_fail_at: None,
                 complete_file_count: 0,
+                create_time: SystemTime::now(),
             })),
             _todo_uploading_chunks: Arc::new(Mutex::new(vec![])),
             control: (sender, Arc::new(Mutex::new(receiver))),

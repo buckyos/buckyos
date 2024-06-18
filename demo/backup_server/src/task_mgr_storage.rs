@@ -1,14 +1,18 @@
-use std::path::{Path, PathBuf};
-use std::os::unix::ffi::OsStringExt;
-use backup_lib::{CheckPointVersion, FileId, FileInfo, FileServerType, ListOffset, TaskId, TaskInfo, TaskKey};
+use backup_lib::{
+    CheckPointVersion, FileId, FileInfo, FileServerType, ListOffset, TaskId, TaskInfo, TaskKey,
+};
 use rusqlite::{params, Connection, Result};
+use std::os::unix::ffi::OsStringExt;
+use std::path::{Path, PathBuf};
 
 pub struct TaskStorageSqlite {
     connection: Connection,
 }
 
 impl TaskStorageSqlite {
-    pub(crate) fn new_with_path(db_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub(crate) fn new_with_path(
+        db_path: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         log::info!("will open sqlite db: {}", db_path);
         let connection = Connection::open(db_path)?;
 
@@ -23,8 +27,8 @@ impl TaskStorageSqlite {
                 meta TEXT DEFAULT '',
                 is_all_files_ready TINYINT DEFAULT 0,
                 dir_path BLOB NOT NULL,
-                create_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
-                update_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
+                create_at INTEGER DEFAULT (STRFTIME('%s', 'now')),
+                update_at INTEGER DEFAULT (STRFTIME('%s', 'now')),
                 UNIQUE (zone_id, key, version)
             )",
             [],
@@ -37,7 +41,7 @@ impl TaskStorageSqlite {
                 file_seq INTEGER NOT NULL,
                 file_path BLOB NOT NULL,
                 file_hash TEXT NOT NULL,
-                create_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
+                create_at INTEGER DEFAULT (STRFTIME('%s', 'now')),
                 FOREIGN KEY (task_id) REFERENCES tasks (task_id),
                 FOREIGN KEY (file_hash) REFERENCES files (file_hash),
                 PRIMARY KEY (task_id, file_path)
@@ -55,7 +59,7 @@ impl TaskStorageSqlite {
                 chunk_size INTEGER DEFAULT NULL,
                 remote_file_id INTEGER DEFAULT NULL,
                 is_uploaded TINYINT DEFAULT 0,
-                create_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
+                create_at INTEGER DEFAULT (STRFTIME('%s', 'now')),
                 finish_at INTEGER DEFAULT NULL
             )",
             [],
@@ -66,8 +70,8 @@ impl TaskStorageSqlite {
                 zone_id TEXT NOT NULL,
                 key TEXT NOT NULL,
                 strategy TEXT NOT NULL,
-                create_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
-                update_at INTEGER DEFAULT (STRFTIME('%S', 'NOW')),
+                create_at INTEGER DEFAULT (STRFTIME('%s', 'now')),
+                update_at INTEGER DEFAULT (STRFTIME('%s', 'now')),
                 PRIMARY KEY (zone_id, key)
             )",
             [],
@@ -76,7 +80,12 @@ impl TaskStorageSqlite {
         Ok(Self { connection })
     }
 
-    pub fn insert_or_update_strategy(&mut self, zone_id: &str, key: &TaskKey, strategy: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn insert_or_update_strategy(
+        &mut self,
+        zone_id: &str,
+        key: &TaskKey,
+        strategy: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let query = "INSERT INTO strategy (zone_id, key, strategy) VALUES (?, ?, ?)
                      ON CONFLICT (zone_id, key) DO UPDATE SET strategy = excluded.strategy";
         let mut stmt = self.connection.prepare(query)?;
@@ -84,12 +93,14 @@ impl TaskStorageSqlite {
         Ok(())
     }
 
-    pub fn query_strategy(&mut self, zone_id: &str, key: &TaskKey) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn query_strategy(
+        &mut self,
+        zone_id: &str,
+        key: &TaskKey,
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
         let query = "SELECT strategy FROM strategy WHERE zone_id = ? AND key = ?";
         let mut stmt = self.connection.prepare(query)?;
-        let result = stmt.query_row(params![zone_id, key.as_str()], |row| {
-            Ok(row.get(0)?)
-        });
+        let result = stmt.query_row(params![zone_id, key.as_str()], |row| Ok(row.get(0)?));
         match result {
             Ok(strategy) => Ok(Some(strategy)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -97,44 +108,71 @@ impl TaskStorageSqlite {
         }
     }
 
-    pub fn insert_task(&mut self, zone_id: &str, key: &TaskKey, version: CheckPointVersion, prev_version: Option<CheckPointVersion>, meta: Option<&str>, dir_path: &Path) -> Result<TaskId, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn insert_task(
+        &mut self,
+        zone_id: &str,
+        key: &TaskKey,
+        version: CheckPointVersion,
+        prev_version: Option<CheckPointVersion>,
+        meta: Option<&str>,
+        dir_path: &Path,
+    ) -> Result<TaskId, Box<dyn std::error::Error + Send + Sync>> {
         let query = "INSERT INTO tasks (zone_id, key, version, prev_version, meta, dir_path) VALUES (?, ?, ?, ?, ?, ?)
                      ON CONFLICT (zone_id, key, version) DO NOTHING
                      RETURNING task_id";
         let mut stmt = self.connection.prepare(query)?;
-        let result = stmt.query_row(params![zone_id, key.as_str(), Into::<u128>::into(version) as u64, prev_version.map(|v| Into::<u128>::into(v) as u64), meta, dir_path.as_os_str().as_encoded_bytes()], |row| {
-            Ok(TaskId::from(row.get::<usize, u64>(0)? as u128))
-        });
+        let result = stmt.query_row(
+            params![
+                zone_id,
+                key.as_str(),
+                Into::<u128>::into(version) as u64,
+                prev_version.map(|v| Into::<u128>::into(v) as u64),
+                meta,
+                dir_path.as_os_str().as_encoded_bytes()
+            ],
+            |row| Ok(TaskId::from(row.get::<usize, u64>(0)? as u128)),
+        );
         match result {
             Ok(task_id) => Ok(task_id),
             Err(rusqlite::Error::QueryReturnedNoRows) => {
-                let query = "SELECT task_id FROM tasks WHERE zone_id = ? AND key = ? AND version = ?";
+                let query =
+                    "SELECT task_id FROM tasks WHERE zone_id = ? AND key = ? AND version = ?";
                 let mut stmt = self.connection.prepare(query)?;
-                let result = stmt.query_row(params![zone_id, key.as_str(), Into::<u128>::into(version) as u64], |row| {
-                    Ok(TaskId::from(row.get::<usize, u64>(0)? as u128))
-                });
+                let result = stmt.query_row(
+                    params![zone_id, key.as_str(), Into::<u128>::into(version) as u64],
+                    |row| Ok(TaskId::from(row.get::<usize, u64>(0)? as u128)),
+                );
                 match result {
                     Ok(task_id) => Ok(task_id),
                     Err(err) => Err(Box::new(err)),
                 }
-            },
+            }
             Err(err) => Err(Box::new(err)),
         }
     }
 
-    pub fn query_task_info_without_files(&mut self, task_id: TaskId) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn query_task_info_without_files(
+        &mut self,
+        task_id: TaskId,
+    ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
         // TODO: 查询完成文件数和文件总数
-        let query = "SELECT key, version, prev_version, meta, dir_path, is_all_files_ready FROM tasks WHERE task_id = ?";
+        let query = "SELECT key, version, prev_version, meta, dir_path, is_all_files_ready, create_at FROM tasks WHERE task_id = ?";
         let mut stmt = self.connection.prepare(query)?;
         let result = stmt.query_row(params![Into::<u128>::into(task_id) as u64], |row| {
             Ok(TaskInfo {
                 task_id,
                 task_key: TaskKey::from(row.get::<usize, String>(0)?),
                 check_point_version: CheckPointVersion::from(row.get::<usize, u64>(1)? as u128),
-                prev_check_point_version: row.get::<usize, Option<u64>>(2)?.map(|v| CheckPointVersion::from(v as u128)),
+                prev_check_point_version: row
+                    .get::<usize, Option<u64>>(2)?
+                    .map(|v| CheckPointVersion::from(v as u128)),
                 meta: row.get::<usize, Option<String>>(3)?,
-                dir_path: PathBuf::from(std::ffi::OsString::from_vec(row.get::<usize, Vec<u8>>(4)?)),
+                dir_path: PathBuf::from(std::ffi::OsString::from_vec(
+                    row.get::<usize, Vec<u8>>(4)?,
+                )),
                 is_all_files_ready: row.get::<usize, u8>(5)? == 1,
+                create_time: std::time::UNIX_EPOCH
+                    + std::time::Duration::from_secs(row.get::<usize, u64>(6)?),
                 complete_file_count: 0,
                 file_count: 0,
             })
@@ -155,7 +193,10 @@ impl TaskStorageSqlite {
         file_size: u64,
         file_server_type: FileServerType,
         file_server_name: &str,
-    ) -> Result<(FileServerType, String, Option<(FileId, u32)>), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<
+        (FileServerType, String, Option<(FileId, u32)>),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
         let tx = self.connection.transaction()?;
 
         let result = tx.query_row(
@@ -169,42 +210,55 @@ impl TaskStorageSqlite {
                 Into::<u32>::into(file_server_type),
                 file_server_name,
             ],
-            |_todo_row| {
-                Ok((file_server_type, file_server_name.to_string(), None))
-            }
+            |_todo_row| Ok((file_server_type, file_server_name.to_string(), None)),
         );
-        
+
         // Insert into "task_files" table
         tx.execute(
             "INSERT INTO task_files (task_id, file_path, file_seq, file_hash)
              VALUES (?, ?, ?, ?)
              ON CONFLICT (task_id, file_path) DO NOTHING",
-            params![Into::<u128>::into(task_id) as u64, file_path.as_os_str().as_encoded_bytes(), file_seq, file_hash],
+            params![
+                Into::<u128>::into(task_id) as u64,
+                file_path.as_os_str().as_encoded_bytes(),
+                file_seq,
+                file_hash
+            ],
         )?;
-        
+
         tx.commit()?;
-        
+
         match result {
             Ok(n) => Ok(n),
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 let query = "SELECT chunk_size, file_server_type, file_server_name, remote_file_id FROM files WHERE file_hash = ?";
                 let mut stmt = self.connection.prepare(query)?;
                 let result = stmt.query_row(params![file_hash], |row| {
-                    Ok((row.get::<usize, Option<u32>>(0)?, row.get::<usize, u32>(1)?, row.get::<usize, String>(2)?, row.get::<usize, Option<u64>>(3)?))
+                    Ok((
+                        row.get::<usize, Option<u32>>(0)?,
+                        row.get::<usize, u32>(1)?,
+                        row.get::<usize, String>(2)?,
+                        row.get::<usize, Option<u64>>(3)?,
+                    ))
                 });
                 match result {
                     Ok((chunk_size, server_type, server_name, remote_file_id)) => {
                         if let Some(chunk_size) = chunk_size {
-                            let server_type = FileServerType::try_from(server_type).expect("file-server-type should be valid");
+                            let server_type = FileServerType::try_from(server_type)
+                                .expect("file-server-type should be valid");
                             let remote_file_id = remote_file_id.expect("chunk-size, file-server-type, file-server-name, remote-file-id should all exist");
-                            Ok((server_type, server_name, Some((FileId::from(remote_file_id as u128), chunk_size))))
+                            Ok((
+                                server_type,
+                                server_name,
+                                Some((FileId::from(remote_file_id as u128), chunk_size)),
+                            ))
                         } else {
                             Ok((file_server_type, file_server_name.to_string(), None))
                         }
-                    },
+                    }
                     Err(_todo_err) => Ok((file_server_type, file_server_name.to_string(), None)),
                 }
-            },
+            }
             Err(err) => Err(Box::new(err)),
         }
     }
@@ -225,18 +279,33 @@ impl TaskStorageSqlite {
         Ok(())
     }
 
-    pub fn update_all_files_ready(&mut self, task_id: TaskId) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn update_all_files_ready(
+        &mut self,
+        task_id: TaskId,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let query = "UPDATE tasks SET is_all_files_ready = 1 WHERE task_id = ?";
         let mut stmt = self.connection.prepare(query)?;
         stmt.execute(params![Into::<u128>::into(task_id) as u64])?;
         Ok(())
     }
 
-    pub fn update_file_uploaded(&mut self, task_id: TaskId, file_path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn update_file_uploaded(
+        &mut self,
+        task_id: TaskId,
+        file_path: &Path,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let query = "UPDATE files SET is_uploaded = 1 WHERE EXISTS (SELECT 1 FROM task_files WHERE task_id = ? AND file_path = ? AND files.file_hash = task_files.file_hash)";
-        log::info!("update_file_uploaded: task_id: {:?}, file_path: {:?}, sql: {}", task_id, file_path, query);
+        log::info!(
+            "update_file_uploaded: task_id: {:?}, file_path: {:?}, sql: {}",
+            task_id,
+            file_path,
+            query
+        );
         let mut stmt = self.connection.prepare(query)?;
-        stmt.execute(params![Into::<u128>::into(task_id) as u64, file_path.as_os_str().as_encoded_bytes()])?;
+        stmt.execute(params![
+            Into::<u128>::into(task_id) as u64,
+            file_path.as_os_str().as_encoded_bytes()
+        ])?;
         Ok(())
     }
 
@@ -249,22 +318,18 @@ impl TaskStorageSqlite {
         is_restorable_only: bool,
     ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
         let (ord_sql, offset, limit) = match offset {
-            ListOffset::FromFirst(offset) => {
-                (
-                    "ORDER BY tasks.version ASC
+            ListOffset::FromFirst(offset) => (
+                "ORDER BY tasks.version ASC
                     LIMIT ? OFFSET ?",
-                    offset,
-                    limit,
-                )
-            },
-            ListOffset::FromLast(offset) => {
-                (
-                    "ORDER BY tasks.version DESC
+                offset,
+                limit,
+            ),
+            ListOffset::FromLast(offset) => (
+                "ORDER BY tasks.version DESC
                     LIMIT ? OFFSET ?",
-                    (std::cmp::max(((offset + 1) as i32) - (limit as i32), 0) as u32),
-                    std::cmp::min(offset + 1, limit),
-                )
-            },
+                (std::cmp::max(((offset + 1) as i32) - (limit as i32), 0) as u32),
+                std::cmp::min(offset + 1, limit),
+            ),
         };
 
         let sql = if is_restorable_only {
@@ -289,23 +354,41 @@ impl TaskStorageSqlite {
 
         let sql = format!("{} {}", sql, ord_sql);
 
-        log::info!("sql: {}, zone_id: {}, task_key: {}, limit: {}, offset: {}", sql, zone_id, task_key.as_str(), limit, offset);
+        log::info!(
+            "sql: {}, zone_id: {}, task_key: {}, limit: {}, offset: {}",
+            sql,
+            zone_id,
+            task_key.as_str(),
+            limit,
+            offset
+        );
 
         let mut stmt = self.connection.prepare(sql.as_str())?;
 
-        let task_infos = stmt.query_map(params![zone_id, task_key.as_str(), limit, offset], |row| {
-            Ok(TaskInfo {
-                task_id: TaskId::from(row.get::<&str, u64>("task_id")? as u128),
-                task_key: TaskKey::from(row.get::<&str, String>("key")?),
-                check_point_version: CheckPointVersion::from(row.get::<&str, u64>("version")? as u128),
-                prev_check_point_version: row.get::<&str, Option<u64>>("prev_version")?.map(|v| CheckPointVersion::from(v as u128)),
-                meta: row.get("meta")?,
-                dir_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(row.get::<&str, Vec<u8>>("dir_path")?)),
-                is_all_files_ready: row.get("is_all_files_ready")?,
-                complete_file_count: row.get("completed_files")?,
-                file_count: row.get("total_files")?,
-            })
-        })?.map(|t| t.unwrap()).collect::<Vec<_>>();
+        let task_infos = stmt
+            .query_map(params![zone_id, task_key.as_str(), limit, offset], |row| {
+                Ok(TaskInfo {
+                    task_id: TaskId::from(row.get::<&str, u64>("task_id")? as u128),
+                    task_key: TaskKey::from(row.get::<&str, String>("key")?),
+                    check_point_version: CheckPointVersion::from(
+                        row.get::<&str, u64>("version")? as u128
+                    ),
+                    prev_check_point_version: row
+                        .get::<&str, Option<u64>>("prev_version")?
+                        .map(|v| CheckPointVersion::from(v as u128)),
+                    meta: row.get("meta")?,
+                    dir_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(
+                        row.get::<&str, Vec<u8>>("dir_path")?,
+                    )),
+                    is_all_files_ready: row.get("is_all_files_ready")?,
+                    complete_file_count: row.get("completed_files")?,
+                    file_count: row.get("total_files")?,
+                    create_time: std::time::UNIX_EPOCH
+                        + std::time::Duration::from_secs(row.get::<&str, u64>("create_at")?),
+                })
+            })?
+            .map(|t| t.unwrap())
+            .collect::<Vec<_>>();
 
         Ok(task_infos)
     }
@@ -326,19 +409,34 @@ impl TaskStorageSqlite {
 
         let mut stmt = self.connection.prepare(sql)?;
 
-        let task_info = stmt.query_row(params![zone_id, task_key.as_str(), Into::<u128>::into(check_point_version) as u64], |row| {
-            Ok(TaskInfo {
-                task_id: TaskId::from(row.get::<&str, u64>("task_id")? as u128),
-                task_key: TaskKey::from(row.get::<&str, String>("key")?),
-                check_point_version: CheckPointVersion::from(row.get::<&str, u64>("version")? as u128),
-                prev_check_point_version: row.get::<&str, Option<u64>>("prev_version")?.map(|v| CheckPointVersion::from(v as u128)),
-                meta: row.get("meta")?,
-                dir_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(row.get::<&str, Vec<u8>>("dir_path")?)),
-                is_all_files_ready: row.get("is_all_files_ready")?,
-                complete_file_count: row.get("completed_files")?,
-                file_count: row.get("total_files")?,
-            })
-        });
+        let task_info = stmt.query_row(
+            params![
+                zone_id,
+                task_key.as_str(),
+                Into::<u128>::into(check_point_version) as u64
+            ],
+            |row| {
+                Ok(TaskInfo {
+                    task_id: TaskId::from(row.get::<&str, u64>("task_id")? as u128),
+                    task_key: TaskKey::from(row.get::<&str, String>("key")?),
+                    check_point_version: CheckPointVersion::from(
+                        row.get::<&str, u64>("version")? as u128
+                    ),
+                    prev_check_point_version: row
+                        .get::<&str, Option<u64>>("prev_version")?
+                        .map(|v| CheckPointVersion::from(v as u128)),
+                    meta: row.get("meta")?,
+                    dir_path: std::path::PathBuf::from(std::ffi::OsString::from_vec(
+                        row.get::<&str, Vec<u8>>("dir_path")?,
+                    )),
+                    is_all_files_ready: row.get("is_all_files_ready")?,
+                    complete_file_count: row.get("completed_files")?,
+                    file_count: row.get("total_files")?,
+                    create_time: std::time::UNIX_EPOCH
+                        + std::time::Duration::from_secs(row.get::<&str, u64>("create_at")?),
+                })
+            },
+        );
 
         match task_info {
             Ok(task_info) => Ok(Some(task_info)),
