@@ -1,10 +1,7 @@
-use crate::env::PackageEnv;
 use crate::error::{PackageSystemErrors, PkgSysResult};
 use serde::{Deserialize, Serialize};
 
-pub struct Parser {
-    pub env: PackageEnv,
-}
+pub struct Parser {}
 
 /*
 pkg_id由两部分组成，包名和版本号或者sha256值。例如：
@@ -23,11 +20,7 @@ pub struct PackageId {
 }
 
 impl Parser {
-    pub fn new(env: PackageEnv) -> Self {
-        Parser { env }
-    }
-
-    pub fn parse(&self, pkg_id: &str) -> PkgSysResult<PackageId> {
+    pub fn parse(pkg_id: &str) -> PkgSysResult<PackageId> {
         let name;
         let mut version = None;
         let mut sha256 = None;
@@ -38,18 +31,19 @@ impl Parser {
         } else {
             return Err(PackageSystemErrors::ParseError(
                 pkg_id.to_string(),
-                "no name".to_string(),
+                "No name".to_string(),
             ));
         }
 
         if let Some(version_part) = parts.next() {
             if version_part.starts_with("sha256:") {
                 sha256 = Some(version_part[7..].to_string());
-                //version = self.get_version_from_sha256(&name, &sha256.as_ref().unwrap())?;
             } else {
+                let version_part = version_part.replace(" ", "").replace(",", "");
                 version = Some(version_part.to_string());
-                // 这里先不做sha256的查询，等到下载时再查询
             }
+        } else {
+            version = Some("*".to_string());
         }
 
         Ok(PackageId {
@@ -57,5 +51,43 @@ impl Parser {
             version,
             sha256,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse() {
+        let pkg_id = "a";
+        let result = Parser::parse(pkg_id).unwrap();
+        assert_eq!(&result.name, "a");
+        assert_eq!(result.version, Some("*".to_string()));
+
+        let pkg_id = "a#0.1.0";
+        let result = Parser::parse(pkg_id).unwrap();
+        assert_eq!(&result.name, "a");
+        assert_eq!(result.version, Some("0.1.0".to_string()));
+
+        let pkg_id = "a#sha256:1234567890";
+        let result = Parser::parse(pkg_id).unwrap();
+        assert_eq!(&result.name, "a");
+        assert_eq!(result.sha256, Some("1234567890".to_string()));
+
+        let pkg_id = "a#>0.1.0";
+        let result = Parser::parse(pkg_id).unwrap();
+        assert_eq!(&result.name, "a");
+        assert_eq!(result.version, Some(">0.1.0".to_string()));
+
+        let pkg_id = "a#>0.1.0<0.1.2";
+        let result = Parser::parse(pkg_id).unwrap();
+        assert_eq!(&result.name, "a");
+        assert_eq!(result.version, Some(">0.1.0<0.1.2".to_string()));
+
+        let pkg_id = "a#>0.1.0, <=0.1.2";
+        let result = Parser::parse(pkg_id).unwrap();
+        assert_eq!(&result.name, "a");
+        assert_eq!(result.version, Some(">0.1.0<=0.1.2".to_string()));
     }
 }

@@ -128,6 +128,7 @@ mod tests {
         assert!(version_util::matches(">1.0.0, <2.0.0", "1.5.0").unwrap());
         assert!(!version_util::matches(">1.0.0, <2.0.0", "2.5.0").unwrap());
         assert!(version_util::matches(">=1.0.0, <=2.0.0", "2.0.0").unwrap());
+        assert!(version_util::matches("*", "2.0.0").unwrap());
     }
 
     #[test]
@@ -151,6 +152,18 @@ mod tests {
         assert_eq!(
             version_util::find_matched_version(">=1.0.0<1.0.1", &versions).unwrap(),
             "1.0.0"
+        );
+        assert_eq!(
+            version_util::find_matched_version(">=1.0.0,<1.0.1", &versions).unwrap(),
+            "1.0.0"
+        );
+        assert_eq!(
+            version_util::find_matched_version(">=1.0.0, <1.0.1", &versions).unwrap(),
+            "1.0.0"
+        );
+        assert_eq!(
+            version_util::find_matched_version(">1.0.0, <=1.0.1", &versions).unwrap(),
+            "1.0.1"
         );
         assert_eq!(
             version_util::find_matched_version("<2.0.0", &versions).unwrap(),

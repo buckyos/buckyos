@@ -77,7 +77,7 @@ struct PackageMetaInfo {
     sha256: String,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackageLockInfo {
     pub name: String,
     pub version: String,
@@ -85,13 +85,13 @@ pub struct PackageLockInfo {
     pub dependencies: Vec<PackageLockDeps>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackageLockDeps {
     pub name: String,
     pub version: String,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackageLockList {
     #[serde(rename = "package")]
     pub packages: Vec<PackageLockInfo>,
@@ -224,8 +224,7 @@ impl PackageEnv {
 
     // load 一个包，从env的依赖根目录中查找目标pkg，找到了就返回一个MediaInfo结构
     pub async fn load(&self, pkg_id_str: &str) -> PkgSysResult<MediaInfo> {
-        let parser = Parser::new(self.clone());
-        let pkg_id = parser.parse(pkg_id_str)?;
+        let pkg_id = Parser::parse(pkg_id_str)?;
 
         // 先解析lock文件，获取所有的包信息
         let lock_file_path = self.work_dir.join("pkg.lock");
@@ -574,8 +573,7 @@ impl PackageEnv {
         pkg_id_str: &str,
     ) -> PkgSysResult<PackageLockInfo> {
         // 只获取一层，即本层和直接依赖，不用获取依赖的依赖
-        let parser = Parser::new(self.clone());
-        let pkg_id = parser.parse(pkg_id_str)?;
+        let pkg_id = Parser::parse(pkg_id_str)?;
 
         let exact_version = match self.find_exact_version(&pkg_id, index_db) {
             Ok(version) => version,
@@ -612,11 +610,11 @@ impl PackageEnv {
 
         for dep in &package_meta_info.deps {
             let dep_pkg_id_str = format!("{}#{}", dep.0, dep.1);
-            let dep_pkg_id = parser.parse(&dep_pkg_id_str)?;
+            let dep_pkg_id = Parser::parse(&dep_pkg_id_str)?;
             match self.find_exact_version(&dep_pkg_id, index_db) {
                 Ok(version) => {
                     info!("get exact version for {}: {}", dep_pkg_id_str, version);
-                    let package_id = parser.parse(&dep_pkg_id_str)?;
+                    let package_id = Parser::parse(&dep_pkg_id_str)?;
                     lock_info.dependencies.push(PackageLockDeps {
                         name: package_id.name.clone(),
                         version: version.clone(),
@@ -642,10 +640,19 @@ impl PackageEnv {
         pkg_id: &PackageId,
         index_db: &IndexDB,
     ) -> PkgSysResult<String> {
-        //let parser: Parser = Parser::new(self.clone());
-        //let pkg_id = parser.parse(pkg_id_str)?;
-
         if let Some(pkg_list) = index_db.packages.get(&pkg_id.name) {
+            if let Some(sha256) = &pkg_id.sha256 {
+                for (version, meta_info) in pkg_list.iter() {
+                    if meta_info.sha256 == *sha256 {
+                        return Ok(version.clone());
+                    }
+                }
+
+                return Err(PackageSystemErrors::VersionNotFoundError(format!(
+                    "{:?}",
+                    pkg_id
+                )));
+            }
             // 将pkg_deps的key组成Vec，并从大到小排序
             let mut versions: Vec<String> = pkg_list.keys().cloned().collect();
             if versions.is_empty() {
@@ -665,8 +672,7 @@ impl PackageEnv {
             });
             debug!("sort versions for {}: {:?}", pkg_id.name, versions);
 
-            // TODO 这里还要处理用sha256标明版本的情况
-            self.get_matched_version(&pkg_id, &versions)
+            self.get_matched_version(&pkg_id.name, &pkg_id.version, &versions)
         } else {
             Err(PackageSystemErrors::VersionNotFoundError(format!(
                 "{:?}",
@@ -703,49 +709,63 @@ impl PackageEnv {
         result: &mut Vec<PackageId>,
         parsed: &mut HashSet<String>,
     ) -> PkgSysResult<()> {
-        let parser = Parser::new(self.clone());
-        // 这里判断是否已经获取过了，避免出现环
-        // if parsed.contains(pkg_id_str) {
-        //     debug!("{} already parsed. stop", pkg_id_str);
-        //     return Ok(());
-        // }
-        // parsed.insert(pkg_id_str.to_string());
-
-        let pkg_id = parser.parse(pkg_id_str)?;
+        let pkg_id = Parser::parse(pkg_id_str)?;
 
         if let Some(pkg_list) = index_db.packages.get(&pkg_id.name) {
-            // 将pkg_deps的key组成Vec，并从大到小排序
-            let mut versions: Vec<String> = pkg_list.keys().cloned().collect();
-            if versions.is_empty() {
+            let mut matched_version = None;
+
+            if let Some(sha256) = &pkg_id.sha256 {
+                for (version, meta_info) in pkg_list.iter() {
+                    if meta_info.sha256 == *sha256 {
+                        matched_version = Some(version.clone());
+                        break;
+                    }
+                }
+            } else {
+                // 将pkg_deps的key组成Vec，并从大到小排序
+                let mut versions: Vec<String> = pkg_list.keys().cloned().collect();
+                if versions.is_empty() {
+                    return Err(PackageSystemErrors::VersionNotFoundError(format!(
+                        "{:?}",
+                        pkg_id
+                    )));
+                }
+                // 理论上不应该出现重合的，所以不处理Ge和Le，Ne，版本高的排在前面
+                versions.sort_by(|a, b| {
+                    version_util::compare(a, b)
+                        .unwrap_or_else(|err| {
+                            error!("{}", err);
+                            Ordering::Equal
+                        })
+                        .reverse()
+                });
+                debug!("sort versions for {}: {:?}", pkg_id.name, versions);
+
+                matched_version =
+                    match self.get_matched_version(&pkg_id.name, &pkg_id.version, &versions) {
+                        Ok(version) => Some(version),
+                        Err(err) => {
+                            error!(
+                            "Failed to get matched version for {}, all versions: {:?}. err:{:?}",
+                            pkg_id_str, versions, err
+                        );
+                            None
+                        }
+                    };
+            }
+
+            if matched_version.is_none() {
+                error!("Failed to get matched version for {}", pkg_id_str);
                 return Err(PackageSystemErrors::VersionNotFoundError(format!(
-                    "{:?}",
-                    pkg_id
+                    "Failed to get matched version for {}",
+                    pkg_id_str
                 )));
             }
-            // 理论上不应该出现重合的，所以不处理Ge和Le，Ne，版本高的排在前面
-            versions.sort_by(|a, b| {
-                version_util::compare(a, b)
-                    .unwrap_or_else(|err| {
-                        error!("{}", err);
-                        Ordering::Equal
-                    })
-                    .reverse()
-            });
-            debug!("sort versions for {}: {:?}", pkg_id.name, versions);
+            let matched_version = matched_version.unwrap();
 
-            let matched_version = match self.get_matched_version(&pkg_id, &versions) {
-                Ok(version) => version,
-                Err(err) => {
-                    error!(
-                        "Failed to get matched version for {}, all versions: {:?}",
-                        pkg_id_str, versions
-                    );
-                    return Err(err);
-                }
-            };
             let exact_pkg_id_str = format!("{}#{}", pkg_id.name, matched_version);
 
-            // 如果精确的版本号存在，就不再递归
+            // 如果精确的版本号存在，就不再递归，避免出现环
             if parsed.contains(&exact_pkg_id_str) {
                 debug!("{} already parsed. stop.", exact_pkg_id_str);
                 return Ok(());
@@ -771,48 +791,41 @@ impl PackageEnv {
                 let dep_pkg_id_str = format!("{}#{}", dep.0, dep.1);
                 self.get_deps_impl(&dep_pkg_id_str, index_db, result, parsed)?;
             }
-        }
 
-        Ok(())
+            Ok(())
+        } else {
+            return Err(PackageSystemErrors::VersionNotFoundError(format!(
+                "No information found for the package named {}.",
+                pkg_id.name
+            )));
+        }
     }
 
-    fn get_matched_version(&self, pkg_id: &PackageId, versions: &[String]) -> PkgSysResult<String> {
+    // 这里versions一定是形如1.0.0这样的版本号，不会有>=,<=,>,<等，也不会是sha256
+    fn get_matched_version(
+        &self,
+        pkg_name: &str,
+        version_condition: &Option<String>,
+        versions: &[String],
+    ) -> PkgSysResult<String> {
         if versions.is_empty() {
             return Err(PackageSystemErrors::VersionNotFoundError(format!(
-                "{:?}",
-                pkg_id
+                "{}#{:?}",
+                pkg_name, version_condition
             )));
         }
 
-        // 如果有sha，优先用sha，否则用version
-        if let Some(sha256) = &pkg_id.sha256 {
-            for v in versions {
-                if v.eq(sha256) {
-                    return Ok(v.to_string());
-                }
-            }
+        if let Some(version_condition) = version_condition {
+            let ret = version_util::find_matched_version(version_condition, &versions);
+            debug!(
+                "find matched version for {}#{} => {:?}",
+                pkg_name, version_condition, ret
+            );
 
-            return Err(PackageSystemErrors::VersionNotFoundError(format!(
-                "{:?}",
-                pkg_id
-            )));
+            ret
+        } else {
+            Ok(versions[0].clone())
         }
-
-        if let Some(version) = &pkg_id.version {
-            let ret = version_util::find_matched_version(version, &versions);
-            debug!("find matched version for {:?} => {:?}", pkg_id, ret);
-            return ret;
-        }
-
-        // 返回列表里的第一个
-        if let Some(v) = versions.get(0) {
-            return Ok(v.to_string());
-        }
-
-        Err(PackageSystemErrors::VersionNotFoundError(format!(
-            "{:?}",
-            pkg_id
-        )))
     }
 
     pub fn get_index_path(&self) -> PkgSysResult<PathBuf> {
@@ -824,7 +837,6 @@ impl PackageEnv {
     }
 
     pub fn get_index(&self) -> PkgSysResult<IndexDB> {
-        //TODO env是否应该有自己的index？
         let index_file_path = self.get_index_path()?;
 
         let index_str = std::fs::read_to_string(index_file_path)?;

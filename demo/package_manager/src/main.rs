@@ -54,8 +54,8 @@ async fn main() {
 
     info!("check_lock_need_update: {:?}", env.check_lock_need_update());
 
-    //let ret = env.update_index().await;
-    //info!("update_index ret: {:?}", ret);
+    let ret = env.update_index().await;
+    info!("update_index ret: {:?}", ret);
 
     let ret = env.build(true).await;
     info!("build ret: {:?}", ret);
