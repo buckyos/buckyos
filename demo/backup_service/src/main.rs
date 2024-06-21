@@ -13,6 +13,7 @@ use task_mgr::BackupTaskMgr;
 use task_storage::FilesReadyState;
 
 mod backup_task;
+mod chunk_transfer;
 mod restore_task;
 mod task_mgr;
 mod task_storage;

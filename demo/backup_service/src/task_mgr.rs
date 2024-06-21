@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     backup_task::{BackupTask, BackupTaskEvent, Task, TaskInfo, TaskInner},
+    chunk_transfer::{self, ChunkTransfer},
     restore_task::RestoreTask,
     task_storage::{ChunkStorageClient, FileStorageClient, FilesReadyState, TaskStorageClient},
 };
@@ -78,6 +79,7 @@ pub(crate) struct BackupTaskMgrInner {
     chunk_mgr_selector: Arc<Box<dyn ChunkMgrSelector>>,
     running_tasks: Arc<Mutex<BackupTaskMap>>,
     state: Arc<Mutex<BackupState>>,
+    chunk_transfer: ChunkTransfer,
 }
 
 impl BackupTaskMgrInner {
@@ -157,6 +159,10 @@ impl BackupTaskMgr {
             running_tasks: Arc::new(Mutex::new(BackupTaskMap::new())),
             state: Arc::new(Mutex::new(BackupState::Stopped)),
             zone_id,
+            chunk_transfer: ChunkTransfer::new(chunk_transfer::Config {
+                limit: 5,
+                timeout_per_kb: std::time::Duration::from_secs(5),
+            }),
         });
 
         Self(task_mgr)
@@ -270,6 +276,7 @@ impl BackupTaskMgr {
             files,
             priority,
             is_manual,
+            self.0.chunk_transfer.clone(),
         )
         .await?;
 
@@ -436,7 +443,11 @@ impl BackupTaskMgr {
         let incomplete_tasks = self.0.task_storage.get_incomplete_tasks(0, 10).await?;
         // TODO: filter by priority
         for task in incomplete_tasks {
-            let backup_task = BackupTask::from_storage(Arc::downgrade(&self.0), task);
+            let backup_task = BackupTask::from_storage(
+                Arc::downgrade(&self.0),
+                task,
+                self.0.chunk_transfer.clone(),
+            );
             self.0.try_run(backup_task).await;
         }
 

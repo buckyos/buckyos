@@ -1,7 +1,7 @@
 #![allow(dead_code)]
-#![allow(unused)]
 
 mod backup_task;
+mod chunk_transfer;
 mod restore_task;
 mod task_mgr;
 mod task_storage;

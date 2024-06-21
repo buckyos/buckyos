@@ -16,5 +16,5 @@ members = [
     "./backup_service",
     "./backup_lib",
 #    "tests/gateway_client",
-    "./gateway-lib",
+    "./gateway-lib", "state-waiter",
 ]
