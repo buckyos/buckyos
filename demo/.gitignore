@@ -5,3 +5,4 @@ node_daemon/target
 target
 Cargo.lock
 docker-compose.yml
+demo/target/
