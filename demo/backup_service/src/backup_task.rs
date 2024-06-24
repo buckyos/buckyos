@@ -75,11 +75,11 @@ pub struct BackupTask {
     mgr: Weak<BackupTaskMgrInner>,
     info: Arc<std::sync::Mutex<TaskInfo>>,
     state: (
-        state_waiter::State<TaskState>,
         state_waiter::Waiter<TaskState>,
+        state_waiter::State<TaskState>,
     ),
     transfer: ChunkTransfer,
-    pending_waitors: Arc<Mutex<Vec<(state_waiter::Waiter<Option<Result<(), Arc<Box<dyn std::error::Error + Send + Sync>>>>>, Option<PendingChunkInfo>)>>>,
+    pending_waiters: Arc<Mutex<Vec<(state_waiter::Waiter<Option<Result<(), Arc<Box<dyn std::error::Error + Send + Sync>>>>>, Option<PendingChunkInfo>)>>>,
     pending_files: Arc<Mutex<HashMap<PathBuf, (FileInfo, u64)>>>, // <file-path, (FileInfo, complete_size)>
 }
 
@@ -91,8 +91,8 @@ impl BackupTask {
         Self {
             mgr,
             info: Arc::new(std::sync::Mutex::new(info)),
-            pending_waitors: Arc::new(Mutex::new(vec![(pending_waiter, None)])),
-            state: (state, waiter),
+            pending_waiters: Arc::new(Mutex::new(vec![(pending_waiter, None)])),
+            state: (waiter, state),
             transfer,
             pending_files: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -210,8 +210,8 @@ impl BackupTask {
                 complete_file_count: 0,
                 create_time: SystemTime::now(),
             })),
-            pending_waitors: Arc::new(Mutex::new(vec![(pending_waiter, None)])),
-            state: (state, waiter),
+            pending_waiters: Arc::new(Mutex::new(vec![(pending_waiter, None)])),
+            state: (waiter, state),
             transfer,
             pending_files: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -296,7 +296,32 @@ impl BackupTask {
                         match self.is_all_files_ready() {
                             FilesReadyState::NotReady => return BackupTaskEvent::Idle(self.clone()),
                             FilesReadyState::Ready => {
-                                // TODO: wait pending chunks
+                                loop {
+                                    let task_state_fut = self.state.0.wait(|s| *s != TaskState::Running);
+                                    let pending_waiters_fut = self.wait_pending_chunk(task_mgr.as_ref(), &task_info, remote_task_id);
+                                
+                                    // pin_mut!(task_state_fut);
+                                    // pin_mut!(pending_waiters_fut);
+
+                                    select! {
+                                        _ = task_state_fut => {
+                                            // Handle control event
+                                            return BackupTaskEvent::Stop(self.clone())
+                                        },
+                                        result = pending_waiters_fut => {
+                                            // Handle pending event
+                                            if let Err(e) = result {
+                                                return e;
+                                            }
+                                            // only reserved pending
+                                            if self.pending_waiters.lock().await.len() == 1 {
+                                                break;
+                                            }
+                                            continue;
+                                        },
+                                    }
+                                }
+
                                 match remote_task_mgr.set_files_prepare_ready(remote_task_id).await {
                                     Ok(_) => {
                                         match task_storage.set_files_prepare_ready(task_info.task_id, FilesReadyState::RemoteReady).await  {
@@ -483,7 +508,7 @@ impl BackupTask {
                     match chunk_storage.is_chunk_uploaded(&task_info.task_key, task_info.check_point_version, file.file_path.as_path(), chunk_seq).await {
                         Ok(is_upload) => {
                             if is_upload {
-                                if let Err(err) = self.post_chunk_uploaded(&file, chunk_seq, chunk_size as u32, remote_task_mgr.as_ref(), &task_info, remote_task_id, false, remote_file_server.as_ref(), chunk_storage.as_ref()).await {
+                                if let Err(err) = self.post_chunk_uploaded(&file, chunk_seq, chunk_size as u32, task_mgr.as_ref(), &task_info, remote_task_id, false).await {
                                     return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
                                 }
                                 continue;
@@ -520,18 +545,20 @@ impl BackupTask {
                         },
                     };
 
-                    self.transfer_chunk(chunk, chunk_hash, task_info.priority, remote_chunk_server, &file, chunk_seq, remote_task_mgr.as_ref(), &task_info, remote_task_id, remote_file_server.as_ref(), chunk_storage.as_ref()).await?;
+                    if let Err(e) = self.transfer_chunk(chunk, chunk_hash, task_info.priority, remote_chunk_server, &file, chunk_seq, task_mgr.as_ref(), &task_info, remote_task_id).await {
+                        return e;
+                    }
                 }
             }
         }
     }
 
     #[async_recursion::async_recursion]
-    async fn transfer_chunk(&self, chunk: Vec<u8>, hash: String, priority: u32, target_server: Box<dyn ChunkMgr>, file_info: &FileInfo, chunk_seq: u64, remote_task_mgr: &dyn TaskMgr, task_info: &TaskInfo, remote_task_id: TaskId, remote_file_server: &dyn FileMgr, chunk_storage: &dyn ChunkStorageClient) -> Result<(), BackupTaskEvent> {
+    async fn transfer_chunk(&self, chunk: Vec<u8>, hash: String, priority: u32, target_server: Box<dyn ChunkMgr>, file_info: &FileInfo, chunk_seq: u64, task_mgr: &BackupTaskMgrInner, task_info: &TaskInfo, remote_task_id: TaskId) -> Result<(), BackupTaskEvent> {
         let chunk_size = chunk.len() as u32;
         match self.transfer.push(chunk, hash, priority, target_server).await {
             Ok(pending_waiter) => {
-                self.pending_waitors.lock().await.push((pending_waiter, Some(PendingChunkInfo {
+                self.pending_waiters.lock().await.push((pending_waiter, Some(PendingChunkInfo {
                     chunk_size,
                     chunk_seq,
                     file_info: file_info.clone(),
@@ -544,60 +571,40 @@ impl BackupTask {
                 // 3. wait pending event to check result; self.pending_event.recv().await
 
                 loop {
-                    let complete_result = {
-                        let mut pending_waitors = self.pending_waitors.lock().await;
-                        let task_state_fut = self.state.1.wait(|s| *s != TaskState::Running);
-                        let wait_event_fut = wait_event.wait(|s| s.is_some());
-                        let pending_waitors_fut = futures::future::select_all(pending_waitors.iter_mut().map(|(waitor, _)| waitor.wait(|s| s.is_some())));
-                    
-                        // pin_mut!(task_state_fut);
-                        // pin_mut!(wait_event_fut);
-                        // pin_mut!(pending_waitors_fut);
+                    let task_state_fut = self.state.0.wait(|s| *s != TaskState::Running);
+                    let wait_event_fut = wait_event.wait(|s| s.is_some());
+                    let pending_waiters_fut = self.wait_pending_chunk(task_mgr, &task_info, remote_task_id);
+                
+                    // pin_mut!(task_state_fut);
+                    // pin_mut!(wait_event_fut);
+                    // pin_mut!(pending_waiters_fut);
 
-                        select! {
-                            _ = wait_event_fut => {
-                                // Handle wait event
-                                return self.transfer_chunk(chunk, hash, priority, target_server, file_info, chunk_seq, remote_task_mgr, task_info, remote_task_id, remote_file_server, chunk_storage).await
-                            },
-                            _ = task_state_fut => {
-                                // Handle control event
-                                return Err(BackupTaskEvent::Stop(self.clone()))
-                            },
-                            result = pending_waitors_fut => {
-                                // Handle pending event
-                                let (result, index, _) = result;
-                                (result, index)
-                            },
-                        }
-                    };
-
-                    let (result, index) = complete_result;
-                    match result {
-                        Some(result) => {
-                            let (_, pending_chunk_info) = self.pending_waitors.lock().await.remove(index);
-                            match result {
-                                Ok(_) => {
-                                    let pending_chunk_info = pending_chunk_info.expect("there is a long pending waiter, should be not wake.");
-                                    if let Err(err) = self.post_chunk_uploaded(&pending_chunk_info.file_info, pending_chunk_info.chunk_seq, pending_chunk_info.chunk_size, remote_task_mgr, &task_info, remote_task_id, true, remote_file_server, chunk_storage).await {
-                                        return Err(BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err)));
-                                    }
-                                    
-                                    continue
-                                },
-                                Err(err) => {
-                                    log::error!("upload chunk failed: {:?}", err);
-                                    return Err(BackupTaskEvent::ErrorAndWillRetry(self.clone(), err))
-                                }
-                            }
+                    select! {
+                        _ = wait_event_fut => {
+                            // Handle wait event
+                            return self.transfer_chunk(chunk, hash, priority, target_server, file_info, chunk_seq, task_mgr, task_info, remote_task_id).await
                         },
-                        None => continue,
+                        _ = task_state_fut => {
+                            // Handle control event
+                            return Err(BackupTaskEvent::Stop(self.clone()))
+                        },
+                        result = pending_waiters_fut => {
+                            // Handle pending event
+                            result?;
+                            continue;
+                        },
                     }
                 }
             },
         }
     }
 
-    async fn post_chunk_uploaded(&self, file_info: &FileInfo, chunk_seq: u64, chunk_size: u32, remote_task_mgr: &dyn TaskMgr, task_info: &TaskInfo, remote_task_id: TaskId, is_transfer: bool, remote_file_server: &dyn FileMgr, chunk_storage: &dyn ChunkStorageClient) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn post_chunk_uploaded(&self, file_info: &FileInfo, chunk_seq: u64, chunk_size: u32, task_mgr: &BackupTaskMgrInner, task_info: &TaskInfo, remote_task_id: TaskId, is_transfer: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let remote_task_mgr = task_mgr.task_mgr_selector().select(&task_info.task_key, Some(task_info.check_point_version)).await?;
+        let remove_file_server = file_info.file_server.as_ref().unwrap();
+        let remote_file_server = task_mgr.file_mgr_selector().select_by_name(remove_file_server.0, remove_file_server.1.as_str()).await?;
+        let chunk_storage = task_mgr.chunk_storage();
+
         let mut pending_files = self.pending_files.lock().await;
         let file_info = pending_files.get_mut(&file_info.file_path).unwrap();
         file_info.1 += chunk_size as u64;
@@ -628,6 +635,35 @@ impl BackupTask {
             }
         }
         Ok(())
+    }
+
+    async fn wait_pending_chunk(&self, task_mgr: &BackupTaskMgrInner, task_info: &TaskInfo, remote_task_id: TaskId) -> Result<Option<()>, BackupTaskEvent> {
+        let complete_result = {
+            let mut pending_waiters = self.pending_waiters.lock().await;
+            futures::future::select_all(pending_waiters.iter_mut().map(|(waiter, _)| waiter.wait(|s| s.is_some()))).await
+        };
+
+        let (result, index, _) = complete_result;
+        match result {
+            Some(result) => {
+                let (_, pending_chunk_info) = self.pending_waiters.lock().await.remove(index);
+                match result {
+                    Ok(_) => {
+                        let pending_chunk_info = pending_chunk_info.expect("there is a long pending waiter, should be not wake.");
+                        if let Err(err) = self.post_chunk_uploaded(&pending_chunk_info.file_info, pending_chunk_info.chunk_seq, pending_chunk_info.chunk_size, task_mgr, &task_info, remote_task_id, true).await {
+                            return Err(BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err)));
+                        }
+                        
+                        Ok(Some(()))
+                    },
+                    Err(err) => {
+                        log::error!("upload chunk failed: {:?}", err);
+                        Err(BackupTaskEvent::ErrorAndWillRetry(self.clone(), err))
+                    }
+                }
+            },
+            None => Ok(None),
+        }
     }
 
     // [path, Option<(hash, file-size)>]
@@ -697,51 +733,52 @@ impl TaskInner for BackupTask {
     async fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let backup_task = self.clone();
         tokio::task::spawn(async move {
-            loop {
-                let task_mgr = backup_task.mgr.upgrade();
-                let task_mgr = match task_mgr {
-                    Some(task_mgr) => task_mgr,
-                    None => {
-                        log::error!("task manager has been dropped.");
-                        break;
-                    }
-                };
-
-                // // run once
-                let state = backup_task.run_once().await;
-                log::info!("task successed: {:?}", backup_task.task_id());
-                
-                if let Some(task_event_sender) = task_mgr.task_event_sender().await {
-                    task_event_sender.send(state.clone())
-                    .await
-                    .expect("todo: channel overflow");
-                } else {
-                    log::error!("task manager has stopped.");
-                    break;
+            let task_mgr = backup_task.mgr.upgrade();
+            let task_mgr = match task_mgr {
+                Some(task_mgr) => task_mgr,
+                None => {
+                    log::error!("task manager has been dropped.");
+                    return;
                 }
+            };
 
-                match state {
-                    BackupTaskEvent::New(_) => unreachable!(),
-                    BackupTaskEvent::Idle(_) => break,
-                    BackupTaskEvent::ErrorAndWillRetry(_, _) => {
-                        break;
-                        // futures::select! {
-                        //     _ = tokio::time::sleep(Duration::from_secs(1)) => {}
-                        //     control = backup_task.control.1.recv() => {
-                        //         match control {
-                        //             Some(BackupTaskControl::Stop) => {
-                        //                 task_mgr.task_event_sender().await.send(BackupTaskEvent::Stop(backup_task)).await;
-                        //                 break
-                        //             },
-                        //             None => continue,
-                        //         }
-                        //     }
-                        // }
-                    }
-                    BackupTaskEvent::Fail(_, _) => break,
-                    BackupTaskEvent::Successed(_) => break,
-                    BackupTaskEvent::Stop(_) => break,
+            // // run once
+            let state = backup_task.run_once().await;
+            log::info!("task successed: {:?}", backup_task.task_id());
+            
+            if let Some(task_event_sender) = task_mgr.task_event_sender().await {
+                task_event_sender.send(state.clone())
+                .await
+                .expect("todo: channel overflow");
+            } else {
+                log::error!("task manager has stopped.");
+                return;
+            }
+
+            match state {
+                BackupTaskEvent::New(_) => unreachable!(),
+                BackupTaskEvent::Idle(_) => return,
+                BackupTaskEvent::ErrorAndWillRetry(_, _) => {
+                    return;
+                    // futures::select! {
+                    //     _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    //     control = backup_task.control.1.recv() => {
+                    //         match control {
+                    //             Some(BackupTaskControl::Stop) => {
+                    //                 task_mgr.task_event_sender().await.send(BackupTaskEvent::Stop(backup_task)).await;
+                    //                 break
+                    //             },
+                    //             None => continue,
+                    //         }
+                    //     }
+                    // }
                 }
+                BackupTaskEvent::Fail(_, _) => return,
+                BackupTaskEvent::Successed(_) => return,
+                BackupTaskEvent::Stop(_) => {
+                    backup_task.state.1.set(TaskState::Stopped);
+                    return;
+                },
             }
         });
 
@@ -749,7 +786,7 @@ impl TaskInner for BackupTask {
     }
 
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.control.0.send(BackupTaskControl::Stop).await?;
+        self.state.1.set(TaskState::Stopping);
         Ok(())
     }
 }
