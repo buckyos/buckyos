@@ -343,7 +343,7 @@ impl BackupTask {
                 Err(err) => return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err)),
             };
 
-            for file in upload_files {
+            for mut file in upload_files {
                 file_seq = std::cmp::max(file.file_seq as usize + 1, file_seq);
                 self.pending_files.lock().await.insert(file.file_path.clone(), (file.clone(), 0));
                 let (file_server_type, file_server_name, remote_file_id, chunk_size) = match task_storage
@@ -402,9 +402,11 @@ impl BackupTask {
                     },
                 };
 
+                file.file_server = Some((file_server_type, file_server_name, Some((remote_file_id, chunk_size))));
+                let file_server = file.file_server.as_ref().unwrap();
                 let remote_file_server = match task_mgr
                     .file_mgr_selector()
-                    .select_by_name(file_server_type, file_server_name.as_str())
+                    .select_by_name(file_server.0, file_server.1.as_str())
                     .await
                 {
                     Ok(remote_file_server) => remote_file_server,
@@ -601,35 +603,35 @@ impl BackupTask {
 
     async fn post_chunk_uploaded(&self, file_info: &FileInfo, chunk_seq: u64, chunk_size: u32, task_mgr: &BackupTaskMgrInner, task_info: &TaskInfo, remote_task_id: TaskId, is_transfer: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let remote_task_mgr = task_mgr.task_mgr_selector().select(&task_info.task_key, Some(task_info.check_point_version)).await?;
-        let remove_file_server = file_info.file_server.as_ref().unwrap();
-        let remote_file_server = task_mgr.file_mgr_selector().select_by_name(remove_file_server.0, remove_file_server.1.as_str()).await?;
         let chunk_storage = task_mgr.chunk_storage();
 
         let mut pending_files = self.pending_files.lock().await;
-        let file_info = pending_files.get_mut(&file_info.file_path).unwrap();
-        file_info.1 += chunk_size as u64;
+        let pending_file_info = pending_files.get_mut(&file_info.file_path).unwrap();
+        pending_file_info.1 += chunk_size as u64;
 
         if is_transfer {
-            if let Err(err) = remote_file_server.set_chunk_uploaded(file_info.0.file_server.as_ref().unwrap().2.unwrap().0, chunk_seq).await
+            let remove_file_server_info = file_info.file_server.as_ref().unwrap();
+            let remote_file_server = task_mgr.file_mgr_selector().select_by_name(remove_file_server_info.0, remove_file_server_info.1.as_str()).await?;
+            if let Err(err) = remote_file_server.set_chunk_uploaded(remove_file_server_info.2.unwrap().0, chunk_seq).await
             {
                 log::error!("set chunk uploaded failed: {:?}", err);
                 return Err(err);
             }
         }
 
-        if file_info.1 >= file_info.0.file_size {
+        if pending_file_info.1 >= pending_file_info.0.file_size {
             if let Err(err) = remote_task_mgr.set_file_uploaded(
                 remote_task_id,
-                file_info.0.file_path.as_path()
+                pending_file_info.0.file_path.as_path()
             ).await {
                 log::error!("set file uploaded failed: {:?}", err);
                 return Err(err);
             }
-            let _todo_ = tokio::fs::remove_file(file_info.0.file_path.as_path()).await;
+            let _todo_ = tokio::fs::remove_file(pending_file_info.0.file_path.as_path()).await;
         }
 
         if is_transfer {
-            if let Err(err) = chunk_storage.set_chunk_uploaded(&task_info.task_key, task_info.check_point_version, file_info.0.file_path.as_path(), chunk_seq).await {
+            if let Err(err) = chunk_storage.set_chunk_uploaded(&task_info.task_key, task_info.check_point_version, pending_file_info.0.file_path.as_path(), chunk_seq).await {
                 log::error!("set chunk uploaded failed: {:?}", err);
                 return Err(err);
             }
