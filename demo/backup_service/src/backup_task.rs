@@ -422,7 +422,9 @@ impl BackupTask {
                 let chunk_size = chunk_size as u64;
                 let chunk_count = (file.file_size + chunk_size - 1) / chunk_size;
                 let file_path = task_info.dir_path.join(file.file_path.as_path());
-                for chunk_seq in 0..chunk_count {
+
+                let mut chunk_seq = 0;
+                while chunk_seq < chunk_count {
                     let offset = chunk_seq * chunk_size;
                     let chunk_size = std::cmp::min(chunk_size, file.file_size - offset);
                     let (chunk_server_type, chunk_server_name, chunk_hash, chunk, _todo_remote_chunk_id) =
@@ -513,6 +515,7 @@ impl BackupTask {
                                 if let Err(err) = self.post_chunk_uploaded(&file, chunk_seq, chunk_size as u32, task_mgr.as_ref(), &task_info, remote_task_id, false).await {
                                     return BackupTaskEvent::ErrorAndWillRetry(self.clone(), Arc::new(err));
                                 }
+                                chunk_seq += 1;
                                 continue;
                             }
                         }
@@ -547,16 +550,21 @@ impl BackupTask {
                         },
                     };
 
-                    if let Err(e) = self.transfer_chunk(chunk, chunk_hash, task_info.priority, remote_chunk_server, &file, chunk_seq, task_mgr.as_ref(), &task_info, remote_task_id).await {
-                        return e;
+                    match self.transfer_chunk(chunk, chunk_hash, task_info.priority, remote_chunk_server, &file, chunk_seq, task_mgr.as_ref(), &task_info, remote_task_id).await {
+                        Ok(is_pending) => {
+                            if is_pending {
+                                chunk_seq += 1;
+                            }
+                            continue;
+                        }
+                        Err(e) => return e
                     }
                 }
             }
         }
     }
 
-    #[async_recursion::async_recursion]
-    async fn transfer_chunk(&self, chunk: Vec<u8>, hash: String, priority: u32, target_server: Box<dyn ChunkMgr>, file_info: &FileInfo, chunk_seq: u64, task_mgr: &BackupTaskMgrInner, task_info: &TaskInfo, remote_task_id: TaskId) -> Result<(), BackupTaskEvent> {
+    async fn transfer_chunk(&self, chunk: Vec<u8>, hash: String, priority: u32, target_server: Box<dyn ChunkMgr>, file_info: &FileInfo, chunk_seq: u64, task_mgr: &BackupTaskMgrInner, task_info: &TaskInfo, remote_task_id: TaskId) -> Result<bool, BackupTaskEvent> {
         let chunk_size = chunk.len() as u32;
         match self.transfer.push(chunk, hash, priority, target_server).await {
             Ok(pending_waiter) => {
@@ -565,7 +573,7 @@ impl BackupTask {
                     chunk_seq,
                     file_info: file_info.clone(),
                 })));
-                Ok(())
+                Ok(true)
             },
             Err((wait_event, chunk, hash, target_server)) => {
                 // 1. wait event to continue; wait_event.recv().await
@@ -584,7 +592,7 @@ impl BackupTask {
                     select! {
                         _ = wait_event_fut => {
                             // Handle wait event
-                            return self.transfer_chunk(chunk, hash, priority, target_server, file_info, chunk_seq, task_mgr, task_info, remote_task_id).await
+                            return Ok(false)
                         },
                         _ = task_state_fut => {
                             // Handle control event
@@ -746,7 +754,7 @@ impl TaskInner for BackupTask {
 
             // // run once
             let state = backup_task.run_once().await;
-            log::info!("task successed: {:?}", backup_task.task_id());
+            log::info!("task run once done: {:?}", backup_task.task_id());
             
             if let Some(task_event_sender) = task_mgr.task_event_sender().await {
                 task_event_sender.send(state.clone())

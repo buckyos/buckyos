@@ -24,9 +24,9 @@ pub struct TaskStorageSqlite {
 }
 
 impl TaskStorageSqlite {
-    pub(crate) fn new_with_path(
+    pub(crate) fn new_with_path<P: AsRef<Path>>(
         zone_id: String,
-        db_path: &str,
+        db_path: P,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let connection = Connection::open(db_path)?;
 
