@@ -132,6 +132,10 @@ impl RestoreTask {
                 }
 
                 pos += chunk_info.chunk_size as u64;
+
+                if pos > writen_size {
+                    writen_size = pos;
+                }
             }
 
             files.push(file_info.file_path);
