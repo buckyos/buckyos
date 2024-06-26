@@ -151,7 +151,6 @@ pub trait TaskStorageInStrategy: TaskStorageQuerier {
         prev_check_point_version: Option<CheckPointVersion>,
         strategy: &CheckPointVersionStrategy,
     ) -> Result<Vec<TaskId>, Box<dyn std::error::Error + Send + Sync>> {
-        // TODO: check strategy to clear earlier tasks.
         // 1. reserved_complete_tasks: get reserved complete tasks
         // 2. reserved_incomplete_tasks: get reserved incomplete tasks
         // 3. all_tasks = get all tasks

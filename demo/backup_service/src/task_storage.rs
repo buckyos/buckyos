@@ -1,5 +1,9 @@
+use backup_lib::{
+    CheckPointVersion, ChunkId, ChunkServerType, ChunkStorage, FileId, FileInfo, FileServerType,
+    FileStorageQuerier, ListOffset, TaskId, TaskKey, TaskStorageDelete, TaskStorageInStrategy,
+    Transaction,
+};
 use std::path::Path;
-use backup_lib::{CheckPointVersion, ChunkId, ChunkServerType, ChunkStorage, FileId, FileInfo, FileServerType, FileStorageQuerier, ListOffset, TaskId, TaskKey, TaskStorageDelete, TaskStorageInStrategy, Transaction};
 
 use crate::backup_task::TaskInfo;
 
@@ -52,10 +56,14 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         file_path: &Path,
         hash: &str,
         file_size: u64,
-        file_seq: u32
+        file_seq: u32,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-    async fn set_files_prepare_ready(&self, task_id: TaskId, state: FilesReadyState) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn set_files_prepare_ready(
+        &self,
+        task_id: TaskId,
+        state: FilesReadyState,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     async fn create_task_with_files(
         &self,
@@ -131,7 +139,10 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         task_key: &TaskKey,
         check_point_version: CheckPointVersion,
         file_path: &Path,
-    ) -> Result<Option<(FileServerType, String, FileId, u32)>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<
+        Option<(FileServerType, String, FileId, u32)>,
+        Box<dyn std::error::Error + Send + Sync>,
+    >;
 
     async fn set_file_info_pushed(
         &self,
@@ -166,6 +177,12 @@ pub trait TaskStorageClient: TaskStorageInStrategy + TaskStorageDelete + Transac
         limit: u32,
         is_restorable_only: bool,
     ) -> Result<Vec<TaskInfo>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn set_task_last_try_fail_time(
+        &self,
+        task_key: &TaskKey,
+        version: CheckPointVersion,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]
@@ -177,7 +194,10 @@ pub trait FileStorageClient: FileStorageQuerier {
         version: CheckPointVersion,
         file_path: &Path,
         chunk_seq: u64,
-    ) -> Result<Option<(ChunkServerType, String, String, ChunkId)>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<
+        Option<(ChunkServerType, String, String, ChunkId)>,
+        Box<dyn std::error::Error + Send + Sync>,
+    >;
 
     async fn set_chunk_info_pushed(
         &self,

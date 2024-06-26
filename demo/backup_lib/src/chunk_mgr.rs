@@ -1,9 +1,11 @@
 use crate::{ChunkId, FileServerType};
-use serde::{Serialize, Deserialize};
+use base58::ToBase58;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum ChunkServerType {
-    Http = 1
+    Http = 1,
 }
 
 impl TryFrom<u32> for ChunkServerType {
@@ -56,8 +58,15 @@ pub trait ChunkMgrServerSelector: Send + Sync {
 pub trait ChunkMgr: Send + Sync {
     fn server_type(&self) -> ChunkServerType;
     fn server_name(&self) -> &str;
-    async fn upload(&self, chunk_hash: &str, chunk: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    async fn download(&self, chunk_id: ChunkId) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn upload(
+        &self,
+        chunk_hash: &str,
+        chunk: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn download(
+        &self,
+        chunk_id: ChunkId,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]
@@ -67,4 +76,12 @@ pub trait ChunkMgrSelector: Send + Sync {
         chunk_server_type: ChunkServerType,
         server_name: &str,
     ) -> Result<Box<dyn ChunkMgr>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+pub fn check_chunk_hash(chunk: &[u8], chunk_hash: &str) -> bool {
+    let mut hasher = Sha256::new();
+    hasher.update(chunk);
+    let hash = hasher.finalize();
+    let hash = hash.as_slice().to_base58();
+    hash == chunk_hash
 }

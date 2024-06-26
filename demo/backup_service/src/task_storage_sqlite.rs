@@ -336,9 +336,9 @@ impl TaskStorageClient for TaskStorageSqlite {
                     file_count: row.get("total_files")?,
                     priority: row.get("priority")?,
                     is_manual: row.get::<&str, u8>("is_manual")? == 1,
-                    last_fail_at: row.get::<&str, Option<u64>>("last_fail_at")?.map(|utc| {
-                        std::time::UNIX_EPOCH + std::time::Duration::from_secs(utc as u64)
-                    }),
+                    last_fail_at: row
+                        .get::<&str, Option<u64>>("last_fail_at")?
+                        .map(|t| std::time::UNIX_EPOCH + std::time::Duration::from_secs(t as u64)),
                     create_time: std::time::UNIX_EPOCH
                         + std::time::Duration::from_secs(row.get::<&str, u64>("create_at")?),
                 })
@@ -576,9 +576,9 @@ impl TaskStorageClient for TaskStorageSqlite {
                     file_count: row.get("total_files")?,
                     priority: row.get("priority")?,
                     is_manual: row.get::<&str, u8>("is_manual")? == 1,
-                    last_fail_at: row.get::<&str, Option<u64>>("last_fail_at")?.map(|utc| {
-                        std::time::UNIX_EPOCH + std::time::Duration::from_secs(utc as u64)
-                    }),
+                    last_fail_at: row
+                        .get::<&str, Option<u64>>("last_fail_at")?
+                        .map(|t| std::time::UNIX_EPOCH + std::time::Duration::from_secs(t as u64)),
                     create_time: std::time::UNIX_EPOCH
                         + std::time::Duration::from_secs(row.get::<&str, u64>("create_at")?),
                 })
@@ -664,8 +664,8 @@ impl TaskStorageClient for TaskStorageSqlite {
                         file_count: row.get("total_files")?,
                         priority: row.get("priority")?,
                         is_manual: row.get::<&str, u8>("is_manual")? == 1,
-                        last_fail_at: row.get::<&str, Option<u64>>("last_fail_at")?.map(|utc| {
-                            std::time::UNIX_EPOCH + std::time::Duration::from_secs(utc as u64)
+                        last_fail_at: row.get::<&str, Option<u64>>("last_fail_at")?.map(|t| {
+                            std::time::UNIX_EPOCH + std::time::Duration::from_secs(t as u64)
                         }),
                         create_time: std::time::UNIX_EPOCH
                             + std::time::Duration::from_secs(row.get::<&str, u64>("create_at")?),
@@ -749,8 +749,8 @@ impl TaskStorageClient for TaskStorageSqlite {
                         file_count: row.get("total_files")?,
                         priority: row.get("priority")?,
                         is_manual: row.get::<&str, u8>("is_manual")? == 1,
-                        last_fail_at: row.get::<&str, Option<u64>>("last_fail_at")?.map(|utc| {
-                            std::time::UNIX_EPOCH + std::time::Duration::from_secs(utc as u64)
+                        last_fail_at: row.get::<&str, Option<u64>>("last_fail_at")?.map(|t| {
+                            std::time::UNIX_EPOCH + std::time::Duration::from_secs(t as u64)
                         }),
                         create_time: std::time::UNIX_EPOCH
                             + std::time::Duration::from_secs(row.get::<&str, u64>("create_at")?),
@@ -761,6 +761,29 @@ impl TaskStorageClient for TaskStorageSqlite {
             .collect::<Vec<_>>();
 
         Ok(task_infos)
+    }
+
+    async fn set_task_last_try_fail_time(
+        &self,
+        task_key: &TaskKey,
+        version: CheckPointVersion,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let current_time = std::time::SystemTime::now();
+        let sql = "UPDATE upload_tasks SET last_fail_at = ? WHERE key = ? AND version = ? AND zone_id = ?";
+        let connection = self.connection.lock().await;
+        let execute = connection.execute(
+            sql,
+            params![
+                current_time
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as u64,
+                task_key.as_str(),
+                Into::<u128>::into(version) as u64,
+                self.zone_id
+            ],
+        )?;
+        Ok(())
     }
 }
 

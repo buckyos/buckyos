@@ -124,7 +124,6 @@ impl BackupTask {
                             file_server: None,
                         }),
                         None => {
-                            // TODO: read by files
                             let chunk_full_path = dir_path.join(&chunk_relative_path);
                             log::debug!("will read chunk file: {:?}, dir-path: {:?}, relative_path: {:?}", chunk_full_path, dir_path, chunk_relative_path);
                             let mut file = tokio::fs::File::open(chunk_full_path).await?;
@@ -217,7 +216,10 @@ impl BackupTask {
         })
     }
 
-    // TODO: error handling
+    pub fn task_info(&self) -> TaskInfo {
+        self.info.lock().unwrap().clone()
+    }
+
     async fn run_once(&self) -> BackupTaskEvent {
         log::debug!("try to run task: {:?}", self.task_id());
 
@@ -416,7 +418,6 @@ impl BackupTask {
                     },
                 };
 
-                // TODO: read the control command to test if the task should be stopped.
                 // push chunks
                 let file_storage = task_mgr.file_storage();
                 let chunk_size = chunk_size as u64;
@@ -769,21 +770,23 @@ impl TaskInner for BackupTask {
                 BackupTaskEvent::New(_) => unreachable!(),
                 BackupTaskEvent::Idle(_) => return,
                 BackupTaskEvent::ErrorAndWillRetry(_, _) => {
+                    let (task_key, check_point_version) = {
+                        let task_info = backup_task.info.lock().unwrap();
+                        (task_info.task_key.clone(), task_info.check_point_version)
+                    };
+                    
+                    let _ = task_mgr.task_storage().set_task_last_try_fail_time(&task_key, check_point_version).await;
                     return;
-                    // futures::select! {
-                    //     _ = tokio::time::sleep(Duration::from_secs(1)) => {}
-                    //     control = backup_task.control.1.recv() => {
-                    //         match control {
-                    //             Some(BackupTaskControl::Stop) => {
-                    //                 task_mgr.task_event_sender().await.send(BackupTaskEvent::Stop(backup_task)).await;
-                    //                 break
-                    //             },
-                    //             None => continue,
-                    //         }
-                    //     }
-                    // }
                 }
-                BackupTaskEvent::Fail(_, _) => return,
+                BackupTaskEvent::Fail(_, _) => {
+                    let (task_key, check_point_version) = {
+                        let task_info = backup_task.info.lock().unwrap();
+                        (task_info.task_key.clone(), task_info.check_point_version)
+                    };
+                    
+                    let _ = task_mgr.task_storage().set_task_last_try_fail_time(&task_key, check_point_version).await;
+                    return;
+                },
                 BackupTaskEvent::Successed(_) => return,
                 BackupTaskEvent::Stop(_) => {
                     backup_task.state.1.set(TaskState::Stopped);

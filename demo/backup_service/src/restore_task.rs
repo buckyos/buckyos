@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Weak};
-use tokio::io::AsyncWriteExt; // Import the AsyncWriteExt trait
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt}; // Import the AsyncWriteExt trait
 
-use backup_lib::TaskInfo;
+use backup_lib::{check_chunk_hash, TaskInfo};
 
 use crate::task_mgr::RestoreTaskMgrInner;
 
@@ -60,16 +60,19 @@ impl RestoreTask {
 
             let file_path = self.dir_path.join(file_info.file_path.as_path());
 
-            // TODO: 续传
             let mut file = tokio::fs::OpenOptions::new()
                 .write(true)
-                .create_new(true)
+                .read(true)
+                .create(true)
                 .open(file_path.as_path())
                 .await
                 .map_err(|err| {
                     log::error!("create file failed: {:?}, path: {:?}", err, file_path);
                     err
                 })?;
+
+            let mut writen_size = file.metadata().await?.len() as u64;
+            let mut pos = 0;
 
             let chunk_size = chunk_size as u64;
             let chunk_count = (file_info.file_size + chunk_size - 1) / chunk_size;
@@ -84,25 +87,51 @@ impl RestoreTask {
                 }
 
                 let chunk_info = chunk_info.unwrap();
-                if chunk_info.chunk_server.is_none() {
-                    return Err("chunk server not found".into());
+
+                if chunk_info.chunk_size as u64 > chunk_size {
+                    return Err("chunk size not match".into());
                 }
 
-                let chunk_server = chunk_info.chunk_server.unwrap();
-                if chunk_server.2.is_none() {
-                    return Err("chunk id not found".into());
+                let is_local =
+                    if pos < writen_size && pos + (chunk_info.chunk_size as u64) <= writen_size {
+                        let mut chunk = vec![0u8; chunk_info.chunk_size as usize];
+                        file.read_exact(chunk.as_mut_slice()).await.is_ok()
+                            && check_chunk_hash(chunk.as_slice(), chunk_info.hash.as_str())
+                    } else {
+                        false
+                    };
+
+                if !is_local {
+                    if chunk_info.chunk_server.is_none() {
+                        return Err("chunk server not found".into());
+                    }
+
+                    let chunk_server = chunk_info.chunk_server.unwrap();
+                    if chunk_server.2.is_none() {
+                        return Err("chunk id not found".into());
+                    }
+
+                    let chunk_mgr_server = task_mgr
+                        .chunk_mgr_selector()
+                        .select_by_name(chunk_server.0, chunk_server.1.as_str())
+                        .await?;
+
+                    let chunk_id = chunk_server.2.unwrap();
+                    let chunk = chunk_mgr_server.download(chunk_id).await?;
+
+                    if chunk.len() as u64 != chunk_info.chunk_size as u64 {
+                        return Err("chunk size not match".into());
+                    }
+
+                    file.seek(std::io::SeekFrom::Start(pos)).await?;
+                    file.write_all(chunk.as_slice()).await?;
+
+                    if !check_chunk_hash(chunk.as_slice(), chunk_info.hash.as_str()) {
+                        return Err("chunk hash not match".into());
+                    }
                 }
 
-                let chunk_mgr_server = task_mgr
-                    .chunk_mgr_selector()
-                    .select_by_name(chunk_server.0, chunk_server.1.as_str())
-                    .await?;
-
-                let chunk_id = chunk_server.2.unwrap();
-                let chunk = chunk_mgr_server.download(chunk_id).await?;
-
-                // TODO: check chunk size and hash
-                file.write_all(chunk.as_slice()).await?;
+                pos += chunk_info.chunk_size as u64;
             }
 
             files.push(file_info.file_path);

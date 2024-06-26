@@ -155,8 +155,10 @@ impl TaskStorageSqlite {
         &mut self,
         task_id: TaskId,
     ) -> Result<Option<TaskInfo>, Box<dyn std::error::Error + Send + Sync>> {
-        // TODO: 查询完成文件数和文件总数
-        let query = "SELECT key, version, prev_version, meta, dir_path, is_all_files_ready, create_at FROM tasks WHERE task_id = ?";
+        let query = "SELECT key, version, prev_version, meta, dir_path, is_all_files_ready, create_at, 
+            (SELECT COUNT(*) FROM files WHERE files.task_id = tasks.task_id AND files.is_uploaded = 1) AS completed_files,
+            (SELECT COUNT(*) FROM files WHERE files.task_id = tasks.task_id) AS total_files,
+            FROM tasks WHERE task_id = ?";
         let mut stmt = self.connection.prepare(query)?;
         let result = stmt.query_row(params![Into::<u128>::into(task_id) as u64], |row| {
             Ok(TaskInfo {
@@ -173,8 +175,8 @@ impl TaskStorageSqlite {
                 is_all_files_ready: row.get::<usize, u8>(5)? == 1,
                 create_time: std::time::UNIX_EPOCH
                     + std::time::Duration::from_secs(row.get::<usize, u64>(6)?),
-                complete_file_count: 0,
-                file_count: 0,
+                complete_file_count: row.get::<usize, usize>(7)?,
+                file_count: row.get::<usize, usize>(8)?,
             })
         });
         match result {

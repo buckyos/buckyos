@@ -2,11 +2,12 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
+    time::SystemTime,
 };
 
 use backup_lib::{
     CheckPointVersion, CheckPointVersionStrategy, ChunkMgrSelector, FileMgrSelector, ListOffset,
-    TaskId, TaskInfo as TaskInfoServer, TaskKey, TaskMgrSelector, TaskStorageQuerier,
+    TaskId, TaskKey, TaskMgrSelector, TaskStorageQuerier,
 };
 use rusqlite::Result;
 use tokio::sync::Mutex;
@@ -35,11 +36,31 @@ impl BackupTaskMap {
     }
 
     async fn try_run(&mut self, backup_task: BackupTask) {
-        if self.tasks.len() < MAX_RUNNING_TASK_COUNT {
+        let task_count = self.tasks.len();
+        if task_count >= MAX_RUNNING_TASK_COUNT {
+            let low_priority = self
+                .tasks
+                .iter()
+                .max_by(|t1, t2| Self::priority_cmp(&t1.1.task_info(), &t2.1.task_info()))
+                .unwrap();
+
+            if let std::cmp::Ordering::Greater =
+                Self::priority_cmp(&low_priority.1.task_info(), &backup_task.task_info())
+            {
+                let _todo_ = low_priority.1.stop().await;
+            }
+        } else {
             let task_key = backup_task.task_key();
             let task_id = backup_task.task_id();
             let version = backup_task.check_point_version();
-            self.tasks.insert(task_id, backup_task.clone());
+            match self.tasks.entry(task_id) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return;
+                }
+                std::collections::hash_map::Entry::Vacant(et) => {
+                    et.insert(backup_task.clone());
+                }
+            }
             self.task_ids
                 .entry(task_key)
                 .or_insert_with(HashMap::new)
@@ -57,6 +78,31 @@ impl BackupTaskMap {
         self.task_ids.entry(task_key).and_modify(|v| {
             v.remove(&version);
         });
+    }
+
+    fn priority_cmp(t1: &TaskInfo, t2: &TaskInfo) -> std::cmp::Ordering {
+        let retry1 = Self::test_retry_duration(t1);
+        let retry2 = Self::test_retry_duration(t2);
+        if !retry1 {
+            std::cmp::Ordering::Greater
+        } else if !retry2 {
+            std::cmp::Ordering::Less
+        } else {
+            t1.priority.cmp(&t2.priority)
+        }
+    }
+
+    fn test_retry_duration(t: &TaskInfo) -> bool {
+        match t.last_fail_at {
+            Some(t) => {
+                let now = std::time::SystemTime::now();
+                match now.duration_since(t) {
+                    Ok(d) if d.as_secs() < 300 => false,
+                    _ => true,
+                }
+            }
+            None => true,
+        }
     }
 }
 
@@ -440,8 +486,21 @@ impl BackupTaskMgr {
     }
 
     async fn makeup_tasks(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let incomplete_tasks = self.0.task_storage.get_incomplete_tasks(0, 10).await?;
-        // TODO: filter by priority
+        let mut is_more = true;
+        let mut incomplete_tasks = vec![];
+        while is_more {
+            let tasks = self.0.task_storage.get_incomplete_tasks(0, 10).await?;
+            is_more = tasks.len() == 10;
+
+            let tasks = tasks
+                .into_iter()
+                .filter(BackupTaskMap::test_retry_duration)
+                .collect::<Vec<_>>();
+            incomplete_tasks.extend(tasks);
+            incomplete_tasks.sort_by(BackupTaskMap::priority_cmp);
+            incomplete_tasks.truncate(10);
+        }
+
         for task in incomplete_tasks {
             let backup_task = BackupTask::from_storage(
                 Arc::downgrade(&self.0),
