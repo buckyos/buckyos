@@ -488,9 +488,17 @@ impl BackupTaskMgr {
     async fn makeup_tasks(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut is_more = true;
         let mut incomplete_tasks = vec![];
+        let mut offset = 0;
         while is_more {
-            let tasks = self.0.task_storage.get_incomplete_tasks(0, 10).await?;
+            let tasks = self.0.task_storage.get_incomplete_tasks(offset, 10).await?;
+
             is_more = tasks.len() == 10;
+            offset += tasks.len() as u32;
+
+            log::info!(
+                "get incomplete tasks: {:?}",
+                tasks.iter().map(|t| t.task_id).collect::<Vec<_>>()
+            );
 
             let tasks = tasks
                 .into_iter()
