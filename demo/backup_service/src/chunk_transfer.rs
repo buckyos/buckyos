@@ -1,12 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
-
-use backup_lib::ChunkMgr;
+use futures::Future;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct Config {
     pub limit: usize,
-    pub timeout_per_kb: std::time::Duration,
 }
 
 struct TransferTaskState {
@@ -66,21 +64,22 @@ impl ChunkTransfer {
         }))
     }
 
-    pub async fn push(
+    pub async fn push<F, P, R, A>(
         &self,
-        chunk: Vec<u8>,
-        hash: String,
+        proc: F,
+        param: P,
         priority: u32,
-        target_server: Box<dyn ChunkMgr>,
+        limit_duration: Duration,
     ) -> Result<
-        state_waiter::Waiter<Option<Result<(), Arc<Box<dyn std::error::Error + Send + Sync>>>>>,
-        (
-            state_waiter::Waiter<Option<()>>,
-            Vec<u8>,
-            String,
-            Box<dyn ChunkMgr>,
-        ),
-    > {
+        state_waiter::Waiter<Option<Result<R, Arc<Box<dyn std::error::Error + Send + Sync>>>>>,
+        (state_waiter::Waiter<Option<()>>, P),
+    >
+    where
+        F: FnOnce(P) -> A + Send + 'static,
+        A: Future<Output = Result<R, Box<dyn std::error::Error + Send + Sync>>> + Send,
+        P: Send + 'static,
+        R: Clone + Send + 'static,
+    {
         let mut task_state = self.0.task_state.lock().await;
         let pending_count = task_state.pending_count(priority);
 
@@ -92,10 +91,7 @@ impl ChunkTransfer {
             let cfg = self.0.config.clone();
 
             tokio::spawn(async move {
-                let chunk_size_kb = chunk.len() >> 10; // Convert chunk size to kilobytes
-                let timeout = cfg.timeout_per_kb * chunk_size_kb as u32;
-                let result =
-                    tokio::time::timeout(timeout, target_server.upload(&hash, &chunk)).await;
+                let result = tokio::time::timeout(limit_duration, proc(param)).await;
 
                 let mut task_state = task_state_arc.lock().await;
                 let pending_count = task_state.pending_tasks.get_mut(&priority).unwrap();
@@ -126,7 +122,7 @@ impl ChunkTransfer {
                 .entry(priority)
                 .or_insert_with(Vec::new)
                 .push(state);
-            Err((waiter, chunk, hash, target_server))
+            Err((waiter, param))
         }
     }
 }

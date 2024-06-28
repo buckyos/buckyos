@@ -71,6 +71,16 @@ struct PendingChunkInfo {
     file_info: FileInfo,
 }
 
+struct UploadChunkParam {
+    chunk: Vec<u8>,
+    hash: String,
+    target_server: Box<dyn ChunkMgr>,
+}
+
+async fn upload_chunk(param: UploadChunkParam) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    param.target_server.upload(param.hash.as_str(), param.chunk.as_slice()).await
+}
+
 #[derive(Clone)]
 pub struct BackupTask {
     mgr: Weak<BackupTaskMgrInner>,
@@ -572,7 +582,9 @@ impl BackupTask {
 
     async fn transfer_chunk(&self, chunk: Vec<u8>, hash: String, priority: u32, target_server: Box<dyn ChunkMgr>, file_info: &FileInfo, chunk_seq: u64, task_mgr: &BackupTaskMgrInner, task_info: &TaskInfo, remote_task_id: TaskId) -> Result<bool, BackupTaskEvent> {
         let chunk_size = chunk.len() as u32;
-        match self.transfer.push(chunk, hash, priority, target_server).await {
+        let chunk_size_kb = std::cmp::max(3, chunk_size >> 10); // Convert chunk size to kilobytes
+        let timeout = task_mgr.timeout_per_kb() * chunk_size_kb as u32;
+        match self.transfer.push(upload_chunk, UploadChunkParam {hash, chunk, target_server}, priority, timeout).await {
             Ok(pending_waiter) => {
                 self.pending_waiters.lock().await.push((pending_waiter, Some(PendingChunkInfo {
                     chunk_size,
@@ -581,7 +593,7 @@ impl BackupTask {
                 })));
                 Ok(true)
             },
-            Err((wait_event, chunk, hash, target_server)) => {
+            Err((wait_event, _)) => {
                 // 1. wait event to continue; wait_event.recv().await
                 // 2. wait control event to stop; self.control.1.recv().await
                 // 3. wait pending event to check result; self.pending_event.recv().await

@@ -126,6 +126,7 @@ pub(crate) struct BackupTaskMgrInner {
     running_tasks: Arc<Mutex<BackupTaskMap>>,
     state: Arc<Mutex<BackupState>>,
     chunk_transfer: ChunkTransfer,
+    timeout_per_kb: std::time::Duration,
 }
 
 impl BackupTaskMgrInner {
@@ -155,6 +156,10 @@ impl BackupTaskMgrInner {
 
     pub(crate) fn chunk_mgr_selector(&self) -> Arc<Box<dyn ChunkMgrSelector>> {
         self.chunk_mgr_selector.clone()
+    }
+
+    pub(crate) fn timeout_per_kb(&self) -> std::time::Duration {
+        self.timeout_per_kb
     }
 
     pub(crate) async fn task_event_sender(
@@ -205,10 +210,8 @@ impl BackupTaskMgr {
             running_tasks: Arc::new(Mutex::new(BackupTaskMap::new())),
             state: Arc::new(Mutex::new(BackupState::Stopped)),
             zone_id,
-            chunk_transfer: ChunkTransfer::new(chunk_transfer::Config {
-                limit: 5,
-                timeout_per_kb: std::time::Duration::from_secs(5),
-            }),
+            chunk_transfer: ChunkTransfer::new(chunk_transfer::Config { limit: 8 }),
+            timeout_per_kb: std::time::Duration::from_secs(4),
         });
 
         Self(task_mgr)
@@ -527,6 +530,7 @@ pub struct RestoreTaskMgrInner {
     task_mgr_selector: Arc<Box<dyn TaskMgrSelector>>,
     file_mgr_selector: Arc<Box<dyn FileMgrSelector>>,
     chunk_mgr_selector: Arc<Box<dyn ChunkMgrSelector>>,
+    timeout_per_kb: std::time::Duration,
 }
 
 impl RestoreTaskMgrInner {
@@ -545,6 +549,10 @@ impl RestoreTaskMgrInner {
     pub(crate) fn chunk_mgr_selector(&self) -> Arc<Box<dyn ChunkMgrSelector>> {
         self.chunk_mgr_selector.clone()
     }
+
+    pub(crate) fn timeout_per_kb(&self) -> std::time::Duration {
+        self.timeout_per_kb
+    }
 }
 
 pub struct RestoreTaskMgr(Arc<RestoreTaskMgrInner>);
@@ -561,6 +569,7 @@ impl RestoreTaskMgr {
             file_mgr_selector: Arc::new(file_mgr_selector),
             chunk_mgr_selector: Arc::new(chunk_mgr_selector),
             zone_id,
+            timeout_per_kb: std::time::Duration::from_secs(4),
         }))
     }
 
