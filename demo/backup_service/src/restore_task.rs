@@ -345,17 +345,68 @@ impl RestoreTask {
 
                 loop {
                     let wait_event_fut = wait_event.wait(|s| s.is_some());
-                    let pending_waiters_fut = self.wait_pending_chunk();
+                    let pending_waiters_fut = {
+                        let pending_waiters = self.pending_waiters.lock().await;
+                        futures::future::select_all(
+                            pending_waiters
+                                .iter()
+                                .map(|(waiter, _)| waiter.wait(|s| s.is_some())),
+                        )
+                    };
 
                     select! {
                         _ = wait_event_fut => {
                             // Handle wait event
                             return Ok(false)
                         },
-                        result = pending_waiters_fut => {
+                        complete_result = pending_waiters_fut => {
                             // Handle pending event
-                            result?;
-                            continue;
+                            let (result, index, _) = complete_result;
+                            if let Some(result) = result {
+                                let pending_chunk_info = self
+                                    .pending_waiters
+                                    .lock()
+                                    .await
+                                    .remove(index)
+                                    .1
+                                    .clone();
+                                let pending_chunk_info = pending_chunk_info
+                                    .expect("there is a long pending waiter, should be not wake.");
+                                log::info!(
+                                    "pending chunk waited: {:?}, seq: {}, result: {:?}",
+                                    pending_chunk_info.file_info.file_path,
+                                    pending_chunk_info.chunk_seq,
+                                    result.as_ref().map(|_| "...")
+                                );
+                                match result {
+                                    Ok(chunk) => {
+                                        if let Err(err) = self
+                                            .post_chunk_downloaded(
+                                                &pending_chunk_info.file_info,
+                                                pending_chunk_info.chunk_seq
+                                                    * pending_chunk_info
+                                                        .file_info
+                                                        .file_server
+                                                        .as_ref()
+                                                        .unwrap()
+                                                        .2
+                                                        .as_ref()
+                                                        .unwrap()
+                                                        .1 as u64,
+                                                chunk,
+                                                false,
+                                            )
+                                            .await
+                                        {
+                                            return Err(err);
+                                        }
+                                    }
+                                    Err(err) => {
+                                        log::error!("upload chunk failed: {:?}", err);
+                                        return Err(Arc::try_unwrap(err).unwrap());
+                                    }
+                                };
+                            }
                         },
                     }
                 }
@@ -419,7 +470,7 @@ impl RestoreTask {
                     "pending chunk waited: {:?}, seq: {}, result: {:?}",
                     pending_chunk_info.file_info.file_path,
                     pending_chunk_info.chunk_seq,
-                    result
+                    result.as_ref().map(|_| "...")
                 );
                 let result = match result {
                     Ok(chunk) => {
