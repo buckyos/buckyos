@@ -377,7 +377,18 @@ impl PackageEnv {
 
         if let Some(dependencies) = package_data.get("dependencies").and_then(|d| d.as_table()) {
             for (dep_name, dep_version) in dependencies {
-                if !self.check_dependency(dep_name, dep_version.as_str().unwrap(), &package_list)? {
+                debug!(
+                    "Check lock need update. Check dep: {}#{}",
+                    dep_name,
+                    dep_version.as_str().unwrap()
+                );
+                let mut checked = HashSet::new();
+                if !self.check_dependency(
+                    dep_name,
+                    dep_version.as_str().unwrap(),
+                    &package_list,
+                    &mut checked,
+                )? {
                     return Ok(true);
                 }
             }
@@ -391,24 +402,41 @@ impl PackageEnv {
         dep_name: &str,
         dep_version: &str,
         lock_packages: &PackageLockList,
+        checked: &mut HashSet<String>, // 记录哪些已经check过了，避免有环，但是要有警告
     ) -> PkgSysResult<bool> {
         /*这里理论上只需查找一层，因为如果顶层的满足条件，那么子依赖也会满足条件
          *因为上次生成lock文件时，子依赖都是根据条件生成的
+         这里是有可能有环的，要规避 TODO
         （有手动编辑lock文件的可能，先递归查找一下吧）
          */
+        //debug!("Check dependency: {}#{}", dep_name, dep_version);
+        if checked.contains(format!("{}#{}", dep_name, dep_version).as_str()) {
+            warn!("Circular dependency detected: {}#{}", dep_name, dep_version);
+            return Ok(true);
+        }
         let mut found = false;
         for lock_info in lock_packages.packages.iter() {
             if lock_info.name == dep_name {
                 let lock_version = &lock_info.version;
                 if version_util::matches(dep_version, lock_version)? {
+                    debug!(
+                        "Find matched version: {}#{}=>{}",
+                        dep_name, dep_version, lock_version
+                    );
                     found = true;
+                    checked.insert(format!("{}#{}", dep_name, dep_version));
 
                     // 检查子依赖
                     for lock_sub_dep in &lock_info.dependencies {
+                        debug!(
+                            "Check sub dependency: {}#{} for {}#{}",
+                            lock_sub_dep.name, lock_sub_dep.version, dep_name, dep_version
+                        );
                         if !self.check_dependency(
                             &lock_sub_dep.name,
                             &lock_sub_dep.version,
                             lock_packages,
+                            checked,
                         )? {
                             return Ok(false);
                         }

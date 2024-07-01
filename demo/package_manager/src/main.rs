@@ -52,6 +52,23 @@ async fn main() {
     //let ret = env.build(false).await;
     //info!("build: {:?}", ret);
 
+    // info!("{:?}", Version::parse("1.0.0"));
+    // info!("{:?}", Version::parse(">=1.0.0"));
+    // info!("{:?}", Version::parse("=1.0.0"));
+    // info!("{:?}", Version::parse("^1.0.0"));
+    // info!("{:?}", VersionReq::parse("=1.0.0"));
+    // info!("{:?}", VersionReq::parse("1.0.0"));
+    // info!("{:?}", VersionReq::parse(">=1.0.0"));
+    // info!(
+    //     "{:?}",
+    //     VersionReq::parse("1.0.0")
+    //         .unwrap()
+    //         .matches(&Version::parse("1.1.0").unwrap())
+    // );
+
+    // info!("{:?}", Version::parse("1.0.0"));
+    // info!("{:?}", VersionReq::parse(">1.0.0"));
+
     info!("check_lock_need_update: {:?}", env.check_lock_need_update());
 
     let ret = env.update_index().await;

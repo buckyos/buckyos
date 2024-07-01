@@ -1,5 +1,6 @@
 use crate::error::*;
-use regex::Regex;
+use crate::parser::Parser;
+use log::*;
 use semver::{Version, VersionReq};
 use std::cmp::Ordering;
 use version_compare::{compare as version_compare, Cmp};
@@ -24,7 +25,7 @@ pub mod version_util {
         }
     }
 
-    pub fn matches(version_condition: &str, version: &str) -> PkgSysResult<bool> {
+    pub fn matches(version_expression: &str, version: &str) -> PkgSysResult<bool> {
         /*version_condition可能为以下几种情况：
         *
         >0.1.4  >=0.1.4
@@ -33,50 +34,56 @@ pub mod version_util {
         >0.1.4<0.1.6    >0.1.4<=0.1.6   >=0.1.4<0.1.6   >=0.1.4<=0.1.6
         >0.1.4 <0.1.6   >0.1.4 <=0.1.6  >=0.1.4 <0.1.6   >=0.1.4 <=0.1.6
         >0.1.4,<0.1.6   >0.1.4,<=0.1.6  >=0.1.4,<0.1.6  >=0.1.4, <=0.1.6
+        >0.0.1-alpha
         */
-        if version_condition == "*" {
+        debug!(
+            "matches version_expression:{}, version:{}",
+            version_expression, version
+        );
+        if version_expression == "*" {
             return Ok(true);
         }
 
-        //如果version_condition不是以> < 开头，则直接比较
-        if !version_condition.starts_with('>') && !version_condition.starts_with('<') {
-            //如果是以=开头，去掉等号
-            let version_condition = if version_condition.starts_with('=') {
-                &version_condition[1..]
-            } else {
-                version_condition
-            };
-            return Ok(version == version_condition);
-        }
-
         let version = Version::parse(version).map_err(|err| {
-            PackageSystemErrors::VersionError(format!(
-                "Semver parse error: {}, err:{}",
-                version, err
-            ))
+            PackageSystemErrors::VersionError(format!("Invalid version:{}, err:{}", version, err))
         })?;
 
-        // 正则表达式匹配条件
-        let re = Regex::new(r"([><=]*\d+\.\d+\.\d+)").unwrap();
-        let conditions: Vec<&str> = re
-            .find_iter(version_condition)
-            .map(|mat| mat.as_str())
-            .collect();
-
-        // 检查每个条件是否匹配
-        for condition in conditions {
-            let version_req = VersionReq::parse(condition).map_err(|err| {
-                PackageSystemErrors::VersionError(format!(
-                    "VersionReq parse error: {}, err:{}",
-                    condition, err
-                ))
-            })?;
-            if !version_req.matches(&version) {
-                return Ok(false);
+        match Parser::get_version_conditions(version_expression) {
+            Ok(conditions) => {
+                if conditions.len() == 1 {
+                    match Version::parse(&conditions[0]) {
+                        Ok(version_req) => {
+                            return Ok(version == version_req);
+                        }
+                        Err(_) => match VersionReq::parse(&conditions[0]) {
+                            Ok(version_req) => {
+                                return Ok(version_req.matches(&version));
+                            }
+                            Err(err) => {
+                                return Err(PackageSystemErrors::ParseError(
+                                    version_expression.to_string(),
+                                    err.to_string(),
+                                ))
+                            }
+                        },
+                    }
+                } else {
+                    for condition in conditions {
+                        let version_req = VersionReq::parse(&condition).map_err(|err| {
+                            PackageSystemErrors::VersionError(format!(
+                                "VersionReq parse error: {}, err:{}",
+                                condition, err
+                            ))
+                        })?;
+                        if !version_req.matches(&version) {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                }
             }
+            Err(err) => Err(err),
         }
-
-        Ok(true)
     }
 
     pub fn find_matched_version(
@@ -125,10 +132,12 @@ mod tests {
         assert!(version_util::matches(">=1.0.0", "1.0.0").unwrap());
         assert!(version_util::matches("<1.0.1", "1.0.0").unwrap());
         assert!(version_util::matches("<=1.0.0", "1.0.0").unwrap());
-        assert!(version_util::matches(">1.0.0, <2.0.0", "1.5.0").unwrap());
-        assert!(!version_util::matches(">1.0.0, <2.0.0", "2.5.0").unwrap());
-        assert!(version_util::matches(">=1.0.0, <=2.0.0", "2.0.0").unwrap());
+        assert!(version_util::matches(">1.0.0<2.0.0", "1.5.0").unwrap());
+        assert!(!version_util::matches(">1.0.0<2.0.0", "2.5.0").unwrap());
+        assert!(version_util::matches(">=1.0.0<=2.0.0", "2.0.0").unwrap());
         assert!(version_util::matches("*", "2.0.0").unwrap());
+        assert!(version_util::matches("1.0.1", "1.0.1").unwrap());
+        assert!(!version_util::matches("1.0.1", "1.0.2").unwrap());
     }
 
     #[test]
@@ -154,15 +163,15 @@ mod tests {
             "1.0.0"
         );
         assert_eq!(
-            version_util::find_matched_version(">=1.0.0,<1.0.1", &versions).unwrap(),
+            version_util::find_matched_version(">=1.0.0<1.0.1", &versions).unwrap(),
             "1.0.0"
         );
         assert_eq!(
-            version_util::find_matched_version(">=1.0.0, <1.0.1", &versions).unwrap(),
+            version_util::find_matched_version(">=1.0.0<1.0.1", &versions).unwrap(),
             "1.0.0"
         );
         assert_eq!(
-            version_util::find_matched_version(">1.0.0, <=1.0.1", &versions).unwrap(),
+            version_util::find_matched_version(">1.0.0<=1.0.1", &versions).unwrap(),
             "1.0.1"
         );
         assert_eq!(
