@@ -185,7 +185,8 @@ BuckyOS里还会预装一些extension frame-service ,用来提供一些必要的
 2. 由于pkg_id本身可以包含hash信息，因此我们可以实现Zero Trust：从任何源下载的pkg都是可验证的。
 3. 当首次安装完成后，系统会在内部的repo-server里保存已安装的app-pkg,这些数据作为系统数据的一部分也会被备份。系统运行过程中,node 需要下载app pkg到本地，这个过程只依赖zone内的repo server,没有外部依赖。
 
-下面进入到应用的启动流程
+下面进入到应用的启动流程。
+
 ![BuckyOS的App Start流程](./doc/pic/buckyos-App%20Container.svg)
 
 上图描述了应用容器的启动流程，并说明了kRPC服务的权限控制是如何实现的。
