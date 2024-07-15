@@ -299,4 +299,4 @@ Basic Operation Process
 
 ## 许可证
 
-BUckyOS是一个自由，开源，去中心的系统，鼓励所有的厂商都可以基于BuckyOS构造自己的商业产品。因此采用双许可证。一个是传统的GPL Base的许可证，当传统的开源项目使用BuckyOS时使用。另一个是SouceDAO Base的许可证，当一个issue了Token的组织使用BuckyOS时使用，按该许可证的要求，该组织需要将自己issue的Token的一部分捐赠给BuckyOS DAO。
+BuckyOS是一个自由，开源，去中心的系统，鼓励所有的厂商基于BuckyOS构造自己的商业产品，平等的开展良性竞争。因此我们在开源许可证的选择上的核心目标是实现生态共赢，尤其是通过规则保持BuckyOS的去中心内核，保护我们的贡献者可以分享到生态成长的利益，建立一个长期共赢的丰富生态。还要尽量通过共同利益凝聚共识，防止分裂。因此采用双许可证。一个是传统的LGPL Base的许可证，对内核的所有修改都必须按GPL的规则开源，也不拒绝闭源的非自由应用软件（但这些应用软件不可以是系统不可缺少的一部分，我们不会有新的GMS）。另一个是SouceDAO Base的许可证，当一个issue了DAO Token的组织使用BuckyOS时使用，按该许可证的要求，该组织需要将自己issue的Token的一部分捐赠给BuckyOS DAO。
