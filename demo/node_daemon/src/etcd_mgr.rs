@@ -21,18 +21,11 @@ macro_rules! handle_error {
 }
 
 pub(crate) fn parse_etcd_url(server: String) -> Result<(String, String, String)> {
-    let parts: Vec<&str> = server.split(":").collect();
-    if parts.len() < 2 {
-        error!("etcd server format error:{}", server);
-        return Err(NodeDaemonErrors::ReasonError(
-            "etcd server format error".to_string(),
-        ));
-    }
-    let machine = parts[0];
-    let client_port: i32 = parts[1].parse().unwrap();
-    let peer_port = client_port + 1;
+    let machine = server;
+    let client_port: i32 = 2379;
+    let peer_port = 2380;
 
-    let client_url = format!("http://{}:{}", machine, client_port);
+    let client_url = format!("http://127.0.0.1:{}", client_port);
     let peer_url = format!("http://{}:{}", machine, peer_port);
 
     // --initial-cluster 参数应该是：
@@ -110,7 +103,7 @@ pub(crate) async fn get_etcd_data_version(
     sleep(Duration::from_secs(1)).await;
 
     // etcd要在cluster配置的所有节点都就绪后才能正常工作
-    if !etcd_client::check_etcd_health(&name) {
+    if !etcd_client::check_etcd_health(&name).await {
         error!("etcd is not healthy");
         return Err(NodeDaemonErrors::ReasonError(
             "etcd is not healthy".to_string(),

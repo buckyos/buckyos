@@ -1,0 +1,22 @@
+[package]
+name = "vpn"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = {version = "1", features = ["full"]}
+tun = {  version = "0.6.1", features = ["async"] }
+pnet = "0.35"
+log = "0.4"
+sfo-result = { version = "0.2.4", features = ["backtrace", "log"] }
+clap = "4.5.9"
+serde = "1"
+serde_json = "1"
+flexi_logger = "0.28.5"
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["codec"]}
+
+bucky-raw-codec = {git="https://github.com/buckyos/bucky-raw-codec.git", features = ["derive"]}
+bucky-error = {git = "https://github.com/buckyos/bucky-error.git"}
+libc = "0.2.155"
+hex = "0.4.3"

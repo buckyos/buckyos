@@ -135,32 +135,32 @@ pub fn start_etcd(
         .arg(cluster_token)
         .arg("--initial-cluster-state")
         .arg(cluster_state)
-        .arg("--log-outputs")
-        .arg(format!("/var/log/etcd.{}.log", name))
+        // .arg("--log-outputs")
+        // .arg(format!("/var/log/etcd.{}.log", name))
         // .stdout(std::process::Stdio::inherit())
         // .stderr(std::process::Stdio::inherit())
         .spawn()
 }
 
-pub fn check_etcd_health(name: &str) -> bool {
+pub async fn check_etcd_health(name: &str) -> bool {
     let timeout = 3;
-    let url = format!("http://{}:2379/health", name);
-    let client = reqwest::blocking::Client::builder()
+    let url = "http://127.0.0.1:2379/health".to_string();
+    let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout)) // 设置请求超时时间为2秒
         .build()
         .expect("Failed to build HTTP client");
 
-    for _ in 0..10 {
-        let response = client.get(&url).send();
+    for _ in 0..3600 {
+        let response = client.get(&url).send().await;
         info!("Checking etcd health: {:?}", response);
         if let Ok(resp) = response {
-            if let Ok(json) = resp.json::<Value>() {
+            if let Ok(json) = resp.json::<Value>().await {
                 if json["health"] == "true" {
                     return true;
                 }
             }
         }
-        std::thread::sleep(Duration::from_secs(1));
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
     false
 }

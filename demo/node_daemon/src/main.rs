@@ -21,6 +21,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, fs::File};
+use std::path::Path;
 // use tokio::*;
 use toml;
 
@@ -34,6 +35,7 @@ use gateway_lib::DeviceEndPoint;
 use name_client::NameClient;
 
 use thiserror::Error;
+use tide::log::start;
 
 #[derive(Error, Debug)]
 enum NodeDaemonErrors {
@@ -267,6 +269,59 @@ async fn get_node_config(
     // ));
 }
 
+#[derive(Serialize, Deserialize)]
+struct VpnClientConfig {
+    pub server: String,
+    pub client_key: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VpnClient {
+    pub client_key: String,
+    pub ip: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VpnServerConfig {
+    pub ip: String,
+    pub port: u16,
+    pub clients: Vec<VpnClient>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VpnConfig {
+    pub server: Option<VpnServerConfig>,
+    pub client: Option<VpnClientConfig>,
+}
+
+async fn start_vpn() -> Result<()> {
+    let vpn_config = "vpn.json";
+    if !Path::new(vpn_config).exists() {
+        return Ok(());
+    }
+    let json_config = std::fs::read_to_string(vpn_config).map_err(|e| NodeDaemonErrors::ParserConfigError(format!("{}", e)))?;
+    let config: VpnConfig = serde_json::from_str(json_config.as_str()).map_err(|e| NodeDaemonErrors::ParserConfigError(format!("{}", e)))?;
+
+    if config.server.is_some() {
+        let server_config = config.server.as_ref().unwrap();
+        let mut client_map = HashMap::new();
+        for client in server_config.clients.iter() {
+            client_map.insert(client.client_key.clone(), client.ip.clone());
+        }
+        let server = Arc::new(vpn::VpnServer::bind((server_config.ip.as_str(), server_config.port), client_map).await
+            .map_err(|e| NodeDaemonErrors::ReasonError(format!("{}", e)))?);
+        server.start().await;
+    }
+
+    if config.client.is_some() {
+        let client_config = config.client.as_ref().unwrap();
+        let client = Arc::new(vpn::VpnClient::new(client_config.server.as_str(), client_config.client_key.as_str()));
+        client.start().await;
+        client.wait_online().await;
+    }
+    Ok(())
+}
+
 //start gateway for etcd cluster
 async fn start_gateway_by_zone_config(
     zone_config: &ZoneConfig,
@@ -451,8 +506,24 @@ async fn node_daemon_main_loop(
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> std::result::Result<(), String> {
+fn main() {
+    if num_cpus::get() < 2 {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async_main());
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async_main());
+    }
+}
+
+async fn async_main() -> std::result::Result<(), String> {
     init_log_config();
     info!("node_dameon start...");
 
@@ -472,12 +543,17 @@ async fn main() -> std::result::Result<(), String> {
     })?;
     info!("zone config: {:?}", zone_config);
 
-    start_gateway_by_zone_config(&zone_config, &node_identity.node_id.as_str())
-        .await
-        .map_err(|err| {
-            error!("start gateway by zone config failed!,{}", err);
-            return String::from("start gateway by zone config failed!");
-        })?;
+    start_vpn().await.map_err(|err| {
+        error!("start vpn failed! {}", err);
+        return String::from("start vpn failed!")
+    })?;
+
+    // start_gateway_by_zone_config(&zone_config, &node_identity.node_id.as_str())
+    //     .await
+    //     .map_err(|err| {
+    //         error!("start gateway by zone config failed!,{}", err);
+    //         return String::from("start gateway by zone config failed!");
+    //     })?;
 
     //检查etcd状态
     let etcd_state = check_etcd_by_zone_config(&zone_config, &node_identity)

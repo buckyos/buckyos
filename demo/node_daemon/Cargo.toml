@@ -27,9 +27,10 @@ version-compare = "*"
 rusqlite = { version = '0.31.0', features = ['bundled', 'blob'] }
 chrono = "0.4"
 
-
 etcd_client = { path = "../etcd_client" }
 name_client = { path = "../name_client" }
 gateway-lib = { path = "../gateway-lib"}
 backup_service = {path = "../backup_service"}
 backup_lib = {path = "../backup_lib"}
+vpn = { path = "../vpn" }
+num_cpus = "1.16.0"

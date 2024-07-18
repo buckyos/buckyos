@@ -48,10 +48,10 @@ main() {
 	    exit 1
 	fi
 
-	if [ "$OS" = "Ubuntu" ]; then
+	if [[ "$OS" = "Ubuntu" || "$OS" = "Debian" ]]; then
 	    echo "System is $OS"
 	else
-	    echo "This script currently only supports Ubuntu."
+	    echo "This script currently only supports Ubuntu and Debian."
 	    exit 1
 	fi
 
@@ -61,20 +61,37 @@ main() {
 	if ! command -v docker &> /dev/null
 	then
 	    echo "Installing Docker."
-	    # Add Docker's official GPG key:
-	    sudo apt-get update
-	    sudo apt-get install ca-certificates curl -y
-	    sudo install -m 0755 -d /etc/apt/keyrings
-	    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-	    sudo chmod a+r /etc/apt/keyrings/docker.asc
+	    if [ "$OS" = "Ubuntu" ]; then
+		    # Add Docker's official GPG key:
+		    sudo apt-get update
+		    sudo apt-get install ca-certificates curl -y
+		    sudo install -m 0755 -d /etc/apt/keyrings
+		    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+		    sudo chmod a+r /etc/apt/keyrings/docker.asc
 
-	    # Add the repository to Apt sources:
-	    echo \
-	      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-	      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-	      sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-	    sudo apt-get update
-	    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+		    # Add the repository to Apt sources:
+		    echo \
+		      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+		      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+		      sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+		    sudo apt-get update
+		    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+		elif [ "$OS" = "Debian" ]; then
+			# Add Docker's official GPG key:
+	        sudo apt-get update
+	        sudo apt-get install ca-certificates curl
+	        sudo install -m 0755 -d /etc/apt/keyrings
+	        sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+	        sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+	        # Add the repository to Apt sources:
+	        echo \
+	          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
+	          $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+	          sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+	        sudo apt-get update
+	        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+		fi
 	else
 	    echo "Docker has installed."
 	fi
@@ -85,7 +102,7 @@ main() {
 		echo "Downloading buckycli..."
 		ensure sudo curl -z "$buckycli" --progress-bar -o "$buckycli" https://cache.mynode.site/buckycli
 	fi
-	
+
 	sudo chmod +x "$buckycli"
 
 	while true; do
@@ -626,7 +643,7 @@ create_node() {
 			read -p "Please enter node_name[$node_1/$node_2/$node_3]: " cur_node < /dev/tty
 		else
 			read -p "Please enter node_name[default: $local_node]: " cur_node < /dev/tty
-			if [ -z "$cur_node"]; then
+			if [ -z "$cur_node" ]; then
 				cur_node=$local_node
 			fi
 		fi
@@ -695,34 +712,36 @@ create_node() {
 
 create_wan_2_lan_node() {
 	local local_node=""
-	local node_1_ips="127.0.0.1"
+	local wan_ip=""
+	local cur_net=""
+	local node_1_ips="192.168.19.101"
 	local node_1_ip_mode="manual"
 	if [ "$etcd_1_net" == "wan" ]; then
 		ensure_node_dns $node_1
-		node_1_ips=$ips
+		wan_ip=$ips
 		node_1_ip_mode=$ip_mode
 		if [ -z "$local_node" ]; then
-			local_node=$(is_local_host $node_1 $node_1_ips)
+			local_node=$(is_local_host $node_1 $wan_ip)
 		fi
 	fi
-	local node_2_ips="127.0.0.1"
+	local node_2_ips="192.168.19.102"
 	local node_2_ip_mode="manual"
 	if [ "$etcd_2_net" == "wan" ]; then
 		ensure_node_dns $node_2
-		node_2_ips=$ips
+		wan_ip=$ips
 		node_2_ip_mode=$ip_mode
 		if [ -z "$local_node" ]; then
-			local_node=$(is_local_host $node_2 $node_2_ips)
+			local_node=$(is_local_host $node_2 $wan_ip)
 		fi
 	fi
-	local node_3_ips="127.0.0.1"
+	local node_3_ips="192.168.19.103"
 	local node_3_ip_mode="manual"
 	if [ "$etcd_3_net" == "wan" ]; then
 		ensure_node_dns $node_3
-		node_3_ips=$ips
+		wan_ip=$ips
 		node_3_ip_mode=$ip_mode
 		if [ -z "$local_node" ]; then
-			local_node=$(is_local_host $node_3 $node_3_ips)
+			local_node=$(is_local_host $node_3 $wan_ip)
 		fi
 	fi
 
@@ -731,7 +750,7 @@ create_wan_2_lan_node() {
 			read -p "Please enter node_name[$node_1/$node_2/$node_3]: " cur_node < /dev/tty
 		else
 			read -p "Please enter node_name[default: $local_node]: " cur_node < /dev/tty
-			if [ -z "$cur_node"]; then
+			if [ -z "$cur_node" ]; then
 				cur_node=$local_node
 			fi
 		fi
@@ -746,6 +765,14 @@ create_wan_2_lan_node() {
 			fi
 		fi
 	done
+
+	if [ "$cur_node" = "$node_1" ]; then
+		cur_net=$etcd_1_net
+	elif [ "$cur_node" = "$node_2" ]; then
+		cur_net=$etcd_2_net
+	else
+		cur_net=$etcd_3_net
+	fi
 
 	while true; do
 		read -p "Please enter data path [default: ~/buckyos]: " data_path < /dev/tty
@@ -766,6 +793,11 @@ create_wan_2_lan_node() {
 	ensure sudo mkdir -p "$data_path/$cur_node/data"
 	ensure sudo mkdir -p "$data_path/$cur_node/data/gv0"
 	ensure sudo mkdir -p "$data_path/$cur_node/etcd"
+	if [ "$cur_net" == "wan" ]; then
+		create_wan_vpn_cfg $cur_node $wan_ip "$data_path/$cur_node/vpn.json"
+	else
+		create_lan_vpn_cfg $cur_node $wan_ip "$data_path/$cur_node/vpn.json"
+	fi
 
 	local zone_local_cfg=""
 	if [ "$zone_cfg_mode" = "local" ]; then
@@ -790,53 +822,60 @@ create_wan_2_lan_node() {
 		local ip_list=($node_3_ips)
 	    node_3_host="--add-host $node_3:${ip_list[0]}"
 	fi
-	
+
 	if [ "$docker_use_local" = false ]; then
 		ensure sudo docker pull $docker_image
 	fi
- 	echo "sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image"
+# 	echo "sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --cap-add=NET_ADMIN --device /dev/net/tun --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/vpn.json":/buckyos/vpn.json -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 3452:3452 -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image"
+ 	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --cap-add=NET_ADMIN --device /dev/net/tun --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/vpn.json":/buckyos/vpn.json -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 3452:3452 -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
 # 	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
 }
 
 ensure_node_dns() {
 	local node_name=$1
-	echo "Checking the domain $node_name IP Address..."
 	ip_mode="dns"
-	ips=$(nslookup $node_name | grep 'Address:' | tail -n +2 | awk '{print $2}')
-	if [ -z "$ips" ]; then
-		while true; do
-			read -p "The domain $node_name can't resolve IP address.Do you want to configure dns or enter the ip address manually?[dns(d)/manual(m)] [default: manual]: " dns_mode < /dev/tty
-			if [ -z $dns_mode ]; then
-				dns_mode="manual"
-			fi
-			case $dns_mode in
-				"dns" | "d" )
-					while true; do
-						ips=$(nslookup $node_name | grep 'Address:' | tail -n +2 | awk '{print $2}')
-						if [ -z "$ips" ]; then
-				            echo "The domain $node_name is not configured with DNS."
-				        else
-				            break
-				        fi
-					done
-					break;;
-				"manual" | "m")
-					while true; do
-						read -p "Please enter an IP address: " ip < /dev/tty
 
-		                if is_valid_ip "$ip"; then
-		                    ips=$ip
-		                    break
-		                else
-		                    echo "The IP address $ip is invalid."
-		                fi
-					done
-					ip_mode="manual"
-					break;;
-				* ) echo "Please answer dns or manual.";;
-			esac
-		done
-	fi
+	while true; do
+		read -p "Do you want to configure dns or enter the ip address manually for $node_name?[dns(d)/manual(m)] [default: manual]: " dns_mode < /dev/tty
+		if [ -z $dns_mode ]; then
+			dns_mode="manual"
+		fi
+		case $dns_mode in
+			"dns" | "d" )
+				while true; do
+					domain=$(nslookup $node_name | grep 'Name:' | tail -n +1 | awk '{print $2}')
+					ips=$(nslookup $node_name | grep 'Address:' | tail -n +2 | awk '{print $2}')
+					if [[ "$domain" != "$node_name" || -z "$ips" ]]; then
+						domain=$(nslookup $node_name.$zone_name | grep 'Name:' | tail -n +1 | awk '{print $2}')
+						ips=$(nslookup $node_name.$zone_name | grep 'Address:' | tail -n +2 | awk '{print $2}')
+						if [[ "$domain" != "$node_name.$zone_name" || -z "$ips" ]]; then
+			                echo "The domain $node_name is not configured with DNS."
+			            else
+				            echo "Get ip address $ips from dns."
+				            break
+			            fi
+			        else
+			            echo "Get ip address $ips from dns."
+			            break
+			        fi
+				done
+				break;;
+			"manual" | "m")
+				while true; do
+					read -p "Please enter an IP address: " ip < /dev/tty
+
+	                if is_valid_ip "$ip"; then
+	                    ips=$ip
+	                    break
+	                else
+	                    echo "The IP address $ip is invalid."
+	                fi
+				done
+				ip_mode="manual"
+				break;;
+			* ) echo "Please answer dns or manual.";;
+		esac
+	done
 }
 
 is_local_host() {
@@ -1026,6 +1065,52 @@ EOF
 )
 	ensure sudo echo -e "$zone_node_config_template" > "$data_path/zone_node_config.yml"
 	ensure $buckycli import_zone_config -f "$data_path/zone_node_config.yml"
+}
+
+create_wan_vpn_cfg() {
+	local cur_node=$1
+	local wan_ip=$2
+	local cfg_path=$3
+	local vpn_cfg=$(cat <<- EOF
+{
+  "server": {
+    "ip": "0.0.0.0",
+    "port": 3452,
+    "clients": [{
+      "client_key": "$node_1",
+      "ip": "192.168.19.101"
+    },{
+      "client_key": "$node_2",
+      "ip": "192.168.19.102"
+    },{
+      "client_key": "$node_3",
+      "ip": "192.168.19.103"
+    }]
+  },
+  "client": {
+    "client_key": "$cur_node",
+    "server": "127.0.0.1:3452"
+  }
+}
+EOF
+)
+	ensure sudo echo -e "$vpn_cfg" > "$cfg_path"
+}
+
+create_lan_vpn_cfg() {
+	local cur_node=$1
+	local wan_ip=$2
+	local cfg_path=$3
+	local vpn_cfg=$(cat <<- EOF
+{
+  "client": {
+    "client_key": "$cur_node",
+    "server": "$wan_ip:3452"
+  }
+}
+EOF
+)
+	ensure sudo echo -e "$vpn_cfg" > "$cfg_path"
 }
 
 ensure_etcd_cluster_health() {

@@ -6,7 +6,7 @@ members = [
     "./etcd_client",
 	"./backup_server",
     "./buckycli",
-    "./name_client", 
+    "./name_client",
     "./dcfs_fuse",
     "./gateway",
     "./etcd_tool",
@@ -16,5 +16,7 @@ members = [
     "./backup_service",
     "./backup_lib",
 #    "tests/gateway_client",
-    "./gateway-lib", "state-waiter",
+    "./gateway-lib",
+    "state-waiter",
+    "./vpn"
 ]

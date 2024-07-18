@@ -16,7 +16,7 @@ RUN apt update; \
     sudo apt-get install -y fuse; \
     apt clean;
 
-EXPOSE 2379 2380 139 445 49152-49162
+EXPOSE 2379 2380 139 445 49152-49162 3452
 
 ADD target/release/node_daemon /usr/local/bin/
 COPY smb_service/ "/buckyos/service/smb_service#0.1.0/"
