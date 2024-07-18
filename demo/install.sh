@@ -145,6 +145,7 @@ create_all_in_one_mode() {
 	    sleep 1
 	done
 	import_all_config
+	echo "Please access storage through \"\\$node_1\" or \"\\$node_1's ip\""
 }
 
 create_interworking_network_mode() {
@@ -155,6 +156,7 @@ create_interworking_network_mode() {
 	ensure_etcd_cluster_health
 
 	import_all_config
+	echo "Please access storage through \"\\$node_1\" or \"\\$node_1's ip\""
 }
 
 create_wan_2_lan_mode() {
@@ -165,6 +167,7 @@ create_wan_2_lan_mode() {
 	ensure_etcd_cluster_health
 
 	import_all_config
+	echo "Please access storage through \"\\$node_1\" or \"\\$node_1's ip\""
 }
 
 create_etcd_item() {
@@ -265,17 +268,17 @@ ensure_create_zone_cfg() {
 			;;
 		"invalid")
 			echo "Zone configuration on DNS is not available."
-			read -p "Please enter the name of node 1 [default: etcd1]: " node_1 < /dev/tty
-			read -p "Please enter the name of node 2 [default: etcd2]: " node_2 < /dev/tty
-			read -p "Please enter the name of node 3 [default: gateway]: " node_3 < /dev/tty
+			read -p "Please enter the name of node 1 [default: node1]: " node_1 < /dev/tty
+			read -p "Please enter the name of node 2 [default: node2]: " node_2 < /dev/tty
+			read -p "Please enter the name of node 3 [default: node3]: " node_3 < /dev/tty
 			if [ -z "$node_1" ]; then
-				node_1="etcd1"
+				node_1="node1"
 			fi
 			if [ -z "$node_2" ]; then
-				node_2="etcd2"
+				node_2="node2"
 			fi
 			if [ -z "$node_3" ]; then
-				node_3="gateway"
+				node_3="node3"
 			fi
 
 			while true; do
@@ -374,14 +377,14 @@ ensure_create_wan_2_lan_zone_cfg() {
 			;;
 		"invalid")
 			echo "Zone configuration on DNS is not available."
-			read -p "Please enter the name of node 1 [default: etcd1]: " node_1 < /dev/tty
+			read -p "Please enter the name of node 1 [default: gateway]: " node_1 < /dev/tty
 			if [ -z "$node_1" ]; then
-				node_1="etcd1"
+				node_1="gateway"
 			fi
 			while true; do
-				read -p "Please enter the net mode of $node_1.[lan/wan] [default: lan]: " etcd_1_net < /dev/tty
+				read -p "Please enter the net mode of $node_1.[lan/wan] [default: wan]: " etcd_1_net < /dev/tty
 				if [ -z "$etcd_1_net" ]; then
-					etcd_1_net="lan"
+					etcd_1_net="wan"
 				fi
 				if [ "$etcd_1_net" != "lan" ] && [ "$etcd_1_net" != "wan" ]; then
 					echo "Please answer lan or wan."
@@ -390,9 +393,9 @@ ensure_create_wan_2_lan_zone_cfg() {
 				fi
 			done
 			etcd_1_port="12379"
-			read -p "Please enter the name of node 2 [default: etcd2]: " node_2 < /dev/tty
+			read -p "Please enter the name of node 2 [default: node1]: " node_2 < /dev/tty
 			if [ -z "$node_2" ]; then
-				node_2="etcd2"
+				node_2="node1"
 			fi
 			while true; do
 				read -p "Please enter the net mode of $node_2.[lan/wan] [default: lan]: " etcd_2_net < /dev/tty
@@ -406,14 +409,14 @@ ensure_create_wan_2_lan_zone_cfg() {
 				fi
 			done
 			etcd_2_port="12379"
-			read -p "Please enter the name of node 3 [default: gateway]: " node_3 < /dev/tty
+			read -p "Please enter the name of node 3 [default: node2]: " node_3 < /dev/tty
 			if [ -z "$node_3" ]; then
-				node_3="gateway"
+				node_3="node2"
 			fi
 			while true; do
-				read -p "Please enter the net mode of $node_3.[lan/wan] [default: wan]: " etcd_3_net < /dev/tty
+				read -p "Please enter the net mode of $node_3.[lan/wan] [default: lan]: " etcd_3_net < /dev/tty
 				if [ -z "$etcd_3_net" ]; then
-					etcd_3_net="wan"
+					etcd_3_net="lan"
 				fi
 				if [ "$etcd_3_net" != "lan" ] && [ "$etcd_3_net" != "wan" ]; then
 					echo "Please answer lan or wan."
@@ -1063,6 +1066,7 @@ import_all_config() {
 }
 EOF
 )
+	ensure sudo rm -f "$data_path/zone_node_config.yml"
 	ensure sudo echo -e "$zone_node_config_template" > "$data_path/zone_node_config.yml"
 	ensure $buckycli import_zone_config -f "$data_path/zone_node_config.yml"
 }

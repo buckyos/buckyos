@@ -170,7 +170,7 @@ async fn import_node_config(file_path: &str, etcd: &str) -> Result<(), String> {
         .map_err(|_e| "connect etcd error".to_string())?;
     for (key, value) in config {
         etcd_client
-            .set(&format!("{}_node_config", key), &value.to_string())
+            .set(&format!("nodes/{}", key), &value.to_string())
             .await
             .map_err(|_e| "put etcd error".to_string())?;
     }
