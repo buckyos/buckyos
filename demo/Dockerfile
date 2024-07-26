@@ -14,15 +14,17 @@ RUN apt update; \
     sed -i '/option max-port/ c\    option max-port 49162' /etc/glusterfs/glusterd.vol; \
     sudo apt-get install -y samba; \
     sudo apt-get install -y fuse; \
+    sudo apt-get install -y nginx; \
     apt clean;
 
-EXPOSE 2379 2380 139 445 49152-49162 3452
+EXPOSE 8080 2379 2380 139 445 49152-49162 3452
 
 ADD target/release/node_daemon /usr/local/bin/
 COPY smb_service/ "/buckyos/service/smb_service#0.1.0/"
 COPY frame-glusterfs/ "/buckyos/service/glusterfs#0.1.0/"
 COPY backup_service/script/ "/buckyos/service/backup_service#0.1.0/"
 COPY target/release/backup_service "/buckyos/service/backup_service#0.1.0/"
+COPY nginx_service "/buckyos/service/nginx_service#0.1.0/"
 
 WORKDIR /buckyos
 

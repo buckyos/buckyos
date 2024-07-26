@@ -145,7 +145,7 @@ create_all_in_one_mode() {
 	    sleep 1
 	done
 	import_all_config
-	echo "Please access storage through \"\\$node_1\" or \"\\$node_1's ip\""
+	echo "Please access storage through \"\\\\$node_1\" or \"\\\\$node_1's ip\""
 }
 
 create_interworking_network_mode() {
@@ -156,7 +156,7 @@ create_interworking_network_mode() {
 	ensure_etcd_cluster_health
 
 	import_all_config
-	echo "Please access storage through \"\\$node_1\" or \"\\$node_1's ip\""
+	echo "Please access storage through \"\\\\$node_1\" or \"\\\\$node_1's ip\""
 }
 
 create_wan_2_lan_mode() {
@@ -167,7 +167,8 @@ create_wan_2_lan_mode() {
 	ensure_etcd_cluster_health
 
 	import_all_config
-	echo "Please access storage through \"\\$node_1\" or \"\\$node_1's ip\""
+	echo "Please access storage through \"\\\\$node_2\" or \"\\\\$node_2's ip\""
+	echo "You can browse the stored content through this URL: http://$node_1's ip:3345"
 }
 
 create_etcd_item() {
@@ -830,7 +831,12 @@ create_wan_2_lan_node() {
 		ensure sudo docker pull $docker_image
 	fi
 # 	echo "sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --cap-add=NET_ADMIN --device /dev/net/tun --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/vpn.json":/buckyos/vpn.json -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 3452:3452 -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image"
- 	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --cap-add=NET_ADMIN --device /dev/net/tun --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/vpn.json":/buckyos/vpn.json -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 3452:3452 -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
+ 	if [ "$cur_net" == "wan" ]; then
+ 	    ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --cap-add=NET_ADMIN --device /dev/net/tun --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/vpn.json":/buckyos/vpn.json -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 3345:8080 -p 3452:3452 -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 2379:2379 -p 2380:2380 $docker_image
+	else
+ 	    ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --cap-add=NET_ADMIN --device /dev/net/tun --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/vpn.json":/buckyos/vpn.json -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 3452:3452 -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
+	fi
+# 	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --cap-add=NET_ADMIN --device /dev/net/tun --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/vpn.json":/buckyos/vpn.json -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 3345:80 -p 3452:3452 -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
 # 	ensure sudo docker run -d --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --restart=always $node_1_host $node_2_host $node_3_host $zone_local_cfg -v "$data_path/$cur_node/node_identity.toml":/buckyos/node_identity.toml -v "$data_path/$cur_node/data":/buckyos/data -v $data_path/$cur_node/etcd:/buckyos/$cur_node.etcd  --name buckyos -h $cur_node -p 24008:24008 -p 24007:24007 -p 49152-49162:49152-49162 -p 139:139 -p 445:445 -p 2379:2379 -p 2380:2380 $docker_image
 }
 
@@ -897,6 +903,11 @@ is_local_host() {
 }
 
 import_all_config() {
+	nginx_cfg=$(cat <<- EOF
+server {\\\\nserver_name _;\\\\nlisten 8080;\\\\nlocation / {\\\\nroot /mnt/glusterfs;\\\\nautoindex on;\\\\n}}
+EOF
+)
+
 	zone_node_config_template=$(cat <<- EOF
 {
   "$node_1": {
@@ -957,6 +968,31 @@ import_all_config() {
          }
        }
      },
+	   "nginx_service": {
+	       "target_state": "Running",
+	       "pkg_id": "nginx_service",
+	       "version": "*",
+	       "operations": {
+	         "deploy": {
+	           "command": "deploy.sh",
+	           "params": [
+	           ]
+	         },
+	         "status": {
+	           "command": "status.sh",
+	           "params": [
+	              "--status"
+	            ]
+	         },
+	         "start": {
+	           "command": "start.sh",
+	           "params": [
+	              "$nginx_cfg"
+	          ]
+	         }
+	       }
+	     }
+	  },
 	 "backup_service": {
        "target_state": "Running",
        "pkg_id": "backup_service",
@@ -979,7 +1015,6 @@ import_all_config() {
          }
        }
      }
-    }
   },
   "$node_2": {
     "services": {
@@ -1019,7 +1054,25 @@ import_all_config() {
 	            ]
 	        }
         }
-      }
+      },
+	    "samba": {
+	      "target_state": "Running",
+	      "pkg_id": "smb_service",
+	      "version": "*",
+	      "operations": {
+	        "deploy": {
+	          "command": "deploy.sh"
+	        },
+	        "status": {
+	          "command": "status.sh",
+	          "params": ["--status"]
+	        },
+	        "start": {
+	          "command": "start.sh",
+	          "params": ["/mnt/glusterfs"]
+	        }
+	      }
+	    }
     }
   },
   "$node_3": {
@@ -1060,7 +1113,25 @@ import_all_config() {
 	            ]
 	        }
         }
-      }
+      },
+        "samba": {
+          "target_state": "Running",
+          "pkg_id": "smb_service",
+          "version": "*",
+          "operations": {
+            "deploy": {
+              "command": "deploy.sh"
+            },
+            "status": {
+              "command": "status.sh",
+              "params": ["--status"]
+            },
+            "start": {
+              "command": "start.sh",
+              "params": ["/mnt/glusterfs"]
+            }
+          }
+        }
     }
   }
 }
