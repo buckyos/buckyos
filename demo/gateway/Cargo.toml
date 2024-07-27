@@ -21,7 +21,7 @@ fern = "*"
 chrono = "*"
 warp = "*"
 bytes = "*"
-http = "*"
+http = "0.2.12"
 dirs = "*"
 
 [dev-dependencies]

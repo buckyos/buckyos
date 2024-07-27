@@ -40,7 +40,7 @@ fn init_log_config() {
         simplelog::WriteLogger::new(
             log::LevelFilter::Info,
             config,
-            std::fs::File::create("backup-server.log").unwrap(),
+            std::fs::File::create("/tmp/backup-server.log").unwrap(),
         ),
     ])
     .unwrap();
@@ -238,6 +238,7 @@ async fn backup_etcd_process(etcd_servers: String, backup_task_mgr: BackupTaskMg
                 .duration_trunc(chrono::TimeDelta::minutes(10))
                 .expect("Invalid time");
             let end_time = start_time + chrono::TimeDelta::minutes(3);
+            log::info!("time test: start: {}, end: {}", start_time, end_time);
             (start_time, end_time)
         } else {
             let start_time = Local.from_utc_datetime(
@@ -256,10 +257,12 @@ async fn backup_etcd_process(etcd_servers: String, backup_task_mgr: BackupTaskMg
         };
 
         let current_time = Local::now();
+        log::info!("start: {}, end: {}, current: {}", start_time, end_time, current_time);
         if current_time >= start_time
             && current_time <= end_time
             && current_time - last_backup_time >= TimeDelta::seconds(5 * 3600)
         {
+            log::info!("will start backup etcd once.");
             match backup_etcd_once(etcd_servers.as_str(), backup_task_mgr.clone()).await {
                 Ok(_) => {
                     last_backup_time = current_time;
@@ -271,7 +274,7 @@ async fn backup_etcd_process(etcd_servers: String, backup_task_mgr: BackupTaskMg
         }
 
         // Sleep for 1 hour before checking again
-        tokio::time::sleep(Duration::from_secs(3600)).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
     }
 }
 

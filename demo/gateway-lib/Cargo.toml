@@ -10,7 +10,7 @@ log = "*"
 tokio = { version = "*", features = ["full"] }
 async-trait = "*"
 serde = { version = "*", features = ["derive"] }
-http = "*"
+http = "0.2.12"
 serde_json = "*"
 reqwest = { version = "*", features = ["json"] }
 anyhow = "*"
