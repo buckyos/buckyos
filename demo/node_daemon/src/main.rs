@@ -120,7 +120,7 @@ fn init_log_config() {
         WriteLogger::new(
             LevelFilter::Info,
             config,
-            File::create("node_daemon.log").unwrap(),
+            File::create("/tmp/node_daemon.log").unwrap(),
         ),
     ])
     .unwrap();
@@ -448,6 +448,8 @@ async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig)
         })?;
     let sys_cfg = Arc::new(&sys_cfg);
     let node_config = get_node_config(node_identity, Arc::clone(&sys_cfg)).await?;
+
+    log::info!("node_config:{:?}", node_config);
 
     //try_backup_etcd_data()
     etcd_mgr::try_report_node_status(node_identity, Arc::clone(&sys_cfg));

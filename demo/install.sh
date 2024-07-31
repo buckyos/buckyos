@@ -214,7 +214,8 @@ create_zone_local_cfg() {
 {
     "zone_id" : "$1",
     "etcd_servers":["$2","$3","$4"],
-    "etcd_data_version":0
+    "etcd_data_version":0,
+    "backup_server_id": "http://47.106.164.184"
 }
 EOF
 )
@@ -991,7 +992,6 @@ EOF
 	          ]
 	         }
 	       }
-	     }
 	  },
 	 "backup_service": {
        "target_state": "Running",
@@ -1015,6 +1015,7 @@ EOF
          }
        }
      }
+   }
   },
   "$node_2": {
     "services": {
@@ -1137,6 +1138,7 @@ EOF
 }
 EOF
 )
+	# echo "zone-node-config save path: $data_path, content: $zone_node_config_template"
 	ensure sudo rm -f "$data_path/zone_node_config.yml"
 	ensure sudo echo -e "$zone_node_config_template" > "$data_path/zone_node_config.yml"
 	ensure $buckycli import_zone_config -f "$data_path/zone_node_config.yml"
