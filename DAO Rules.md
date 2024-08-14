@@ -1,16 +1,14 @@
-
-
-## BuckyOS DAO Establishment
+# BuckyOS DAO Rules
 
 "Open source organizations have a long history and brilliant achievements. Practice has proved that an open source organization can achieve the goal of writing better code only by working in the virtual world. We believe that software development work is very suitable for DAO. We call this DAO for decentralized organizations to jointly develop software as SourceDAO." ---- from the White Paper of CodeDAO (https://www.codedao.ai)
 
 According to the design of SourceDao, we need to determine the following key matters before the official deployment of the Buckyos DAO contract:
 
-### DAO official website
+## DAO official website
 
 https://dao.buckyos.org
 
-### DAO Token Info
+## DAO Token Info
 
 - Ticker: BDT (Buckyos Dao Token)
 - Total Supply: 2.1 billion
@@ -18,21 +16,20 @@ https://dao.buckyos.org
 - Blockchain: Polygon
 - Contract Address: (to be deployed)
 
-### BuckyOS Release Plan
+## BuckyOS Release Plan
 
-#### 2024
+### 2024
 
 - **0.1 Demo:** 2.5% (Done)
-- **0.2 PoC:** 2.5%
-- **0.3 Pre-Alpha:** 5% (First complete version)
+- **0.2 Pre-Alpha1:** 2.5%
+- **0.3 Pre-Alpha2:** 5% (First complete version)
 - **0.4 Alpha:** 2.5% (2024 Q4)
 
-#### 2025
+### 2025
 
 - **0.5 Beta:** 2.5%
 - **0.6 RC:** 5% (First public release version)
 - **0.7 First Release:** 2.5% (2025 Q3)
-
 
 ## BuckyOS DAO Rules Introduction
 
@@ -128,74 +125,16 @@ Based on the project management module provided by SourceDAO, explore a new open
 
 Difficulty is expressed in the mode of requirement engineer level * time (in weeks, less than 1 week is counted as 1 week). 1 week of work time is calculated as 20 hours.
 
-## Demo current progress
-
-- [x] System Architecture Design,@waterflier,A8
-- Kernel Moels
-  - [x] node_daemon,@waterflier,A8
-  - Name Service System,@wugren
-    - [x] Name Client,@wugren,A2
-      - [x] DNS Backend,@wugren,S2
-      - [ ] ENS Backend,A2
-    - [x] buckycli nameservice command,@wugren,S1
-  - [x] cyfs-gateway,@lurenpluto,A3
-    - [x] gateway-core (socks proxy),@lurenpluto, A2
-    - [x] basic tunnel support,@lurenpluto,A2
-    - gateway-front
-      - [x] Support EndPoint mapping,@lurenpluto,S1
-    - [x] gateway-lib,@lurenpluto,S2
-    - [x] buckycli gateway commands,@lurenpluto,S1
-  - system config(base on etcd)  
-    - [x] system-config lib,@alexsunxl,A1
-    - [x] etcd installation,@alexsunxl,A2
-    - [x] etcd's automatic backup and recovery,@alexsunxl,@streetycat,A2
-    - [x] etcd startup phase with cyfs-gateway integration,@lurenpluto,A1
-  - pkg system
-    - [x] pkg system design,@waterflier,A2
-    - [x] pkg_libs,@glen0125, A2
-    - [x] pkg_loader,@glen0125, A1
-    - [x] pkg_installer,@glen0125, A2
-    - [x] pkg_repo_http_server,@glen0125, S4
-    - [x] buckycli pkg commands,@glen0125, S1
-  - backup system
-    - [x] backup lib(client),@streetycat, A2
-    - [x] backup task mgr,@streetycat,A6
-    - backup servers
-      - [x] http backup server,@streetycat,S2  
-- Kernel Services
-  - DFS
-    - glusterFS
-      - [x] Installation package production,@glen0125,A2
-      - [x] gulsterFS core research ,@glen0125,@wugren,A4
-      - [x] glusterFS and cyfs-Gateway Integration,@wugren,S2
-      - [x] Integrated OpenVPN (demo only),@wugren,S2
-    - DCFS (pre-research),@photosssa,@waterflier
-      - [x] Infrastructure design,@waterflier,A2
-      - [x] Adjust disk-map for small clusters，@photosssa,A4
-      - [x] Performance research with fuse integration，@photosssa,A2
-- Frame Services
-  - [x] smb-service,@wugren,A1
-  - [x] k8s-service,@wugren,A2
-  - [ ] http-fs-service,A1
-- System Tools
-  - [x] buckycli,@alexsunxl,@wugren,A2
-  - [x] demo install.sh,@wugren,A2
-  - [x] demo quickstart.md @waterflier,A1
-  - [x] docker build files,@wugren,S1
-  - [ ] dev scripts,
-- BuckyOS DAO System
-  - [x] DAO official website,@alexsunxl,S2
-  - [x] DAO Contract,@weiqiushi,A4
 
 ## Token Allocation Calculation Based on Contributions
 
-Based on the statistics of work completed during the DEMO phase, we can calculate each individual's contribution proportion for this version according to the following rules (the DEMO does not consider the accuracy of plan execution and delivery quality factors):
+Based on the statistics of work completed during the DEMO phase, we can calculate each individual's contribution proportion for this version according to the following rules:
 
 - The workload of tasks is divided into A (Architect level) and S (Software Engineer level), with the number following each letter representing the required work weeks. The minimum time requirement for each task is 1 week.
 - The score coefficient for A-level work is 3, and for S-level work, it is 2.
 - If multiple people collaboratively complete a task (which is not encouraged), unless otherwise specified, the score is equally distributed among them.
 
-Using these rules, we can calculate each individual's contribution for the DEMO phase.
+Using these rules, we can calculate each individual's contribution for the DEMO phase as a exsample.
 
 - **waterflier**
   - System Architecture Design: 24 (A8)
@@ -289,12 +228,5 @@ Using these rules, we can calculate each individual's contribution for the DEMO 
 
 These percentages reflect each individual's workload proportion relative to the total project workload.
 
-## BuckyOS Committee
-
-According to the SourceDAO rules, an officially operating SourceDAO requires a 3-person committee. 
-
-Once the DEMO is officially released, the BuckyOS DAO contract will go live. My proposal is to have the first committee composed of the `top three contributors` based on the DEMO phase contributions.
 
 
-----------------------
-Everyone is welcome to make an opinion. We plan to formally deploy a contract with the Buckyos DAO after the DEMO is released, and to issue BDT to the contributor of the DEMO stage according to the contribution ratio of the DEMO stage.
