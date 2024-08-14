@@ -37,7 +37,7 @@ SourceDAO provides a comprehensive design for DAO-ification of open source proje
 
 (Complete rules can be viewed on the official website of Buckyos Dao)
 
-###  Operation Process
+### Operation Process
 
 1. **Create an organization:** Define goals, initial BDT distribution, initial members, and establish the initial Roadmap.
 2. **Roadmap:** Link system maturity to token release. More mature systems release more tokens. The Roadmap outlines project phases: PoC, MVP, Alpha, Beta, Formula (Product Release), each with a BDT release plan.
@@ -91,11 +91,11 @@ BuckyOS is an open source organization, so engineers are the main members of the
 
 ## Decision-Making Mechanism
 
-#### Transaction Classification:
+### Transaction Classification:
 
 DAO transactions are classified into internal project transactions, routine DAO transactions, important transactions, and major transactions. Internal project transactions are decided by the project lead or designated responsible individuals, routine DAO transactions are decided by committee voting, and important and major transactions are decided by bidding from all BDT holders. The difference between important and major transactions lies in the minimum voting threshold (the amount of BDT available for voting). Important transactions require a minimum voting threshold of 30% of the available BDT, while major transactions require a minimum voting threshold of 40%.
 
-#### Decision-Making Process:
+### Decision-Making Process:
 
 Except for internal project transactions, all DAO transactions follow the following process:
 
@@ -126,7 +126,7 @@ Based on the project management module provided by SourceDAO, explore a new open
 Difficulty is expressed in the mode of requirement engineer level * time (in weeks, less than 1 week is counted as 1 week). 1 week of work time is calculated as 20 hours.
 
 
-## Token Allocation Calculation Based on Contributions
+## Token Reward Rules Based on Contributions
 
 Based on the statistics of work completed during the DEMO phase, we can calculate each individual's contribution proportion for this version according to the following rules:
 

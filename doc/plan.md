@@ -1,127 +1,189 @@
-# buckyos 系统研发计划
+# BuckyOS Current Development Plan PoC (Pre-Alpha1)
 
-## 系统的3个阶段目标（不包括AI部分）的主要需求
+## Overview of the Overall Plan
 
-### 第一阶段 私有存储集群 (Alpha版规划)
+### Phase 1: Private Storage Cloud (Alpha, 2024)
 
-- 核心是集群管理、存储系统的优化、备份与恢复,文件的分享。这些核心功能都能在通过 App/浏览器 + 设备的方式，提供完备已用的UI。（可以参考iStoreOS)。尤其是站在与NAS对标的角度，要做非常完善的产品设计，可以支持产品销售。（不扣分）
+- The core focuses are cluster management, storage system optimization, backup and recovery, and file sharing. All these core functions should be provided with a complete and usable UI through an app/browser + device approach (similar to iStoreOS). Especially from the perspective of competing with NAS, we need very comprehensive product design to support product sales.
 
-- 通过设备销售预设的3个节点是：存储服务器，随身Wifi，公网Gateway。随身Wifi的基本功能是在家的时候作为第二节点，存储空间较小，主要用于“热数据的副本”。其基础操作系统大概率是Android。但用户随时携带时可用电池供电，在弱网（比如飞机上）可对文件系统提供只读访问，能读取最近使用的热数据和最近刚刚写入的新数据。这在大部分情况下都是够用的。
+- The three pre-configured nodes through device sales are: storage server, portable WiFi (SBOX), and public Gateway. The basic function of the portable WiFi is to serve as a second node at home, with a smaller storage capacity, mainly for "hot data replicas." Its base operating system is likely Android. However, when carried by the user, it can be powered by a battery, and in a weak network (e.g., on an airplane), it can provide read-only access to the file system, allowing access to recently used hot data and newly written data. This should be sufficient in most cases.
 
-- 这是系统的第一个正式版本，因此我们还需要建立完整的系统内核框架，尤其是u/k区分，以及完备的基础权限控制体系，基础系统管理上支持用户态app.server的安装和更新。
+- This is the first official version of the system, so we need to establish a complete system kernel framework, particularly the u/k separation, as well as a comprehensive basic permission control system, and support user-space app.server installation and updates in the basic system management.
 
-- 备份系统和DMC打通后，可以提供真正的去中心备份生态。Token激励是我们首个版本可以销售的主要加分项。
+- Once the backup system is integrated with DMC, it can provide a truly decentralized backup ecosystem. Token incentives will be the main selling point of our first version.
 
-- 文件的分享通过应用的方式来开发，这是我们早期主要的拉新手段。文件的公网发布需要用户在公网有Gateway Node，可以给我们带来一些潜在的订阅收入。
+- File sharing will be developed through applications, which will be our main method of attracting new users in the early stages. Public file publishing requires the user to have a Gateway Node on the public network, which could bring us some potential subscription revenue.
 
-- 我们的系统架构应该已于在传统的云端运行，可以和容易的在云端创建一个规模的集群。并能通过备份恢复逻辑从云端迁移到边缘。
+- Our system architecture should already be running in the traditional cloud, capable of easily creating a cluster on the cloud and migrating from the cloud to the edge through the backup and recovery logic.
 
-- 我们需要在生产环境下细粒度的使用GlusterFS,这需要我们能明确的通过配置，实现我们所需要的核心功能。我们自己研发的dcfs-lite会是我们的核心技术护城河，专为私有存储云场景设计：配置更灵活，运行更稳定，运维更简单，性能更好。
+- We need to use GlusterFS in production environments with fine granularity. This requires us to clearly achieve our core functionality through configuration. Our self-developed dcfs-lite will be our core technical moat, specifically designed for private storage cloud scenarios: more flexible configuration, more stable operation, simpler maintenance, and better performance.
 
-## 第二阶段 扩展：软件上兼容OpenDAN，硬件上可以与安防(AI)摄像头结合 
+This phase is planned to be completed in 2024 through the following minor versions:
 
-- 主要通过外部合作的方式完成，考验我们系统的可扩展性
-- 该场景有传统AI+GenAI的新能力需求。我们的Library 应用要支持用AI管理海量的多媒体文件。
-- 将OpenDAN所需要的AI Compute Kernel功能集成。
+- **0.1 Demo:** 2.5% (Done)
+- **0.2 PoC (Pre-Alpha1):** 2.5% (🔥🔥🔥 `Current Version`)
+- **0.3 Pre-Alpha2:** 5% (First complete version)
+- **0.4 Alpha:** 2.5% (Available for user testing, Q4 2024)
 
-## 第三阶段 持续完善：与下载、串流等流量业务整合 
+### Phase 2: Integration of AI (Beta, Q2 2025)
 
-- NAS必然是要拥有下载功能的。我们肯定要基于buckyos的app.service框架首先移植一个下载软件
-- 强大的RTC基础能力，是未来具有实时感知能力的本地AI Agent的重要基础能力。
-- 充分发挥P2P的经验优势，在这个方向上会从实际场景出发继续整合BDT
-- 传输证明 + Token化的BitTorrent，实现 种子文件分享、下载加速，上传的Token化。
-- 传统的VPN业务，通过传输证明支持雨燕的业务 (Gateway向下兼容今天的Clash生态），希望能承接这个庞大的，已有生态的大量用户。
-- 云主机：在VPN的基础上，进一步扩展到云主机生态。用户不但可以更简单的RDP连接自己的设备，还可以更好的出借自己的设备。
-- VPN和云主机业务主要通过外部合作方式推进
+System integration with the OpenDAN Framework, with hardware integration with security (AI) cameras.
 
+- Integrate the AI Compute Kernel functionality required by OpenDAN, upgrading from a Personal Server to a Personal AI Server, testing our system's scalability.
+- Meet the demand for new capabilities combining traditional AI with GenAI. Our Library application should support AI management of vast multimedia files.
+- Integrate with traditional security cameras, achieving more privacy-controlled and long-term data storage, and perform semantic analysis of large amounts of raw data based on AI.
 
-## Alpha阶段的主要组件
+### Phase 3: Perfecting Key Application Development (Official Version, Q2 2026)
 
-- Kernel Moels
-  - [ ] *node_daemon
-    - [ ] *app & service loader,实现正式的权限管理和容器隔离
-    - [ ] node task execute system,通常用来执行运维任务，如果绕不过去就要实现
-  - system config(base on etcd)  
-    - [ ] *system-config lib,@alexsunxl,A1
-    - [ ] *ACL System
-  - system status 用于实现系统状态监控
-  - kRPC
-    - [ ] *kRPC libs
-    - [ ] *授权认证中心
-  - kLog
-    - [ ] *kLog lib
-    - [ ] *kLog server
-  - kMQ
+AI-driven media processing. Support for download, streaming, and other traffic services.
+
+- Organizing and processing photos and videos is an eternal theme. With the foundation of data storage and AIGC, we can collaborate with more digital image processing teams to create the next-generation personal media center.
+- NAS must have download capabilities.
+- Strong RTC capabilities are the foundation for a future local AI Agent with real-time sensing capabilities. Leveraging P2P expertise, we will continue to integrate BDT based on practical scenarios.
+- Transmission proof + Tokenization of BitTorrent, enabling seed file sharing, download acceleration, and Tokenization of uploads.
+- Traditional VPN business, supporting PCDN business through transmission proof (cyfs-gateway downward compatibility with today's Clash ecosystem), aiming to attract a large number of users from this vast existing ecosystem.
+- Cloud hosting: Further expanding the cloud hosting ecosystem based on VPN. Users can not only connect to their devices more easily via RDP but also securely lend out their limited devices.
+- This phase focuses on new application development, striving to complete it through external collaboration.
+
+## Overall Plan for the Alpha Phase
+
+Functions marked with `*` are those I believe must be completed in the next release version 0.2 (PoC). Functions without `*` may depend on some basic components.
+
+- Kernel Models
+  - [ ] *node_daemon (A4 @waterflier)
+    - [ ] *app & service loader (A4), implement formal permission management and container isolation
+    - [ ] node task execute system (A4), usually used for maintenance tasks; implement if unavoidable
+  - system config (A2)
+    - [ ] *system-config lib (A2)
+    - [ ] *ACL libs (A4 @waterflier), basic ACL usage and management
+  - system status for system status monitoring
+  - kRPC @waterflier
+    - [ ] *kRPC libs (A4)
+    - [ ] *Authorization center (A2)
+  - kLog, a reliable logging library, is the foundation for automatic fault diagnosis in the system.
+    - [ ] *kLog lib (A4), defines the basic interfaces for kLog output and reliable behavior logic, can handle server downtime
+    - [ ] *kLog server (S2), PoC version should implement a simple version to ensure reliability
+  - kMQ message queue, supports custom event systems
   - pkg system
-    - [ ] *完善libs，便于其它组件使用
-    - [ ] 与task system的集成
-    - [ ] *与ACL系统集成
+    - [ ] *Improve lib (A2) to facilitate use by other components
+    - [ ] Integrate with the task system
 - Kernel Services
-  - [ ] *scheduler
-  - [ ] *Task Manager
+  - [ ] *scheduler (A4 @waterflier), a key module to be implemented in the PoC version, automatically generating node_config and establishing an initial extensible framework
+  - [ ] *Task Manager (A4), providing a general stateful background task management service, supporting reliable execution of critical tasks
   - DFS
-    - [ ] *glusterFS 与ACL集成
-    - DCFS (单独列出)
-  - dApp manager
-    - [ ] *basic API support（源管理,已安装管理,权限配置，安装器）
-    - [ ] *in-zone pkg repo server
-  - backup system （单独列出）
-  - cyfs-gateway (单独列出)
+    - [ ] *glusterFS (A2) integrated with ACL
+    - DCFS (listed separately)
+  - dApp manager, the apt tool in BuckyOS, provides basic reliable pkg management capabilities for the system.
+    - [ ] *basic API support (A4), source management, installed management, permission configuration, installer
+    - [ ] *CLI tools (S4), command-line tools similar to apt based on basic API
+    - [ ] *in-zone pkg repo service (S4), a stable repo service running within the zone
+    - [ ] *Installer UI (A4), meets the minimum requirements for dApp permission control in the system
+  - backup system (listed separately)
+  - cyfs-gateway (listed separately)
 - Frame Services
-  - [ ] *smb-service，与ACL集成
-  - [ ] *k8s-service,与ACL集成
-  - [ ] *http-fs-service,与ACL集成
+  - [ ] *smb-service (A2), integrated with ACL
+  - [ ] k8s-service, integrated with ACL
+  - [ ] *http-fs-service (A2), integrated with ACL
   - [ ] Notify Manager
-  - [ ] *User Inbox
+  - [ ] *User Inbox (S4), the user's system inbox, where all applications can send messages
   - [ ] dApp Store
-  - [ ] *Contorl panel 根据界面需求，提供基本的系统管理功能（含Web页）
-- CyberChat App（暂时命名）
-  - [ ] *账号管理
-  - [ ] *名字管理
-  - [ ] *zone管理
-  - [ ] *存储管理(纯展示)
-  - [ ] *File UI
+  - [ ] *Control panel (S8) Provide basic system management functions according to the requirements document (including related web pages), can be further divided.
+- [ ] *CyberChat App (A4), BuckyOS control app modified based on the CYFS wallet app.
+  - [ ] *Account management (S4), mainly local DID account management, much logic can be reused from CYFS wallet
+  - [ ] *Name management (S4), manage friendly names owned
+  - [ ] *Zone management (S2), support relevant requirements of the first version
+  - [ ] *Storage management (S2), pure display in the first version
+  - [ ] *File UI (S4), provide basic UI to access DFS
 - Web2.5 Services
-  - [ ] *Web3 通用lib设计
-  - [ ] *账号管理+签名服务(含签名历史记录)
-  - [ ] *did解析与名字解析 (基于cyfs-gateway)
-  - [ ] 名字申请与管理
-  - [ ] gateway服务(订阅管理)
-  - [ ] *http backup server
-  - [ ] 云端zone支持:两种思路
-  - [ ] Web2.5 => Web3 迁移
-- *BuckyOS Backup Suite
+  - [ ] *BuckyOS Web general lib design (A4 @waterflier), the basic library used by all web pages
+  - [ ] *Account management + signature service (A2), including signature history
+  - [ ] *did resolution and name resolution (S2), mainly implemented in cyfs-gateway, this mainly handles formal online operations
+  - [ ] *Name application and management (S4), allowing users to easily and freely own a $name.buckyos.org name, obtained during account registration
+  - [ ] gateway service (subscription management)
+  - [ ] *http backup server (S2), mainly functions from BuckyOS Backup Suite, simple online operation at first (with size restrictions), followed by subscription implementation
+  - [ ] Cloud zone support: two research approaches
+  - [ ] Support migration from Web2.5 to Web3
+- [ ] *BuckyOS Backup Suite (independent product with separate points, additional rewards from the DMC fund), an independent cross-platform backup software, refer to its independent PRD.
+  - [ ] Backup Service
   - [ ] UI
-  - [ ] backup basic libs
-  - [ ] http target client
+  - [ ] Backup basic libs
+  - [ ] http DAV target client
+  - [ ] http DAV target server
   - [ ] dmc target client
   - [ ] dmc target server
-- CYFS Gateway
-  - [ ] *支持buckyos的demo需求: 基于TAP Device的VPN
-- CI/CD *支持
-  - [ ] *nightly CI/CD系统
-  - [ ] *快速云端开发环境搭建
-- DCFS
-- SDK
+- [ ] *CYFS Gateway (independent product with separate points), detailed requirements document is still being written
+  - [ ] *Support buckyos demo needs:
 
+ TAP Device-based VPN, allowing needed services to work transparently with the main OOD in the same LAN
+  - [ ] *Expose FrameService/dApp services to the outside of the Zone securely via reverse proxy
+  - [ ] *Establish a basic framework, including rule engine, tunnel management, and support for reverse proxy https server
+  - [ ] *cyfs-nameservice service, supporting our name system and did-document system
+- CI/CD Support
+  - [ ] *Nightly CI/CD system (A4), based on Github Action
+  - [ ] *Rapid cloud development environment setup (A4), referencing Github's CodeSpace
+  - [ ] Rapid independent CI/CD environment setup based on specific branches
+  - [ ] Set up typical responsible test environments
+- DCFS Formal architecture design is ongoing based on the Demo phase research results.
+- SDK Initially integrated according to internal needs, formal planning will begin in version 0.3.
 
-### ALC
+(TODO: Continuously improve the brief introduction of each module)
 
-基础权限: 
-Kernel 可以访问所有数据，拥有所有权限,可以被所有人依赖
-Frame 只有自己容器的权限，可以被所有人依赖
-dApp 只有自己的权限，不能被人依赖（因为会有潜在的数据泄露风险），dApp安装时可以要求依赖frame service,一并安装
+## Project Management Process
 
+0.2 PoC is the first relatively official version of BuckyOS. To ensure quality, we have formulated the following project management process based on the actual situation:
 
+### Step 1: Read Existing Documents and Discuss
 
+- Understand the requirements of the current version
+- Understand the overall system architecture of BuckyOS
+- Understand the current version's plan, module division, functional boundaries of each module, and implementation ideas
 
+If you have any questions while reading the documents, you can discuss them by creating an issue.
 
+The issue should contain a clear question, and you should try to provide your own understanding or opinion before the discussion.
 
+### Step 2: Apply to Become a Module Lead
 
+Understand the potential benefits of becoming a project lead. This document has listed the expected points for relevant modules (which is usually the minimum difficulty of the component). You can choose components that you are proficient in or that offer higher rewards for further research, based on BuckyOS DAO Rules to estimate expected rewards.
+  
+Once you have decided on the module you want to work on, you can write a `proposal.md`. The document should contain two main sections, with no length limit, and should be as concise as possible:
 
+1. What this module will do (functional boundaries)
+2. How you plan to implement it and approximately how long it will take
 
+Since multiple people may apply for the same module, you can also highlight your advantages in becoming the lead in this document. After writing it, initiate a PR and wait for the version lead's review.
 
+### Step 3: PR Review
 
+The version lead (or other authorized long-term contributors) will discuss with the applicant in the PR through comments. Once an agreement is reached, the PR will be merged, and the PR submitter will become the module lead. If multiple people apply for the same module, the version lead will choose one person to become the lead based on the discussion results.
 
+### Step 4: Write a More Detailed Plan
 
+After becoming a module lead, the lead needs to continue submitting the `plan.md` document (no longer required through PR). This document should break down the plan in as much detail as possible and provide a more accurate time estimate. It can also adjust the points for this module according to the plan. The `plan.md` should include:
 
+1. Necessary document writing plan
+2. Development plan
+3. Testing plan
+
+The module lead or version lead may initiate an issue to discuss the `plan.md`. After the discussion, the version lead will usually update the module points in the version plan (this document).
+
+### Step 5: Enter Development and Testing Phase
+
+Once in the development phase, the module lead can develop in their branch. We also allow direct development on the main branch. However, note that submissions on the main branch must pass the nightly CI/CD tests. Submissions that do not pass the test will be DISSed by everyone~
+
+The version lead will update the current version chart on the Github Project once a week and provide risk warnings. The module lead can proactively update the status on the Project.
+
+### Step 6: Announce Development Completion
+
+After the module lead believes the module has been completed and passed testing, they can submit a `test_report.md` in the PM directory, indicating that the component has been completed and is waiting for the version release.
+At this stage, focus on bug issues and resolve them promptly.
+
+### Step 7: Version Release and Settlement
+
+After all modules are completed, the version lead will push for integration and experience testing. When the version lead feels it is appropriate, they will announce the version Release. If no major issues arise within a week, it will enter the DAO settlement stage according to the rules. After settlement, everyone can receive the corresponding BDT rewards based on their actual points.
+
+## Discussion
+
+If you have any questions or suggestions about this document, please discuss them in the following issue:
+
+[https://github.com/buckyos/buckyos/issues/15](https://github.com/buckyos/buckyos/issues/15)
