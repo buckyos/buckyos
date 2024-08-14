@@ -2,7 +2,8 @@
 
 ## 系统的3个阶段目标（不包括AI部分）的主要需求
 
-### 第一阶段 私有存储集群 
+### 第一阶段 私有存储集群 (Alpha版规划)
+
 - 核心是集群管理、存储系统的优化、备份与恢复,文件的分享。这些核心功能都能在通过 App/浏览器 + 设备的方式，提供完备已用的UI。（可以参考iStoreOS)。尤其是站在与NAS对标的角度，要做非常完善的产品设计，可以支持产品销售。（不扣分）
 
 - 通过设备销售预设的3个节点是：存储服务器，随身Wifi，公网Gateway。随身Wifi的基本功能是在家的时候作为第二节点，存储空间较小，主要用于“热数据的副本”。其基础操作系统大概率是Android。但用户随时携带时可用电池供电，在弱网（比如飞机上）可对文件系统提供只读访问，能读取最近使用的热数据和最近刚刚写入的新数据。这在大部分情况下都是够用的。
@@ -17,12 +18,14 @@
 
 - 我们需要在生产环境下细粒度的使用GlusterFS,这需要我们能明确的通过配置，实现我们所需要的核心功能。我们自己研发的dcfs-lite会是我们的核心技术护城河，专为私有存储云场景设计：配置更灵活，运行更稳定，运维更简单，性能更好。
 
-## 第二阶段 扩展：与安防(AI)摄像头结合 
+## 第二阶段 扩展：软件上兼容OpenDAN，硬件上可以与安防(AI)摄像头结合 
+
 - 主要通过外部合作的方式完成，考验我们系统的可扩展性
 - 该场景有传统AI+GenAI的新能力需求。我们的Library 应用要支持用AI管理海量的多媒体文件。
 - 将OpenDAN所需要的AI Compute Kernel功能集成。
 
-## 第三阶段 完善：与下载、串流等流量业务整合 
+## 第三阶段 持续完善：与下载、串流等流量业务整合 
+
 - NAS必然是要拥有下载功能的。我们肯定要基于buckyos的app.service框架首先移植一个下载软件
 - 强大的RTC基础能力，是未来具有实时感知能力的本地AI Agent的重要基础能力。
 - 充分发挥P2P的经验优势，在这个方向上会从实际场景出发继续整合BDT
@@ -32,83 +35,84 @@
 - VPN和云主机业务主要通过外部合作方式推进
 
 
-## Kernel组件
+## Alpha阶段的主要组件
 
-### cyfs-ns
-最好的开源DNS客户端(dnsmasq的上位替代)
+- Kernel Moels
+  - [ ] *node_daemon
+    - [ ] *app & service loader,实现正式的权限管理和容器隔离
+    - [ ] node task execute system,通常用来执行运维任务，如果绕不过去就要实现
+  - system config(base on etcd)  
+    - [ ] *system-config lib,@alexsunxl,A1
+    - [ ] *ACL System
+  - system status 用于实现系统状态监控
+  - kRPC
+    - [ ] *kRPC libs
+    - [ ] *授权认证中心
+  - kLog
+    - [ ] *kLog lib
+    - [ ] *kLog server
+  - kMQ
+  - pkg system
+    - [ ] *完善libs，便于其它组件使用
+    - [ ] 与task system的集成
+    - [ ] *与ACL系统集成
+- Kernel Services
+  - [ ] *scheduler
+  - [ ] *Task Manager
+  - DFS
+    - [ ] *glusterFS 与ACL集成
+    - DCFS (单独列出)
+  - dApp manager
+    - [ ] *basic API support（源管理,已安装管理,权限配置，安装器）
+    - [ ] *in-zone pkg repo server
+  - backup system （单独列出）
+  - cyfs-gateway (单独列出)
+- Frame Services
+  - [ ] *smb-service，与ACL集成
+  - [ ] *k8s-service,与ACL集成
+  - [ ] *http-fs-service,与ACL集成
+  - [ ] Notify Manager
+  - [ ] *User Inbox
+  - [ ] dApp Store
+  - [ ] *Contorl panel 根据界面需求，提供基本的系统管理功能（含Web页）
+- CyberChat App（暂时命名）
+  - [ ] *账号管理
+  - [ ] *名字管理
+  - [ ] *zone管理
+  - [ ] *存储管理(纯展示)
+  - [ ] *File UI
+- Web2.5 Services
+  - [ ] *Web3 通用lib设计
+  - [ ] *账号管理+签名服务(含签名历史记录)
+  - [ ] *did解析与名字解析 (基于cyfs-gateway)
+  - [ ] 名字申请与管理
+  - [ ] gateway服务(订阅管理)
+  - [ ] *http backup server
+  - [ ] 云端zone支持:两种思路
+  - [ ] Web2.5 => Web3 迁移
+- *BuckyOS Backup Suite
+  - [ ] UI
+  - [ ] backup basic libs
+  - [ ] http target client
+  - [ ] dmc target client
+  - [ ] dmc target server
+- CYFS Gateway
+  - [ ] *支持buckyos的demo需求: 基于TAP Device的VPN
+- CI/CD *支持
+  - [ ] *nightly CI/CD系统
+  - [ ] *快速云端开发环境搭建
+- DCFS
+- SDK
 
-- 可以独立工作，可以是软路由上dns server的首选
-- 定义`可信名字查询框架`，能能持续扩展支持多种主流的去中心名字协议（ens)
-- 能很好的与相关应用进行配合（比如fake-ip模式）
+
+### ALC
+
+基础权限: 
+Kernel 可以访问所有数据，拥有所有权限,可以被所有人依赖
+Frame 只有自己容器的权限，可以被所有人依赖
+dApp 只有自己的权限，不能被人依赖（因为会有潜在的数据泄露风险），dApp安装时可以要求依赖frame service,一并安装
 
 
-### cyfs-gateway
-最好的 vpn client，是clash-core的上位替代. 提供了TCP链接的上位替代：从面向地址升级到面向可信身份
-最好的 NDN网关，任何应用都可以通过简单的http接口，访问CID Base的多源下载网络
-更好的利用你的上传带宽，不管是vpn还是upload挖矿，都可以通过扩展支持
- 
-
-### node_daemon
-
-### etcd control
-
-### system-config
-
-### ACL
-
-### kRPC
-
-### kLog
-
-## Frame Servcie组
-
-
-### 分布式存储
-
-### 调度器
-
-### 应用容器 
-
-### k8s
-
-## CI/CD 相关
-高质量的自动化测试与发布
-
-## System UI
-
-## 产品相关
-
-
-
-
-
-
-## 激活与Zone管理
-1. Descktop Web激活 
-2. Mobile App激活 （优先）
-
-## 文件系统的使用
-1. 提供标准的smb://
-2. Personal Station (和上述激活/app绑定)
-3. Android TV App(Personal Station的 App版本)
-
-## 日常备份
-- 配置备份方式
-- 选择合适的备份服务，并进行预支付
-- 管理备份任务
-- 配置闲置空间以进行DMC挖矿
-
-## 存储空间的运维
-- 存储空间的健康度展示（设备损害会进行健康度提示）
-- 同过添加设备扩容
-- 删除损坏的设备
-- 替换损坏的设备（返厂维修环节）
-- 自动从备份中恢复
-
-## Gateway的配置
-- Enable公网Gateway:自建 or 订阅
-- Gateway的计费 
-- 修改公网Gateway
 
 
 
