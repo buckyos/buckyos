@@ -73,7 +73,7 @@ Functions marked with `*` are those I believe must be completed in the next rele
   - DFS
     - [ ] *glusterFS (A2) integrated with ACL
     - DCFS (listed separately)
-  - dApp manager, the apt tool in BuckyOS, provides basic reliable pkg management capabilities for the system.
+  - dApp manager, the `apt` tool in BuckyOS, provides basic reliable pkg management capabilities for the system.
     - [ ] *basic API support (A4), source management, installed management, permission configuration, installer
     - [ ] *CLI tools (S4), command-line tools similar to apt based on basic API
     - [ ] *in-zone pkg repo service (S4), a stable repo service running within the zone
@@ -85,7 +85,7 @@ Functions marked with `*` are those I believe must be completed in the next rele
   - [ ] k8s-service, integrated with ACL
   - [ ] *http-fs-service (A2), integrated with ACL
   - [ ] Notify Manager
-  - [ ] *User Inbox (S4), the user's system inbox, where all applications can send messages
+  - [ ] *msg_bus(S4), the user's system inbox, where all applications can send messages
   - [ ] dApp Store
   - [ ] *Control panel (S8) Provide basic system management functions according to the requirements document (including related web pages), can be further divided.
 - [ ] *CyberChat App (A4), BuckyOS control app modified based on the CYFS wallet app.
