@@ -1,9 +1,16 @@
-# 目标
+## Objectives
 
-1. 兼容基本存储单元超大的存储系统(DMC)
-    - 友好支持打包小文件和分割大文件
-2. 每个存储单元存储的数据应该是完备的，读取本单元数据不依赖其他存储单元，损坏一个存储单元数据不影响其他存储单元。
-    - 各存储块自己保留内部数据的元信息
-3. 接口层兼容传统以文件为单位的存取方式
-4. 本地可存储部分元数据用于加速，但极端情况下可脱离本地数据仅通过账号信息完整地恢复数据。
-5. 可独立运行于多个平台(NAS, PC 等)
+1. Implement backup for binary files (directories).
+2. Support various backup source data forms (local files, different cloud storage providers, DMC, etc.).
+3. Support various backup storage media (local files/external hard drives, different cloud storage providers, DMC, etc.).
+4. Be compatible with large storage systems for basic storage units (DMC).
+    - Friendly support for packaging small files and splitting large files.
+5. Ensure that each storage unit's data is complete; reading data from one unit should not depend on other storage units. Damage to one storage unit should not affect the others.
+    - Each storage block should retain its internal data metadata.
+6. The interface layer should be compatible with traditional file-based access methods.
+7. Local storage of some metadata is allowed for acceleration, but in extreme cases, data should be fully recoverable using only account information without relying on local data.
+8. Should be able to run independently on multiple platforms (NAS, PC, etc.).
+
+## Basic Architecture
+
+![backup](./draft.drawio.png)
