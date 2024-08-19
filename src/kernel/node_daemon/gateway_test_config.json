@@ -1,0 +1,25 @@
+{
+    "config": {
+        "device_id": "etcd1",	
+        "addr_type": "lan"		
+    },
+
+    "known_device": [	
+        {
+            "id": "gateway",
+            "addr": "192.168.100.110",
+            "addr_type": "wan"
+        }
+    ],
+   "service": [{
+        "block": "upstream",
+        "type": "tcp",
+        "addr": "127.0.0.1",
+        "port": 1008
+    }, {
+        "block": "proxy",
+        "addr": "127.0.0.1",
+        "port": 1081,
+        "type": "socks5"
+    }]
+}

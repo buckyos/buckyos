@@ -1,0 +1,13 @@
+[package]
+name = "system_config"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@alexsunxl","@waterflier"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+log = "*"
+serde = "*"
+serde_json = "*"
+etcd-rs = "*"
+url = "*"

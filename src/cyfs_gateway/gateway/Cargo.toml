@@ -1,0 +1,28 @@
+[package]
+name = "gateway"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+gateway-lib = { path = "../gateway-lib" }
+fast-socks5 = "*"
+thiserror = "*"
+log = "*"
+tokio = { version = "*", features = ["full"] }
+async-trait = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+lazy_static = "*"
+clap = "*"
+env_logger = "*"
+fern = "*"
+chrono = "*"
+warp = "*"
+bytes = "*"
+http = "0.2.12"
+dirs = "*"
+
+[dev-dependencies]
+tokio-socks = "*"

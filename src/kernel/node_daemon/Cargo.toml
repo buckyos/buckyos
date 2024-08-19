@@ -1,0 +1,42 @@
+[package]
+name = "node_daemon"
+version = "0.2.1"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# 3rd party dependencies
+toml = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+log = "*"
+simplelog = "*"
+thiserror = "*"
+tokio = { version = "*", features = ["full"] }
+async-trait = "*"
+reqwest = {version = "*", default-features = false, features = ["json", "rustls-tls"]}
+tide = "*"
+regex = "*"
+sha2 = "*"
+base58 = "*"
+futures = "*"
+lazy_static = "*"
+async-recursion = "*"
+version-compare = "*"
+rusqlite = { version = '*', features = ['bundled', 'blob'] }
+chrono = "*"
+num_cpus = "*"
+
+# buckyos common libs
+
+
+# workspace dependencies
+sys-config =  "*"
+name-client =  "*"
+gateway-lib =  "*"
+package-manager =  "*"
+backup-lib =  "*"
+
+

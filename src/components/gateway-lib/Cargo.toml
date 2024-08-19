@@ -1,0 +1,19 @@
+[package]
+name = "gateway-lib"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fast-socks5 = "*"
+thiserror = "*"
+log = "*"
+tokio = { version = "*", features = ["full"] }
+async-trait = "*"
+serde = { version = "*", features = ["derive"] }
+http = "0.2.12"
+serde_json = "*"
+reqwest = { version = "*", features = ["json"] }
+anyhow = "*"
+
+[dev-dependencies]
+env_logger = "*"

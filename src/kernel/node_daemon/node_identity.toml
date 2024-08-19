@@ -1,0 +1,2 @@
+owner_zone = "mynode.site"
+node_id = "etcd1"

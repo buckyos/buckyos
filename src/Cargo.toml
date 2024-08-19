@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+
+members = [
+    #"./components/backup-lib",
+    #"./components/gateway-lib",
+    "./components/name-lib",
+    #"./components/package-manager",
+
+    #"./kernel/node_daemon",
+    "./kernel/sys-config",
+    "./kernel/sys_config_service",    
+    "./kernel/acl",
+]
