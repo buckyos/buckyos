@@ -1,4 +1,4 @@
-## Objectives
+## Goal
 
 1. Implement backup for binary files (directories).
 2. Support various backup source data forms (local files, different cloud storage providers, DMC, etc.).
@@ -14,3 +14,5 @@
 ## Basic Architecture
 
 ![backup](./draft.drawio.png)
+
+\*\* Modules communicate with each other using HTTP protocol calls to decouple dependencies between extension modules, thereby enhancing scalability and stability.
