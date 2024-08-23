@@ -10,4 +10,7 @@ log = "*"
 serde = "*"
 serde_json = "*"
 etcd-rs = "*"
-url = "*"
+lazy_static = "*"
+thiserror = "*"
+
+kRPC ={ path = "../kRPC" }

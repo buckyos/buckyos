@@ -8,7 +8,8 @@ members = [
     #"./components/package-manager",
 
     #"./kernel/node_daemon",
+    "./kernel/kRPC",
+    "./kernel/acl",
     "./kernel/sys-config",
     "./kernel/sys_config_service",    
-    "./kernel/acl",
 ]

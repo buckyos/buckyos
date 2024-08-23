@@ -1,23 +1,14 @@
 [package]
-name = "system_config_service"
+name = "kRPC"
 version = "0.2.0"
 edition = "2021"
 authors = ["BuckyOS DAO","@waterflier"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async-trait = "*"
+tokio = { version = "1", features = ["full"] }
 log = "*"
-simplelog = "*"
-serde = "*"
+serde = { version = "*", features = ["derive"] }
 serde_json = "*"
-url = "*"
-tokio = { version = "*", features = ["full"] }
-warp = "*"
-etcd-client = "*"
-sled = "*"
-lazy_static = "*"
 thiserror = "*"
-# rocksdb = "*"
-kRPC ={ path = "../kRPC" }
-
+reqwest = {version = "*", features = ["json", "rustls-tls"]}
