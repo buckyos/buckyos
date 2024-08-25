@@ -1,0 +1,11 @@
+[package]
+name = "test_jwt"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+[dependencies]
+serde = "*"
+serde_json = "*"
+jsonwebtoken = "*"
+
