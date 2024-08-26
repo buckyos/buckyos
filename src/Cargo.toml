@@ -11,5 +11,6 @@ members = [
     "./kernel/kRPC",
     "./kernel/acl",
     "./kernel/sys-config",
-    "./kernel/sys_config_service",    
+    "./kernel/sys_config_service", 
+    "./kernel/verify_hub",   
 ]

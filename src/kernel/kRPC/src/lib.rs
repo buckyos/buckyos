@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+mod session_token;
+
 use reqwest::{Client, ClientBuilder};
 use std::time::{Duration,SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
@@ -174,6 +176,7 @@ impl kRPC {
         }
     }
 }
+
 
 mod test {
     use super::*;

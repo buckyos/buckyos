@@ -128,6 +128,9 @@ async fn service_main() {
         }
 
         //todo: check session_token
+        let appid:String;
+        let userid:String;
+
 
         let process_result =  process_request(method,params).await;
         let rpc_response : RPCResponse;

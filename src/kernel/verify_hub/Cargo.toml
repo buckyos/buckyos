@@ -1,0 +1,21 @@
+[package]
+name = "verify_hub"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+[dependencies]
+async-trait = "*"
+log = "*"
+simplelog = "*"
+serde = "*"
+serde_json = "*"
+url = "*"
+tokio = { version = "*", features = ["full"] }
+warp = "*"
+lazy_static = "*"
+thiserror = "*"
+jsonwebtoken = "*"
+# rocksdb = "*"
+kRPC ={ path = "../kRPC" }
+name_lib = { path = "../../components/name-lib" }

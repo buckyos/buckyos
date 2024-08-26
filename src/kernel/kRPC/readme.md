@@ -52,4 +52,16 @@ response:
 
 上述协议是简单且完整的，我们不会在HTTP-Header里加入任何东西，保持协议本身的简洁和完整。
 
-## 3. 调用链的鉴权问题(放在ACL里讨论?)
+## 3. 基于session_token的鉴权
+对RPC中的session token进行验证。session_token的有效期有两种
+a. 一次性有效，该session_token是和一次调用绑定的，该次调用完成后session_token失效。
+b. 多次有效，通常session_token会标注一个有效期和起始的seq,验证通过后从该seq开始，直到有效期结束，都是有效的。有效期取决于服务端的配置和session_token本身携带的有效期。
+
+session_token的验证也有两种
+a. 自验证。这意味着session_token包含签名，如何能得到合适的did public key，就可以验证session_token的合法性。
+b. 通过verify_hub验证，通过verify_hub来验证session_token。这类session_token通常是多次有效的。
+
+向verify_hub申请token
+verify_hub可以根据需要不断的支持新的session_token的验证方法
+
+verify_hub也可以主动通知session_token的失效，我们鼓励通过web socket来和verify_hub保持连接实现这个功能。

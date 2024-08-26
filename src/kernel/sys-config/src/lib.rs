@@ -26,6 +26,7 @@ pub async fn sys_config_set(key: &str, value: &str) -> Result<u64> {
     return client.set(key, value).await;
 }
 
+
 #[cfg(test)]
 mod tests {
     #[test]

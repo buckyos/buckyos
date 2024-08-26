@@ -8,11 +8,17 @@ struct Claims {
     my_test_name: bool,
     exp: usize,
 }
-
+/*
+iss (issuer)：签发人
+exp (expiration time)：过期时间
+sub (subject)：主题
+aud (audience)：受众
+nbf (Not Before)：生效时间
+iat (Issued At)：签发时间
+jti (JWT ID)：编号
+*/
 
 fn main() {
-    // Public Key (JWK) 格式化
-
     let jwk = json!(
             {
                 "kty": "OKP",
@@ -28,7 +34,7 @@ fn main() {
 MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 -----END PRIVATE KEY-----
 "#;
-    // 创建 JWT
+    //create JWT
     let my_claims = Claims {
         my_test_name: true,
         exp: 1724625212, 
@@ -39,13 +45,13 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     let token = encode(&header, &my_claims, &private_key).unwrap();
     println!("JWT: {}", token);
 
-    // 验证 JWT
+    // verify JWT
     let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
     let import_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
     let validation = Validation::new(Algorithm::EdDSA);
     let decoded_token = decode::<Claims>(&token, &import_key, &validation).unwrap();
 
-    println!("JWT 验证成功");
+    println!("JWT verify OK!");
     println!("Protected Header: {:?}", decoded_token.header.alg);
     println!("Payload: {:?}", decoded_token.claims);
 }
