@@ -1,4 +1,5 @@
-06:44:27 [INFO] Starting verify_hub service...
-06:44:27 [INFO] verify_hub service initialized
-06:44:27 [INFO] Server::run; addr=127.0.0.1:3032
-06:44:27 [INFO] listening on http://127.0.0.1:3032
+01:46:19 [INFO] Starting verify_hub service...
+01:46:19 [INFO] verify_hub service initialized
+01:46:19 [INFO] Server::run; addr=127.0.0.1:3032
+01:46:19 [INFO] listening on http://127.0.0.1:3032
+01:46:19 [INFO] Received request: {"method":"login","params":{"jwt":"eyJhbGciOiJFZERTQSJ9.eyJhcHBpZCI6InN5c3RlbSIsImV4cCI6MTcyNDgxMzE3OSwidXNlcmlkIjoiZGlkOmV4YW1wbGU6MTIzNDU2Nzg5MCJ9.FGJ2dLSLC28xzr_cGYYxB0bOZ3feSm2qFFyWBJvPXzvHntVWLGNnmOxA_OWLd6ny_a5FWd8bsmtA5yM8AjUsBg","type":"jwt"},"sys":[1724809579000001]}

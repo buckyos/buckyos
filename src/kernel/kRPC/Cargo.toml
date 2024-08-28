@@ -12,3 +12,4 @@ serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 thiserror = "*"
 reqwest = {version = "*", features = ["json", "rustls-tls"]}
+jsonwebtoken = "*"

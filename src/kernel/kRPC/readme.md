@@ -6,9 +6,9 @@ kPRC帮助应用开发者简单的实现一致的RPC调用。其基本思路是
 
 client:
 ```rust
-rpc_client = new kPRCClient(json_encoder);
+rpc_client = new kPRCClient(service_url or service_name,session_token);
 params = {"a":1,"b":2};
-rpc_client.call("add",params);
+result = rpc_client.call("add",params);
 ```
 
 我们也鼓励api的提供者提供相应的定制化的client-stub,以便于更好的使用api。
@@ -65,3 +65,12 @@ b. 通过verify_hub验证，通过verify_hub来验证session_token。这类sessi
 verify_hub可以根据需要不断的支持新的session_token的验证方法
 
 verify_hub也可以主动通知session_token的失效，我们鼓励通过web socket来和verify_hub保持连接实现这个功能。
+
+
+## 4. session_token的安全管理
+一般session_token的有效期不会超过1个周，当超过有效期后，会需要秘钥(密码)来重新获取session_token。
+对重放攻击的管理：
+session_token中有签发时间和有效期，因此只在这个周期内有效
+同一个subject只能有一个有效的session_token，如果有新的session_token生成，旧的session_token会被废弃（自动废弃）。
+通过session_token的签发时间可以用来判断谁是新的session_token
+考虑到时间的误差，系统不会接受超过可信时间1小时以上的签发时间，防止发生bug

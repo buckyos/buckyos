@@ -4,11 +4,11 @@ const { SignJWT, generateKeyPair,jwtVerify,importJWK, exportJWK,base64url, impor
 
 async function createAndVerifyEdDSAJWT() {
     // 生成 EdDSA 密钥对（Ed25519）
-    //const { privateKey, publicKey } = await generateKeyPair('EdDSA');
-    //var jwk = await exportJWK(publicKey);
-    //console.log('Public Key (JWK):',JSON.stringify(jwk));   
-    //const privateKeyDer = privateKey.export({ type: 'pkcs8',format: 'pem' });
-    //console.log('Private Key (DER):', privateKeyDer);    
+    var { privateKey, publicKey } = await generateKeyPair('EdDSA');
+    var jwk = await exportJWK(publicKey);
+    console.log('Public Key (JWK base64URL):',jwk.x);   
+    const privateKeyDer = privateKey.export({ type: 'pkcs8',format: 'pem' });
+    console.log('Private Key (DER):', privateKeyDer);    
     privateKey = `
  -----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
@@ -20,6 +20,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 
     const jwt = await new SignJWT({ 'my_test_name': true,exp:1724625212})
         .setProtectedHeader({ alg: 'EdDSA' })
+        .setExpirationTime('2h')
         .sign(importPrivateKey);
 
     console.log('JWT:', jwt);

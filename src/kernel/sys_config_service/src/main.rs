@@ -3,9 +3,9 @@ mod kv_provider;
 //mod rocksdb_provider;
 mod sled_provider;
 
-
 use std::sync::{Arc};
 use std::{fs::File};
+use std::time::{SystemTime, UNIX_EPOCH};
 use log::*;
 use simplelog::*;
 use tokio::sync::Mutex;
@@ -53,7 +53,31 @@ async fn handle_set(params:Value) -> Result<Value> {
 }
 
 
-async fn process_request(method:String,param:Value) -> ::kRPC::Result<Value> {
+async fn process_request(method:String,param:Value,session_token:Option<String>) -> ::kRPC::Result<Value> {
+    //check session_token 
+    if session_token.is_some() {
+        let session_token = session_token.unwrap();
+        let mut rpc_session_token = RPCSessionToken::from_string(session_token.as_str())?;
+        //veruft session token (need access trust did_list)
+        verify_session_token(&mut rpc_session_token).await?;
+        if rpc_session_token.exp.is_some() {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            if now > rpc_session_token.exp.unwrap()  {
+                return Err(RPCErrors::TokenExpired(session_token));
+            }
+        }
+        
+        if rpc_session_token.is_self_verify() {
+            //generate a non-store quick verify token for next-call
+        }
+        //do access control here
+
+        
+    } else {
+        return Err(RPCErrors::NoPermission("No session token".to_string()));
+    }
+
+
     match method.as_str() {
         "sys_config_get" => {
             return handle_get(param).await;
@@ -96,6 +120,18 @@ fn init_log_config() {
 }
 
 
+async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
+    match token.token_type {
+        RPCSessionTokenType::Normal => {
+            //this token is issued by this service,so found it
+            //found it ! verify it and write user info to token
+            Ok(())
+        },
+        RPCSessionTokenType::JWT => {
+            Ok(())
+        }
+    }
+}
 
 async fn service_main() {
     init_log_config();
@@ -111,45 +147,31 @@ async fn service_main() {
     .and(warp::post())
     .and(warp::body::json())
     .and_then(|req: RPCRequest| async {
-        info!("Received request: {}", serde_json::to_string(&req).unwrap());
-        let mut trace_id = 0;
-        let mut session_token = None;
-        let method = req.method;
-        let params = req.params;
-
-        if req.sys.is_some() {
-            let sys = req.sys.unwrap();
-            if sys.len() > 0 {
-                trace_id = sys[0].as_u64().unwrap();
-            }
-            if sys.len() > 1 {
-                session_token = Some(sys[1].as_str().unwrap().to_string());
-            }
-        }
-
-        //todo: check session_token
-        let appid:String;
-        let userid:String;
-
-
-        let process_result =  process_request(method,params).await;
+        info!("|==>Received request: {}", serde_json::to_string(&req).unwrap());
+    
+        let process_result =  process_request(req.method,req.params,req.token).await;
+        
         let rpc_response : RPCResponse;
         match process_result {
             Ok(result) => {
                 rpc_response = RPCResponse {
                     result: RPCResult::Success(result),
-                    sys: Some(vec![json!(trace_id)]),
+                    seq: req.seq,
+                    token: None,
+                    trace_id: req.trace_id
                 };
             },
             Err(err) => {
                 rpc_response = RPCResponse {
                     result: RPCResult::Failed(err.to_string()),
-                    sys: Some(vec![json!(trace_id)]),
+                    seq: req.seq,
+                    token: None,
+                    trace_id: req.trace_id
                 };
             }
         }
         
-        info!("Response: {}", serde_json::to_string(&rpc_response).unwrap());
+        info!("<==|Response: {}", serde_json::to_string(&rpc_response).unwrap());
         Ok::<_, warp::Rejection>(warp::reply::json(&rpc_response))
     });
 
@@ -176,7 +198,7 @@ mod test {
 
         sleep(Duration::from_millis(100)).await;
 
-        let mut client = kRPC::new("http://127.0.0.1:3030/system_config");
+        let mut client = kRPC::new("http://127.0.0.1:3030/system_config",&None);
         client.call("sys_config_set", json!( {"key":"test_key","value":"test_value"})).await;
         let result = client.call("sys_config_get", json!( {"key":"test_key"})).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "test_value");

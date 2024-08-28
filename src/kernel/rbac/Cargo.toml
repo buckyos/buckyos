@@ -1,5 +1,5 @@
 [package]
-name = "acl"
+name = "rbac"
 version = "0.2.0"
 edition = "2021"
 authors = ["BuckyOS DAO","@waterflier"]
@@ -11,3 +11,4 @@ log = "*"
 serde = "*"
 serde_json = "*"
 casbin = "*"
+lazy_static = "*"

@@ -18,11 +18,23 @@ enum LoginType {
     ByJWT,
 }
 
+lazy_static ! {
+    static ref PRIVATE_KEY:EncodingKey = {
+        let private_key_pem = r#"
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
+-----END PRIVATE KEY-----
+"#;
+        let private_key = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap();
+        private_key
+    };
+}
+
 async fn get_trust_did_document(device_id:&str) -> Result<DIDSimpleDocument> {
     unimplemented!("get_trust_device_did_document")
 }
 
-fn generate_session_token(appid:&str,userid:&str,login_nonce:u64) -> String {
+fn generate_session_token(appid:&str,userid:&str,login_nonce:u64) -> RPCSessionToken {
     unimplemented!()
 }
 
@@ -31,7 +43,20 @@ fn verify_jws_signature(json_obj:&Value,signature:&str,device_public_key:&str) -
 }
 
 async fn get_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKey> {
-    unimplemented!()
+    if kid.is_none() {
+        //use default public key : owner's public key
+        let jwk = json!(
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "vZ2kEJdazmmmmxTYIuVPCt0gGgMOnBP6mMrQmqminB0"
+            }
+        );
+        let result_key : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
+        return Ok(DecodingKey::from_jwk(&result_key).unwrap());
+        
+    }    
+    return Err(RPCErrors::ReasonError("kid not found".to_string()));
 }
 
 async fn verify_jwt(jwt:&str) -> Result<Value> {
@@ -65,10 +90,10 @@ async fn handle_verify_session_token(params:Value) -> Result<Value> {
         verify_jwt(session_token).await?;
     }
     
-    Ok(Value::String("ok".to_string()))
+    Ok(Value::Bool(true))
 }
 
-async fn handle_login_by_jwt(params:Value,login_nonce:u64) -> Result<Value> {
+async fn handle_login_by_jwt(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
     let jwt = params.get("jwt")
     .ok_or(RPCErrors::ReasonError("Missing jwt".to_string()))?;
     let jwt = jwt.as_str().ok_or(RPCErrors::ReasonError("Invalid jwt".to_string()))?;
@@ -86,10 +111,10 @@ async fn handle_login_by_jwt(params:Value,login_nonce:u64) -> Result<Value> {
     //generate session token
     let session_token = generate_session_token(appid,userid,login_nonce);
 
-    return Ok(Value::String(session_token));
+    return Ok(session_token);
 }
 
-async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<Value> {
+async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
     let userid = params.get("userid")
     .ok_or(RPCErrors::ReasonError("Missing userid".to_string()))?;
     let userid = userid.as_str().ok_or(RPCErrors::ReasonError("Invalid userid".to_string()))?;
@@ -110,7 +135,6 @@ async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<Value
 
     //TODO:check login_nonce > last_login_nonce
 
-
     let mut will_hash = params.clone();
     let will_hash_obj = will_hash.as_object_mut().unwrap();
     will_hash_obj.remove("signature");
@@ -124,7 +148,7 @@ async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<Value
     //generate session token
     let session_token = generate_session_token(appid,userid,login_nonce);
 
-    return Ok(Value::String(session_token));
+    return Ok(session_token);
 }
 
 async fn handle_login(params:Value,login_nonce:u64) -> Result<Value> {
@@ -152,10 +176,12 @@ async fn handle_login(params:Value,login_nonce:u64) -> Result<Value> {
 
     match real_login_type {
         LoginType::ByJWT => {
-            return handle_login_by_jwt(params,login_nonce).await;
+            let session_token = handle_login_by_jwt(params,login_nonce).await?;
+            return Ok(Value::String(session_token.to_string()));
         },
         LoginType::BySignature => {
-            return handle_login_by_signature(params,login_nonce).await;
+            let session_token =  handle_login_by_signature(params,login_nonce).await?;
+            return Ok(Value::String(session_token.to_string()));
         },
         _ => {
             return Err(RPCErrors::ReasonError("Invalid login type".to_string()));
@@ -209,39 +235,25 @@ async fn service_main() {
     .and(warp::body::json())
     .and_then(|req: RPCRequest| async {
         info!("Received request: {}", serde_json::to_string(&req).unwrap());
-        let mut trace_id = 0;
-        let mut session_token = None;
-        let method = req.method;
-        let params = req.params;
 
-        if req.sys.is_some() {
-            let sys = req.sys.unwrap();
-            if sys.len() > 0 {
-                trace_id = sys[0].as_u64().unwrap();
-            }
-            if sys.len() > 1 {
-                session_token = Some(sys[1].as_str().unwrap().to_string());
-            }
-        }
-
-        //todo: check session_token
-        let appid:String;
-        let userid:String;
-
-
-        let process_result =  process_request(method,params,trace_id).await;
+        let process_result =  process_request(req.method,req.params,req.seq).await;
+        
         let rpc_response : RPCResponse;
         match process_result {
             Ok(result) => {
                 rpc_response = RPCResponse {
                     result: RPCResult::Success(result),
-                    sys: Some(vec![json!(trace_id)]),
+                    seq:req.seq,
+                    token:None,
+                    trace_id:req.trace_id,
                 };
             },
             Err(err) => {
                 rpc_response = RPCResponse {
                     result: RPCResult::Failed(err.to_string()),
-                    sys: Some(vec![json!(trace_id)]),
+                    seq:req.seq,
+                    token:None,
+                    trace_id:req.trace_id,
                 };
             }
         }
@@ -263,17 +275,44 @@ mod test {
     use super::*;
     use tokio::time::{sleep,Duration};
     use tokio::task;
-    
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[tokio::test]
-    async fn test_server_get_set() {
+    async fn test_login_and_verify() {
         let server = task::spawn(async {
             service_main().await;
         });
 
         sleep(Duration::from_millis(100)).await;
+        let test_owner_public_key = "vZ2kEJdazmmmmxTYIuVPCt0gGgMOnBP6mMrQmqminB0";
+        let test_owner_private_key_pem = r#"
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIK45kLWIAx3CHmbEmyCST4YB3InSCA4XAV6udqHtRV5P
+-----END PRIVATE KEY-----
+"#;
+        //login test,use trust device JWT
+        let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
+        let mut client = kRPC::new("http://127.0.0.1:3032/verify_hub",&None);
+        let mut header = Header::new(Algorithm::EdDSA);
+        //完整的kid表达应该是 $zoneid#kid 这种形式，为了提高性能做了一点简化
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        header.kid = None;
+        header.typ = None;
+        let login_params = json!({
+            "userid": "did:example:1234567890",
+            "appid": "system", 
+            "exp":(now + 3600) as usize
+        });        
+        let token = encode(&header, &login_params, &private_key).unwrap();
+
+        let session_token = client.call("login", json!( {"type":"jwt","jwt":token})).await.unwrap();
+        print!("session_token:{}",session_token);
+
+        //verify token test,use JWT-session-token
+
+        let verify_result = client.call("verify_token", json!( {"session_token":session_token})).await.unwrap();
+        print!("verify result:{}",verify_result);
 
         drop(server);
-
     }
 }
