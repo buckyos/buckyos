@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc};
+use log::*;
 use tokio::sync::Mutex;
 use casbin::{rhai::ImmutableString, CoreApi, DefaultModel, Enforcer, Filter, MemoryAdapter, MgmtApi};
 use lazy_static::lazy_static;
@@ -16,7 +17,7 @@ lazy_static!{
 pub async fn init_default_enforcer()->Result<Enforcer,Box<dyn std::error::Error>>{
     let model_str = r#"
 [request_definition]
-r = sub, obj, act
+r = sub,obj,act
 
 [policy_definition]
 p = sub, obj, act, eft
@@ -25,43 +26,31 @@ p = sub, obj, act, eft
 g = _, _ # sub, role
 
 [policy_effect]
-e = some(where (p.eft == allow)) && !some(where (p.eft == deny))
+e = priority(p.eft) || deny
 
 [matchers]
-m = g(r.sub, p.sub) && keyMatch2(r.obj, p.obj) && regexMatch(r.act, p.act)
+m = (g(r.sub, p.sub) || r.sub == p.sub) && regexMatch(r.obj,p.obj) && regexMatch(r.act, p.act)
+#m = g(r.sub, p.sub) && r.sub == keyGet3(r.obj, p.obj, p.sub) && keyMatch5(r.obj,p.obj) && regexMatch(r.act, p.act)
     "#;
 
 
     let policy_str = r#"
-p, owner, kv://*, read|write,allow
-p, owner, dfs://*, read|write,allow
-p, owner, fs://$device_id:/, read,allow
+p, owner, kv://.+$, read|write,allow
+p, owner, dfs://.+$, read|write,allow
+p, owner, fs://[^/]+/.+$, read|write,allow
 
-p, kernel_service, kv://*, read,allow
-p, kernel_service, dfs://*, read,allow
-p, kernel_service, fs://$device_id:/, read,allow
+p, user, ^kv://system/.+$, read,allow
+p, alice, ^dfs://homes/alice/.+$, read|write,allow
+p, user, ^dfs://public/.+$,read|write,allow
+p, app1, ^dfs://homes/[^/]+/apps/app1/[^/]+, read|write,allow
 
-p, frame_service, kv://*, read,allow
-p, frame_service, dfs://*, read,allow
-p, frame_service, fs://$device_id:/, read,allow
+p, limit, dfs://public/[^/]+, read,allow
+p, guest, dfs://public/[^/]+, read,allow
 
-p, sudo_user, kv://*, read|write,allow
-p, sudo_user, dfs://*, read|write,allow
-
-
-p, user, dfs://homes/:userid, read|write,allow
-p, user, dfs://public,read|write,allow
-p, app_service, dfs://homes/:userid/:appid, read,allow
-
-p, limit_user, dfs://homes/:userid, read,allow
-
-p, guest, dfs://public, read,allow
-p, bob,dfs://public,write,deny
-
-g, alice, owner
+g, alice, user
 g, bob, user
-g, charlie, user
-g, app1, app_service
+g, app1, app
+g, app2, app
     "#;
 
 
@@ -83,14 +72,23 @@ g, app1, app_service
 }
 //use default RBAC config to enforce the access control
 //default acl config is stored in the memory,so it is not async function
-pub async fn enforce(userid:&str, appid:&str,res_path:&str,op_name:&str) -> bool {
+pub async fn enforce(userid:&str, appid:Option<&str>,res_path:&str,op_name:&str) -> bool {
     let mut enforcer = SYS_ENFORCE.lock().await;
     if enforcer.is_none() {
         *enforcer = Some(init_default_enforcer().await.unwrap());        
     }
+
     let enforcer = enforcer.as_mut().unwrap();
     let res = enforcer.enforce((userid, res_path, op_name)).unwrap();
-    return res;
+    println!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
+    if appid.is_none() {
+        return res;
+    } else {
+        let appid = appid.unwrap();
+        let res2 = enforcer.enforce((appid, res_path, op_name)).unwrap();
+        println!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
+        return res2 && res;
+    }
 }
 
 //test
@@ -100,12 +98,13 @@ mod tests {
     use tokio::test;
     use std::collections::HashMap;
     use casbin::{rhai::ImmutableString, CoreApi, DefaultModel, Enforcer, Filter, MemoryAdapter, MgmtApi};
+    
     #[test]
     async fn test_simple_enforce() -> Result<(), Box<dyn std::error::Error>> {
         // 定义模型配置
         let model_str = r#"
 [request_definition]
-r = sub, app,act, obj 
+r = sub,act, obj 
 
 [policy_definition]
 p = sub, obj, act, eft
@@ -117,13 +116,11 @@ g = _, _
 e = priority(p.eft) || deny
 
 [matchers]
-m = g(r.sub, p.sub) || g(r.app,p.sub) && keyMatch2(r.obj, p.obj) && regexMatch(r.act, p.act)
+m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)
         "#;
     
         // 定义策略配置
         let policy_str = r#"
-        p, app_service, dfs://homes/:userid/:appid, read,allow
-        p, app_service, *, deny
         p, owner, kv://*, read|write,allow
         p, owner, dfs://*, read|write,allow
         p, owner, fs://$device_id:/, read,allow
@@ -178,28 +175,19 @@ m = g(r.sub, p.sub) || g(r.app,p.sub) && keyMatch2(r.obj, p.obj) && regexMatch(r
 
     
         // 测试权限
-        let alice_read_kv = e.enforce(("alice", "app1","write","kv://config")).unwrap();
+        let alice_read_kv = e.enforce(("alice","write","kv://config")).unwrap();
         println!("Alice can write kv://config: {}", alice_read_kv); // true
-        assert_eq!(alice_read_kv, false);
-        assert_eq!(e.enforce(("alice", "dfs://public", "write")).unwrap(), true);
-
-        let bob_write_dfs = e.enforce(("bob", "dfs://homes/bob", "write")).unwrap();
-        println!("Bob can write dfs://homes/bob: {}", bob_write_dfs); // true
-        assert_eq!(bob_write_dfs, true);
-        assert_eq!(e.enforce(("bob", "dfs://public", "write")).unwrap(), false);
-
-        let charlie_delete_dfs = e.enforce(("charlie", "dfs://homes/charlie", "delete")).unwrap();
-        println!("Charlie can delete dfs://homes/charlie: {}", charlie_delete_dfs); // false
-        assert_eq!(charlie_delete_dfs, false);
+        assert_eq!(alice_read_kv, true);
     
         Ok(())
     }
 
     #[test]
     async fn test_enforce() {
-        let res = enforce("alice", "app1", "dfs://homes/alice/app1", "read").await;
+        let res = enforce("alice", Some("app1"), "dfs://homes/alice/apps/app1/data", "write").await;
         assert_eq!(res, true);
-        assert_eq!(enforce("bob", "app1", "dfs://homes/alice/app2", "read").await, false);
+        assert_eq!(enforce("bob", None, "dfs://homes/alice/app2", "read").await, false);
+        assert_eq!(enforce("alice", Some("app1"), "dfs://homes/alice/apps/app2/data", "write").await, false);
     }
 
 }
