@@ -30,7 +30,7 @@ e = priority(p.eft) || deny
 
 [matchers]
 m = (g(r.sub, p.sub) || r.sub == p.sub) && regexMatch(r.obj,p.obj) && regexMatch(r.act, p.act)
-#m = g(r.sub, p.sub) && r.sub == keyGet3(r.obj, p.obj, p.sub) && keyMatch5(r.obj,p.obj) && regexMatch(r.act, p.act)
+#m = (g(r.sub, p.sub) || r.sub == p.sub) && r.sub == keyGet3(r.obj, p.obj, p.sub) && regexMatch(r.obj,p.obj) && regexMatch(r.act, p.act)
     "#;
 
 
@@ -39,10 +39,13 @@ p, owner, kv://.+$, read|write,allow
 p, owner, dfs://.+$, read|write,allow
 p, owner, fs://[^/]+/.+$, read|write,allow
 
-p, user, ^kv://system/.+$, read,allow
-p, alice, ^dfs://homes/alice/.+$, read|write,allow
+p, user, ^kv://.+$, read,allow
 p, user, ^dfs://public/.+$,read|write,allow
+
 p, app1, ^dfs://homes/[^/]+/apps/app1/[^/]+, read|write,allow
+
+p, alice, ^dfs://homes/alice/.+$, read|write,allow
+p, alice, ^kv://users/alice/.+$, read|write,allow
 
 p, limit, dfs://public/[^/]+, read,allow
 p, guest, dfs://public/[^/]+, read,allow
@@ -80,13 +83,15 @@ pub async fn enforce(userid:&str, appid:Option<&str>,res_path:&str,op_name:&str)
 
     let enforcer = enforcer.as_mut().unwrap();
     let res = enforcer.enforce((userid, res_path, op_name)).unwrap();
-    println!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
+    //println!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
+    info!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
     if appid.is_none() {
         return res;
     } else {
         let appid = appid.unwrap();
         let res2 = enforcer.enforce((appid, res_path, op_name)).unwrap();
-        println!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
+        //println!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
+        info!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
         return res2 && res;
     }
 }

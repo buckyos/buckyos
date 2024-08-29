@@ -3700,9 +3700,11 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "etcd-client",
+ "jsonwebtoken",
  "kRPC",
  "lazy_static",
  "log",
+ "rbac",
  "serde",
  "serde_json",
  "simplelog",

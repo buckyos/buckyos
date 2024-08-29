@@ -5,19 +5,31 @@ mod sled_provider;
 
 use std::sync::{Arc};
 use std::{fs::File};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+
 use log::*;
 use simplelog::*;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
 use warp::{reply::{Reply, Response}, Filter};
 use serde_json::{Value, json};
+use jsonwebtoken::{DecodingKey};
 
 use ::kRPC::*;
+use rbac::*;
+
 use kv_provider::KVStoreProvider;
 use sled_provider::SledStore; 
 
-async fn handle_get(params:Value) -> Result<Value> {
+lazy_static!{
+    static ref TRUST_KEYS: Arc<Mutex<HashMap<String,DecodingKey> > > = {
+        let hashmap : HashMap<String,DecodingKey> = HashMap::new();  
+
+        Arc::new(Mutex::new(hashmap))
+    };
+}
+async fn handle_get(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
     //TODO:ACL control here
     let key = params.get("key");
     if key.is_none() {
@@ -25,13 +37,23 @@ async fn handle_get(params:Value) -> Result<Value> {
     }
     
     let key = key.unwrap().as_str().unwrap();
+
+    if session_token.userid.is_none() {
+        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    }
+    let userid = session_token.userid.as_ref().unwrap();
+    let full_res_path = format!("kv://{}",key);
+    if !enforce(userid, session_token.appid.as_deref(), full_res_path.as_str(), "read").await {
+        return Err(RPCErrors::NoPermission("No read permission".to_string()));
+    }
+
     
     let store = SYS_STORE.lock().await;
     let result = store.get(String::from(key)).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     return Ok(Value::String(result));
 }
 
-async fn handle_set(params:Value) -> Result<Value> {
+async fn handle_set(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
     let key = params.get("key");
     if key.is_none() {
         return Err(RPCErrors::ReasonError("Missing key".to_string()));
@@ -45,6 +67,15 @@ async fn handle_set(params:Value) -> Result<Value> {
     }
     let new_value = new_value.unwrap();
     let new_value = new_value.as_str().unwrap();
+
+    if session_token.userid.is_none() {
+        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    }
+    let userid = session_token.userid.as_ref().unwrap();
+    let full_res_path = format!("kv://{}",key);
+    if !enforce(userid, session_token.appid.as_deref(), full_res_path.as_str(), "write").await {
+        return Err(RPCErrors::NoPermission("No read permission".to_string()));
+    }
 
     let store = SYS_STORE.lock().await;
     info!("Set key:[{}] to value:[{}]",key,new_value);
@@ -71,23 +102,24 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
             //generate a non-store quick verify token for next-call
         }
         //do access control here
-
+        
+        match method.as_str() {
+            "sys_config_get" => {
+                return handle_get(param,&rpc_session_token).await;
+            },
+            "sys_config_set" => {
+                return handle_set(param,&rpc_session_token).await;
+            },
+            // Add more methods here
+            _ => Err(RPCErrors::UnknownMethod(String::from(method))),
+        }
         
     } else {
         return Err(RPCErrors::NoPermission("No session token".to_string()));
     }
 
 
-    match method.as_str() {
-        "sys_config_get" => {
-            return handle_get(param).await;
-        },
-        "sys_config_set" => {
-            return handle_set(param).await;
-        },
-        // Add more methods here
-        _ => Err(RPCErrors::UnknownMethod(String::from(method))),
-    }
+
 }
 
 lazy_static!{
@@ -121,16 +153,12 @@ fn init_log_config() {
 
 
 async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
-    match token.token_type {
-        RPCSessionTokenType::Normal => {
-            //this token is issued by this service,so found it
-            //found it ! verify it and write user info to token
-            Ok(())
-        },
-        RPCSessionTokenType::JWT => {
-            Ok(())
-        }
+    if token.is_self_verify() {
+        let trust_keys = TRUST_KEYS.lock().await;
+        token.do_self_verify(&trust_keys)?;
     }
+
+    Ok(())
 }
 
 async fn service_main() {
@@ -186,23 +214,57 @@ async fn main() {
 
 mod test {
     use super::*;
+    use jsonwebtoken::EncodingKey;
     use tokio::time::{sleep,Duration};
     use tokio::task;
+    
     
 
     #[tokio::test]
     async fn test_server_get_set() {
+        {
+            let jwk = json!(
+                {
+                    "kty": "OKP",
+                    "crv": "Ed25519",
+                    "x": "vZ2kEJdazmmmmxTYIuVPCt0gGgMOnBP6mMrQmqminB0"
+                }
+            );
+            let result_key : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
+            let mut hashmap = TRUST_KEYS.lock().await;
+
+            hashmap.insert("{owner}".to_string(), DecodingKey::from_jwk(&result_key).unwrap());
+        }
+
         let server = task::spawn(async {
             service_main().await;
         });
 
-        sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(1000)).await;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let test_owner_private_key_pem = r#"
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEIK45kLWIAx3CHmbEmyCST4YB3InSCA4XAV6udqHtRV5P
+        -----END PRIVATE KEY-----
+        "#;
+                
+        let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
+        let token = RPCSessionToken{
+            userid: Some("alice".to_string()),
+            appid: None,
+            exp: Some(now+3600),
+            token_type: RPCSessionTokenType::JWT,
+            token: None,
+        };
+        let jwt = token.generate_jwt(Some("{owner}".to_string()),&private_key).unwrap();
+        
 
-        let mut client = kRPC::new("http://127.0.0.1:3030/system_config",&None);
-        client.call("sys_config_set", json!( {"key":"test_key","value":"test_value"})).await;
-        let result = client.call("sys_config_get", json!( {"key":"test_key"})).await.unwrap();
+        let mut client = kRPC::new("http://127.0.0.1:3030/system_config",&Some(jwt));
+        let _ = client.call("sys_config_set", json!( {"key":"users/alice/test_key","value":"test_value"})).await.unwrap();
+        let result = client.call("sys_config_get", json!( {"key":"users/alice/test_key"})).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "test_value");
-
+        let result = client.call("sys_config_set", json!( {"key":"users/bob/test_key","value":"test_value"})).await;
+        assert!(result.is_err());
         drop(server);
 
     }

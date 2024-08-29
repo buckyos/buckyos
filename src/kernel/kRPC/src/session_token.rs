@@ -1,6 +1,8 @@
 
 use std::collections::hash_map::HashMap;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
+use log::{info, trace};
+use serde_json::json;
 use crate::{Result,RPCErrors};
 
 pub enum RPCSessionTokenType {
@@ -23,7 +25,7 @@ impl RPCSessionToken {
             return Ok(RPCSessionToken {
                 token_type : RPCSessionTokenType::Normal,
                 appid: None,
-                userid: None,
+                userid: None,   
                 token: Some(token.to_string()),
                 exp: None,
             });
@@ -38,15 +40,49 @@ impl RPCSessionToken {
         }
     }
 
+    pub fn get_values(&self) -> Result<(String,String)> {
+        if self.userid.is_none() || self.appid.is_none() {
+            return Err(RPCErrors::InvalidToken("Invalid token: userid or appid is none".to_string()));
+        }
+        Ok((self.userid.as_ref().unwrap().to_string(),self.appid.as_ref().unwrap().to_string()))
+    }
+
     pub fn to_string(&self) -> String {
         match self.token_type {
             RPCSessionTokenType::Normal => {
                 return self.token.as_ref().unwrap().to_string();
             }
             RPCSessionTokenType::JWT => {
-                return self.token.as_ref().unwrap().to_string();
+                if self.token.is_none() {
+                    //let jwt_token 
+                    return "".to_string();
+                } else {
+                    return self.token.as_ref().unwrap().to_string();
+                }
             }
         }
+    }
+
+    pub fn generate_jwt(&self,kid:Option<String>,private_key:&EncodingKey) -> Result<String> {
+
+        //let test_owner_private_key_pem = r#"
+        //-----BEGIN PRIVATE KEY-----
+        //MC4CAQAwBQYDK2VwBCIEIK45kLWIAx3CHmbEmyCST4YB3InSCA4XAV6udqHtRV5P
+        //-----END PRIVATE KEY-----
+        //"#;
+                //login test,use trust device JWT
+        //let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
+        let mut header = Header::new(Algorithm::EdDSA);        
+        header.kid = kid;
+        header.typ = None;
+        let payload = json!({
+            "userid": self.userid,
+            "appid": self.appid,
+            "exp": self.exp,
+        });        
+        let token = encode(&header, &payload, private_key)
+            .map_err(|op| RPCErrors::ReasonError(format!("JWT encode error:{}",op)))?;
+        Ok(token)
     }
 
     pub fn is_self_verify(&self) -> bool {
@@ -60,7 +96,7 @@ impl RPCSessionToken {
         }
     }
 
-    pub fn do_self_verify(&mut self,trust_keys:HashMap<String,DecodingKey>) -> Result<()> {
+    pub fn do_self_verify(&mut self,trust_keys:&HashMap<String,DecodingKey>) -> Result<()> {
         if !self.is_self_verify() {
             return Err(RPCErrors::InvalidToken("Not a self verify token".to_string()));
         }
@@ -88,23 +124,34 @@ impl RPCSessionToken {
 
         let decoded_json = decoded_token.claims.as_object()
             .ok_or(RPCErrors::InvalidToken("Invalid token".to_string()))?;
+        info!("decoded token: {:?}",decoded_json);
 
         let userid = decoded_json.get("userid")
             .ok_or(RPCErrors::InvalidToken("Missing userid".to_string()))?;
         let userid = userid.as_str().ok_or(RPCErrors::ReasonError("Invalid userid".to_string()))?;
-        let appid = decoded_json.get("appid")
-            .ok_or(RPCErrors::InvalidToken("Missing appid".to_string()))?;
-        let appid = appid.as_str().ok_or(RPCErrors::ReasonError("Invalid appid".to_string()))?;
+        let appid = decoded_json.get("appid");
+        if appid.is_some() {
+            let appid = appid.unwrap();
+            if appid.is_null() {
+                self.appid = None;
+            } else {
+                let appid = appid.as_str().ok_or(RPCErrors::ReasonError("Invalid appid".to_string()))?;
+                self.appid = Some(appid.to_string());
+            }
+        }
+
         let exp = decoded_json.get("exp");
         if exp.is_some() {
-            let exp = exp.unwrap().as_u64().ok_or(RPCErrors::ReasonError("Invalid expire time".to_string()))?;
-            self.exp = Some(exp);
+            let exp = exp.unwrap();
+            if exp.is_null() {
+                self.exp = None;
+            } else {
+                let exp = exp.as_u64().ok_or(RPCErrors::ReasonError("Invalid expire time".to_string()))?;
+                self.exp = Some(exp);
+            }
         }
 
         self.userid = Some(userid.to_string());
-        self.appid = Some(appid.to_string());
-       
-
         Ok(())
     }
 }

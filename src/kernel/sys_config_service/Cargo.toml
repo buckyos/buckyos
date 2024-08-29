@@ -18,6 +18,8 @@ etcd-client = "*"
 sled = "*"
 lazy_static = "*"
 thiserror = "*"
+jsonwebtoken = "*" 
 # rocksdb = "*"
 kRPC ={ path = "../kRPC" }
+rbac = { path = "../rbac" }
 
