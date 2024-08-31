@@ -37,7 +37,7 @@ impl SystemConfigClient {
         }
     }
 
-    pub async fn register_device(&mut self,device_jwt:&str,boot_info:&Option<String>) -> Result<()> {
+    pub async fn register_device(&self,device_jwt:&str,boot_info:&Option<String>) -> Result<()> {
         let result = self.client.call("sys_config_register_device", json!({"device_jwt": device_jwt}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
@@ -45,7 +45,7 @@ impl SystemConfigClient {
         Ok(())
     }
     
-    pub async fn get(&mut self, key: &str) -> Result<(Value,u64)> {
+    pub async fn get(&self, key: &str) -> Result<(Value,u64)> {
         let result = self.client.call("sys_config_get", json!({"key": key}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
@@ -53,7 +53,7 @@ impl SystemConfigClient {
         Ok((result,0))
     }
 
-    pub async fn set(&mut self, key: &str, value: &str) -> Result<u64> {
+    pub async fn set(&self, key: &str, value: &str) -> Result<u64> {
         let result = self.client.call("sys_config_set", json!({"key": key, "value": value}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;

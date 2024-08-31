@@ -259,12 +259,15 @@ mod test {
     
         sleep(Duration::from_millis(1000)).await;
 
-        let mut client = kRPC::new("http://127.0.0.1:3030/system_config",&Some(jwt));
+        let client = kRPC::new("http://127.0.0.1:3030/system_config",&Some(jwt));
         let _ = client.call("sys_config_set", json!( {"key":"users/alice/test_key","value":"test_value"})).await.unwrap();
         let result = client.call("sys_config_get", json!( {"key":"users/alice/test_key"})).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "test_value");
         let result = client.call("sys_config_set", json!( {"key":"users/bob/test_key","value":"test_value"})).await;
         assert!(result.is_err());
+
+        //test timeout
+        
         drop(server);
 
     }

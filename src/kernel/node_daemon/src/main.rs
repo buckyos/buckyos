@@ -247,7 +247,7 @@ async fn generate_boot_config()->Result<serde_json::Value> {
 }
 
 
-async fn get_node_config(node_host_name: &str,sys_config_client: &mut SystemConfigClient) -> Result<NodeConfig> {
+async fn get_node_config(node_host_name: &str,sys_config_client: &SystemConfigClient) -> Result<NodeConfig> {
     let json_config_path = format!("{}_node_config.json", node_host_name);
     let json_config = std::fs::read_to_string(json_config_path);
     if json_config.is_ok() {
@@ -276,7 +276,7 @@ async fn get_node_config(node_host_name: &str,sys_config_client: &mut SystemConf
 }
 
 async fn node_main(node_host_name: &str,
-    sys_config_client: &mut SystemConfigClient,
+    sys_config_client: &SystemConfigClient,
     device_private_key: &EncodingKey) -> Result<bool> {
 
     let node_config= get_node_config(node_host_name, sys_config_client).await
@@ -313,7 +313,7 @@ async fn node_main(node_host_name: &str,
 
 async fn node_daemon_main_loop(
     node_host_name:&str,
-    sys_config_client: &mut SystemConfigClient,
+    sys_config_client: &SystemConfigClient,
     device_private_key: &EncodingKey,
 ) -> Result<()> {
     let mut loop_step = 0;
@@ -436,7 +436,7 @@ async fn async_main() -> std::result::Result<(), String> {
     })?;
 
     //check this is node is in ood list
-    let mut syc_cfg_client: SystemConfigClient;
+    let syc_cfg_client: SystemConfigClient;
     let boot_config: serde_json::Value; 
     if zone_config.oods.contains(&device_doc.hostname) {
         //If this node is ood: try run / recover  system_config_service
@@ -497,7 +497,7 @@ async fn async_main() -> std::result::Result<(), String> {
 
     //use boot config to init name-lib.. etc kernel libs.
     info!("{}@{} boot OK, enter node daemon main loop!", device_doc.hostname, node_identity.zone_name);
-    node_daemon_main_loop(device_doc.hostname.as_str(), &mut syc_cfg_client, &device_private_key)
+    node_daemon_main_loop(device_doc.hostname.as_str(), &syc_cfg_client, &device_private_key)
         .await
         .map_err(|err| {
             error!("node daemon main loop failed! {}", err);

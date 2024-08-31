@@ -7,6 +7,7 @@ pub use protocol::*;
 use reqwest::{Client, ClientBuilder};
 use std::time::{Duration,SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
+use tokio::sync::RwLock;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -32,8 +33,8 @@ pub struct kRPC {
     client: Client,
     server_url: String,
     protcol_type:RPCProtoclType,
-    seq:u64,
-    session_token:Option<String>,
+    seq:RwLock<u64>,
+    session_token:RwLock<Option<String>>,
     init_token:Option<String>,
 }
 
@@ -56,35 +57,42 @@ impl kRPC {
             client,
             server_url: url.to_string(),
             protcol_type:RPCProtoclType::HttpPostJson,
-            seq:timestamp_millis,
-            session_token:token.clone(),
+            seq:RwLock::new(timestamp_millis),
+            session_token:RwLock::new(token.clone()),
             init_token:token.clone(),
         }
     }
 
-    pub async fn call(&mut self, method: &str, params: Value) -> Result<Value> {
+    pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
         //retry 2 times here.
         self._call(method, params).await
     }
 
-    pub async fn _call(&mut self, method: &str, params: Value) -> Result<Value> {
+    pub async fn _call(&self, method: &str, params: Value) -> Result<Value> {
         let request_body:Value;
-        self.seq += 1;
-        
-        if self.session_token.is_some() {
-            request_body = json!({
-                "method": method,
-                "params": params,
-                "sys": [self.seq, self.session_token.clone().unwrap()]
-            });
-        } else {
-            request_body = json!({
-                "method": method,
-                "params": params,
-                "sys": [self.seq]
-            });
+        let current_seq:u64;
+        {
+            let mut seq = self.seq.write().await;
+            *seq += 1;
+            current_seq = *seq;
+
+            let session_token = self.session_token.read().await;
+            
+            if session_token.is_some() {
+                request_body = json!({
+                    "method": method,
+                    "params": params,
+                    "sys": [*seq, session_token.as_ref().unwrap()]
+                });
+            } else {
+                request_body = json!({
+                    "method": method,
+                    "params": params,
+                    "sys": [*seq]
+                });
+            }
         }
-        
+
         let response = self.client
             .post(&self.server_url)
             .json(&request_body)
@@ -101,14 +109,14 @@ impl kRPC {
                 if sys.len() > 1 {
                     let seq = sys[0].as_u64()
                         .ok_or(RPCErrors::ParserResponseError("sys[0] is not u64".to_string()))?;
-                    if seq != self.seq {
-                        return Err(RPCErrors::ParserResponseError(format!("seq not match: {}!={}",seq,self.seq)));
+                    if seq != current_seq {
+                        return Err(RPCErrors::ParserResponseError(format!("seq not match: {}!={}",seq,current_seq)));
                     }
                 }
                 if sys.len() > 2 {
                     let token = sys[1].as_str()
                         .ok_or(RPCErrors::ParserResponseError("sys[1] is not string".to_string()))?;
-                    self.session_token = Some(token.to_string());
+                    self.session_token.write().await.replace(token.to_string());    
                 }
             }
 
