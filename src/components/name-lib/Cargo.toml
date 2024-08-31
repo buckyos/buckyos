@@ -13,5 +13,6 @@ async-trait = "*"
 trust-dns-resolver = { version = "*", features = ["dns-over-rustls"] }
 tokio = { version = "*", features = ["full"] }
 mini-moka = "*" 
+jsonwebtoken = "*"
 bucky-crypto = {git = "https://github.com/buckyos/bucky-crypto.git", version = "*", features = ["x509"]}
 

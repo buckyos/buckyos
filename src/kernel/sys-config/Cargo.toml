@@ -12,5 +12,5 @@ serde_json = "*"
 etcd-rs = "*"
 lazy_static = "*"
 thiserror = "*"
-
+rand = "*"
 kRPC ={ path = "../kRPC" }

@@ -1,9 +1,13 @@
 
+
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 pub struct DID {
     pub method: String,
     pub id: String,
 }
+
+pub const DID_DOC_AUTHKEY: &str = "#auth-key";
 
 impl DID {
     pub fn new(method: &str, id: &str) -> Self {
@@ -45,4 +49,20 @@ impl DIDSimpleDocument {
             last_modified: None,
         }
     }
+}
+
+#[derive(Clone, Serialize, Deserialize,Debug)]
+pub struct ZoneConfig {
+    pub zone_name: String,
+    pub did: String,
+    pub oods: Vec<String>, //etcd server endpoints
+    pub backup_server_info:Option<String>
+}
+
+
+#[derive(Clone, Serialize, Deserialize,Debug)]
+pub struct DeviceConfig {
+    pub did: String,
+    pub hostname: String,
+    pub device_type: String,
 }

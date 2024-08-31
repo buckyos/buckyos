@@ -14,6 +14,13 @@ pub use provider::*;
 pub use utility::*;
 pub use name_client::*;
 
+pub async fn resolve(name: &str,record_type:Option<&str>) -> NSResult<serde_json::Value> {
+    unimplemented!()
+}
+
+pub async fn resolve_did(did: &str,fragment:Option<&str>) -> NSResult<serde_json::Value> {
+    unimplemented!()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -21,6 +28,14 @@ mod tests {
     fn test_utility() {
         assert_eq!(is_did("did:example:123456789abcdefghi"), true);
         assert_eq!(is_did("www.buckyos.org"), false);
+    }
+
+    fn test_resolve_nameinfo() {
+
+    }
+
+    fn test_resolve_did() {
+
     }
 
 }

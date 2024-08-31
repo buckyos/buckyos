@@ -28,15 +28,14 @@ version-compare = "*"
 rusqlite = { version = '*', features = ['bundled', 'blob'] }
 chrono = "*"
 num_cpus = "*"
+jsonwebtoken = "*"  
 
-# buckyos common libs
+name_lib = { path = "../../components/name-lib" }
+package-manager = { path = "../../components/package-manager" }
+kRPC = { path = "../../kernel/kRPC" }
+system_config = { path = "../sys-config" }
 
 
-# workspace dependencies
-sys-config =  "*"
-name-client =  "*"
-gateway-lib =  "*"
-package-manager =  "*"
-backup-lib =  "*"
+
 
 

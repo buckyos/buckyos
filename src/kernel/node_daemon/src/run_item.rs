@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::{debug, info, warn};
 use serde_json::Value;
 use serde::{Deserialize, Serialize};
@@ -32,11 +33,6 @@ pub enum RunItemTargetState {
     Stopped, 
 }
 
-#[derive(Serialize, Deserialize, Debug,Clone)]
-pub struct RunItemControlOperation {
-    pub command : String,
-    pub params : Option<Vec<String>>,
-}
 
 pub struct RunItemParams {
     pub node_id: String,
@@ -51,43 +47,47 @@ impl RunItemParams {
         }
     }
 }
-
+#[derive(Serialize, Deserialize, Debug,Clone)]
+pub struct RunItemControlOperation {
+    pub command : String,
+    pub params : Option<Vec<String>>,
+}
 #[async_trait]
 pub trait RunItemControl {
     fn get_item_name(&self) -> Result<String>;
-    async fn deploy(&self, params: Option<&RunItemParams>) -> Result<()>;
+    async fn deploy(&self, params: &Option<RunItemParams>) -> Result<()>;
     //async fn remove(&self, params: Option<&RunItemParams>) -> Result<()>;
     //return new version
-    async fn update(&self, params: Option<&RunItemParams>) -> Result<String>;
+    async fn update(&self, params: &Option<RunItemParams>) -> Result<String>;
 
-    async fn start(&self, params: Option<&RunItemParams>) -> Result<()>;
-    async fn stop(&self, params: Option<&RunItemParams>) -> Result<()>;
+    async fn start(&self, control_key:&EncodingKey,params: &Option<RunItemParams>) -> Result<()>;
+    async fn stop(&self, params: &Option<RunItemParams>) -> Result<()>;
 
-    async fn get_state(&self, params: Option<&RunItemParams>) -> Result<RunItemState>;
+    async fn get_state(&self, params: &Option<RunItemParams>) -> Result<RunItemState>;
 }
 
 pub async fn control_run_item_to_target_state(
     item: &dyn RunItemControl,
     target_state: RunItemTargetState,
-    params: Option<&RunItemParams>,
+    device_private_key: &EncodingKey
 ) -> Result<()> {
     let item_name = item.get_item_name()?;
     match target_state {
-        RunItemTargetState::Running => match item.get_state(params).await? {
+        RunItemTargetState::Running => match item.get_state(&None).await? {
             RunItemState::Started => {
                 debug!("{} is already running, do nothing!", item_name);
                 Ok(())
             }
             RunItemState::NotExist => {
                 warn!("{} not exist,deploy and start it!", item_name);
-                item.deploy(params).await?;
+                item.deploy(&None).await?;
                 warn!("{} deploy success,start it!", item_name);
-                item.start(params).await?;
+                item.start(device_private_key,&None).await?;
                 Ok(())
             }
             RunItemState::Stopped(_) => {
                 warn!("{} stopped,start it!", item_name);
-                item.start(params).await?;
+                item.start(device_private_key,&None).await?;
                 Ok(())
             }
             RunItemState::Deploying => {
@@ -95,15 +95,15 @@ pub async fn control_run_item_to_target_state(
                 Ok(())
             }
         },
-        RunItemTargetState::Stopped => match item.get_state(params).await? {
+        RunItemTargetState::Stopped => match item.get_state(&None).await? {
             RunItemState::Started => {
                 warn!("{} is running,stop it!", item_name);
-                item.stop(params).await?;
+                item.stop(&None).await?;
                 Ok(())
             }
             RunItemState::NotExist => {
                 warn!("{} not exist,deploy it!", item_name);
-                item.deploy(params).await?;
+                item.deploy(&None).await?;
                 Ok(())
             }
             RunItemState::Stopped(_) => {

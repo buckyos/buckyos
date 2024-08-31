@@ -64,14 +64,6 @@ impl RPCSessionToken {
     }
 
     pub fn generate_jwt(&self,kid:Option<String>,private_key:&EncodingKey) -> Result<String> {
-
-        //let test_owner_private_key_pem = r#"
-        //-----BEGIN PRIVATE KEY-----
-        //MC4CAQAwBQYDK2VwBCIEIK45kLWIAx3CHmbEmyCST4YB3InSCA4XAV6udqHtRV5P
-        //-----END PRIVATE KEY-----
-        //"#;
-                //login test,use trust device JWT
-        //let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
         let mut header = Header::new(Algorithm::EdDSA);        
         header.kid = kid;
         header.typ = None;

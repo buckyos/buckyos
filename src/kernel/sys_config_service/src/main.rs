@@ -54,6 +54,7 @@ async fn handle_get(params:Value,session_token:&RPCSessionToken) -> Result<Value
 }
 
 async fn handle_set(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
+    //check params
     let key = params.get("key");
     if key.is_none() {
         return Err(RPCErrors::ReasonError("Missing key".to_string()));
@@ -68,6 +69,7 @@ async fn handle_set(params:Value,session_token:&RPCSessionToken) -> Result<Value
     let new_value = new_value.unwrap();
     let new_value = new_value.as_str().unwrap();
 
+    //check access control
     if session_token.userid.is_none() {
         return Err(RPCErrors::NoPermission("No userid".to_string()));
     }
@@ -77,9 +79,11 @@ async fn handle_set(params:Value,session_token:&RPCSessionToken) -> Result<Value
         return Err(RPCErrors::NoPermission("No read permission".to_string()));
     }
 
+    //do business logic
     let store = SYS_STORE.lock().await;
     info!("Set key:[{}] to value:[{}]",key,new_value);
     store.set(String::from(key),String::from(new_value)).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    
     return Ok(Value::Null);
 }
 
@@ -117,8 +121,6 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
     } else {
         return Err(RPCErrors::NoPermission("No session token".to_string()));
     }
-
-
 
 }
 
@@ -218,8 +220,6 @@ mod test {
     use tokio::time::{sleep,Duration};
     use tokio::task;
     
-    
-
     #[tokio::test]
     async fn test_server_get_set() {
         {
@@ -240,7 +240,6 @@ mod test {
             service_main().await;
         });
 
-        sleep(Duration::from_millis(1000)).await;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let test_owner_private_key_pem = r#"
         -----BEGIN PRIVATE KEY-----
@@ -252,12 +251,13 @@ mod test {
         let token = RPCSessionToken{
             userid: Some("alice".to_string()),
             appid: None,
-            exp: Some(now+3600),
+            exp: Some(now+5),
             token_type: RPCSessionTokenType::JWT,
             token: None,
         };
         let jwt = token.generate_jwt(Some("{owner}".to_string()),&private_key).unwrap();
-        
+    
+        sleep(Duration::from_millis(1000)).await;
 
         let mut client = kRPC::new("http://127.0.0.1:3030/system_config",&Some(jwt));
         let _ = client.call("sys_config_set", json!( {"key":"users/alice/test_key","value":"test_value"})).await.unwrap();

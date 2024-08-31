@@ -1,6 +1,7 @@
-use crate::pkg_mgr::*;
-use crate::run_item::*;
+
+
 use async_trait::async_trait;
+use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
 use serde_json::Value;
 use serde::{Serialize, Deserialize};
@@ -10,6 +11,8 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 
+use crate::run_item::*;
+use package_manager::*;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ServiceConfig {
@@ -18,8 +21,10 @@ pub struct ServiceConfig {
     //pub name : String, // service name
     pub pkg_id : String,
     pub operations : HashMap<String, RunItemControlOperation>,
+
 }
 
+//service include kernel_service and frame_service,not include app_service
 
 #[async_trait]
 impl RunItemControl for ServiceConfig {
@@ -27,10 +32,11 @@ impl RunItemControl for ServiceConfig {
         return Ok(self.pkg_id.clone());
     }
 
-    async fn deploy(&self, params: Option<&RunItemParams>) -> Result<()> {
+
+    async fn deploy(&self, params: &Option<RunItemParams>) -> Result<()> {
         // 部署文件系统时需要机器名，以root权限运行脚本，默认程序本身应该是root权限
-        let env = PackageEnv::new(PathBuf::from("/buckyos/service"));
-        let media_info = env.load_pkg(&self.pkg_id).await;
+        let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
+        let media_info = env.load(&self.pkg_id).await;
         if media_info.is_ok() {
             self.execute_operation(&media_info.unwrap(),"deploy").await?;
             return Ok(());
@@ -53,33 +59,33 @@ impl RunItemControl for ServiceConfig {
     //     Ok(())
     // }
 
-    async fn update(&self, params: Option<&RunItemParams>) -> Result<String> {
+    async fn update(&self, params: &Option<RunItemParams>) -> Result<String> {
 
         unimplemented!();
         //self.execute_operation("update").await?;
     }
 
-    async fn start(&self, params: Option<&RunItemParams>) -> Result<()> {
-        let env = PackageEnv::new(PathBuf::from("/buckyos/service"));
-        let media_info = env.load_pkg(&self.pkg_id).await;
+    async fn start(&self, control_key:&EncodingKey, params: &Option<RunItemParams>) -> Result<()> {
+        let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
+        let media_info = env.load(&self.pkg_id).await;
         if media_info.is_ok() {
             self.execute_operation(&media_info.unwrap(),"start").await?;
         }
         Ok(())
     }
 
-    async fn stop(&self, params: Option<&RunItemParams>) -> Result<()> {
-        let env = PackageEnv::new(PathBuf::from("/buckyos/service"));
-        let media_info = env.load_pkg(&self.pkg_id).await;
+    async fn stop(&self, params: &Option<RunItemParams>) -> Result<()> {
+        let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
+        let media_info = env.load(&self.pkg_id).await;
         if media_info.is_ok() {
             self.execute_operation(&media_info.unwrap(),"stop").await?;
         }
         Ok(())
     }
 
-    async fn get_state(&self, params: Option<&RunItemParams>) -> Result<RunItemState> {
-        let env = PackageEnv::new(PathBuf::from("/buckyos/service"));
-        let media_info = env.load_pkg(&self.pkg_id).await;
+    async fn get_state(&self, params: &Option<RunItemParams>) -> Result<RunItemState> {
+        let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
+        let media_info = env.load(&self.pkg_id).await;
         if media_info.is_err() {
             return Ok(RunItemState::NotExist);
         }

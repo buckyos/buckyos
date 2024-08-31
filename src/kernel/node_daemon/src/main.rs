@@ -4,35 +4,37 @@
 // mod backup;
 // mod backup_task_mgr;
 // mod backup_task_storage;
-mod etcd_mgr;
-mod pkg_mgr;
+//mod etcd_mgr;
+//mod pkg_mgr;
 mod run_item;
 mod service_mgr;
-
-
-use etcd_client::*;
-use futures::prelude::*;
-use log::*;
-use serde::{Deserialize, Serialize};
-// use serde_json::error;
-use simplelog::*;
+use std::env;
 use std::fmt::format;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, fs::File};
 use std::path::Path;
 // use tokio::*;
-use toml;
 
+//use etcd_client::*;
+use futures::prelude::*;
+use jsonwebtoken::jwk::Jwk;
+use log::*;
+use serde::{Deserialize, Serialize};
+use sha2::digest::const_oid::db::rfc4519::O;
+// use serde_json::error;
+use simplelog::*;
+use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
+use system_config::*;
+use toml;
+use serde_json::{from_value, json};
+use name_lib::*;
 // use crate::backup::*;
 // use crate::backup_task_mgr::*;
-use crate::etcd_mgr::*;
+
 use crate::run_item::*;
 use crate::service_mgr::*;
-use crate::system_config::*;
-use gateway_lib::DeviceEndPoint;
-use name_client::NameClient;
 
 use thiserror::Error;
 use tide::log::start;
@@ -51,13 +53,15 @@ enum NodeDaemonErrors {
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
+//NodeIdentity from ood active progress
 #[derive(Deserialize, Debug)]
 struct NodeIdentityConfig {
-    owner_zone: String,
-    node_id: String,
-
-    //node_pubblic_key : String,
-    //node_private_key : String,
+    zone_name: String,// $name.buckyos.org or did:ens:$name
+    owner_public_key: jsonwebtoken::jwk::Jwk, //owner is zone_owner
+    owner_name:Option<String>,//owner's name
+    device_doc_jwt:String,//device document,jwt string,siged by owner
+    zone_nonce:String,// random string, is default password of some service
+    //device_private_key: ,storage in partical file
 }
 
 //load from SystemConfig,node的配置分为下面几个部分
@@ -69,6 +73,7 @@ struct NodeIdentityConfig {
 struct NodeConfig {
     revision: u64,
     services: HashMap<String, ServiceConfig>,
+    is_running: bool,
 }
 
 impl NodeConfig {
@@ -82,26 +87,6 @@ impl NodeConfig {
             "Failed to parse NodeConfig JSON".to_string(),
         ));
     }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct ZoneConfig {
-    zone_id: String,
-    //zone_public_key: String,
-    etcd_servers: Vec<String>, //etcd server endpoints
-    etcd_data_version: i64,    //last backup etcd data version, 0 is not backup
-    backup_server_id: Option<String>,
-}
-
-//load from SystemConfig
-//struct ZoneInnerConfig {
-//service configs
-//}
-
-enum EtcdState {
-    Good(String),                 //string is best node_name have etcd for this node
-    Error(String),                //string is error message
-    NeedRunInThisMachine(String), //string is the endpoint info
 }
 
 fn init_log_config() {
@@ -127,9 +112,36 @@ fn init_log_config() {
     .unwrap();
 }
 
-fn load_identity_config() -> Result<NodeIdentityConfig> {
-    // load from /etc/buckyos/node_identity.toml
-    let file_path = "node_identity.toml";
+fn load_node_private_key() -> Result<EncodingKey> {
+    // load from /etc/buckyos/node_private_key.toml
+    let file_path = "node_private_key.pem";
+    let contents = std::fs::read_to_string(file_path).map_err(|err| {
+        error!("read node private key failed! {}", err);
+        return NodeDaemonErrors::ReadConfigError(String::from(file_path));
+    })?;
+
+    let private_key: EncodingKey = EncodingKey::from_ed_pem(contents.as_bytes()).map_err(|err| {
+        error!("parse node private key failed! {}", err);
+        return NodeDaemonErrors::ParserConfigError(format!(
+            "Failed to parse node private key {}",
+            err
+        ));
+    })?;
+
+    Ok(private_key)
+}
+
+fn load_identity_config() -> Result<(NodeIdentityConfig)> {
+    //load ./node_identity.toml for debug
+    //load from /opt/buckyos/etc/node_identity.toml
+    let mut file_path = "node_identity.toml";
+    let path = Path::new(file_path);
+    if path.exists() {
+        warn!("debug load node identity config from ./node_identity.toml");
+    } else {
+        file_path = "/opt/buckyos/etc/node_identity.toml";
+    }   
+
     let contents = std::fs::read_to_string(file_path).map_err(|err| {
         error!("read node identity config failed! {}", err);
         return NodeDaemonErrors::ReadConfigError(String::from(file_path));
@@ -143,287 +155,144 @@ fn load_identity_config() -> Result<NodeIdentityConfig> {
         ));
     })?;
 
+    info!("load node identity config from {} success!",file_path);
     Ok(config)
+}
+
+fn load_device_private_key() -> Result<(EncodingKey)> {
+    let mut file_path = "device_private_key.pem";
+    let path = Path::new(file_path);
+    if path.exists() {
+        warn!("debug load device private_key from ./device_private_key.pem");
+    } else {
+        file_path = "/opt/buckyos/etc/device_private_key.pem";
+    }   
+    let private_key = std::fs::read_to_string(file_path).map_err(|err| {
+        error!("read device private key failed! {}", err);
+        return NodeDaemonErrors::ParserConfigError("read device private key failed!".to_string());
+    })?;
+
+    let private_key: EncodingKey = EncodingKey::from_ed_pem(private_key.as_bytes()).map_err(|err| {
+        error!("parse device private key failed! {}", err);
+        return NodeDaemonErrors::ParserConfigError("parse device private key failed!".to_string());
+    })?;
+
+    info!("load device private key from {} success!",file_path);
+    Ok(private_key)
 }
 
 async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneConfig> {
     //If local files exist, priority loads local files
-    let json_config_path = format!("{}_zone_config.json", node_identity.owner_zone_id);
-    let json_config = std::fs::read_to_string(json_config_path);
+    let json_config_path = format!("{}.zconfig.json", node_identity.zone_name);
+    let json_config = std::fs::read_to_string(json_config_path.clone());
     if json_config.is_ok() {
         let zone_config = serde_json::from_str(&json_config.unwrap());
         if zone_config.is_ok() {
-            warn!(
-                "load zone config from ./{}_zone_config.json success!",
-                node_identity.owner_zone_id
-            );
+            warn!("debug load zone config from {} success!",json_config_path.as_str());
             return Ok(zone_config.unwrap());
+        } else {
+            error!("parse debug zone config from local file failed! {}", json_config_path.as_str());
+            return Err(NodeDaemonErrors::ReasonError("parse debug zone config from local file failed!".to_string()));
         }
     }
 
-    info!("no local zone_config file found, try query from name_service");
-    let mut zone_did = node_identity.owner_zone.clone();
-    let name_client = NameClient::new();
-    if !name_lib::is_did(node_identity.owner_zone.as_str()) {
-        //owner zone is a NAME, need query to get DID
+    let mut zone_did = node_identity.zone_name.clone();
+    if !name_lib::is_did(node_identity.zone_name.as_str()) {
+        //owner zone is a NAME, need query NameInfo to get DID
         info!("owner zone is a NAME, try nameclient.query to get did");
-        let zone_name_info = name_client.resolve(node_identity.owner_zone.as_str(),"DID").await.map_err(
-            (|err| {
+        let zone_jwt = name_lib::resolve(node_identity.zone_name.as_str(),Some("DID")).await
+            .map_err(|err| {
                 error!("query zone config by nameclient failed! {}", err);
                 return NodeDaemonErrors::ReasonError("query zone config failed!".to_string());
             })?;
+        let zone_jwt = zone_jwt.as_str()
+            .ok_or(NodeDaemonErrors::ReasonError("get zone jwt failed!".to_string()))?;
 
-        if zone_name_info.did_document.is_none() {
-            return Err(NodeDaemonErrors::ReasonError(
-                "query zone config by nameclient failed!, did info not found".to_string(),
-            ));
-        } 
+        let zone_doc_json = decode_json_from_jwt_with_default_pk(zone_jwt, &node_identity.owner_public_key).await
+            .map_err(|err| {
+            error!("decode zone doc failed! {}", err);
+            return NodeDaemonErrors::ReasonError("decode zone doc failed!".to_string());
+        })?;
 
-        let zone_did_doc = zone_name_info.did_document.unwrap();
-        zone_did = zone_did_doc.id.clone();
-        if zone_did_doc.payload.is_some() {
-            name_client.add_did_cache(&zone_did, zone_did_doc.clone()).await;
-        }
-        
-    } 
+        let zone_doc:ZoneConfig = serde_json::from_value(zone_doc_json).map_err(|err| {
+            error!("parse zone doc failed! {}", err);
+            return NodeDaemonErrors::ReasonError("parse zone doc failed!".to_string());
+        })?;
 
-    let zone_did_document = name_client.resolve_did(zone_did).await.map_err(|err| {
+        zone_did = zone_doc.did;
+    }  
+
+    let zone_doc_json = name_lib::resolve_did(zone_did.as_str(),None).await.map_err(|err| {
         error!("resolve zone did failed! {}", err);
         return NodeDaemonErrors::ReasonError("resolve zone did failed!".to_string());
     })?;
 
-    if zone_did_document.payload.is_none() {
-        return Err(NodeDaemonErrors::ReasonError(
-            "resolve zone did failed!, did document payload not found".to_string(),
-        ));
-    }
+    let zone_config:ZoneConfig = serde_json::from_value(zone_doc_json).map_err(|err| {
+        error!("parse zone config failed! {}", err);
+        return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
+    })?;
 
-    let zone_config = serde_json::from_str(zone_did_document.payload.unwrap().as_str()).map_err(
-        (|err| {
-            error!("parse zone config failed! {}", err);
-            return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
-        })?;
-    
     return Ok(zone_config);
 }
 
-//fn execute_docker(docker_config)   -> Result<(), Box<dyn std::error::Error>>{
-//    for docker_instance in docker_config {
-//尝试启动/停止镜像
-//启动镜像前，需要通知zone内的docker repo先更新必要的镜像。该过程和docekr repo的实现是解耦合的，后续可以用
-//    }
-//}
+async fn generate_boot_config()->Result<serde_json::Value> {
+    let mut boot_config = json!({
+        "node_id": "node_id",
+        "zone_name": "zone_name",
+        "owner_name": "owner_name",
+        "device_doc_jwt": "device_doc_jwt",
+    });
 
-//fn execute_service(service_config)  -> Result<(), Box<dyn std::error::Error>>{
-//    for service_instance in service_config {
-//service一定不跑在docker里
-//尝试启动/停止/更新服务
+    Ok(boot_config)
+}
 
-//    }
-//}
 
-async fn get_node_config(
-    node_identity: &NodeIdentityConfig,
-    sys_cfg: Arc<&SystemConfig>,
-) -> Result<NodeConfig> {
-    //首先尝试加载本地文件，如果本地文件存在则返回
-    let json_config_path = format!("{}_node_config.json", node_identity.node_id);
+async fn get_node_config(node_host_name: &str,sys_config_client: &mut SystemConfigClient) -> Result<NodeConfig> {
+    let json_config_path = format!("{}_node_config.json", node_host_name);
     let json_config = std::fs::read_to_string(json_config_path);
     if json_config.is_ok() {
         let node_config = NodeConfig::from_json_str(&json_config.unwrap());
         if node_config.is_ok() {
-            warn!(
-                "load node config from ./{}_node_config.json success!",
-                node_identity.node_id
-            );
+            warn!("Debug load node config from ./{}_node_config.json success!",node_host_name);
             return node_config;
         }
     }
 
-    // key: nodes/$node_id
-    //尝试通过system_config加载，加载成功更新缓存，失败则尝试使用缓存中的数据
-    let sys_node_key = format!("nodes/{}", node_identity.node_id);
-    // 从etcd中读取
-    let sys_cfg_result = sys_cfg.get(&sys_node_key).await;
-    if sys_cfg_result.is_err() {
-        return Err(NodeDaemonErrors::ReasonError(
-            "get node config failed from etcd!".to_string(),
-        ));
-    }
-    let result = sys_cfg_result.as_ref().unwrap();
-    let revision = result.1 as u64;
-    let config: HashMap<String, serde_json::Value> = serde_json::from_str(result.0.as_str())
-        .map_err(|e| {
-            NodeDaemonErrors::ReasonError("get node config from etcd and parse failed!".to_string())
+    let sys_node_key = format!("nodes/{}/config", node_host_name);
+    let (sys_cfg_result,rversion) = sys_config_client.get(sys_node_key.as_str()).await
+        .map_err(|error| {
+            error!("get node config failed from etcd! {}", error);
+            return NodeDaemonErrors::SystemConfigError("get node config failed from etcd!".to_string());
         })?;
-    let services = config.get("services");
-    if services.is_none() {
-        return Err(NodeDaemonErrors::ReasonError(
-            "get node config from etcd and parse failed!".to_string(),
-        ));
-    }
-    let services: std::result::Result<HashMap<String, ServiceConfig>, serde_json::Error> =
-        serde_json::from_value(services.unwrap().clone());
-    if services.is_err() {
-        return Err(NodeDaemonErrors::ReasonError(
-            "get node config from etcd and parse failed!".to_string(),
-        ));
-    }
-    let node_config = NodeConfig {
-        revision: revision,
-        services: services.unwrap(),
-    };
-    warn!("load node config from system_config success!",);
-    return Ok(node_config);
 
-    // //无法的找到node_config,返回错误
-    // return Err(NodeDaemonErrors::ReasonError(
-    //     "get node config failed!".to_string(),
-    // ));
+    let node_config = serde_json::from_value(sys_cfg_result).map_err(|err| {
+        error!("parse node config failed! {}", err);
+        return NodeDaemonErrors::SystemConfigError("parse node config failed!".to_string());
+    })?;
+
+    info!("load node config from system_config success!",);
+
+    Ok(node_config)
 }
 
+async fn node_main(node_host_name: &str,
+    sys_config_client: &mut SystemConfigClient,
+    device_private_key: &EncodingKey) -> Result<bool> {
 
-
-//start gateway for etcd cluster
-async fn start_gateway_by_zone_config(
-    zone_config: &ZoneConfig,
-    current_node_id: &str,
-) -> Result<()> {
-    //get gateway config from zone_config
-    // let mut have_wan_node = false;
-    // let mut have_lan_node = false;
-    // let mut this_node_is_lan = false;
-    // let mut this_node = None;
-    // let mut lan_nodes = vec![];
-    // let mut wan_nodes = vec![];
-    // for etcd_server in zone_config.etcd_servers.iter() {
-    //     let server_ep = DeviceEndPoint::from_str(etcd_server)
-    //         .map_err(|err| return NodeDaemonErrors::ParserConfigError(err))?;
-    //     if server_ep.nat_id.is_some() {
-    //         if server_ep.device_name == current_node_id {
-    //             this_node_is_lan = true;
-
-    //             assert!(this_node.is_none());
-    //             this_node = Some(server_ep);
-    //         } else {
-    //             lan_nodes.push(server_ep);
-    //         }
-    //         have_lan_node = true;
-    //     } else {
-    //         if server_ep.device_name == current_node_id {
-    //             this_node_is_lan = false;
-
-    //             assert!(this_node.is_none());
-    //             this_node = Some(server_ep);
-    //         } else {
-    //             wan_nodes.push(server_ep);
-    //         }
-    //         have_wan_node = true;
-    //     }
-    // }
-
-    // // gen gateway config now
-    // assert!(this_node.is_some());
-    // let this_node = this_node.unwrap();
-
-    // // Add current node config at first
-    // let mut gateway_config = gateway_lib::ConfigGen::new(
-    //     current_node_id,
-    //     if this_node_is_lan {
-    //         gateway_lib::PeerAddrType::LAN
-    //     } else {
-    //         gateway_lib::PeerAddrType::WAN
-    //     },
-    //     0,
-    // );
-
-    // // Add etcd service as upstream
-    // let etcd_port = this_node.port.unwrap();
-    // gateway_config.add_upstream_service("etcd", "tcp", "127.0.0.1", etcd_port);
-
-    // // Add other nodes etcd service via tcp forward proxy
-    // for lan_node in lan_nodes {
-    //     let etcd_port = lan_node.port.unwrap();
-
-    //     gateway_config.add_device(&lan_node.device_name, None, None, Some(gateway_lib::PeerAddrType::LAN));
-    //     gateway_config.add_forward_proxy(
-    //         format!("{}-etcd", lan_node.device_name),
-    //         "tcp",
-    //         "127.0.0.1",
-    //         etcd_port,
-    //         lan_node.device_name,
-    //         etcd_port,
-    //     );
-    // }
-    // for wan_node in wan_nodes {
-    //     let etcd_port = wan_node.port.unwrap();
-
-    //     gateway_config.add_device(&wan_node.device_name, None, None, Some(gateway_lib::PeerAddrType::WAN));
-    //     gateway_config.add_forward_proxy(
-    //         format!("{}-etcd", wan_node.device_name),
-    //         "tcp",
-    //         "127.0.0.1",
-    //         etcd_port,
-    //         wan_node.device_name,
-    //         etcd_port,
-    //     );
-    // }
-
-    // let cmd = gateway_config.gen();
-    // info!("Gateway config: {}", cmd);
-
-    // // Try start gateway
-    // if have_wan_node == have_lan_node {
-    //     if this_node_is_lan {
-    //         //TODO:start gateway, and register on WAN nodes and start passive port forward
-    //         warn!("start gateway, and register on WAN nodes and start passive port forward")
-    //     } else {
-    //         //TODO:start gateway, and start port forward to LAN nodes
-    //         warn!("start gateway, and start port forward to LAN nodes")
-    //     }
-    // } else {
-    //     warn!("all node in some NAT, no gateway needed!");
-    // }
-
-    Ok(())
-}
-
-async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig) -> Result<()> {
-    // node_id对应的上，就用nodeid作为访问方式，对应不上就直接连local的etcd
-    let node_id = node_identity.node_id.clone();
-    let local_endpoint = zone_config
-        .etcd_servers
-        .iter()
-        .find(|&server| server.starts_with(&node_id))
-        .map_or_else(
-            || "http://127.0.0.1:2379".to_string(),
-            |server| parse_etcd_url(server.to_string()).unwrap().0,
-        );
-
-    info!("node_main local_endpoint:{}", local_endpoint);
-
-    let sys_cfg = SystemConfig::new(&vec![local_endpoint])
-        .await
-        .map_err(|_| {
-            error!("SystemConfig init failed!");
-            NodeDaemonErrors::SystemConfigError("".to_string())
+    let node_config= get_node_config(node_host_name, sys_config_client).await
+        .map_err(|err| {
+            error!("load node config failed! {}", err);
+            return NodeDaemonErrors::SystemConfigError("cann't load node config!".to_string());
         })?;
-    let sys_cfg = Arc::new(&sys_cfg);
-    let node_config = get_node_config(node_identity, Arc::clone(&sys_cfg)).await?;
-
-    log::info!("node_config:{:?}", node_config);
-
-    //try_backup_etcd_data()
-    etcd_mgr::try_report_node_status(node_identity, Arc::clone(&sys_cfg));
-
-    //cmd_config = load_node_cmd_config()
-    //execute_cmd(cmd_config) //一般是执行运维命令，类似系统备份和恢复,由node_ctl负责执行
+    
+    if !node_config.is_running {
+        return Ok(false);
+    }
 
     let service_stream = stream::iter(node_config.services);
-    service_stream
-        .for_each_concurrent(1, |(service_name, service_cfg)| async move {
+    service_stream.for_each_concurrent(1, |(service_name, service_cfg)| async move {
             let target_state = service_cfg.target_state.clone();
-            let _ = control_run_item_to_target_state(&service_cfg, target_state, None)
+            let _ = control_run_item_to_target_state(&service_cfg, target_state, device_private_key)
                 .await
                 .map_err(|_err| {
                     error!("control service item to target state failed!");
@@ -438,34 +307,34 @@ async fn node_main(node_identity: &NodeIdentityConfig, zone_config: &ZoneConfig)
     //execute_vm(vm_config)
     //docker_config = system_config.get("")
     //execute_docker(docker_config)
-    Ok(())
+    Ok(true)
 }
 
+
 async fn node_daemon_main_loop(
-    node_identity: &NodeIdentityConfig,
-    zone_config: Arc<ZoneConfig>,
+    node_host_name:&str,
+    sys_config_client: &mut SystemConfigClient,
+    device_private_key: &EncodingKey,
 ) -> Result<()> {
-    let zone_config = zone_config.as_ref();
     let mut loop_step = 0;
     let mut is_running = true;
 
     loop {
-        if is_running == false {
+        if !is_running {
             break;
         }
+
         loop_step += 1;
         info!("node daemon main loop step:{}", loop_step);
 
-        let node_main_result = node_main(node_identity, zone_config).await;
-        match node_main_result {
-            Ok(_) => {
-                info!("node_main success!");
-            }
-            Err(err) => {
-                error!("node_main failed! {}", err);
-            }
+        let main_result = node_main(node_host_name, sys_config_client, device_private_key).await;
+        if main_result.is_err() {
+            error!("node_main failed! {}", main_result.err().unwrap());
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        } else {
+            is_running = main_result.unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
     Ok(())
 }
@@ -490,95 +359,145 @@ fn main() {
 async fn async_main() -> std::result::Result<(), String> {
     init_log_config();
     info!("node_dameon start...");
-
+    //load node identity config
     let node_identity = load_identity_config().map_err(|err| {
         error!("load node identity config failed! {}", err);
-        String::from("load node identity config failed!")
+        return String::from("load node identity config failed!")
     })?;
 
-    info!(
-        "zone_id : {}, node_id is:{}",
-        node_identity.owner_zone_id, node_identity.node_id
-    );
+    //verify device_doc by owner_public_key
+    if node_identity.owner_name.is_some() {
+        let owner_name = node_identity.owner_name.as_ref().unwrap();
+        let zone_owner_doc_key = name_lib::resolve_did(owner_name,Some(name_lib::DID_DOC_AUTHKEY)).await;
+        match zone_owner_doc_key {
+            Ok(zone_owner_doc_key) => {
+                let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(zone_owner_doc_key).unwrap();
+                if public_key_jwk != node_identity.owner_public_key {
+                    warn!("owner public key not match! ");
+                }
+            }
+            Err(err) => {
+                error!("resolve owner public key from resolve_did failed! {}", err);
+            }
+        }
+    }
+    let device_doc_json = decode_json_from_jwt_with_default_pk(&node_identity.device_doc_jwt, &node_identity.owner_public_key)
+        .await
+        .map_err(|err| {
+            error!("decode device doc failed! {}", err);
+            return String::from("decode device doc from jwt failed!");
+        })?;
+    let device_doc : DeviceConfig = serde_json::from_value(device_doc_json).map_err(|err| {
+        error!("parse device doc failed! {}", err);
+        return String::from("parse device doc failed!");
+    })?;
+    info!("current node's device doc: {:?}", device_doc);
+    
+    //verify node_name is this device's hostname
+    let current_host_name = std::env::var("HOSTNAME").unwrap();
+    if device_doc.hostname != current_host_name {
+        warn!("device.hostname not match node's hostname {}!",current_host_name);
+        return Err("device.hostname not match node's hostname".to_string());
+    }
 
+    //load device private key
+    let device_private_key = load_device_private_key().map_err(|error| {
+        error!("load device private key failed! {}", error);
+        return String::from("load device private key failed!");
+    })?;
+    
+    info!("start looking zone {} 's config...", node_identity.zone_name.as_str());
     let zone_config = looking_zone_config(&node_identity).await.map_err(|err| {
         error!("looking zone config failed! {}", err);
         String::from("looking zone config failed!")
     })?;
-    info!("zone config: {:?}", zone_config);
+    info!("Load zone document OK, {:?}", zone_config);
+    info!("Booting...");
 
-
-    // start_gateway_by_zone_config(&zone_config, &node_identity.node_id.as_str())
-    //     .await
-    //     .map_err(|err| {
-    //         error!("start gateway by zone config failed!,{}", err);
-    //         return String::from("start gateway by zone config failed!");
-    //     })?;
 
     //init system config (client)
     //if init system config failed, try to init system config service at this machine ,then try to init system config client again
-    
-    let mut syc_cfg_client = SystemConfig::new(&zone_config.etcd_servers)
-        .await
-        .map_err(|_err| {
-            error!("SystemConfig init failed!");
-            return String::from("SystemConfig init failed!");
-        })?;
+    let now = SystemTime::now();
+    let since_the_epoch = now.duration_since(UNIX_EPOCH)
+        .expect("Time went backwards");
+    let timestamp = since_the_epoch.as_secs();
 
-    let sys_state = syc_cfg_client.check_state(&zone_config, &node_identity)
-        .await
-        .map_err(|_err| {
-            error!("check etcd by zone config failed!");
-            return String::from("check etcd by zone config failed!");
-        })?;
+    let device_session_token = kRPC::RPCSessionToken {
+        token_type : kRPC::RPCSessionTokenType::JWT,
+        userid : Some(device_doc.hostname.clone()),
+        appid:Some("kernel".to_string()),
+        exp:Some(timestamp + 3600*24*7),
+        token:None,
+    };
 
-    match sys_state {
-        EtcdState::Good(node_name) => {
-            info!("etcd service is good, node:{} is my server.", node_name);
+    let device_session_token_jwt = device_session_token.generate_jwt(Some(device_doc.did.clone()),&device_private_key).map_err(|err| {
+        error!("generate device session token failed! {}", err);
+        return String::from("generate device session token failed!");
+    })?;
+
+    //check this is node is in ood list
+    let mut syc_cfg_client: SystemConfigClient;
+    let boot_config: serde_json::Value; 
+    if zone_config.oods.contains(&device_doc.hostname) {
+        //If this node is ood: try run / recover  system_config_service
+        //  init system_config client, if kv://boot is not exist, create it and register new ood. 
+        let is_system_config_service_running = sys_config_check_running().await;
+        if is_system_config_service_running.is_err() {
+            warn!("check system_config_service running failed!,try to start system_config_service");
+            let start_result = sys_config_start_service().await.map_err(|err| {
+                error!("start system_config_service failed! {}", err);
+                return String::from("start system_config_service failed!");
+            })?;
         }
-        EtcdState::Error(err_msg) => {
-            error!("etcd is error, err_msg:{}", err_msg);
-            return Err(String::from("etcd is error!"));
-        }
-        EtcdState::NeedRunInThisMachine(endpoint) => {
-            info!(
-                "etcd need run in this machine, endpoint:{}. try to get config version",
-                endpoint
-            );
-            let etcd_data_version = etcd_mgr::get_etcd_data_version(&node_identity, &zone_config)
-                .await
-                .map_err(|err| {
-                    error!("get etcd data version {}", err);
-                    return String::from("get etcd data version failed!");
+
+        let ood = vec![device_doc.hostname.clone()];
+        syc_cfg_client = SystemConfigClient::new(&ood, &Some(device_session_token_jwt));
+        let boot_config_result = syc_cfg_client.get("boot").await;
+        match boot_config_result {
+            system_config::Result::Err(SystemConfigError::KeyNotFound(_)) => {
+                warn!("boot config is not exist, create it!");
+
+                boot_config = generate_boot_config().await.map_err(|err| {
+                    error!("generate boot config failed! {}", err);
+                    return String::from("generate boot config failed!");
                 })?;
 
-            if etcd_data_version < zone_config.etcd_data_version {
-                info!("local etcd data version is old, wait for etcd restore!");
-                etcd_mgr::try_restore_etcd(&node_identity, &zone_config)
-                    .await
-                    .map_err(|_err| {
-                        error!("try restore etcd failed!");
-                        return String::from("try restore etcd failed!");
+                let boot_config_str = serde_json::to_string(&boot_config).map_err(|err| {
+                    error!("serialize boot config failed! {}", err);
+                    return String::from("serialize boot config failed!");
+                })?;
+
+                syc_cfg_client.register_device(node_identity.device_doc_jwt.as_str(),&Some(boot_config_str)).await
+                    .map_err(|err| {
+                        error!("reigster device and set boot config failed! {}", err);
+                        return String::from("set boot config failed!");
                     })?;
+                info!("Register Device and Init boot config OK, {}", boot_config);
+            },
+            system_config::Result::Ok(r) => {
+                boot_config = r.0;
+                info!("OOD device load boot config OK, {}", boot_config);
+            },
+            _ => {
+                error!("get boot config failed!");
+                return Err(String::from("get boot config failed!"));
             }
-
-            try_start_etcd(&node_identity, &zone_config)
-                .await
-                .map_err(|_err| {
-                    error!("try start etcd failed!");
-                    return String::from("try start etcd failed!");
-                })?;
         }
+
+    } else {
+        //this node is not ood: try connect to system_config_service
+        syc_cfg_client = SystemConfigClient::new(&zone_config.oods, &Some(device_session_token_jwt));
+        let (boot_config,_) = syc_cfg_client.get("boot").await
+            .map_err(|error| {
+                error!("get boot config failed! {}", error);
+                return String::from("get boot config failed!");
+            })?;
+        info!("Load boot config OK, {:?}", boot_config);
     }
 
-    // let node_identity = Arc::new(node_identity);
-    let zone_config = Arc::new(zone_config);
-    let zc_clone = Arc::clone(&zone_config);
-    // 创建一个新线程来处理备份逻辑
-    // std::thread::spawn(move || system_config_backup(zc_clone));
-
-    info!("Ready, start node daemon main loop!");
-    node_daemon_main_loop(&node_identity, zone_config)
+    //use boot config to init name-lib.. etc kernel libs.
+    info!("{}@{} boot OK, enter node daemon main loop!", device_doc.hostname, node_identity.zone_name);
+    node_daemon_main_loop(device_doc.hostname.as_str(), &mut syc_cfg_client, &device_private_key)
         .await
         .map_err(|err| {
             error!("node daemon main loop failed! {}", err);

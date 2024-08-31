@@ -39,7 +39,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         my_test_name: true,
         exp: 1724625212, 
     };
-    let private_key = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap();
+    let private_key: EncodingKey = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap();
     let mut header = Header::new(Algorithm::EdDSA);
     header.typ = None; // 默认为 JWT，设置为None以节约空间
     let token = encode(&header, &my_claims, &private_key).unwrap();
