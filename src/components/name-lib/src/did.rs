@@ -35,7 +35,7 @@ impl DID {
 
 
 
-#[derive(Clone, Serialize, Deserialize,Debug)]
+#[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub enum EncodedDocument {
     JsonLd(Value),
     Jwt(String),
