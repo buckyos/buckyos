@@ -1,5 +1,5 @@
 use std::time::Duration;
-use crate::{DIDSimpleDocument, NSError, NSProvider, NSResult, NameInfo};
+use crate::{DIDDocumentTrait, EncodedDocument, NSError, NSProvider, NSResult, NameInfo};
 
 pub struct NameQuery {
     providers: Vec<Box<dyn NSProvider>>,
@@ -35,13 +35,13 @@ impl NameQuery {
         Err(NSError::NotFound(String::from(name)))
     }
 
-    pub async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<DIDSimpleDocument> {
+    pub async fn query_did(&self, did: &str) -> NSResult<EncodedDocument> {
         if self.providers.len() == 0 {
             return Err(NSError::Failed(format!("no provider for {}", did)));
         }
 
         for provider in self.providers.iter() {
-            match provider.query_did(did,fragment).await {
+            match provider.query_did(did,None).await {
                 Ok(info) => {
                     return Ok(info);
                 },

@@ -2,12 +2,13 @@
 use std::sync::{Arc};
 use std::{fs::File};
 use log::*;
+use name_lib::DeviceConfig;
 use simplelog::*;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
 use warp::{reply::{Reply, Response}, Filter};
 use serde_json::{Value, json};
-use name_lib::DIDSimpleDocument;
+use name_lib::*;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
 use ::kRPC::*;
 
@@ -30,7 +31,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     };
 }
 
-async fn get_trust_did_document(device_id:&str) -> Result<DIDSimpleDocument> {
+async fn get_trust_did_document(device_id:&str) -> Result<DeviceConfig> {
     unimplemented!("get_trust_device_did_document")
 }
 
@@ -38,7 +39,7 @@ fn generate_session_token(appid:&str,userid:&str,login_nonce:u64) -> RPCSessionT
     unimplemented!()
 }
 
-fn verify_jws_signature(json_obj:&Value,signature:&str,device_public_key:&str) -> bool {
+fn verify_jws_signature(json_obj:&Value,signature:&str,decode_key:&DecodingKey) -> bool {
     unimplemented!("verify_signature")
 }
 
@@ -131,7 +132,7 @@ async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<RPCSe
 
     //verify signature
     let trust_did_document = get_trust_did_document(from).await?;
-    let device_public_key = trust_did_document.public_key.ok_or(RPCErrors::ReasonError("Device public key not found".to_string()))?;
+    let device_public_key = trust_did_document.get_auth_key().ok_or(RPCErrors::ReasonError("Device public key not found".to_string()))?;
 
     //TODO:check login_nonce > last_login_nonce
 
@@ -141,7 +142,7 @@ async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<RPCSe
     will_hash_obj.remove("type");
     will_hash_obj.insert(String::from("login_nonce"),json!(login_nonce));
 
-    if !verify_jws_signature(&will_hash,signature,device_public_key.as_str()) {
+    if !verify_jws_signature(&will_hash,signature,&device_public_key) {
         return Err(RPCErrors::ReasonError("Invalid signature".to_string()));
     }
 

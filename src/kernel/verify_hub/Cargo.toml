@@ -18,4 +18,4 @@ thiserror = "*"
 jsonwebtoken = "*"
 # rocksdb = "*"
 kRPC ={ path = "../kRPC" }
-name_lib = { path = "../../components/name-lib" }
+name-lib = { path = "../../components/name-lib" }

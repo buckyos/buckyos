@@ -2,6 +2,7 @@
 
 use log::*;
 use rand::random;
+use serde::{Serialize,Deserialize};
 use serde_json::{Value, json};
 use ::kRPC::kRPC;
 use thiserror::Error;
@@ -23,12 +24,13 @@ pub struct SystemConfigClient {
     client: kRPC,
 }
 
+
 impl SystemConfigClient {
     pub fn new(ood_list:&Vec<String>,session_token:&Option<String>) -> Self {
         assert!(ood_list.len() > 0);
         let index = random::<usize>() % ood_list.len();
         let device_name = ood_list[index].clone();
-        let server_url = format!("http://{}:3030/system_config",device_name);
+        let server_url = format!("http://{}:10030/system_config",device_name);
         //http://$device_name:3080/systemconfig
 
         let client = kRPC::new(server_url.as_str(), session_token);
@@ -37,8 +39,20 @@ impl SystemConfigClient {
         }
     }
 
-    pub async fn register_device(&self,device_jwt:&str,boot_info:&Option<String>) -> Result<()> {
-        let result = self.client.call("sys_config_register_device", json!({"device_jwt": device_jwt}))
+    pub async fn register_device(&self,device_jwt:&str,boot_info:&Option<serde_json::Value>) -> Result<()> {
+        let param:serde_json::Value;
+        if boot_info.is_some() {
+            param = json!({
+                "device_doc": device_jwt,
+                "boot_info": boot_info,
+            });
+        } else {
+            param = json!({
+                "device_doc": device_jwt,
+            });
+        }
+        
+        let result = self.client.call("sys_config_register_device",param)
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
@@ -60,6 +74,4 @@ impl SystemConfigClient {
 
         Ok(0)
     }
-
-
 }

@@ -4,8 +4,10 @@ resolver = "2"
 members = [
     #"./components/backup-lib",
     #"./components/gateway-lib",
+
     "./components/name-lib",
     "./components/package-manager",
+    "./components/buckyos-kit",
 
     "./kernel/kRPC",
     "./kernel/rbac",

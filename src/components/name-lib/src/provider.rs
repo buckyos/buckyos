@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::{DIDSimpleDocument, NSError, NSResult};
+use crate::{DIDDocumentTrait, EncodedDocument , NSError, NSResult};
 
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -28,7 +28,7 @@ pub struct NameInfo {
     pub address: Vec<IpAddr>,
     pub cname:Option<String>,
     pub txt:Option<String>,
-    pub did_document:Option<DIDSimpleDocument>,
+    pub did_document:Option<EncodedDocument>,
     pub proof_type:NameProof,
     pub create_time: u64,
     pub ttl: Option<u64>,
@@ -38,5 +38,5 @@ pub struct NameInfo {
 #[async_trait::async_trait]
 pub trait NSProvider: 'static + Send + Sync {
     async fn query(&self, name: &str,record_type:Option<&str>) -> NSResult<NameInfo>;
-    async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<DIDSimpleDocument>;
+    async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument>;
 }

@@ -20,6 +20,9 @@ lazy_static = "*"
 thiserror = "*"
 jsonwebtoken = "*" 
 # rocksdb = "*"
+buckyos-kit = { path = "../../components/buckyos-kit" }
+name-lib = { path = "../../components/name-lib" }
 kRPC ={ path = "../kRPC" }
 rbac = { path = "../rbac" }
+
 

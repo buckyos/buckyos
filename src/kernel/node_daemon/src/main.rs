@@ -22,7 +22,6 @@ use futures::prelude::*;
 use jsonwebtoken::jwk::Jwk;
 use log::*;
 use serde::{Deserialize, Serialize};
-use sha2::digest::const_oid::db::rfc4519::O;
 // use serde_json::error;
 use simplelog::*;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
@@ -200,34 +199,45 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
     if !name_lib::is_did(node_identity.zone_name.as_str()) {
         //owner zone is a NAME, need query NameInfo to get DID
         info!("owner zone is a NAME, try nameclient.query to get did");
+        let naem_info = name_lib::resolve(node_identity.zone_name.as_str(),Some("DID")).await
+            .map_err(|err| {
+                error!("query zone config by nameclient failed! {}", err);
+                return NodeDaemonErrors::ReasonError("query zone config failed!".to_string());
+            })?;
+
         let zone_jwt = name_lib::resolve(node_identity.zone_name.as_str(),Some("DID")).await
             .map_err(|err| {
                 error!("query zone config by nameclient failed! {}", err);
                 return NodeDaemonErrors::ReasonError("query zone config failed!".to_string());
             })?;
-        let zone_jwt = zone_jwt.as_str()
-            .ok_or(NodeDaemonErrors::ReasonError("get zone jwt failed!".to_string()))?;
 
-        let zone_doc_json = decode_json_from_jwt_with_default_pk(zone_jwt, &node_identity.owner_public_key).await
+        if zone_jwt.did_document.is_none() {
+            error!("get zone jwt failed!");
+            return Err(NodeDaemonErrors::ReasonError("get zone jwt failed!".to_string()));
+        }
+        let zone_jwt = zone_jwt.did_document.unwrap();
+        let import_key = DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(
+            |err| {
+                error!("parse owner public key failed! {}", err);
+                return NodeDaemonErrors::ReasonError("parse owner public key failed!".to_string());
+            })?;
+        
+        let zone_config = ZoneConfig::decode(&zone_jwt, Some(&import_key))
             .map_err(|err| {
-            error!("decode zone doc failed! {}", err);
-            return NodeDaemonErrors::ReasonError("decode zone doc failed!".to_string());
-        })?;
+                error!("parse zone config failed! {}", err);
+                return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
+            })?;
 
-        let zone_doc:ZoneConfig = serde_json::from_value(zone_doc_json).map_err(|err| {
-            error!("parse zone doc failed! {}", err);
-            return NodeDaemonErrors::ReasonError("parse zone doc failed!".to_string());
-        })?;
-
-        zone_did = zone_doc.did;
+        zone_did = zone_config.did;
     }  
 
-    let zone_doc_json = name_lib::resolve_did(zone_did.as_str(),None).await.map_err(|err| {
+    //try load lasted document from name_lib 
+    let zone_doc: EncodedDocument = name_lib::resolve_did(zone_did.as_str()).await.map_err(|err| {
         error!("resolve zone did failed! {}", err);
         return NodeDaemonErrors::ReasonError("resolve zone did failed!".to_string());
     })?;
 
-    let zone_config:ZoneConfig = serde_json::from_value(zone_doc_json).map_err(|err| {
+    let zone_config:ZoneConfig = ZoneConfig::decode(&zone_doc,None).map_err(|err| {
         error!("parse zone config failed! {}", err);
         return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
     })?;
@@ -368,12 +378,15 @@ async fn async_main() -> std::result::Result<(), String> {
     //verify device_doc by owner_public_key
     if node_identity.owner_name.is_some() {
         let owner_name = node_identity.owner_name.as_ref().unwrap();
-        let zone_owner_doc_key = name_lib::resolve_did(owner_name,Some(name_lib::DID_DOC_AUTHKEY)).await;
-        match zone_owner_doc_key {
-            Ok(zone_owner_doc_key) => {
-                let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(zone_owner_doc_key).unwrap();
-                if public_key_jwk != node_identity.owner_public_key {
-                    warn!("owner public key not match! ");
+        let owner_config = name_lib::resolve_did(owner_name.as_str()).await;
+        match owner_config {
+            Ok(owner_config) => {
+                let owner_config = OwnerConfig::decode(&owner_config,None);
+                if owner_config.is_ok() {
+                    let owner_config = owner_config.unwrap();
+                    if owner_config.auth_key != node_identity.owner_public_key {
+                        warn!("owner public key not match! ");
+                    }
                 }
             }
             Err(err) => {
@@ -382,7 +395,6 @@ async fn async_main() -> std::result::Result<(), String> {
         }
     }
     let device_doc_json = decode_json_from_jwt_with_default_pk(&node_identity.device_doc_jwt, &node_identity.owner_public_key)
-        .await
         .map_err(|err| {
             error!("decode device doc failed! {}", err);
             return String::from("decode device doc from jwt failed!");
@@ -395,9 +407,9 @@ async fn async_main() -> std::result::Result<(), String> {
     
     //verify node_name is this device's hostname
     let current_host_name = std::env::var("HOSTNAME").unwrap();
-    if device_doc.hostname != current_host_name {
+    if device_doc.name != current_host_name {
         warn!("device.hostname not match node's hostname {}!",current_host_name);
-        return Err("device.hostname not match node's hostname".to_string());
+        //return Err("device.hostname not match node's hostname".to_string());
     }
 
     //load device private key
@@ -424,7 +436,7 @@ async fn async_main() -> std::result::Result<(), String> {
 
     let device_session_token = kRPC::RPCSessionToken {
         token_type : kRPC::RPCSessionTokenType::JWT,
-        userid : Some(device_doc.hostname.clone()),
+        userid : Some(device_doc.name.clone()),
         appid:Some("kernel".to_string()),
         exp:Some(timestamp + 3600*24*7),
         token:None,
@@ -438,19 +450,19 @@ async fn async_main() -> std::result::Result<(), String> {
     //check this is node is in ood list
     let syc_cfg_client: SystemConfigClient;
     let boot_config: serde_json::Value; 
-    if zone_config.oods.contains(&device_doc.hostname) {
+    if zone_config.oods.contains(&device_doc.name) {
         //If this node is ood: try run / recover  system_config_service
         //  init system_config client, if kv://boot is not exist, create it and register new ood. 
         let is_system_config_service_running = sys_config_check_running().await;
         if is_system_config_service_running.is_err() {
             warn!("check system_config_service running failed!,try to start system_config_service");
-            let start_result = sys_config_start_service().await.map_err(|err| {
+            let start_result = sys_config_start_service(Some(node_identity.zone_nonce.as_str())).await.map_err(|err| {
                 error!("start system_config_service failed! {}", err);
                 return String::from("start system_config_service failed!");
             })?;
         }
 
-        let ood = vec![device_doc.hostname.clone()];
+        let ood = vec![device_doc.name.clone()];
         syc_cfg_client = SystemConfigClient::new(&ood, &Some(device_session_token_jwt));
         let boot_config_result = syc_cfg_client.get("boot").await;
         match boot_config_result {
@@ -462,17 +474,14 @@ async fn async_main() -> std::result::Result<(), String> {
                     return String::from("generate boot config failed!");
                 })?;
 
-                let boot_config_str = serde_json::to_string(&boot_config).map_err(|err| {
-                    error!("serialize boot config failed! {}", err);
-                    return String::from("serialize boot config failed!");
-                })?;
 
-                syc_cfg_client.register_device(node_identity.device_doc_jwt.as_str(),&Some(boot_config_str)).await
+                syc_cfg_client.register_device(node_identity.device_doc_jwt.as_str(),&Some(boot_config)).await
                     .map_err(|err| {
                         error!("reigster device and set boot config failed! {}", err);
                         return String::from("set boot config failed!");
                     })?;
-                info!("Register Device and Init boot config OK, {}", boot_config);
+                info!("Register Device and Init boot config OK, wat 2 secs.");
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             },
             system_config::Result::Ok(r) => {
                 boot_config = r.0;
@@ -496,8 +505,8 @@ async fn async_main() -> std::result::Result<(), String> {
     }
 
     //use boot config to init name-lib.. etc kernel libs.
-    info!("{}@{} boot OK, enter node daemon main loop!", device_doc.hostname, node_identity.zone_name);
-    node_daemon_main_loop(device_doc.hostname.as_str(), &syc_cfg_client, &device_private_key)
+    info!("{}@{} boot OK, enter node daemon main loop!", device_doc.name, node_identity.zone_name);
+    node_daemon_main_loop(&device_doc.name.as_str(), &syc_cfg_client, &device_private_key)
         .await
         .map_err(|err| {
             error!("node daemon main loop failed! {}", err);

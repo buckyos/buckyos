@@ -13,4 +13,7 @@ etcd-rs = "*"
 lazy_static = "*"
 thiserror = "*"
 rand = "*"
+sysinfo = "*"
+
+buckyos-kit = { path = "../../components/buckyos-kit" }
 kRPC ={ path = "../kRPC" }

@@ -9,13 +9,7 @@ use tokio::sync::Mutex;
 use casbin::{rhai::ImmutableString, CoreApi, DefaultModel, Enforcer, Filter, MemoryAdapter, MgmtApi};
 use lazy_static::lazy_static;
 
-lazy_static!{
-    static ref SYS_ENFORCE: Arc<Mutex<Option<Enforcer> > > = {
-        Arc::new(Mutex::new(None))
-    };
-}
-pub async fn init_default_enforcer()->Result<Enforcer,Box<dyn std::error::Error>>{
-    let model_str = r#"
+pub const DEFAULT_MODEL: &str =  r#"
 [request_definition]
 r = sub,obj,act
 
@@ -31,10 +25,9 @@ e = priority(p.eft) || deny
 [matchers]
 m = (g(r.sub, p.sub) || r.sub == p.sub) && regexMatch(r.obj,p.obj) && regexMatch(r.act, p.act)
 #m = (g(r.sub, p.sub) || r.sub == p.sub) && r.sub == keyGet3(r.obj, p.obj, p.sub) && regexMatch(r.obj,p.obj) && regexMatch(r.act, p.act)
-    "#;
+"#;
 
-
-    let policy_str = r#"
+pub const DEFAULT_POLICY: &str = r#"
 p, owner, kv://.+$, read|write,allow
 p, owner, dfs://.+$, read|write,allow
 p, owner, fs://[^/]+/.+$, read|write,allow
@@ -54,8 +47,16 @@ g, alice, user
 g, bob, user
 g, app1, app
 g, app2, app
-    "#;
+"#;
 
+lazy_static!{
+    static ref SYS_ENFORCE: Arc<Mutex<Option<Enforcer> > > = {
+        Arc::new(Mutex::new(None))
+    };
+}
+pub async fn create_enforcer(model_str:Option<&str>,policy_str:Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let model_str = model_str.unwrap_or(DEFAULT_MODEL);
+    let policy_str = policy_str.unwrap_or(DEFAULT_POLICY);
 
     let m = DefaultModel::from_str(model_str).await?;
     let mut e = Enforcer::new(m, MemoryAdapter::default()).await?;
@@ -71,17 +72,21 @@ g, app2, app
         }
     }
 
-    return Ok(e);
+    let mut enforcer = SYS_ENFORCE.lock().await;
+    *enforcer = Some(e);
+    Ok(())
 }
+
 //use default RBAC config to enforce the access control
 //default acl config is stored in the memory,so it is not async function
+//TODO :use system_config event to reload the config.
 pub async fn enforce(userid:&str, appid:Option<&str>,res_path:&str,op_name:&str) -> bool {
-    let mut enforcer = SYS_ENFORCE.lock().await;
+    let enforcer = SYS_ENFORCE.lock().await;
     if enforcer.is_none() {
-        *enforcer = Some(init_default_enforcer().await.unwrap());        
+        error!("enforcer is not initialized");
+        return false;
     }
-
-    let enforcer = enforcer.as_mut().unwrap();
+    let enforcer = enforcer.as_ref().unwrap();
     let res = enforcer.enforce((userid, res_path, op_name)).unwrap();
     //println!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
     info!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
@@ -189,6 +194,7 @@ m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)
 
     #[test]
     async fn test_enforce() {
+        create_enforcer(None,None).await.unwrap();
         let res = enforce("alice", Some("app1"), "dfs://homes/alice/apps/app1/data", "write").await;
         assert_eq!(res, true);
         assert_eq!(enforce("bob", None, "dfs://homes/alice/app2", "read").await, false);

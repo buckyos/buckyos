@@ -1,5 +1,5 @@
 [package]
-name = "name_lib"
+name = "name-lib"
 version = "0.2.0"
 edition = "2021"
 
@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 thiserror = "*"
+log = "*"   
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 async-trait = "*"
@@ -14,5 +15,6 @@ trust-dns-resolver = { version = "*", features = ["dns-over-rustls"] }
 tokio = { version = "*", features = ["full"] }
 mini-moka = "*" 
 jsonwebtoken = "*"
-bucky-crypto = {git = "https://github.com/buckyos/bucky-crypto.git", version = "*", features = ["x509"]}
+base64="*"
+
 

@@ -5,7 +5,7 @@ use trust_dns_resolver::config::*;
 use trust_dns_resolver::proto::rr::record_type;
 use trust_dns_resolver::TokioAsyncResolver;
 
-use crate::{DIDSimpleDocument, NSError, NSProvider, NSResult, NameInfo, NameProof};
+use crate::{EncodedDocument, NSError, NSProvider, NSResult, NameInfo, NameProof};
 
 pub struct DNSProvider {
     dns_server: Option<String>,
@@ -108,9 +108,9 @@ impl NSProvider for DNSProvider {
                 return Ok(name_info);
             },
             "DID"=>{
-                let response = resolver.txt_lookup(name).await.unwrap();
-                let mut did_txt = String::new();
-                let mut did_doc = DIDSimpleDocument::new();
+                let response: trust_dns_resolver::lookup::TxtLookup = resolver.txt_lookup(name).await.unwrap();
+                //let mut did_tx:String;
+                //let mut did_doc = DIDSimpleDocument::new();
 
                 for record in response.iter() {
                     let txt = record.txt_data().iter().map(|s| -> String {
@@ -120,7 +120,8 @@ impl NSProvider for DNSProvider {
                         let txt = String::from_utf8_lossy(byte_slice).to_string();
                         if txt.starts_with("did=") {
                             let did_payload = txt.trim_start_matches("did=").trim_end_matches(";");
-                            did_doc = serde_json::from_str(did_payload).unwrap();
+                            //did_tx = did_payload.to_string();
+                            //did_doc = serde_json::from_str(did_payload).unwrap();
                         }
                         
                         return String::from_utf8_lossy(byte_slice).to_string();
@@ -139,7 +140,7 @@ impl NSProvider for DNSProvider {
        
     }
 
-    async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<DIDSimpleDocument> {
+    async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {
         unimplemented!()
     }
 }

@@ -8,4 +8,6 @@ authors = ["BuckyOS DAO","@waterflier"]
 serde = "*"
 serde_json = "*"
 jsonwebtoken = "*"
+thiserror = "*"
+base64 = "*"
 

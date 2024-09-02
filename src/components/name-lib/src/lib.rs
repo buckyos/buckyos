@@ -7,20 +7,23 @@ mod name_client;
 mod name_query;
 mod dns_provider;
 mod did;
+mod config;
 
 
 pub use did::*;
+pub use config::*;
 pub use provider::*;
 pub use utility::*;
 pub use name_client::*;
 
-pub async fn resolve(name: &str,record_type:Option<&str>) -> NSResult<serde_json::Value> {
-    unimplemented!()
+pub async fn resolve(name: &str,record_type:Option<&str>) -> NSResult<NameInfo> {
+     unimplemented!()
 }
 
-pub async fn resolve_did(did: &str,fragment:Option<&str>) -> NSResult<serde_json::Value> {
-    unimplemented!()
+pub async fn resolve_did(did: &str) -> NSResult<EncodedDocument> {
+     unimplemented!()
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

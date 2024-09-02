@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{NSProvider, NSResult, NameInfo,DIDSimpleDocument};
+use crate::{DIDDocumentTrait, EncodedDocument, NSProvider, NSResult, NameInfo};
 use crate::dns_provider::DNSProvider;  
 use crate::name_query::NameQuery;
 
@@ -16,7 +16,7 @@ pub struct NameClient {
     name_query: NameQuery,
     config : NameClientConfig,
     cache: mini_moka::sync::Cache<String, NameInfo>,
-    doc_cache: mini_moka::sync::Cache<String, DIDSimpleDocument>
+    doc_cache: mini_moka::sync::Cache<String, EncodedDocument>
 }
 
 impl NameClient {
@@ -33,8 +33,9 @@ impl NameClient {
         }
     }
 
-    pub async fn add_did_cache(&self, did: &String,doc:DIDSimpleDocument) {
+    pub async fn add_did_cache(&self, did: &String, doc:EncodedDocument) -> NSResult<()> {
         self.doc_cache.insert(did.clone(), doc);
+        Ok(())
     }
 
     pub async fn reslove(&self, name: &String,record_type:Option<&str>) -> NSResult<NameInfo> {
@@ -58,7 +59,7 @@ impl NameClient {
         return Ok(name_info);
     }
 
-    pub async fn resolve_did(&self, did: &String,fragment:Option<&str>) -> NSResult<DIDSimpleDocument> {
+    pub async fn resolve_did(&self, did: &String,fragment:Option<&str>) -> NSResult<EncodedDocument> {
         if self.config.enable_cache {
             let cache_info = self.doc_cache.get(did);
             if cache_info.is_some() {
@@ -66,7 +67,7 @@ impl NameClient {
             }
         }
 
-        let did_doc = self.name_query.query_did(did,fragment).await?;
+        let did_doc = self.name_query.query_did(did).await?;
 
         self.doc_cache.insert(did.clone(), did_doc.clone());
         return Ok(did_doc);

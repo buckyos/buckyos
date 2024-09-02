@@ -1,7 +1,7 @@
 
 use std::collections::hash_map::HashMap;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
-use log::{info, trace};
+use log::*;
 use serde_json::json;
 use crate::{Result,RPCErrors};
 
@@ -98,7 +98,7 @@ impl RPCSessionToken {
 
         let token_str = self.token.as_ref().unwrap();
         let header: jsonwebtoken::Header = jsonwebtoken::decode_header(token_str).map_err(|error| {
-            RPCErrors::ReasonError("JWT decode header error".to_string())
+            RPCErrors::ReasonError(format!("JWT decode header error : {}",error))
         })?;
 
         let kid:String;
@@ -166,6 +166,6 @@ pub async fn request_session_token() -> String {
 }
 
 
-pub async fn requst_verify_session_token(token: &str) -> bool {
+pub async fn requst_verify_session_token(_token: &str) -> bool {
     unimplemented!();
 }
