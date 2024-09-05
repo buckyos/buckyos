@@ -17,4 +17,6 @@ mini-moka = "*"
 jsonwebtoken = "*"
 base64="*"
 
+buckyos-kit = { path = "../buckyos-kit" }
+
 

@@ -1,21 +1,38 @@
 
 use std::collections::hash_map::HashMap;
+use serde::{Serialize,Deserialize};
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
 use log::*;
 use serde_json::json;
 use crate::{Result,RPCErrors};
 
+#[derive(Clone, Debug, Serialize, Deserialize,PartialEq)]
 pub enum RPCSessionTokenType {
     Normal,
     JWT,
 }
 
+impl Default for RPCSessionTokenType {
+    fn default() -> Self {
+        RPCSessionTokenType::JWT
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct RPCSessionToken {
+    #[serde(skip_serializing,skip_deserializing)]
     pub token_type : RPCSessionTokenType,
-    pub userid: Option<String>,
-    pub appid: Option<String>,
+    #[serde(skip_serializing,skip_deserializing)]
     pub token: Option<String>,
+
+    pub appid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub exp: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iss: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<u64>,
+    pub userid: Option<String>,
 }
 
 impl RPCSessionToken {
@@ -24,19 +41,24 @@ impl RPCSessionToken {
         if have_dot.is_none() {
             return Ok(RPCSessionToken {
                 token_type : RPCSessionTokenType::Normal,
+                nonce: None,
                 appid: None,
                 userid: None,   
                 token: Some(token.to_string()),
+                iss: None,
                 exp: None,
             });
         } else {
             return Ok(RPCSessionToken {
                 token_type : RPCSessionTokenType::JWT,
+                nonce: None,
                 appid: None,
                 userid: None,
                 token: Some(token.to_string()),
+                iss: None,
                 exp: None,
             });
+           
         }
     }
 
@@ -67,11 +89,9 @@ impl RPCSessionToken {
         let mut header = Header::new(Algorithm::EdDSA);        
         header.kid = kid;
         header.typ = None;
-        let payload = json!({
-            "userid": self.userid,
-            "appid": self.appid,
-            "exp": self.exp,
-        });        
+        let payload = serde_json::to_value(self).map_err(|op| RPCErrors::ReasonError(format!("encode to JSON error:{}",op)))?;
+        info!("header: {:?}",header);
+        info!("payload: {:?}",payload);
         let token = encode(&header, &payload, private_key)
             .map_err(|op| RPCErrors::ReasonError(format!("JWT encode error:{}",op)))?;
         Ok(token)
@@ -103,7 +123,7 @@ impl RPCSessionToken {
 
         let kid:String;
         if header.kid.is_none() {
-            kid = "{owner}".to_string();
+            kid = "{verify_hub}".to_string();
         } else {
             kid = header.kid.unwrap();
         }    

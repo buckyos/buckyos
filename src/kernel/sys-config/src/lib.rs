@@ -18,6 +18,10 @@ lazy_static!{
     };
 }
 
+pub fn sys_config_get_device_path(device_id: &str) -> String {
+    format!("/device/{}", device_id)
+}
+
 pub async fn sys_config_get(key: &str) -> Result<(serde_json::Value, u64)> {
     let mut client = SYS_CONFIG.lock().unwrap(); 
     client.get(key).await

@@ -48,13 +48,9 @@ pub fn decode_jwt_claim_without_verify(jwt: &str) -> NSResult<serde_json::Value>
     if parts.len() != 3 {
         return Err(NSError::Failed("parts.len != 3".to_string())); // JWT 应该由三个部分组成
     }
-
     let claims_part = parts[1];
-    println!("claims_part: {:?}", claims_part);
     let claims_bytes = URL_SAFE_NO_PAD.decode(claims_part).map_err(|_| NSError::Failed("base64 decode error".to_string()))?;
     let claims_str = String::from_utf8(claims_bytes).map_err(|_| NSError::Failed("String::from_utf8 error".to_string()))?;
-    println!("claims_str: {:?}", claims_str);
-    
     let claims: serde_json::Value = serde_json::from_str(claims_str.as_str()).map_err(|_| NSError::Failed("serde_json::from_str error".to_string()))?;
 
     Ok(claims)

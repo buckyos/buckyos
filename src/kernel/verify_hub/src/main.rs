@@ -1,5 +1,9 @@
 
+use std::env;
+use std::f32::consts::E;
 use std::sync::{Arc};
+use std::collections::HashMap;
+use std::time::{SystemTime,UNIX_EPOCH};
 use std::{fs::File};
 use log::*;
 use name_lib::DeviceConfig;
@@ -10,13 +14,22 @@ use warp::{reply::{Reply, Response}, Filter};
 use serde_json::{Value, json};
 use name_lib::*;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
+
+use buckyos_kit::*; 
+use sys_config::*;
 use ::kRPC::*;
 
-
+type Result<T> = std::result::Result<T, RPCErrors>;
 enum LoginType {
     ByPassword,
     BySignature,
     ByJWT,
+}
+
+#[derive(Clone,Debug,PartialEq)]
+struct VerifyServiceConfig {
+    zone_config : ZoneConfig,
+    token_from_device:String,
 }
 
 lazy_static ! {
@@ -29,38 +42,114 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         let private_key = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap();
         private_key
     };
-}
 
-async fn get_trust_did_document(device_id:&str) -> Result<DeviceConfig> {
-    unimplemented!("get_trust_device_did_document")
+    static ref TOKEN_CACHE:Arc<Mutex<HashMap<String,(u64,RPCSessionToken)>>> = {
+        Arc::new(Mutex::new(HashMap::new()))
+    };
+
+    static ref TRUSTKEY_CACHE:Arc<Mutex<HashMap<String,DecodingKey>>> = {
+        Arc::new(Mutex::new(HashMap::new()))
+    };
+
+    static ref VERIFY_SERVICE_CONFIG:Arc<Mutex<Option<VerifyServiceConfig>>> = {
+        Arc::new(Mutex::new(None))
+    };
 }
 
 fn generate_session_token(appid:&str,userid:&str,login_nonce:u64) -> RPCSessionToken {
-    unimplemented!()
+    let now = buckyos_get_unix_timestamp();
+    let exp = now + 3600*24*7;
+    let login_nonce = login_nonce;
+    let header = Header::new(Algorithm::EdDSA);
+    
+    let mut session_token = RPCSessionToken {
+        token_type : RPCSessionTokenType::JWT,
+        nonce:Some(login_nonce),
+        appid: Some(appid.to_string()),
+        userid: Some(userid.to_string()),
+        token: None,
+        iss: Some("{verify_hub}".to_string()),
+        exp: Some(exp),
+    };
+
+    session_token.token = Some(session_token.generate_jwt(Some("{verify_hub}".to_string()), &PRIVATE_KEY).unwrap());
+    
+    return session_token;
 }
 
-fn verify_jws_signature(json_obj:&Value,signature:&str,decode_key:&DecodingKey) -> bool {
-    unimplemented!("verify_signature")
+async fn load_token_from_cache(key:&str) -> Option<(u64,RPCSessionToken)> {
+    let cache = TOKEN_CACHE.lock().await;
+    let token = cache.get(key);
+    if token.is_none() {
+        return None;
+    } else {
+        let (create_nonce,token) = token.unwrap();
+        return Some((create_nonce.clone(),token.clone()));
+    }
+}
+async fn cache_token(key:&str,create_nonce:u64,token:RPCSessionToken) {
+    TOKEN_CACHE.lock().await.insert(key.to_string(),(create_nonce,token));
 }
 
-async fn get_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKey> {
+
+async fn load_trustkey_from_cache(kid:&str) -> Option<DecodingKey> {
+    let cache = TRUSTKEY_CACHE.lock().await;
+    let decoding_key = cache.get(kid);
+    if decoding_key.is_none() {
+        return None;
+    }
+    return Some(decoding_key.unwrap().clone());
+}
+
+async fn cache_trustkey(kid:&str,key:DecodingKey) {
+    TRUSTKEY_CACHE.lock().await.insert(kid.to_string(),key);
+}
+
+async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKey> {
+    //turst keys include : zone's owner, admin users, server device
+    //kid : {owner}
+    //kid : #device_id
+
     if kid.is_none() {
-        //use default public key : owner's public key
-        let jwk = json!(
-            {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "vZ2kEJdazmmmmxTYIuVPCt0gGgMOnBP6mMrQmqminB0"
-            }
-        );
-        let result_key : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
-        return Ok(DecodingKey::from_jwk(&result_key).unwrap());
-        
-    }    
-    return Err(RPCErrors::ReasonError("kid not found".to_string()));
+        //return verify_hub's public key
+        return load_trustkey_from_cache("{verify_hub}").await.ok_or(RPCErrors::ReasonError("Verify hub public key not found".to_string()));
+    }
+
+    let kid = kid.as_ref().unwrap();
+    let cached_key = load_trustkey_from_cache(kid).await;
+    if cached_key.is_some() {
+        return Ok(cached_key.unwrap());
+    }
+
+    //not found in trustkey_cache, try load from system config service
+    let result_key : DecodingKey;
+    if kid == "{owner}" {
+        //load zone config from system config service
+        result_key = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap()
+                        .zone_config.get_auth_key().ok_or(RPCErrors::ReasonError("Owner public key not found".to_string()))?;
+        info!("load owner public key from zone config");
+    } else {
+        //load device config from system config service(not from name-lib)
+        let zone_config = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().zone_config.clone();
+        let token_from_device = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().token_from_device.clone();
+        let system_config_client = SystemConfigClient::new(&zone_config.oods,&Some(token_from_device));
+        let get_result = system_config_client.get(sys_config_get_device_path(kid).as_str()).await;
+        if get_result.is_err() {
+            return Err(RPCErrors::ReasonError("Trust key  not found".to_string()));
+        }
+        let (device_config,_version) = get_result.unwrap();
+        let device_config:DeviceConfig= serde_json::from_value(device_config).map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        result_key = device_config.get_auth_key().ok_or(RPCErrors::ReasonError("Device public key not found".to_string()))?;
+    }
+
+    //kid is device_id,try load device config from system config service
+    cache_trustkey(&kid,result_key.clone()).await;
+
+    return Ok(result_key);
 }
 
-async fn verify_jwt(jwt:&str) -> Result<Value> {
+//return (kid,payload)
+async fn verify_jwt(jwt:&str) -> Result<(Option<String>,Value)> {
     let header: jsonwebtoken::Header = jsonwebtoken::decode_header(jwt).map_err(|error| {
         error!("JWT decode header error: {}", error);
         RPCErrors::ReasonError("JWT decode header error".to_string())
@@ -68,7 +157,7 @@ async fn verify_jwt(jwt:&str) -> Result<Value> {
     let validation = Validation::new(header.alg);
     
     //try get public key from header.kid
-    let public_key = get_public_key_from_kid(&header.kid).await?;
+    let public_key = get_trust_public_key_from_kid(&header.kid).await?;
     
     //verify jwt
     let decoded_token = jsonwebtoken::decode::<Value>(&jwt, &public_key, &validation).map_err(|error| {
@@ -76,7 +165,7 @@ async fn verify_jwt(jwt:&str) -> Result<Value> {
         RPCErrors::ReasonError("JWT verify error".to_string())
     })?;
 
-    return Ok(decoded_token.claims);
+    return Ok((header.kid,decoded_token.claims));
 }
 
 async fn handle_verify_session_token(params:Value) -> Result<Value> {
@@ -86,12 +175,21 @@ async fn handle_verify_session_token(params:Value) -> Result<Value> {
     let first_dot = session_token.find('.');
     if first_dot.is_none() {
         //this is not a jwt token, use token-store to verify
+        return Err(RPCErrors::InvalidToken("not a jwt token".to_string()));
     } else {
         //this is a jwt token, verify it locally
-        verify_jwt(session_token).await?;
+        let (iss,json_body) = verify_jwt(session_token).await?;
+        let rpc_session_token : RPCSessionToken = serde_json::from_value(json_body.clone()).map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let now = buckyos_get_unix_timestamp();
+        if rpc_session_token.exp.is_none() {
+            return Err(RPCErrors::ReasonError("Token expired".to_string()));
+        }
+        let exp = rpc_session_token.exp.unwrap();
+        if now > exp {
+            return Err(RPCErrors::ReasonError("Token expired".to_string()));
+        }
+        Ok(json_body)
     }
-    
-    Ok(Value::Bool(true))
 }
 
 async fn handle_login_by_jwt(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
@@ -99,7 +197,8 @@ async fn handle_login_by_jwt(params:Value,login_nonce:u64) -> Result<RPCSessionT
     .ok_or(RPCErrors::ReasonError("Missing jwt".to_string()))?;
     let jwt = jwt.as_str().ok_or(RPCErrors::ReasonError("Invalid jwt".to_string()))?;
 
-    let jwt_payload = verify_jwt(jwt).await?;
+
+    let (iss,jwt_payload) = verify_jwt(jwt).await?;
 
     let userid = jwt_payload.get("userid")
         .ok_or(RPCErrors::ReasonError("Missing userid".to_string()))?;
@@ -108,49 +207,77 @@ async fn handle_login_by_jwt(params:Value,login_nonce:u64) -> Result<RPCSessionT
         .ok_or(RPCErrors::ReasonError("Missing appid".to_string()))?;
     let appid = appid.as_str().ok_or(RPCErrors::ReasonError("Invalid appid".to_string()))?;
 
-
-    //generate session token
-    let session_token = generate_session_token(appid,userid,login_nonce);
-
-    return Ok(session_token);
-}
-
-async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
-    let userid = params.get("userid")
-    .ok_or(RPCErrors::ReasonError("Missing userid".to_string()))?;
-    let userid = userid.as_str().ok_or(RPCErrors::ReasonError("Invalid userid".to_string()))?;
-    let appid = params.get("appid")
-        .ok_or(RPCErrors::ReasonError("Missing appid".to_string()))?;
-    let appid = appid.as_str().ok_or(RPCErrors::ReasonError("Invalid appid".to_string()))?;
-
-    let _from = params.get("from")
-    .ok_or(RPCErrors::ReasonError("Missing from".to_string()))?;
-    let from = _from.as_str().ok_or(RPCErrors::ReasonError("Invalid from".to_string()))?;
-    let _signature = params.get("signature")
-        .ok_or(RPCErrors::ReasonError("Missing signature".to_string()))?;
-    let signature = _signature.as_str().ok_or(RPCErrors::ReasonError("Invalid signature".to_string()))?;
-
-    //verify signature
-    let trust_did_document = get_trust_did_document(from).await?;
-    let device_public_key = trust_did_document.get_auth_key().ok_or(RPCErrors::ReasonError("Device public key not found".to_string()))?;
-
-    //TODO:check login_nonce > last_login_nonce
-
-    let mut will_hash = params.clone();
-    let will_hash_obj = will_hash.as_object_mut().unwrap();
-    will_hash_obj.remove("signature");
-    will_hash_obj.remove("type");
-    will_hash_obj.insert(String::from("login_nonce"),json!(login_nonce));
-
-    if !verify_jws_signature(&will_hash,signature,&device_public_key) {
-        return Err(RPCErrors::ReasonError("Invalid signature".to_string()));
+    let exp = jwt_payload.get("exp")
+        .ok_or(RPCErrors::ReasonError("Missing exp".to_string()))?;
+    let exp = exp.as_u64().ok_or(RPCErrors::ReasonError("Invalid exp".to_string()))?;
+    let login_nonce = jwt_payload.get("nonce");
+    let mut create_nonce:u64 = 0;
+    if login_nonce.is_some() {
+        create_nonce = login_nonce.unwrap().as_u64().ok_or(RPCErrors::ReasonError("Invalid login_nonce".to_string()))?;
+    }
+    if buckyos_get_unix_timestamp() > exp {
+        return Err(RPCErrors::ReasonError("Token expired".to_string()));
+    }
+    let iss = iss.ok_or(RPCErrors::ReasonError("Invalid iss".to_string()))?;
+    //load last login token from cache;
+    let key = format!("{}_{}_{}",userid,appid,iss);
+    let cache_result = load_token_from_cache(key.as_str()).await;
+    if cache_result.is_some() {
+        
+        let (last_nonce,old_token) = cache_result.unwrap();
+        info!("old_token:{:?},{},req.token.nonce:{}",old_token,last_nonce,create_nonce);
+        if last_nonce > create_nonce {
+            return Err(RPCErrors::ReasonError("Invalid login_nonce".to_string()));
+        }
+        
+        if last_nonce == create_nonce {
+            return Ok(old_token);
+        }
     }
 
-    //generate session token
-    let session_token = generate_session_token(appid,userid,login_nonce);
+    let session_token = generate_session_token(appid,userid,create_nonce);
+    //store session token to cache
+    cache_token(key.as_str(),create_nonce,session_token.clone()).await;
 
     return Ok(session_token);
 }
+
+// async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
+//     let userid = params.get("userid")
+//     .ok_or(RPCErrors::ReasonError("Missing userid".to_string()))?;
+//     let userid = userid.as_str().ok_or(RPCErrors::ReasonError("Invalid userid".to_string()))?;
+//     let appid = params.get("appid")
+//         .ok_or(RPCErrors::ReasonError("Missing appid".to_string()))?;
+//     let appid = appid.as_str().ok_or(RPCErrors::ReasonError("Invalid appid".to_string()))?;
+
+//     let _from = params.get("from")
+//     .ok_or(RPCErrors::ReasonError("Missing from".to_string()))?;
+//     let from = _from.as_str().ok_or(RPCErrors::ReasonError("Invalid from".to_string()))?;
+//     let _signature = params.get("signature")
+//         .ok_or(RPCErrors::ReasonError("Missing signature".to_string()))?;
+//     let signature = _signature.as_str().ok_or(RPCErrors::ReasonError("Invalid signature".to_string()))?;
+
+//     //verify signature
+//     let trust_did_document = get_trust_did_document(from).await?;
+//     let device_public_key = trust_did_document.get_auth_key().ok_or(RPCErrors::ReasonError("Device public key not found".to_string()))?;
+
+//     //TODO:check login_nonce > last_login_nonce
+
+//     let mut will_hash = params.clone();
+//     let will_hash_obj = will_hash.as_object_mut().unwrap();
+//     will_hash_obj.remove("signature");
+//     will_hash_obj.remove("type");
+//     will_hash_obj.insert(String::from("login_nonce"),json!(login_nonce));
+
+//     if !verify_jws_signature(&will_hash,signature,&device_public_key) {
+//         return Err(RPCErrors::ReasonError("Invalid signature".to_string()));
+//     }
+
+//     //generate session token
+//     let session_token = generate_session_token(appid,userid,login_nonce);
+
+//     return Ok(session_token);
+// }
 
 async fn handle_login(params:Value,login_nonce:u64) -> Result<Value> {
     //default logint type is JWT
@@ -180,10 +307,10 @@ async fn handle_login(params:Value,login_nonce:u64) -> Result<Value> {
             let session_token = handle_login_by_jwt(params,login_nonce).await?;
             return Ok(Value::String(session_token.to_string()));
         },
-        LoginType::BySignature => {
-            let session_token =  handle_login_by_signature(params,login_nonce).await?;
-            return Ok(Value::String(session_token.to_string()));
-        },
+        // LoginType::BySignature => {
+        //     let session_token =  handle_login_by_signature(params,login_nonce).await?;
+        //     return Ok(Value::String(session_token.to_string()));
+        // },
         _ => {
             return Err(RPCErrors::ReasonError("Invalid login type".to_string()));
         }   
@@ -225,17 +352,41 @@ fn init_log_config() {
     .unwrap();
 }
 
+async fn init_service_config() -> Result<()> {
+    //load zone config form env
+    let mut service_config = VERIFY_SERVICE_CONFIG.lock().await;
+    if service_config.is_some() {
+        return Ok(());
+    }
+
+    let zone_config_str = env::var("ZONE_CONFIG").map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    let session_token = env::var("SESSION_TOKEN").map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    info!("zone_config_str:{}",zone_config_str);
+    
+    let new_service_config = VerifyServiceConfig {
+        zone_config: serde_json::from_str(zone_config_str.as_str()).map_err(|error| RPCErrors::ReasonError(error.to_string()))?,
+        token_from_device: session_token,
+    };
+
+    service_config.replace(new_service_config);
+
+    info!("service config loaded:{:?}",service_config);
+    Ok(())
+}
 
 
 async fn service_main() {
     init_log_config();
     info!("Starting verify_hub service...");
+    //init service config from system config service and env
+    init_service_config().await.unwrap();
+    //load cache from service_cache@dfs:// and service_local_cache@fs://
 
     let rpc_route = warp::path("verify_hub")
     .and(warp::post())
     .and(warp::body::json())
     .and_then(|req: RPCRequest| async {
-        info!("Received request: {}", serde_json::to_string(&req).unwrap());
+        info!("|==>Received request: {}", serde_json::to_string(&req).unwrap());
 
         let process_result =  process_request(req.method,req.params,req.seq).await;
         
@@ -259,7 +410,7 @@ async fn service_main() {
             }
         }
         
-        info!("Response: {}", serde_json::to_string(&rpc_response).unwrap());
+        info!("<==|Response: {}", serde_json::to_string(&rpc_response).unwrap());
         Ok::<_, warp::Rejection>(warp::reply::json(&rpc_response))
     });
 
@@ -280,15 +431,29 @@ mod test {
 
     #[tokio::test]
     async fn test_login_and_verify() {
+        let zone_config = ZoneConfig::get_test_config();
+        env::set_var("ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
+        env::set_var("SESSION_TOKEN", "abcdefg");//for test only
+        
+
         let server = task::spawn(async {
             service_main().await;
         });
 
         sleep(Duration::from_millis(100)).await;
-        let test_owner_public_key = "vZ2kEJdazmmmmxTYIuVPCt0gGgMOnBP6mMrQmqminB0";
+        let test_jwk = json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc",
+        });
+        let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(test_jwk).unwrap();
+        let test_pk = DecodingKey::from_jwk(&public_key_jwk).unwrap();
+       
+        cache_trustkey("{verify_hub}",test_pk.clone()).await;
+        cache_trustkey("{owner}",test_pk).await;
         let test_owner_private_key_pem = r#"
 -----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIK45kLWIAx3CHmbEmyCST4YB3InSCA4XAV6udqHtRV5P
+MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 -----END PRIVATE KEY-----
 "#;
         //login test,use trust device JWT
@@ -297,7 +462,7 @@ MC4CAQAwBQYDK2VwBCIEIK45kLWIAx3CHmbEmyCST4YB3InSCA4XAV6udqHtRV5P
         let mut header = Header::new(Algorithm::EdDSA);
         //完整的kid表达应该是 $zoneid#kid 这种形式，为了提高性能做了一点简化
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        header.kid = None;
+        header.kid = Some("{owner}".to_string());
         header.typ = None;
         let login_params = json!({
             "userid": "did:example:1234567890",
@@ -305,14 +470,42 @@ MC4CAQAwBQYDK2VwBCIEIK45kLWIAx3CHmbEmyCST4YB3InSCA4XAV6udqHtRV5P
             "exp":(now + 3600) as usize
         });        
         let token = encode(&header, &login_params, &private_key).unwrap();
+        
+        let test_login_token = RPCSessionToken {
+            token_type : RPCSessionTokenType::JWT,
+            nonce:Some(buckyos_get_unix_timestamp()*1_000_000),
+            appid: Some("kernel".to_string()),
+            userid: Some("alice".to_string()),
+            token: None,
+            iss: Some("{owner}".to_string()),
+            exp: Some(now + 3600),
+        };
 
-        let session_token = client.call("login", json!( {"type":"jwt","jwt":token})).await.unwrap();
+        let test_jwt = test_login_token.generate_jwt(Some("{owner}".to_string()), &private_key).unwrap();
+
+        let session_token = client.call("login", json!( {"type":"jwt","jwt":test_jwt})).await.unwrap();
         print!("session_token:{}",session_token);
 
         //verify token test,use JWT-session-token
 
         let verify_result = client.call("verify_token", json!( {"session_token":session_token})).await.unwrap();
         print!("verify result:{}",verify_result);
+
+        //test expired token
+        let test_login_token = RPCSessionToken {
+            token_type : RPCSessionTokenType::JWT,
+            nonce:Some((buckyos_get_unix_timestamp()-10000)*1_000_000),
+            appid: Some("kernel".to_string()),
+            userid: Some("alice".to_string()),
+            token: None,
+            iss: Some("{owner}".to_string()),
+            exp: Some(now + 3600),
+        };
+
+        let test_jwt = test_login_token.generate_jwt(Some("{owner}".to_string()), &private_key).unwrap();
+
+        let session_token = client.call("login", json!( {"type":"jwt","jwt":test_jwt})).await;
+        assert!(session_token.is_err());
 
         drop(server);
     }

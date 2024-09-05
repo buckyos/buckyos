@@ -2,6 +2,8 @@ use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use log::*;
 use serde::{Serialize,Deserialize};
+use serde_json::json;
+use buckyos_kit::*;
 
 use crate::{DIDDocumentTrait,EncodedDocument};
 use crate::{NSResult,NSError};
@@ -31,6 +33,31 @@ pub struct ZoneConfig {
     pub exp:u64,
     pub iat:u64,
 }
+
+impl ZoneConfig {
+    pub fn get_test_config() -> ZoneConfig {
+        let jwk = json!(
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
+            }
+        );
+        let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
+        return ZoneConfig {
+            did: "did:ens:example".to_string(),
+            name: Some("www.example.com".to_string()),
+            owner_name: None,
+            auth_key: Some(public_key_jwk),
+            oods: vec!["ood01".to_string()],
+            backup_server_info: None,
+            verify_hub_info: None,
+            exp: buckyos_get_unix_timestamp() + 3600*24*365,
+            iat: buckyos_get_unix_timestamp(),
+        }
+    }
+}
+
 impl DIDDocumentTrait for ZoneConfig {
     
     fn get_did(&self) -> &str {    

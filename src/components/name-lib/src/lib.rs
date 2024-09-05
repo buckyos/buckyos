@@ -41,4 +41,10 @@ mod tests {
 
     }
 
+    fn test_progress() {
+        //get zone_config from dns
+        
+        //
+    }
+
 }

@@ -34,7 +34,7 @@ buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
 package-manager = { path = "../../components/package-manager" }
 kRPC = { path = "../../kernel/kRPC" }
-system_config = { path = "../sys-config" }
+sys-config = { path = "../sys-config" }
 
 
 

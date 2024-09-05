@@ -1,5 +1,19 @@
-01:46:19 [INFO] Starting verify_hub service...
-01:46:19 [INFO] verify_hub service initialized
-01:46:19 [INFO] Server::run; addr=127.0.0.1:3032
-01:46:19 [INFO] listening on http://127.0.0.1:3032
-01:46:19 [INFO] Received request: {"method":"login","params":{"jwt":"eyJhbGciOiJFZERTQSJ9.eyJhcHBpZCI6InN5c3RlbSIsImV4cCI6MTcyNDgxMzE3OSwidXNlcmlkIjoiZGlkOmV4YW1wbGU6MTIzNDU2Nzg5MCJ9.FGJ2dLSLC28xzr_cGYYxB0bOZ3feSm2qFFyWBJvPXzvHntVWLGNnmOxA_OWLd6ny_a5FWd8bsmtA5yM8AjUsBg","type":"jwt"},"sys":[1724809579000001]}
+05:56:04 [INFO] Starting verify_hub service...
+05:56:04 [INFO] zone_config_str:{"did":"did:ens:example","name":"www.example.com","auth_key":{"kty":"OKP","crv":"Ed25519","x":"gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"},"oods":["ood01"],"exp":1757051764,"iat":1725515764}
+05:56:04 [INFO] service config loaded:Some(VerifyServiceConfig { zone_config: ZoneConfig { did: "did:ens:example", name: Some("www.example.com"), owner_name: None, auth_key: Some(Jwk { common: CommonParameters { public_key_use: None, key_operations: None, key_algorithm: None, key_id: None, x509_url: None, x509_chain: None, x509_sha1_fingerprint: None, x509_sha256_fingerprint: None }, algorithm: OctetKeyPair(OctetKeyPairParameters { key_type: OctetKeyPair, curve: Ed25519, x: "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc" }) }), oods: ["ood01"], backup_server_info: None, verify_hub_info: None, exp: 1757051764, iat: 1725515764 }, token_from_device: "abcdefg" })
+05:56:04 [INFO] verify_hub service initialized
+05:56:04 [INFO] Server::run; addr=127.0.0.1:3032
+05:56:04 [INFO] listening on http://127.0.0.1:3032
+05:56:05 [INFO] header: Header { typ: None, alg: EdDSA, cty: None, jku: None, jwk: None, kid: Some("{owner}"), x5u: None, x5c: None, x5t: None, x5t_s256: None }
+05:56:05 [INFO] payload: Object {"appid": String("kernel"), "exp": Number(1725519365), "iss": String("{owner}"), "nonce": Number(1725515765000000), "userid": String("alice")}
+05:56:05 [INFO] |==>Received request: {"method":"login","params":{"jwt":"eyJhbGciOiJFZERTQSIsImtpZCI6Intvd25lcn0ifQ.eyJhcHBpZCI6Imtlcm5lbCIsImV4cCI6MTcyNTUxOTM2NSwiaXNzIjoie293bmVyfSIsIm5vbmNlIjoxNzI1NTE1NzY1MDAwMDAwLCJ1c2VyaWQiOiJhbGljZSJ9.-Pecr4gIEJJCWGfBP7FZppLUEEYDYmv-bypiWshoPhRlviiaG9cOz44DPBYvXjEwP48nAipgpw_NkSeo5DmhBg","type":"jwt"},"sys":[1725515765000001]}
+05:56:05 [INFO] header: Header { typ: None, alg: EdDSA, cty: None, jku: None, jwk: None, kid: Some("{verify_hub}"), x5u: None, x5c: None, x5t: None, x5t_s256: None }
+05:56:05 [INFO] payload: Object {"appid": String("kernel"), "exp": Number(1726120565), "iss": String("{verify_hub}"), "nonce": Number(1725515765000000), "userid": String("alice")}
+05:56:05 [INFO] <==|Response: {"result":"eyJhbGciOiJFZERTQSIsImtpZCI6Int2ZXJpZnlfaHVifSJ9.eyJhcHBpZCI6Imtlcm5lbCIsImV4cCI6MTcyNjEyMDU2NSwiaXNzIjoie3ZlcmlmeV9odWJ9Iiwibm9uY2UiOjE3MjU1MTU3NjUwMDAwMDAsInVzZXJpZCI6ImFsaWNlIn0.chmJ2wCFWmv4Pl8Qlep2JEIqbbF8wT5lgwDPYSCh2C4H19jRVsTS2NGKWE0vJtdTHVDmvX8Lc2hiWU8Kg14hDw","sys":[1725515765000001]}
+05:56:05 [INFO] |==>Received request: {"method":"verify_token","params":{"session_token":"eyJhbGciOiJFZERTQSIsImtpZCI6Int2ZXJpZnlfaHVifSJ9.eyJhcHBpZCI6Imtlcm5lbCIsImV4cCI6MTcyNjEyMDU2NSwiaXNzIjoie3ZlcmlmeV9odWJ9Iiwibm9uY2UiOjE3MjU1MTU3NjUwMDAwMDAsInVzZXJpZCI6ImFsaWNlIn0.chmJ2wCFWmv4Pl8Qlep2JEIqbbF8wT5lgwDPYSCh2C4H19jRVsTS2NGKWE0vJtdTHVDmvX8Lc2hiWU8Kg14hDw"},"sys":[1725515765000002]}
+05:56:05 [INFO] <==|Response: {"result":{"appid":"kernel","exp":1726120565,"iss":"{verify_hub}","nonce":1725515765000000,"userid":"alice"},"sys":[1725515765000002]}
+05:56:05 [INFO] header: Header { typ: None, alg: EdDSA, cty: None, jku: None, jwk: None, kid: Some("{owner}"), x5u: None, x5c: None, x5t: None, x5t_s256: None }
+05:56:05 [INFO] payload: Object {"appid": String("kernel"), "exp": Number(1725519365), "iss": String("{owner}"), "nonce": Number(1725505765000000), "userid": String("alice")}
+05:56:05 [INFO] |==>Received request: {"method":"login","params":{"jwt":"eyJhbGciOiJFZERTQSIsImtpZCI6Intvd25lcn0ifQ.eyJhcHBpZCI6Imtlcm5lbCIsImV4cCI6MTcyNTUxOTM2NSwiaXNzIjoie293bmVyfSIsIm5vbmNlIjoxNzI1NTA1NzY1MDAwMDAwLCJ1c2VyaWQiOiJhbGljZSJ9.L2yVrBq5TBRgLW_6laZ_nLOnCYU5qh8w6NITHcNHEqkEaGnMTHLS9LJYw_3lTpC48mOtCTBepcajH_vdw3ULBw","type":"jwt"},"sys":[1725515765000003]}
+05:56:05 [INFO] old_token:RPCSessionToken { token_type: JWT, token: Some("eyJhbGciOiJFZERTQSIsImtpZCI6Int2ZXJpZnlfaHVifSJ9.eyJhcHBpZCI6Imtlcm5lbCIsImV4cCI6MTcyNjEyMDU2NSwiaXNzIjoie3ZlcmlmeV9odWJ9Iiwibm9uY2UiOjE3MjU1MTU3NjUwMDAwMDAsInVzZXJpZCI6ImFsaWNlIn0.chmJ2wCFWmv4Pl8Qlep2JEIqbbF8wT5lgwDPYSCh2C4H19jRVsTS2NGKWE0vJtdTHVDmvX8Lc2hiWU8Kg14hDw"), appid: Some("kernel"), exp: Some(1726120565), iss: Some("{verify_hub}"), nonce: Some(1725515765000000), userid: Some("alice") },1725515765000000,req.token.nonce:1725505765000000
+05:56:05 [INFO] <==|Response: {"error":"Failed due to reason: Invalid login_nonce","sys":[1725515765000003]}

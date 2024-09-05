@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 // use serde_json::error;
 use simplelog::*;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
-use system_config::*;
+use sys_config::*;
 use toml;
 use serde_json::{from_value, json};
 use name_lib::*;
@@ -436,9 +436,11 @@ async fn async_main() -> std::result::Result<(), String> {
 
     let device_session_token = kRPC::RPCSessionToken {
         token_type : kRPC::RPCSessionTokenType::JWT,
+        nonce : None,
         userid : Some(device_doc.name.clone()),
         appid:Some("kernel".to_string()),
         exp:Some(timestamp + 3600*24*7),
+        iss:Some(device_doc.name.clone()),
         token:None,
     };
 
@@ -466,7 +468,7 @@ async fn async_main() -> std::result::Result<(), String> {
         syc_cfg_client = SystemConfigClient::new(&ood, &Some(device_session_token_jwt));
         let boot_config_result = syc_cfg_client.get("boot").await;
         match boot_config_result {
-            system_config::Result::Err(SystemConfigError::KeyNotFound(_)) => {
+            sys_config::Result::Err(SystemConfigError::KeyNotFound(_)) => {
                 warn!("boot config is not exist, create it!");
 
                 boot_config = generate_boot_config().await.map_err(|err| {
@@ -483,7 +485,7 @@ async fn async_main() -> std::result::Result<(), String> {
                 info!("Register Device and Init boot config OK, wat 2 secs.");
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             },
-            system_config::Result::Ok(r) => {
+            sys_config::Result::Ok(r) => {
                 boot_config = r.0;
                 info!("OOD device load boot config OK, {}", boot_config);
             },
