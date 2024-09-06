@@ -12,6 +12,16 @@ pub struct NameClientConfig {
     cache_size:u64,
 }
 
+impl Default for NameClientConfig {
+    fn default() -> Self {
+        Self {
+            enable_cache: true,
+            local_cache_dir: None,
+            max_ttl: 3600*24*7,
+            cache_size: 1024*1024,
+        }
+    }
+}
 pub struct NameClient {
     name_query: NameQuery,
     config : NameClientConfig,
@@ -33,14 +43,14 @@ impl NameClient {
         }
     }
 
-    pub async fn add_did_cache(&self, did: &String, doc:EncodedDocument) -> NSResult<()> {
-        self.doc_cache.insert(did.clone(), doc);
+    pub fn add_did_cache(&self, did: &str, doc:EncodedDocument) -> NSResult<()> {
+        self.doc_cache.insert(did.to_string(), doc);
         Ok(())
     }
 
-    pub async fn reslove(&self, name: &String,record_type:Option<&str>) -> NSResult<NameInfo> {
+    pub async fn resolve(&self, name: &str,record_type:Option<&str>) -> NSResult<NameInfo> {
         if self.config.enable_cache {
-            let cache_info = self.cache.get(name);
+            let cache_info = self.cache.get(&name.to_string());
             if cache_info.is_some() {
                 return Ok(cache_info.unwrap().clone());
             }
@@ -53,15 +63,16 @@ impl NameClient {
             if ttl > self.config.max_ttl {
                 ttl = self.config.max_ttl;
             }
-            self.cache.insert(name.clone(), name_info.clone());
+            self.cache.insert(name.to_string(), name_info.clone());
         } 
       
         return Ok(name_info);
     }
 
-    pub async fn resolve_did(&self, did: &String,fragment:Option<&str>) -> NSResult<EncodedDocument> {
+    pub async fn resolve_did(&self, did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {
         if self.config.enable_cache {
-            let cache_info = self.doc_cache.get(did);
+            let cache_info = self.doc_cache.get(&did.to_string());
+
             if cache_info.is_some() {
                 return Ok(cache_info.unwrap().clone());
             }
@@ -69,7 +80,7 @@ impl NameClient {
 
         let did_doc = self.name_query.query_did(did).await?;
 
-        self.doc_cache.insert(did.clone(), did_doc.clone());
+        self.doc_cache.insert(did.to_string(), did_doc.clone());
         return Ok(did_doc);
     }
 }

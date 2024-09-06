@@ -1,5 +1,3 @@
-
-
 use async_trait::async_trait;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
@@ -9,7 +7,6 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-
 
 use crate::run_item::*;
 use package_manager::*;
@@ -32,7 +29,6 @@ impl RunItemControl for ServiceConfig {
     fn get_item_name(&self) -> Result<String> {
         return Ok(self.pkg_id.clone());
     }
-
 
     async fn deploy(&self, params: &Option<RunItemParams>) -> Result<()> {
         // 部署文件系统时需要机器名，以root权限运行脚本，默认程序本身应该是root权限
@@ -115,18 +111,18 @@ impl ServiceConfig {
         let op: &RunItemControlOperation = op.unwrap();
         let op_sh_file = media_info.full_path.join(op.command.as_str());
         //run_cmd(deploy_sh_file)
-        let ret = buckyos_kit::run_script_with_args(
-            op_sh_file.to_str().unwrap(),
+        let ret = execute(
+            &op_sh_file,
             5,  
-            &op.params
+            None,//TODO: 补充op的params
+            None,
+            None
         ).await.map_err(|error| {
             ControlRuntItemErrors::ExecuteError(
                 format!("{} service execuite op {} error", self.pkg_id.as_str(), op_name),
                 format!("{}", error),
             )
         })?;
-        return Ok(ret);
+        return Ok(ret.0);
     }
-
-    
 }

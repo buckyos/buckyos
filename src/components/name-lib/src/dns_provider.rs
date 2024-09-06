@@ -115,21 +115,28 @@ impl NSProvider for DNSProvider {
                 for record in response.iter() {
                     let txt = record.txt_data().iter().map(|s| -> String {
                         let byte_slice: &[u8] = &s;
-                        
-                        //parse did document, like did=$did_payload;
-                        let txt = String::from_utf8_lossy(byte_slice).to_string();
-                        if txt.starts_with("did=") {
-                            let did_payload = txt.trim_start_matches("did=").trim_end_matches(";");
-                            //did_tx = did_payload.to_string();
-                            //did_doc = serde_json::from_str(did_payload).unwrap();
-                        }
-                        
                         return String::from_utf8_lossy(byte_slice).to_string();
+                    }).collect::<Vec<String>>().join("");
 
+                    if txt.starts_with("DID=") {
+                        let did_payload = txt.trim_start_matches("DID=").trim_end_matches(";");
+                        println!("did_payload: {}",did_payload);
 
-                    }).collect::<Vec<String>>().join(" ");
-                    
+                        let did_doc = EncodedDocument::Jwt(did_payload.to_string());
+                        let name_info = NameInfo {
+                            name: name.to_string(),
+                            address:Vec::new(),
+                            cname: None,
+                            txt: None,
+                            did_document: Some(did_doc),
+                            proof_type: NameProof::None,
+                            create_time: 0,
+                            ttl: None,
+                        }; 
+                        return Ok(name_info);
+                    }
                 }
+                return Err(NSError::Failed("DID not found".to_string()));
             },
             _ => {
                 return Err(NSError::Failed(format!("Invalid record type: {}", record_type)));
@@ -141,7 +148,7 @@ impl NSProvider for DNSProvider {
     }
 
     async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {
-        unimplemented!()
+        return Err(NSError::Failed("Not implemented".to_string()));
     }
 }
 

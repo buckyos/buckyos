@@ -17,6 +17,7 @@ use std::{collections::HashMap, fs::File};
 use std::path::Path;
 // use tokio::*;
 
+use buckyos_kit::{ServicePkg,ServiceState,get_buckyos_system_bin_dir};
 //use etcd_client::*;
 use futures::prelude::*;
 use jsonwebtoken::jwk::Jwk;
@@ -125,7 +126,7 @@ fn load_node_private_key() -> Result<EncodingKey> {
             "Failed to parse node private key {}",
             err
         ));
-    })?;
+    })?; 
 
     Ok(private_key)
 }
@@ -196,14 +197,16 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
     }
 
     let mut zone_did = node_identity.zone_name.clone();
+    info!("node_identity.owner_public_key: {:?}",node_identity.owner_public_key);
+    let owner_public_key = DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(
+        |err| {
+            error!("parse owner public key failed! {}", err);
+            return NodeDaemonErrors::ReasonError("parse owner public key failed!".to_string());
+        })?;
+
     if !name_lib::is_did(node_identity.zone_name.as_str()) {
         //owner zone is a NAME, need query NameInfo to get DID
         info!("owner zone is a NAME, try nameclient.query to get did");
-        let naem_info = name_lib::resolve(node_identity.zone_name.as_str(),Some("DID")).await
-            .map_err(|err| {
-                error!("query zone config by nameclient failed! {}", err);
-                return NodeDaemonErrors::ReasonError("query zone config failed!".to_string());
-            })?;
 
         let zone_jwt = name_lib::resolve(node_identity.zone_name.as_str(),Some("DID")).await
             .map_err(|err| {
@@ -216,28 +219,27 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
             return Err(NodeDaemonErrors::ReasonError("get zone jwt failed!".to_string()));
         }
         let zone_jwt = zone_jwt.did_document.unwrap();
-        let import_key = DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(
-            |err| {
-                error!("parse owner public key failed! {}", err);
-                return NodeDaemonErrors::ReasonError("parse owner public key failed!".to_string());
-            })?;
+        info!("zone_jwt: {:?}",zone_jwt);
+
         
-        let zone_config = ZoneConfig::decode(&zone_jwt, Some(&import_key))
+        let zone_config = ZoneConfig::decode(&zone_jwt, Some(&owner_public_key))
             .map_err(|err| {
                 error!("parse zone config failed! {}", err);
                 return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
             })?;
-
+    
         zone_did = zone_config.did;
+        add_did_cache(zone_did.as_str(),zone_jwt.clone()).await.unwrap();
+        info!("add zone did {} -> {:?} to cache success!",zone_did,zone_jwt);
     }  
 
     //try load lasted document from name_lib 
-    let zone_doc: EncodedDocument = name_lib::resolve_did(zone_did.as_str()).await.map_err(|err| {
+    let zone_doc: EncodedDocument = name_lib::resolve_did(zone_did.as_str(),None).await.map_err(|err| {
         error!("resolve zone did failed! {}", err);
         return NodeDaemonErrors::ReasonError("resolve zone did failed!".to_string());
     })?;
 
-    let zone_config:ZoneConfig = ZoneConfig::decode(&zone_doc,None).map_err(|err| {
+    let zone_config:ZoneConfig = ZoneConfig::decode(&zone_doc,Some(&owner_public_key)).map_err(|err| {
         error!("parse zone config failed! {}", err);
         return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
     })?;
@@ -378,7 +380,7 @@ async fn async_main() -> std::result::Result<(), String> {
     //verify device_doc by owner_public_key
     if node_identity.owner_name.is_some() {
         let owner_name = node_identity.owner_name.as_ref().unwrap();
-        let owner_config = name_lib::resolve_did(owner_name.as_str()).await;
+        let owner_config = name_lib::resolve_did(owner_name.as_str(),None).await;
         match owner_config {
             Ok(owner_config) => {
                 let owner_config = OwnerConfig::decode(&owner_config,None);
@@ -406,10 +408,12 @@ async fn async_main() -> std::result::Result<(), String> {
     info!("current node's device doc: {:?}", device_doc);
     
     //verify node_name is this device's hostname
-    let current_host_name = std::env::var("HOSTNAME").unwrap();
-    if device_doc.name != current_host_name {
-        warn!("device.hostname not match node's hostname {}!",current_host_name);
-        //return Err("device.hostname not match node's hostname".to_string());
+    if let Ok(hostname) = std::fs::read_to_string("/etc/hostname") {
+        let hostname = hostname.trim().to_string();
+        if device_doc.name != hostname {
+            warn!("device.hostname not match node's hostname {}!",hostname);
+            //return Err("device.hostname not match node's hostname".to_string());
+        }     
     }
 
     //load device private key
@@ -418,7 +422,7 @@ async fn async_main() -> std::result::Result<(), String> {
         return String::from("load device private key failed!");
     })?;
     
-    info!("start looking zone {} 's config...", node_identity.zone_name.as_str());
+    info!("start looking zone [{}] 's config...", node_identity.zone_name.as_str());
     let zone_config = looking_zone_config(&node_identity).await.map_err(|err| {
         error!("looking zone config failed! {}", err);
         String::from("looking zone config failed!")
@@ -453,12 +457,21 @@ async fn async_main() -> std::result::Result<(), String> {
     let syc_cfg_client: SystemConfigClient;
     let boot_config: serde_json::Value; 
     if zone_config.oods.contains(&device_doc.name) {
+        let mut sys_config_service_pkg = ServicePkg::new("system_config_service".to_string(),get_buckyos_system_bin_dir());
+        let _ = sys_config_service_pkg.load().await.map_err(|err| {
+            error!("load system_config_service pkg failed! {}", err);
+            return String::from("load system_config_service failed!");
+        })?;
         //If this node is ood: try run / recover  system_config_service
         //  init system_config client, if kv://boot is not exist, create it and register new ood. 
-        let is_system_config_service_running = sys_config_check_running().await;
-        if is_system_config_service_running.is_err() {
+        let running_state = sys_config_service_pkg.status().await.map_err(|err| {
+            error!("check system_config_service running failed! {}", err);
+            return String::from("check system_config_service running failed!");
+        })?;
+
+        if running_state == ServiceState::Stopped {
             warn!("check system_config_service running failed!,try to start system_config_service");
-            let start_result = sys_config_start_service(Some(node_identity.zone_nonce.as_str())).await.map_err(|err| {
+            let start_result = sys_config_service_pkg.start().await.map_err(|err| {
                 error!("start system_config_service failed! {}", err);
                 return String::from("start system_config_service failed!");
             })?;

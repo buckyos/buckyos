@@ -90,8 +90,8 @@ impl RPCSessionToken {
         header.kid = kid;
         header.typ = None;
         let payload = serde_json::to_value(self).map_err(|op| RPCErrors::ReasonError(format!("encode to JSON error:{}",op)))?;
-        info!("header: {:?}",header);
-        info!("payload: {:?}",payload);
+        //info!("header: {:?}",header);
+        //info!("payload: {:?}",payload);
         let token = encode(&header, &payload, private_key)
             .map_err(|op| RPCErrors::ReasonError(format!("JWT encode error:{}",op)))?;
         Ok(token)

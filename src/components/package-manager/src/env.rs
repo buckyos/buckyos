@@ -53,13 +53,13 @@ pub struct PackageEnv {
   类型（dir or file）
   完整路径
 */
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub enum MediaType {
     Dir,
     File,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MediaInfo {
     pub pkg_id: PackageId,
     pub full_path: PathBuf,
@@ -240,7 +240,7 @@ impl PackageEnv {
             PackageSystemErrors::ParseError("pkg.lock".to_string(), err.to_string())
         })?;
 
-        let mut target_pkg = None;
+        let mut target_pkg = Some(pkg_id.name.clone());
         let all_version = "*".to_string();
         // 在package_list中查找符合条件的包
         for lock_info in package_list.packages.iter() {
@@ -355,7 +355,7 @@ impl PackageEnv {
     }
 
     pub fn get_install_dir(&self) -> PathBuf {
-        self.get_deps_dir() //.join(".bkzs")
+        self.work_dir.clone() //.join(".bkzs")
     }
 
     fn get_pkg_cache_dir(&self) -> PathBuf {

@@ -11,3 +11,5 @@ sysinfo = "*"
 tokio = { version = "*", features = ["full"] }
 log = "*"
 thiserror = "*"
+env_logger = "*"
+package-manager = { path = "../package-manager" }

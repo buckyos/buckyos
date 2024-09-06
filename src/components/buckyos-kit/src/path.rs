@@ -19,6 +19,3 @@ pub fn get_buckyos_system_etc_dir() -> PathBuf {
     get_buckyos_root_dir().join("etc")
 }
 
-pub fn get_buckyos_system_config_service_path() -> PathBuf {
-    get_buckyos_system_bin_dir().join("sys_config_service")
-}

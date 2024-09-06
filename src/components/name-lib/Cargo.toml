@@ -16,7 +16,7 @@ tokio = { version = "*", features = ["full"] }
 mini-moka = "*" 
 jsonwebtoken = "*"
 base64="*"
-
+once_cell="*"
 buckyos-kit = { path = "../buckyos-kit" }
 
 

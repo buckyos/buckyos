@@ -151,6 +151,28 @@ pub struct DeviceConfig {
     pub iat:u64,
 }
 
+impl DeviceConfig {
+    pub fn get_test_config() -> DeviceConfig {
+        let jwk = json!(
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
+            }
+        );
+        let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
+        return DeviceConfig {
+            did: "did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
+            name: "ood1".to_string(),
+            device_type: "ood".to_string(),
+            auth_key: public_key_jwk,
+            iss: "waterfllier".to_string(),
+            exp: buckyos_get_unix_timestamp() + 3600*24*365, 
+            iat: buckyos_get_unix_timestamp(),
+        }
+    }
+}
+
 impl DIDDocumentTrait for DeviceConfig {
     fn get_did(&self) -> &str {
         return self.did.as_str()
@@ -304,14 +326,14 @@ mod tests {
     fn test_zone_config() {
         let private_key_pem = r#"
         -----BEGIN PRIVATE KEY-----
-        MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
+        MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         -----END PRIVATE KEY-----
         "#;
         let jwk = json!(
             {
                 "kty": "OKP",
                 "crv": "Ed25519",
-                "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
+                "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
             }
         );
         let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
@@ -323,7 +345,7 @@ mod tests {
             name: None,
             owner_name: None,
             auth_key: None,
-            oods: vec!["ood01".to_string(),"ood02".to_string(),"gate#wlan".to_string()],
+            oods: vec!["ood01".to_string()],
             backup_server_info: Some("http://abcd@backup.example.com".to_string()),
             verify_hub_info: None,
             
@@ -347,28 +369,28 @@ mod tests {
 
     #[test]
     fn test_device_config() {
-        let private_key_pem = r#"
+        let owner_private_key_pem = r#"
         -----BEGIN PRIVATE KEY-----
-        MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
+        MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         -----END PRIVATE KEY-----
         "#;
-        let jwk = json!(
+        let device_jwk = json!(
             {
                 "kty": "OKP",
                 "crv": "Ed25519",
                 "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
             }
         );
-        let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
-        let private_key: EncodingKey = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap();
+        let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(device_jwk).unwrap();
+        let private_key: EncodingKey = EncodingKey::from_ed_pem(owner_private_key_pem.as_bytes()).unwrap();
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         let device_config = DeviceConfig {
             did: "did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
-            name: "ood1".to_string(),
+            name: "ood01".to_string(),
             device_type: "ood".to_string(),
             auth_key: public_key_jwk,
-            iss: "did:ens:waterfllier".to_string(),
+            iss: "waterfllier".to_string(),
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };
@@ -391,14 +413,14 @@ mod tests {
     fn test_owner_config() {
         let private_key_pem = r#"
         -----BEGIN PRIVATE KEY-----
-        MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
+        MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         -----END PRIVATE KEY-----
         "#;
         let jwk = json!(
             {
                 "kty": "OKP",
                 "crv": "Ed25519",
-                "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
+                "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
             }
         );
         let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();

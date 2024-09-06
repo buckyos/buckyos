@@ -15,14 +15,14 @@ pub struct EndPointInfo {
 }
 
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize,Debug)]
 pub enum NameProof {
     None, 
     ServerProof,
     OwnerProof,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize,Debug)]
 pub struct NameInfo {
     pub name: String,
     pub address: Vec<IpAddr>,
