@@ -23,11 +23,34 @@ g = _, _ # sub, role
 e = priority(p.eft) || deny
 
 [matchers]
-m = (g(r.sub, p.sub) || r.sub == p.sub) && regexMatch(r.obj,p.obj) && regexMatch(r.act, p.act)
-#m = (g(r.sub, p.sub) || r.sub == p.sub) && r.sub == keyGet3(r.obj, p.obj, p.sub) && regexMatch(r.obj,p.obj) && regexMatch(r.act, p.act)
+m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.sub) || keyGet3(r.obj, p.obj, p.sub) =="") && keyMatch3(r.obj,p.obj)) && regexMatch(r.act, p.act)
+
 "#;
 
 pub const DEFAULT_POLICY: &str = r#"
+
+p, kernel, kv://*, read|write,allow
+p, kernel, dfs://*, read|write,allow
+
+p, owner, kv://*, read|write,allow
+p, owner, dfs://*, read|write,allow
+
+
+p, user, kv://*, read,allow
+p, user, dfs://public/*,read|write,allow
+p, user, dfs://homes/{user}/*, read|write,allow
+p, app,  dfs://homes/*/apps/{app}/*, read|write,allow
+
+p, limit, dfs://public/*, read,allow
+p, guest, dfs://public/*, read,allow
+
+g, alice, user
+g, bob, user
+g, app1, app
+g, app2, app
+"#;
+
+pub const DEFAULT_POLICY2: &str = r#"
 p, owner, kv://.+$, read|write,allow
 p, owner, dfs://.+$, read|write,allow
 p, owner, fs://[^/]+/.+$, read|write,allow
@@ -87,18 +110,20 @@ pub async fn enforce(userid:&str, appid:Option<&str>,res_path:&str,op_name:&str)
         return false;
     }
     let enforcer = enforcer.as_ref().unwrap();
-    let res = enforcer.enforce((userid, res_path, op_name)).unwrap();
-    //println!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
-    info!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
-    if appid.is_none() {
-        return res;
-    } else {
-        let appid = appid.unwrap();
-        let res2 = enforcer.enforce((appid, res_path, op_name)).unwrap();
-        //println!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
-        info!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
-        return res2 && res;
+
+    
+    let appid = appid.unwrap_or("kernel");
+    let res2 = enforcer.enforce((appid, res_path, op_name)).unwrap();
+    println!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
+    info!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);    
+    if appid == "kernel" {
+        return res2;
     }
+
+    let res = enforcer.enforce((userid, res_path, op_name)).unwrap();
+    println!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
+    info!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
+    return res2 && res;
 }
 
 //test
@@ -195,9 +220,9 @@ m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)
     #[test]
     async fn test_enforce() {
         create_enforcer(None,None).await.unwrap();
-        let res = enforce("alice", Some("app1"), "dfs://homes/alice/apps/app1/data", "write").await;
+        let res = enforce("ood01", None, "kv://boot", "read").await;
         assert_eq!(res, true);
-        assert_eq!(enforce("bob", None, "dfs://homes/alice/app2", "read").await, false);
+        assert_eq!(enforce("bob", None, "dfs://homes/alice/apps/app2", "read").await, true);
         assert_eq!(enforce("alice", Some("app1"), "dfs://homes/alice/apps/app2/data", "write").await, false);
     }
 

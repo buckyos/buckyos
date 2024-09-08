@@ -343,13 +343,13 @@ mod tests {
         let zone_config = ZoneConfig {
             did: "did:ens:buckyos".to_string(),
             name: None,
-            owner_name: None,
+            owner_name: Some("did:ens:waterflier".to_string()),
             auth_key: None,
             oods: vec!["ood01".to_string()],
             backup_server_info: Some("http://abcd@backup.example.com".to_string()),
             verify_hub_info: None,
             
-            exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600, 
+            exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };
 
@@ -391,7 +391,7 @@ mod tests {
             device_type: "ood".to_string(),
             auth_key: public_key_jwk,
             iss: "waterfllier".to_string(),
-            exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365, 
+            exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };
 

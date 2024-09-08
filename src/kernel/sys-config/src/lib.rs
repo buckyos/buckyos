@@ -13,7 +13,7 @@ lazy_static!{
     static ref SYS_CONFIG: Arc<Mutex<SystemConfigClient>> = {
         print!("init SystemConfigClient");
 
-        Arc::new(Mutex::new(SystemConfigClient::new(&vec!["ood".to_string()],&None)))
+        Arc::new(Mutex::new(SystemConfigClient::new(&vec!["ood01".to_string()],&None)))
     };
 }
 

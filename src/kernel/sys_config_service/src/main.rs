@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use log::*;
+use serde::de;
 use simplelog::*;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
@@ -19,6 +20,7 @@ use jsonwebtoken::{DecodingKey};
 use ::kRPC::*;
 use rbac::*;
 use name_lib::*;
+use buckyos_kit::*;
 
 use kv_provider::KVStoreProvider;
 use sled_provider::SledStore; 
@@ -30,85 +32,10 @@ lazy_static!{
     };
 }
 
-// this function should move to scheduler in future
-async fn init_sys_config_by_boot_info(boot_info:&ZoneConfig) {  
-
-    let init_json = json!({
-        "system/rbac/model":rbac::DEFAULT_MODEL,
-        "system/rbac/policy":rbac::DEFAULT_POLICY,
-        //all kernel services
-        // - verify_hub service
-
-        //all default apps
-        //format!("users/owner/apps")
-
-        //node configs
-        format!("nodes/{}/config","ood"):"test"
-    });
-
-    let store = SYS_STORE.lock().await;
-    for (key,value) in init_json.as_object().unwrap() {
-        store.create(key,value.as_str().unwrap()).await.unwrap();
-    }
-}
-
-async fn handle_register_device(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
-    let device_doc = params.get("device_doc");
-    if device_doc.is_none() {
-        return Err(RPCErrors::ReasonError("Missing device_doc".to_string()));
-    }
-    let device_doc = device_doc.unwrap();
-    let device_doc_jwt = device_doc.as_str().unwrap();
-    let mut verify_public_key : DecodingKey;
-    let boot_info = params.get("boot_info");
-    
-    if boot_info.is_some() {
-        //verify boot_info ,write result 
-        let boot_info_str = boot_info.unwrap().to_string();
-        let store = SYS_STORE.lock().await;
-        let result = store.get(String::from("boot/config")).await;
-
-        match result {
-            Ok(value) => {
-                if value.is_none() {
-                    let zone_config:ZoneConfig = serde_json::from_value(boot_info.unwrap().clone())
-                        .map_err(|err| {
-                            warn!("Boot info is not zoneconfig !error:{}",err);
-                            RPCErrors::ReasonError(err.to_string())
-                        })?;
-                    let auth_key = zone_config.get_auth_key();
-                    if auth_key.is_none() {
-                        return Err(RPCErrors::ReasonError("Missing auth_key in zoneConfig".to_string()));
-                    } 
-                    verify_public_key = auth_key.unwrap();
-                        
-                    let create_result = store.create("boot/config",boot_info_str.as_str()).await;
-                    if create_result.is_ok() {
-                        warn!("Boot config not exist,init sys config by boot info");
-                        init_sys_config_by_boot_info(&zone_config).await;     
-                        TRUST_KEYS.lock().await.insert("{owner}".to_string(),verify_public_key);                   
-                    }
-                } else {
-                    warn!("Boot config already exist,do device register only");
-                }
-            },
-            Err(err) => {
-                return Err(RPCErrors::ReasonError(err.to_string()));
-            }
-        }
-    } 
-    
-    info!("Register device with device_doc_jwt:[{}]",device_doc_jwt);
-    verify_public_key = TRUST_KEYS.lock().await.get("{owner}")
-        .ok_or(RPCErrors::ReasonError("No trust key".to_string()))?
-        .clone();
-    //verify device_doc,write result
-    let device_doc_json = decode_json_from_jwt_with_pk(device_doc_jwt,&verify_public_key)
-        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-
-    //do register device
-       
-    Ok(Value::Bool(true))
+lazy_static!{
+    static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> = {
+        Arc::new(Mutex::new(SledStore::new().unwrap()))
+    };
 }
 
 async fn handle_get(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
@@ -123,7 +50,9 @@ async fn handle_get(params:Value,session_token:&RPCSessionToken) -> Result<Value
         return Err(RPCErrors::NoPermission("No userid".to_string()));
     }
     let userid = session_token.userid.as_ref().unwrap();
+
     let full_res_path = format!("kv://{}",key);
+    
     if !enforce(userid, session_token.appid.as_deref(), full_res_path.as_str(), "read").await {
         return Err(RPCErrors::NoPermission("No read permission".to_string()));
     }
@@ -249,11 +178,6 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
             }
         }
         
-        if rpc_session_token.is_self_verify() {
-            //generate a non-store quick verify token for next-call
-        }
-        //do access control here
-        
         match method.as_str() {
             "sys_config_create"=>{
                 return handle_create(param,&rpc_session_token).await;
@@ -267,9 +191,6 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
             "sys_config_delete" => {
                 return handle_delete(param,&rpc_session_token).await;
             },
-            "sys_config_register_device" => {
-                return handle_register_device(param,&rpc_session_token).await;
-            },
             // Add more methods here
             _ => Err(RPCErrors::UnknownMethod(String::from(method))),
         }
@@ -280,16 +201,15 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
 
 }
 
-lazy_static!{
-    static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> = {
-        Arc::new(Mutex::new(SledStore::new().unwrap()))
-    };
-}
+
 
 fn init_log_config() {
     // 创建一个日志配置对象
-    let config = ConfigBuilder::new().build();
-
+    let config = ConfigBuilder::new()
+        .set_time_format_custom(format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"))
+        .build();
+       
+    let log_path = get_buckyos_root_dir().join("logs").join("sys_config_service.log");
     // 初始化日志器
     CombinedLogger::init(vec![
         // 将日志输出到标准输出，例如终端
@@ -299,11 +219,10 @@ fn init_log_config() {
             TerminalMode::Mixed,
             ColorChoice::Auto,
         ),
-        // 同时将日志输出到文件
         WriteLogger::new(
             LevelFilter::Info,
             config,
-            File::create("sys_config_service.log").unwrap(),
+            File::create(log_path).unwrap(),
         ),
     ])
     .unwrap();
@@ -319,9 +238,67 @@ async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
     Ok(())
 }
 
+async fn init_by_boot_config()->Result<()> {
+
+    let store = SYS_STORE.lock().await;
+    let rbac_model = store.get("system/rbac/model".to_string()).await;
+    let rbac_policy = store.get("system/rbac/policy".to_string()).await;
+    let mut set_rbac = false;
+    if rbac_model.is_ok() && rbac_policy.is_ok() {
+        let rbac_model = rbac_model.unwrap();
+        let rbac_policy = rbac_policy.unwrap();
+        if rbac_model.is_some() && rbac_policy.is_some() {
+            rbac::create_enforcer(Some(rbac_model.unwrap().as_str()),
+             Some(rbac_policy.unwrap().as_str())).await.unwrap();
+            set_rbac = true;
+        }
+    } 
+
+    if !set_rbac {
+        rbac::create_enforcer(None,None).await.unwrap();
+    }
+
+    //let zone_config_str = std::env::var("BUCKY_ZONE_CONFIG");
+    //if zone_config_str.is_ok() {
+    //    let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str.unwrap()).unwrap();
+    //}
+
+    let device_doc_str = std::env::var("BUCKY_THIS_DEVICE");
+    if device_doc_str.is_ok() {
+        let device_doc_str = device_doc_str.unwrap();
+        let device_doc:DeviceConfig = serde_json::from_str(&device_doc_str).unwrap();
+        let device_key_str = serde_json::to_string(&device_doc.auth_key).unwrap();
+        let devcie_key = device_doc.get_auth_key();
+        if devcie_key.is_some() {
+            let devcie_key = devcie_key.unwrap();
+            TRUST_KEYS.lock().await.insert(device_doc.name.clone(),devcie_key.clone());
+            info!("Insert device name:[{}] - key:[{}] to trust keys",device_doc.name,device_key_str);
+            TRUST_KEYS.lock().await.insert(device_doc.did.clone(),devcie_key);
+            info!("Insert device did:[{}] - key:[{}] to trust keys",device_doc.did,device_key_str);
+        }
+    } else {
+        error!("Missing BUCKY_THIS_DEVICE");
+    }
+    let zone_owner_str = std::env::var("BUCKY_ZONE_OWNER");
+    if zone_owner_str.is_ok() {
+        let zone_owner_key_str  = zone_owner_str.unwrap();
+        let zone_owner_key : jsonwebtoken::jwk::Jwk = serde_json::from_str(&zone_owner_key_str).unwrap();
+        let zone_owner_key = DecodingKey::from_jwk(&zone_owner_key).unwrap();
+        TRUST_KEYS.lock().await.insert("{owner}".to_string(),zone_owner_key.clone());
+        info!("Insert zone owner key:[{}] to trust keys",zone_owner_key_str);
+        //TRUST_KEYS.lock().await.insert("{owner}".to_string(),zone_owner_key);
+    } else {
+        error!("Missing BUCKY_ZONE_OWNER");
+    }
+
+
+    Ok(())
+}
+
 async fn service_main() {
     init_log_config();
-    info!("Starting system config service...");
+    info!("Starting system config service............................");
+    init_by_boot_config().await.unwrap();
     // Select the rear end storage, here you can switch different implementation
 
     let rpc_route = warp::path("system_config")
@@ -451,3 +428,5 @@ mod test {
 
     }
 }
+
+

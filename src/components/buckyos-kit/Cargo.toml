@@ -8,8 +8,12 @@ authors = ["BuckyOS DAO","@waterflier"]
 
 [dependencies]
 sysinfo = "*"
+serde_json = "*"
 tokio = { version = "*", features = ["full"] }
 log = "*"
 thiserror = "*"
 env_logger = "*"
+ed25519-dalek = { version = "*", features = ["rand_core"] } 
+rand = "*"
+base64 = "*"
 package-manager = { path = "../package-manager" }

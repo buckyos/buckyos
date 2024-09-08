@@ -13,11 +13,12 @@ use std::fmt::format;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use time::macros::format_description;
 use std::{collections::HashMap, fs::File};
 use std::path::Path;
 // use tokio::*;
 
-use buckyos_kit::{ServicePkg,ServiceState,get_buckyos_system_bin_dir};
+use buckyos_kit::{*};
 //use etcd_client::*;
 use futures::prelude::*;
 use jsonwebtoken::jwk::Jwk;
@@ -30,14 +31,13 @@ use sys_config::*;
 use toml;
 use serde_json::{from_value, json};
 use name_lib::*;
-// use crate::backup::*;
-// use crate::backup_task_mgr::*;
+
 
 use crate::run_item::*;
 use crate::service_mgr::*;
 
 use thiserror::Error;
-use tide::log::start;
+
 
 #[derive(Error, Debug)]
 enum NodeDaemonErrors {
@@ -72,6 +72,8 @@ struct NodeIdentityConfig {
 #[derive(Serialize, Deserialize, Debug)]
 struct NodeConfig {
     revision: u64,
+    kernel: HashMap<String, ServiceConfig>,
+    apps: HashMap<String, ServiceConfig>,
     services: HashMap<String, ServiceConfig>,
     is_running: bool,
 }
@@ -91,8 +93,11 @@ impl NodeConfig {
 
 fn init_log_config() {
     // 创建一个日志配置对象
-    let config = ConfigBuilder::new().build();
-
+    let config = ConfigBuilder::new()
+        .set_time_format_custom(format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"))
+        .build();
+       
+    let log_path = get_buckyos_root_dir().join("logs").join("node_daemon.log");
     // 初始化日志器
     CombinedLogger::init(vec![
         // 将日志输出到标准输出，例如终端
@@ -102,11 +107,10 @@ fn init_log_config() {
             TerminalMode::Mixed,
             ColorChoice::Auto,
         ),
-        // 同时将日志输出到文件
         WriteLogger::new(
             LevelFilter::Info,
             config,
-            File::create("/tmp/node_daemon.log").unwrap(),
+            File::create(log_path).unwrap(),
         ),
     ])
     .unwrap();
@@ -247,17 +251,6 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
     return Ok(zone_config);
 }
 
-async fn generate_boot_config()->Result<serde_json::Value> {
-    let mut boot_config = json!({
-        "node_id": "node_id",
-        "zone_name": "zone_name",
-        "owner_name": "owner_name",
-        "device_doc_jwt": "device_doc_jwt",
-    });
-
-    Ok(boot_config)
-}
-
 
 async fn get_node_config(node_host_name: &str,sys_config_client: &SystemConfigClient) -> Result<NodeConfig> {
     let json_config_path = format!("{}_node_config.json", node_host_name);
@@ -301,7 +294,7 @@ async fn node_main(node_host_name: &str,
         return Ok(false);
     }
 
-    let service_stream = stream::iter(node_config.services);
+    let service_stream = stream::iter(node_config.kernel);
     service_stream.for_each_concurrent(1, |(service_name, service_cfg)| async move {
             let target_state = service_cfg.target_state.clone();
             let _ = control_run_item_to_target_state(&service_cfg, target_state, device_private_key)
@@ -351,21 +344,27 @@ async fn node_daemon_main_loop(
     Ok(())
 }
 
-fn main() {
-    if num_cpus::get() < 2 {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async_main());
+
+async fn do_boot_scheduler() -> std::result::Result<(),String> {
+    let mut scheduler_pkg = ServicePkg::new("scheduler".to_string(),get_buckyos_system_bin_dir());
+    let _ = scheduler_pkg.load().await.map_err(|err| {
+        error!("load scheduler pkg failed! {}", err);
+        return String::from("load scheduler pkg failed!");
+    })?;
+
+    let start_result = scheduler_pkg.start(vec!["--boot".to_string()]).await.map_err(|err| {
+        error!("start scheduler pkg failed! {}", err);
+        return String::from("start scheduler pkg failed!");
+    })?;
+
+    if start_result == 0 {
+        info!("run scheduler pkg success!");
+        Ok(())
     } else {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async_main());
+        error!("run scheduler pkg failed!");
+        Err(String::from("run scheduler pkg failed!"))
     }
+    
 }
 
 async fn async_main() -> std::result::Result<(), String> {
@@ -428,8 +427,11 @@ async fn async_main() -> std::result::Result<(), String> {
         String::from("looking zone config failed!")
     })?;
     info!("Load zone document OK, {:?}", zone_config);
-    info!("Booting...");
+    info!("Booting......");
 
+    std::env::set_var("BUCKY_ZONE_OWNER", serde_json::to_string(&node_identity.owner_public_key).unwrap());
+    std::env::set_var("BUCKY_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
+    std::env::set_var("BUCKY_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
 
     //init system config (client)
     //if init system config failed, try to init system config service at this machine ,then try to init system config client again
@@ -453,11 +455,11 @@ async fn async_main() -> std::result::Result<(), String> {
         return String::from("generate device session token failed!");
     })?;
 
-    //check this is node is in ood list
+    //check node is ood node?
     let syc_cfg_client: SystemConfigClient;
     let boot_config: serde_json::Value; 
     if zone_config.oods.contains(&device_doc.name) {
-        let mut sys_config_service_pkg = ServicePkg::new("system_config_service".to_string(),get_buckyos_system_bin_dir());
+        let mut sys_config_service_pkg = ServicePkg::new("system_config".to_string(),get_buckyos_system_bin_dir());
         let _ = sys_config_service_pkg.load().await.map_err(|err| {
             error!("load system_config_service pkg failed! {}", err);
             return String::from("load system_config_service failed!");
@@ -471,31 +473,24 @@ async fn async_main() -> std::result::Result<(), String> {
 
         if running_state == ServiceState::Stopped {
             warn!("check system_config_service running failed!,try to start system_config_service");
-            let start_result = sys_config_service_pkg.start().await.map_err(|err| {
+            let start_result = sys_config_service_pkg.start(vec![]).await.map_err(|err| {
                 error!("start system_config_service failed! {}", err);
                 return String::from("start system_config_service failed!");
             })?;
         }
 
-        let ood = vec![device_doc.name.clone()];
-        syc_cfg_client = SystemConfigClient::new(&ood, &Some(device_session_token_jwt));
-        let boot_config_result = syc_cfg_client.get("boot").await;
+        let ood = vec![];
+        syc_cfg_client = SystemConfigClient::new(&ood, &Some(device_session_token_jwt.clone()));
+        let boot_config_result = syc_cfg_client.get("boot/config").await;
         match boot_config_result {
             sys_config::Result::Err(SystemConfigError::KeyNotFound(_)) => {
-                warn!("boot config is not exist, create it!");
-
-                boot_config = generate_boot_config().await.map_err(|err| {
-                    error!("generate boot config failed! {}", err);
-                    return String::from("generate boot config failed!");
+                warn!("boot config is not exist, try first scheduler to generate it!");
+                std::env::set_var("SCHEDULER_SESSION_TOKEN", device_session_token_jwt.clone());
+                do_boot_scheduler().await.map_err(|err| {
+                    error!("do boot scheduler failed! {}", err);
+                    return String::from("do boot scheduler failed!");
                 })?;
-
-
-                syc_cfg_client.register_device(node_identity.device_doc_jwt.as_str(),&Some(boot_config)).await
-                    .map_err(|err| {
-                        error!("reigster device and set boot config failed! {}", err);
-                        return String::from("set boot config failed!");
-                    })?;
-                info!("Register Device and Init boot config OK, wat 2 secs.");
+                info!("Init boot config OK, wat 2 secs.");
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             },
             sys_config::Result::Ok(r) => {
@@ -529,4 +524,21 @@ async fn async_main() -> std::result::Result<(), String> {
         })?;
 
     Ok(())
+}
+
+fn main() {
+    if num_cpus::get() < 2 {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async_main());
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async_main());
+    }
 }

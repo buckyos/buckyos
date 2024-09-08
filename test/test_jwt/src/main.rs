@@ -5,6 +5,10 @@ use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, Dec
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use thiserror::*;
+use ed25519_dalek::{ed25519::signature::SignerMut, SigningKey};
+use rand::rngs::OsRng;
+use base64;
+
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,7 +60,31 @@ pub fn decode_jwt_claim_without_verify(jwt: &str) -> NSResult<serde_json::Value>
     Ok(claims)
 }
 
+pub fn generate_key_pair() {
+    let mut csprng = OsRng{};
+
+   
+    let signing_key: SigningKey = SigningKey::generate(&mut csprng);
+
+    //let keypair: Keypair = Keypair::generate(&mut csprng);
+
+    let private_key_pem = format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+        base64::encode(signing_key.to_bytes())
+    );
+
+    let public_key_jwk = json!({
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": base64::encode(signing_key.verifying_key().to_bytes()),
+    });
+
+    println!("Genereate Private Key (PEM): {}", private_key_pem);
+    println!("Generate Public Key (JWK): {}", public_key_jwk);
+}
+
 fn main() {
+    generate_key_pair();
     let jwk = json!(
             {
                 "kty": "OKP",

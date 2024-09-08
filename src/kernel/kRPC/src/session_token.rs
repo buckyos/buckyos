@@ -152,6 +152,16 @@ impl RPCSessionToken {
             }
         }
 
+        let iss = decoded_json.get("iss");
+        if iss.is_some() {
+            let iss = iss.unwrap();
+            if iss.is_null() {
+                self.iss = None;
+            } else {
+                self.iss = Some(iss.as_str().unwrap().to_string());
+            }
+        }
+
         let exp = decoded_json.get("exp");
         if exp.is_some() {
             let exp = exp.unwrap();

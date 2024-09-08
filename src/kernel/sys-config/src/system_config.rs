@@ -27,15 +27,21 @@ pub struct SystemConfigClient {
 
 impl SystemConfigClient {
     pub fn new(ood_list:&Vec<String>,session_token:&Option<String>) -> Self {
-        assert!(ood_list.len() > 0);
-        let index = random::<usize>() % ood_list.len();
-        let device_name = ood_list[index].clone();
-        let server_url = format!("http://{}:10030/system_config",device_name);
-        //http://$device_name:3080/systemconfig
+        if ood_list.len() == 0 {
+            let client = kRPC::new("http://127.0.0.1:10030/system_config", session_token);
+            SystemConfigClient {
+                client,
+            }
+        } else {
+            let index = random::<usize>() % ood_list.len();
+            let device_name = ood_list[index].clone();
+            let server_url = format!("http://{}:10030/system_config",device_name);
+            //http://$device_name:3080/systemconfig
 
-        let client = kRPC::new(server_url.as_str(), session_token);
-        SystemConfigClient {
-            client,
+            let client = kRPC::new(server_url.as_str(), session_token);
+            SystemConfigClient {
+                client,
+            }
         }
     }
 
@@ -64,6 +70,10 @@ impl SystemConfigClient {
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
+        if result.is_null() {
+            return Err(SystemConfigError::KeyNotFound(key.to_string()));
+        }
+
         Ok((result,0))
     }
 
@@ -74,4 +84,14 @@ impl SystemConfigClient {
 
         Ok(0)
     }
+
+    pub async fn create(&self,key:&str,value:&str) -> Result<u64> {
+        let result = self.client.call("sys_config_create", json!({"key": key, "value": value}))
+            .await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+
+        Ok(0)
+    }
+    
+    
 }

@@ -6,15 +6,15 @@ use std::collections::HashMap;
 use std::time::{SystemTime,UNIX_EPOCH};
 use std::{fs::File};
 use log::*;
-use name_lib::DeviceConfig;
+
 use simplelog::*;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
 use warp::{reply::{Reply, Response}, Filter};
 use serde_json::{Value, json};
-use name_lib::*;
-use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
 
+use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
+use name_lib::*;
 use buckyos_kit::*; 
 use sys_config::*;
 use ::kRPC::*;
@@ -415,7 +415,7 @@ async fn service_main() {
     });
 
     info!("verify_hub service initialized");
-    warp::serve(rpc_route).run(([127, 0, 0, 1], 3032)).await;
+    warp::serve(rpc_route).run(([127, 0, 0, 1], 10032)).await;
 }
 
 #[tokio::main]
@@ -458,7 +458,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 "#;
         //login test,use trust device JWT
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
-        let mut client = kRPC::new("http://127.0.0.1:3032/verify_hub",&None);
+        let mut client = kRPC::new("http://127.0.0.1:10032/verify_hub",&None);
         let mut header = Header::new(Algorithm::EdDSA);
         //完整的kid表达应该是 $zoneid#kid 这种形式，为了提高性能做了一点简化
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();

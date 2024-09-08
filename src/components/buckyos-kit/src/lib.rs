@@ -5,6 +5,29 @@ pub use path::*;
 pub use process::*;
 pub use time::*;
 
+use serde_json::json;
+use ed25519_dalek::{SigningKey};
+use rand::rngs::OsRng;
+
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
+    let mut csprng = OsRng{};
+
+    let signing_key: SigningKey = SigningKey::generate(&mut csprng);
+    let private_key_pem = format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+        URL_SAFE_NO_PAD.encode(signing_key.to_bytes())
+    );
+    let public_key_jwk = json!({
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes()),
+    });
+
+    (private_key_pem, public_key_jwk)
+}
+
+
 mod test {
     use std::path::PathBuf;
 

@@ -10,4 +10,5 @@ serde_json = "*"
 jsonwebtoken = "*"
 thiserror = "*"
 base64 = "*"
-
+ed25519-dalek = { version = "*", features = ["rand_core"] } 
+rand = "*"

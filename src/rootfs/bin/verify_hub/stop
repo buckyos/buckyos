@@ -1,0 +1,7 @@
+#!/bin/python
+
+import os
+
+# 考虑上一个进程可能是卡死的，因此需要先kill掉
+print("try to kill verify_hub")
+os.system("killall verify_hub")

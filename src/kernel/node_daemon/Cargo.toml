@@ -16,19 +16,11 @@ simplelog = "*"
 thiserror = "*"
 tokio = { version = "*", features = ["full"] }
 async-trait = "*"
-reqwest = {version = "*", default-features = false, features = ["json", "rustls-tls"]}
-tide = "*"
-regex = "*"
-sha2 = "*"
-base58 = "*"
 futures = "*"
 lazy_static = "*"
-async-recursion = "*"
-version-compare = "*"
-rusqlite = { version = '*', features = ['bundled', 'blob'] }
-chrono = "*"
-num_cpus = "*"
 jsonwebtoken = "*"  
+num_cpus = "*"
+time = { version = "^0.3", features = ["formatting"] }
 
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }

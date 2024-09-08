@@ -1,0 +1,26 @@
+[package]
+name = "scheduler"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+
+[dependencies]
+time = { version = "^0.3", features = ["formatting"] }
+async-trait = "*"
+log = "*"
+simplelog = "*"
+serde = "*"
+serde_json = "*"
+url = "*"
+tokio = { version = "*", features = ["full"] }
+warp = "*"
+lazy_static = "*"
+thiserror = "*"
+jsonwebtoken = "*"
+# rocksdb = "*"
+buckyos-kit = { path = "../../components/buckyos-kit" }
+name-lib = { path = "../../components/name-lib" }
+rbac = { path = "../rbac" }
+kRPC ={ path = "../kRPC" }
+sys-config = { path = "../sys-config" }

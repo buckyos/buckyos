@@ -1,5 +1,5 @@
 [package]
-name = "system_config_service"
+name = "system_config"
 version = "0.2.0"
 edition = "2021"
 authors = ["BuckyOS DAO","@waterflier"]
@@ -8,6 +8,7 @@ authors = ["BuckyOS DAO","@waterflier"]
 
 
 [dependencies]
+time = { version = "^0.3", features = ["formatting"] }
 async-trait = "*"
 log = "*"
 simplelog = "*"

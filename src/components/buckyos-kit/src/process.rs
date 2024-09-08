@@ -52,6 +52,7 @@ pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String
             command = Command::new(script_engine_path.file_name().unwrap().to_str().unwrap());
             command.arg(path);
             read_first_line = true;
+            info!("start run script execute {} {}...", script_engine_path.file_name().unwrap().to_str().unwrap(),path.to_string_lossy());
         }
     }
 
@@ -172,30 +173,31 @@ impl ServicePkg {
         }
     }
 
-    async fn execute_operation(&self, op_name: &str) -> Result<i32> {
+    async fn execute_operation(&self, op_name: &str,parms:Vec<String>) -> Result<i32> {
         if self.media_info.is_none() {
             return Err(ServiceControlError::ReasonError("media info is not loaded".to_string()));
         }
         let media_info = self.media_info.clone().unwrap();
         let op_file = media_info.full_path.join(op_name);
-        let (result, output) = execute(&op_file, 5, None,
+        info!("start execute {} ...", op_file.display());
+        let (result, output) = execute(&op_file, 5, Some(&parms),
             self.current_dir.as_ref(), Some(&self.env_vars)).await?;
         info!("execute {} ==> result: {} \n\t {}", op_file.display(), result, String::from_utf8_lossy(&output));
         Ok(result)
     }
 
-    pub async fn start(&self) -> Result<i32> {
-        let result = self.execute_operation("start").await?;
+    pub async fn start(&self,parms:Vec<String>) -> Result<i32> {
+        let result = self.execute_operation("start",parms).await?;
         Ok(result)
     }
 
     pub async fn stop(&self) -> Result<i32> {
-        let result = self.execute_operation("stop").await?;
+        let result = self.execute_operation("stop",vec![]).await?;
         Ok(result)
     }
 
     pub async fn status(&self) -> Result<ServiceState> {
-        let result = self.execute_operation("status").await?;
+        let result = self.execute_operation("status",vec![]).await?;
         match result {
             0 => Ok(ServiceState::Started),
             -1 => Ok(ServiceState::NotExist),
