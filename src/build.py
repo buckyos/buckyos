@@ -1,5 +1,6 @@
 
 import os
+import sys
 import tempfile
 import shutil
 
@@ -12,8 +13,11 @@ project_name = "buckyos"
 target_dir = os.path.join(temp_dir, "rust_build", project_name)
 os.makedirs(target_dir, exist_ok=True)
 
-#cargo_command = f'cargo clean --target-dir "{target_dir}"'
-#os.system(cargo_command)
+args = sys.argv[1:]
+if len(args) > 0:
+    if args[0] == "clean":
+        cargo_command = f'cargo clean --target-dir "{target_dir}"'
+        os.system(cargo_command)
 
 cargo_command = f'cargo build --release --target-dir "{target_dir}"'
 build_result = os.system(cargo_command)

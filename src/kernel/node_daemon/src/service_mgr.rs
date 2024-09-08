@@ -15,7 +15,6 @@ use buckyos_kit::*;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ServiceConfig {
     pub target_state : RunItemTargetState,
-    pub version : String,
     //pub name : String, // service name
     pub pkg_id : String,
     pub operations : HashMap<String, RunItemControlOperation>,

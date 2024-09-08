@@ -65,7 +65,7 @@ impl SystemConfigClient {
         Ok(())
     }
     
-    pub async fn get(&self, key: &str) -> Result<(Value,u64)> {
+    pub async fn get(&self, key: &str) -> Result<(String,u64)> {
         let result = self.client.call("sys_config_get", json!({"key": key}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
@@ -73,8 +73,9 @@ impl SystemConfigClient {
         if result.is_null() {
             return Err(SystemConfigError::KeyNotFound(key.to_string()));
         }
-
-        Ok((result,0))
+        let value = result.as_str().unwrap_or("");
+        let revision = 0;
+        Ok((value.to_string(),revision))
     }
 
     pub async fn set(&self, key: &str, value: &str) -> Result<u64> {

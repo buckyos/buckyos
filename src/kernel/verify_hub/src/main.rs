@@ -138,7 +138,7 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
             return Err(RPCErrors::ReasonError("Trust key  not found".to_string()));
         }
         let (device_config,_version) = get_result.unwrap();
-        let device_config:DeviceConfig= serde_json::from_value(device_config).map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let device_config:DeviceConfig= serde_json::from_str(&device_config).map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         result_key = device_config.get_auth_key().ok_or(RPCErrors::ReasonError("Device public key not found".to_string()))?;
     }
 

@@ -19,9 +19,10 @@ async fn generate_ood_config(ood_name:&str) -> Result<HashMap<String,Value>> {
 
     //init ood config
     init_list.insert(format!("nodes/{}/config",ood_name),json!({
+        "is_running":true,
+        "revision" : 0,
         "kernel" : {
             "verify_hub" : {
-                "revision" : 0,
                 "target_state":"Running",
                 "pkg_id":"verify_hub",
                 "operations":{
@@ -40,7 +41,6 @@ async fn generate_ood_config(ood_name:&str) -> Result<HashMap<String,Value>> {
                 }
             },
             "scheduler" : {
-                "revision" : 0,
                 "target_state":"Running",
                 "pkg_id":"scheduler",
                 "operations":{
@@ -147,6 +147,8 @@ async fn do_boot_scheduler() -> Result<()> {
                 for (key,value) in init_list.iter() {
                     system_config_client.create(key,serde_json::to_string(value).unwrap().as_str()).await?;
                 }
+                info!("boot scheduler success");
+                return Ok(());
                 
             } else {
                 error!("only one ood in zone config is supported");

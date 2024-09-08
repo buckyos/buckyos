@@ -39,6 +39,7 @@ lazy_static!{
 }
 
 async fn handle_get(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
+    info!("handle_get: {:?}",params);
     let key = params.get("key");
     if key.is_none() {
         return Err(RPCErrors::ReasonError("Missing key".to_string()));
@@ -50,14 +51,12 @@ async fn handle_get(params:Value,session_token:&RPCSessionToken) -> Result<Value
         return Err(RPCErrors::NoPermission("No userid".to_string()));
     }
     let userid = session_token.userid.as_ref().unwrap();
-
     let full_res_path = format!("kv://{}",key);
-    
     if !enforce(userid, session_token.appid.as_deref(), full_res_path.as_str(), "read").await {
         return Err(RPCErrors::NoPermission("No read permission".to_string()));
     }
 
-    
+    info!("handle_get: {:?}",key);
     let store = SYS_STORE.lock().await;
     let result = store.get(String::from(key)).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     if result.is_none() {
@@ -69,6 +68,7 @@ async fn handle_get(params:Value,session_token:&RPCSessionToken) -> Result<Value
 }
 
 async fn handle_set(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
+    info!("handle_set: {:?}",params);
     //check params
     let key = params.get("key");
     if key.is_none() {
@@ -174,10 +174,12 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
         if rpc_session_token.exp.is_some() {
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
             if now > rpc_session_token.exp.unwrap()  {
+                warn!("session token expired: {}",session_token);
                 return Err(RPCErrors::TokenExpired(session_token));
             }
+            info!("session token is valid: {}",session_token);
         }
-        
+        info!("ready to handle request : {}",method.as_str());
         match method.as_str() {
             "sys_config_create"=>{
                 return handle_create(param,&rpc_session_token).await;
@@ -234,7 +236,7 @@ async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
         let trust_keys = TRUST_KEYS.lock().await;
         token.do_self_verify(&trust_keys)?;
     }
-
+    info!("verify_session_token: {:?}",token);
     Ok(())
 }
 
@@ -382,6 +384,8 @@ mod test {
             exp: Some(now+5),//5 seconds
             token_type: RPCSessionTokenType::JWT,
             token: None,
+            iss:None,
+            nonce:None,
         };
         let jwt = token.generate_jwt(Some("{owner}".to_string()),&private_key).unwrap();
     
@@ -396,7 +400,7 @@ mod test {
         let _ = client.call("sys_config_set", json!( {"key":"users/alice/test_key","value":"test_value"})).await.unwrap();
         //test get
         println!("test get");
-        let result = client.call("sys_config_get", json!( {"key":"users/alice/test_key"})).await.unwrap();
+        let result = client.call("sys_config_get", json!( {"key":"boot/config"})).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "test_value");
         //test no permission set
         println!("test no permission set");

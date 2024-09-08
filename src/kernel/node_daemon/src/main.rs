@@ -76,6 +76,7 @@ struct NodeConfig {
     apps: HashMap<String, ServiceConfig>,
     services: HashMap<String, ServiceConfig>,
     is_running: bool,
+    
 }
 
 impl NodeConfig {
@@ -270,7 +271,7 @@ async fn get_node_config(node_host_name: &str,sys_config_client: &SystemConfigCl
             return NodeDaemonErrors::SystemConfigError("get node config failed from etcd!".to_string());
         })?;
 
-    let node_config = serde_json::from_value(sys_cfg_result).map_err(|err| {
+    let node_config = serde_json::from_str(&sys_cfg_result).map_err(|err| {
         error!("parse node config failed! {}", err);
         return NodeDaemonErrors::SystemConfigError("parse node config failed!".to_string());
     })?;
@@ -494,7 +495,10 @@ async fn async_main() -> std::result::Result<(), String> {
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             },
             sys_config::Result::Ok(r) => {
-                boot_config = r.0;
+                boot_config = serde_json::from_str(r.0.as_str()).map_err(|err| {
+                    error!("parse boot config failed! {}", err);
+                    return String::from("parse boot config failed!");
+                })?;
                 info!("OOD device load boot config OK, {}", boot_config);
             },
             _ => {
