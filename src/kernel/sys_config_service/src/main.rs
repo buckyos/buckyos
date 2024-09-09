@@ -3,19 +3,21 @@ mod kv_provider;
 //mod rocksdb_provider;
 mod sled_provider;
 
-use std::sync::{Arc};
-use std::{fs::File};
+
 use std::collections::HashMap;
+use std::fs::File;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use jsonwebtoken::DecodingKey;
 use log::*;
-use serde::de;
+
 use simplelog::*;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
-use warp::{reply::{Reply, Response}, Filter};
-use serde_json::{Value, json};
-use jsonwebtoken::{DecodingKey};
+use warp::{Filter};
+use serde_json::{Value};
+
 
 use ::kRPC::*;
 use rbac::*;
@@ -344,12 +346,10 @@ async fn main() {
     service_main().await;
 }
 
+
+#[cfg(test)]
 mod test {
     use super::*;
-    use jsonwebtoken::EncodingKey;
-    use tokio::time::{sleep,Duration};
-    use tokio::task;
-    
     #[tokio::test]
     async fn test_server_interface() {
         {
@@ -425,11 +425,6 @@ mod test {
         assert!(result.is_err());
  
         drop(server);
-    }
-
-
-    async fn test_register_and_init() {
-
     }
 }
 

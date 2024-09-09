@@ -27,10 +27,8 @@ pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
     (private_key_pem, public_key_jwk)
 }
 
-
+#[cfg(test)]
 mod test {
-    use std::path::PathBuf;
-
     use super::*;
     use env_logger;
     #[test]

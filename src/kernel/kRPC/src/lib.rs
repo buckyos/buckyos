@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(non_camel_case_types)]
 mod session_token;
 mod protocol;
 pub use session_token::*;
@@ -131,7 +132,7 @@ impl kRPC {
     }
 }
 
-
+#[cfg(test)]
 mod test {
     use super::*;
     #[test]

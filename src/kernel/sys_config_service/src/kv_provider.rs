@@ -8,8 +8,6 @@ pub enum KVStoreErrors {
     KeyNotFound(String),
     #[error("key exist : {0}")]
     KeyExist(String),
-    #[error("set too large : {0}")]
-    TooLarge(String),
     #[error("internal error : {0}")]
     InternalError(String),
 

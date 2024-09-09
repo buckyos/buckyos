@@ -3,7 +3,6 @@ use std::collections::hash_map::HashMap;
 use serde::{Serialize,Deserialize};
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
 use log::*;
-use serde_json::json;
 use crate::{Result,RPCErrors};
 
 #[derive(Clone, Debug, Serialize, Deserialize,PartialEq)]

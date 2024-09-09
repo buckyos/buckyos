@@ -1,5 +1,5 @@
-use tokio::time::{timeout, sleep, Duration};
-use tokio::process::{Command, Child};
+use tokio::time::{timeout, Duration};
+use tokio::process::{Command};
 use log::*;
 use thiserror::Error;
 use tokio::fs::File;
@@ -146,6 +146,17 @@ pub struct ServicePkg {
     pub media_info: Option<MediaInfo>,
 }
 
+impl Default for ServicePkg {
+    fn default() -> Self {
+        Self {
+            pkg_id: "".to_string(),
+            pkg_env: PackageEnv::new(PathBuf::from("")),
+            current_dir: None,
+            env_vars: HashMap::new(),
+            media_info: None,
+        }
+    }
+}
 impl ServicePkg {
     pub fn new(pkg_id: String,env_path: PathBuf) -> Self {
         Self {
@@ -173,31 +184,31 @@ impl ServicePkg {
         }
     }
 
-    async fn execute_operation(&self, op_name: &str,parms:Vec<String>) -> Result<i32> {
+    async fn execute_operation(&self, op_name: &str,parms:Option<&Vec<String>>) -> Result<i32> {
         if self.media_info.is_none() {
             return Err(ServiceControlError::ReasonError("media info is not loaded".to_string()));
         }
         let media_info = self.media_info.clone().unwrap();
         let op_file = media_info.full_path.join(op_name);
         info!("start execute {} ...", op_file.display());
-        let (result, output) = execute(&op_file, 5, Some(&parms),
+        let (result, output) = execute(&op_file, 5, parms,
             self.current_dir.as_ref(), Some(&self.env_vars)).await?;
         info!("execute {} ==> result: {} \n\t {}", op_file.display(), result, String::from_utf8_lossy(&output));
         Ok(result)
     }
 
-    pub async fn start(&self,parms:Vec<String>) -> Result<i32> {
+    pub async fn start(&self,parms:Option<&Vec<String>>) -> Result<i32> {
         let result = self.execute_operation("start",parms).await?;
         Ok(result)
     }
 
     pub async fn stop(&self) -> Result<i32> {
-        let result = self.execute_operation("stop",vec![]).await?;
+        let result = self.execute_operation("stop",None).await?;
         Ok(result)
     }
 
     pub async fn status(&self) -> Result<ServiceState> {
-        let result = self.execute_operation("status",vec![]).await?;
+        let result = self.execute_operation("status",None).await?;
         match result {
             0 => Ok(ServiceState::Started),
             -1 => Ok(ServiceState::NotExist),

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc};
+use casbin::RbacApi;
 use log::*;
 use tokio::sync::Mutex;
 use casbin::{rhai::ImmutableString, CoreApi, DefaultModel, Enforcer, Filter, MemoryAdapter, MgmtApi};
@@ -44,6 +45,8 @@ p, app,  dfs://homes/*/apps/{app}/*, read|write,allow
 p, limit, dfs://public/*, read,allow
 p, guest, dfs://public/*, read,allow
 
+g, node_daemon, kernel
+g, ood01,ood
 g, alice, user
 g, bob, user
 g, app1, app
@@ -104,14 +107,17 @@ pub async fn create_enforcer(model_str:Option<&str>,policy_str:Option<&str>) -> 
 //default acl config is stored in the memory,so it is not async function
 //TODO :use system_config event to reload the config.
 pub async fn enforce(userid:&str, appid:Option<&str>,res_path:&str,op_name:&str) -> bool {
-    let enforcer = SYS_ENFORCE.lock().await;
+    let mut enforcer = SYS_ENFORCE.lock().await;
     if enforcer.is_none() {
         error!("enforcer is not initialized");
         return false;
     }
-    let enforcer = enforcer.as_ref().unwrap();
+    let mut enforcer = enforcer.as_mut().unwrap();
 
-    
+    //let roles = enforcer.get_roles_for_user(userid,None);
+    //println!("roles for user {}: {:?}", userid, roles);
+    //info!("roles for user {}: {:?}", userid, roles);
+
     let appid = appid.unwrap_or("kernel");
     let res2 = enforcer.enforce((appid, res_path, op_name)).unwrap();
     println!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);

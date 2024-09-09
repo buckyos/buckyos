@@ -1,30 +1,30 @@
 #![allow(dead_code)]
 #![allow(unused)]
 
-// mod backup;
-// mod backup_task_mgr;
-// mod backup_task_storage;
-//mod etcd_mgr;
-//mod pkg_mgr;
+
 mod run_item;
-mod service_mgr;
+mod kernel_mgr; // support manager kernel service (run in native, run for system)
+mod service_mgr; // support manager frame service (run in docker,run for all users)
+mod app_mgr; // support manager app service (run in docker,run for one user)
+
 use std::env;
 use std::fmt::format;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use kernel_mgr::KernelServiceConfig;
 use time::macros::format_description;
 use std::{collections::HashMap, fs::File};
 use std::path::Path;
 // use tokio::*;
 
 use buckyos_kit::{*};
-//use etcd_client::*;
+
 use futures::prelude::*;
 use jsonwebtoken::jwk::Jwk;
 use log::*;
 use serde::{Deserialize, Serialize};
-// use serde_json::error;
+
 use simplelog::*;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
 use sys_config::*;
@@ -35,6 +35,8 @@ use name_lib::*;
 
 use crate::run_item::*;
 use crate::service_mgr::*;
+use crate::app_mgr::*;
+use crate::kernel_mgr::*;
 
 use thiserror::Error;
 
@@ -69,12 +71,12 @@ struct NodeIdentityConfig {
 // 系统资源情况，（比如可用内存等），改变密度很大。这一块暂时不用etcd实现，而是用专门的监控服务保存
 // RunItem的配置。这块由调度器改变，一旦改变,node_daemon就会产生相应的控制命令
 // Task(Cmd)配置，暂时不实现
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 struct NodeConfig {
     revision: u64,
-    kernel: HashMap<String, ServiceConfig>,
-    apps: HashMap<String, ServiceConfig>,
-    services: HashMap<String, ServiceConfig>,
+    kernel: HashMap<String, KernelServiceConfig>,
+    apps: HashMap<String, AppServiceConfig>,
+    services: HashMap<String, FrameServiceConfig>,
     is_running: bool,
     
 }
@@ -295,7 +297,19 @@ async fn node_main(node_host_name: &str,
         return Ok(false);
     }
 
-    let service_stream = stream::iter(node_config.kernel);
+
+    let kernel_stream = stream::iter(node_config.kernel);
+    kernel_stream.for_each_concurrent(1, |(kernel_service_name, kernel_cfg)| async move {
+            let target_state = kernel_cfg.target_state.clone();
+            let _ = control_run_item_to_target_state(&kernel_cfg, target_state, device_private_key)
+                .await
+                .map_err(|_err| {
+                    error!("control kernel service item {} to target state failed!",kernel_service_name.clone());
+                    return NodeDaemonErrors::SystemConfigError(kernel_service_name.clone());
+                });
+    }).await;
+
+    let service_stream = stream::iter(node_config.services);
     service_stream.for_each_concurrent(1, |(service_name, service_cfg)| async move {
             let target_state = service_cfg.target_state.clone();
             let _ = control_run_item_to_target_state(&service_cfg, target_state, device_private_key)
@@ -353,7 +367,8 @@ async fn do_boot_scheduler() -> std::result::Result<(),String> {
         return String::from("load scheduler pkg failed!");
     })?;
 
-    let start_result = scheduler_pkg.start(vec!["--boot".to_string()]).await.map_err(|err| {
+    let params = vec!["--boot".to_string()];
+    let start_result = scheduler_pkg.start(Some(&params)).await.map_err(|err| {
         error!("start scheduler pkg failed! {}", err);
         return String::from("start scheduler pkg failed!");
     })?;
@@ -474,7 +489,7 @@ async fn async_main() -> std::result::Result<(), String> {
 
         if running_state == ServiceState::Stopped {
             warn!("check system_config_service running failed!,try to start system_config_service");
-            let start_result = sys_config_service_pkg.start(vec![]).await.map_err(|err| {
+            let start_result = sys_config_service_pkg.start(None).await.map_err(|err| {
                 error!("start system_config_service failed! {}", err);
                 return String::from("start system_config_service failed!");
             })?;

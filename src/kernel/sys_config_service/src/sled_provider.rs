@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use sled::{Db, IVec};
-use std::{env, path::{Path, PathBuf}, sync::Arc};
+use std::sync::Arc;
 use crate::kv_provider::*;
 use log::*;
 use buckyos_kit::*;
@@ -25,7 +25,7 @@ impl KVStoreProvider for SledStore {
         match self.db.get(key.clone()).map_err(|error| KVStoreErrors::InternalError(error.to_string()))? {
             Some(value) => {
                 let result = String::from_utf8(value.to_vec())
-                    .map_err(|err| KVStoreErrors::InternalError("Invalid UTF-8 sequence".to_string()))?;
+                    .map_err(|_err| KVStoreErrors::InternalError("Invalid UTF-8 sequence".to_string()))?;
                 info!("Sled Get key:[{}] value:[{}]", key, result);
                 Ok(Some(result))
             },

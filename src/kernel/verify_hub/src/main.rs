@@ -1,19 +1,17 @@
 
 use std::env;
-use std::f32::consts::E;
 use std::sync::{Arc};
 use std::collections::HashMap;
-use std::time::{SystemTime,UNIX_EPOCH};
 use std::{fs::File};
 use log::*;
 
 use simplelog::*;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
-use warp::{reply::{Reply, Response}, Filter};
-use serde_json::{Value, json};
+use warp::{Filter};
+use serde_json::{Value};
 
-use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
+use jsonwebtoken::{Validation, EncodingKey, DecodingKey};
 use name_lib::*;
 use buckyos_kit::*; 
 use sys_config::*;
@@ -60,7 +58,6 @@ fn generate_session_token(appid:&str,userid:&str,login_nonce:u64) -> RPCSessionT
     let now = buckyos_get_unix_timestamp();
     let exp = now + 3600*24*7;
     let login_nonce = login_nonce;
-    let header = Header::new(Algorithm::EdDSA);
     
     let mut session_token = RPCSessionToken {
         token_type : RPCSessionTokenType::JWT,
@@ -178,7 +175,7 @@ async fn handle_verify_session_token(params:Value) -> Result<Value> {
         return Err(RPCErrors::InvalidToken("not a jwt token".to_string()));
     } else {
         //this is a jwt token, verify it locally
-        let (iss,json_body) = verify_jwt(session_token).await?;
+        let (_iss,json_body) = verify_jwt(session_token).await?;
         let rpc_session_token : RPCSessionToken = serde_json::from_value(json_body.clone()).map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         let now = buckyos_get_unix_timestamp();
         if rpc_session_token.exp.is_none() {
@@ -192,7 +189,7 @@ async fn handle_verify_session_token(params:Value) -> Result<Value> {
     }
 }
 
-async fn handle_login_by_jwt(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
+async fn handle_login_by_jwt(params:Value,_login_nonce:u64) -> Result<RPCSessionToken> {
     let jwt = params.get("jwt")
     .ok_or(RPCErrors::ReasonError("Missing jwt".to_string()))?;
     let jwt = jwt.as_str().ok_or(RPCErrors::ReasonError("Invalid jwt".to_string()))?;
@@ -423,9 +420,10 @@ async fn main() {
     service_main().await;
 }
 
+#[cfg(test)]
 mod test {
     use super::*;
-    use tokio::time::{sleep,Duration};
+    use tokio::time::{sleep};
     use tokio::task;
     use std::time::{SystemTime, UNIX_EPOCH};
 

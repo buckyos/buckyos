@@ -7,8 +7,6 @@ use serde_json::{Value, json};
 
 use name_lib::*;
 use buckyos_kit::*;
-use ::kRPC::*;
-use rbac::*;
 use sys_config::SystemConfigClient;
 
 
@@ -226,6 +224,7 @@ async fn main() {
     exit(ret.unwrap());
 }
 
+#[cfg(test)]
 mod test {
     use tokio::test;
     use super::*;

@@ -13,23 +13,27 @@ use package_manager::*;
 use buckyos_kit::*;
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ServiceConfig {
+pub struct FrameServiceConfig {
     pub target_state : RunItemTargetState,
     //pub name : String, // service name
     pub pkg_id : String,
     pub operations : HashMap<String, RunItemControlOperation>,
+
+    //不支持serizalize
+    #[serde(skip)]
+    service_pkg : Option<MediaInfo>,
 
 }
 
 //service include kernel_service and frame_service,not include app_service
 
 #[async_trait]
-impl RunItemControl for ServiceConfig {
+impl RunItemControl for FrameServiceConfig {
     fn get_item_name(&self) -> Result<String> {
         return Ok(self.pkg_id.clone());
     }
 
-    async fn deploy(&self, params: &Option<RunItemParams>) -> Result<()> {
+    async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         // 部署文件系统时需要机器名，以root权限运行脚本，默认程序本身应该是root权限
         let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
         let media_info = env.load(&self.pkg_id).await;
@@ -55,13 +59,7 @@ impl RunItemControl for ServiceConfig {
     //     Ok(())
     // }
 
-    async fn update(&self, params: &Option<RunItemParams>) -> Result<String> {
-
-        unimplemented!();
-        //self.execute_operation("update").await?;
-    }
-
-    async fn start(&self, control_key:&EncodingKey, params: &Option<RunItemParams>) -> Result<()> {
+    async fn start(&self, control_key:&EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
         let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
         let media_info = env.load(&self.pkg_id).await;
         if media_info.is_ok() {
@@ -70,7 +68,7 @@ impl RunItemControl for ServiceConfig {
         Ok(())
     }
 
-    async fn stop(&self, params: &Option<RunItemParams>) -> Result<()> {
+    async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
         let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
         let media_info = env.load(&self.pkg_id).await;
         if media_info.is_ok() {
@@ -79,24 +77,24 @@ impl RunItemControl for ServiceConfig {
         Ok(())
     }
 
-    async fn get_state(&self, params: &Option<RunItemParams>) -> Result<RunItemState> {
+    async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
         let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
         let media_info = env.load(&self.pkg_id).await;
         if media_info.is_err() {
-            return Ok(RunItemState::NotExist);
+            return Ok(ServiceState::NotExist);
         }
         let ret_code = self.execute_operation(&media_info.unwrap(),"status").await?;
         if ret_code == 0 {
-            Ok(RunItemState::Started)
+            Ok(ServiceState::Started)
         } else if ret_code > 0 {
-            Ok(RunItemState::Stopped("".to_string()))
+            Ok(ServiceState::Stopped)
         } else {
-            Ok(RunItemState::NotExist)
+            Ok(ServiceState::NotExist)
         }
     }
 }
 
-impl ServiceConfig {
+impl FrameServiceConfig {
     async fn execute_operation(&self, media_info: &MediaInfo, op_name: &str) -> Result<i32> {
         let op = self.operations.get(op_name);
         if op.is_none() {
