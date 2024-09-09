@@ -330,7 +330,11 @@ async fn process_request(method:String,param:Value,trace_id:u64) -> ::kRPC::Resu
 
 
 fn init_log_config() {
-    let config = ConfigBuilder::new().build();
+    let config = ConfigBuilder::new()
+        .set_time_format_custom(format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"))
+        .build();
+
+    let log_path = get_buckyos_root_dir().join("logs").join("verify_hub.log");
     CombinedLogger::init(vec![
         // 将日志输出到标准输出，例如终端
         TermLogger::new(
@@ -339,11 +343,11 @@ fn init_log_config() {
             TerminalMode::Mixed,
             ColorChoice::Auto,
         ),
-
+   
         WriteLogger::new(
             LevelFilter::Info,
             config,
-            File::create("verify_hub.log").unwrap(),
+            File::create(log_path).unwrap(),
         ),
     ])
     .unwrap();
@@ -356,8 +360,8 @@ async fn init_service_config() -> Result<()> {
         return Ok(());
     }
 
-    let zone_config_str = env::var("ZONE_CONFIG").map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-    let session_token = env::var("SESSION_TOKEN").map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    let zone_config_str = env::var("BUCKY_ZONE_CONFIG").map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    let session_token = env::var("VERIFY_HUB_SESSION_TOKEN").map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
     info!("zone_config_str:{}",zone_config_str);
     
     let new_service_config = VerifyServiceConfig {

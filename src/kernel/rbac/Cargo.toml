@@ -10,5 +10,5 @@ tokio = { version = "1", features = ["full"] }
 log = "*"
 serde = "*"
 serde_json = "*"
-casbin = "*"
+casbin = {version = "*", features = ["logging","explain"]}
 lazy_static = "*"

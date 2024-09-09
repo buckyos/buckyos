@@ -285,7 +285,7 @@ async fn get_node_config(node_host_name: &str,sys_config_client: &SystemConfigCl
 
 async fn node_main(node_host_name: &str,
     sys_config_client: &SystemConfigClient,
-    device_private_key: &EncodingKey) -> Result<bool> {
+    device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
 
     let node_config= get_node_config(node_host_name, sys_config_client).await
         .map_err(|err| {
@@ -300,8 +300,15 @@ async fn node_main(node_host_name: &str,
 
     let kernel_stream = stream::iter(node_config.kernel);
     kernel_stream.for_each_concurrent(1, |(kernel_service_name, kernel_cfg)| async move {
+            let kernel_run_item = KernelServiceRunItem::new(
+                &kernel_cfg,
+                &device_doc,
+                &device_private_key
+            );
+            
             let target_state = kernel_cfg.target_state.clone();
-            let _ = control_run_item_to_target_state(&kernel_cfg, target_state, device_private_key)
+
+            let _ = control_run_item_to_target_state(&kernel_run_item, target_state, device_private_key)
                 .await
                 .map_err(|_err| {
                     error!("control kernel service item {} to target state failed!",kernel_service_name.clone());
@@ -327,6 +334,7 @@ async fn node_main(node_host_name: &str,
     //execute_vm(vm_config)
     //docker_config = system_config.get("")
     //execute_docker(docker_config)
+    info!("node daemon main succes end.");
     Ok(true)
 }
 
@@ -334,6 +342,7 @@ async fn node_main(node_host_name: &str,
 async fn node_daemon_main_loop(
     node_host_name:&str,
     sys_config_client: &SystemConfigClient,
+    device_doc:&DeviceConfig,
     device_private_key: &EncodingKey,
 ) -> Result<()> {
     let mut loop_step = 0;
@@ -347,13 +356,13 @@ async fn node_daemon_main_loop(
         loop_step += 1;
         info!("node daemon main loop step:{}", loop_step);
 
-        let main_result = node_main(node_host_name, sys_config_client, device_private_key).await;
+        let main_result = node_main(node_host_name, sys_config_client, device_doc, device_private_key).await;
         if main_result.is_err() {
             error!("node_main failed! {}", main_result.err().unwrap());
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         } else {
             is_running = main_result.unwrap();
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
     }
     Ok(())
@@ -535,7 +544,7 @@ async fn async_main() -> std::result::Result<(), String> {
 
     //use boot config to init name-lib.. etc kernel libs.
     info!("{}@{} boot OK, enter node daemon main loop!", device_doc.name, node_identity.zone_name);
-    node_daemon_main_loop(&device_doc.name.as_str(), &syc_cfg_client, &device_private_key)
+    node_daemon_main_loop(&device_doc.name.as_str(), &syc_cfg_client, &device_doc, &device_private_key)
         .await
         .map_err(|err| {
             error!("node daemon main loop failed! {}", err);

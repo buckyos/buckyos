@@ -6,6 +6,7 @@ authors = ["BuckyOS DAO","@waterflier"]
 
 
 [dependencies]
+time = { version = "^0.3", features = ["formatting"] }
 async-trait = "*"
 log = "*"
 simplelog = "*"

@@ -13,7 +13,6 @@ def check_process_exists(process_name):
     except subprocess.CalledProcessError:
         return False
 
-# 检查TCP端口3030是否可连接
 def check_port() -> bool:
     import socket
     try:
@@ -32,6 +31,7 @@ if __name__ == "__main__":
         if check_port():
             print(f"{process_name} is running")
             exit(0)
+            
     print(f"{process_name} is not running")
     exit(1)
 

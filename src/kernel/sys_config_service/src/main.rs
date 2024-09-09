@@ -41,24 +41,31 @@ lazy_static!{
 }
 
 async fn handle_get(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
-    info!("handle_get: {:?}",params);
     let key = params.get("key");
     if key.is_none() {
         return Err(RPCErrors::ReasonError("Missing key".to_string()));
     }
     
-    let key = key.unwrap().as_str().unwrap();
+    let key = key.unwrap();
+    let key = key.as_str();
+    if key.is_none() {
+        return Err(RPCErrors::ReasonError("Missing key".to_string()));
+    }
+    let key = key.unwrap();
 
     if session_token.userid.is_none() {
         return Err(RPCErrors::NoPermission("No userid".to_string()));
     }
     let userid = session_token.userid.as_ref().unwrap();
-    let full_res_path = format!("kv://{}",key);
-    if !enforce(userid, session_token.appid.as_deref(), full_res_path.as_str(), "read").await {
-        return Err(RPCErrors::NoPermission("No read permission".to_string()));
-    }
+    
 
-    info!("handle_get: {:?}",key);
+    let full_res_path = format!("kv://{}",key);
+    let is_allowed = enforce(userid, None, full_res_path.as_str(), "read").await;
+    if !is_allowed {
+        warn!("No read permission");
+        return Err(RPCErrors::NoPermission("No read permission".to_string()));
+    };
+
     let store = SYS_STORE.lock().await;
     let result = store.get(String::from(key)).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     if result.is_none() {
@@ -70,7 +77,6 @@ async fn handle_get(params:Value,session_token:&RPCSessionToken) -> Result<Value
 }
 
 async fn handle_set(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
-    info!("handle_set: {:?}",params);
     //check params
     let key = params.get("key");
     if key.is_none() {
@@ -248,18 +254,22 @@ async fn init_by_boot_config()->Result<()> {
     let rbac_model = store.get("system/rbac/model".to_string()).await;
     let rbac_policy = store.get("system/rbac/policy".to_string()).await;
     let mut set_rbac = false;
-    if rbac_model.is_ok() && rbac_policy.is_ok() {
-        let rbac_model = rbac_model.unwrap();
-        let rbac_policy = rbac_policy.unwrap();
-        if rbac_model.is_some() && rbac_policy.is_some() {
-            rbac::create_enforcer(Some(rbac_model.unwrap().as_str()),
-             Some(rbac_policy.unwrap().as_str())).await.unwrap();
-            set_rbac = true;
-        }
-    } 
+    // if rbac_model.is_ok() && rbac_policy.is_ok() {
+    //     let rbac_model = rbac_model.unwrap();
+    //     let rbac_policy = rbac_policy.unwrap();
+    //     if rbac_model.is_some() && rbac_policy.is_some() {
+    //         info!("model config: {}",rbac_model.clone().unwrap());
+    //         info!("policy config: {}",rbac_policy.clone().unwrap());
+    //         rbac::create_enforcer(Some(rbac_model.unwrap().trim()),
+    //          Some(rbac_policy.unwrap().trim())).await.unwrap();
+    //         set_rbac = true;
+    //         info!("load rbac model and policy from kv store successfully!");
+    //     }
+    // } 
 
     if !set_rbac {
         rbac::create_enforcer(None,None).await.unwrap();
+        info!("load rbac model and policy defaut setting successfully!");
     }
 
     //let zone_config_str = std::env::var("BUCKY_ZONE_CONFIG");
@@ -349,6 +359,12 @@ async fn main() {
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
+    use jsonwebtoken::EncodingKey;
+    use serde_json::json;
+    use tokio::{task, time::sleep};
+
     use super::*;
     #[tokio::test]
     async fn test_server_interface() {

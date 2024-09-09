@@ -107,26 +107,38 @@ pub async fn create_enforcer(model_str:Option<&str>,policy_str:Option<&str>) -> 
 //default acl config is stored in the memory,so it is not async function
 //TODO :use system_config event to reload the config.
 pub async fn enforce(userid:&str, appid:Option<&str>,res_path:&str,op_name:&str) -> bool {
-    let mut enforcer = SYS_ENFORCE.lock().await;
+
+    let enforcer = SYS_ENFORCE.lock().await;
     if enforcer.is_none() {
         error!("enforcer is not initialized");
         return false;
     }
-    let mut enforcer = enforcer.as_mut().unwrap();
+    let enforcer = enforcer.as_ref().unwrap();
 
     //let roles = enforcer.get_roles_for_user(userid,None);
     //println!("roles for user {}: {:?}", userid, roles);
     //info!("roles for user {}: {:?}", userid, roles);
 
     let appid = appid.unwrap_or("kernel");
-    let res2 = enforcer.enforce((appid, res_path, op_name)).unwrap();
+    let res2 = enforcer.enforce((appid, res_path, op_name));
+    if res2.is_err() {
+        error!("enforce error: {}", res2.err().unwrap());
+        return false;
+    }
+    let res2 = res2.unwrap();
+
     println!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
     info!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);    
     if appid == "kernel" {
         return res2;
     }
 
-    let res = enforcer.enforce((userid, res_path, op_name)).unwrap();
+    let res = enforcer.enforce((userid, res_path, op_name));
+    if res.is_err() {
+        error!("enforce error: {}", res.err().unwrap());
+        return false;
+    }
+    let res = res.unwrap();
     println!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
     info!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
     return res2 && res;

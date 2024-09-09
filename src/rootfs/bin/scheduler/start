@@ -17,3 +17,4 @@ arg_str = " ".join(args)
 
 # 启动新的进程，注意使用nohup模式，并使用本命令行的参数
 os.system(f"nohup {current_dir}/scheduler {arg_str} > /dev/null 2>&1 &")
+print("scheduler start success")

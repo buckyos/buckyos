@@ -159,7 +159,20 @@ async fn do_boot_scheduler() -> Result<()> {
 }
 
 async fn schedule_loop() -> Result<()> {
+    let mut loop_step = 0;
+    let is_running = true;
+    info!("schedule loop start...");
+    loop {
+        if !is_running {
+            break;
+        }
+        
+        loop_step += 1;
+        info!("schedule loop step:{}.", loop_step);
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    }
     Ok(())
+
 }
 
 fn init_log_config() {
