@@ -254,18 +254,18 @@ async fn init_by_boot_config()->Result<()> {
     let rbac_model = store.get("system/rbac/model".to_string()).await;
     let rbac_policy = store.get("system/rbac/policy".to_string()).await;
     let mut set_rbac = false;
-    // if rbac_model.is_ok() && rbac_policy.is_ok() {
-    //     let rbac_model = rbac_model.unwrap();
-    //     let rbac_policy = rbac_policy.unwrap();
-    //     if rbac_model.is_some() && rbac_policy.is_some() {
-    //         info!("model config: {}",rbac_model.clone().unwrap());
-    //         info!("policy config: {}",rbac_policy.clone().unwrap());
-    //         rbac::create_enforcer(Some(rbac_model.unwrap().trim()),
-    //          Some(rbac_policy.unwrap().trim())).await.unwrap();
-    //         set_rbac = true;
-    //         info!("load rbac model and policy from kv store successfully!");
-    //     }
-    // } 
+    if rbac_model.is_ok() && rbac_policy.is_ok() {
+        let rbac_model = rbac_model.unwrap();
+        let rbac_policy = rbac_policy.unwrap();
+        if rbac_model.is_some() && rbac_policy.is_some() {
+            info!("model config: {}",rbac_model.clone().unwrap());
+            info!("policy config: {}",rbac_policy.clone().unwrap());
+            rbac::create_enforcer(Some(rbac_model.unwrap().trim()),
+             Some(rbac_policy.unwrap().trim())).await.unwrap();
+            set_rbac = true;
+            info!("load rbac model and policy from kv store successfully!");
+        }
+    } 
 
     if !set_rbac {
         rbac::create_enforcer(None,None).await.unwrap();

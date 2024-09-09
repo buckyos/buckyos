@@ -12,11 +12,9 @@ use sys_config::SystemConfigClient;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-async fn generate_ood_config(ood_name:&str) -> Result<HashMap<String,Value>> {
-    let mut init_list : HashMap<String,Value> = HashMap::new();
-
-    //init ood config
-    init_list.insert(format!("nodes/{}/config",ood_name),json!({
+async fn generate_ood_config(ood_name:&str) -> Result<HashMap<String,String>> {
+    let mut init_list : HashMap<String,String> = HashMap::new();
+    let config_str = serde_json::to_string(&json!({
         "is_running":true,
         "revision" : 0,
         "kernel" : {
@@ -62,13 +60,15 @@ async fn generate_ood_config(ood_name:&str) -> Result<HashMap<String,Value>> {
         "apps":{
 
         }
-    }));
+    })).unwrap();
+    //init ood config
+    init_list.insert(format!("nodes/{}/config",ood_name),config_str);
     
     Ok(init_list)
 }
 
 async fn do_boot_scheduler() -> Result<()> {
-    let mut init_list : HashMap<String,Value> = HashMap::new();
+    let mut init_list : HashMap<String,String> = HashMap::new();
     let zone_config_str = std::env::var("BUCKY_ZONE_CONFIG");
     if zone_config_str.is_ok() {
         let mut zone_config:ZoneConfig = serde_json::from_str(&zone_config_str.unwrap()).unwrap();
@@ -96,28 +96,32 @@ async fn do_boot_scheduler() -> Result<()> {
                     public_key: serde_json::from_value(public_key_jwk).unwrap(),
                 };
                 zone_config.verify_hub_info = Some(verify_hub_info);
-                init_list.insert("system/verify_hub/key".to_string(),Value::String(private_key_pem));
-                init_list.insert("services/verify_hub/info".to_string(),json!(
+                init_list.insert("system/verify_hub/key".to_string(),private_key_pem);
+                let verify_hub_info_str = serde_json::to_string(&json!(
                     {
                         "endpoints" :[
                             format!("{}:10032",ood_name)
                         ]
                     }
-                ));
-                init_list.insert("services/verify_hub/setting".to_string(),json!(
+                )).unwrap();
+                init_list.insert("services/verify_hub/info".to_string(),verify_hub_info_str);
+                let verify_hub_setting_str = serde_json::to_string(&json!(
                     {
                         "trust_keys" : []
                     }
-                ));
+                )).unwrap();
+                init_list.insert("services/verify_hub/setting".to_string(),verify_hub_setting_str);
 
                 //scheduer
-                init_list.insert("services/scheduler/info".to_string(),json!(
+                let scheduler_info_str = serde_json::to_string(&json!(
                     {
                         "endpoints" :[
                             format!("{}:10034",ood_name)
                         ]
                     }
-                ));
+                )).unwrap();
+                init_list.insert("services/scheduler/info".to_string(),scheduler_info_str);
+
 
 
                 //add default user
@@ -129,21 +133,23 @@ async fn do_boot_scheduler() -> Result<()> {
                             owner_name = owner_did.unwrap().id.to_string();
                         }
                     }
-                    init_list.insert(format!("users/{}",owner_name),json!(
+                    let owner_str = serde_json::to_string(&json!(   
                         {
                             "type":"admin"
                         }
-                    ));
+                    )).unwrap();
+                    
+                    init_list.insert(format!("users/{}",owner_name),owner_str);
                 }
 
                 //write zone config 
-                init_list.insert("boot/config".to_string(),serde_json::to_value(zone_config.clone()).unwrap());
-                init_list.insert("system/rbac/model".to_string(),Value::String(rbac::DEFAULT_MODEL.to_string()));
-                init_list.insert("system/rbac/policy".to_string(),Value::String(rbac::DEFAULT_POLICY.to_string()));
+                init_list.insert("boot/config".to_string(),serde_json::to_string(&zone_config).unwrap());
+                init_list.insert("system/rbac/model".to_string(),rbac::DEFAULT_MODEL.to_string());
+                init_list.insert("system/rbac/policy".to_string(),rbac::DEFAULT_POLICY.to_string());
 
                 //write to system_config
                 for (key,value) in init_list.iter() {
-                    system_config_client.create(key,serde_json::to_string(value).unwrap().as_str()).await?;
+                    system_config_client.create(key,value).await?;
                 }
                 info!("boot scheduler success");
                 return Ok(());

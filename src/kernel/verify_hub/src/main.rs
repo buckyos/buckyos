@@ -6,7 +6,7 @@ use std::{fs::File};
 use log::*;
 
 use simplelog::*;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use lazy_static::lazy_static;
 use warp::{Filter};
 use serde_json::{Value};
@@ -31,14 +31,14 @@ struct VerifyServiceConfig {
 }
 
 lazy_static ! {
-    static ref PRIVATE_KEY:EncodingKey = {
+    static ref PRIVATE_KEY:Arc<RwLock<EncodingKey>> = {
         let private_key_pem = r#"
 -----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 -----END PRIVATE KEY-----
 "#;
         let private_key = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap();
-        private_key
+        Arc::new(RwLock::new(private_key))
     };
 
     static ref TOKEN_CACHE:Arc<Mutex<HashMap<String,(u64,RPCSessionToken)>>> = {
@@ -54,7 +54,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     };
 }
 
-fn generate_session_token(appid:&str,userid:&str,login_nonce:u64) -> RPCSessionToken {
+async fn generate_session_token(appid:&str,userid:&str,login_nonce:u64) -> RPCSessionToken {
     let now = buckyos_get_unix_timestamp();
     let exp = now + 3600*24*7;
     let login_nonce = login_nonce;
@@ -68,8 +68,11 @@ fn generate_session_token(appid:&str,userid:&str,login_nonce:u64) -> RPCSessionT
         iss: Some("{verify_hub}".to_string()),
         exp: Some(exp),
     };
-
-    session_token.token = Some(session_token.generate_jwt(Some("{verify_hub}".to_string()), &PRIVATE_KEY).unwrap());
+    
+    {
+        let private_key = PRIVATE_KEY.read().await;
+        session_token.token = Some(session_token.generate_jwt(Some("{verify_hub}".to_string()), &private_key).unwrap());
+    }
     
     return session_token;
 }
@@ -232,7 +235,7 @@ async fn handle_login_by_jwt(params:Value,_login_nonce:u64) -> Result<RPCSession
         }
     }
 
-    let session_token = generate_session_token(appid,userid,create_nonce);
+    let session_token = generate_session_token(appid,userid,create_nonce).await;
     //store session token to cache
     cache_token(key.as_str(),create_nonce,session_token.clone()).await;
 
@@ -355,32 +358,61 @@ fn init_log_config() {
 
 async fn init_service_config() -> Result<()> {
     //load zone config form env
-    let mut service_config = VERIFY_SERVICE_CONFIG.lock().await;
-    if service_config.is_some() {
+    let zone_config_str = env::var("BUCKY_ZONE_CONFIG").map_err(|error| RPCErrors::ReasonError(error.to_string()));
+    if zone_config_str.is_err() {
+        warn!("BUCKY_ZONE_CONFIG not set,use default zone config for test!");
         return Ok(());
     }
-
-    let zone_config_str = env::var("BUCKY_ZONE_CONFIG").map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    let zone_config_str = zone_config_str.unwrap();
     let session_token = env::var("VERIFY_HUB_SESSION_TOKEN").map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
     info!("zone_config_str:{}",zone_config_str);
     
     let new_service_config = VerifyServiceConfig {
         zone_config: serde_json::from_str(zone_config_str.as_str()).map_err(|error| RPCErrors::ReasonError(error.to_string()))?,
-        token_from_device: session_token,
+        token_from_device: session_token.clone(),
     };
 
-    service_config.replace(new_service_config);
+    {
+        let mut service_config = VERIFY_SERVICE_CONFIG.lock().await;
+        if service_config.is_some() {
+            return Ok(());
+        }
+        service_config.replace(new_service_config);
+    }
+    
+    info!("start load config from system config service.");
+    let ood_list = vec![];
+    let system_config_client = SystemConfigClient::new(&ood_list,&Some(session_token));
+    let private_key_str = system_config_client.get("system/verify_hub/key").await;
+    if private_key_str.is_ok() {
+        let (private_key,_) = private_key_str.unwrap();
+        let private_key = EncodingKey::from_ed_pem(private_key.as_bytes());
+        if private_key.is_ok() {
+            let private_key = private_key.unwrap();
+            let mut verify_hub_private_key = PRIVATE_KEY.write().await;
+            *verify_hub_private_key = private_key;
+        } else {
+            warn!("verify_hub private key format error,use default private key for test!");
+        }
+    } else {
+        warn!("verify_hub private key cann't load from system config service,use default private key for test!");
+    }
 
-    info!("service config loaded:{:?}",service_config);
+    info!("verify_hub init success!");
     Ok(())
 }
 
 
-async fn service_main() {
+async fn service_main() -> i32 {
     init_log_config();
     info!("Starting verify_hub service...");
     //init service config from system config service and env
-    init_service_config().await.unwrap();
+    let _ = init_service_config().await.map_err(
+        |error| {
+            error!("init service config failed:{}",error);
+            return -1;
+        }
+    );
     //load cache from service_cache@dfs:// and service_local_cache@fs://
 
     let rpc_route = warp::path("verify_hub")
@@ -417,6 +449,7 @@ async fn service_main() {
 
     info!("verify_hub service initialized");
     warp::serve(rpc_route).run(([127, 0, 0, 1], 10032)).await;
+    return 0;
 }
 
 #[tokio::main]
@@ -427,9 +460,11 @@ async fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
+    use jsonwebtoken::{encode, Algorithm, Header};
+    use serde_json::json;
     use tokio::time::{sleep};
     use tokio::task;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[tokio::test]
     async fn test_login_and_verify() {

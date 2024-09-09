@@ -9,13 +9,15 @@ async function createAndVerifyEdDSAJWT() {
     console.log('Public Key (JWK base64URL):',jwk.x);   
     const privateKeyDer = privateKey.export({ type: 'pkcs8',format: 'pem' });
     console.log('Private Key (DER):', privateKeyDer);    
+    
     privateKey = `
  -----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
+MC4CAQAwBQYDK2VwBCIEIIzZ5HJjrbfQqxMOmNZRbnnR93iqgjbE8iKADMfkdn39
 -----END PRIVATE KEY-----   
     `
+    //MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     const importPrivateKey = await importPKCS8(privateKey.trim(),"Ed25519");
-    const publicKeyBase64 = "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc";
+    const publicKeyBase64 = "NZZYu7WHLuuUQhcBAUw5HsXsq2qu4KNZ_V1E9U00KJI";
     console.log('Public Key (Base64URL):', publicKeyBase64);
 
     const jwt = await new SignJWT({ 'my_test_name': true,exp:1724625212})

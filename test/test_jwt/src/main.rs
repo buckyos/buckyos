@@ -1,6 +1,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::prelude::BASE64_STANDARD_NO_PAD;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
 use serde::{Serialize, Deserialize};
 use serde_json::json;
@@ -10,7 +11,7 @@ use rand::rngs::OsRng;
 use base64;
 
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
     my_test_name: bool,
@@ -60,23 +61,36 @@ pub fn decode_jwt_claim_without_verify(jwt: &str) -> NSResult<serde_json::Value>
     Ok(claims)
 }
 
+// 辅助函数：构建 PKCS#8 格式的私钥
+fn build_pkcs8(private_key: &[u8]) -> Vec<u8> {
+    let mut pkcs8 = vec![
+        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20
+    ];
+    pkcs8.extend_from_slice(private_key);
+    pkcs8
+}
+
 pub fn generate_key_pair() {
     let mut csprng = OsRng{};
 
    
     let signing_key: SigningKey = SigningKey::generate(&mut csprng);
 
-    //let keypair: Keypair = Keypair::generate(&mut csprng);
 
+    // 构建私钥 PEM
+    let private_key_bytes = signing_key.to_bytes();
+    let pkcs8_bytes = build_pkcs8(&private_key_bytes);
     let private_key_pem = format!(
         "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
-        base64::encode(signing_key.to_bytes())
+        STANDARD.encode(&pkcs8_bytes)
     );
+
+
 
     let public_key_jwk = json!({
         "kty": "OKP",
         "crv": "Ed25519",
-        "x": base64::encode(signing_key.verifying_key().to_bytes()),
+        "x": URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes()),
     });
 
     println!("Genereate Private Key (PEM): {}", private_key_pem);
@@ -89,7 +103,7 @@ fn main() {
             {
                 "kty": "OKP",
                 "crv": "Ed25519",
-                "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
+                "x": "oDrETgXBLCjN0RS4yeIePMtrTNZV5pDNncwR6eqq6f0"
             }
         );
     println!("Public Key (JWK): {:?}", jwk);
@@ -97,7 +111,7 @@ fn main() {
     // Private Key (Base64URL)
     let private_key_pem = r#"
 -----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
+MC4CAQAwBQYDK2VwBCIEIKfb6WDUJcmV0rp5AM3rdaiHuhnW4+uQNV317sVaGr2G
 -----END PRIVATE KEY-----
 "#;
     //create JWT

@@ -14,6 +14,7 @@ log = "*"
 thiserror = "*"
 env_logger = "*"
 ed25519-dalek = { version = "*", features = ["rand_core"] } 
+pkcs8 = "*"
 rand = "*"
 base64 = "*"
 package-manager = { path = "../package-manager" }

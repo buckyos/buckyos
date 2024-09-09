@@ -266,14 +266,14 @@ async fn get_node_config(node_host_name: &str,sys_config_client: &SystemConfigCl
         }
     }
 
-    let sys_node_key = format!("nodes/{}/config", node_host_name);
-    let (sys_cfg_result,rversion) = sys_config_client.get(sys_node_key.as_str()).await
+    let node_key = format!("nodes/{}/config", node_host_name);
+    let (node_cfg_result,rversion) = sys_config_client.get(node_key.as_str()).await
         .map_err(|error| {
             error!("get node config failed from etcd! {}", error);
             return NodeDaemonErrors::SystemConfigError("get node config failed from etcd!".to_string());
         })?;
 
-    let node_config = serde_json::from_str(&sys_cfg_result).map_err(|err| {
+    let node_config = NodeConfig::from_json_str(&node_cfg_result).map_err(|err| {
         error!("parse node config failed! {}", err);
         return NodeDaemonErrors::SystemConfigError("parse node config failed!".to_string());
     })?;

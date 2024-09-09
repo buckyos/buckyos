@@ -45,26 +45,6 @@ impl SystemConfigClient {
         }
     }
 
-    pub async fn register_device(&self,device_jwt:&str,boot_info:&Option<serde_json::Value>) -> Result<()> {
-        let param:serde_json::Value;
-        if boot_info.is_some() {
-            param = json!({
-                "device_doc": device_jwt,
-                "boot_info": boot_info,
-            });
-        } else {
-            param = json!({
-                "device_doc": device_jwt,
-            });
-        }
-        
-        let result = self.client.call("sys_config_register_device",param)
-            .await
-            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
-
-        Ok(())
-    }
-    
     pub async fn get(&self, key: &str) -> Result<(String,u64)> {
         let result = self.client.call("sys_config_get", json!({"key": key}))
             .await
