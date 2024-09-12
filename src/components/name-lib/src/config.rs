@@ -24,7 +24,7 @@ pub struct ZoneConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_key : Option<Jwk>,
+    pub auth_key : Option<Jwk>,//owner's public key
     pub oods: Vec<String>, //etcd server endpoints
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_server_info:Option<String>,
@@ -79,10 +79,10 @@ impl DIDDocumentTrait for ZoneConfig {
         return true;
     }
     fn get_prover_kid(&self) -> Option<String> {
-        if self.owner_name.is_none() {
-            return None;
-        }   
-        return Some(format!("{}#auth_key",self.owner_name.as_ref().unwrap()));
+        if self.owner_name.is_some() {
+            return Some(format!("{}#auth_key",self.owner_name.as_ref().unwrap()));
+        }
+        return None;
     }
     fn get_iss(&self) -> Option<String> {
         return self.owner_name.clone();
@@ -118,9 +118,12 @@ impl DIDDocumentTrait for ZoneConfig {
                 })?;
                 return Ok(result);
             },
-            _ => {
-                return Err(NSError::Failed("Invalid document type".to_string()));
-            }
+            EncodedDocument::JsonLd(json_value) => {
+                let result:ZoneConfig = serde_json::from_value(json_value.clone()).map_err(|error| {
+                    NSError::Failed(format!("Failed to decode zone config:{}",error))
+                })?;
+                return Ok(result);
+            },
         }
     }
     // async fn decode_with_load_key<'a, F, Fut>(doc: &'a EncodedDocument,loader:F) -> NSResult<Self> 

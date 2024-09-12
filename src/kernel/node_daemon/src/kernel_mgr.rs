@@ -94,7 +94,7 @@ impl RunItemControl for KernelServiceRunItem {
     async fn stop(&self, params:Option<&Vec<String>>) -> Result<()> {
         let service_pkg = self.service_pkg.read().await;
         if service_pkg.is_some() {
-            let result = service_pkg.as_ref().unwrap().stop().await.map_err(|err| {
+            let result = service_pkg.as_ref().unwrap().stop(None).await.map_err(|err| {
                 return ControlRuntItemErrors::ExecuteError("stop".to_string(), err.to_string());
             })?;
             if result == 0 {
@@ -115,7 +115,7 @@ impl RunItemControl for KernelServiceRunItem {
                 need_load_pkg = true;
             } else {
                 //TODO:还要比较准确版本是否符合现在的“pkg_id要求”
-                let result_state = service_pkg.as_ref().unwrap().status().await.map_err(|err| {
+                let result_state = service_pkg.as_ref().unwrap().status(None).await.map_err(|err| {
                     return ControlRuntItemErrors::ExecuteError("get_state".to_string(), err.to_string());
                 })?;
                 return Ok(result_state);
@@ -127,7 +127,7 @@ impl RunItemControl for KernelServiceRunItem {
             let load_result = service_pkg.load().await;
             if load_result.is_ok() {
                 let mut new_service_pkg = self.service_pkg.write().await;
-                let result = service_pkg.status().await.map_err(|err| {
+                let result = service_pkg.status(None).await.map_err(|err| {
                     return ControlRuntItemErrors::ExecuteError("get_state".to_string(), err.to_string());
                 })?;
                 *new_service_pkg = Some(service_pkg);

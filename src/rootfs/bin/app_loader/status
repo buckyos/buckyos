@@ -1,0 +1,40 @@
+#!/bin/python
+
+import docker
+import sys
+
+appid = sys.argv[1]
+username = sys.argv[2]
+
+container_id = f"{username}-{appid}"
+
+def is_container_running(container_name):
+    # 连接到本地 Docker 客户端
+    client = docker.from_env()
+
+    try:
+        # 获取指定名字的容器
+        container = client.containers.get(container_name)
+
+        # 检查容器是否在运行
+        if container.status == "running":
+            print(f"Container '{container_name}' is running.")
+            return True
+        else:
+            print(f"Container '{container_name}' is not running. Status: {container.status}")
+            return False
+    except docker.errors.NotFound:
+        print(f"Container '{container_name}' not found.")
+        return False
+
+def check_port() -> bool:
+    return True
+
+if __name__ == "__main__":
+    if is_container_running(container_id):
+        if check_port():
+            print(f"app {container_id} is running")
+            exit(0)
+    print(f"app {container_id} is not running")
+    exit(1)
+

@@ -52,7 +52,7 @@ pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String
             command = Command::new(script_engine_path.file_name().unwrap().to_str().unwrap());
             command.arg(path);
             read_first_line = true;
-            info!("start run script execute {} {}...", script_engine_path.file_name().unwrap().to_str().unwrap(),path.to_string_lossy());
+            //info!("start run script execute {} {}...", script_engine_path.file_name().unwrap().to_str().unwrap(),path.to_string_lossy());
         }
     }
 
@@ -136,8 +136,6 @@ async fn read_stream<R: AsyncRead + Unpin>(mut reader: R) -> std::io::Result<Vec
     Ok(buffer)
 }
 
-
-
 pub struct ServicePkg {
     pub pkg_id : String,
     pub pkg_env: PackageEnv,
@@ -190,7 +188,7 @@ impl ServicePkg {
         }
         let media_info = self.media_info.clone().unwrap();
         let op_file = media_info.full_path.join(op_name);
-        info!("start execute {} ...", op_file.display());
+        //info!("start execute {} ...", op_file.display());
         let (result, output) = execute(&op_file, 5, parms,
             self.current_dir.as_ref(), Some(&self.env_vars)).await?;
         info!("execute {} ==> result: {} \n\t {}", op_file.display(), result, String::from_utf8_lossy(&output));
@@ -202,13 +200,13 @@ impl ServicePkg {
         Ok(result)
     }
 
-    pub async fn stop(&self) -> Result<i32> {
-        let result = self.execute_operation("stop",None).await?;
+    pub async fn stop(&self,parms:Option<&Vec<String>>) -> Result<i32> {
+        let result = self.execute_operation("stop",parms).await?;
         Ok(result)
     }
 
-    pub async fn status(&self) -> Result<ServiceState> {
-        let result = self.execute_operation("status",None).await?;
+    pub async fn status(&self,parms:Option<&Vec<String>>) -> Result<ServiceState> {
+        let result = self.execute_operation("status",parms).await?;
         match result {
             0 => Ok(ServiceState::Started),
             -1 => Ok(ServiceState::NotExist),

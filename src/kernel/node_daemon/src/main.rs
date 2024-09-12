@@ -60,7 +60,7 @@ type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 struct NodeIdentityConfig {
     zone_name: String,// $name.buckyos.org or did:ens:$name
     owner_public_key: jsonwebtoken::jwk::Jwk, //owner is zone_owner
-    owner_name:Option<String>,//owner's name
+    owner_name:String,//owner's name
     device_doc_jwt:String,//device document,jwt string,siged by owner
     zone_nonce:String,// random string, is default password of some service
     //device_private_key: ,storage in partical file
@@ -229,15 +229,18 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
         info!("zone_jwt: {:?}",zone_jwt);
 
         
-        let zone_config = ZoneConfig::decode(&zone_jwt, Some(&owner_public_key))
+        let mut zone_config = ZoneConfig::decode(&zone_jwt, Some(&owner_public_key))
             .map_err(|err| {
                 error!("parse zone config failed! {}", err);
                 return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
             })?;
     
-        zone_did = zone_config.did;
-        add_did_cache(zone_did.as_str(),zone_jwt.clone()).await.unwrap();
-        info!("add zone did {} -> {:?} to cache success!",zone_did,zone_jwt);
+        zone_did = zone_config.did.clone();
+        zone_config.owner_name = Some(node_identity.owner_name.clone());
+        let zone_config_json = serde_json::to_value(zone_config).unwrap();
+        let cache_did_doc = EncodedDocument::JsonLd(zone_config_json);
+        add_did_cache(zone_did.as_str(),cache_did_doc).await.unwrap();
+        info!("add zone did {}  to cache success!",zone_did);
     }  
 
     //try load lasted document from name_lib 
@@ -252,6 +255,21 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
     })?;
 
     return Ok(zone_config);
+}
+
+async fn load_app_info(app_id: &str,username: &str,sys_config_client: &SystemConfigClient) -> Result<AppInfo> {
+    let app_key = format!("users/{}/apps/{}/config", username,app_id);
+    let (app_cfg_result,rversion) = sys_config_client.get(app_key.as_str()).await
+        .map_err(|error| {
+            warn!("get app config failed from system_config! {}", error);
+            return NodeDaemonErrors::SystemConfigError("get app config failed from etcd!".to_string());
+        })?;
+    
+    let app_info = serde_json::from_str(&app_cfg_result);
+    if app_info.is_ok() {
+        return Ok(app_info.unwrap());
+    }
+    return Err(NodeDaemonErrors::SystemConfigError("get app info failed!".to_string()));
 }
 
 
@@ -315,25 +333,40 @@ async fn node_main(node_host_name: &str,
                     return NodeDaemonErrors::SystemConfigError(kernel_service_name.clone());
                 });
     }).await;
+    
+    // let service_stream = stream::iter(node_config.services);
+    // service_stream.for_each_concurrent(1, |(service_name, service_cfg)| async move {
+    //         let target_state = service_cfg.target_state.clone();
+    //         let _ = control_run_item_to_target_state(&service_cfg, target_state, device_private_key)
+    //             .await
+    //             .map_err(|_err| {
+    //                 error!("control service item to target state failed!");
+    //                 return NodeDaemonErrors::SystemConfigError(service_name.clone());
+    //             });
+    //     })
+    //     .await;
 
-    let service_stream = stream::iter(node_config.services);
-    service_stream.for_each_concurrent(1, |(service_name, service_cfg)| async move {
-            let target_state = service_cfg.target_state.clone();
-            let _ = control_run_item_to_target_state(&service_cfg, target_state, device_private_key)
-                .await
-                .map_err(|_err| {
-                    error!("control service item to target state failed!");
-                    return NodeDaemonErrors::SystemConfigError(service_name.clone());
-                });
-        })
-        .await;
+    let app_stream = stream::iter(node_config.apps);
+    app_stream.for_each_concurrent(1, |(app_id_with_name, app_cfg)| async move {
+        
+        let app_info = load_app_info(app_cfg.app_id.as_str(),app_cfg.username.as_str(),sys_config_client).await;
+        if app_info.is_err() {
+            error!("load {} info failed! ,app not install?", app_cfg.app_id);
+            return;
+        }
+        let app_info = app_info.unwrap();
+        let app_run_item = AppRunItem::new(&app_cfg.app_id,app_info,
+            device_doc,device_private_key);
+        
+        let target_state = app_cfg.target_state.clone();
+        let _ = control_run_item_to_target_state(&app_run_item, target_state, device_private_key)
+            .await
+            .map_err(|_err| {
+                error!("control app service item {} to target state failed!",app_cfg.app_id.clone());
+                return NodeDaemonErrors::SystemConfigError(app_cfg.app_id.clone());
+            });
+    }).await;
 
-    //service_config = system_config.get("")
-    //execute_service(service_config)
-    //vm_config = system_config.get("")
-    //execute_vm(vm_config)
-    //docker_config = system_config.get("")
-    //execute_docker(docker_config)
     info!("node daemon main succes end.");
     Ok(true)
 }
@@ -383,10 +416,10 @@ async fn do_boot_scheduler() -> std::result::Result<(),String> {
     })?;
 
     if start_result == 0 {
-        info!("run scheduler pkg success!");
+        info!("boot run scheduler pkg success!");
         Ok(())
     } else {
-        error!("run scheduler pkg failed!");
+        error!("boot run run scheduler pkg failed!");
         Err(String::from("run scheduler pkg failed!"))
     }
     
@@ -402,9 +435,9 @@ async fn async_main() -> std::result::Result<(), String> {
     })?;
 
     //verify device_doc by owner_public_key
-    if node_identity.owner_name.is_some() {
-        let owner_name = node_identity.owner_name.as_ref().unwrap();
-        let owner_config = name_lib::resolve_did(owner_name.as_str(),None).await;
+    {
+        let owner_name = node_identity.owner_name.as_ref();
+        let owner_config = name_lib::resolve_did(owner_name,None).await;
         match owner_config {
             Ok(owner_config) => {
                 let owner_config = OwnerConfig::decode(&owner_config,None);
@@ -420,6 +453,7 @@ async fn async_main() -> std::result::Result<(), String> {
             }
         }
     }
+
     let device_doc_json = decode_json_from_jwt_with_default_pk(&node_identity.device_doc_jwt, &node_identity.owner_public_key)
         .map_err(|err| {
             error!("decode device doc failed! {}", err);
@@ -491,7 +525,7 @@ async fn async_main() -> std::result::Result<(), String> {
         })?;
         //If this node is ood: try run / recover  system_config_service
         //  init system_config client, if kv://boot is not exist, create it and register new ood. 
-        let running_state = sys_config_service_pkg.status().await.map_err(|err| {
+        let running_state = sys_config_service_pkg.status(None).await.map_err(|err| {
             error!("check system_config_service running failed! {}", err);
             return String::from("check system_config_service running failed!");
         })?;

@@ -3,7 +3,7 @@ use std::process::exit;
 use std::{fs::File};
 use log::*;
 use simplelog::*;
-use serde_json::{Value, json};
+use serde_json::{json};
 
 use name_lib::*;
 use buckyos_kit::*;
@@ -12,7 +12,32 @@ use sys_config::SystemConfigClient;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-async fn generate_ood_config(ood_name:&str) -> Result<HashMap<String,String>> {
+async fn generate_app_config(user_name:&str) -> Result<HashMap<String,String>> {
+    let mut init_list : HashMap<String,String> = HashMap::new();
+    let config_str = serde_json::to_string(&json!({
+        "app_id":"buckyos.home_station",
+        "app_name" : "Home Station",
+        "app_description" : "Home Station",
+        "vendor_id" : "buckyos",
+        "pkg_id" : "home_station",
+        "username" : user_name.to_string(),
+        "service_docker_images" : {
+            "x86_server" : "buckyos/home_station:latest"
+        },
+        "data_mount_point" : "/home/data",
+        "cache_mount_point" : "/home/cache",
+        "local_cache_mount_point" : "/home/local_cache",
+        "max_cpu_num" : Some(4),
+        "max_cpu_percent" : Some(80),
+        "memory_quota" : 1024*1024*1024*1, //1GB
+        "host_name" : Some("home".to_string()),
+        "port" : 20080
+    })).unwrap();
+    init_list.insert(format!("users/{}/apps/{}/config",user_name.to_string(),"buckyos.home_station"),config_str);
+    Ok(init_list)
+}
+
+async fn generate_ood_config(ood_name:&str,owner_name:&str) -> Result<HashMap<String,String>> {
     let mut init_list : HashMap<String,String> = HashMap::new();
     let config_str = serde_json::to_string(&json!({
         "is_running":true,
@@ -58,7 +83,11 @@ async fn generate_ood_config(ood_name:&str) -> Result<HashMap<String,String>> {
         "services":{
         },
         "apps":{
-
+            format!("{}#buckyos.home_station",owner_name):{
+                "target_state":"Running",
+                "app_id":"buckyos.home_station",
+                "username":owner_name,
+            }
         }
     })).unwrap();
     //init ood config
@@ -70,7 +99,9 @@ async fn generate_ood_config(ood_name:&str) -> Result<HashMap<String,String>> {
 async fn do_boot_scheduler() -> Result<()> {
     let mut init_list : HashMap<String,String> = HashMap::new();
     let zone_config_str = std::env::var("BUCKY_ZONE_CONFIG");
+    
     if zone_config_str.is_ok() {
+        info!("zone_config_str:{}",zone_config_str.as_ref().unwrap());
         let mut zone_config:ZoneConfig = serde_json::from_str(&zone_config_str.unwrap()).unwrap();
         let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN"); 
         if rpc_session_token_str.is_ok() {
@@ -84,8 +115,28 @@ async fn do_boot_scheduler() -> Result<()> {
 
             //generate ood config
             if zone_config.oods.len() ==1 {
+                //add default user
+                let mut owner_name = zone_config.owner_name.clone().unwrap();
+
+                if is_did(&owner_name) {
+                    let owner_did = DID::from_str(&owner_name);
+                    if owner_did.is_some() {
+                        owner_name = owner_did.unwrap().id.to_string();
+                    }
+                }
+                let owner_str = serde_json::to_string(&json!(   
+                    {
+                        "type":"admin"
+                    }
+                )).unwrap();
+                
+                init_list.insert(format!("users/{}/info",owner_name),owner_str);
+                let app_config = generate_app_config(&owner_name).await?;
+                init_list.extend(app_config);
+       
+
                 let ood_name = zone_config.oods[0].clone();
-                let ood_config = generate_ood_config(&ood_name).await?;
+                let ood_config = generate_ood_config(&ood_name,&owner_name).await?;
                 init_list.extend(ood_config);
 
                 //generate verify_hub service config
@@ -122,25 +173,6 @@ async fn do_boot_scheduler() -> Result<()> {
                 )).unwrap();
                 init_list.insert("services/scheduler/info".to_string(),scheduler_info_str);
 
-
-
-                //add default user
-                if zone_config.owner_name.is_some() {
-                    let mut owner_name = zone_config.owner_name.clone().unwrap();
-                    if is_did(&owner_name) {
-                        let owner_did = DID::from_str(&owner_name);
-                        if owner_did.is_some() {
-                            owner_name = owner_did.unwrap().id.to_string();
-                        }
-                    }
-                    let owner_str = serde_json::to_string(&json!(   
-                        {
-                            "type":"admin"
-                        }
-                    )).unwrap();
-                    
-                    init_list.insert(format!("users/{}",owner_name),owner_str);
-                }
 
                 //write zone config 
                 init_list.insert("boot/config".to_string(),serde_json::to_string(&zone_config).unwrap());

@@ -1,0 +1,94 @@
+#!/bin/python
+
+import os
+import sys
+import json
+
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+
+appid = sys.argv[1]
+username = sys.argv[2]
+
+full_appid = f"{username}#{appid}"
+app_config = os.getenv(f"{full_appid}.config")
+app_token = os.getenv(f"{full_appid}.token")
+
+
+if app_token is None:
+    print(f"No configuration found for appid: {full_appid}")
+    exit(1)
+    
+if app_config is None:
+    print(f"No configuration found for appid: {full_appid}")
+    exit(1)
+
+config = json.loads(app_config)
+
+# 如果镜像已经在运行，则先停止再启动
+print(f"Before start, try stopping container: {username}-{appid}")
+docker_command = f"docker kill  {full_appid}"
+os.system(docker_command)
+
+# 如果容器已经存在，则直接用docker start命令
+ret = os.system(f"docker start {full_appid}")
+if ret == 0:
+    print(f"Container {full_appid} is already running, skip building")
+    exit(0)
+
+
+
+# 得到镜像名
+image_list = config.get("service_docker_images")
+if image_list is None:
+    print("Image list not found in the configuration")
+    exit(1)
+
+image_name = image_list.get("x86_server")
+if not image_name:
+    print("Image name not found in the configuration")
+    exit(1)
+
+# 通过配置得到镜像的启动参数，包括路径映射，虚拟网络，CPU配额，内存配额
+volume_mapping = ""
+data_mount_point = config.get("data_mount_point", "")
+if data_mount_point:
+    os.makedirs(f"/opt/buckyos/data/{username}/{appid}", exist_ok=True)
+    volume_mapping += f"-v /opt/buckyos/data/{username}/{appid}/:{data_mount_point} "
+
+local_cache_mount_point = config.get("local_cache_mount_point", "")
+if local_cache_mount_point:
+    os.makedirs(f"/opt/buckyos/cache/{username}/{appid}", exist_ok=True)
+    volume_mapping += f"-v /opt/buckyos/cache/{username}/{appid}/:{local_cache_mount_point} "
+
+#network_settings = config.get("network_settings", "")
+cpu_quota = config.get("cpu_quota", "")
+memory_quota = config.get("memory_quota", "")
+
+print(f"Image Name: {image_name}")
+
+port = config.get("port", "")
+if port:
+    port = f"-p {port}:{port} "
+
+# 构造docker命令
+docker_command = f"docker run --rm {port} --name {username}-{appid} -e {full_appid}.config -e {full_appid}.token -d "
+
+if volume_mapping:
+    docker_command += volume_mapping
+
+#if network_settings:
+#    docker_command += f"--network {network_settings} "
+
+#if cpu_quota:
+#    docker_command += f"--cpu-quota={cpu_quota} "
+
+#if memory_quota:
+#    docker_command += f"--memory={memory_quota} "
+docker_command += f" {image_name}"
+
+
+print(f"docker craete container command: {docker_command}")
+os.system(docker_command)
+

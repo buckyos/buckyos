@@ -1,9 +1,14 @@
 mod path;
 mod process;
 mod time;
+mod config;
+
+
 pub use path::*;
 pub use process::*;
 pub use time::*;
+pub use config::*;
+
 
 use serde_json::json;
 use ed25519_dalek::SigningKey;
@@ -17,7 +22,6 @@ fn build_pkcs8(private_key: &[u8]) -> Vec<u8> {
     pkcs8.extend_from_slice(private_key);
     pkcs8
 }
-
 
 pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
     let mut csprng = OsRng{};
