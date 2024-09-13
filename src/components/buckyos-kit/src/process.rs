@@ -60,7 +60,7 @@ pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String
         let extension = Path::new(path).extension().and_then(|s| s.to_str()).unwrap_or("");
         let mut is_known_script = true;
         match extension {
-            "py" => command_str = "python".to_string(),
+            "py" => command_str = "python3".to_string(),
             "js" => command_str = "node".to_string(),
             "sh" => {
                 command_str = "sh".to_string();

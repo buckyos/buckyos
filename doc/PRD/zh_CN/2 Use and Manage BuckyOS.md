@@ -131,8 +131,8 @@ Library是AI驱动的，基于知识图谱的新数据管理模式。比如根�
   - /opt/buckyos/bin 保存BuckyOS System文件的分区 ，可以是ReadOnly的，只有在系统升级时才写入数据,这个分区通常和本地Linux的根分区是同一个
   - /opt/buckyos/etc 
   - /opt/buckyos/data 保存系统数据(System Config的数据)的分区，必须是RW的，但数据量很小，如果上一个分区可写，那么这两个分区通常是同一个 （有重要数据）
-  - /opt/buckyos/cache/service 保存BcukyOS (dApp) Service 镜像 (local pkg)的分区 ，SSD 必须是RW的，且读取数据要快 
-  - /opt/buckyos/cache/$appid 保存dApp的Local Cache数据，这通常是一些计算临时数据，可以随时删除。
+
+  - /opt/buckyos/cache/$userid/$appid 保存dApp的Local Cache数据，这通常是一些计算临时数据，可以随时删除。
   - /opt/buckyos/dfs/caches bcache DFS Cache分区 （1-多个），必须是RW的，且读写数据要快，SSD可以和上一个分区是同一个
   - /opt/buckyos/dfs/chunks bchunk DFS ChunkData 分区（0-多个），SSD/HDD,不会轻易删除的数据 （有重要数据）
 

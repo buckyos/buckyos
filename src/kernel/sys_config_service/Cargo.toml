@@ -17,7 +17,6 @@ serde_json = "*"
 url = "*"
 tokio = { version = "*", features = ["full"] }
 warp = "*"
-etcd-client = "*"
 sled = "*"
 lazy_static = "*"
 thiserror = "*"

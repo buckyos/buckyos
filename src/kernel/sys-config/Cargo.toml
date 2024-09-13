@@ -9,7 +9,6 @@ authors = ["BuckyOS DAO","@alexsunxl","@waterflier"]
 log = "*"
 serde = "*"
 serde_json = "*"
-etcd-rs = "*"
 lazy_static = "*"
 thiserror = "*"
 rand = "*"
