@@ -60,17 +60,17 @@ Functions marked with `*` are those I believe must be completed in the next rele
     - [ ] *system config event support (A2 @waterflier), use websocket for config-change notification
   - system status for system status monitoring
   - kRPC @waterflier
-    - [x] *rust kRPC libs (A4)
+    - [x] *rust kRPC libs (A4,@waterflier)
     - [ ] *typescript kRPC libs (A2)
-    - [x] *verify_hub service  (A2)
+    - [x] *verify_hub service  (A2,@waterflier)
       - [ ] improve user and device register logical. (A2)
   - kLog, a reliable logging library, is the foundation for automatic fault diagnosis in the system.
     - [ ] *kLog lib (A4), defines the basic interfaces for kLog output and reliable behavior logic, can handle server downtime
     - [ ] *kLog server (S2), PoC version should implement a simple version to ensure reliability
   - kMQ message queue, supports custom event systems
   - pkg system
-    - [x] *Improve lib (waterflier,S2) to facilitate use by other components
-    - [ ] Integrate with the task system (A4)
+    - [x] *Improve lib (S2,@waterflier) to facilitate use by other components
+    - [ ] Integrate with the task system (A4,@glen0125)
 - Kernel Services
   - [x] *scheduler (A2 @waterflier), a key module to be implemented in the PoC version, automatically generating node_config and establishing an initial extensible framework
     - [x] *boot scheduler (A2), the first scheduler to be implemented, mainly for system initialization
@@ -82,9 +82,9 @@ Functions marked with `*` are those I believe must be completed in the next rele
     - [ ] *glusterFS (A2) integrated with rbac
     - DCFS (listed separately)
   - dApp manager, the `apt` tool in BuckyOS, provides basic reliable pkg management capabilities for the system.
-    - [ ] *basic API support (A4), source management, installed management, permission configuration, installer
-    - [ ] *CLI tools (S4), command-line tools similar to apt based on basic API
-    - [ ] *in-zone pkg repo service (S4), a stable repo service running within the zone
+    - [ ] *basic API support (A4,@glen0125), source management, installed management, permission configuration, installer
+    - [ ] *CLI tools (S4,@glen0125), command-line tools similar to apt based on basic API
+    - [ ] *in-zone pkg repo service (S4,@glen0125), a stable repo service running within the zone
     - [ ] *Installer UI (A4), meets the minimum requirements for dApp permission control in the system
   - backup system (listed separately)
   - cyfs-gateway (listed separately)
