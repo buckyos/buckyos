@@ -4,7 +4,7 @@
 //mod gateway;
 //mod interface;
 mod log_util;
-mod dispatcher;
+//mod dispatcher;
 //mod peer;
 //mod proxy;
 //mod service;

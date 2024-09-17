@@ -8,8 +8,6 @@ use crate::{NSErrorCode, NSResult};
 pub enum ProviderType {
     #[serde(rename = "dns")]
     DNS,
-    #[serde(rename = "etcd")]
-    ETCD,
 }
 
 #[derive(Serialize, Deserialize)]

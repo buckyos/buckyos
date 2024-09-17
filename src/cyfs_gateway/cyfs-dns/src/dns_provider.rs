@@ -62,7 +62,7 @@ impl NSProvider for DNSProvider {
                         }
                     }
                     let txt = DnsTxtCodec::decode(txt_list)?;
-                    let txt = String::from_utf8_lossy(txt.as_slice()).to_string();
+                    //let txt = String::from_utf8_lossy(txt.as_slice()).to_string();
                     return Ok(serde_json::from_str(txt.as_str()).map_err(|e| {
                         NSError::new(NSErrorCode::InvalidData, format!("Failed to parse txt {} err: {}", txt, e))
                     })?);

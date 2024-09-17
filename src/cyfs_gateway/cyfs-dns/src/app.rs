@@ -1,4 +1,4 @@
-use crate::{DNSConfig, DNSProvider, ETCDConfig, ETCDProvider, LocalProvider, NameQuery, NSCmdRegister, NSCmdRegisterRef, NSConfig, NSProvider, NSResult, ProviderType};
+use crate::{DNSConfig, DNSProvider, LocalProvider, NameQuery, NSCmdRegister, NSCmdRegisterRef, NSConfig, NSProvider, NSResult, ProviderType};
 
 pub struct NSApp {
     cmd_register: NSCmdRegisterRef,
@@ -22,11 +22,7 @@ impl NSApp {
             let provider = match provider.ty {
                 ProviderType::DNS => {
                     let config = provider.get::<DNSConfig>()?;
-                    Box::new(DNSProvider::new(config.dns_server)) as Box<dyn NSProvider>
-                }
-                ProviderType::ETCD => {
-                    let config = provider.get::<ETCDConfig>()?;
-                    Box::new(ETCDProvider::new(config.etcd_url)) as Box<dyn NSProvider>
+                    Box::new(DNSProvider::new()) as Box<dyn NSProvider>
                 }
             };
             provider.load(self.cmd_register.as_ref()).await?;

@@ -1,15 +1,16 @@
-use gateway_lib::*;
-use crate::peer::{OnNewTunnelHandleResult, PeerManagerEvents, PeerManagerEventsRef};
-use crate::tunnel::{DataTunnelInfo, TunnelCombiner};
+use cyfs_gateway_lib::*;
+//use crate::peer::{OnNewTunnelHandleResult, PeerManagerEvents, PeerManagerEventsRef};
+//use crate::tunnel::{DataTunnelInfo, TunnelCombiner};
 
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpStream;
-
+use log::*;
 
 struct BindSource {
-
+    addr : IpAddr,
+    port : u16,
 }
 
 
