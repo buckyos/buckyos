@@ -9,6 +9,11 @@ members = [
     "./components/package-manager",
     "./components/buckyos-kit",
 
+    "./cyfs_gateway/cyfs-gateway-lib",
+    "./cyfs_gateway/cyfs_gateway",
+    "./cyfs_gateway/cyfs-dns",
+    "./cyfs_gateway/cyfs-warp",
+
     "./kernel/kRPC",
     "./kernel/rbac",
     "./kernel/sys-config",

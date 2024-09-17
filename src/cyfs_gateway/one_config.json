@@ -1,0 +1,92 @@
+{
+    "global_config":{
+
+    },
+    "tunnel_builder":{
+
+    },
+    "servers":{
+        "main_http_server":{
+            "type":"cyfs-warp",
+            "http_bind":"0.0.0.0:80",
+            "https_bind":"0.0.0.0:443",
+            "route": {
+                "*/system_config":{
+                    "type":"upstream",
+                    "target":"system_config_service:10030"
+                },
+                "*/res":{
+                    "type":"files",
+                    "target":"/data/res"
+                }
+            }
+        },
+        "main_socks_server":{
+            "type":"cyfs-socks",
+            "bind":"localhost:8000",
+            "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml"
+        },
+        "main_dns_server":{
+            "type":"cyfs-dns",
+            "bind":"localhost:53",
+            "ddns":{
+                "enable":true,
+                "bind":"localhost:8080"
+            },
+            "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml",
+            "providers":[
+                {
+                    "order":0,
+                    "type":"zone_system_config"
+                },
+                {
+                    "order":1,
+                    "type":"d-dns"
+                },
+                {
+                    "order":1,
+                    "type":"dns" // use dns server info from OS
+                },
+                {
+                    "order":2,
+                    "type":"ens-client",
+                    "target":"http://ens.buckyos.org"
+                }
+            ],
+            "fallback":[
+                "114.114.114.114:53",
+                "8.8.8.8",
+                "https://dns.google/dns-query"
+            ]
+        }
+    },
+    "services" : {
+        "tcp://_:80":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://_:443":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://127.0.0.1:8000":{
+            "type":"server",
+            "id":"main_socks_server"
+        },
+        "udp://_:53":{
+            "type":"server",
+            "id":"main_dns_server"
+        },
+
+        "tcp://_:6000":{
+            "type":"forward",
+            "target":"ood02:6000",
+            "enable-tunnel":["direct","rtcp"]
+        },
+        "tcp://_:6001":{
+            "type":"forward",
+            "target":"192.168.1.102:6001"
+            //"enable-tunnel":[] default is ["direct"]
+        }
+    }
+}

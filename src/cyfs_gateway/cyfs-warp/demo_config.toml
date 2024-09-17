@@ -1,0 +1,12 @@
+[hosts."example.com"]
+tls = { cert_path = "/path/to/cert.pem", key_path = "/path/to/key.pem" }
+
+[hosts."example.com".routes]
+"/api" = { upstream = "http://localhost:8080" }
+"/static" = { local_dir = "/path/to/static/files" }
+
+[hosts."another.com"]
+tls = { cert_path = "/path/to/another_cert.pem", key_path = "/path/to/another_key.pem" }
+
+[hosts."another.com".routes]
+"/" = { upstream = "http://localhost:9090" }
