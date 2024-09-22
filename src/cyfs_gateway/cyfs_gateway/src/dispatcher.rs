@@ -128,18 +128,18 @@ impl ServiceDispatcher {
                         } else {
                             let target_tunnel = get_tunnel(&target,None).await;
                             if target_tunnel.is_err() {
-                                warn!("datagram forward service process accept failed, get target tunnel failed: {}", target_tunnel.err().unwrap());
+                                warn!("datagram-forward create tunnel failed:{}", target_tunnel.err().unwrap());
                                 continue;
                             }
                             let target_tunnel = target_tunnel.unwrap();
                             let datagram_client = target_tunnel.create_datagram_client(target_port).await;
                             if datagram_client.is_err() {
-                                warn!("datagram forward service forward connection failed, create datagram client failed: {}", datagram_client.err().unwrap());
+                                warn!("datagram-forward create datagram client failed: {}", datagram_client.err().unwrap());
                                 continue;
                             }
-
+                            info!("datagram-forward create a new client from {}", incoming);
                             let datagram_client = datagram_client.unwrap();
-                            datagram_client.send_datagram(&buffer[0..read_len]);
+                            let _ = datagram_client.send_datagram(&buffer[0..read_len]).await;
                             all_sessions.insert(source_ep.clone(),datagram_client.clone_box());
                             drop(all_sessions);
 
@@ -152,11 +152,15 @@ impl ServiceDispatcher {
                                     //TODO: idel timeout,delete self from datagram_client_session
                                     let read_result = datagram_client.recv_datagram(&mut buffer2).await;
                                     if read_result.is_err() {
-                                        warn!("datagram forward service recvfrom target failed: {}", read_result.err().unwrap());
+                                        warn!("datagram-forward recvfrom target failed: {}", read_result.err().unwrap());
                                         break;
                                     }
                                     read_len2 = read_result.unwrap();
-                                    income_server2.send_datagram(&source_ep,&buffer2[0..read_len2]);
+                                    let send_result = income_server2.send_datagram(&source_ep,&buffer2[0..read_len2]).await;
+                                    if send_result.is_err() {
+                                        warn!("datagram-forward response to income_server failed: {}", send_result.err().unwrap());
+                                        break;
+                                    }
                                 }
                             });
                         }     

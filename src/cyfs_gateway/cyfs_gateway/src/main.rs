@@ -102,16 +102,38 @@ fn main() {
 mod tests {
     use super::*;
     use tokio::test;
+    use tokio::net::UdpSocket;
+    use tokio::task;
+
+    async fn start_test_udp_echo_server() -> Result<()> {
+        let socket = UdpSocket::bind("0.0.0.0:8889").await.unwrap();
+
+        let mut buf = [0; 2048]; // 缓冲区，接收数据
+
+        loop {
+
+            let (len, addr) = socket.recv_from(&mut buf).await.unwrap();
+            socket.send_to(&buf[..len], &addr).await?;
+            info!("echo {} bytes back to {}", len, addr);
+        }   
+    }
 
     #[test]
     async fn test_service_main() {
         log_util::init_logging().unwrap();
+        task::spawn(async {
+            start_test_udp_echo_server().await.unwrap();
+        });
         let config = r#"
         {
             "dispatcher" : {
                 "tcp://0.0.0.0:6001":{
                     "type":"forward",
                     "target":"tcp://192.168.1.188:8888"
+                },
+                "udp://0.0.0.0:6002":{
+                    "type":"forward",
+                    "target":"udp://192.168.1.188:8889"
                 }
             }
         }
