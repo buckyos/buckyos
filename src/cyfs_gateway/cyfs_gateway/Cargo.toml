@@ -8,6 +8,7 @@ authors = ["BuckyOS DAO","@waterflier","@lurenpluto"]
 [dependencies]
 thiserror = "*"
 log = "*"
+url = "*"
 tokio = { version = "*", features = ["full"] }
 async-trait = "*"
 serde = { version = "*", features = ["derive"] }
@@ -19,3 +20,4 @@ bytes = "*"
 dirs = "*"
 fern = "*"
 chrono = "*"
+cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }

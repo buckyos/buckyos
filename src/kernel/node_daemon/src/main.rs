@@ -573,7 +573,7 @@ async fn async_main() -> std::result::Result<(), String> {
                 error!("get boot config failed! {}", error);
                 return String::from("get boot config failed!");
             })?;
-        info!("Load boot config OK, {:?}", boot_config);
+        info!("Load boot config OK!! config: {:?}", boot_config);
     }
 
     //use boot config to init name-lib.. etc kernel libs.

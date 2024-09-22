@@ -4,7 +4,8 @@
 //mod gateway;
 //mod interface;
 mod log_util;
-//mod dispatcher;
+mod dispatcher;
+mod config_loader;
 //mod peer;
 //mod proxy;
 //mod service;
@@ -23,17 +24,20 @@ async fn service_main(config: &str) -> Result<()> {
         Box::new(e) as Box<dyn std::error::Error>
     })?;
 
-    //let gateway = Gateway::load(&json).await?;
+    //load config
+    let mut config_loader = config_loader::ConfigLoader::new();
+    let load_result = config_loader.load_from_json_value(_json);
+    if load_result.is_err() {
+        let msg = format!("Error loading config: {}", load_result.err().unwrap());
+        error!("{}", msg);
+        std::process::exit(1);
+    }
 
-    //gateway.start().await?;
-
-    // Start http interface
-    //let interface = interface::GatewayInterface::new(
-    //    gateway.upstream_manager(),
-    //    gateway.proxy_manager(),
-    //    gateway.config_storage(),
-    //);
-    //interface.start().await?;
+    //start servers
+    
+    //start dispatcher
+    let dispatcher = dispatcher::ServiceDispatcher::new(config_loader.dispatcher.clone());
+    dispatcher.start().await;
 
     // sleep forever
     let _ = tokio::signal::ctrl_c().await;
@@ -92,3 +96,27 @@ fn main() {
         }
     });
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::test;
+
+    #[test]
+    async fn test_service_main() {
+        log_util::init_logging().unwrap();
+        let config = r#"
+        {
+            "dispatcher" : {
+                "tcp://0.0.0.0:6001":{
+                    "type":"forward",
+                    "target":"tcp://192.168.1.188:8888"
+                }
+            }
+        }
+        "#;
+        service_main(config).await.unwrap();
+    }
+}
+    

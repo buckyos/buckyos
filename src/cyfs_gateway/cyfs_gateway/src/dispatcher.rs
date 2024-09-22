@@ -1,350 +1,206 @@
 use cyfs_gateway_lib::*;
-//use crate::peer::{OnNewTunnelHandleResult, PeerManagerEvents, PeerManagerEventsRef};
-//use crate::tunnel::{DataTunnelInfo, TunnelCombiner};
-
-use std::net::{IpAddr, SocketAddr};
+use dirs::data_dir;
+use std::net::{Incoming, IpAddr, SocketAddr};
+use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
-use tokio::net::TcpStream;
+use std::sync::{Arc};
+use tokio::sync::Mutex;
 use log::*;
-
-struct BindSource {
-    addr : IpAddr,
-    port : u16,
-}
+use url::Url;
+use tokio::task;
 
 
 
-#[derive(Clone, Debug)]
-pub struct UpstreamService {
-    source: BindSource,
-    id: String,
-    addr: SocketAddr,
-    protocol: UpstreamServiceProtocol,
-
-    
-}
-
-impl Service {
-    pub fn source(&self) -> BindSource {
-        self.source
-    }
-
-    pub fn load(value: &serde_json::Value, source: Option<ConfigSource>) -> GatewayResult<Self> {
-        if !value.is_object() {
-            return Err(GatewayError::InvalidConfig("upstream".to_owned()));
-        }
-
-        let id = value["id"]
-            .as_str()
-            .ok_or(GatewayError::InvalidConfig(
-                "Invalid upstream block config: id".to_owned(),
-            ))?
-            .to_owned();
-        if id.is_empty() {
-            let msg = format!(
-                "Invalid upstream block config: id, {}",
-                serde_json::to_string(value).unwrap()
-            );
-            warn!("{}", msg);
-
-            return Err(GatewayError::InvalidConfig(msg));
-        }
-
-        let addr: IpAddr = value["addr"]
-            .as_str()
-            .ok_or(GatewayError::InvalidConfig(
-                "Invalid upstream block config: addr".to_owned(),
-            ))?
-            .parse()
-            .map_err(|e| {
-                let msg = format!("Error parsing addr: {}", e);
-                GatewayError::InvalidConfig(msg)
-            })?;
-        let port = value["port"].as_u64().ok_or(GatewayError::InvalidConfig(
-            "Invalid upstream block config: port".to_owned(),
-        ))? as u16;
-        let protocol = value["protocol"]
-            .as_str()
-            .ok_or(GatewayError::InvalidConfig(
-                "Invalid upstream block config: type".to_owned(),
-            ))?;
-
-        let protocol = UpstreamServiceProtocol::from_str(protocol)?;
-
-        info!(
-            "New upstream service: {}, {}:{} type: {}",
-            id,
-            addr,
-            port,
-            protocol.as_str()
-        );
-
-        Ok(Self {
-            id,
-            addr: SocketAddr::new(addr, port),
-            protocol,
-            source: source.unwrap_or(ConfigSource::Config),
-        })
-    }
-
-    pub fn dump(&self) -> serde_json::Value {
-        let mut obj = serde_json::Map::new();
-        obj.insert("block".to_owned(), "upstream".into());
-        obj.insert("id".to_owned(), serde_json::Value::String(self.id.clone()));
-        obj.insert("addr".to_owned(), serde_json::Value::String(self.addr.ip().to_string()));
-        obj.insert("port".to_owned(), serde_json::Value::Number(serde_json::Number::from(self.addr.port())));
-        obj.insert("protocol".to_owned(), serde_json::Value::String(self.protocol.as_str().to_owned()));
-
-        serde_json::Value::Object(obj)
-    }
-}
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Clone)]
 pub struct ServiceDispatcher {
-    services: Arc<Mutex<Vec<UpstreamService>>>,
+    //services: Arc<Mutex<Vec<UpstreamService>>>,
+    config_source:Option<String>,
+    config_version:u64,
+    config: Arc<Mutex<HashMap<Url,DispatcherConfig>>>,
 }
 
 impl ServiceDispatcher {
-    pub fn new() -> Self {
+    pub fn new(config: HashMap<Url,DispatcherConfig>) -> Self {
         Self {
-            services: Arc::new(Mutex::new(Vec::new())),
+            config_source: None,
+            config_version: 0,
+            config: Arc::new(Mutex::new(config)),
         }
     }
 
-    pub fn clone_as_events(&self) -> PeerManagerEventsRef {
-        Arc::new(Box::new(self.clone()) as Box<dyn PeerManagerEvents>)
+    pub async fn create_income_listener(&self, incoming: &Url) -> Result<Box<dyn StreamListener>> {
+        let new_listener = create_listner_by_url(incoming).await.map_err(|e| {
+            error!("create_income_listener failed, {}", e);
+            Box::new(e)
+        })?;
+        Ok(new_listener)
     }
 
-    pub fn get_service(&self, id: &str) -> Option<UpstreamService> {
-        let services = self.services.lock().unwrap();
-        for service in services.iter() {
-            if service.id == id {
-                return Some(service.clone());
-            }
-        }
-
-        None
+    pub async fn create_income_datagram_server(&self, incoming: &Url) -> Result<Box<dyn DatagramServerBox>> {
+        let new_server = create_datagram_server_by_url(incoming).await.map_err(|e| {
+            error!("create_income_datagram_server failed, {}", e);
+            Box::new(e)
+        })?;
+        Ok(new_server)
     }
 
-    pub fn is_service_exist(&self, id: &str) -> bool {
-        self.get_service(id).is_some()
-    }
-
-    /*
-    {
-        "block": "upstream",
-        "addr": "127.0.0.1",
-        "port": 2000,
-        "type": "tcp"
-    }
-    */
-    pub fn load_block(&self, value: &serde_json::Value) -> GatewayResult<()> {
-        let service = UpstreamService::load(value, None)?;
-
-        // check if service already exists
-        let mut services = self.services.lock().unwrap();
-        for s in services.iter() {
-            if s.id == service.id {
-                let msg = format!("Upstream service already exists: {}", service.id);
-                warn!("{}", msg);
-                return Err(GatewayError::InvalidConfig(msg));
-            }
-        }
-
-        info!("New upstream service: {:?}", service);
-
-        services.push(service);
-
-        Ok(())
-    }
-
-    // Only dump dynamic config
-    pub fn dump(&self) -> Vec<serde_json::Value> {
-        let services = self.services.lock().unwrap();
-        let mut arr = Vec::new();
-        for service in services.iter() {
-            if service.source == ConfigSource::Dynamic {
-                arr.push(service.dump());
-            }
-        }
-
-        arr
-    }
-
-    pub fn add(&self, service: UpstreamService) -> GatewayResult<()> {
-        let mut services = self.services.lock().unwrap();
-        for s in services.iter() {
-            if s.id == service.id {
-                let msg = format!("Upstream service already exists: {}", service.id);
-                warn!("{}", msg);
-                return Err(GatewayError::AlreadyExists(msg));
-            }
-        }
-
-        info!("New upstream service: {:?}", service);
-
-        services.push(service);
-
-        Ok(())
-    }
-
-    pub fn remove(&self, id: &str) -> GatewayResult<()> {
-        let mut services = self.services.lock().unwrap();
-        let mut found = false;
-        services.retain(|s| {
-            if s.id == id {
-                found = true;
-                false
-            } else {
-                true
-            }
-        });
-
-        if !found {
-            let msg = format!("Upstream service not found: {}", id);
-            warn!("{}", msg);
-            return Err(GatewayError::UpstreamNotFound(msg));
-        }
-
-        info!("Upstream service removed: {}", id);
-
-        Ok(())
-    }
-
-    fn find_service(
-        &self,
-        port: u16,
-        protocol: UpstreamServiceProtocol,
-    ) -> Option<UpstreamService> {
-        let services = self.services.lock().unwrap();
-        for service in services.iter() {
-            // info!("Service item: {} {}", service.addr.port(), protocol.as_str());
-            if service.addr.port() == port && service.protocol == protocol {
-                // info!("Got service: {} {}", service.addr.port(), protocol.as_str());
-                return Some(service.clone());
-            }
-        }
-
-        None
-    }
-
-    pub async fn bind_tunnel(&self, tunnel: DataTunnelInfo) -> GatewayResult<()> {
-        let service = self.find_service(tunnel.port, UpstreamServiceProtocol::Tcp);
-        if service.is_none() {
-            let msg = format!("No upstream service found for port {}", tunnel.port);
-            return Err(GatewayError::UpstreamNotFound(msg));
-        }
-
-        self.bind_tunnel_impl(service.unwrap(), tunnel).await
-    }
-
-    async fn bind_tunnel_impl(
-        &self,
-        service: UpstreamService,
-        tunnel: DataTunnelInfo,
-    ) -> GatewayResult<()> {
-        match service.protocol {
-            UpstreamServiceProtocol::Tcp | UpstreamServiceProtocol::Http => {
-                tokio::spawn(Self::run_tcp_forward(tunnel, service));
-            }
-            UpstreamServiceProtocol::Udp => {
-                let msg = format!("Udp tunnel not supported yet {}", tunnel.port);
-                error!("{}", msg);
-                return Err(GatewayError::NotSupported(msg));
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn run_tcp_forward(
-        tunnel: DataTunnelInfo,
-        service: UpstreamService,
-    ) -> GatewayResult<()> {
-        // first create tcp stream to upstream service
-        let mut stream = TcpStream::connect(&service.addr).await.map_err(|e| {
-            let msg = format!(
-                "Error connecting to upstream service: {}, {}",
-                service.addr, e
-            );
-            error!("{}", msg);
-            GatewayError::Io(e)
+    pub async fn start_foward_service(&self, incoming: &Url, target: &Url) -> Result<()> {
+        let incoming_category = get_protocol_category(incoming.scheme()).map_err(|e| {
+            error!("start_foward_service failed, Invalid incoming protocol: {}", e);
+            e
+        })?;
+        let target_category = get_protocol_category(target.scheme()).map_err(|e| {
+            error!("start_foward_service failed, Invalid target protocol: {}", e);
+            e
         })?;
 
-        info!(
-            "Bind tunnel {} to upstream service {}",
-            tunnel.port, service.addr
-        );
+        if incoming_category != target_category {
+            error!("start_foward_service failed, incoming protocol and target protocol must be the same");
+            return Err(Box::new(TunnelError::UnknowProtocol("incoming protocol and target protocol must be the same".to_string())));
+        }
 
-        let mut btunnel = TunnelCombiner::new(tunnel.tunnel_reader, tunnel.tunnel_writer);
+        let target_port = target.port().unwrap_or(incoming.port().unwrap_or(0));
+        if target_port == 0 {
+            error!("start_foward_service failed, target port is not specified");
+            return Err(Box::new(TunnelError::UnknowProtocol("target port is not specified".to_string())));
+        }
 
-        let (read, write) = tokio::io::copy_bidirectional(&mut btunnel, &mut stream)
-            .await
-            .map_err(|e| {
-                let msg = format!(
-                    "Error forward tunnel to upstream service: {} {}",
-                    service.addr, e
-                );
-                error!("{}", msg);
-                GatewayError::Io(e)
-            })?;
+        match target_category {
+            ProtocolCategory::Stream => {
+                let listener = self.create_income_listener(incoming).await?;
+                let incoming = incoming.clone();
+                let target = target.clone();
+                task::spawn(async move {
+                    loop {
+                        let accept_result = listener.accept().await;
+                        if accept_result.is_err() {
+                            warn!("stream forward service process accept failed: {}", accept_result.err().unwrap());
+                            break;
+                        }
+                        let (mut income_stream, _) = accept_result.unwrap(); 
+                        info!("stream forward service accept connection from {}", incoming);
+                        let target_tunnel = get_tunnel(&target,None).await;
+                        if target_tunnel.is_err() {
+                            warn!("stream forward service process accept failed, get target tunnel failed: {}", target_tunnel.err().unwrap());
+                            continue;
+                        }
+                        let target_tunnel = target_tunnel.unwrap();
+                        let mut target_stream = target_tunnel.open_stream(target_port).await;
+                        if target_stream.is_err() {
+                            warn!("stream forward service forward connection failed, open target stream failed: {}", target_stream.err().unwrap());
+                            continue;
+                        }
+                        let mut target_stream = target_stream.unwrap();
+                        task::spawn(async move {
+                            tokio::io::copy_bidirectional(income_stream.as_mut(),target_stream.as_mut()).await;
+                        });
+                        
+                    }
+                });
+            },
+            ProtocolCategory::Datagram => {
+                let income_server = self.create_income_datagram_server(incoming).await?;
+                let incoming = incoming.clone();
+                let target = target.clone();
+                type DatagramClientSession = Box<dyn DatagramClientBox>;
+                type DatagramClientSessionMap = Arc<Mutex<HashMap<TunnelEndpoint,DatagramClientSession>>>;
+                task::spawn(async move {
+                    let mut buffer = vec![0u8; 1024*4];
+                    let mut read_len:usize = 0;
+                    let mut all_client_session:DatagramClientSessionMap = Arc::new(Mutex::new(HashMap::new()));
+                    let mut source_ep:TunnelEndpoint;
+                    loop {
+                        let recv_result = income_server.recv_datagram(&mut buffer).await;
+                        if recv_result.is_err() {
+                            warn!("datagram forward service process recvfrom income_server failed: {}", recv_result.err().unwrap());
+                            continue;;
+                        }
+                        (read_len,source_ep) = recv_result.unwrap();
+                        let mut all_sessions = all_client_session.lock().await;
+                        let clientsession = all_sessions.get(&source_ep);
+                        
+                        if clientsession.is_some() {
+                            let clientsession = clientsession.unwrap();
+                            clientsession.send_datagram(&buffer[0..read_len]);
+                            drop(all_sessions);
+                        } else {
+                            let target_tunnel = get_tunnel(&target,None).await;
+                            if target_tunnel.is_err() {
+                                warn!("datagram forward service process accept failed, get target tunnel failed: {}", target_tunnel.err().unwrap());
+                                continue;
+                            }
+                            let target_tunnel = target_tunnel.unwrap();
+                            let datagram_client = target_tunnel.create_datagram_client(target_port).await;
+                            if datagram_client.is_err() {
+                                warn!("datagram forward service forward connection failed, create datagram client failed: {}", datagram_client.err().unwrap());
+                                continue;
+                            }
 
-        /*
-        // bind reader and writer to tunnel.tunnel_writer and tunnel.tunnel_reader
-        let stream_to_tunnel = tokio::io::copy(&mut reader, &mut tunnel.tunnel_writer);
-        let tunnel_to_stream = tokio::io::copy(&mut tunnel.tunnel_reader, &mut writer);
+                            let datagram_client = datagram_client.unwrap();
+                            datagram_client.send_datagram(&buffer[0..read_len]);
+                            all_sessions.insert(source_ep.clone(),datagram_client.clone_box());
+                            drop(all_sessions);
 
-        tokio::try_join!(stream_to_tunnel, tunnel_to_stream).map_err(|e| {
-            let msg = format!(
-                "Error forward tunnel to upstream service: {} {}",
-                service.addr, e
-            );
-            error!("{}", msg);
-            GatewayError::Io(e)
-        })?;
-        */
-
-        info!(
-            "Tunnel {} bound to upstream service {} finished, {} bytes read, {} bytes written",
-            tunnel.port, service.addr, read, write
-        );
+                            let income_server2 = income_server.clone();
+                            task::spawn(async move {
+                                //store datagram_client_session
+                                let mut buffer2 = vec![0u8; 1024*4];
+                                let mut read_len2:usize = 0;
+                                loop {
+                                    //TODO: idel timeout,delete self from datagram_client_session
+                                    let read_result = datagram_client.recv_datagram(&mut buffer2).await;
+                                    if read_result.is_err() {
+                                        warn!("datagram forward service recvfrom target failed: {}", read_result.err().unwrap());
+                                        break;
+                                    }
+                                    read_len2 = read_result.unwrap();
+                                    income_server2.send_datagram(&source_ep,&buffer2[0..read_len2]);
+                                }
+                            });
+                        }     
+                    }
+                });
+            }
+        }
 
         Ok(())
+    }
+
+    pub async fn start(&self) {
+        info!("Service dispatcher started");
+        let config = self.config.lock().await;
+        
+        for (incomeing, target) in config.iter() {
+            match &target.target {
+                DispatcherTarget::Forward(target_url) => {
+                    //TODO: store the task handle to stop it when the config is changed
+                    match self.start_foward_service(incomeing, target_url).await {
+                        Ok(_) => {
+                            info!("Start foward service from {} to {} OK ", incomeing.to_string(), target_url.to_string());
+                        },
+                        Err(e) => {
+                            error!("Start foward service from {} to {} failed, {}", incomeing.to_string(), target_url.to_string(), e);
+                        }
+                    }
+                }
+                DispatcherTarget::Server(server_id) => {
+                    unimplemented!();
+                    //looking for server config by server_id
+                    //start server with config
+                }
+            }
+        }
+    }
+
+
+    pub fn flush_new_config(&self, config: Option<DispatcherConfig>) {
+        unimplemented!();
+        // if config is None, then reload the config from the config_source
+        //verify new config
+        //calculate the difference between the new config and the old config
+        //execuite the difference
     }
 }
 
-impl PeerManagerEvents for UpstreamManager {
-    fn on_recv_data_tunnel(&self, info: DataTunnelInfo) -> GatewayResult<OnNewTunnelHandleResult> {
-        info!(
-            "Will handle data tunnel for upstream manager: {}, {}",
-            info.device_id, info.port
-        );
-
-        let service = self.find_service(info.port, UpstreamServiceProtocol::Tcp);
-        if service.is_none() {
-            let msg = format!("No upstream service found for port {}", info.port);
-            info!("{}", msg);
-
-            let ret = OnNewTunnelHandleResult {
-                handled: false,
-                info: Some(info),
-            };
-
-            return Ok(ret);
-        }
-
-        let this = self.clone();
-        tokio::spawn(async move {
-            let service = service.unwrap();
-            let _ = this.bind_tunnel_impl(service, info).await;
-        });
-
-        Ok(OnNewTunnelHandleResult {
-            handled: true,
-            info: None,
-        })
-    }
-}
-
-pub type UpstreamManagerRef = Arc<UpstreamManager>;

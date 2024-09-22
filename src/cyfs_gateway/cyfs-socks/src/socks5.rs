@@ -1,4 +1,4 @@
-use super::util::Socks5Util;
+use crate::Socks5Util;
 use crate::{
     peer::{NameManagerRef, PeerManagerRef},
     tunnel::TunnelCombiner,

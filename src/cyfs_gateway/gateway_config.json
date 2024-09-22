@@ -1,9 +1,17 @@
 {
-    "global_config":{
-
-    },
     "tunnel_builder":{
-
+        "tunnel_bdt" : {
+            "enable-tunnel" : ["bdt","rtcp"],
+            "sn" : "127.0.0.1"
+        },
+        "tunnel_ssr":{
+            "enable-tunnel" : ["ssr","ss"],
+            "proxy_config": {
+                "host":"myssr.test.com",
+                "port":8889,
+                "auth":"aes:23323"
+            }
+        }
     },
     "servers":{
         "main_http_server":{
@@ -44,14 +52,15 @@
                     "type":"d-dns"
                 },
                 {
-                    "order":1,
-                    "type":"dns" // use dns server info from OS
-                },
-                {
                     "order":2,
                     "type":"ens-client",
                     "target":"http://ens.buckyos.org"
+                },
+                {
+                    "order":3,
+                    "type":"dns" // use dns server info from OS
                 }
+
             ],
             "fallback":[
                 "114.114.114.114:53",
@@ -60,7 +69,7 @@
             ]
         }
     },
-    "services" : {
+    "dispatcher" : {
         "tcp://_:80":{
             "type":"server",
             "id":"main_http_server"
