@@ -1,10 +1,12 @@
 mod config;
 mod tunnel;
 mod tunnel_mgr;
+mod log_util;
 
 pub use config::*;
 pub use tunnel::*;
 pub use tunnel_mgr::*;
+pub use log_util::*;
 
 use thiserror::Error;
 

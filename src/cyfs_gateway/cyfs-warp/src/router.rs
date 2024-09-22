@@ -2,12 +2,13 @@
 use crate::config::{Config, RouteConfig};
 use anyhow::Result;
 use hyper::{header, Body, Request, Response, StatusCode};
-use log::info;
+use log::*;
 use rustls::ServerConfig;
 use std::sync::Arc;
 use tokio::fs;
 use url::Url;
 use std::collections::HashMap;
+
 
 pub struct Router {
     config: Config,
@@ -39,8 +40,16 @@ impl Router {
             .routes
             .iter()
             .find(|(route, _)| path.starts_with(*route))
-            .map(|(_, config)| config)
-            .ok_or_else(|| anyhow::anyhow!("No matching route found for path: {}", path))?;
+            .map(|(_, config)| config);
+
+        if route_config.is_none() {
+            warn!("Route Config not found: {}", path);
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("Route not found"))?);
+        }
+
+        let route_config = route_config.unwrap();   
 
         match route_config {
             RouteConfig {

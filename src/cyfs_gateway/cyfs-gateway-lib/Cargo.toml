@@ -16,3 +16,5 @@ reqwest = {version = "*", features = ["json", "rustls-tls"]}
 jsonwebtoken = "*"
 url = "*"
 lazy_static = "*"
+fern = "*"
+chrono = "*"

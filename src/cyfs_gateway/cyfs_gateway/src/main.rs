@@ -3,7 +3,6 @@
 //mod config;
 //mod gateway;
 //mod interface;
-mod log_util;
 mod dispatcher;
 mod config_loader;
 //mod peer;
@@ -14,6 +13,7 @@ mod config_loader;
 
 use log::*;
 use clap::{Arg, ArgGroup, Command};
+use cyfs_gateway_lib::*;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -76,7 +76,7 @@ fn main() {
         .get_matches();
 
     // init log
-    log_util::init_logging().unwrap();
+    init_logging().unwrap();
 
     // Gets a value for config if supplied by user, or defaults to "default.json"
     let config: String = load_config_from_args(&matches)

@@ -11,6 +11,7 @@ use hyper::{Body, Request, Response, Server};
 use log::{error, info};
 use rustls::ServerConfig;
 use tokio::net::TcpListener;
+use core::task;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,13 +20,17 @@ use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::TcpListenerStream;
 use futures::stream::StreamExt;
 use hyper::server::accept::from_stream;
+use cyfs_gateway_lib::*;
 
 
 async fn cyfs_warp_main() -> Result<()> {
-    env_logger::init();
+    init_logging();
+    let tls_port = 3000;
+    let http_port = 3002;
 
     let config = Config::from_file("d:\\temp\\config.toml").await?;
     let router = Arc::new(Router::new(config.clone()));
+    let router2 = router.clone();
 
     let tls_configs: HashMap<String, Arc<ServerConfig>> = config
         .hosts
@@ -67,7 +72,7 @@ async fn cyfs_warp_main() -> Result<()> {
             }))
         }
     });
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], tls_port));
     let listener = TcpListener::bind(addr).await?;
     let listener_stream = TcpListenerStream::new(listener);
     let tls_acceptor = Arc::new(tls_acceptor);
@@ -96,8 +101,26 @@ async fn cyfs_warp_main() -> Result<()> {
 
     let acceptor = from_stream(incoming_tls_stream);
     let server = Server::builder(acceptor).serve(make_svc);
+    info!("HTTPS Server running on https://{}", addr);
 
-    info!("Server running on https://{}", addr);
+    tokio::task::spawn(async move {
+        let addr_http = SocketAddr::from(([0, 0, 0, 0], http_port));
+        let listener_http = TcpListener::bind(addr_http).await;
+        let listener_http = listener_http.unwrap();
+        let listener_stream_http = TcpListenerStream::new(listener_http);
+        let http_acceptor = from_stream(listener_stream_http);
+        let make_svc = make_service_fn(move |conn| {
+            let router = router2.clone();
+            async move {
+                Ok::<_, hyper::Error>(service_fn(move |req| {
+                    handle_request(router.clone(), None, req)
+                }))
+            }
+        });
+        let server_http = Server::builder(http_acceptor).serve(make_svc);
+        info!("HTTP Server running on http://{}", addr_http);
+        server_http.await;
+    });
 
     server.await?;
 
