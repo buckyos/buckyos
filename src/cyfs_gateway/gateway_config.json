@@ -16,16 +16,31 @@
     "servers":{
         "main_http_server":{
             "type":"cyfs-warp",
-            "http_bind":"0.0.0.0:80",
-            "https_bind":"0.0.0.0:443",
-            "route": {
-                "*/system_config":{
-                    "type":"upstream",
-                    "target":"system_config_service:10030"
+            "bind":"0.0.0.0",
+            "http_port":80,
+            "https_port":443,
+            "hosts": {
+                "another.com": {
+                    "tls_only":1,
+                    "tls": {
+                        "cert_path": "/path/to/cert.pem",
+                        "key_path": "/path/to/key.pem"
+                    },
+                    "routes": {
+                        "/": {
+                            "upstream": "http://localhost:9090"
+                        }
+                    }
                 },
-                "*/res":{
-                    "type":"files",
-                    "target":"/data/res"
+                "example.com": {
+                    "routes": {
+                        "/api": {
+                            "upstream": "http://localhost:8080"
+                        },
+                        "/static": {
+                            "local_dir": "D:\\temp"
+                        }
+                    }
                 }
             }
         },
@@ -58,7 +73,7 @@
                 },
                 {
                     "order":3,
-                    "type":"dns" // use dns server info from OS
+                    "type":"dns" 
                 }
 
             ],
@@ -70,11 +85,11 @@
         }
     },
     "dispatcher" : {
-        "tcp://_:80":{
+        "tcp://0.0.0.0:80":{
             "type":"server",
             "id":"main_http_server"
         },
-        "tcp://_:443":{
+        "tcp://0.0.0.0:443":{
             "type":"server",
             "id":"main_http_server"
         },
@@ -82,20 +97,19 @@
             "type":"server",
             "id":"main_socks_server"
         },
-        "udp://_:53":{
+        "udp://0.0.0.0:53":{
             "type":"server",
             "id":"main_dns_server"
         },
 
-        "tcp://_:6000":{
+        "tcp://0.0.0.0:6000":{
             "type":"forward",
             "target":"ood02:6000",
             "enable-tunnel":["direct","rtcp"]
         },
-        "tcp://_:6001":{
+        "tcp://0.0.0.0:6001":{
             "type":"forward",
             "target":"192.168.1.102:6001"
-            //"enable-tunnel":[] default is ["direct"]
         }
     }
 }

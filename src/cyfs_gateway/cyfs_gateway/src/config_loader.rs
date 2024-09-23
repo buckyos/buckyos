@@ -5,7 +5,7 @@ use url::Url;
 use serde_json::{Value, from_value};
 pub struct ConfigLoader {
     pub dispatcher : HashMap<Url,DispatcherConfig>,
-    //servers_config : HashMap<String,ServerConfig>,
+
     //tunnel_builder_config : HashMap<String,TunnelBuilderConfig>,
 }
 
@@ -13,7 +13,6 @@ impl ConfigLoader {
     pub fn new() -> Self {
         ConfigLoader {
             dispatcher : HashMap::new(),
-            //servers_config : HashMap::new(),
         }
     } 
 
