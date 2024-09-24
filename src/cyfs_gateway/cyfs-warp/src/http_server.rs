@@ -13,8 +13,9 @@ use anyhow::Result;
 use log::*;
 
 use rustls::ServerConfig;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Request, Response, Server};
+use hyper::service::service_fn;
+use hyper::{Request, Response};
+use hyper::body::Body;
 use hyper::server::accept::from_stream;
 use hyper::server::conn::Http;
 

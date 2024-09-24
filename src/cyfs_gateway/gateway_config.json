@@ -56,7 +56,7 @@
                 "enable":true,
                 "bind":"localhost:8080"
             },
-            "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml",
+            
             "providers":[
                 {
                     "order":0,
@@ -73,7 +73,8 @@
                 },
                 {
                     "order":3,
-                    "type":"dns" 
+                    "type":"rule-dns", 
+                    "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml",
                 }
 
             ],

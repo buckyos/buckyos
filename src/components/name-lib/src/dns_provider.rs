@@ -1,9 +1,9 @@
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
-use trust_dns_resolver::config::*;
-use trust_dns_resolver::proto::rr::record_type;
-use trust_dns_resolver::TokioAsyncResolver;
+use hickory_resolver::{config::*, Resolver};
+use hickory_resolver::proto::rr::record_type;
+use hickory_resolver::TokioAsyncResolver;
 
 use crate::{EncodedDocument, NSError, NSProvider, NSResult, NameInfo, NameProof};
 
@@ -46,7 +46,9 @@ impl DNSProvider {
 }
 #[async_trait::async_trait]
 impl NSProvider for DNSProvider {
-
+    fn get_id(&self) -> String {
+        return  "dns provider".to_string();
+    }
     async fn query(&self, name: &str,record_type:Option<&str>) -> NSResult<NameInfo> {
         let mut server_config = ResolverConfig::default();
         if self.dns_server.is_some() {
@@ -61,8 +63,9 @@ impl NSProvider for DNSProvider {
                 name_server_configs,
             );
         }
+        //let resolver2 = Resolver::new();
         let resolver = TokioAsyncResolver::tokio(server_config, ResolverOpts::default());
-        
+        //resolver.lookup(name, record_type)
         //for dns proivder,default record type is A.
         let record_type = record_type.unwrap_or("A");
         match record_type {
@@ -73,7 +76,7 @@ impl NSProvider for DNSProvider {
                     let txt = record.txt_data().iter().map(|s| -> String {
                         let byte_slice: &[u8] = &s;
                         return String::from_utf8_lossy(byte_slice).to_string();
-                    }).collect::<Vec<String>>().join(" ");
+                    }).collect::<Vec<String>>().join("");
                     whole_txt.push_str(&txt);
                 }
 
@@ -108,7 +111,7 @@ impl NSProvider for DNSProvider {
                 return Ok(name_info);
             },
             "DID"=>{
-                let response: trust_dns_resolver::lookup::TxtLookup = resolver.txt_lookup(name).await.unwrap();
+                let response: hickory_resolver::lookup::TxtLookup = resolver.txt_lookup(name).await.unwrap();
                 //let mut did_tx:String;
                 //let mut did_doc = DIDSimpleDocument::new();
 
@@ -139,6 +142,7 @@ impl NSProvider for DNSProvider {
                 return Err(NSError::Failed("DID not found".to_string()));
             },
             _ => {
+                //resolver.lookup(name, record_type).await;
                 return Err(NSError::Failed(format!("Invalid record type: {}", record_type)));
             }
         }

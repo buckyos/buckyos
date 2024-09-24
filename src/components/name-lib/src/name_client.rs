@@ -8,7 +8,7 @@ use crate::name_query::NameQuery;
 pub struct NameClientConfig {
     enable_cache: bool,
     local_cache_dir: Option<String>,
-    max_ttl: u64,
+    max_ttl: u32,
     cache_size:u64,
 }
 

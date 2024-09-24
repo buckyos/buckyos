@@ -11,7 +11,7 @@ log = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 async-trait = "*"
-trust-dns-resolver = { version = "*", features = ["dns-over-rustls"] }
+hickory-resolver = { version = "*", features = ["dns-over-rustls"] }
 tokio = { version = "*", features = ["full"] }
 mini-moka = "*" 
 jsonwebtoken = "*"

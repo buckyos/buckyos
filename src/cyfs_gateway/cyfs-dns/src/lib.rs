@@ -1,25 +1,35 @@
 #![allow(unused)]
 
-mod error;
-mod name_query;
-mod node_server;
-mod provider;
-mod http_node_server;
-mod node_client;
-mod http_node_client;
-mod dns_provider;
-mod dns_txt_codec;
-mod config;
-mod local_provider;
-mod app;
+mod dns_server;
 
-pub use error::*;
-pub use name_query::*;
-pub use node_server::*;
-pub use provider::*;
-pub use node_client::*;
-pub use dns_provider::*;
-pub use dns_txt_codec::*;
-pub use config::*;
-pub use local_provider::*;
-pub use app::*;
+pub use dns_server::*;
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use cyfs_gateway_lib::*;
+    use serde_json::*;
+
+    #[tokio::test]
+    async fn test_cyfs_dns_main() {
+        init_logging();
+        let config_str = r#"
+{
+  "port":2053,
+  "resolver_chain": [
+    {
+      "type": "dns",
+      "cache": true
+    }
+  ],
+  "fallback": []
+}
+    "#;
+        let dns_config:DNSServerConfig = serde_json::from_str(config_str).unwrap();
+        
+        let start_result = start_dns_server(dns_config).await;
+        println!("result: {:?}", start_result);
+        assert!(start_result.is_ok());
+    }
+}

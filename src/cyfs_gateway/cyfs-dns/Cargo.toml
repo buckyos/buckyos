@@ -1,25 +1,23 @@
 [package]
 name = "cyfs-dns"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-authors = ["BuckyOS DAO","@wugren","@waterflier"]
+authors = ["BuckyOS DAO","@waterflier","@wugren"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async-std = { version = '1.12', features = ['unstable', 'attributes'] }
-serde = "1.0.197"
-serde_json = "1.0.116"
-callback-trait = "0.1.2"
-async-trait = "0.1.80"
-sfo-http = { version = "0.4", features = ['actix-web', 'openapi']}
-sfo-result = {version = "0.2", features = ["log", "backtrace", "serde"]}
-sfo-serde-result = "0.2"
-bucky-crypto = {git = "https://github.com/buckyos/bucky-crypto.git", version = "0.1.0", features = ["x509"]}
-hickory-client = { version = "0.24.1", features = ["backtrace"] }
-sfo-net-utils = "0.1.1"
-tokio = { version = "1.37.0", features = ["rt", "macros", "fs"]}
-log = "0.4.21"
-mini-moka = { version = "0.10.3", features = ["sync"]}
-base64 = "0.22.0"
-toml = "0.8.12"
+thiserror = "*"
+async-trait = "*"
+anyhow = "*"
+log = "*"
+env_logger = "*"
+tokio = { version = "*", features = ["full"] }
+serde = "*"
+serde_json = "*"
+hickory-server = "*"
+hickory-proto = "*"
+chrono = "*"
+url = "*"
+cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
+name-lib = {path = "../../components/name-lib"}

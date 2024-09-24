@@ -19,6 +19,7 @@ static GLOBAL_NAME_CLIENT: Lazy<Mutex<NameClient>> = Lazy::new(|| {
 pub use did::*;
 pub use config::*;
 pub use provider::*;
+pub use dns_provider::*;
 pub use utility::*;
 pub use name_client::*;
 

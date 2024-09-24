@@ -31,12 +31,13 @@ pub struct NameInfo {
     pub did_document:Option<EncodedDocument>,
     pub proof_type:NameProof,
     pub create_time: u64,
-    pub ttl: Option<u64>,
+    pub ttl: Option<u32>,
 }
 
 
 #[async_trait::async_trait]
 pub trait NSProvider: 'static + Send + Sync {
+    fn get_id(&self) -> String;
     async fn query(&self, name: &str,record_type:Option<&str>) -> NSResult<NameInfo>;
     async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument>;
 }

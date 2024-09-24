@@ -1,7 +1,8 @@
 // src/router.rs
 
 use anyhow::Result;
-use hyper::{header, Body, Request, Response, StatusCode};
+use hyper::{body::{Body}, header, Request, Response, StatusCode};
+
 use log::*;
 use rustls::ServerConfig;
 use std::sync::Arc;
@@ -21,8 +22,8 @@ impl Router {
 
     pub async fn route(
         &self,
-        req: Request<Body>,
-    ) -> Result<Response<Body>> {
+        req: Request<hyper::body::Incoming>,
+    ) -> Result<BoxBody<Bytes, hyper::Error>> {
         let mut host = req
             .headers()
             .get("host")

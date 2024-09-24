@@ -43,10 +43,30 @@ impl WarpServerConfig {
     }
 }
 
+#[derive(Deserialize, Debug,Clone)]
+pub enum DNSProviderType {
+    #[serde(rename = "dns")]
+    DNS,//query name info by system
+}
 
+#[derive(Deserialize,Clone)]
+pub struct DNSProviderConfig {
+    #[serde(rename = "type")]
+    pub provider_type: DNSProviderType,
+    #[serde(flatten)]
+    pub config: serde_json::Value,
+}
 
+#[derive(Deserialize, Clone)]
 pub struct DNSServerConfig {
-
+    pub bind : Option<String>,
+    pub port : u16,
+    //dot_port : u16,
+    //doh_port : u16,
+    //tls: Option<TlsConfig>, include cert.pem and key.pem
+    //dnssec: bool,
+    pub resolver_chain : Vec<DNSProviderConfig>,
+    pub fallback : Vec<String>,//fallback dns servers
 }
 
 pub struct SocksProxyConfig {
