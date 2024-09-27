@@ -20,6 +20,7 @@ pub fn get_protocol_category(str_protocol:&str) -> TunnelResult<ProtocolCategory
     let str_protocol = str_protocol.to_lowercase();
     match str_protocol.as_str() {
         "tcp" => Ok(ProtocolCategory::Stream),
+        "rtcp" => Ok(ProtocolCategory::Stream),
         "udp" => Ok(ProtocolCategory::Datagram),
         _ => Err(TunnelError::UnknowProtocol(str_protocol)),
     }
@@ -33,6 +34,9 @@ pub fn get_tunnel_builder_by_protocol(protocol:&str) -> TunnelResult<Box<dyn Tun
         "udp" => {
             return Ok(Box::new(crate::IPTunnelBuilder::new()))
         },
+        "rtcp" => {
+            return Ok(Box::new(crate::RTcpTunnelBuilder::new("cyfs_gateway".to_string(),2980)))
+        }
         _ => return Err(TunnelError::UnknowProtocol(protocol.to_string()))
     }
 }
