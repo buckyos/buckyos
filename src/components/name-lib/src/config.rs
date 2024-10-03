@@ -16,22 +16,28 @@ pub struct VerifyHubInfo {
     pub public_key:Jwk,
 }
 
+
+
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct ZoneConfig {
-    pub did: String,
+    pub did: String,//full did
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_key : Option<Jwk>,//owner's public key
-    pub oods: Vec<String>, //etcd server endpoints
+    //ood server endpoints,can be ["ood1","ood2@192.168.32.1","ood3#vlan1]
+    pub oods: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub backup_server_info:Option<String>,
+    pub services:Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sn:Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vlan:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify_hub_info:Option<VerifyHubInfo>,
     pub exp:u64,
-    pub iat:u64,
 }
 
 impl ZoneConfig {
@@ -46,16 +52,78 @@ impl ZoneConfig {
         let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
         return ZoneConfig {
             did: "did:ens:example".to_string(),
-            name: Some("www.example.com".to_string()),
+            name: Some("waterflier.web3.buckyos.io".to_string()),
             owner_name: None,
             auth_key: Some(public_key_jwk),
             oods: vec!["ood01".to_string()],
-            backup_server_info: None,
+            sn: None,
+            vlan: None,
+            services: None,
             verify_hub_info: None,
             exp: buckyos_get_unix_timestamp() + 3600*24*365,
-            iat: buckyos_get_unix_timestamp(),
         }
     }
+
+    pub fn get_ood_ip(&self,ood_name: &str) -> Option<String> {
+        if self.oods.is_empty() {
+            return None;
+        }
+
+        for ood in self.oods.iter() {
+            if ood.starts_with(ood_name) {
+                return Some(ood.split('@').nth(1).unwrap_or("").to_string());
+            }
+        }
+        return None;
+    }
+
+    pub fn get_ood_network_id(&self,ood_name: &str) -> Option<String> {
+        if self.oods.is_empty() {
+            return None;
+        }
+
+        for ood in self.oods.iter() {
+            if ood.starts_with(ood_name) {
+                return Some(ood.split('#').nth(1).unwrap_or("").to_string());
+            }
+        }
+        return None;
+    }
+
+    fn get_default_service_port(&self,service_name: &str) -> Option<u16> {
+        if service_name.starts_with("http") {
+            return Some(80);
+        } else if service_name.starts_with("https") {
+            return Some(443);
+        }
+        return None;
+    }
+
+    pub fn get_service_port(&self,service_name: &str) -> Option<u16> {
+        if self.services.is_none() {
+            return self.get_default_service_port(service_name);
+        }
+        let services = self.services.as_ref().unwrap();
+        if services.is_empty() {
+            return self.get_default_service_port(service_name);
+        }
+
+        for service in services.iter() {
+            if service.starts_with(service_name) {
+                let port_str = service.split(':').nth(1).unwrap_or("");
+                if port_str.is_empty() {
+                    return self.get_default_service_port(service_name);
+                }
+                if port_str == "0" {
+                    return None;
+                }
+                return Some(port_str.parse::<u16>().unwrap());
+            }
+        }
+
+        return None;
+    }
+    
 }
 
 impl DIDDocumentTrait for ZoneConfig {

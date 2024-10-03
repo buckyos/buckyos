@@ -1,2 +1,5 @@
 .vscode
 .VSCodeCounter
+src/kernel/node_active/node_modules/
+test/test_jwt/node_modules/
+*.bkp

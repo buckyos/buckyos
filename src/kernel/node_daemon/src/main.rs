@@ -480,12 +480,12 @@ async fn async_main() -> std::result::Result<(), String> {
         return String::from("load device private key failed!");
     })?;
     
-    info!("start looking zone [{}] 's config...", node_identity.zone_name.as_str());
+    info!("start refresh zone [{}] 's config...", node_identity.zone_name.as_str());
     let zone_config = looking_zone_config(&node_identity).await.map_err(|err| {
         error!("looking zone config failed! {}", err);
         String::from("looking zone config failed!")
     })?;
-    info!("Load zone document OK, {:?}", zone_config);
+    info!("Load Zone document OK, {:?}", zone_config);
     info!("Booting......");
 
     std::env::set_var("BUCKY_ZONE_OWNER", serde_json::to_string(&node_identity.owner_public_key).unwrap());
