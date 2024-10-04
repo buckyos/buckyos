@@ -6,8 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+sysinfo = "*"
 thiserror = "*"
 log = "*"   
+rand = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 async-trait = "*"
@@ -17,6 +19,8 @@ mini-moka = "*"
 jsonwebtoken = "*"
 base64="*"
 once_cell="*"
+lazy_static="*"
 buckyos-kit = { path = "../buckyos-kit" }
+kRPC = { path = "../../kernel/kRPC" }
 
 

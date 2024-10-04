@@ -12,6 +12,9 @@ serde_json = "*"
 lazy_static = "*"
 thiserror = "*"
 rand = "*"
+tokio = { version = "*", features = ["full"] }
 
 buckyos-kit = { path = "../../components/buckyos-kit" }
+name-lib = { path = "../../components/name-lib" }
 kRPC ={ path = "../kRPC" }
+

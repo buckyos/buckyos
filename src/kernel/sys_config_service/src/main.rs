@@ -315,7 +315,7 @@ async fn service_main() {
     init_by_boot_config().await.unwrap();
     // Select the rear end storage, here you can switch different implementation
 
-    let rpc_route = warp::path("system_config")
+    let rpc_route = warp::path!("kapi" / "system_config")
     .and(warp::post())
     .and(warp::body::json())
     .and_then(|req: RPCRequest| async {
@@ -348,7 +348,7 @@ async fn service_main() {
     });
 
     info!("Starting system config service");
-    warp::serve(rpc_route).run(([0, 0, 0, 0], 10030)).await;
+    warp::serve(rpc_route).run(([0, 0, 0, 0], 3200)).await;
 }
 
 #[tokio::main]
@@ -407,7 +407,7 @@ mod test {
     
         sleep(Duration::from_millis(1000)).await;
 
-        let client = kRPC::new("http://127.0.0.1:10030/system_config",&Some(jwt));
+        let client = kRPC::new("http://127.0.0.1:3200/kapi/system_config",&Some(jwt));
         //test create
         println!("test create");
         client.call("sys_config_create", json!( {"key":"users/alice/test_key","value":"test_value_create"})).await.unwrap();

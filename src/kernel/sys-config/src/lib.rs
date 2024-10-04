@@ -13,13 +13,16 @@ lazy_static!{
     static ref SYS_CONFIG: Arc<Mutex<SystemConfigClient>> = {
         print!("init SystemConfigClient");
 
-        Arc::new(Mutex::new(SystemConfigClient::new(&vec!["ood01".to_string()],&None)))
+        Arc::new(Mutex::new(SystemConfigClient::new(None,&None)))
     };
 }
 
 pub fn sys_config_get_device_path(device_id: &str) -> String {
-    format!("/device/{}", device_id)
+    format!("/devices/{}", device_id)
 }
+
+
+
 
 pub async fn sys_config_get(key: &str) -> Result<(String, u64)> {
     let mut client = SYS_CONFIG.lock().unwrap(); 

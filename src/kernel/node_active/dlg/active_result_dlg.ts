@@ -11,6 +11,7 @@ class ActiveResultDlg extends HTMLElement {
         const shadow = this.attachShadow({ mode: 'open' });
         shadow.appendChild(template.content.cloneNode(true));
 
+
     }
 
 }

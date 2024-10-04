@@ -1,11 +1,16 @@
+use std::net::IpAddr;
+
 use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use log::*;
+use rand::seq::SliceRandom;
 use serde::{Serialize,Deserialize};
 use serde_json::json;
 use buckyos_kit::*;
+use once_cell::sync::OnceCell;
 
-use crate::{DIDDocumentTrait,EncodedDocument};
+
+use crate::{DeviceInfo,DIDDocumentTrait,EncodedDocument};
 use crate::{NSResult,NSError};
 use crate::{decode_json_from_jwt_with_pk,decode_jwt_claim_without_verify,decode_json_from_jwt_with_default_pk};
 
@@ -27,17 +32,25 @@ pub struct ZoneConfig {
     pub owner_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_key : Option<Jwk>,//owner's public key
+    
     //ood server endpoints,can be ["ood1","ood2@192.168.32.1","ood3#vlan1]
     pub oods: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub services:Option<Vec<String>>,
+    pub services:Option<Vec<String>>,//like ["http:0","https:443","smb"],0 means disable
+    
+    //因为所有的Node上的Gateway都是同质的，所以这里可以不用配置？DNS记录解析到哪个Node，哪个Node的Gateway就是ZoneGateway
+    //#[serde(skip_serializing_if = "Option::is_none")]
+    //pub gateway:Option<String>,//default gateway node name for this zone
+    
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sn:Option<String>,
+    pub sn:Option<String>,//
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vlan:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify_hub_info:Option<VerifyHubInfo>,
     pub exp:u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iat:Option<u64>,
 }
 
 impl ZoneConfig {
@@ -56,37 +69,65 @@ impl ZoneConfig {
             owner_name: None,
             auth_key: Some(public_key_jwk),
             oods: vec!["ood01".to_string()],
+            //gateway: None,
             sn: None,
             vlan: None,
             services: None,
             verify_hub_info: None,
+            iat:None,
             exp: buckyos_get_unix_timestamp() + 3600*24*365,
         }
     }
 
-    pub fn get_ood_ip(&self,ood_name: &str) -> Option<String> {
-        if self.oods.is_empty() {
-            return None;
+    pub fn select_same_subnet_ood(&self,device_info:&DeviceInfo) -> Option<String> {
+        let mut ood_list = self.oods.clone();
+        ood_list.shuffle(&mut rand::thread_rng());
+
+        for ood in ood_list.iter() {
+            let ood_device_info = DeviceInfo::new(ood);
+            if ood_device_info.net_id == device_info.net_id {
+                return Some(ood.clone());
+            }
         }
 
+        return None;
+    }
+
+    pub fn select_wan_ood(&self) -> Option<String> {
+        let mut ood_list = self.oods.clone();
+        ood_list.shuffle(&mut rand::thread_rng());
         for ood in self.oods.iter() {
-            if ood.starts_with(ood_name) {
-                return Some(ood.split('@').nth(1).unwrap_or("").to_string());
+            let device_info = DeviceInfo::new(ood);
+            if device_info.is_wan_device() {
+                return Some(ood.clone());
             }
         }
         return None;
     }
 
-    pub fn get_ood_network_id(&self,ood_name: &str) -> Option<String> {
-        if self.oods.is_empty() {
+    pub fn get_sn_url(&self) -> Option<String> {
+        let sn_port = self.get_service_port("http");
+        if sn_port.is_none() {
             return None;
         }
 
-        for ood in self.oods.iter() {
-            if ood.starts_with(ood_name) {
-                return Some(ood.split('#').nth(1).unwrap_or("").to_string());
+        let sn_port = sn_port.unwrap();
+        if self.sn.is_some() {
+            if sn_port == 80 {
+                return Some(format!("http://{}/kapi/sn",self.sn.as_ref().unwrap()));
+            } else {
+                return Some(format!("http://{}:{}/kapi/sn",self.sn.as_ref().unwrap(),sn_port));
             }
         }
+
+        if self.name.is_some() {
+            if sn_port == 80 {
+                return Some(format!("http://{}/kapi/sn",self.name.as_ref().unwrap()));
+            } else {
+                return Some(format!("http://{}:{}/kapi/sn",self.name.as_ref().unwrap(),sn_port));
+            }
+        }
+
         return None;
     }
 
@@ -126,6 +167,8 @@ impl ZoneConfig {
     
 }
 
+
+
 impl DIDDocumentTrait for ZoneConfig {
     
     fn get_did(&self) -> &str {    
@@ -159,7 +202,7 @@ impl DIDDocumentTrait for ZoneConfig {
         return Some(self.exp)
     }
     fn get_iat(&self) -> Option<u64> {
-        return Some(self.iat)
+        return self.iat;
     }
 
     fn encode(&self,key:Option<&EncodingKey>) -> NSResult<EncodedDocument> {
@@ -204,8 +247,8 @@ impl DIDDocumentTrait for ZoneConfig {
 
 
 pub enum DeviceType {
-    OOD,
-    Server,
+    OOD, //run system config service
+    Server,//run other service
     Sensor,
 }
 
@@ -213,8 +256,12 @@ pub enum DeviceType {
 pub struct DeviceConfig {
     pub did: String,
 
-    pub name: String,
+    pub name: String,//host name
     pub device_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip:Option<IpAddr>,//main_ip
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub net_id:Option<String>,
     pub auth_key : Jwk,
 
     pub iss:String,
@@ -236,6 +283,8 @@ impl DeviceConfig {
             did: "did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
             name: "ood1".to_string(),
             device_type: "ood".to_string(),
+            ip:None,
+            net_id:None,
             auth_key: public_key_jwk,
             iss: "waterfllier".to_string(),
             exp: buckyos_get_unix_timestamp() + 3600*24*365, 
@@ -412,16 +461,17 @@ mod tests {
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         let zone_config = ZoneConfig {
-            did: "did:ens:buckyos".to_string(),
+            did: "did:ens:waterflier".to_string(),
             name: None,
-            owner_name: Some("did:ens:waterflier".to_string()),
-            auth_key: None,
+            owner_name: None,
+            auth_key: None, 
             oods: vec!["ood01".to_string()],
-            backup_server_info: Some("http://abcd@backup.example.com".to_string()),
+            services: None,
+            sn: Some("web3.buckyos.io".to_string()),
+            vlan: None,
             verify_hub_info: None,
-            
+            iat:None,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
-            iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };
 
         let json_str = serde_json::to_string(&zone_config).unwrap();
@@ -445,14 +495,14 @@ mod tests {
         MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         -----END PRIVATE KEY-----
         "#;
-        let device_jwk = json!(
+        let owner_jwk = json!(
             {
                 "kty": "OKP",
                 "crv": "Ed25519",
-                "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
+                "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
             }
         );
-        let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(device_jwk).unwrap();
+        let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(owner_jwk).unwrap();
         let private_key: EncodingKey = EncodingKey::from_ed_pem(owner_private_key_pem.as_bytes()).unwrap();
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
@@ -462,6 +512,8 @@ mod tests {
             device_type: "ood".to_string(),
             auth_key: public_key_jwk,
             iss: "waterfllier".to_string(),
+            ip:None,
+            net_id:None,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };

@@ -182,31 +182,31 @@ impl ServicePkg {
         }
     }
 
-    async fn execute_operation(&self, op_name: &str,parms:Option<&Vec<String>>) -> Result<i32> {
+    async fn execute_operation(&self, op_name: &str,params:Option<&Vec<String>>) -> Result<i32> {
         if self.media_info.is_none() {
             return Err(ServiceControlError::ReasonError("media info is not loaded".to_string()));
         }
         let media_info = self.media_info.clone().unwrap();
         let op_file = media_info.full_path.join(op_name);
         //info!("start execute {} ...", op_file.display());
-        let (result, output) = execute(&op_file, 5, parms,
+        let (result, output) = execute(&op_file, 5, params,
             self.current_dir.as_ref(), Some(&self.env_vars)).await?;
         info!("execute {} ==> result: {} \n\t {}", op_file.display(), result, String::from_utf8_lossy(&output));
         Ok(result)
     }
 
-    pub async fn start(&self,parms:Option<&Vec<String>>) -> Result<i32> {
-        let result = self.execute_operation("start",parms).await?;
+    pub async fn start(&self,params:Option<&Vec<String>>) -> Result<i32> {
+        let result = self.execute_operation("start",params).await?;
         Ok(result)
     }
 
-    pub async fn stop(&self,parms:Option<&Vec<String>>) -> Result<i32> {
-        let result = self.execute_operation("stop",parms).await?;
+    pub async fn stop(&self,params:Option<&Vec<String>>) -> Result<i32> {
+        let result = self.execute_operation("stop",params).await?;
         Ok(result)
     }
 
-    pub async fn status(&self,parms:Option<&Vec<String>>) -> Result<ServiceState> {
-        let result = self.execute_operation("status",parms).await?;
+    pub async fn status(&self,params:Option<&Vec<String>>) -> Result<ServiceState> {
+        let result = self.execute_operation("status",params).await?;
         match result {
             0 => Ok(ServiceState::Started),
             -1 => Ok(ServiceState::NotExist),

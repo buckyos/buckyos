@@ -249,10 +249,14 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
         return NodeDaemonErrors::ReasonError("resolve zone did failed!".to_string());
     })?;
 
-    let zone_config:ZoneConfig = ZoneConfig::decode(&zone_doc,Some(&owner_public_key)).map_err(|err| {
+    let mut zone_config:ZoneConfig = ZoneConfig::decode(&zone_doc,Some(&owner_public_key)).map_err(|err| {
         error!("parse zone config failed! {}", err);
         return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
     })?;
+
+    if zone_config.name.is_none() {
+        zone_config.name = Some(node_identity.zone_name.clone());
+    }
 
     return Ok(zone_config);
 }
@@ -371,6 +375,36 @@ async fn node_main(node_host_name: &str,
     Ok(true)
 }
 
+async fn update_device_info(device_host_name:&str,sys_config_client: &SystemConfigClient) {
+    let device_key = sys_config_get_device_path(device_host_name);
+    let mut device_info = DeviceInfo::new(device_host_name);
+    let fill_result = device_info.auto_fill_by_system_info().await;
+    if fill_result.is_err() {
+        error!("auto fill device info failed! {}", fill_result.err().unwrap());
+        return;
+    }
+    let device_info_str = serde_json::to_string(&device_info).unwrap();
+    let device_key = format!("{}/info",sys_config_get_device_path(device_host_name));
+    let put_result = sys_config_client.set(device_key.as_str(),device_info_str.as_str()).await;
+    if put_result.is_err() {
+        error!("update device info to system_config failed! {}", put_result.err().unwrap());
+    } else {
+        info!("update device info to system_config success!");
+    }
+}
+
+async fn register_device_doc(device_doc:&DeviceConfig,sys_config_client: &SystemConfigClient) {
+    let device_key = sys_config_get_device_path(device_doc.name.as_str());
+    let device_doc_str = serde_json::to_string(&device_doc).unwrap();
+    let device_key = format!("{}/doc",sys_config_get_device_path(device_doc.name.as_str()));
+    let put_result = sys_config_client.set(device_key.as_str(),device_doc_str.as_str()).await;
+    if put_result.is_err() {
+        error!("register device doc to system_config failed! {}", put_result.err().unwrap());
+    } else {
+        info!("register device doc to system_config success!");
+    }
+
+}
 
 async fn node_daemon_main_loop(
     node_host_name:&str,
@@ -380,6 +414,10 @@ async fn node_daemon_main_loop(
 ) -> Result<()> {
     let mut loop_step = 0;
     let mut is_running = true;
+    let mut last_register_time = 0;
+
+    //try regsiter device doc
+    register_device_doc(device_doc, sys_config_client).await;
 
     loop {
         if !is_running {
@@ -388,6 +426,11 @@ async fn node_daemon_main_loop(
 
         loop_step += 1;
         info!("node daemon main loop step:{}", loop_step);
+        let now = buckyos_get_unix_timestamp();
+        if now - last_register_time > 30 {
+            update_device_info(node_host_name, sys_config_client).await;
+            last_register_time = now;
+        }
 
         let main_result = node_main(node_host_name, sys_config_client, device_doc, device_private_key).await;
         if main_result.is_err() {
@@ -425,12 +468,43 @@ async fn do_boot_scheduler() -> std::result::Result<(),String> {
     
 }
 
+async fn start_cyfs_gateway_service(device_doc: &DeviceConfig, device_private_key: &EncodingKey) -> std::result::Result<(),String> {
+    let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs_gateway".to_string(),get_buckyos_system_bin_dir());
+    let _ = cyfs_gateway_service_pkg.load().await.map_err(|err| {
+        error!("load cyfs_gateway service pkg failed! {}", err);
+        return String::from("load cyfs_gateway service pkg failed!");
+    })?;
+
+    let running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
+        error!("check cyfs_gateway running failed! {}", err);
+        return String::from("check cyfs_gateway running failed!");
+    })?;    
+
+    if running_state == ServiceState::Stopped {
+        warn!("check cyfs_gateway is stopped,try to start cyfs_gateway");
+        //params: boot cyfs-gateway configs, identiy_etc folder, keep_tunnel list
+        //  gateway_config: port_forward for system_config service 
+        let params = vec!["--boot".to_string()];
+        let start_result = cyfs_gateway_service_pkg.start(None).await.map_err(|err| {
+            error!("start cyfs_gateway failed! {}", err);
+            return String::from("start cyfs_gateway failed!");
+        })?;
+
+        info!("start cyfs_gateway OK!,result:{}. wait 5 seconds...",start_result);
+        //wait 5 seconds
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    }
+
+    Ok(())
+}
+
 async fn async_main() -> std::result::Result<(), String> {
     init_log_config();
     info!("node_dameon start...");
     //load node identity config
     let node_identity = load_identity_config().map_err(|err| {
         error!("load node identity config failed! {}", err);
+        //TODO: if there is no args disable node-active, start node-active service
         return String::from("load node identity config failed!")
     })?;
 
@@ -449,7 +523,7 @@ async fn async_main() -> std::result::Result<(), String> {
                 }
             }
             Err(err) => {
-                error!("resolve owner public key from resolve_did failed! {}", err);
+                error!("resolve owner public key by resolve_did failed! {}", err);
             }
         }
     }
@@ -465,7 +539,8 @@ async fn async_main() -> std::result::Result<(), String> {
     })?;
     info!("current node's device doc: {:?}", device_doc);
     
-    //verify node_name is this device's hostname
+    //verify node_name is this device's hostname 
+    //TODO all platform support needed
     if let Ok(hostname) = std::fs::read_to_string("/etc/hostname") {
         let hostname = hostname.trim().to_string();
         if device_doc.name != hostname {
@@ -486,13 +561,14 @@ async fn async_main() -> std::result::Result<(), String> {
         String::from("looking zone config failed!")
     })?;
     info!("Load Zone document OK, {:?}", zone_config);
+    name_lib::CURRENT_ZONE_CONFIG.set(zone_config).unwrap();
     info!("Booting......");
-
+    let zone_config = name_lib::CURRENT_ZONE_CONFIG.get().unwrap();
     std::env::set_var("BUCKY_ZONE_OWNER", serde_json::to_string(&node_identity.owner_public_key).unwrap());
     std::env::set_var("BUCKY_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
     std::env::set_var("BUCKY_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
 
-    //init system config (client)
+    //TODO: init system config (client)
     //if init system config failed, try to init system config service at this machine ,then try to init system config client again
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH)
@@ -514,7 +590,13 @@ async fn async_main() -> std::result::Result<(), String> {
         return String::from("generate device session token failed!");
     })?;
 
-    //check node is ood node?
+    //init kernel_service:cyfs-gateway service
+    start_cyfs_gateway_service(&device_doc, &device_private_key).await.map_err(|err| {
+        error!("init cyfs_gateway service failed! {}", err);
+        return String::from("init cyfs_gateway service failed!");
+    })?;
+
+    //init kernel_service:system_config service
     let syc_cfg_client: SystemConfigClient;
     let boot_config: serde_json::Value; 
     if zone_config.oods.contains(&device_doc.name) {
@@ -531,15 +613,14 @@ async fn async_main() -> std::result::Result<(), String> {
         })?;
 
         if running_state == ServiceState::Stopped {
-            warn!("check system_config_service running failed!,try to start system_config_service");
+            warn!("check system_config_service is stopped,try to start system_config_service");
             let start_result = sys_config_service_pkg.start(None).await.map_err(|err| {
                 error!("start system_config_service failed! {}", err);
                 return String::from("start system_config_service failed!");
             })?;
         }
 
-        let ood = vec![];
-        syc_cfg_client = SystemConfigClient::new(&ood, &Some(device_session_token_jwt.clone()));
+        syc_cfg_client = SystemConfigClient::new(None, &Some(device_session_token_jwt.clone()));
         let boot_config_result = syc_cfg_client.get("boot/config").await;
         match boot_config_result {
             sys_config::Result::Err(SystemConfigError::KeyNotFound(_)) => {
@@ -567,7 +648,8 @@ async fn async_main() -> std::result::Result<(), String> {
 
     } else {
         //this node is not ood: try connect to system_config_service
-        syc_cfg_client = SystemConfigClient::new(&zone_config.oods, &Some(device_session_token_jwt));
+        let this_device = DeviceInfo::from_device_doc(&device_doc);
+        syc_cfg_client = SystemConfigClient::new(Some(&this_device), &Some(device_session_token_jwt));
         let (boot_config,_) = syc_cfg_client.get("boot").await
             .map_err(|error| {
                 error!("get boot config failed! {}", error);
