@@ -9,9 +9,10 @@ authors = ["BuckyOS DAO","@waterflier"]
 
 log = "*"
 tokio = { version = "*", features = ["full"] }
-hyper = { version = "*", features = ["full"] }
-rustls = "*"
-tokio-rustls = "*"
+tokio-util = { version = "*", features = ["io"] }
+hyper = { version = "0.14", features = ["full"] }
+rustls = "0.21"
+tokio-rustls = "0.24"
 futures-util = "*"
 toml = "*"
 serde = { version = "*", features = ["derive"] }

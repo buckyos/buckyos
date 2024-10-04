@@ -1,13 +1,11 @@
 // src/router.rs
 
 use anyhow::Result;
-use hyper::{body::{Body}, header, Request, Response, StatusCode};
-
+use hyper::{Body, Request, Response, StatusCode};
 use log::*;
 use rustls::ServerConfig;
 use std::sync::Arc;
-use tokio::fs;
-use url::Url;
+use std::path::Path;
 use std::collections::HashMap;
 use cyfs_gateway_lib::*;
 
@@ -22,8 +20,8 @@ impl Router {
 
     pub async fn route(
         &self,
-        req: Request<hyper::body::Incoming>,
-    ) -> Result<BoxBody<Bytes, hyper::Error>> {
+        req: Request<Body>,
+    ) -> Result<Response<Body>> {
         let mut host = req
             .headers()
             .get("host")
@@ -90,17 +88,27 @@ impl Router {
         Ok(resp)
     }
 
-    async fn handle_local_dir(&self, req: Request<Body>, local_dir: &str,route_path:&str) -> Result<Response<Body>> {
+    async fn handle_local_dir(&self, req: Request<Body>, local_dir: &str, route_path: &str) -> Result<Response<Body>> {
         let path = req.uri().path();
         let sub_path = path.trim_start_matches(route_path);
         let file_path = format!("{}{}", local_dir, sub_path);
-        //TODO 针对大文件，应该边读边返回，而不是一次性读取
-        if let Ok(contents) = fs::read(&file_path).await {
+        let path = Path::new(&file_path);
+
+        if path.is_file() {
+            let file = match tokio::fs::File::open(&path).await {
+                Ok(file) => file,
+                Err(_) => return Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::from("File not found"))?),
+            };
             let mime_type = mime_guess::from_path(&file_path).first_or_octet_stream();
+            let stream = tokio_util::io::ReaderStream::new(file);
+            let body = Body::wrap_stream(stream);
+
             Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", mime_type.as_ref())
-                .body(Body::from(contents))?)
+                .body(body)?)
         } else {
             Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)

@@ -39,8 +39,8 @@ pub struct ZoneConfig {
     pub services:Option<Vec<String>>,//like ["http:0","https:443","smb"],0 means disable
     
     //因为所有的Node上的Gateway都是同质的，所以这里可以不用配置？DNS记录解析到哪个Node，哪个Node的Gateway就是ZoneGateway
-    //#[serde(skip_serializing_if = "Option::is_none")]
-    //pub gateway:Option<String>,//default gateway node name for this zone
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway:Option<String>,//default gateway node name for this zone,like gate@210.22.12.3#wlan
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sn:Option<String>,//

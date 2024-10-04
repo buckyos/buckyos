@@ -1,11 +1,11 @@
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+
 use std::sync::Arc;
 use std::fs;
 use futures::stream::StreamExt;
 
-use serde::{Serialize,Deserialize};
+
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -13,11 +13,9 @@ use anyhow::Result;
 use log::*;
 
 use rustls::ServerConfig;
-use hyper::service::service_fn;
-use hyper::{Request, Response};
-use hyper::body::Body;
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, Request, Response, Server};
 use hyper::server::accept::from_stream;
-use hyper::server::conn::Http;
 
 use cyfs_gateway_lib::*;
 use crate::router::*;
