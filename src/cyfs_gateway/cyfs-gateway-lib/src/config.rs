@@ -1,11 +1,8 @@
 
 
-
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio::fs;
-use serde::{Serialize,Deserialize};
+use std::collections::HashMap;
+use serde::Deserialize;
 use url::Url;
 
 
@@ -19,6 +16,7 @@ pub struct HostConfig {
 pub struct RouteConfig {
     pub upstream: Option<String>,
     pub local_dir: Option<String>,
+    pub inner_service: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

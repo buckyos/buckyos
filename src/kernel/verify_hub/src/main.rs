@@ -130,7 +130,7 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
         info!("load owner public key from zone config");
     } else {
         //load device config from system config service(not from name-lib)
-        let zone_config = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().zone_config.clone();
+        let _zone_config = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().zone_config.clone();
         let token_from_device = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().token_from_device.clone();
         let system_config_client = SystemConfigClient::new(None,&Some(token_from_device));
         let get_result = system_config_client.get(sys_config_get_device_path(kid).as_str()).await;

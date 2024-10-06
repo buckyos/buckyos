@@ -1,4 +1,4 @@
-use std::f32::consts::E;
+#![allow(unused)]
 use std::pin::Pin;
 /*
 tunnel的控制协议
@@ -369,7 +369,7 @@ impl RTcpTunnelPackage {
 
             let mut pos = 0;
             let json_pos = buf[pos];
-            if json_pos > 255 || json_pos < 6 {
+            if json_pos < 6 {
                 error!("json_pos is invalid");
                 return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"json_pos is invalid"));
             }
@@ -536,7 +536,10 @@ impl RTcpTunnel {
                 RTcpTunnelPackage::send_hello_stream(&mut stream2,ropen_package.body.session_key.as_str()).await?;
                 //3. 绑定两个stream
                 task::spawn(async move {
-                    tokio::io::copy_bidirectional(&mut stream2,&mut stream1).await;
+                    let _copy_result = tokio::io::copy_bidirectional(&mut stream2,&mut stream1).await;
+                    if _copy_result.is_err() {
+                        error!("copy stream2 to stream1 error:{}",_copy_result.err().unwrap());
+                    }
                 });
 
                 //4. send ropen_resp

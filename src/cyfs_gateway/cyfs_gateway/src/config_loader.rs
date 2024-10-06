@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use cyfs_gateway_lib::DispatcherConfig;
 use url::Url;
-use serde_json::{Value, from_value};
+use serde_json::from_value;
 pub struct ConfigLoader {
     pub dispatcher : HashMap<Url,DispatcherConfig>,
 

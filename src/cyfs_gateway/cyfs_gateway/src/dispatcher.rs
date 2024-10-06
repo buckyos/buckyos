@@ -1,9 +1,7 @@
+#![allow(unused)]
 use cyfs_gateway_lib::*;
-use dirs::data_dir;
-use std::net::{Incoming, IpAddr, SocketAddr};
 use std::collections::HashMap;
-use std::str::FromStr;
-use std::sync::{Arc};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use log::*;
 use url::Url;
@@ -115,7 +113,7 @@ impl ServiceDispatcher {
                         let recv_result = income_server.recv_datagram(&mut buffer).await;
                         if recv_result.is_err() {
                             warn!("datagram forward service process recvfrom income_server failed: {}", recv_result.err().unwrap());
-                            continue;;
+                            continue;
                         }
                         (read_len,source_ep) = recv_result.unwrap();
                         let mut all_sessions = all_client_session.lock().await;

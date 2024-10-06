@@ -8,6 +8,7 @@ authors = ["BuckyOS DAO","@waterflier"]
 [dependencies]
 
 log = "*"
+lazy_static = "*"
 tokio = { version = "*", features = ["full"] }
 tokio-util = { version = "*", features = ["io"] }
 hyper = { version = "0.14", features = ["full"] }
@@ -25,3 +26,4 @@ mime_guess = "*"
 async-stream = "*"
 tokio-stream = { version = "*", features = ["full"] }
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
+kRPC = { path = "../../kernel/kRPC" }

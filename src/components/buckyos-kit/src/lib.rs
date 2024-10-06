@@ -7,7 +7,6 @@ mod config;
 pub use path::*;
 pub use process::*;
 pub use time::*;
-pub use config::*;
 
 
 use serde_json::json;
@@ -96,7 +95,7 @@ mod test {
 
         let pkg_id = "test2".to_string();
         let env_path = PathBuf::from("d:\\temp\\");
-        let mut pkg = ServicePkg::new(pkg_id, env_path);
+        let pkg = ServicePkg::new(pkg_id, env_path);
         pkg.start(None).await.unwrap();
     }
 }

@@ -12,7 +12,7 @@ mod config_loader;
 //mod tunnel;
 
 use log::*;
-use clap::{Arg, ArgGroup, Command};
+use clap::{Arg, Command};
 use cyfs_gateway_lib::*;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -120,7 +120,6 @@ mod tests {
 
     #[test]
     async fn test_service_main() {
-        log_util::init_logging().unwrap();
         task::spawn(async {
             start_test_udp_echo_server().await.unwrap();
         });

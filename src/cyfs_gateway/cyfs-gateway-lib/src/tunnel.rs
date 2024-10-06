@@ -24,7 +24,7 @@ pub trait StreamListener : Send
 #[async_trait]
 pub trait DatagramClient : Send  + Sync
 {
-    async fn recv_datagram(&self,buffer:&mut [u8]) -> Result<(usize),std::io::Error>;
+    async fn recv_datagram(&self,buffer:&mut [u8]) -> Result<usize,std::io::Error>;
     async fn send_datagram(&self,buffer:&[u8]) -> Result<usize,std::io::Error>;
 }
 pub trait DatagramClientBox : DatagramClient {
@@ -146,7 +146,7 @@ impl UdpClient {
 
 #[async_trait]
 impl DatagramClient for UdpClient {
-    async fn recv_datagram(&self, buffer: &mut [u8]) -> Result<(usize), std::io::Error> {
+    async fn recv_datagram(&self, buffer: &mut [u8]) -> Result<usize, std::io::Error> {
         let (size, _) = self.client.recv_from(buffer).await?;
         Ok(size)
     }

@@ -1,4 +1,6 @@
 
+#![allow(unused)]
+
 use crate::{DatagramServer, DatagramServerBox,StreamListener,TunnelBuilder, Tunnel,TunnelBox,TunnelError, TunnelResult};
 use serde_json::Value;
 use url::Url;
