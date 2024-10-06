@@ -1,6 +1,8 @@
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize,Serializer};
 use serde_json::{Value};
 use serde::ser::SerializeStruct;
+use crate::RPCErrors;
 pub enum RPCProtoclType {
     HttpPostJson,
 }
@@ -189,4 +191,14 @@ impl<'de> Deserialize<'de> for RPCResponse {
         }
 
     }
+}
+
+#[async_trait]
+pub trait kRPCHandler {
+    async fn handle_rpc_call(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors>;
+}
+
+#[async_trait]
+pub trait kRPCHandlerBuilder {
+    async fn create_handler(&self, config:Value) -> Result<Box<dyn kRPCHandler>,RPCErrors>;
 }

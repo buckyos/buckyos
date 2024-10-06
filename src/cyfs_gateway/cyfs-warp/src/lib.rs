@@ -7,6 +7,7 @@ pub use router::*;
 pub use http_server::*;
 
 mod test {
+    #![allow(unused)]
     use super::*;
     use cyfs_gateway_lib::*;
     use serde_json::*;

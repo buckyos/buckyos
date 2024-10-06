@@ -6,6 +6,7 @@ authors = ["BuckyOS DAO","@waterflier"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+async-trait = "*"
 tokio = { version = "1", features = ["full"] }
 log = "*"
 serde = { version = "*", features = ["derive"] }
