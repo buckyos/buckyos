@@ -1,0 +1,19 @@
+[package]
+name = "cyfs-sn"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+[dependencies]
+anyhow = "*"
+log = "*"
+lazy_static = "*"
+tokio = { version = "*", features = ["full"] }
+async-trait = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+env_logger = "*"
+url = "*"
+cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
+kRPC = { path = "../../kernel/kRPC" }
+name-lib = { path = "../../components/name-lib" }

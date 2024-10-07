@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-
+#![allow(unused_imports)]
 //mod config;
 //mod gateway;
 //mod interface;
@@ -11,10 +11,14 @@ mod config_loader;
 //mod storage;
 //mod tunnel;
 
+
+use std::path::PathBuf;
 use log::*;
 use clap::{Arg, Command};
 use cyfs_gateway_lib::*;
-
+use cyfs_warp::*;
+use buckyos_kit::*;
+use tokio::task;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 async fn service_main(config: &str) -> Result<()> {
@@ -25,8 +29,8 @@ async fn service_main(config: &str) -> Result<()> {
     })?;
 
     //load config
-    let mut config_loader = config_loader::ConfigLoader::new();
-    let load_result = config_loader.load_from_json_value(_json);
+    let mut config_loader = config_loader::GatewayConfig::new();
+    let load_result = config_loader.load_from_json_value(_json).await;
     if load_result.is_err() {
         let msg = format!("Error loading config: {}", load_result.err().unwrap());
         error!("{}", msg);
@@ -34,6 +38,19 @@ async fn service_main(config: &str) -> Result<()> {
     }
 
     //start servers
+    for (server_id,server_config) in config_loader.servers.iter() {
+        match server_config {
+            ServerConfig::Warp(warp_config) => {
+                let warp_config = warp_config.clone();
+                task::spawn(async move {
+                    let _ = start_cyfs_warp_server(warp_config).await;
+                });
+            },
+            _ => {
+                error!("Invalid server type: {}", server_id);
+            },
+        }
+    }
     
     //start dispatcher
     let dispatcher = dispatcher::ServiceDispatcher::new(config_loader.dispatcher.clone());
@@ -47,16 +64,20 @@ async fn service_main(config: &str) -> Result<()> {
 
 // Parse config first, then config file if supplied by user
 fn load_config_from_args(matches: &clap::ArgMatches) -> Result<String> {
-    if let Some(config) = matches.get_one::<String>("config") {
-        Ok(config.clone())
+    let default_config = get_buckyos_system_etc_dir().join("cyfs_gateway.json");
+    let config_file = matches.get_one::<String>("config_file");
+    let real_config_file;
+    if config_file.is_none() {
+        real_config_file = default_config;
     } else {
-        let config_file: &String = matches.get_one("config_file").unwrap();
-        std::fs::read_to_string(config_file).map_err(|e| {
-            let msg = format!("Error reading config file {}: {}", config_file, e);
-            error!("{}", msg);
-            Box::new(e) as Box<dyn std::error::Error>
-        })
+        real_config_file = PathBuf::from(config_file.unwrap());
     }
+    std::fs::read_to_string(real_config_file.clone()).map_err(|e| {
+        let msg = format!("Error reading config file {}: {}", real_config_file.display(), e);
+        error!("{}", msg);
+        Box::new(e) as Box<dyn std::error::Error>
+    })
+
 }
 
 fn main() {
@@ -76,9 +97,9 @@ fn main() {
         .get_matches();
 
     // init log
-    init_logging().unwrap();
+    init_logging("cyfs_gateway");
+    info!("cyfs_gateway start...");
 
-    // Gets a value for config if supplied by user, or defaults to "default.json"
     let config: String = load_config_from_args(&matches)
         .map_err(|e| {
             error!("Error loading config: {}", e);

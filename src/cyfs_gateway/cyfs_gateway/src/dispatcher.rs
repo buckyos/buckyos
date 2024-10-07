@@ -188,7 +188,7 @@ impl ServiceDispatcher {
                     }
                 }
                 DispatcherTarget::Server(server_id) => {
-                    unimplemented!();
+                    info!("dispatcher from {} to server {}", incomeing.to_string(), server_id);
                     //looking for server config by server_id
                     //start server with config
                 }

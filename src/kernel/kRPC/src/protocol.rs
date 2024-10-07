@@ -110,6 +110,17 @@ pub struct RPCResponse {
     pub trace_id:Option<String>,
 }
 
+impl RPCResponse {
+    pub fn new(result:RPCResult,seq:u64) -> Self {
+        RPCResponse {
+            result: result,
+            seq:seq,
+            token:None,
+            trace_id:None,
+        }
+    }
+}
+
 impl Serialize for RPCResponse {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -198,7 +209,3 @@ pub trait kRPCHandler {
     async fn handle_rpc_call(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors>;
 }
 
-#[async_trait]
-pub trait kRPCHandlerBuilder {
-    async fn create_handler(&self, config:Value) -> Result<Box<dyn kRPCHandler>,RPCErrors>;
-}

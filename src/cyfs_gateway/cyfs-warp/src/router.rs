@@ -3,9 +3,10 @@
 #![allow(unused)]
 
 use anyhow::Result;
-use hyper::{Body, Request, Response, StatusCode};
+use hyper::{Body, Client, Request, Response, StatusCode};
 use log::*;
 use rustls::ServerConfig;
+use url::Url;
 use std::sync::Arc;
 use std::path::Path;
 use std::collections::HashMap;
@@ -18,11 +19,11 @@ use lazy_static::lazy_static;
 
 
 lazy_static!{
-    static ref INNER_SERVICES_BUILDERS: Arc<Mutex< HashMap<String, Arc<dyn Fn() -> Box<dyn kRPCHandler + Send + Sync>+ Send + Sync>>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref INNER_SERVICES_BUILDERS: Arc<Mutex< HashMap<String, Arc<dyn Fn () -> Box<dyn kRPCHandler + Send + Sync>+ Send + Sync>>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 pub async fn register_inner_service_builder<F>(inner_service_name: &str, constructor : F) 
-    where F: Fn() -> Box<dyn kRPCHandler + Send + Sync> + 'static + Send + Sync,
+    where F: Fn () -> Box<dyn kRPCHandler + Send + Sync> + 'static + Send + Sync,
 {
     let mut inner_service_builder = INNER_SERVICES_BUILDERS.lock().await;
     inner_service_builder.insert(inner_service_name.to_string(), Arc::new(constructor));
@@ -131,19 +132,46 @@ impl Router {
         //parse resp to Response<Body>
         Ok(Response::new(Body::from(serde_json::to_string(&resp)?)))
     }
+
     async fn handle_upstream(&self, req: Request<Body>, upstream: &str) -> Result<Response<Body>> {
         let url = format!("{}{}", upstream, req.uri().path_and_query().map_or("", |x| x.as_str()));
-        let client = hyper::Client::new();
-        let header = req.headers().clone();
-        let mut upstream_req = Request::builder()
-            .method(req.method())
-            .uri(&url)
-            .body(req.into_body())?;
+        let upstream_url = Url::parse(upstream);
+        if upstream_url.is_err() {
+            return Err(anyhow::anyhow!("Failed to parse upstream url: {}", upstream_url.err().unwrap()));
+        }
+        let upstream_url = upstream_url.unwrap();
+        let scheme = upstream_url.scheme();
+        match scheme {
+            "tcp"|"http"|"https" => {
+                let client = Client::new();
+                let header = req.headers().clone();
+                let mut upstream_req = Request::builder()
+                    .method(req.method())
+                    .uri(&url)
+                    .body(req.into_body())?;
+        
+                *upstream_req.headers_mut() = header;
+        
+                let resp = client.request(upstream_req).await?;
+                return Ok(resp)
+            },
+            _ => {
+                let tunnel_connector = TunnelConnector;
+                let client: Client<TunnelConnector, Body> = Client::builder()
+                    .build::<_, hyper::Body>(tunnel_connector);
 
-        *upstream_req.headers_mut() = header;
+                let header = req.headers().clone();
+                let mut upstream_req = Request::builder()
+                .method(req.method())
+                .uri(&url)
+                .body(req.into_body())?;
 
-        let resp = client.request(upstream_req).await?;
-        Ok(resp)
+                *upstream_req.headers_mut() = header;
+                let resp = client.request(upstream_req).await?;
+                return Ok(resp)
+            }
+        }
+ 
     }
 
     async fn handle_local_dir(&self, req: Request<Body>, local_dir: &str, route_path: &str) -> Result<Response<Body>> {

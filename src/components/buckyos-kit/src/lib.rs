@@ -2,12 +2,12 @@ mod path;
 mod process;
 mod time;
 mod config;
-
+mod log_util;
 
 pub use path::*;
 pub use process::*;
 pub use time::*;
-
+pub use log_util::*;
 
 use serde_json::json;
 use ed25519_dalek::SigningKey;

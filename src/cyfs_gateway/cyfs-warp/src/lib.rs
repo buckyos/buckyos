@@ -10,6 +10,7 @@ mod test {
     #![allow(unused)]
     use super::*;
     use cyfs_gateway_lib::*;
+    use buckyos_kit::*;
     use serde_json::*;
 
     #[tokio::test]

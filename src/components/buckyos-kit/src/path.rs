@@ -19,3 +19,6 @@ pub fn get_buckyos_system_etc_dir() -> PathBuf {
     get_buckyos_root_dir().join("etc")
 }
 
+pub fn get_buckyos_log_dir(service: &str) -> PathBuf {
+    get_buckyos_root_dir().join("logs").join(service)
+}

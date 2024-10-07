@@ -1,22 +1,99 @@
-
 use std::collections::HashMap;
 use cyfs_gateway_lib::DispatcherConfig;
+use cyfs_gateway_lib::ServerConfig;
+use cyfs_gateway_lib::WarpServerConfig;
+use cyfs_sn::*;
+use cyfs_warp::register_inner_service_builder;
 use url::Url;
 use serde_json::from_value;
-pub struct ConfigLoader {
+use log::*;
+pub struct GatewayConfig {
     pub dispatcher : HashMap<Url,DispatcherConfig>,
-
+    pub servers : HashMap<String,ServerConfig>,
     //tunnel_builder_config : HashMap<String,TunnelBuilderConfig>,
 }
 
-impl ConfigLoader {
+impl GatewayConfig {
     pub fn new() -> Self {
-        ConfigLoader {
+        GatewayConfig {
             dispatcher : HashMap::new(),
+            servers : HashMap::new(),
         }
     } 
 
-    pub fn load_from_json_value(&mut self, json_value: serde_json::Value) -> Result<(),String> {
+    pub async fn load_from_json_value(&mut self, json_value: serde_json::Value) -> Result<(),String> {
+        //register inner serveric
+        let inner_services = json_value.get("inner_services");
+        if inner_services.is_some() {
+            let inner_services = inner_services.unwrap();
+            let inner_services = inner_services.as_object();
+            if inner_services.is_some() {
+                for (server_id,server_config) in inner_services.unwrap().iter() {
+                    let server_type = server_config.get("type");
+                    if server_type.is_none() {
+                        return Err("Server type not found".to_string());
+                    }
+                    let server_type = server_type.unwrap().as_str();
+                    if server_type.is_none() {
+                        return Err("Server type not string".to_string());
+                    }
+                    let server_type = server_type.unwrap();
+                    match server_type {
+                        "cyfs_sn" => {
+                            let sn_config = serde_json::from_value::<SNServerConfig>(server_config.clone());
+                            if sn_config.is_err() {
+                                return Err(format!("Invalid sn config: {}",sn_config.err().unwrap()));
+                            }
+                            let sn_config = sn_config.unwrap();
+                            info!("Register sn server: {:?}",server_id);
+                            register_inner_service_builder(server_id, move || {  
+                                Box::new(SNServer::new(Some(sn_config)))
+                            }).await;
+                        },
+                        _ => {
+                            return Err(format!("Invalid server type: {}",server_type));
+                        },
+                    }
+                }
+            }
+        }
+        register_inner_service_builder("cyfs_sn",|| {
+            Box::new(SNServer::new(None))
+        }).await;
+        
+        //load servers
+        let servers = json_value.get("servers").unwrap();
+        let servers = servers.as_object();
+        if servers.is_some() {
+            let servers = servers.unwrap();
+            for (k,v) in servers.iter() {
+                let server_type = v.get("type");
+                if server_type.is_none() {
+                    return Err("Server type not found".to_string());
+                }
+                let server_type = server_type.unwrap().as_str();
+                if server_type.is_none() {
+                    return Err("Server type not string".to_string());
+                }
+                let server_type = server_type.unwrap();
+                match server_type {
+                    "cyfs-warp" => {
+                        let warp_config = serde_json::from_value::<WarpServerConfig>(v.clone());
+                        if warp_config.is_err() {
+                            return Err(format!("Invalid warp config: {}",warp_config.err().unwrap()));
+                        }
+                        let warp_config = warp_config.unwrap();
+                        self.servers.insert(k.clone(),ServerConfig::Warp(warp_config));
+                    },
+                    _ => {
+                        return Err(format!("Invalid server type: {}",server_type));
+                    },
+                }
+                                
+            }
+        }
+
+        //load dispatcher
         let dispatcher = json_value.get("dispatcher").unwrap();
         let dispatcher = dispatcher.as_object().unwrap();
         for (k,v) in dispatcher.iter() {

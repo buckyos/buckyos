@@ -72,9 +72,9 @@ pub struct SocksProxyConfig {
 }
 
 pub enum ServerConfig {
-    WarpServerConfig(WarpServerConfig),
-    DNSServerConfig(DNSServerConfig),
-    SocksProxyConfig(SocksProxyConfig),
+    Warp(WarpServerConfig),
+    DNS(DNSServerConfig),
+    Socks(SocksProxyConfig),
 }
 
 #[derive(Clone,Debug)]

@@ -18,6 +18,10 @@ clap = "*"
 env_logger = "*"
 bytes = "*"
 dirs = "*"
-fern = "*"
-chrono = "*"
+
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
+buckyos-kit = { path = "../../components/buckyos-kit" }
+
+cyfs-warp = { path= "../cyfs-warp"}
+cyfs-sn = { path = "../cyfs-sn" }
+

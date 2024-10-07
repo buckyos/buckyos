@@ -1,12 +1,13 @@
 mod config;
 mod tunnel;
+mod tunnel_connector;
 mod tunnel_mgr;
-mod log_util;
 mod rtcp_tunnel;
+
 pub use config::*;
 pub use tunnel::*;
+pub use tunnel_connector::*;
 pub use tunnel_mgr::*;
-pub use log_util::*;
 pub use rtcp_tunnel::*;
 
 use thiserror::Error;

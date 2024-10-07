@@ -26,4 +26,5 @@ mime_guess = "*"
 async-stream = "*"
 tokio-stream = { version = "*", features = ["full"] }
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
+buckyos-kit = { path = "../../components/buckyos-kit" }
 kRPC = { path = "../../kernel/kRPC" }
