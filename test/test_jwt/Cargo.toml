@@ -1,0 +1,15 @@
+[package]
+name = "test_jwt"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+[dependencies]
+serde = "*"
+serde_json = "*"
+jsonwebtoken = "*"
+thiserror = "*"
+base64 = "*"
+ed25519-dalek = { version = "*", features = ["rand_core"] } 
+pkcs8 = "*"
+rand = "*"

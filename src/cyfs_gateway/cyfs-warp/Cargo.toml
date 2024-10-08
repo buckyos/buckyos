@@ -1,0 +1,30 @@
+[package]
+name = "cyfs-warp"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+log = "*"
+lazy_static = "*"
+tokio = { version = "*", features = ["full"] }
+tokio-util = { version = "*", features = ["io"] }
+hyper = { version = "0.14", features = ["full"] }
+rustls = "0.21"
+tokio-rustls = "0.24"
+futures-util = "*"
+toml = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+anyhow = "*"
+env_logger = "*"
+url = "*"
+futures = "*"
+mime_guess = "*"
+async-stream = "*"
+tokio-stream = { version = "*", features = ["full"] }
+cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
+buckyos-kit = { path = "../../components/buckyos-kit" }
+kRPC = { path = "../../kernel/kRPC" }

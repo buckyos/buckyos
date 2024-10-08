@@ -50,33 +50,41 @@ AI-driven media processing. Support for download, streaming, and other traffic s
 Functions marked with `*` are those I believe must be completed in the next release version 0.2 (PoC). Functions without `*` may depend on some basic components.
 
 - Kernel Models
-  - [ ] *node_daemon (A4 @waterflier)
-    - [ ] *app & service loader (A4), implement formal permission management and container isolation
+  - [x] *node_daemon (A4 @waterflier)
+    - [x] *app & service loader (A4 @waterflier), implement formal permission management and container isolation
     - [ ] node task execute system (A4), usually used for maintenance tasks; implement if unavoidable
-  - system config (A2)
-    - [ ] *system-config lib (A2)
-    - [ ] *ACL libs (A4 @waterflier), basic ACL usage and management
+  - [x] system config service(A2 @waterflier)
+    - [ ] *Support etcd in more than 3 OOD clusters through scalable backends (A2)
+    - [x] *system-config lib (A2 @waterflier)
+    - [x] *rbac libs (A4 @waterflier), basic rbac usage and management
+    - [ ] *system config event support (A2 @waterflier), use websocket for config-change notification
   - system status for system status monitoring
   - kRPC @waterflier
-    - [ ] *kRPC libs (A4)
-    - [ ] *Authorization center (A2)
+    - [x] *rust kRPC libs (A4,@waterflier)
+    - [ ] *typescript kRPC libs (A2)
+    - [x] *verify_hub service  (A2,@waterflier)
+      - [ ] improve user and device register logical. (A2)
   - kLog, a reliable logging library, is the foundation for automatic fault diagnosis in the system.
     - [ ] *kLog lib (A4), defines the basic interfaces for kLog output and reliable behavior logic, can handle server downtime
     - [ ] *kLog server (S2), PoC version should implement a simple version to ensure reliability
   - kMQ message queue, supports custom event systems
   - pkg system
-    - [ ] *Improve lib (A2) to facilitate use by other components
-    - [ ] Integrate with the task system
+    - [x] *Improve lib (S2,@waterflier) to facilitate use by other components
+    - [ ] Integrate with the task system (A4,@glen0125)
 - Kernel Services
-  - [ ] *scheduler (A4 @waterflier), a key module to be implemented in the PoC version, automatically generating node_config and establishing an initial extensible framework
+  - [x] *scheduler (A2 @waterflier), a key module to be implemented in the PoC version, automatically generating node_config and establishing an initial extensible framework
+    - [x] *boot scheduler (A2), the first scheduler to be implemented, mainly for system initialization
+    - [ ] *Making scheduling logic for single OOD(A2)
+    - [ ] *Implement the scheduling logic for multi-OOD(A2)
+    - [ ] *When single OOD scale to multiple OOD, realize the scheduling logic with OP task(A4)
   - [ ] *Task Manager (A4), providing a general stateful background task management service, supporting reliable execution of critical tasks
   - DFS
-    - [ ] *glusterFS (A2) integrated with ACL
+    - [ ] *glusterFS (A2) integrated with rbac
     - DCFS (listed separately)
   - dApp manager, the `apt` tool in BuckyOS, provides basic reliable pkg management capabilities for the system.
-    - [ ] *basic API support (A4), source management, installed management, permission configuration, installer
-    - [ ] *CLI tools (S4), command-line tools similar to apt based on basic API
-    - [ ] *in-zone pkg repo service (S4), a stable repo service running within the zone
+    - [ ] *basic API support (A4,@glen0125), source management, installed management, permission configuration, installer
+    - [ ] *CLI tools (S4,@glen0125), command-line tools similar to apt based on basic API
+    - [ ] *in-zone pkg repo service (S4,@glen0125), a stable repo service running within the zone
     - [ ] *Installer UI (A4), meets the minimum requirements for dApp permission control in the system
   - backup system (listed separately)
   - cyfs-gateway (listed separately)
@@ -88,6 +96,8 @@ Functions marked with `*` are those I believe must be completed in the next rele
   - [ ] *msg_bus(S4), the user's system inbox, where all applications can send messages
   - [ ] dApp Store
   - [ ] *Control panel (S8) Provide basic system management functions according to the requirements document (including related web pages), can be further divided.
+- Demo dApps 
+  - [ ] *Home Station App(A4),home page app for user.
 - [ ] *CyberChat App (A4), BuckyOS control app modified based on the CYFS wallet app.
   - [ ] *Account management (S4), mainly local DID account management, much logic can be reused from CYFS wallet
   - [ ] *Name management (S4), manage friendly names owned
@@ -112,9 +122,7 @@ Functions marked with `*` are those I believe must be completed in the next rele
   - [ ] dmc target client
   - [ ] dmc target server
 - [ ] *CYFS Gateway (independent product with separate points), detailed requirements document is still being written
-  - [ ] *Support buckyos demo needs:
-
- TAP Device-based VPN, allowing needed services to work transparently with the main OOD in the same LAN
+  - [ ] *Support buckyos demo needs: TAP Device-based VPN, allowing needed services to work transparently with the main OOD in the same LAN
   - [ ] *Expose FrameService/dApp services to the outside of the Zone securely via reverse proxy
   - [ ] *Establish a basic framework, including rule engine, tunnel management, and support for reverse proxy https server
   - [ ] *cyfs-nameservice service, supporting our name system and did-document system

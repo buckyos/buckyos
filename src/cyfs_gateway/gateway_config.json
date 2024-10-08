@@ -1,0 +1,116 @@
+{
+    "tunnel_builder":{
+        "tunnel_bdt" : {
+            "enable-tunnel" : ["bdt","rtcp"],
+            "sn" : "127.0.0.1"
+        },
+        "tunnel_ssr":{
+            "enable-tunnel" : ["ssr","ss"],
+            "proxy_config": {
+                "host":"myssr.test.com",
+                "port":8889,
+                "auth":"aes:23323"
+            }
+        }
+    },
+    "servers":{
+        "main_http_server":{
+            "type":"cyfs-warp",
+            "bind":"0.0.0.0",
+            "http_port":80,
+            "https_port":443,
+            "hosts": {
+                "another.com": {
+                    "tls_only":1,
+                    "tls": {
+                        "cert_path": "/path/to/cert.pem",
+                        "key_path": "/path/to/key.pem"
+                    },
+                    "routes": {
+                        "/": {
+                            "upstream": "http://localhost:9090"
+                        }
+                    }
+                },
+                "example.com": {
+                    "routes": {
+                        "/api": {
+                            "upstream": "http://localhost:8080"
+                        },
+                        "/static": {
+                            "local_dir": "D:\\temp"
+                        }
+                    }
+                }
+            }
+        },
+        "main_socks_server":{
+            "type":"cyfs-socks",
+            "bind":"localhost:8000",
+            "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml"
+        },
+        "main_dns_server":{
+            "type":"cyfs-dns",
+            "bind":"localhost:53",
+            "ddns":{
+                "enable":true,
+                "bind":"localhost:8080"
+            },
+            
+            "providers":[
+                {
+                    "order":0,
+                    "type":"zone_system_config"
+                },
+                {
+                    "order":1,
+                    "type":"sn-dns"
+                },
+                {
+                    "order":2,
+                    "type":"ens-client",
+                    "target":"http://ens.buckyos.org"
+                },
+                {
+                    "order":3,
+                    "type":"rule-dns", 
+                    "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml",
+                }
+
+            ],
+            "fallback":[
+                "114.114.114.114:53",
+                "8.8.8.8",
+                "https://dns.google/dns-query"
+            ]
+        }
+    },
+    "dispatcher" : {
+        "tcp://0.0.0.0:80":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://0.0.0.0:443":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://127.0.0.1:8000":{
+            "type":"server",
+            "id":"main_socks_server"
+        },
+        "udp://0.0.0.0:53":{
+            "type":"server",
+            "id":"main_dns_server"
+        },
+
+        "tcp://0.0.0.0:6000":{
+            "type":"forward",
+            "target":"ood02:6000",
+            "enable-tunnel":["direct","rtcp"]
+        },
+        "tcp://0.0.0.0:6001":{
+            "type":"forward",
+            "target":"192.168.1.102:6001"
+        }
+    }
+}

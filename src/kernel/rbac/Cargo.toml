@@ -1,0 +1,14 @@
+[package]
+name = "rbac"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+log = "*"
+serde = "*"
+serde_json = "*"
+casbin = {version = "*", features = ["logging","explain"]}
+lazy_static = "*"

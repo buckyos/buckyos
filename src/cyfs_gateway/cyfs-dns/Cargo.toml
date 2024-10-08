@@ -1,0 +1,23 @@
+[package]
+name = "cyfs-dns"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier","@wugren"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+thiserror = "*"
+async-trait = "*"
+anyhow = "*"
+log = "*"
+env_logger = "*"
+tokio = { version = "*", features = ["full"] }
+serde = "*"
+serde_json = "*"
+hickory-server = "*"
+hickory-proto = "*"
+chrono = "*"
+url = "*"
+cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
+name-lib = {path = "../../components/name-lib"}

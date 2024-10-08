@@ -1,0 +1,7 @@
+
+
+<div style="display: flex; align-items: center;gap: 10px;"> 
+    <md-checkbox id="check_box"></md-checkbox> 
+    <div id="check_lable">uninit checkbox text</div>
+</div>
+

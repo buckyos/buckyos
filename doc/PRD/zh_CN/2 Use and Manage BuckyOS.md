@@ -127,12 +127,22 @@ Library是AI驱动的，基于知识图谱的新数据管理模式。比如根�
 - 所有的数据必然会保存在本地文件系统上,BuckyOS并不依赖本地文件系统的具体实现和关键特性。
 - 用户可感知的数据基本都保存在DFS上。DFS也是BuckyOS最重要的基础服务，如DFS启动失败，BuckyOS的大部分功能（尤其是写功能）会无法使用。
 - 站在Node Local OS 的角度（这个Local OS通常是Linux），其本地目录(分区）的需求如下，可通过BuckyOS的NodeConfig进行调整：（TODO：画图）
-  - /bsys 保存BuckyOS System文件的分区 ，可以是ReadOnly的，只有在系统升级时才写入数据,这个分区通常和本地Linux的根分区是同一个
-  - /bsys/data 保存系统数据(System Config的数据)的分区，必须是RW的，但数据量很小，如果上一个分区可写，那么这两个分区通常是同一个 （有重要数据）
-  - /bcache/system 保存BcukyOS (dApp) Service 镜像 (local pkg)的分区 ，SSD 必须是RW的，且读取数据要快 
-  - /bcache/$appid 保存dApp的Local Cache数据，这通常是一些计算临时数据，可以随时删除。
-  - /bcache DFS Cache分区 （1-多个），必须是RW的，且读写数据要快，SSD可以和上一个分区是同一个
-  - /bchunk DFS ChunkData 分区（0-多个），SSD/HDD,不会轻易删除的数据 （有重要数据）
+  - /opt/buckyos_backup/ 保存发布时的二进制文件和一些必要配置的初始版本，只读目录。用来做系统恢复。
+  - /opt/buckyos/bin 保存BuckyOS System文件的分区 ，可以是ReadOnly的，只有在系统升级时才写入数据,这个分区通常和本地Linux的根分区是同一个
+  - /opt/buckyos/etc 
+  - /opt/buckyos/data 保存系统数据(System Config的数据)的分区，必须是RW的，但数据量很小，如果上一个分区可写，那么这两个分区通常是同一个 （有重要数据）
+
+  - /opt/buckyos/cache/$userid/$appid 保存dApp的Local Cache数据，这通常是一些计算临时数据，可以随时删除。
+  - /opt/buckyos/dfs/caches bcache DFS Cache分区 （1-多个），必须是RW的，且读写数据要快，SSD可以和上一个分区是同一个
+  - /opt/buckyos/dfs/chunks bchunk DFS ChunkData 分区（0-多个），SSD/HDD,不会轻易删除的数据 （有重要数据）
+
+
+使用docker启动时，只需要简单的做下面映射即可。docker的启动脚本会自动创建上述目录结构并从buckyos_backup目录复制初始软件过去
+用户通过映射不同的本地buckyos目录，实际上可以实现切换不同的BuckyOS版本，或则在一个物理机器上运行多个BuckyOS实例。
+
+```
+docker run -v /home/$username/buckyos:/opt/buckyos buckyos/buckyos
+```
 
 - DFS上的分区划分
   - dfs://system 保存系统服务的数据，比如系统内的repo_server会将所有已安装的dApp的pkg保存在这里
@@ -148,7 +158,7 @@ Library是AI驱动的，基于知识图谱的新数据管理模式。比如根�
 
 站在app开发者的角度，在其容器里，看到的是下面几个目录:
 
-- /bsys 只读
+- /opt/buckyos/bin 只读
 - /bcache/$appid 默认读写
 - /appdata/$appid 默认读写
 - /appcache/$appid 默认读写

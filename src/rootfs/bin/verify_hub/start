@@ -1,0 +1,12 @@
+#!/bin/python3
+
+import os
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 考虑上一个进程可能是卡死的，因此需要先kill掉
+print("try to kill verify_hub")
+os.system("killall verify_hub")
+
+# 启动新的进程，注意使用nohup模式
+os.system(f"nohup {current_dir}/verify_hub > /dev/null 2>&1 &")
+print("verify_hub service started")

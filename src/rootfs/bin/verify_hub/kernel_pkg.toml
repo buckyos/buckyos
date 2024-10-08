@@ -1,0 +1,2 @@
+service_name = "verify_hub"
+service_type = "kernel"

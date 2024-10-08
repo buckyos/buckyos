@@ -1,0 +1,25 @@
+[package]
+name = "cyfs-gateway-lib"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rand = "*"
+hex = "*"
+anyhow = "*"
+tokio = { version = "*", features = ["full"] }
+async-trait = "*"
+log = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+toml = "*"
+thiserror = "*"
+reqwest = {version = "*", features = ["json", "rustls-tls"]}
+jsonwebtoken = "*"
+url = "*"
+lazy_static = "*"
+fern = "*"
+chrono = "*"
+hyper = "0.14"

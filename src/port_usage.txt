@@ -1,0 +1,9 @@
+3000-4000 kernel service
+    3000-3100 NodeDaemon
+    3100-3200 cyfs-gateway
+    3200-3300 system_config http kapi/system_config
+    3300-3400 veriy_hub http kapi/verify_hub
+
+4000-5000 frame service
+
+> 10000 app service

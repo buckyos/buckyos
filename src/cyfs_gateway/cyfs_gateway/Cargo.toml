@@ -1,0 +1,27 @@
+[package]
+name = "cyfs_gateway"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier","@lurenpluto"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+thiserror = "*"
+log = "*"
+url = "*"
+tokio = { version = "*", features = ["full"] }
+async-trait = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+lazy_static = "*"
+clap = "*"
+env_logger = "*"
+bytes = "*"
+dirs = "*"
+
+cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
+buckyos-kit = { path = "../../components/buckyos-kit" }
+
+cyfs-warp = { path= "../cyfs-warp"}
+cyfs-sn = { path = "../cyfs-sn" }
+

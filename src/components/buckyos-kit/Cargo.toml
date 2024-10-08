@@ -1,0 +1,22 @@
+[package]
+name = "buckyos-kit"
+version = "0.2.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+thiserror = "*"
+sysinfo = "*"
+serde_json = "*"
+time = { version = "^0.3", features = ["formatting"] }
+tokio = { version = "*", features = ["full"] }
+log = "*"
+simplelog = "*"
+env_logger = "*"
+ed25519-dalek = { version = "*", features = ["rand_core"] } 
+pkcs8 = "*"
+rand = "*"
+base64 = "*"
+package-manager = { path = "../package-manager" }
