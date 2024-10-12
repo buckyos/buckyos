@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 #![allow(unused)]
 mod system_config;
-mod etcd_control;
+mod sn_client;
 pub use system_config::*;
+pub use sn_client::*;
 
 use std::sync::{Arc, Mutex};
 use lazy_static::lazy_static;
@@ -12,16 +13,13 @@ use buckyos_kit::*;
 lazy_static!{
     static ref SYS_CONFIG: Arc<Mutex<SystemConfigClient>> = {
         print!("init SystemConfigClient");
-
-        Arc::new(Mutex::new(SystemConfigClient::new(None,&None)))
+        Arc::new(Mutex::new(SystemConfigClient::new(None,None)))
     };
 }
 
 pub fn sys_config_get_device_path(device_id: &str) -> String {
     format!("/devices/{}", device_id)
 }
-
-
 
 
 pub async fn sys_config_get(key: &str) -> Result<(String, u64)> {

@@ -21,3 +21,4 @@ chrono = "*"
 url = "*"
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 name-lib = {path = "../../components/name-lib"}
+name-client = {path = "../../components/name-client"}

@@ -13,7 +13,7 @@ mod test {
 
     #[tokio::test]
     async fn test_cyfs_dns_main() {
-        init_logging();
+       
         let config_str = r#"
 {
   "port":2053,

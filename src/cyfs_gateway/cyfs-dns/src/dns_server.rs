@@ -16,7 +16,7 @@ use hickory_server::authority::{Catalog, MessageRequest, MessageResponse, Messag
 use hickory_proto::serialize::binary::{BinEncodable,BinDecodable};
 
 use anyhow::Result;
-use name_lib::{DNSProvider, NSProvider, NameInfo};
+use name_client::{DNSProvider, NSProvider, NameInfo};
 use cyfs_gateway_lib::*;
 use tokio::time::timeout;
 use url::Url;

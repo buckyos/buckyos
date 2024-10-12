@@ -41,7 +41,7 @@ pub struct kRPC {
 }
 
 impl kRPC {
-    pub fn new(url: &str,token:&Option<String>) -> Self {
+    pub fn new(url: &str,token:Option<String>) -> Self {
         let start = SystemTime::now();
         let since_the_epoch = start.duration_since(UNIX_EPOCH)
             .expect("Time went backwards");

@@ -132,7 +132,7 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
         //load device config from system config service(not from name-lib)
         let _zone_config = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().zone_config.clone();
         let token_from_device = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().token_from_device.clone();
-        let system_config_client = SystemConfigClient::new(None,&Some(token_from_device));
+        let system_config_client = SystemConfigClient::new(None,Some(token_from_device.as_str()));
         let get_result = system_config_client.get(sys_config_get_device_path(kid).as_str()).await;
         if get_result.is_err() {
             return Err(RPCErrors::ReasonError("Trust key  not found".to_string()));
@@ -381,7 +381,7 @@ async fn init_service_config() -> Result<()> {
     }
     
     info!("start load config from system config service.");
-    let system_config_client = SystemConfigClient::new(None,&Some(session_token));
+    let system_config_client = SystemConfigClient::new(None,Some(session_token.as_str()));
     let private_key_str = system_config_client.get("system/verify_hub/key").await;
     if private_key_str.is_ok() {
         let (private_key,_) = private_key_str.unwrap();
@@ -494,7 +494,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 "#;
         //login test,use trust device JWT
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
-        let mut client = kRPC::new("http://127.0.0.1:3300/kapi/verify_hub",&None);
+        let mut client = kRPC::new("http://127.0.0.1:3300/kapi/verify_hub",None);
         let mut header = Header::new(Algorithm::EdDSA);
         //完整的kid表达应该是 $zoneid#kid 这种形式，为了提高性能做了一点简化
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();

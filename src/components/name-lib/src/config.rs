@@ -8,9 +8,10 @@ use serde::{Serialize,Deserialize};
 use serde_json::json;
 use buckyos_kit::*;
 use once_cell::sync::OnceCell;
+use crate::DID;
+use crate::DeviceInfo;
 
-
-use crate::{DeviceInfo,DIDDocumentTrait,EncodedDocument};
+use crate::{DIDDocumentTrait,EncodedDocument};
 use crate::{NSResult,NSError};
 use crate::{decode_json_from_jwt_with_pk,decode_jwt_claim_without_verify,decode_json_from_jwt_with_default_pk};
 
@@ -54,6 +55,22 @@ pub struct ZoneConfig {
 }
 
 impl ZoneConfig {
+    pub fn get_zone_short_name(&self) -> String {
+        let did = DID::from_str(self.did.as_str());
+        if did.is_some() {
+            let did = did.unwrap();
+            return did.id.clone();
+        }
+        
+        if self.name.is_some() {
+            let name = self.name.as_ref().unwrap();
+            let short_name = name.split('.').next().unwrap_or(name);
+            return short_name.to_string();
+        }
+
+        return self.did.clone();
+    }
+
     pub fn get_test_config() -> ZoneConfig {
         let jwk = json!(
             {
@@ -79,6 +96,21 @@ impl ZoneConfig {
         }
     }
 
+    pub fn get_node_host_name(&self,node_name:&str) -> String {
+        let zone_short_name = self.get_zone_short_name();
+        let host_name = format!("{}-{}",zone_short_name,node_name);
+        return host_name;
+    }
+
+    pub fn get_ood_string(&self,node_name:&str) -> Option<String> {
+        for ood in self.oods.iter() {
+            if ood.starts_with(node_name) {
+                return Some(ood.clone());
+            }
+        }
+        return None;
+    }
+    
     pub fn select_same_subnet_ood(&self,device_info:&DeviceInfo) -> Option<String> {
         let mut ood_list = self.oods.clone();
         ood_list.shuffle(&mut rand::thread_rng());

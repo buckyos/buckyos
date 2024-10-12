@@ -21,9 +21,11 @@ lazy_static = "*"
 jsonwebtoken = "*"  
 num_cpus = "*"
 time = { version = "^0.3", features = ["formatting"] }
+sysinfo = "*"
 
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
+name-client = { path = "../../components/name-client" }
 package-manager = { path = "../../components/package-manager" }
 kRPC = { path = "../../kernel/kRPC" }
 sys-config = { path = "../sys-config" }

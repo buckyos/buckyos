@@ -106,7 +106,7 @@ async fn do_boot_scheduler() -> Result<()> {
         let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN"); 
         if rpc_session_token_str.is_ok() {
             let rpc_session_token = rpc_session_token_str.unwrap();
-            let system_config_client = SystemConfigClient::new(None,&Some(rpc_session_token));
+            let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
             let boot_config = system_config_client.get("boot/config").await;
             if boot_config.is_ok() {
                 return Err("boot/config already exists, boot scheduler failed".into());

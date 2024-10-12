@@ -2,7 +2,6 @@ import { defineConfig } from "vite";
 import { resolve } from "path";
 import dts from 'vite-plugin-dts'
 
-console.log(__dirname);
 
 export default defineConfig({
   build: {

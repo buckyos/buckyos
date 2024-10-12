@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
@@ -5,8 +7,8 @@ use hickory_resolver::{config::*, Resolver};
 use hickory_resolver::proto::rr::record_type;
 use hickory_resolver::TokioAsyncResolver;
 
-use crate::{EncodedDocument, NSError, NSProvider, NSResult, NameInfo, NameProof};
-
+use crate::{NSProvider, NameInfo, NameProof};
+use name_lib::*;
 pub struct DNSProvider {
     dns_server: Option<String>,
 }
@@ -147,8 +149,6 @@ impl NSProvider for DNSProvider {
             }
         }
         
-        Err(NSError::Failed("Failed to query DNS".to_string()))
-       
     }
 
     async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {

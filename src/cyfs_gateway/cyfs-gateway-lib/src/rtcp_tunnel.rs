@@ -457,10 +457,14 @@ impl RTcpTunnelPackage {
         Ok(())
     }
 
-    pub async fn send_hello_stream(stream:&mut TcpStream,session_key:&str) -> Result<()> {
-        //let package = RTcpTunnelPackage::HelloStream(session_key.to_string());
-        //RTcpTunnelPackage::send_package(stream,package).await
-        unimplemented!("send_hello_stream not implemented");
+    pub async fn send_hello_stream(stream:&mut TcpStream,session_key:&str) -> Result<(),anyhow::Error> {
+        let total_len = 0;
+        let mut write_buf: Vec<u8> = Vec::new();
+        let bytes = u16::to_be_bytes(total_len);
+        write_buf.extend_from_slice(&bytes);
+        write_buf.extend_from_slice(session_key.as_bytes());
+        stream.write_all(&write_buf).await?;
+        Ok(())
     }
 }
 
@@ -585,8 +589,11 @@ impl RTcpTunnel {
         }
     }
 
-    async fn post_ropen(&self,session_key:&str) {
-        unimplemented!()
+    async fn post_ropen(&self,dest_port:u16,session_key:&str) {
+        let ropen_package = RTcpROpenPackage::new(0,session_key.to_string(),dest_port);
+        let mut write_stream = self.write_stream.lock().await;
+        let mut write_stream = Pin::new(&mut *write_stream);
+        let _ = RTcpTunnelPackage::send_package(write_stream,ropen_package).await;
     }
 
     async fn wait_ropen_stream(&self,session_key:&str) -> Result<TcpStream,std::io::Error> {
@@ -628,7 +635,7 @@ impl Tunnel for RTcpTunnel {
             //generate 32byte session_key
             let random_bytes: [u8; 16] = rand::thread_rng().gen();
             let session_key = hex::encode(random_bytes);
-            self.post_ropen(session_key.as_str()).await;
+            self.post_ropen(dest_port,session_key.as_str()).await;
             //wait new stream with session_key fomr target
             let stream = self.wait_ropen_stream(&session_key.as_str()).await?;
             Ok(Box::new(stream))
@@ -783,7 +790,7 @@ impl TunnelBuilder for RTcpTunnelBuilder {
             return Ok(Box::new(tunnel.unwrap().clone()));
         }
 
-        // lookup target device doc
+        // resolve target device ip
         //      try to connect target device
         //      if success, create tunnel and insert to tunnel map
         let host = target.host_str().unwrap();

@@ -5,12 +5,8 @@ use std::{net::SocketAddr, sync::Arc};
 use async_trait::async_trait;
 use log::*;
 
-use hyper::client::connect::Connection;
-
 use crate::{TunnelError, TunnelResult};
 
-pub trait AsyncStreamConnection: AsyncStream + Connection {}
-impl<T: AsyncStream + Connection> AsyncStreamConnection for T {}
 
 #[derive(Hash, Eq, PartialEq, Debug,Clone)]
 pub struct TunnelEndpoint {
