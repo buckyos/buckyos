@@ -72,7 +72,11 @@ impl NSProvider for DNSProvider {
         let record_type = record_type.unwrap_or("A");
         match record_type {
             "TXT" => {
-                let response = resolver.txt_lookup(name).await.unwrap();
+                let response = resolver.txt_lookup(name).await;
+                if response.is_err() {
+                    return Err(NSError::Failed(format!("lookup txt failed! {}",response.err().unwrap())));
+                }
+                let response = response.unwrap();
                 let mut whole_txt = String::new();
                 for record in response.iter() {
                     let txt = record.txt_data().iter().map(|s| -> String {
@@ -95,7 +99,11 @@ impl NSProvider for DNSProvider {
                 return Ok(name_info);
             },
             "A" | "AAAA" => {
-                let response = resolver.lookup_ip(name).await.unwrap();
+                let response = resolver.lookup_ip(name).await;
+                if response.is_err() {
+                    return Err(NSError::Failed(format!("lookup ip failed! {}",response.err().unwrap())));
+                }
+                let response = response.unwrap();
                 let mut addrs = Vec::new();
                 for ip in response.iter() {
                     addrs.push(ip);
@@ -113,7 +121,11 @@ impl NSProvider for DNSProvider {
                 return Ok(name_info);
             },
             "DID"=>{
-                let response: hickory_resolver::lookup::TxtLookup = resolver.txt_lookup(name).await.unwrap();
+                let response = resolver.txt_lookup(name).await;
+                if response.is_err() {
+                    return Err(NSError::Failed(format!("lookup txt failed! {}",response.err().unwrap())));
+                }
+                let response = response.unwrap();
                 //let mut did_tx:String;
                 //let mut did_doc = DIDSimpleDocument::new();
 

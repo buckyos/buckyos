@@ -2,10 +2,7 @@
 use std::env;
 use std::sync::{Arc};
 use std::collections::HashMap;
-use std::{fs::File};
 use log::*;
-
-use simplelog::*;
 use tokio::sync::{Mutex, RwLock};
 use lazy_static::lazy_static;
 use warp::{Filter};
@@ -331,31 +328,6 @@ async fn process_request(method:String,param:Value,trace_id:u64) -> ::kRPC::Resu
     }
 }
 
-
-fn init_log_config() {
-    let config = ConfigBuilder::new()
-        .set_time_format_custom(format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"))
-        .build();
-
-    let log_path = get_buckyos_root_dir().join("logs").join("verify_hub.log");
-    CombinedLogger::init(vec![
-        // 将日志输出到标准输出，例如终端
-        TermLogger::new(
-            LevelFilter::Info,
-            config.clone(),
-            TerminalMode::Mixed,
-            ColorChoice::Auto,
-        ),
-   
-        WriteLogger::new(
-            LevelFilter::Info,
-            config,
-            File::create(log_path).unwrap(),
-        ),
-    ])
-    .unwrap();
-}
-
 async fn init_service_config() -> Result<()> {
     //load zone config form env
     let zone_config_str = env::var("BUCKY_ZONE_CONFIG").map_err(|error| RPCErrors::ReasonError(error.to_string()));
@@ -403,7 +375,7 @@ async fn init_service_config() -> Result<()> {
 
 
 async fn service_main() -> i32 {
-    init_log_config();
+    init_logging("verify_hub");
     info!("Starting verify_hub service...");
     //init service config from system config service and env
     let _ = init_service_config().await.map_err(

@@ -261,13 +261,17 @@ impl NSProvider for ZoneProvider {
             if system_config_url.is_ok() {
                 let system_config_url = system_config_url.unwrap();
                 let client = SystemConfigClient::new(Some(system_config_url.as_str()),self.session_token.as_deref());
+                info!("ZoneProvider try first resolve ip by system config service for {} ...",name);
                 let name_info = self.do_system_config_client_query(&client, name).await;
                 if name_info.is_ok() {
+                    info!("ZoneProvider first resolve ip by system config service for {} success",name);
                     let set_result = self.client.set(client);
                     if set_result.is_err() {
                         warn!("ZoneProvider set system config client failed");
                     }
                     return name_info;
+                } else {
+                    warn!("ZoneProvider first resolve ip by system config service for {} failed",name);
                 }
             }
 
@@ -291,7 +295,12 @@ impl NSProvider for ZoneProvider {
             return Err(NSError::NotFound("zone config not found".to_string()));
         }
         let zone_config = zone_config.unwrap();
-        unimplemented!()
+        if did == zone_config.did.as_str() {
+            let zone_value = serde_json::to_value(zone_config).unwrap();
+            return Ok(EncodedDocument::JsonLd(zone_value));
+        }
+
+        Err(NSError::NotFound(format!("did {} not found",did)))
     }
 
 }

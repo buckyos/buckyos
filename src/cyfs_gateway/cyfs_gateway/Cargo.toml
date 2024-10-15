@@ -21,6 +21,7 @@ dirs = "*"
 
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
+name-client = { path = "../../components/name-client" }
 
 cyfs-warp = { path= "../cyfs-warp"}
 cyfs-sn = { path = "../cyfs-sn" }

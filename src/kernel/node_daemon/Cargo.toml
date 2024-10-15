@@ -9,6 +9,7 @@ authors = ["BuckyOS DAO","@waterflier"]
 [dependencies]
 # 3rd party dependencies
 toml = "*"
+clap = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 log = "*"

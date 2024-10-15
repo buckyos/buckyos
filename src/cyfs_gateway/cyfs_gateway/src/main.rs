@@ -14,19 +14,22 @@ mod config_loader;
 
 use std::path::PathBuf;
 use log::*;
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 use cyfs_gateway_lib::*;
 use cyfs_warp::*;
 use buckyos_kit::*;
 use tokio::task;
+use url::Url;
+use name_client::*;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-async fn service_main(config: &str) -> Result<()> {
+async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
     let _json = serde_json::from_str(config).map_err(|e| {
         let msg = format!("Error parsing config: {} {}", e, config);
         error!("{}", msg);
         Box::new(e) as Box<dyn std::error::Error>
     })?;
+
 
     //load config
     let mut config_loader = config_loader::GatewayConfig::new();
@@ -35,6 +38,34 @@ async fn service_main(config: &str) -> Result<()> {
         let msg = format!("Error loading config: {}", load_result.err().unwrap());
         error!("{}", msg);
         std::process::exit(1);
+    }
+    
+    let disable_buckyos = matches.get_flag("disable-buckyos");
+    if !disable_buckyos {
+        init_global_buckyos_value_by_env("GATEWAY");
+        //keep tunnel
+        let keep_tunnel = matches.get_many::<String>("keep_tunnel");
+        if keep_tunnel.is_some() {
+            let keep_tunnel = keep_tunnel.unwrap();
+            let keep_tunnel: Vec<String> = keep_tunnel.map(|s| s.to_owned()).collect();
+            
+            task::spawn(async move {
+                loop {
+                    for tunnel in keep_tunnel.iter() {
+                        let tunnel_url = format!("rtcp://{}",tunnel);
+                        info!("keep tunnel: {}", tunnel_url);
+                        let tunnel_url = Url::parse(tunnel_url.as_str()).unwrap();
+                        
+                        let tunnle = get_tunnel(&tunnel_url,None).await;
+                        if tunnle.is_err() {
+                            warn!("Error getting tunnel: {}", tunnle.err().unwrap());
+                            continue;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            });
+        }
     }
 
     //start servers
@@ -51,11 +82,9 @@ async fn service_main(config: &str) -> Result<()> {
             },
         }
     }
-    
     //start dispatcher
     let dispatcher = dispatcher::ServiceDispatcher::new(config_loader.dispatcher.clone());
     dispatcher.start().await;
-
     // sleep forever
     let _ = tokio::signal::ctrl_c().await;
 
@@ -94,6 +123,14 @@ fn main() {
                 .help("config file path file with json format content")
                 .required(false),
         )
+        .arg(Arg::new("keep_tunnel")
+            .long("keep_tunnel")
+            .help("keep tunnel when start")
+            .num_args(1..))
+        .arg(Arg::new("disable-buckyos")
+            .long("disable-buckyos")
+            .help("disable init buckyos system services")
+            .action(ArgAction::SetTrue))
         .get_matches();
 
     // init log
@@ -112,7 +149,7 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     rt.block_on(async {
-        if let Err(e) = service_main(&config).await {
+        if let Err(e) = service_main(&config,&matches).await {
             error!("Gateway run error: {}", e);
         }
     });

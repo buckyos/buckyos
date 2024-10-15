@@ -51,27 +51,31 @@ result:u32
 
 */
 use std::time::Duration;
-use rand::Rng;
-use serde::{Deserialize, Serialize};
-use tokio::net::tcp::ReadHalf;
-use tokio::stream;
-use tokio::sync::{Mutex, Notify};
-use tokio::task;
-use tokio::time::timeout;
-use url::form_urlencoded::ByteSerialize;
 use std::collections::HashMap;
 use std::net::{SocketAddr};
 use std::sync::Arc;
 use std::{fmt::Debug, net::IpAddr};
 use std::str::FromStr;
+
+use tokio::net::tcp::ReadHalf;
+use tokio::stream;
+use tokio::sync::{Mutex, Notify};
+use tokio::task;
+use tokio::time::timeout;
 use tokio::net::{TcpListener,TcpStream};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
 use log::*;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
+use url::form_urlencoded::ByteSerialize;
 use url::Url;
 use lazy_static::lazy_static;
 use anyhow::Result;
+use name_client::*;
+
 use crate::{ tunnel, TunnelEndpoint, TunnelError, TunnelResult};
 use crate::tunnel::{AsyncStream, DatagramClientBox, DatagramServerBox, StreamListener, Tunnel, TunnelBox, TunnelBuilder};
 
@@ -790,12 +794,13 @@ impl TunnelBuilder for RTcpTunnelBuilder {
             return Ok(Box::new(tunnel.unwrap().clone()));
         }
 
-        // resolve target device ip
-        //      try to connect target device
-        //      if success, create tunnel and insert to tunnel map
-        let host = target.host_str().unwrap();
+        let device_ip = resolve_ip(target.as_str()).await;
+        if device_ip.is_err() {
+            return Err(TunnelError::ConnectError(format!("cann't resolve target device {} ip.",target.as_str())));
+        }
+        let device_ip = device_ip.unwrap();
         let port = target.port().unwrap_or(2980);
-        let remote_addr = format!("{}:{}",host,port);
+        let remote_addr = format!("{}:{}",device_ip,port);
         let tunnel_stream = tokio::net::TcpStream::connect(remote_addr.clone()).await;
         if tunnel_stream.is_err() {
             warn!("connect to {} error:{}",remote_addr,tunnel_stream.err().unwrap());

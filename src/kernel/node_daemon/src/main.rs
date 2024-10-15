@@ -12,10 +12,11 @@ use std::fmt::format;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use clap::{Arg, Command};
 use kernel_mgr::KernelServiceConfig;
 use time::macros::format_description;
 use std::{collections::HashMap, fs::File};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 // use tokio::*;
 
 use buckyos_kit::{*};
@@ -140,20 +141,22 @@ fn load_node_private_key() -> Result<EncodingKey> {
     Ok(private_key)
 }
 
-fn load_identity_config() -> Result<(NodeIdentityConfig)> {
+fn load_identity_config(node_id: &str) -> Result<(NodeIdentityConfig)> {
     //load ./node_identity.toml for debug
     //load from /opt/buckyos/etc/node_identity.toml
-    let mut file_path = "node_identity.toml";
-    let path = Path::new(file_path);
+    let mut file_path = PathBuf::from(format!("{}_identity.toml",node_id));
+    let path = Path::new(&file_path);
     if path.exists() {
         warn!("debug load node identity config from ./node_identity.toml");
     } else {
-        file_path = "/opt/buckyos/etc/node_identity.toml";
+        let etc_dir = get_buckyos_system_etc_dir();
+       
+        file_path = etc_dir.join(format!("{}_identity.toml",node_id));
     }   
 
-    let contents = std::fs::read_to_string(file_path).map_err(|err| {
+    let contents = std::fs::read_to_string(file_path.clone()).map_err(|err| {
         error!("read node identity config failed! {}", err);
-        return NodeDaemonErrors::ReadConfigError(String::from(file_path));
+        return NodeDaemonErrors::ReadConfigError(file_path.to_string_lossy().to_string());
     })?;
 
     let config: NodeIdentityConfig = toml::from_str(&contents).map_err(|err| {
@@ -164,19 +167,20 @@ fn load_identity_config() -> Result<(NodeIdentityConfig)> {
         ));
     })?;
 
-    info!("load node identity config from {} success!",file_path);
+    info!("load node identity config from {} success!",file_path.to_string_lossy());
     Ok(config)
 }
 
-fn load_device_private_key() -> Result<(EncodingKey)> {
-    let mut file_path = "device_private_key.pem";
-    let path = Path::new(file_path);
+fn load_device_private_key(node_id: &str) -> Result<(EncodingKey)> {
+    let mut file_path = format!("{}_private_key.pem",node_id);
+    let path = Path::new(file_path.as_str());
     if path.exists() {
         warn!("debug load device private_key from ./device_private_key.pem");
     } else {
-        file_path = "/opt/buckyos/etc/device_private_key.pem";
+        let etc_dir = get_buckyos_system_etc_dir();
+        file_path = format!("{}/{}_private_key.pem",etc_dir.to_string_lossy(),node_id);
     }   
-    let private_key = std::fs::read_to_string(file_path).map_err(|err| {
+    let private_key = std::fs::read_to_string(file_path.clone()).map_err(|err| {
         error!("read device private key failed! {}", err);
         return NodeDaemonErrors::ParserConfigError("read device private key failed!".to_string());
     })?;
@@ -535,12 +539,30 @@ async fn start_cyfs_gateway_service(device_doc: &DeviceConfig, device_private_ke
 
 async fn async_main() -> std::result::Result<(), String> {
     init_log_config();
+    let matches = Command::new("BuckyOS Node Daemon")
+    .arg(
+        Arg::new("id")
+            .long("node_id")
+            .help("This node's id")
+            .required(false),
+    )
+    .get_matches();
+
+    let node_id = matches.get_one::<String>("id");
+    let defualt_node_id = "node".to_string();
+    let node_id = node_id.unwrap_or(&defualt_node_id);
+
     info!("node_dameon start...");
     //load node identity config
-    let node_identity = load_identity_config().map_err(|err| {
+    let node_identity = load_identity_config(node_id).map_err(|err| {
         error!("load node identity config failed! {}", err);
         //TODO: if there is no args disable node-active, start node-active service
         return String::from("load node identity config failed!")
+    })?;
+
+    init_default_name_client().await.map_err(|err| {
+        error!("init default name client failed! {}", err);
+        return String::from("init default name client failed!");
     })?;
 
     //verify device_doc by owner_public_key
@@ -575,7 +597,7 @@ async fn async_main() -> std::result::Result<(), String> {
     info!("current node's device doc: {:?}", device_doc);
     
     //load device private key
-    let device_private_key = load_device_private_key().map_err(|error| {
+    let device_private_key = load_device_private_key(&node_id).map_err(|error| {
         error!("load device private key failed! {}", error);
         return String::from("load device private key failed!");
     })?;
@@ -628,6 +650,12 @@ async fn async_main() -> std::result::Result<(), String> {
     let device_session_token_jwt = device_session_token.generate_jwt(Some(device_doc.did.clone()),&device_private_key).map_err(|err| {
         error!("generate device session token failed! {}", err);
         return String::from("generate device session token failed!");
+    })?;
+
+    let device_info = DeviceInfo::from_device_doc(&device_doc);
+    enable_zone_provider(Some(&device_info),Some(&device_session_token_jwt)).await.map_err(|err| {
+        error!("enable zone provider failed! {}", err);
+        return String::from("enable zone provider failed!");
     })?;
     
     //init kernel_service:cyfs-gateway service
@@ -684,7 +712,7 @@ async fn async_main() -> std::result::Result<(), String> {
             },
             _ => {
                 error!("get boot config failed!");
-                return Err(String::from("get boot config failed!"));
+                return Err(format!("get boot config failed! {}", boot_config_result.err().unwrap()));
             }
         }
 
@@ -705,6 +733,9 @@ async fn async_main() -> std::result::Result<(), String> {
     }
 
     //use boot config to init name-lib.. etc kernel libs.
+    let gateway_ip = resolve_ip("gateway").await;
+    info!("gateway ip: {:?}", gateway_ip);
+
     info!("{}@{} boot OK, enter node daemon main loop!", device_doc.name, node_identity.zone_name);
     node_daemon_main_loop(&device_doc.name.as_str(), &syc_cfg_client, &device_doc, &device_private_key)
         .await
