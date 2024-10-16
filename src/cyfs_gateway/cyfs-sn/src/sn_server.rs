@@ -30,9 +30,9 @@ impl SNServer {
     }
 
     pub async fn update_device(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
-        let device_info = req.params.get("device_info");
+        let device_info_json = req.params.get("device_info");
         let owner_id = req.params.get("owner_id");
-        if owner_id.is_none() || device_info.is_none() {
+        if owner_id.is_none() || device_info_json.is_none() {
             return Err(RPCErrors::ParseRequestError("Invalid params, owner_id or device_info is none".to_string()));
         }
         let owner_id = owner_id.unwrap().as_str();
@@ -42,17 +42,21 @@ impl SNServer {
         let owner_id = owner_id.unwrap();
         
 
-        let device_info = serde_json::from_value::<DeviceInfo>(device_info.unwrap().clone()).map_err(|e|{
+        let device_info = serde_json::from_value::<DeviceInfo>(device_info_json.unwrap().clone()).map_err(|e|{
             error!("Failed to parse device info: {:?}",e);
             RPCErrors::ParseRequestError(e.to_string())
         })?;    
 
+        info!("will update {}_{} ==> {:?}",owner_id,device_info.hostname.clone(),device_info_json);
+
         let mut device_info_map = self.all_device_info.lock().await;
-        let key = format!("{}_{}",owner_id,device_info.hostname);
-        device_info_map.insert(key, device_info);
+        let key = format!("{}_{}",owner_id,device_info.hostname.clone());
+        device_info_map.insert(key.clone(), device_info);
         let resp = RPCResponse::new(RPCResult::Success(json!({
             "code":0 
         })),req.seq);
+
+        info!("update device info done: for {}",key);
         return Ok(resp);
     }
     

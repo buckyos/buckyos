@@ -12,6 +12,8 @@ pub async fn sn_update_device_info(sn_url: &str, session_token: Option<String>,
         RPCErrors::ParseRequestError(e.to_string())
     })?;
 
+    info!("update device info to sn {} for {}_{}",sn_url,owner_id,device_id);
+
     let _result = client.call("update", json!({
         "device_id": device_id, 
         "owner_id": owner_id, 

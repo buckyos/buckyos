@@ -8,21 +8,11 @@
         "main_http_server":{
             "type":"cyfs-warp",
             "bind":"0.0.0.0",
-            "http_port":8000,
+            "http_port":80,
             "tls_port":443,
             "hosts": {
-                "another.com": {
-                  "routes": {
-                    "/": {
-                      "upstream": "http://localhost:9090"
-                    }
-                  }
-                },
-                "example.com": {
+                "web3.buckyos.io": {
                     "routes": {
-                        "/api": {
-                            "upstream": "rtcp://"
-                        },
                         "/static": {
                             "local_dir": "/tmp/"
                         },
@@ -42,15 +32,6 @@
         "tcp://0.0.0.0:443":{
             "type":"server",
             "id":"main_http_server"
-        },
-
-        "tcp://0.0.0.0:6001":{
-            "type":"forward",
-            "target":"tcp://192.168.1.188:8888"
-        },
-        "udp://0.0.0.0:6002":{
-            "type":"forward",
-            "target":"udp://192.168.1.188:8889"
         }
     }
 }

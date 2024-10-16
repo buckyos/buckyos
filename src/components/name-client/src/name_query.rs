@@ -22,8 +22,10 @@ impl NameQuery {
             return Err(NSError::Failed(format!("no provider for {}", name)));
         }
 
+        let record_type = record_type.unwrap_or("A");
+
         for provider in self.providers.iter().rev() {
-            match provider.query(name,record_type).await {
+            match provider.query(name,Some(record_type)).await {
                 Ok(info) => {
                     return Ok(info);
                 },

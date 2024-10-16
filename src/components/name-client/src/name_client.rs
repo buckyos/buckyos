@@ -46,8 +46,8 @@ impl NameClient {
         }
     }
 
-    pub fn enable_zone_provider(&mut self,this_device: Option<&DeviceInfo>,session_token: Option<&String>) {
-        self.name_query.add_provider(Box::new(ZoneProvider::new(this_device,session_token)));
+    pub fn enable_zone_provider(&mut self,this_device: Option<&DeviceInfo>,session_token: Option<&String>,is_gateway:bool) {
+        self.name_query.add_provider(Box::new(ZoneProvider::new(this_device,session_token,is_gateway)));
     }
 
     pub fn add_did_cache(&self, did: &str, doc:EncodedDocument) -> NSResult<()> {

@@ -668,6 +668,7 @@ impl StreamListener for RTcpStreamListener {
     }
 }
 
+#[derive(Clone)]
 pub struct RTcpTunnelBuilder {
     tunnel_port: u16,
     this_device: String,
@@ -793,10 +794,11 @@ impl TunnelBuilder for RTcpTunnelBuilder {
         if tunnel.is_some() {
             return Ok(Box::new(tunnel.unwrap().clone()));
         }
-
-        let device_ip = resolve_ip(target.as_str()).await;
+        let host = target.host().unwrap().to_string();
+        info!("create tunnel to {} ,resolve ip first",host.as_str());
+        let device_ip = resolve_ip(host.as_str()).await;
         if device_ip.is_err() {
-            return Err(TunnelError::ConnectError(format!("cann't resolve target device {} ip.",target.as_str())));
+            return Err(TunnelError::ConnectError(format!("cann't resolve target device {} ip.",host.as_str())));
         }
         let device_ip = device_ip.unwrap();
         let port = target.port().unwrap_or(2980);

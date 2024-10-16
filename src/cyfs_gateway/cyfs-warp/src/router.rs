@@ -7,7 +7,7 @@ use hyper::{Body, Client, Request, Response, StatusCode};
 use log::*;
 use rustls::ServerConfig;
 use url::Url;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use std::path::Path;
 use std::collections::HashMap;
 use cyfs_gateway_lib::*;
@@ -49,6 +49,7 @@ impl Router {
     pub async fn route(
         &self,
         req: Request<Body>,
+        client_ip:SocketAddr,
     ) -> Result<Response<Body>> {
         let mut host = req
             .headers()
@@ -63,30 +64,39 @@ impl Router {
                 host = result.unwrap().0.to_string();
             } 
         } 
+        let req_path = req.uri().path();
+        info!("{}==>warp recv_req: {} {:?}",client_ip,req_path,req.headers());
 
-        let host_config = self.config.hosts.get(&host).ok_or_else(|| {
-            anyhow::anyhow!("Host not found in configuration: {}", host)
-        })?;
+        let host_config = self.config.hosts.get(&host).or_else(|| self.config.hosts.get("*"));
+        if host_config.is_none() {
+            warn!("Route Config not found: {}", host);
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("Route not found"))?);
+        }
 
-        let path = req.uri().path();
+        let host_config = host_config.unwrap();
+        debug!("host_config: {:?}", host_config);
+
         let mut route_path = String::new();
         let route_config = host_config
             .routes
             .iter()
             .find(|(route, _)| {
                 route_path = (*route).clone();
-                return path.starts_with(*route);
+                return req_path.starts_with(*route);
             })
             .map(|(_, config)| config);
 
         if route_config.is_none() {
-            warn!("Route Config not found: {}", path);
+            warn!("Route Config not found: {}", req_path);
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::from("Route not found"))?);
         }
 
         let route_config = route_config.unwrap();   
+        info!("route_config: {:?}",route_config);
 
         match route_config {
             RouteConfig {

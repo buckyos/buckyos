@@ -102,14 +102,17 @@ pub async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfi
         return Ok(ood_info.ip.unwrap().clone());
     }
 
+    let zone_short_name = zone_config.get_zone_short_name();
+    
+
     if !ood_info.is_wan_device() {
-        let hostname = ood_info.hostname.clone();
+        let hostname = format!("{}-{}",zone_short_name.as_str(),ood_info.hostname.as_str());
         let addr = resolve_lan_hostname(hostname.as_str());
         if addr.is_some() {
             return Ok(addr.unwrap());
         }
 
-        let hostname = format!("{}.local",ood_info.hostname);
+        let hostname = format!("{}-{}.local",zone_short_name.as_str(),ood_info.hostname.as_str());
         let addr = resolve_lan_hostname(hostname.as_str());
         if addr.is_some() {
             return Ok(addr.unwrap());
@@ -120,6 +123,7 @@ pub async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfi
     let sn_url = zone_config.get_sn_url();
     if sn_url.is_some() {
         let sn_url = sn_url.unwrap();
+        info!("try resolve ood {} ip by sn: {}",ood_info.hostname.clone(),sn_url);
         let device_info = sn_get_device_info(sn_url.as_str(),None,
             zone_config.get_zone_short_name().as_str(),ood_info.hostname.as_str()).await;
 
@@ -133,7 +137,7 @@ pub async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfi
 }
 
 
-pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_config:&ZoneConfig) -> NSResult<String> {
+pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_config:&ZoneConfig,is_gateway:bool) -> NSResult<String> {
     if this_device.is_none() {
         return Ok(String::from("http://127.0.0.1:3200/kapi/system_config"));
     }
@@ -170,9 +174,13 @@ pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_
         }
     }
 
-    //connect to local cyfs_gateway,local cyfs-gateway will use tunnel connect to ood
-    warn!("cann't connect to ood directly, try connect to system config service by local cyfs_gateway");
-    return Ok(String::from("http://127.0.0.1:3180/kapi/system_config"));
+    if !is_gateway {
+        //connect to local cyfs_gateway,local cyfs-gateway will use tunnel connect to ood
+        warn!("cann't connect to ood directly, try connect to system config service by local cyfs_gateway");
+        return Ok(String::from("http://127.0.0.1:3180/kapi/system_config"));
+    }
+
+    Err(NSError::NotFound("cann't find system config service url".to_string()))
 }
 
 
@@ -182,14 +190,16 @@ pub struct ZoneProvider {
     client : OnceCell<SystemConfigClient>,
     session_token: Option<String>,
     this_device: Option<DeviceInfo>,
+    is_gateway:bool,
 }
 
 impl ZoneProvider {
-    pub fn new(this_device: Option<&DeviceInfo>,session_token: Option<&String>) -> Self {
+    pub fn new(this_device: Option<&DeviceInfo>,session_token: Option<&String>,is_gateway:bool) -> Self {
         Self { 
             client:OnceCell::new(),
             session_token:session_token.map(|s|s.clone()),
             this_device:this_device.map(|d|d.clone()),
+            is_gateway,
         }
     }
 
@@ -239,14 +249,17 @@ impl NSProvider for ZoneProvider {
         }
 
         if name.contains(".") {
+            warn!("ZoneProvider only support device name resolve now, {} is not a device name",name);
             return Err(NSError::NotFound(format!("only support device name resolve now, {} is not a device name",name)));
         }
 
         let client = self.client.get();
         if client.is_some() {
+            info!("ZoneProvider try resolve ip by system config service for {} ...",name);
             let client = client.unwrap();
             let name_info = self.do_system_config_client_query(&client,name).await;
             if name_info.is_ok() {
+                info!("ZoneProvider resolve ip by system config service for {} success",name);
                 return name_info;
             }
         } else {
@@ -257,11 +270,11 @@ impl NSProvider for ZoneProvider {
             }
             let zone_config = zone_config.unwrap();
             let this_device = self.this_device.as_ref();
-            let system_config_url = get_system_config_service_url(this_device, &zone_config).await;
+            let system_config_url = get_system_config_service_url(this_device, &zone_config,self.is_gateway).await;
             if system_config_url.is_ok() {
                 let system_config_url = system_config_url.unwrap();
+                info!("ZoneProvider try connect to system config service {} for resolve ip for {} ...",system_config_url.as_str(),name);
                 let client = SystemConfigClient::new(Some(system_config_url.as_str()),self.session_token.as_deref());
-                info!("ZoneProvider try first resolve ip by system config service for {} ...",name);
                 let name_info = self.do_system_config_client_query(&client, name).await;
                 if name_info.is_ok() {
                     info!("ZoneProvider first resolve ip by system config service for {} success",name);
@@ -276,6 +289,7 @@ impl NSProvider for ZoneProvider {
             }
 
             //if target device is ood, try resolve ip by ood info in zone config
+            info!("ZoneProvider try resolve ip by ood info in zone config for {} ...",name);
             let ood_string = zone_config.get_ood_string(name);
             if ood_string.is_some() {
                 let ood_info = DeviceInfo::new(ood_string.unwrap().as_str());

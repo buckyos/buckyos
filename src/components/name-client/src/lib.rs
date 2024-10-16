@@ -95,9 +95,9 @@ pub async fn init_default_name_client() -> NSResult<()> {
     Ok(())
 }
 
-pub async fn enable_zone_provider(this_device: Option<&DeviceInfo>,session_token: Option<&String>) -> NSResult<()> {
+pub async fn enable_zone_provider(this_device: Option<&DeviceInfo>,session_token: Option<&String>,is_gateway:bool) -> NSResult<()> {
     let mut client = NameClient::new(NameClientConfig::default());
-    client.enable_zone_provider(this_device,session_token);
+    client.enable_zone_provider(this_device,session_token,is_gateway);
     let set_result = GLOBAL_NAME_CLIENT.set(client);
     if set_result.is_err() {
         return Err(NSError::Failed("Failed to set GLOBAL_NAME_CLIENT".to_string()));

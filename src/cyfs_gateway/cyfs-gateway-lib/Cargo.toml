@@ -23,4 +23,6 @@ lazy_static = "*"
 fern = "*"
 chrono = "*"
 hyper = "0.14"
+name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
+

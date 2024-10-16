@@ -1,12 +1,18 @@
 #!/bin/python3
-
+import sys
 import os
+import argparse
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# 考虑上一个进程可能是卡死的，因此需要先kill掉
+
 print("try to kill cyfs_gateway")
 os.system("killall cyfs_gateway")
 
-# 启动新的进程，注意使用nohup模式
-os.system(f"nohup {current_dir}/cyfs_gateway > /dev/null 2>&1 &")
+parser = argparse.ArgumentParser(description="cyfs_gateway startup script")
+parser.add_argument("--node_id", type=str,required=True, help="node id")
+args = parser.parse_args()
+node_id = args.node_id
+config_file = f"{current_dir}/../../etc/{node_id}_gateway.json"
+#print(f"Gateway config_file: {config_file}")
+os.system(f"nohup {current_dir}/cyfs_gateway --config_file {config_file} > /dev/null 2>&1 &")
 print("cyfs_gateway service started")

@@ -21,6 +21,8 @@ use buckyos_kit::*;
 use tokio::task;
 use url::Url;
 use name_client::*;
+use name_lib::*;
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
@@ -43,6 +45,11 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
     let disable_buckyos = matches.get_flag("disable-buckyos");
     if !disable_buckyos {
         init_global_buckyos_value_by_env("GATEWAY");
+        let this_device = CURRENT_DEVICE_CONFIG.get();
+        let this_device = this_device.unwrap();
+        let this_device_info = DeviceInfo::from_device_doc(this_device);
+        let session_token = CURRENT_APP_SESSION_TOKEN.get();
+        let _ = enable_zone_provider (Some(&this_device_info),session_token,true).await;
         //keep tunnel
         let keep_tunnel = matches.get_many::<String>("keep_tunnel");
         if keep_tunnel.is_some() {

@@ -478,6 +478,13 @@ async fn do_boot_scheduler() -> std::result::Result<(),String> {
 async fn start_register_ood_info_to_sn(device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
     //try register ood's device_info to sn,
     // TODO: move this logic to cyfs-gateway service?
+    let sn_url = zone_config.get_sn_url();
+    if sn_url.is_none() {
+        error!("sn url is none!");
+        return Err(String::from("sn url is none!"));
+    }
+    let sn_url = sn_url.unwrap();
+
     let ood_string = zone_config.get_ood_string(device_doc.name.as_str());
     if ood_string.is_none() {
         error!("ood string is none!");
@@ -492,13 +499,8 @@ async fn start_register_ood_info_to_sn(device_doc: &DeviceConfig, device_private
         return Err(String::from("auto fill ood info failed!"));
     }
 
-    let sn_url = zone_config.get_sn_url();
-    if sn_url.is_none() {
-        error!("sn url is none!");
-        return Err(String::from("sn url is none!"));
-    }
 
-    let sn_url = sn_url.unwrap();
+
     sn_update_device_info(sn_url.as_str(), None, 
     &zone_config.get_zone_short_name(),device_doc.name.as_str(), &ood_info, ).await;
 
@@ -506,7 +508,7 @@ async fn start_register_ood_info_to_sn(device_doc: &DeviceConfig, device_private
     Ok(sn_url)
 }
 
-async fn start_cyfs_gateway_service(device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig) -> std::result::Result<(),String> {
+async fn start_cyfs_gateway_service(node_id: &String,device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig) -> std::result::Result<(),String> {
     let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs_gateway".to_string(),get_buckyos_system_bin_dir());
     let _ = cyfs_gateway_service_pkg.load().await.map_err(|err| {
         error!("load cyfs_gateway service pkg failed! {}", err);
@@ -523,8 +525,9 @@ async fn start_cyfs_gateway_service(device_doc: &DeviceConfig, device_private_ke
         //params: boot cyfs-gateway configs, identiy_etc folder, keep_tunnel list 
         //  ood: keep tunnel to other ood, keep tunnel to gateway
         //  gateway_config: port_forward for system_config service 
-        let params = vec!["--boot".to_string()];
-        let start_result = cyfs_gateway_service_pkg.start(None).await.map_err(|err| {
+
+        let params = vec!["--node_id".to_string(),node_id.clone()];
+        let start_result = cyfs_gateway_service_pkg.start(Some(&params)).await.map_err(|err| {
             error!("start cyfs_gateway failed! {}", err);
             return String::from("start cyfs_gateway failed!");
         })?;
@@ -653,19 +656,20 @@ async fn async_main() -> std::result::Result<(), String> {
     })?;
 
     let device_info = DeviceInfo::from_device_doc(&device_doc);
-    enable_zone_provider(Some(&device_info),Some(&device_session_token_jwt)).await.map_err(|err| {
+    enable_zone_provider(Some(&device_info),Some(&device_session_token_jwt),false).await.map_err(|err| {
         error!("enable zone provider failed! {}", err);
         return String::from("enable zone provider failed!");
     })?;
     
     //init kernel_service:cyfs-gateway service
-    start_cyfs_gateway_service(&device_doc, &device_private_key,&zone_config).await.map_err(|err| {
+    std::env::set_var("GATEWAY_SESSIONT_TOKEN",device_session_token_jwt.clone());
+    start_cyfs_gateway_service(node_id,&device_doc, &device_private_key,&zone_config).await.map_err(|err| {
         error!("init cyfs_gateway service failed! {}", err);
         return String::from("init cyfs_gateway service failed!");
     })?;
 
     //init kernel_service:system_config service
-    let syc_cfg_client: SystemConfigClient;
+    let mut syc_cfg_client: SystemConfigClient;
     let boot_config: serde_json::Value; 
     if is_ood {
         start_register_ood_info_to_sn(&device_doc, &device_private_key,&zone_config).await;
@@ -719,17 +723,21 @@ async fn async_main() -> std::result::Result<(), String> {
     } else {
         //this node is not ood: try connect to system_config_service
         let this_device = DeviceInfo::from_device_doc(&device_doc);
-        let system_config_url = get_system_config_service_url(Some(&this_device),&zone_config).await.map_err(|err| {
+        let system_config_url = get_system_config_service_url(Some(&this_device),&zone_config,false).await.map_err(|err| {
             error!("get system_config_url failed! {}", err);
             return String::from("get system_config_url failed!");
         })?;
-        syc_cfg_client = SystemConfigClient::new(Some(system_config_url.as_str()), Some(device_session_token_jwt.as_str()));
-        let (boot_config,_) = syc_cfg_client.get("boot").await
-            .map_err(|error| {
-                error!("get boot config failed! {}", error);
-                return String::from("get boot config failed!");
-            })?;
-        info!("Load boot config OK!! config: {:?}", boot_config);
+        loop {
+            syc_cfg_client = SystemConfigClient::new(Some(system_config_url.as_str()), Some(device_session_token_jwt.as_str()));
+            let boot_config_result = syc_cfg_client.get("boot").await;
+            if boot_config_result.is_ok() {
+                info!("Connect to system_config_service and load boot config OK! boot config: {:?}", boot_config_result.unwrap().0.as_str());
+                break;
+            } else {
+                warn!("Connect to system_config_service failed! {}", boot_config_result.err().unwrap());
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            }
+        }
     }
 
     //use boot config to init name-lib.. etc kernel libs.
