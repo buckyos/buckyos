@@ -55,6 +55,11 @@ impl NameClient {
         Ok(())
     }
 
+    pub fn add_nameinfo_cache(&self, name: &str, info:NameInfo) -> NSResult<()> {
+        self.cache.insert(name.to_string(), info);
+        Ok(())
+    }
+
     pub async fn resolve(&self, name: &str,record_type:Option<&str>) -> NSResult<NameInfo> {
         if self.config.enable_cache {
             let cache_info = self.cache.get(&name.to_string());

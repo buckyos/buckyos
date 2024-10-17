@@ -147,6 +147,15 @@ pub async fn add_did_cache(did: &str, doc:EncodedDocument) -> NSResult<()> {
     client.add_did_cache(did, doc)
 }
 
+pub async fn add_nameinfo_cache(name: &str, info:NameInfo) -> NSResult<()> {
+    let client = get_name_client();
+    if client.is_none() {
+        return Err(NSError::NotFound("Name client not found".to_string()));
+    }
+    let client = client.unwrap();
+    client.add_nameinfo_cache(name, info)
+}
+
 
 
 #[cfg(test)]
