@@ -130,7 +130,8 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
         let _zone_config = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().zone_config.clone();
         let token_from_device = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().token_from_device.clone();
         let system_config_client = SystemConfigClient::new(None,Some(token_from_device.as_str()));
-        let get_result = system_config_client.get(sys_config_get_device_path(kid).as_str()).await;
+        let device_doc_path = format!("{}/doc",sys_config_get_device_path(kid));
+        let get_result = system_config_client.get(device_doc_path.as_str()).await;
         if get_result.is_err() {
             return Err(RPCErrors::ReasonError("Trust key  not found".to_string()));
         }

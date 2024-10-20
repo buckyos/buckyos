@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::process::exit;
-use std::{fs::File};
 use log::*;
-use simplelog::*;
-use serde_json::{json};
+use serde_json::json;
 
 use name_lib::*;
+use name_client::*;
 use buckyos_kit::*;
 use sys_config::SystemConfigClient;
 
@@ -96,6 +95,7 @@ async fn generate_ood_config(ood_name:&str,owner_name:&str) -> Result<HashMap<St
     Ok(init_list)
 }
 
+
 async fn do_boot_scheduler() -> Result<()> {
     let mut init_list : HashMap<String,String> = HashMap::new();
     let zone_config_str = std::env::var("BUCKY_ZONE_CONFIG");
@@ -150,7 +150,7 @@ async fn do_boot_scheduler() -> Result<()> {
                 let verify_hub_info_str = serde_json::to_string(&json!(
                     {
                         "endpoints" :[
-                            format!("{}:10032",ood_name)
+                            format!("{}:3300",ood_name)
                         ]
                     }
                 )).unwrap();
@@ -166,7 +166,7 @@ async fn do_boot_scheduler() -> Result<()> {
                 let scheduler_info_str = serde_json::to_string(&json!(
                     {
                         "endpoints" :[
-                            format!("{}:10034",ood_name)
+                            format!("{}:3400",ood_name)
                         ]
                     }
                 )).unwrap();
@@ -212,33 +212,12 @@ async fn schedule_loop() -> Result<()> {
 
 }
 
-fn init_log_config() {
-    let config = ConfigBuilder::new()
-        .set_time_format_custom(format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"))
-        .build();
-       
-    let log_path = get_buckyos_root_dir().join("logs").join("scheduler.log");
-
-    CombinedLogger::init(vec![
-        // 将日志输出到标准输出，例如终端
-        TermLogger::new(
-            LevelFilter::Info,
-            config.clone(),
-            TerminalMode::Mixed,
-            ColorChoice::Auto,
-        ),
-        WriteLogger::new(
-            LevelFilter::Info,
-            config,
-            File::create(log_path).unwrap(),
-        ),
-    ])
-    .unwrap();
-}
 
 async fn service_main(is_boot:bool) -> Result<i32> {
-    init_log_config();
+    init_logging("scheduler");
     info!("Starting scheduler service............................");
+    init_global_buckyos_value_by_env("SCHEDULER");
+    let _ =init_default_name_client().await;
     if is_boot {
         info!("do_boot_scheduler,scheduler run once");
         do_boot_scheduler().await.map_err(|e| {

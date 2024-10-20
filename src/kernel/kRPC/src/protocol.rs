@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize,Serializer};
 use serde_json::{Value};
@@ -206,6 +208,6 @@ impl<'de> Deserialize<'de> for RPCResponse {
 
 #[async_trait]
 pub trait kRPCHandler {
-    async fn handle_rpc_call(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors>;
+    async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors>;
 }
 

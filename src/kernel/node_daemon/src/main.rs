@@ -382,7 +382,6 @@ async fn node_main(node_host_name: &str,
 }
 
 async fn update_device_info(device_host_name:&str,sys_config_client: &SystemConfigClient) {
-    let device_key = sys_config_get_device_path(device_host_name);
     let mut device_info = DeviceInfo::new(device_host_name);
     let fill_result = device_info.auto_fill_by_system_info().await;
     if fill_result.is_err() {
@@ -390,6 +389,7 @@ async fn update_device_info(device_host_name:&str,sys_config_client: &SystemConf
         return;
     }
     let device_info_str = serde_json::to_string(&device_info).unwrap();
+    
     let device_key = format!("{}/info",sys_config_get_device_path(device_host_name));
     let put_result = sys_config_client.set(device_key.as_str(),device_info_str.as_str()).await;
     if put_result.is_err() {

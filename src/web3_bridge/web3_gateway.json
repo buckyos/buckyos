@@ -1,7 +1,8 @@
 {
     "inner_services":{
         "main_sn" : {
-            "type" : "cyfs_sn"
+            "type" : "cyfs_sn",
+            "host":"web3.buckyos.io"
         }
     },
     "servers":{
@@ -22,9 +23,30 @@
                     }
                 }
             }
+        },
+        "main_dns_server":{
+            "type":"cyfs-dns",
+            "bind":"0.0.0.0",
+            "port":2053,
+            "resolver_chain": [
+                {
+                  "type": "SN",
+                  "server_id": "main_sn"
+                },
+                {
+                    "type": "dns",
+                    "cache": true
+                }
+            ],
+            "fallback": ["8.8.8.8","6.6.6.6"]
         }
     },
+    
     "dispatcher" : {
+        "udp://0.0.0.0:53":{
+            "type":"server",
+            "id":"main_dns_server"
+        },
         "tcp://0.0.0.0:80":{
             "type":"server",
             "id":"main_http_server"

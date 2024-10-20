@@ -499,7 +499,7 @@ mod tests {
             owner_name: None,
             gateway: None,
             auth_key: None, 
-            oods: vec!["ood01".to_string()],
+            oods: vec!["ood1".to_string()],
             services: None,
             sn: Some("web3.buckyos.io".to_string()),
             vlan: None,
@@ -552,7 +552,7 @@ mod tests {
         let ood_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(ood_public_key).unwrap();
         let device_config = DeviceConfig {
             did: "did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
-            name: "ood01".to_string(),
+            name: "ood1".to_string(),
             device_type: "ood".to_string(),
             auth_key: ood_key_jwk,
             iss: "waterfllier".to_string(),

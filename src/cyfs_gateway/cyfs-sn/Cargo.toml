@@ -14,6 +14,12 @@ serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 env_logger = "*"
 url = "*"
+rusqlite = "*"
+rand = "*"
+once_cell = "*"
+
+buckyos-kit = { path = "../../components/buckyos-kit" }
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 kRPC = { path = "../../kernel/kRPC" }
 name-lib = { path = "../../components/name-lib" }
+name-client = { path = "../../components/name-client" }

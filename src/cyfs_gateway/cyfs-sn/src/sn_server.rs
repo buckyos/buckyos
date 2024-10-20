@@ -1,35 +1,97 @@
 #![allow(unused)]
 use ::kRPC::*;
-use std::result::Result;
+use std::{fmt::format, net::IpAddr, result::Result};
 use async_trait::async_trait;
 use serde_json::{Value,json};
 use name_lib::*;
+use name_client::*;
 use log::*;
 use tokio::sync::Mutex;
 use std::sync::Arc;
 use std::collections::HashMap;
 use serde::{Serialize,Deserialize};
+use std::str::FromStr;
+use lazy_static::lazy_static;
 
-#[derive(Debug,Clone,Copy,Serialize,Deserialize)]
+use crate::sn_db::{self, *};
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
 pub struct SNServerConfig {
+    host:String,
 }
 
+
+lazy_static!{
+    static ref SN_SERVER_MAP:Arc<Mutex<HashMap<String,SNServer>>> = Arc::new(Mutex::new(HashMap::new()));
+}
+
+#[derive(Clone)]
 pub struct SNServer {
-    all_device_info:Arc<Mutex<HashMap<String,DeviceInfo>>>,
+    //ipaddress is the ip from update_op's ip_from
+    all_device_info:Arc<Mutex<HashMap<String,(DeviceInfo,IpAddr)>>>,
+    all_user_zone_config:Arc<Mutex<HashMap<String,String>>>,
+    server_host:String,
 }
 
 impl SNServer {
     pub fn new(server_config:Option<SNServerConfig>) -> Self {
+        let conn = get_sn_db_conn();
+        if conn.is_ok() {
+            let conn = conn.unwrap();
+            initialize_database(&conn);
+        } else {
+            error!("Failed to open sn_db.sqlite3");
+            panic!("Failed to open sn_db.sqlite3");
+        }
+
+        let mut server_host = "web3.buckyos.io".to_string();
+        if server_config.is_some() {
+            let server_config = server_config.unwrap();
+            let server_host = server_config.host;
+        }
+
         SNServer {
             all_device_info:Arc::new(Mutex::new(HashMap::new())),
+            all_user_zone_config:Arc::new(Mutex::new(HashMap::new())),
+            server_host:server_host,
         }
+    }
+
+
+    pub async fn register_user(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
+        let user_name = req.params.get("user_name");
+        let public_key = req.params.get("public_key");
+        let active_code = req.params.get("active_code");
+        let zone_config = req.params.get("zone_config");
+        if user_name.is_none() || public_key.is_none() || active_code.is_none() || zone_config.is_none() {
+            return Err(RPCErrors::ParseRequestError("Invalid params, user_name or public_key or active_code is none".to_string()));
+        }
+        let user_name = user_name.unwrap().as_str().unwrap();
+        let public_key = public_key.unwrap().as_str().unwrap();
+        let active_code = active_code.unwrap().as_str().unwrap();
+        let zone_config = zone_config.unwrap().as_str().unwrap();
+
+        let conn = sn_db::get_sn_db_conn().unwrap();
+        let ret = sn_db::register_user(&conn, active_code, user_name, public_key, zone_config);
+        if ret.is_err() {
+            let err_str = ret.err().unwrap().to_string();
+            warn!("Failed to register user {}: {:?}",user_name,err_str.as_str());
+            return Err(RPCErrors::ParseRequestError(format!("Failed to register user: {}",err_str)));
+        } 
+
+        info!("user {} registered success, public_key: {}, active_code: {}",user_name,public_key,active_code);
+
+        let resp = RPCResponse::new(RPCResult::Success(json!({
+            "code":0 
+        })),req.seq);
+        return Ok(resp);
     }
 
     pub async fn register_device(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
         unimplemented!();
     }
 
-    pub async fn update_device(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
+    pub async fn update_device(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors> {
         let device_info_json = req.params.get("device_info");
         let owner_id = req.params.get("owner_id");
         if owner_id.is_none() || device_info_json.is_none() {
@@ -40,9 +102,10 @@ impl SNServer {
             return Err(RPCErrors::ParseRequestError("Invalid params, owner_id is none".to_string()));
         }
         let owner_id = owner_id.unwrap();
-        
+        let device_info_json = device_info_json.unwrap();
+    
 
-        let device_info = serde_json::from_value::<DeviceInfo>(device_info_json.unwrap().clone()).map_err(|e|{
+        let device_info = serde_json::from_value::<DeviceInfo>(device_info_json.clone()).map_err(|e|{
             error!("Failed to parse device info: {:?}",e);
             RPCErrors::ParseRequestError(e.to_string())
         })?;    
@@ -51,7 +114,10 @@ impl SNServer {
 
         let mut device_info_map = self.all_device_info.lock().await;
         let key = format!("{}_{}",owner_id,device_info.hostname.clone());
-        device_info_map.insert(key.clone(), device_info);
+        device_info_map.insert(key.clone(), (device_info.clone(),ip_from));
+        let conn = sn_db::get_sn_db_conn().unwrap();
+        let ip_str = ip_from.to_string();
+        sn_db::update_device_by_name(&conn, owner_id, &device_info.hostname.clone(), ip_str.as_str(), device_info_json.to_string().as_str());
         let resp = RPCResponse::new(RPCResult::Success(json!({
             "code":0 
         })),req.seq);
@@ -60,6 +126,50 @@ impl SNServer {
         return Ok(resp);
     }
     
+
+    async fn get_device_info(&self, device_name: &str, owner_id: &str) -> Option<(DeviceInfo,IpAddr)> {
+        let key = format!("{}_{}",owner_id,device_name);
+        let mut device_info_map = self.all_device_info.lock().await;
+        let device_info = device_info_map.get(&key);
+        if device_info.is_none() {
+            warn!("device info not found for {} in memory cache, try to query from db",key);
+            let conn = sn_db::get_sn_db_conn().unwrap();
+            let device_json = sn_db::query_device(&conn, device_name).unwrap();
+            if device_json.is_none() {
+                warn!("device info not found for {} in db",key);
+                return None;
+            }
+            let device_json = device_json.unwrap();
+            let sn_ip = device_json.3;
+            let sn_ip = IpAddr::from_str(sn_ip.as_str()).unwrap();
+            let device_info_json = device_json.4;
+            let device_value = serde_json::to_value(device_info_json).unwrap();
+            let device_info = serde_json::from_value::<DeviceInfo>(device_value.clone()).unwrap();
+            device_info_map.insert(key.clone(), (device_info.clone(),sn_ip));
+            return Some((device_info.clone(),sn_ip));
+        } else {
+            return device_info.cloned();
+        }
+    }
+
+    async fn get_user_zone_config(&self, username: &str) -> Option<String> {
+        let mut user_zone_config_map = self.all_user_zone_config.lock().await;
+        let zone_config = user_zone_config_map.get(username);
+        if zone_config.is_none() {
+            let conn = sn_db::get_sn_db_conn().unwrap();
+            let user_info = sn_db::get_user_info(&conn, username).unwrap();
+            if user_info.is_some() {
+                let user_info = user_info.unwrap();
+                user_zone_config_map.insert(username.to_string(), user_info.1.clone());
+                return Some(user_info.1.clone());
+            }
+            return None;
+        } else {
+            return zone_config.cloned();
+        }
+    }
+
+    //get device info by device_name and owner_name
     pub async fn get_device(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
         let device_id = req.params.get("device_id");
         let owner_id = req.params.get("owner_id");
@@ -73,25 +183,107 @@ impl SNServer {
         }
         let device_id = device_id.unwrap();
         let owner_id = owner_id.unwrap();
-        let key = format!("{}_{}",owner_id,device_id);
-        let device_info_map = self.all_device_info.lock().await;
-        let device_info = device_info_map.get(&key).unwrap();
-        let device_json = serde_json::to_value(device_info.clone()).unwrap();
-        return Ok(RPCResponse::new(RPCResult::Success(device_json),req.seq));   
+        let device_info = self.get_device_info(device_id, owner_id).await;
+        if device_info.is_some() {
+            let device_info = device_info.unwrap();
+            let device_value = serde_json::to_value(device_info.0).map_err(|e|{
+                warn!("Failed to parse device info: {:?}",e);
+                RPCErrors::ReasonError(e.to_string())
+            })?;
+            return Ok(RPCResponse::new(RPCResult::Success(device_value),req.seq));
+        }
+         else {
+            let device_json = serde_json::to_value(device_info.clone()).unwrap();
+            return Ok(RPCResponse::new(RPCResult::Success(device_json),req.seq)); 
+        }
+  
+    }
+}
+
+#[async_trait]
+impl NSProvider for SNServer {
+    fn get_id(&self) -> String {
+        "sn_ns_provider".to_string()
+    } 
+
+    async fn query(&self, name: &str,record_type:Option<&str>) -> NSResult<NameInfo> {
+        info!("sn server dns process name query: {}, record_type: {:?}",name,record_type);
+        let record_str = record_type.unwrap_or("A");
+        let mut is_support = false;
+        if record_str == "A" || record_str == "AAAA" || record_str == "TXT" {
+            is_support = true;
+        }
+
+        if !is_support {
+            return Err(NSError::NotFound(format!("sn-server not support record type {}",record_str)));
+        }
+        //query A or AAAA record
+        //如果用户的设备存在，返回设备的IP （端口映射方案）
+        //如果用户存在，但设备不存在返回当前服务器的IP （使用web3桥返连方案）
+        
+        //query TXT record
+        //如果用户存在，则返回用户的ZoneConfig
+        let end_string = format!(".{}.",self.server_host.as_str());
+        if name.ends_with(&end_string) {
+            
+            let sub_name = name[0..name.len()-end_string.len()].to_string();
+            //split sub_name by "."
+            let subs:Vec<&str> = sub_name.split(".").collect();
+            let username = subs.last();
+            if username.is_none() {
+                return Err(NSError::NotFound(name.to_string()));
+            }
+            let username = username.unwrap();
+            info!("sub zone {},enter sn serverquery: {}, record_type: {:?}, end_string: {}",username,name,record_type,end_string);
+            match record_str {
+                "TXT" => {
+                    let zone_config = self.get_user_zone_config(username).await;
+                    if zone_config.is_some() {
+                        let result_name_info = NameInfo::from_zone_config_str(name, zone_config.unwrap().as_str());
+                        return Ok(result_name_info);
+                    } else {
+                        return Err(NSError::NotFound(name.to_string()));
+                    }
+                },
+                "A" | "AAAA" => {
+                    let device_info = self.get_device_info(username, "ood1").await;
+                    if device_info.is_some() {
+                        let result_name_info = NameInfo::from_address(name, device_info.unwrap().1);
+                        return Ok(result_name_info);
+                    } else {
+                        return Err(NSError::NotFound(name.to_string()));
+                    }
+                },
+                _ => {
+                    return Err(NSError::NotFound(format!("sn-server not support record type {}",record_str)));
+                }
+            }
+            
+        } else {
+            return Err(NSError::NotFound(name.to_string()));
+        }
+    }
+
+    async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {
+        return Err(NSError::NotFound("sn-server not support did query".to_string()));
     }
 }
 
 #[async_trait]
 impl kRPCHandler for SNServer {
-    async fn handle_rpc_call(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
+    async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors> {
         match req.method.as_str() {
+            "register_user" => {
+                //register user
+                return self.register_user(req).await;
+            },
             "register" => {
                 //register device
                 return self.register_device(req).await;
             },
             "update" => {
                 //update device info
-                return self.update_device(req).await;
+                return self.update_device(req,ip_from).await;
             },
             "get" => {
                 //get device info
@@ -102,4 +294,18 @@ impl kRPCHandler for SNServer {
     }
 }
 
+pub async fn register_sn_server(server_id:&str, sn_server:SNServer) {
+    let mut server_map = SN_SERVER_MAP.lock().await;
+    server_map.insert(server_id.to_string(), sn_server);
+}
 
+pub async fn get_sn_server_by_id(server_id:&str) -> Option<SNServer> {
+    let server_map = SN_SERVER_MAP.lock().await;
+    let sn_server = server_map.get(server_id);
+    if sn_server.is_none() {
+        return None;
+    }
+    let sn_server = sn_server.unwrap();
+    Some(sn_server.clone())
+}
+    

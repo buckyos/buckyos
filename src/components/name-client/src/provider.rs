@@ -34,7 +34,14 @@ pub struct NameInfo {
 
 impl NameInfo {
     pub fn from_address(name:&str,address:IpAddr) -> Self {
-        Self {name:name.to_string(),address:vec![address],cname:None,txt:None,did_document:None,proof_type:NameProof::None,create_time:0,ttl:None}
+        let ttl = 5*60;
+        Self {name:name.to_string(),address:vec![address],cname:None,txt:None,did_document:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
+    }
+
+    pub fn from_zone_config_str(name:&str,zone_config_str:&str) -> Self {
+        let txt_string = format!("DID={};",zone_config_str);
+        let ttl = 3600;
+        Self {name:name.to_string(),address:vec![],cname:None,txt:Some(txt_string),did_document:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
     }
 }
 

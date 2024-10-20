@@ -19,6 +19,8 @@ hickory-server = "*"
 hickory-proto = "*"
 chrono = "*"
 url = "*"
+futures = "*"
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 name-lib = {path = "../../components/name-lib"}
 name-client = {path = "../../components/name-client"}
+cyfs-sn = {path = "../cyfs-sn"}

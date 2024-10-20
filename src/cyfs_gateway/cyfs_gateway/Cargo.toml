@@ -26,4 +26,4 @@ name-lib = { path = "../../components/name-lib" }
 
 cyfs-warp = { path= "../cyfs-warp"}
 cyfs-sn = { path = "../cyfs-sn" }
-
+cyfs-dns = { path = "../cyfs-dns" }

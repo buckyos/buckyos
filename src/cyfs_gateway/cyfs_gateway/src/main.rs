@@ -13,6 +13,7 @@ mod config_loader;
 
 
 use std::path::PathBuf;
+use cyfs_dns::start_cyfs_dns_server;
 use log::*;
 use clap::{Arg, ArgAction, Command};
 use cyfs_gateway_lib::*;
@@ -82,6 +83,12 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
                 let warp_config = warp_config.clone();
                 task::spawn(async move {
                     let _ = start_cyfs_warp_server(warp_config).await;
+                });
+            },
+            ServerConfig::DNS(dns_config) => {
+                let dns_config = dns_config.clone();
+                task::spawn(async move {
+                    let _ = start_cyfs_dns_server(dns_config).await;
                 });
             },
             _ => {

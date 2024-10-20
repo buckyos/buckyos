@@ -120,7 +120,7 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
 
     let acceptor = from_stream(incoming_tls_stream);
     let server = Server::builder(acceptor).serve(make_svc);
-    info!("HTTPS Server running on https://{}", https_bind_addr);
+    info!("cyfs-warp HTTPs Server running on https://{}", https_bind_addr);
 
     tokio::task::spawn(async move {
         let http_bind_addr = format!("{}:{}",bind_addr,config.http_port);
@@ -138,7 +138,7 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
             }
         });
         let server_http = Server::builder(http_acceptor).serve(make_svc);
-        info!("HTTP Server running on http://{}", http_bind_addr);
+        info!("cyfs-warpHTTP Server running on http://{}", http_bind_addr);
         let _ = server_http.await;
     });
 

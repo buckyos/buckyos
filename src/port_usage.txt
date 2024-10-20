@@ -5,6 +5,7 @@
     3100-3200 cyfs-gateway [http 3180,https 3143]
     3200-3300 system_config [http kapi/system_config]
     3300-3400 veriy_hub [http kapi/verify_hub]
+    3400-3500 scheduler [http kapi/scheduler]
 
 4000-5000 frame service
 

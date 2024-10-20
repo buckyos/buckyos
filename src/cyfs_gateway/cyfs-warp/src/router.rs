@@ -7,6 +7,7 @@ use hyper::{Body, Client, Request, Response, StatusCode};
 use log::*;
 use rustls::ServerConfig;
 use url::Url;
+use std::net::IpAddr;
 use std::{net::SocketAddr, sync::Arc};
 use std::path::Path;
 use std::collections::HashMap;
@@ -65,7 +66,8 @@ impl Router {
             } 
         } 
         let req_path = req.uri().path();
-        info!("{}==>warp recv_req: {} {:?}",client_ip,req_path,req.headers());
+        let client_ip = client_ip.ip();
+        info!("{}==>warp recv_req: {} {:?}",client_ip.to_string(),req_path,req.headers());
 
         let host_config = self.config.hosts.get(&host).or_else(|| self.config.hosts.get("*"));
         if host_config.is_none() {
@@ -110,12 +112,12 @@ impl Router {
             RouteConfig {
                 inner_service: Some(inner_service),
                 ..
-            } => self.handle_inner_service(req, inner_service.as_str()).await,
+            } => self.handle_inner_service(inner_service.as_str(),req,client_ip).await,
             _ => Err(anyhow::anyhow!("Invalid route configuration")),
         }
     }
 
-    async fn handle_inner_service(&self, req: Request<Body>, inner_service_name: &str) -> Result<Response<Body>> {
+    async fn handle_inner_service(&self, inner_service_name: &str, req: Request<Body>, client_ip:IpAddr) -> Result<Response<Body>> {
         let inner_service = self.inner_service.get();
         let true_service;
         if inner_service.is_none() {
@@ -138,7 +140,7 @@ impl Router {
             anyhow::anyhow!("Failed to parse request body to RPCRequest: {}", e)
         })?;
 
-        let resp = true_service.handle_rpc_call(rpc_request).await?;
+        let resp = true_service.handle_rpc_call(rpc_request,client_ip).await?;
         //parse resp to Response<Body>
         Ok(Response::new(Body::from(serde_json::to_string(&resp)?)))
     }

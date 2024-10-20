@@ -20,12 +20,11 @@ pub struct DeviceInfo {
     pub hostname:String,
     pub device_type:String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ip:Option<IpAddr>,//main_ip
+    pub ip:Option<IpAddr>,//main_ip from device's self knowledge
     #[serde(skip_serializing_if = "Option::is_none")]
     pub main_net_interface:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub net_id:Option<String>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sys_hostname : Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,6 +85,7 @@ impl DeviceInfo {
             hostname:hostname.to_string(),
             device_type:"ood".to_string(),
             ip:ip,
+            
             main_net_interface:None,
             net_id:net_id,
             node_daemon_ver:None,
