@@ -34,6 +34,7 @@ impl AsyncRead for TunnelStreamConnection {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
+        //info!("TunnelStreamConnection poll_read len:{}",buf.filled().len());
         // 使用 Pin::new_unchecked 将 inner 的可变引用转换为 Pin<&mut dyn AsyncRead>
         Pin::new(&mut *self.get_mut().inner).poll_read(cx, buf)
     }
@@ -46,6 +47,7 @@ impl AsyncWrite for TunnelStreamConnection {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
+        //info!("TunnelStreamConnection poll_write len:{}",buf.len());
         Pin::new(&mut *self.get_mut().inner).poll_write(cx, buf)
     }
 
@@ -53,6 +55,7 @@ impl AsyncWrite for TunnelStreamConnection {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<std::io::Result<()>> {
+        //info!("TunnelStreamConnection poll_flush");
         Pin::new(&mut *self.get_mut().inner).poll_flush(cx)
     }
 
@@ -60,6 +63,7 @@ impl AsyncWrite for TunnelStreamConnection {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<std::io::Result<()>> {
+        //info!("TunnelStreamConnection poll_shutdown");
         Pin::new(&mut *self.get_mut().inner).poll_shutdown(cx)
     }
 }
@@ -79,7 +83,7 @@ impl Service<Uri> for TunnelConnector {
 
     fn call(&mut self, uri: Uri) -> Self::Future {
         Box::pin(async move {
-            info!("TunnelConnector will open stream to {}", uri.to_string());
+            info!("HTTP upstream TunnelConnector will open stream to {}", uri.to_string());
             let target = Url::parse(uri.to_string().as_str()).map_err(|e| Box::new(e) as Box<dyn StdError + Send + Sync>)?;
             let tunnel_host = target.host();
             let target_port = target.port();
@@ -97,7 +101,7 @@ impl Service<Uri> for TunnelConnector {
                 return Err(Box::new(err) as Box<dyn StdError + Send + Sync>);
             }
             let target_tunnel = target_tunnel.unwrap();
-            info!("TunnelConnector Get tunnel OK! {}", target.to_string());
+            //info!("TunnelConnector Get tunnel OK! {}", target.to_string());
             let target_stream = target_tunnel.open_stream(target_port.unwrap_or(80)).await
                 .map_err(|e| Box::new(e) as Box<dyn StdError + Send + Sync>)?;
             Ok(TunnelStreamConnection::new(target_stream))

@@ -44,7 +44,7 @@ shutil.copy(os.path.join(target_dir, "release", "cyfs_gateway"), destination_dir
 
 destination_dir = os.path.join(build_dir, "rootfs/bin")
 shutil.copy(os.path.join(build_dir, "killall.py"), destination_dir)
-print('copying files to rootfs done')
+print('copying files to rootfs & web3_bridge done')
 
 
 # if /opt/buckyos not exist, copy rootfs to /opt/buckyos

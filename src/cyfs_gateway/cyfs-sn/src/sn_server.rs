@@ -350,13 +350,13 @@ impl TunnelSelector for SNServer {
             
             let device_info = self.get_device_info(username, "ood1").await;
             if device_info.is_some() {
-                info!("ood1 device info found for {} in sn server",username);
+                //info!("ood1 device info found for {} in sn server",username);
                 //let device_did = device_info.unwrap().0.did;
                 let device_did = device_info.unwrap().0.did;
                 if device_did.is_some() {
                     let device_did = device_did.unwrap().replace(":", ".");
                     let result_str = format!("rtcp://{}",device_did.as_str());
-                    info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
+                    //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
                     return Some(result_str);
                 } else {
                     warn!("ood1 device did not found for {} in sn server",username);

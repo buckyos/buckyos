@@ -432,7 +432,7 @@ impl RTcpTunnelPackage {
         let mut buf = [0; 2];
         stream.read_exact(&mut buf).await?;
         let len = u16::from_be_bytes(buf);
-        info!("|==> read package len:{}",len);
+        info!("|==> read rtcp package, len:{}",len);
         if len == 0 {
             if !is_first_package {
                 error!("HelloStream MUST be first package.");
@@ -560,7 +560,7 @@ pub struct RTcpTunnel {
 }
 
 impl RTcpTunnel {
-    pub fn new(this_device:String,target: &RTcpTarget,  can_direct: bool,stream:TcpStream) -> Self {
+    fn new(this_device:String,target: &RTcpTarget,  can_direct: bool,stream:TcpStream) -> Self {
         let peer_addr = stream.peer_addr().unwrap();    
         let (read_stream,write_stream) = stream.into_split();
         let mut this_target = target.clone();
@@ -575,8 +575,10 @@ impl RTcpTunnel {
         }
     }
 
-    pub fn close(&self) {
-        unimplemented!("close not implemented");
+    pub async fn close(&self) {
+        //let mut read_stream = self.read_stream.lock().await;
+        //let mut read_stream:OwnedReadHalf = (*read_stream);
+        //read_stream.shutdown().await;
     }
 
     async fn process_package(&self,package:RTcpTunnelPackage) -> Result<(),anyhow::Error> {

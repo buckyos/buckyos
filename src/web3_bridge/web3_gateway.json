@@ -3,7 +3,7 @@
         "main_sn" : {
             "type" : "cyfs_sn",
             "host":"web3.buckyos.io",
-            "ip":"23.239.23.54"
+            "ip":"192.168.1.188"
         }
     },
     "servers":{
