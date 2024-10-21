@@ -5,8 +5,9 @@ use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::{BufReader, AsyncBufReadExt, AsyncReadExt, AsyncRead};
 use std::collections::HashMap;
+use std::env;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{exit, Stdio};
 use package_manager::*;
 
 #[derive(Error, Debug)]
@@ -32,6 +33,18 @@ pub enum ServiceState {
 }
 
 type Result<T> = std::result::Result<T, ServiceControlError>;
+
+pub fn restart_program() -> std::io::Result<()> {
+    let current_exe = env::current_exe()?;
+    
+    Command::new(current_exe)
+        .args(env::args().skip(1)) // 传递原始参数
+        .spawn()?;  // 启动新的进程
+
+    exit(0);  // 退出当前进程
+
+    Ok(())
+}
 
 pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String>>,
                     current_dir: Option<&PathBuf>, env_vars: Option<&HashMap<String, String>>) -> Result<(i32, Vec<u8>)> {

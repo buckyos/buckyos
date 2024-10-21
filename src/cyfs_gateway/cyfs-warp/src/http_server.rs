@@ -138,7 +138,7 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
             }
         });
         let server_http = Server::builder(http_acceptor).serve(make_svc);
-        info!("cyfs-warpHTTP Server running on http://{}", http_bind_addr);
+        info!("cyfs-warp HTTP Server running on http://{}", http_bind_addr);
         let _ = server_http.await;
     });
 

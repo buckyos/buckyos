@@ -77,3 +77,5 @@ class WizzardDlg extends HTMLElement {
 }
 
 customElements.define('bucky-wizzard-dlg', WizzardDlg);
+
+export default WizzardDlg;

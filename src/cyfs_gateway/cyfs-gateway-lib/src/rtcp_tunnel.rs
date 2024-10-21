@@ -17,9 +17,9 @@ cmd:hello
 from_id: string,
 to_id: string,
 test_port:u16
-seession_key:option<string>
+seession_key:option<string> （用对方公钥加密的key,并有自己的签名）
 }
-
+后续所有命令都用tunel key 对称加密
 {
 cmd:hello_ack
 test_result:bool

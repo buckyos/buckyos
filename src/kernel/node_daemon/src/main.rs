@@ -6,6 +6,7 @@ mod run_item;
 mod kernel_mgr; // support manager kernel service (run in native, run for system)
 mod service_mgr; // support manager frame service (run in docker,run for all users)
 mod app_mgr; // support manager app service (run in docker,run for one user)
+mod active_server;
 
 use std::env;
 use std::fmt::format;
@@ -40,7 +41,7 @@ use crate::run_item::*;
 use crate::service_mgr::*;
 use crate::app_mgr::*;
 use crate::kernel_mgr::*;
-
+use crate::active_server::*;
 use thiserror::Error;
 
 
@@ -545,6 +546,9 @@ async fn start_cyfs_gateway_service(node_id: &String,device_doc: &DeviceConfig, 
     Ok(())
 }
 
+
+
+
 async fn async_main() -> std::result::Result<(), String> {
     init_log_config();
     let matches = Command::new("BuckyOS Node Daemon")
@@ -554,19 +558,36 @@ async fn async_main() -> std::result::Result<(), String> {
             .help("This node's id")
             .required(false),
     )
+    .arg(
+        Arg::new("enable_active")
+            .long("enable_active")
+            .help("Enable node active service")
+            .action(clap::ArgAction::SetTrue)
+            .required(false),
+    )
     .get_matches();
 
     let node_id = matches.get_one::<String>("id");
+    let enable_active = matches.get_flag("enable_active");
     let defualt_node_id = "node".to_string();
     let node_id = node_id.unwrap_or(&defualt_node_id);
 
     info!("node_dameon start...");
     //load node identity config
-    let node_identity = load_identity_config(node_id).map_err(|err| {
-        error!("load node identity config failed! {}", err);
-        //TODO: if there is no args disable node-active, start node-active service
-        return String::from("load node identity config failed!")
-    })?;
+    let mut node_identity = load_identity_config(node_id);
+    if node_identity.is_err() {
+        if enable_active {
+            info!("node identity config not found, start node active service...");
+            start_node_active_service().await;
+            info!("node active service returned, restart node_daemon.");
+            restart_program();
+        } else {   
+            error!("load node identity config failed! {}", node_identity.err().unwrap());
+            return Err(String::from("load node identity config failed!"));
+        }
+    }
+
+    let node_identity = node_identity.unwrap();
 
     init_default_name_client().await.map_err(|err| {
         error!("init default name client failed! {}", err);

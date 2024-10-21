@@ -20,6 +20,7 @@
       "baseUrl": ".",
       "experimentalDecorators": true,
       "emitDecoratorMetadata": true,
+      "noEmitOnError": false,
       "paths": {
         "@/components/*": ["components/*"],
         "@/utils/*": ["utils/*"]

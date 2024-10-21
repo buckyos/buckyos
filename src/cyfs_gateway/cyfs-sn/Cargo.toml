@@ -14,7 +14,7 @@ serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 env_logger = "*"
 url = "*"
-rusqlite = "*"
+rusqlite =  { version = "*", features = ["bundled"] }
 rand = "*"
 once_cell = "*"
 

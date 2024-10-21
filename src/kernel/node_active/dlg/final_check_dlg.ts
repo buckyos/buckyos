@@ -1,4 +1,5 @@
 import templateContent from './final_check_dlg.template?raw';  
+import WizzardDlg from '../components/wizzard-dlg';
 
 class FinalCheckDlg extends HTMLElement {
     constructor() {
@@ -23,7 +24,7 @@ class FinalCheckDlg extends HTMLElement {
 
         const next_btn = shadow.getElementById('btn_next');
         next_btn.addEventListener('click', () => {
-            const activeWizzard = document.getElementById('active-wizzard');
+            const activeWizzard = document.getElementById('active-wizzard') as WizzardDlg;
             const active_result_dlg = document.createElement('active-result-dlg');
             activeWizzard.pushDlg(active_result_dlg);
         });

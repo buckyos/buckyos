@@ -229,7 +229,8 @@ impl Router {
     async fn handle_local_dir(&self, req: Request<Body>, local_dir: &str, route_path: &str) -> Result<Response<Body>> {
         let path = req.uri().path();
         let sub_path = path.trim_start_matches(route_path);
-        let file_path = format!("{}{}", local_dir, sub_path);
+        let file_path = format!("{}/{}", local_dir, sub_path);
+        info!("handle_local_dir will load file:{}",file_path);
         let path = Path::new(&file_path);
 
         if path.is_file() {
