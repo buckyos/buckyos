@@ -1,6 +1,7 @@
 #![allow(unused)]
+use cyfs_gateway_lib::TunnelSelector;
 use ::kRPC::*;
-use std::{fmt::format, net::IpAddr, result::Result};
+use std::{fmt::format, net::{IpAddr, Ipv4Addr}, result::Result};
 use async_trait::async_trait;
 use serde_json::{Value,json};
 use name_lib::*;
@@ -18,6 +19,7 @@ use crate::sn_db::{self, *};
 #[derive(Debug,Clone,Serialize,Deserialize)]
 pub struct SNServerConfig {
     host:String,
+    ip:String,
 }
 
 
@@ -31,6 +33,7 @@ pub struct SNServer {
     all_device_info:Arc<Mutex<HashMap<String,(DeviceInfo,IpAddr)>>>,
     all_user_zone_config:Arc<Mutex<HashMap<String,String>>>,
     server_host:String,
+    server_ip:IpAddr,
 }
 
 impl SNServer {
@@ -45,15 +48,18 @@ impl SNServer {
         }
 
         let mut server_host = "web3.buckyos.io".to_string();
+        let mut server_ip:IpAddr = IpAddr::V4(Ipv4Addr::new(127,0,0,1));
         if server_config.is_some() {
             let server_config = server_config.unwrap();
-            let server_host = server_config.host;
-        }
+            server_host = server_config.host;
+            server_ip = IpAddr::from_str(server_config.ip.as_str()).unwrap();
+        } 
 
         SNServer {
             all_device_info:Arc::new(Mutex::new(HashMap::new())),
             all_user_zone_config:Arc::new(Mutex::new(HashMap::new())),
             server_host:server_host,
+            server_ip:server_ip,
         }
     }
 
@@ -127,14 +133,14 @@ impl SNServer {
     }
     
 
-    async fn get_device_info(&self, device_name: &str, owner_id: &str) -> Option<(DeviceInfo,IpAddr)> {
+    async fn get_device_info(&self, owner_id: &str,device_name: &str) -> Option<(DeviceInfo,IpAddr)> {
         let key = format!("{}_{}",owner_id,device_name);
         let mut device_info_map = self.all_device_info.lock().await;
         let device_info = device_info_map.get(&key);
         if device_info.is_none() {
             warn!("device info not found for {} in memory cache, try to query from db",key);
             let conn = sn_db::get_sn_db_conn().unwrap();
-            let device_json = sn_db::query_device(&conn, device_name).unwrap();
+            let device_json = sn_db::query_device_by_name(&conn, owner_id, device_name).unwrap();
             if device_json.is_none() {
                 warn!("device info not found for {} in db",key);
                 return None;
@@ -142,9 +148,14 @@ impl SNServer {
             let device_json = device_json.unwrap();
             let sn_ip = device_json.3;
             let sn_ip = IpAddr::from_str(sn_ip.as_str()).unwrap();
-            let device_info_json = device_json.4;
-            let device_value = serde_json::to_value(device_info_json).unwrap();
-            let device_info = serde_json::from_value::<DeviceInfo>(device_value.clone()).unwrap();
+            let device_info_json:String = device_json.4;
+            //info!("device info json: {}",device_info_json);
+            let device_info = serde_json::from_str::<DeviceInfo>(device_info_json.as_str());
+            if device_info.is_err() {
+                warn!("failed to parse device info from db for {}: {:?}",key,device_info.err().unwrap());
+                return None;
+            }
+            let device_info = device_info.unwrap();
             device_info_map.insert(key.clone(), (device_info.clone(),sn_ip));
             return Some((device_info.clone(),sn_ip));
         } else {
@@ -217,9 +228,16 @@ impl NSProvider for SNServer {
         if !is_support {
             return Err(NSError::NotFound(format!("sn-server not support record type {}",record_str)));
         }
+
+        let full_server_host = format!("{}.",self.server_host.as_str());
+        if name == self.server_host || name == full_server_host {
+            //返回当前服务器的地址
+            let result_name_info = NameInfo::from_address(name, self.server_ip);
+            return Ok(result_name_info);
+        }
         //query A or AAAA record
-        //如果用户的设备存在，返回设备的IP （端口映射方案）
-        //如果用户存在，但设备不存在返回当前服务器的IP （使用web3桥返连方案）
+        //端口映射方案: 如果用户存在 返回设备ood1的IP 
+        //使用web3桥返连方案:如果用户存在和ood1都存在 返回当前服务器的IP 
         
         //query TXT record
         //如果用户存在，则返回用户的ZoneConfig
@@ -234,7 +252,7 @@ impl NSProvider for SNServer {
                 return Err(NSError::NotFound(name.to_string()));
             }
             let username = username.unwrap();
-            info!("sub zone {},enter sn serverquery: {}, record_type: {:?}, end_string: {}",username,name,record_type,end_string);
+            info!("sub zone {},enter sn serverquery: {}, record_type: {:?}",username,name,record_type);
             match record_str {
                 "TXT" => {
                     let zone_config = self.get_user_zone_config(username).await;
@@ -248,7 +266,27 @@ impl NSProvider for SNServer {
                 "A" | "AAAA" => {
                     let device_info = self.get_device_info(username, "ood1").await;
                     if device_info.is_some() {
-                        let result_name_info = NameInfo::from_address(name, device_info.unwrap().1);
+                        let (device_info,device_ip) = device_info.unwrap();
+                        if device_info.is_wan_device() {
+                            let device_report_ip = device_info.ip.unwrap();
+                            match device_report_ip {
+                                IpAddr::V4(ip) => {
+                                    if ip.is_private() {
+                                        info!("device {} is wan device with private ip, return ip {} ",name,device_ip);
+                                        return Ok(NameInfo::from_address(name, device_ip));
+                                    } else {
+                                        info!("device {} is wan device with public ip, return ip {} ",name,device_report_ip);
+                                        return Ok(NameInfo::from_address(name, device_report_ip));
+                                    }
+                                }
+                                IpAddr::V6(ip) => {
+                                    info!("device {} is wan device with public ip, return ip {} ",name,device_ip);
+                                    return Ok(NameInfo::from_address(name, device_report_ip));
+                                }
+                            }
+                        }
+                        info!("device {} is lan device, return sn'sip {} ",name,self.server_ip);
+                        let result_name_info = NameInfo::from_address(name, self.server_ip);
                         return Ok(result_name_info);
                     } else {
                         return Err(NSError::NotFound(name.to_string()));
@@ -294,6 +332,44 @@ impl kRPCHandler for SNServer {
     }
 }
 
+
+#[async_trait]
+impl TunnelSelector for SNServer {
+    async fn select_tunnel_for_http_upstream(&self, req_host:&str,req_path:&str) -> Option<String> {
+        let end_string = format!(".{}",self.server_host.as_str());
+        if req_host.ends_with(&end_string) {
+            let sub_name = req_host[0..req_host.len()-end_string.len()].to_string();
+            //split sub_name by "."
+            let subs:Vec<&str> = sub_name.split(".").collect();
+            let username = subs.last();
+            if username.is_none() {
+                warn!("invalid username for sn tunnel selector {}",req_host);
+                return None;
+            }
+            let username = username.unwrap();
+            
+            let device_info = self.get_device_info(username, "ood1").await;
+            if device_info.is_some() {
+                info!("ood1 device info found for {} in sn server",username);
+                //let device_did = device_info.unwrap().0.did;
+                let device_did = device_info.unwrap().0.did;
+                if device_did.is_some() {
+                    let device_did = device_did.unwrap().replace(":", ".");
+                    let result_str = format!("rtcp://{}/3180",device_did.as_str());
+                    info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
+                    return Some(result_str);
+                } else {
+                    warn!("ood1 device did not found for {} in sn server",username);
+                }
+            } else {
+                warn!("ood1 device info not found for {} in sn server",username);
+            }
+        }
+
+        return None;
+    }
+}
+
 pub async fn register_sn_server(server_id:&str, sn_server:SNServer) {
     let mut server_map = SN_SERVER_MAP.lock().await;
     server_map.insert(server_id.to_string(), sn_server);
@@ -307,5 +383,29 @@ pub async fn get_sn_server_by_id(server_id:&str) -> Option<SNServer> {
     }
     let sn_server = sn_server.unwrap();
     Some(sn_server.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_device_info() {
+        let req_host = "home.lzc.web3.buckyos.io".to_string();
+        let server_host = "web3.buckyos.io".to_string();
+        let end_string = format!(".{}",server_host.as_str());
+        if req_host.ends_with(&end_string) {
+            let sub_name = req_host[0..req_host.len()-end_string.len()].to_string();
+            //split sub_name by "."
+            let subs:Vec<&str> = sub_name.split(".").collect();
+            let username = subs.last();
+            if username.is_none() {
+                warn!("invalid username for sn tunnel selector {}",req_host);
+                return;
+            }
+            let username = username.unwrap();
+            println!("username: {}",username);
+        }
+    }
 }
     

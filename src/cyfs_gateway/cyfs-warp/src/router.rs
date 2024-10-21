@@ -17,7 +17,7 @@ use serde_json::json;
 use ::kRPC::*;
 use lazy_static::lazy_static;
 
-
+use cyfs_sn::*;
 
 lazy_static!{
     static ref INNER_SERVICES_BUILDERS: Arc<Mutex< HashMap<String, Arc<dyn Fn () -> Box<dyn kRPCHandler + Send + Sync>+ Send + Sync>>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -45,6 +45,23 @@ impl Router {
         }
     }
 
+    fn get_config_by_host(&self,host:&str) -> Option<&HostConfig> {
+        let host_config = self.config.hosts.get(host);
+        if host_config.is_some() {
+            return host_config;
+        }
+
+        for (key,value) in self.config.hosts.iter() {
+            if key.starts_with("*.") {
+                if host.ends_with(&key[2..]) {
+                    return Some(value);
+                }
+            }
+        }
+
+        return self.config.hosts.get("*");
+    }
+
 
 
     pub async fn route(
@@ -69,7 +86,7 @@ impl Router {
         let client_ip = client_ip.ip();
         info!("{}==>warp recv_req: {} {:?}",client_ip.to_string(),req_path,req.headers());
 
-        let host_config = self.config.hosts.get(&host).or_else(|| self.config.hosts.get("*"));
+        let host_config = self.get_config_by_host(host.as_str());
         if host_config.is_none() {
             warn!("Route Config not found: {}", host);
             return Ok(Response::builder()
@@ -113,6 +130,10 @@ impl Router {
                 inner_service: Some(inner_service),
                 ..
             } => self.handle_inner_service(inner_service.as_str(),req,client_ip).await,
+            RouteConfig {
+                tunnel_selector: Some(tunnel_selector),
+                ..
+            } => self.handle_upstream_selector(tunnel_selector.as_str(), req, &host,  client_ip).await,
             _ => Err(anyhow::anyhow!("Invalid route configuration")),
         }
     }
@@ -143,6 +164,25 @@ impl Router {
         let resp = true_service.handle_rpc_call(rpc_request,client_ip).await?;
         //parse resp to Response<Body>
         Ok(Response::new(Body::from(serde_json::to_string(&resp)?)))
+    }
+
+    async fn handle_upstream_selector(&self, selector_id:&str,req: Request<Body>,host:&str, client_ip:IpAddr) -> Result<Response<Body>> {
+        //in early stage, only support sn server id
+        let sn_server = get_sn_server_by_id(selector_id).await;
+        if sn_server.is_some() {
+            let sn_server = sn_server.unwrap();
+            let req_path = req.uri().path();
+            let tunnel_url = sn_server.select_tunnel_for_http_upstream(host,req_path).await;
+            if tunnel_url.is_some() {
+                let tunnel_url   = tunnel_url.unwrap();
+                info!("select tunnel: {}",tunnel_url.as_str());
+                return self.handle_upstream(req, tunnel_url.as_str()).await;
+            }
+        } else {
+            warn!("No sn server found for selector: {}",selector_id);
+        }
+
+        return Err(anyhow::anyhow!("No tunnel selected"));
     }
 
     async fn handle_upstream(&self, req: Request<Body>, upstream: &str) -> Result<Response<Body>> {

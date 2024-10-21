@@ -381,8 +381,8 @@ async fn node_main(node_host_name: &str,
     Ok(true)
 }
 
-async fn update_device_info(device_host_name:&str,sys_config_client: &SystemConfigClient) {
-    let mut device_info = DeviceInfo::new(device_host_name);
+async fn update_device_info(device_doc: &DeviceConfig,sys_config_client: &SystemConfigClient) {
+    let mut device_info = DeviceInfo::from_device_doc(device_doc);
     let fill_result = device_info.auto_fill_by_system_info().await;
     if fill_result.is_err() {
         error!("auto fill device info failed! {}", fill_result.err().unwrap());
@@ -390,7 +390,7 @@ async fn update_device_info(device_host_name:&str,sys_config_client: &SystemConf
     }
     let device_info_str = serde_json::to_string(&device_info).unwrap();
     
-    let device_key = format!("{}/info",sys_config_get_device_path(device_host_name));
+    let device_key = format!("{}/info",sys_config_get_device_path(device_doc.name.as_str()));
     let put_result = sys_config_client.set(device_key.as_str(),device_info_str.as_str()).await;
     if put_result.is_err() {
         error!("update device info to system_config failed! {}", put_result.err().unwrap());
@@ -434,7 +434,7 @@ async fn node_daemon_main_loop(
         info!("node daemon main loop step:{}", loop_step);
         let now = buckyos_get_unix_timestamp();
         if now - last_register_time > 30 {
-            update_device_info(node_host_name, sys_config_client).await;
+            update_device_info(&device_doc, sys_config_client).await;
             last_register_time = now;
         }
 
@@ -492,14 +492,14 @@ async fn start_register_ood_info_to_sn(device_doc: &DeviceConfig, device_private
     }
 
     let ood_string = ood_string.unwrap();
-    let mut ood_info = DeviceInfo::new(ood_string.as_str());
+    let mut ood_info = DeviceInfo::from_device_doc(&device_doc);
     let fill_result =ood_info.auto_fill_by_system_info().await;
     if fill_result.is_err() {
         error!("auto fill ood info failed! {}", fill_result.err().unwrap());
         return Err(String::from("auto fill ood info failed!"));
     }
 
-
+    info!("ood info: {:?}",ood_info);
 
     sn_update_device_info(sn_url.as_str(), None, 
     &zone_config.get_zone_short_name(),device_doc.name.as_str(), &ood_info, ).await;
@@ -525,8 +525,13 @@ async fn start_cyfs_gateway_service(node_id: &String,device_doc: &DeviceConfig, 
         //params: boot cyfs-gateway configs, identiy_etc folder, keep_tunnel list 
         //  ood: keep tunnel to other ood, keep tunnel to gateway
         //  gateway_config: port_forward for system_config service 
-
-        let params = vec!["--node_id".to_string(),node_id.clone()];
+        let params : Vec<String>;
+        if zone_config.sn.is_some() {
+            let sn_url = zone_config.sn.as_ref().unwrap();
+            params = vec!["--node_id".to_string(),node_id.clone(),"--keep_tunnel".to_string(),sn_url.clone()];
+        } else {
+            params = vec!["--node_id".to_string(),node_id.clone()];
+        }
         let start_result = cyfs_gateway_service_pkg.start(Some(&params)).await.map_err(|err| {
             error!("start cyfs_gateway failed! {}", err);
             return String::from("start cyfs_gateway failed!");

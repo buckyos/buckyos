@@ -101,6 +101,22 @@ pub fn update_device_by_name(conn: &Connection, owner: &str, device_name: &str, 
     Ok(())
 }
 
+pub fn query_device_by_name(conn: &Connection, owner: &str, device_name: &str) -> Result<Option<(String, String, String, String, String, u64, u64)>> {
+    let mut stmt = conn.prepare("SELECT owner, device_name, did, ip, description, created_at, updated_at FROM devices WHERE device_name = ?1 AND owner = ?2")?;
+    let device_info = stmt.query_row(params![device_name, owner], |row| {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?
+        ))
+    }).optional()?;
+    Ok(device_info)
+}
+
 pub fn query_device(conn: &Connection, did: &str) -> Result<Option<(String, String, String, String, String, u64, u64)>> {
     let mut stmt = conn.prepare("SELECT owner, device_name, did, ip, description, created_at, updated_at FROM devices WHERE did = ?1")?;
     let device_info = stmt.query_row(params![did], |row| {
@@ -180,20 +196,23 @@ mod tests {
         let conn = get_sn_db_conn()?;
         initialize_database(&conn)?;
         // Example usage
-        let codes = generate_activation_codes(&conn, 10)?;
+        let codes = generate_activation_codes(&conn, 100)?;
         println!("codes: {:?}", codes);
         let first_code = codes.first().unwrap();
-        let registration_success = register_user(&conn, first_code.as_str(), "username", "public_key")?;
+        let registration_success = register_user(&conn, first_code.as_str(), 
+            "lzc", "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8", 
+            "eyJhbGciOiJFZERTQSJ9.eyJkaWQiOiJkaWQ6ZW5zOmx6YyIsIm9vZHMiOlsib29kMSJdLCJzbiI6IndlYjMuYnVja3lvcy5pbyIsImV4cCI6MjA0NDgyMzMzNn0.Xqd-4FsDbqZt1YZOIfduzsJik5UZmuylknMiAxLToB2jBBzHHccn1KQptLhhyEL5_Y-89YihO9BX6wO7RoqABw")?;
         if registration_success {
             println!("User registered successfully.");
         } else {
             println!("Registration failed.");
         }
+        let device_info_str =r#"{"hostname":"ood1","device_type":"ood","did":"did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc","ip":"192.168.1.86","sys_hostname":"LZC-USWORK","base_os_info":"Ubuntu 22.04 5.15.153.1-microsoft-standard-WSL2","cpu_info":"AMD Ryzen 7 5800X 8-Core Processor @ 3800 MHz","cpu_usage":0.0,"total_mem":67392299008,"mem_usage":5.7286677}"#;
+        println!("device_info_str: {}",device_info_str);
+        register_device(&conn, "lzc", "ood1", "did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc", "192.168.1.188", device_info_str)?;
+        update_device_by_name(&conn, "lzc", "oo1", "75.4.200.194", device_info_str)?;
         
-        register_device(&conn, "lzc", "ood01", "did:dev:test", "192.168.1.100", "{}")?;
-        update_device_by_name(&conn, "lzc", "ood01", "192.168.1.101", "{}")?;
-        
-        if let Some(device_info) = query_device(&conn, "did:dev:test")? {
+        if let Some(device_info) = query_device(&conn, "did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc")? {
             println!("Device info: {:?}", device_info);
         } else {
             println!("Device not found.");

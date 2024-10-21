@@ -3,16 +3,9 @@
         "main_http_server":{
             "type":"cyfs-warp",
             "bind":"0.0.0.0",
-            "http_port":3180,
-            "tls_port":3143,
+            "http_port":80,
+            "tls_port":443,
             "hosts": {
-                "another.com": {
-                  "routes": {
-                    "/": {
-                      "upstream": "http://localhost:9090"
-                    }
-                  }
-                },
                 "*": {
                     "routes": {
                         "/static": {
@@ -27,11 +20,11 @@
         }
     },
     "dispatcher" : {
-        "tcp://0.0.0.0:3180":{
+        "tcp://0.0.0.0:80":{
             "type":"server",
             "id":"main_http_server"
         },
-        "tcp://0.0.0.0:3143":{
+        "tcp://0.0.0.0:443":{
             "type":"server",
             "id":"main_http_server"
         }

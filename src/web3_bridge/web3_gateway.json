@@ -2,7 +2,8 @@
     "inner_services":{
         "main_sn" : {
             "type" : "cyfs_sn",
-            "host":"web3.buckyos.io"
+            "host":"web3.buckyos.io",
+            "ip":"23.239.23.54"
         }
     },
     "servers":{
@@ -14,11 +15,15 @@
             "hosts": {
                 "web3.buckyos.io": {
                     "routes": {
-                        "/static": {
-                            "local_dir": "/tmp/"
-                        },
                         "/kapi/sn":{
                             "inner_service":"main_sn"
+                        }
+                    }
+                },
+                "*.web3.buckyos.io": {
+                    "routes": {
+                        "/":{
+                            "tunnel_selector":"main_sn"
                         }
                     }
                 }

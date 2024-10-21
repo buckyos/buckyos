@@ -10,9 +10,15 @@ os.system("killall cyfs_gateway")
 
 parser = argparse.ArgumentParser(description="cyfs_gateway startup script")
 parser.add_argument("--node_id", type=str,required=True, help="node id")
+parser.add_argument("--keep_tunnel", type=str,required=False, help="keep tunnel")
 args = parser.parse_args()
 node_id = args.node_id
+keep_tunnel = args.keep_tunnel
 config_file = f"{current_dir}/../../etc/{node_id}_gateway.json"
 #print(f"Gateway config_file: {config_file}")
-os.system(f"nohup {current_dir}/cyfs_gateway --config_file {config_file} > /dev/null 2>&1 &")
+if keep_tunnel is not None:
+    os.system(f"nohup {current_dir}/cyfs_gateway --config_file {config_file} --keep_tunnel {keep_tunnel} > /dev/null 2>&1 &")
+else:
+    os.system(f"nohup {current_dir}/cyfs_gateway --config_file {config_file} > /dev/null 2>&1 &")
+    
 print("cyfs_gateway service started")
