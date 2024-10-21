@@ -355,7 +355,7 @@ impl TunnelSelector for SNServer {
                 let device_did = device_info.unwrap().0.did;
                 if device_did.is_some() {
                     let device_did = device_did.unwrap().replace(":", ".");
-                    let result_str = format!("rtcp://{}/3180",device_did.as_str());
+                    let result_str = format!("rtcp://{}",device_did.as_str());
                     info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
                     return Some(result_str);
                 } else {

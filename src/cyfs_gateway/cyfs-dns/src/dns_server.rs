@@ -197,7 +197,7 @@ impl DnsServer {
 
         // WARN!!! 
         // Be careful to handle the request that may be delivered to the DNS-Server again to avoid the dead cycle
-
+        
         let name = request.query().name().to_string();
         let record_type = request.query().query_type().to_string();
         info!("|==>DNS query name:{},record_type:{}", name,record_type);
@@ -277,7 +277,7 @@ impl RequestHandler for DnsServer {
 pub async fn start_cyfs_dns_server(config:DNSServerConfig) -> anyhow::Result<()> {
     let bind_addr = config.bind.clone().unwrap_or("0.0.0.0".to_string());
     let addr = format!("{}:{}", bind_addr,config.port);
-    info!("cyfs-dns-server bind at:{}", addr);
+    info!("cyfs-dns-server try bind at:{}", addr);
     let udp_socket = UdpSocket::bind(addr.clone()).await?;
     let handler = DnsServer::new(config).await?;
     let mut server = ServerFuture::new(handler);

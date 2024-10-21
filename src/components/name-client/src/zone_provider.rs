@@ -151,7 +151,7 @@ pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_
     //this device is not ood, looking best ood for system config service
     let ood_info_str = zone_config.select_same_subnet_ood(this_device);
     if ood_info_str.is_some() {
-        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str());
+        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),None);
         info!("try connect to same subnet ood: {}",ood_info.hostname);
         let ood_ip = resolve_ood_ip_by_info(&ood_info,zone_config).await;
         if ood_ip.is_ok() {
@@ -164,7 +164,7 @@ pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_
     let ood_info_str = zone_config.select_wan_ood();
     if ood_info_str.is_some() {
         //try connect to wan ood
-        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str());
+        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),None);
         info!("try connect to wan ood: {}",ood_info.hostname);
         let ood_ip = resolve_ood_ip_by_info(&ood_info,zone_config).await;
         if ood_ip.is_ok() {
@@ -292,7 +292,7 @@ impl NSProvider for ZoneProvider {
             info!("ZoneProvider try resolve ip by ood info in zone config for {} ...",name);
             let ood_string = zone_config.get_ood_string(name);
             if ood_string.is_some() {
-                let ood_info = DeviceInfo::new(ood_string.unwrap().as_str());
+                let ood_info = DeviceInfo::new(ood_string.unwrap().as_str(),None);
                 let ip = resolve_ood_ip_by_info(&ood_info,&zone_config).await;
                 if ip.is_ok() {
                     return Ok(NameInfo::from_address(name,ip.unwrap()));

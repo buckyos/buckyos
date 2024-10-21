@@ -4,7 +4,7 @@ import tempfile
 import shutil
 
 # scp to remote server
-remote_server = "root@192.168.1.85"
+remote_server = "root@zhicong.me"
 build_dir = os.path.dirname(os.path.abspath(__file__))
 
 source_dir = os.path.join(build_dir, "rootfs/bin")

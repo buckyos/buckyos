@@ -111,6 +111,12 @@ pub trait TunnelBuilder : Send
     async fn create_datagram_server(&self,bind_url:&Url) -> TunnelResult<Box<dyn DatagramServerBox>>;
 }
 
+#[async_trait]
+pub trait TunnelSelector 
+{
+    async fn select_tunnel_for_http_upstream(&self, req_host:&str,req_path:&str) -> Option<String>;
+}
+
 // ***************** Implementations of IP Tunnel *****************
 
 #[derive(Clone)]

@@ -79,6 +79,7 @@ impl Service<Uri> for TunnelConnector {
 
     fn call(&mut self, uri: Uri) -> Self::Future {
         Box::pin(async move {
+            info!("TunnelConnector will open stream to {}", uri.to_string());
             let target = Url::parse(uri.to_string().as_str()).map_err(|e| Box::new(e) as Box<dyn StdError + Send + Sync>)?;
             let tunnel_host = target.host();
             let target_port = target.port();

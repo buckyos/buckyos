@@ -69,10 +69,20 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
                             warn!("Error getting tunnel: {}", tunnle.err().unwrap());
                             continue;
                         }
+                        let tunnel = tunnle.unwrap();
+                        let _ = tunnel.ping().await;
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
                 }
             });
+        }
+    } else {
+        info!("disable buckyos,set device config for test");
+        let this_device_config = DeviceConfig::new("web3.buckyos.io",None);
+        // load device config from config files
+        let set_result = CURRENT_DEVICE_CONFIG.set(this_device_config);
+        if set_result.is_err() {
+            error!("Failed to set CURRENT_DEVICE_CONFIG");
         }
     }
 

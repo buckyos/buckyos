@@ -20,6 +20,8 @@ pub struct DeviceInfo {
     pub hostname:String,
     pub device_type:String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub did:Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ip:Option<IpAddr>,//main_ip from device's self knowledge
     #[serde(skip_serializing_if = "Option::is_none")]
     pub main_net_interface:Option<String>,
@@ -47,7 +49,8 @@ pub struct DeviceInfo {
 
 impl DeviceInfo {
     pub fn from_device_doc(device_doc:&DeviceConfig) -> Self {
-        let mut device_info = DeviceInfo::new(device_doc.name.as_str());
+        let mut device_info = DeviceInfo::new(device_doc.name.as_str(),Some(device_doc.did.clone()));
+        //device_info.did = Some(device_doc.did.clone());
         device_info.device_type = device_doc.device_type.clone();
         device_info.ip = device_doc.ip.clone();
         device_info.net_id = device_doc.net_id.clone();
@@ -55,7 +58,7 @@ impl DeviceInfo {
         return device_info;
     }
 
-    pub fn new(ood_string:&str) -> Self {
+    pub fn new(ood_string:&str,did:Option<String>) -> Self {
         //device_string format: hostname@[ip]#[netid]
         let ip :Option<IpAddr>;
         let net_id :Option<String>;
@@ -85,7 +88,7 @@ impl DeviceInfo {
             hostname:hostname.to_string(),
             device_type:"ood".to_string(),
             ip:ip,
-            
+            did:did,
             main_net_interface:None,
             net_id:net_id,
             node_daemon_ver:None,

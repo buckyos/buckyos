@@ -17,6 +17,7 @@ pub struct RouteConfig {
     pub upstream: Option<String>,
     pub local_dir: Option<String>,
     pub inner_service: Option<String>,
+    pub tunnel_selector: Option<String>,
     pub bucky_service: Option<String>,
 }
 
