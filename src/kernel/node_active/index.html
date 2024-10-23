@@ -3,9 +3,38 @@
 <head>
     <meta charset="UTF-8">
     <title>Active Your Personal Server</title>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <style>
+        body {
+            /* 使用纹理背景 */
+            background-image: url('res/bkg.png');
+            background-repeat: repeat;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            
+        }
+
+        #active-wizzard {
+            /* 设置浮动面板样式 */
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            max-width: 800px;
+            min-width: 375px;
+            width: 80%;
+            height: auto;
+            min-height: 800px;
+            padding: 20px;
+            margin-top: 20px; /* 离顶部的距离 */
+            box-sizing: border-box;
+        }
+    </style>
 </head>
 <body>
-    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
     <script src="./index.ts" type="module"></script>
 
     <div id="background">

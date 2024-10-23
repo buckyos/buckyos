@@ -1,16 +1,28 @@
 import templateContent from './final_check_dlg.template?raw';  
 import WizzardDlg from '../components/wizzard-dlg';
+import { ActiveWizzardData } from '../active_lib';
 
 class FinalCheckDlg extends HTMLElement {
     constructor() {
       super();
     }
 
+    async do_active(wizzard_data:ActiveWizzardData):Promise<boolean> {
+        return true;
+    }
+
     connectedCallback() {
+        const wizzard_data = (document.getElementById('active-wizzard') as WizzardDlg).wizzard_data as ActiveWizzardData;
+
         const template = document.createElement('template');
         template.innerHTML = templateContent;
         const shadow = this.attachShadow({ mode: 'open' });
         shadow.appendChild(template.content.cloneNode(true));
+
+        let txt_private_key = shadow.getElementById('txt_private_key') as HTMLElement;
+        txt_private_key.textContent = wizzard_data.owner_private_key;
+
+
 
         const copyButton = shadow.getElementById('copyButton');
         copyButton.addEventListener('click', () => {
@@ -24,9 +36,15 @@ class FinalCheckDlg extends HTMLElement {
 
         const next_btn = shadow.getElementById('btn_next');
         next_btn.addEventListener('click', () => {
-            const activeWizzard = document.getElementById('active-wizzard') as WizzardDlg;
-            const active_result_dlg = document.createElement('active-result-dlg');
-            activeWizzard.pushDlg(active_result_dlg);
+            next_btn.disabled = true;
+            this.do_active(wizzard_data).then((result) => {
+                next_btn.disabled = false;
+                if (result) {
+                    const activeWizzard = document.getElementById('active-wizzard') as WizzardDlg;
+                    const active_result_dlg = document.createElement('active-result-dlg');
+                    activeWizzard.pushDlg(active_result_dlg);
+                }
+            });
         });
     }
 

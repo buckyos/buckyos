@@ -29,7 +29,7 @@ pub struct VerifyHubInfo {
 pub struct ZoneConfig {
     pub did: String,//full did
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    pub name: Option<String>,//domain name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

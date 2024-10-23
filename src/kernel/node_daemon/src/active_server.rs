@@ -6,6 +6,7 @@ use std::result::Result;
 use ::kRPC::*;
 use cyfs_gateway_lib::*;
 use cyfs_warp::*;
+use name_lib::*;
 
 
 #[derive(Clone)]
@@ -16,12 +17,28 @@ impl ActiveServer {
     pub fn new() -> Self {
         ActiveServer {}
     }
+
+    async fn handle_generate_key_pair(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
+        let (private_key,public_key) = generate_ed25519_key_pair();
+        return Ok(RPCResponse::new(RPCResult::Success(json!({
+            "private_key":private_key,
+            "public_key":public_key
+        })),req.seq));
+    }
+
+    async fn handle_get_device_info(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
+       unimplemented!()
+    }
 }
 
 #[async_trait]
 impl kRPCHandler for ActiveServer {
     async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors> {
-        unimplemented!()
+        match req.method.as_str() {
+            "generate_key_pair" => self.handle_generate_key_pair(req).await,
+            "get_device_info" => self.handle_get_device_info(req).await,
+            _ => Err(RPCErrors::UnknownMethod(req.method)),
+        }
     }
 }
 
@@ -42,7 +59,7 @@ pub async fn start_node_active_service() {
             "/": {
               "local_dir": active_server_dir.to_str().unwrap()
             },
-            "/kapi/sn" : {
+            "/kapi/active" : {
                 "inner_service":"active_server"
             }
           }

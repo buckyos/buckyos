@@ -13,13 +13,15 @@
     }
 
     .button-container {
-        display: flex;
-        justify-content: center; 
+        position: absolute;
+        bottom: 64px;
+        left: 50%;
+        transform: translateX(-50%);
     }
 </style>
 <div class="frame">
+    <h3>1. 设置访问Personal Server使用的链路</h3>
     <div class="container">
-        <h2>Step1:设置访问Personal Server使用的链路</h2>
         <bucky-checkbox id="chk_enable_bucky_forward" lable="Use the reverse forwarding service provided by Buckyos.io" check="true"></bucky-checkbox>
         <div style="margin-top: 0px; margin-left: 28px;">
             通过buckyos.io 提供的反向代理服务中转流量到 Personal Server
@@ -32,12 +34,11 @@
             <p>早期测试期间,使用buckyos.io系列服务是免费的,但需要邀请码</p>
         </div>
 
-        <md-outlined-text-field id="txt_bucky_forward_token" placeholder="请输入邀请码" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
-        <div id="div_bucky_forward_token_error" hidden style="margin-left: 28px;color: red;">邀请码错误:</div>
+        <md-outlined-text-field id="txt_bucky_sn_token" placeholder="请输入邀请码" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
     </div>
     <p></p>
     <div class="container">
-        <bucky-checkbox id="chk_enable_port_forward" lable="I have opened the port mapping of the router, and it is effective" enable='false'></bucky-checkbox>
+        <bucky-checkbox id="chk_enable_port_forward" lable="I have opened the port mapping of the router, and it is effective"'></bucky-checkbox>
         <div style="margin-top: 0px; margin-left: 28px;">启动端口映射后流量将<b>不经过任何中转</b>到达 Personal Server</div>
         <div style="margin-top: 0px; margin-left: 28px;">开启端口映射的方法(请确保完全理解下面含义):
             <ul style="margin-top: 12px;">
@@ -49,6 +50,9 @@
         </div>
 
 
+    </div>
+    <div class="container">
+        <bucky-checkbox id="chk_enable_self_forwoard" lable="使用自己或其它服务商架设的cyfs-gateway" disabled='true'></bucky-checkbox>
     </div>
     <p></p>
     <p></p>

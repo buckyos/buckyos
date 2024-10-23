@@ -1,6 +1,6 @@
 {
-    "include": ["components", "utils", "test",  "**/*.ts", "typing.d.ts"],
-    "exclude": ["node_modules/**", "dist/**", "res", "public"],
+    "include": ["src"],
+    "exclude": ["node_modules/**", "dist/**", "assets", "public"],
     "compilerOptions": {
       "module": "ESNext",
       "moduleResolution": "bundler",
@@ -21,9 +21,5 @@
       "experimentalDecorators": true,
       "emitDecoratorMetadata": true,
       "noEmitOnError": false,
-      "paths": {
-        "@/components/*": ["components/*"],
-        "@/utils/*": ["utils/*"]
-      }
     }
   }

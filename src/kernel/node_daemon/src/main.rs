@@ -244,6 +244,7 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
     
         zone_did = zone_config.did.clone();
         zone_config.owner_name = Some(node_identity.owner_name.clone());
+        zone_config.name = Some(node_identity.zone_name.clone());
         let zone_config_json = serde_json::to_value(zone_config).unwrap();
         let cache_did_doc = EncodedDocument::JsonLd(zone_config_json);
         add_did_cache(zone_did.as_str(),cache_did_doc).await.unwrap();

@@ -6,9 +6,10 @@ use serde::{Serialize,Deserialize};
 use serde_json::json;
 use thiserror::Error;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
-
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-
+use rand::rngs::OsRng;
+use ed25519_dalek::{ed25519::signature::SignerMut, SigningKey};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
+use base64::prelude::BASE64_STANDARD_NO_PAD;
 use crate::config::DeviceConfig;
 use sysinfo::{Components, Disks, Networks, System};
 
@@ -97,4 +98,30 @@ pub fn decode_json_from_jwt_with_pk(jwt: &str,pk:&jsonwebtoken::DecodingKey) -> 
     Ok(result_value)
 }
 
+fn build_pkcs8(private_key: &[u8]) -> Vec<u8> {
+    let mut pkcs8 = vec![
+        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20
+    ];
+    pkcs8.extend_from_slice(private_key);
+    pkcs8
+}
+
+pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
+    let mut csprng = OsRng{};
+    let signing_key: SigningKey = SigningKey::generate(&mut csprng);
+    let private_key_bytes = signing_key.to_bytes();
+    let pkcs8_bytes = build_pkcs8(&private_key_bytes);
+    let private_key_pem = format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+        STANDARD.encode(&pkcs8_bytes)
+    );
+
+    let public_key_jwk = json!({
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes()),
+    });
+
+    (private_key_pem, public_key_jwk)
+}
 

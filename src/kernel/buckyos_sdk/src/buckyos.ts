@@ -1,5 +1,6 @@
 
-class kRPCClient {
+
+export class BuckyOS {
     constructor({ ssoUrl, clientId, redirectUri, tokenKey = 'sso_token', useCookie = false, cookieOptions = null }) {
         this.ssoUrl = ssoUrl;
         this.clientId = clientId;
@@ -123,5 +124,3 @@ class kRPCClient {
         this.setCookie(name, '', { expires: 'Thu, 01 Jan 1970 00:00:00 GMT', path: '/' });
     }
 }
-
-export default kRPCClient;

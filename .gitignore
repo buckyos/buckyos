@@ -3,3 +3,15 @@
 src/kernel/node_active/node_modules/
 test/test_jwt/node_modules/
 *.bkp
+src/kernel/node_active/dist/
+src/kernel/buckyos_sdk/pnpm-lock.yaml
+src/kernel/buckyos_sdk/dist/
+src/kernel/buckyos_sdk/node_modules/
+src/kernel/node_active/pnpm-lock.yaml
+src/rootfs/bin/active/index.d.ts
+src/rootfs/bin/active/
+src/rootfs/bin/cyfs_gateway/cyfs_gateway
+src/rootfs/bin/scheduler/scheduler
+src/rootfs/bin/system_config/system_config
+src/rootfs/bin/verify_hub/verify_hub
+src/rootfs/bin/node_daemon

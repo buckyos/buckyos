@@ -26,24 +26,16 @@
     }
 </style>
 <div class="frame">
-    <h3>激活前最后确认</h3>
     <div class="container">
-        <div style="margin-top: 0px; margin-left: 28px;">
-            <ul>
-                <li>访问链路:使用buckyos.io提供的中转服务</li>
-                <li>域名: $name.g.buckyos.io</li>
-                <li>OOD主机名:waterflier-ood</li>
-            </ul>
-        </div>
-        <p>请妥善保管以下私钥,激活后将无法再次查看 <a id="copyButton" href="#">(复制)</a></p>
-        <div style="margin-top: 0px; margin-left: 28px;" id="txt_private_key" class="styled-paragraph">
+        <h3>3.设置系统访问权限</h3>
+        <md-outlined-text-field  id="txt_admin_password" placeholder="设置管理密码" type="password"></md-outlined-text-field >
+        <md-outlined-text-field  id="txt_friend_code" placeholder="设置好友访问码"></md-outlined-text-field >
+        <bucky-checkbox id="chk_enable_guest" lable="启用访客模式" check="true"></bucky-checkbox>
+        <div style="margin-top: 0px; margin-left: 28px;">您将通过 <p>$name.web3.buckyos.io</p> 访问您的Personal Server</div>
 
-        </div>
     </div>
-    <p></p>
-    <p></p>
     <div class="button-container">
-        <md-filled-button id="btn_next" style="width: 150px;">Active!</md-filled-button>
+        <md-filled-button id="btn_next" style="width: 150px;">Next</md-filled-button>
     </div>
 </div>
 

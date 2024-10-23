@@ -101,10 +101,11 @@ impl Router {
         let route_config = host_config
             .routes
             .iter()
-            .find(|(route, _)| {
+            .filter(|(route, _)| {
                 route_path = (*route).clone();
                 return req_path.starts_with(*route);
             })
+            .max_by_key(|(route, _)| route.len())
             .map(|(_, config)| config);
 
         if route_config.is_none() {
