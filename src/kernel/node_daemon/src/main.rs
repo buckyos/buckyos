@@ -10,6 +10,7 @@ mod active_server;
 
 use std::env;
 use std::fmt::format;
+use std::process::exit;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -411,7 +412,6 @@ async fn register_device_doc(device_doc:&DeviceConfig,sys_config_client: &System
     } else {
         info!("register device doc to system_config success!");
     }
-
 }
 
 async fn node_daemon_main_loop(
@@ -477,7 +477,7 @@ async fn do_boot_scheduler() -> std::result::Result<(),String> {
 }
 
 //if register OK then return sn's URL
-async fn start_register_ood_info_to_sn(device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
+async fn start_update_ood_info_to_sn(device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
     //try register ood's device_info to sn,
     // TODO: move this logic to cyfs-gateway service?
     let sn_url = zone_config.get_sn_url();
@@ -580,8 +580,9 @@ async fn async_main() -> std::result::Result<(), String> {
         if enable_active {
             info!("node identity config not found, start node active service...");
             start_node_active_service().await;
-            info!("node active service returned, restart node_daemon.");
-            restart_program();
+            info!("node active service returned,exit node_daemon.");
+            exit(0);
+            //restart_program();
         } else {   
             error!("load node identity config failed! {}", node_identity.err().unwrap());
             return Err(String::from("load node identity config failed!"));
@@ -699,7 +700,7 @@ async fn async_main() -> std::result::Result<(), String> {
     let mut syc_cfg_client: SystemConfigClient;
     let boot_config: serde_json::Value; 
     if is_ood {
-        start_register_ood_info_to_sn(&device_doc, &device_private_key,&zone_config).await;
+        start_update_ood_info_to_sn(&device_doc, &device_private_key,&zone_config).await;
 
         let mut sys_config_service_pkg = ServicePkg::new("system_config".to_string(),get_buckyos_system_bin_dir());
         let _ = sys_config_service_pkg.load().await.map_err(|err| {

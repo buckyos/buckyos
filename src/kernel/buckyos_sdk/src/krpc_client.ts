@@ -13,7 +13,7 @@ enum RPCProtocolType {
   
   // RPC 客户端实现
   class kRPCClient {
-    private client: typeof fetch;
+
     private serverUrl: string;
     private protocolType: RPCProtocolType;
     private seq: number;
@@ -21,7 +21,7 @@ enum RPCProtocolType {
     private initToken: string | null;
   
     constructor(url: string, token?: string) {
-      this.client = fetch;
+      //this.client = fetch;
       this.serverUrl = url;
       this.protocolType = RPCProtocolType.HttpPostJson;
       // 使用毫秒时间戳作为初始序列号
@@ -50,13 +50,12 @@ enum RPCProtocolType {
       };
   
       try {
-        const response = await this.client(this.serverUrl, {
+        const response = await window.fetch(this.serverUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify(requestBody),
-          signal: AbortSignal.timeout(15000)
         });
   
         if (!response.ok) {

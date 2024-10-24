@@ -14,6 +14,7 @@
             "tls_port":443,
             "hosts": {
                 "web3.buckyos.io": {
+                    "enable_cors":true,
                     "routes": {
                         "/kapi/sn":{
                             "inner_service":"main_sn"

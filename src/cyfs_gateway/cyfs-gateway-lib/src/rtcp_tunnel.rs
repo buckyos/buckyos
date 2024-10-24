@@ -1,5 +1,5 @@
 #![allow(unused)]
-use std::pin::Pin;
+
 /*
 tunnel的控制协议
 二进制头：2+1+4=7字节
@@ -56,7 +56,9 @@ use std::net::{SocketAddr};
 use std::sync::Arc;
 use std::{fmt::Debug, net::IpAddr};
 use std::str::FromStr;
+use std::pin::Pin;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use tokio::net::tcp::ReadHalf;
 use tokio::stream;
@@ -97,7 +99,7 @@ impl RTcpTarget {
     pub fn from_did(did:String) -> Self {
         RTcpTarget {
             id: RTcpTargetId::DeviceDid(did),
-            stack_port: 2980,
+            stack_port: 12980,
             target_port: 0,
         }
     }
@@ -105,7 +107,7 @@ impl RTcpTarget {
     pub fn from_name(name:String) -> Self {
         RTcpTarget {
             id: RTcpTargetId::DeviceName(name),
-            stack_port: 2980,
+            stack_port: 12980,
             target_port: 0,
         }
     }
@@ -467,7 +469,10 @@ impl RTcpTunnelPackage {
             //start read json
             let _len = json_pos -2;
             let mut read_buf = &buf[(_len as usize)..];
-            let json_str: std::borrow::Cow<'_, str> = String::from_utf8_lossy(read_buf);
+            
+            let base64_str: std::borrow::Cow<'_, str> = String::from_utf8_lossy(read_buf);
+            let json_str = URL_SAFE_NO_PAD.decode(base64_str.as_ref()).unwrap();
+            let json_str = String::from_utf8_lossy(&json_str);
             let package_value = serde_json::from_str(json_str.as_ref());
             if package_value.is_err() {
                 error!("parse package error:{}",package_value.err().unwrap());
@@ -516,8 +521,9 @@ impl RTcpTunnelPackage {
     {
         //encode package to json
         let json_str = serde_json::to_string(&pkg.body).unwrap();
+        let base64_str = URL_SAFE_NO_PAD.encode(json_str.as_bytes());
         let json_pos:u8 = 2 + 1 + 1 + 4;
-        let total_len = 2 + 1 + 1 + 4 + json_str.len();
+        let total_len = 2 + 1 + 1 + 4 + base64_str.len();
         if total_len > 0xffff {
             error!("package too long");
             return Err(anyhow::format_err!("package too long"));
@@ -530,7 +536,7 @@ impl RTcpTunnelPackage {
         write_buf.extend(std::iter::once(pkg.cmd as u8));
         let bytes = u32::to_be_bytes(pkg.seq);
         write_buf.extend_from_slice(&bytes);
-        write_buf.extend_from_slice(json_str.as_bytes());
+        write_buf.extend_from_slice(base64_str.as_bytes());
         info!("send package {} len:{} buflen:{}",json_str.as_str(),total_len,write_buf.len());
         stream.write_all(&write_buf).await?;
 

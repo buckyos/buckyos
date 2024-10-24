@@ -3,6 +3,7 @@
 #![allow(unused)]
 
 use anyhow::Result;
+use hyper::header::HeaderValue;
 use hyper::{Body, Client, Request, Response, StatusCode};
 use log::*;
 use rustls::ServerConfig;
@@ -130,13 +131,29 @@ impl Router {
             RouteConfig {
                 inner_service: Some(inner_service),
                 ..
-            } => self.handle_inner_service(inner_service.as_str(),req,client_ip).await,
+            } => {
+                if host_config.enable_cors && req.method() == hyper::Method::OPTIONS {
+                    Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Body::empty())?)
+                } else {
+                    self.handle_inner_service(inner_service.as_str(),req,client_ip).await
+                }
+            },
             RouteConfig {
                 tunnel_selector: Some(tunnel_selector),
                 ..
             } => self.handle_upstream_selector(tunnel_selector.as_str(), req, &host,  client_ip).await,
             _ => Err(anyhow::anyhow!("Invalid route configuration")),
-        }
+        }.map(|mut resp| {
+            if host_config.enable_cors {
+                let header = resp.headers_mut();
+                header.insert(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+                header.insert(hyper::header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, OPTIONS"));
+                header.insert(hyper::header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("Content-Type, Authorization"));
+            }
+            resp
+        })
     }
 
     async fn handle_inner_service(&self, inner_service_name: &str, req: Request<Body>, client_ip:IpAddr) -> Result<Response<Body>> {
@@ -157,8 +174,14 @@ impl Router {
             anyhow::anyhow!("Failed to read body: {}", e)
         })?;
 
+        let body_str = String::from_utf8(body_bytes.to_vec()).map_err(|e| {
+            anyhow::anyhow!("Failed to convert body to string: {}", e)
+        })?;
+
+        info!("|==>recv kRPC req: {}",body_str);
+
         //parse req to RPCRequest
-        let rpc_request: RPCRequest = serde_json::from_slice(&body_bytes).map_err(|e| {
+        let rpc_request: RPCRequest = serde_json::from_str(body_str.as_str()).map_err(|e| {
             anyhow::anyhow!("Failed to parse request body to RPCRequest: {}", e)
         })?;
 

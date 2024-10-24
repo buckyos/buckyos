@@ -19,14 +19,14 @@ import "./dlg/config_system_dlg";
 import "./dlg/final_check_dlg";
 import "./dlg/active_result_dlg";
 
-import {demo_jwt, GatewayType, ActiveWizzardData, generate_owner_key_pair } from './active_lib';
+import {demo_jwt, GatewayType, ActiveWizzardData, generate_key_pair } from './active_lib';
 
 
 
 
 //after dom loaded
 window.onload = async () => {
-    const {publicKey, privateKey} = await generate_owner_key_pair();
+    const {publicKey, privateKey} = await generate_key_pair();
     const wizzard_data : ActiveWizzardData = {
         sn_active_code : "",
         sn_user_name : "",

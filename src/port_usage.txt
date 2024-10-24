@@ -1,4 +1,3 @@
-2980 rtcp tunnel base port
 3180,3143 是默认的cyfs-gateway http,https端口
 80,443是zonegate的http,https端口
 

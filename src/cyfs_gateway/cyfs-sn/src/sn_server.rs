@@ -63,22 +63,68 @@ impl SNServer {
         }
     }
 
+    pub async fn get_user_tls_cert(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
+        unimplemented!();
+    }
+
+    pub async fn check_username(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
+        let username = req.params.get("username");
+        if username.is_none() {
+            return Err(RPCErrors::ParseRequestError("Invalid params, username is none".to_string()));
+        }
+        let username = username.unwrap().as_str();
+        let conn = sn_db::get_sn_db_conn().map_err(|e|{
+            error!("Failed to get sn_db_conn: {:?}",e);
+            RPCErrors::ReasonError(e.to_string())
+        })?;
+        let username = username.unwrap();
+        let ret = sn_db::is_user_exist(&conn, username).map_err(|e|{
+            error!("Failed to check username: {:?}",e);
+            RPCErrors::ReasonError(e.to_string())
+        })?;
+        let resp = RPCResponse::new(RPCResult::Success(json!({
+            "valid":!ret 
+        })),req.seq);
+        return Ok(resp);
+    }
+
+    pub async fn check_active_code(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
+        let active_code = req.params.get("active_code");
+        if active_code.is_none() {
+            return Err(RPCErrors::ParseRequestError("Invalid params, active_code is none".to_string()));
+        }
+        let active_code = active_code.unwrap().as_str();
+        if active_code.is_none() {
+            return Err(RPCErrors::ParseRequestError("Invalid params, active_code is none".to_string()));
+        }
+        let active_code = active_code.unwrap();
+        let conn = sn_db::get_sn_db_conn().unwrap();
+        let ret = sn_db::check_active_code(&conn, active_code);
+        if ret.is_err() {
+            return Err(RPCErrors::ReasonError(ret.err().unwrap().to_string()));
+        }
+        let valid = ret.unwrap();
+        let resp = RPCResponse::new(RPCResult::Success(json!({
+            "valid":valid 
+        })),req.seq);
+        return Ok(resp);
+    }
 
     pub async fn register_user(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
         let user_name = req.params.get("user_name");
         let public_key = req.params.get("public_key");
         let active_code = req.params.get("active_code");
-        let zone_config = req.params.get("zone_config");
-        if user_name.is_none() || public_key.is_none() || active_code.is_none() || zone_config.is_none() {
-            return Err(RPCErrors::ParseRequestError("Invalid params, user_name or public_key or active_code is none".to_string()));
+        let zone_config_jwt = req.params.get("zone_config");
+        if user_name.is_none() || public_key.is_none() || active_code.is_none() || zone_config_jwt.is_none() {
+            return Err(RPCErrors::ParseRequestError("Invalid params, user_name or public_key or active_code or zone_config (jwt) is none".to_string()));
         }
         let user_name = user_name.unwrap().as_str().unwrap();
         let public_key = public_key.unwrap().as_str().unwrap();
         let active_code = active_code.unwrap().as_str().unwrap();
-        let zone_config = zone_config.unwrap().as_str().unwrap();
+        let zone_config_jwt = zone_config_jwt.unwrap().as_str().unwrap();
 
         let conn = sn_db::get_sn_db_conn().unwrap();
-        let ret = sn_db::register_user(&conn, active_code, user_name, public_key, zone_config);
+        let ret = sn_db::register_user(&conn, active_code, user_name, public_key, zone_config_jwt);
         if ret.is_err() {
             let err_str = ret.err().unwrap().to_string();
             warn!("Failed to register user {}: {:?}",user_name,err_str.as_str());
@@ -94,7 +140,35 @@ impl SNServer {
     }
 
     pub async fn register_device(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
-        unimplemented!();
+        let user_name = req.params.get("user_name");
+        let device_name = req.params.get("device_name");
+        let device_did = req.params.get("device_did");
+        let device_ip = req.params.get("device_ip");
+        let device_info = req.params.get("device_info");
+
+        if user_name.is_none() || device_name.is_none() || device_did.is_none() || device_ip.is_none() || device_info.is_none() {
+            return Err(RPCErrors::ParseRequestError("Invalid params, user_name or device_name or device_did or device_ip or device_info is none".to_string()));
+        }
+        let user_name = user_name.unwrap().as_str().unwrap();
+        let device_name = device_name.unwrap().as_str().unwrap();
+        let device_did = device_did.unwrap().as_str().unwrap();
+        let device_ip = device_ip.unwrap().as_str().unwrap();
+        let device_info = device_info.unwrap().as_str().unwrap();
+
+        let conn = sn_db::get_sn_db_conn().unwrap();
+        let ret = sn_db::register_device(&conn, user_name, device_name, device_did, device_ip, device_info);
+        if ret.is_err() {
+            let err_str = ret.err().unwrap().to_string();
+            warn!("Failed to register device {}_{}: {:?}",user_name,device_name,err_str.as_str());
+            return Err(RPCErrors::ParseRequestError(format!("Failed to register device: {}",err_str)));
+        }   
+
+        info!("device {}_{} registered success",user_name,device_name);
+
+        let resp = RPCResponse::new(RPCResult::Success(json!({
+            "code":0 
+        })),req.seq);
+        return Ok(resp);
     }
 
     pub async fn update_device(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors> {
@@ -116,7 +190,7 @@ impl SNServer {
             RPCErrors::ParseRequestError(e.to_string())
         })?;    
 
-        info!("will update {}_{} ==> {:?}",owner_id,device_info.hostname.clone(),device_info_json);
+        info!("update {}_{} ==> {:?}",owner_id,device_info.hostname.clone(),device_info_json);
 
         let mut device_info_map = self.all_device_info.lock().await;
         let key = format!("{}_{}",owner_id,device_info.hostname.clone());
@@ -174,11 +248,13 @@ impl SNServer {
                 user_zone_config_map.insert(username.to_string(), user_info.1.clone());
                 return Some(user_info.1.clone());
             }
+            warn!("zone config not found for [{}]",username);
             return None;
         } else {
             return zone_config.cloned();
         }
     }
+
 
     //get device info by device_name and owner_name
     pub async fn get_device(&self, req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
@@ -204,6 +280,7 @@ impl SNServer {
             return Ok(RPCResponse::new(RPCResult::Success(device_value),req.seq));
         }
          else {
+            warn!("device info not found for {}_{}",owner_id,device_id);
             let device_json = serde_json::to_value(device_info.clone()).unwrap();
             return Ok(RPCResponse::new(RPCResult::Success(device_json),req.seq)); 
         }
@@ -311,6 +388,18 @@ impl NSProvider for SNServer {
 impl kRPCHandler for SNServer {
     async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors> {
         match req.method.as_str() {
+            "get_user_tls_cert" => {
+                //get user tls cert
+                return self.get_user_tls_cert(req).await;
+            },
+            "check_active_code" => {
+                //check active code
+                return self.check_active_code(req).await;
+            },
+            "check_username" => {
+                //check username
+                return self.check_username(req).await;
+            },
             "register_user" => {
                 //register user
                 return self.register_user(req).await;

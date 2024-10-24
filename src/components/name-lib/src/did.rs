@@ -41,6 +41,15 @@ pub enum EncodedDocument {
     Jwt(String),
 }
 
+impl EncodedDocument {
+    pub fn to_string(&self) -> String {
+        match self {
+            EncodedDocument::Jwt(jwt) => jwt.clone(),
+            EncodedDocument::JsonLd(value) => serde_json::to_string(value).unwrap(),
+        }
+    }
+}
+
 #[async_trait]
 pub trait DIDDocumentTrait {
     fn get_did(&self) -> &str;

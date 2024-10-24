@@ -112,7 +112,7 @@ pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
     let private_key_bytes = signing_key.to_bytes();
     let pkcs8_bytes = build_pkcs8(&private_key_bytes);
     let private_key_pem = format!(
-        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
         STANDARD.encode(&pkcs8_bytes)
     );
 
@@ -125,3 +125,21 @@ pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
     (private_key_pem, public_key_jwk)
 }
 
+
+pub fn get_device_did_from_ed25519_jwk_str(public_key: &str) -> NSResult<String> {
+    let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_str(public_key)
+        .map_err(|_| NSError::Failed("Invalid public key".to_string()))?;
+    let jwk_value = serde_json::to_value(jwk)
+        .map_err(|_| NSError::Failed("Invalid public key".to_string()))?;
+    let x = jwk_value.get("x")
+        .ok_or(NSError::Failed("Invalid public key".to_string()))?;
+    let did = format!("did:dev:{}",x.as_str().unwrap());
+    Ok(did)
+}
+
+pub fn get_device_did_from_ed25519_jwk(public_key: &serde_json::Value) -> NSResult<String> {
+    let x = public_key.get("x")
+        .ok_or(NSError::Failed("Invalid public key".to_string()))?;
+    let did = format!("did:dev:{}",x.as_str().unwrap());
+    Ok(did)
+}

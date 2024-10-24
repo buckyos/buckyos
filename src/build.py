@@ -28,6 +28,12 @@ if build_result != 0:
 
 print(f'build success at: {target_dir}')
 
+vite_build_dir = os.path.join(build_dir, "kernel/node_active")
+vite_build_cmd = f'cd {vite_build_dir} && npm run build'
+os.system(vite_build_cmd)
+
+print(f'npm build success at: {vite_build_dir}')
+
 print('copying files to rootfs')
 destination_dir = os.path.join(build_dir, "rootfs/bin")
 shutil.copy(os.path.join(target_dir, "release", "node_daemon"), destination_dir)
@@ -44,6 +50,12 @@ shutil.copy(os.path.join(target_dir, "release", "cyfs_gateway"), destination_dir
 
 destination_dir = os.path.join(build_dir, "rootfs/bin")
 shutil.copy(os.path.join(build_dir, "killall.py"), destination_dir)
+
+src_dir = os.path.join(vite_build_dir, "dist")
+destination_dir = os.path.join(build_dir, "rootfs/bin/active")
+print(f'copying vite build {src_dir} to {destination_dir}')
+shutil.rmtree(destination_dir)
+shutil.copytree(src_dir, destination_dir)
 print('copying files to rootfs & web3_bridge done')
 
 

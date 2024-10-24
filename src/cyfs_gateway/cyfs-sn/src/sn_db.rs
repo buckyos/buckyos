@@ -43,6 +43,16 @@ pub fn generate_activation_codes(conn: &Connection, count: usize) -> Result<Vec<
     Ok(codes)
 }
 
+pub fn check_active_code(conn: &Connection, active_code: &str) -> Result<bool> {
+    let mut stmt = conn.prepare("SELECT used FROM activation_codes WHERE code = ?1")?;
+    let used : Result<Option<i32>, rusqlite::Error> = stmt.query_row(params![active_code], |row| row.get(0));
+    if used.is_err() {
+        return Ok(false);
+    }
+    let used = used.unwrap();
+    Ok(used.unwrap() == 0)
+}
+
 pub fn register_user(conn: &Connection, activation_code: &str, username: &str, public_key: &str, zone_config: &str) -> Result<bool> {
     let mut stmt = conn.prepare("SELECT used FROM activation_codes WHERE code = ?1")?;
     let used: Option<i32> = stmt.query_row(params![activation_code], |row| row.get(0))?;

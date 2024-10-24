@@ -31,8 +31,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_device_info() {
-        let mut device_info = DeviceInfo::new("");
-        device_info.auto_fill_by_system_info().await;
+        let mut device_info = DeviceInfo::new("ood1",None);
+        device_info.auto_fill_by_system_info().await.unwrap();
         println!("device_info: {:?}",device_info);
     }
 

@@ -8,8 +8,16 @@ use url::Url;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct HostConfig {
+    #[serde(default)]
+    pub enable_cors: bool,
     pub routes: HashMap<String, RouteConfig>,
     pub tls: Option<TlsConfig>,
+}
+
+impl Default for HostConfig {
+    fn default() -> Self {
+        HostConfig { enable_cors: false, routes: HashMap::new(), tls: None }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]

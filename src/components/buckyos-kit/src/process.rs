@@ -38,12 +38,10 @@ pub fn restart_program() -> std::io::Result<()> {
     let current_exe = env::current_exe()?;
     
     Command::new(current_exe)
-        .args(env::args().skip(1)) // 传递原始参数
-        .spawn()?;  // 启动新的进程
+        .args(env::args().skip(1)) 
+        .spawn()?; 
 
-    exit(0);  // 退出当前进程
-
-    Ok(())
+    exit(0); 
 }
 
 pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String>>,

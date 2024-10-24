@@ -1,7 +1,7 @@
 import templateContent from './config_zone_id_dlg.template?raw';  
 import BuckyCheckBox from '../components/checkbox';
 import WizzardDlg from '../components/wizzard-dlg/index';
-import { ActiveWizzardData,generate_owner_key_pair,check_bucky_username,isValidDomain,generate_zone_config_jwt } from '../active_lib';
+import { GatewayType,ActiveWizzardData,generate_key_pair,check_bucky_username,isValidDomain,generate_zone_config_jwt } from '../active_lib';
 
 class ConfigZoneIdDlg extends HTMLElement {
     constructor() {
@@ -52,7 +52,7 @@ class ConfigZoneIdDlg extends HTMLElement {
         var wizzard_data:ActiveWizzardData = activeWizzard.wizzard_data;
         if(wizzard_data.owner_public_key != ""){
             console.log("generate owner key pair");
-            generate_owner_key_pair().then((data) => {
+            generate_key_pair().then((data) => {
                 wizzard_data.owner_public_key = data[0];
                 wizzard_data.owner_private_key = data[1];
                 console.log("generate owner key pair success",wizzard_data.owner_public_key,wizzard_data.owner_private_key);
@@ -73,18 +73,28 @@ class ConfigZoneIdDlg extends HTMLElement {
         txt_name.addEventListener('change', (event) => {
             txt_name.error = false;
             txt_name.errorText = "";
-            generate_zone_config_jwt(txt_name.value,"",wizzard_data.owner_private_key).then((zone_config_jwt)=>{
-                shadow.getElementById('txt_zone_id_value').textContent = zone_config_jwt;
-            });
+            let new_name = txt_name.value;
+            if (new_name.length > 6) {
+                let sn = "";
+                if (wizzard_data.gatewy_type == GatewayType.BuckyForward){
+                    sn = "web3.buckyos.io"   
+                }
+                
+                generate_zone_config_jwt(txt_name.value,sn,wizzard_data.owner_private_key).then((zone_config_jwt) => {
+                        shadow.getElementById('txt_zone_id_value').textContent = "DID="+zone_config_jwt+";";
+                        wizzard_data.zone_config_jwt = zone_config_jwt;
+                });
+            }
         });
 
         txt_domain.addEventListener('change', (event) => {
             txt_domain.error = false;
             txt_domain.errorText = "";
         });
-
-        if(wizzard_data.sn_active_code.length > 0){
-            txt_bucky_sn_token.value = wizzard_data.sn_active_code;
+        if (wizzard_data.sn_active_code) {
+            if(wizzard_data.sn_active_code.length > 0){
+                txt_bucky_sn_token.value = wizzard_data.sn_active_code;
+            }
         }
 
         chk_use_buckyos_name.addEventListener('click', (event) => {

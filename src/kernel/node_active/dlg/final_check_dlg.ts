@@ -1,6 +1,6 @@
 import templateContent from './final_check_dlg.template?raw';  
 import WizzardDlg from '../components/wizzard-dlg';
-import { ActiveWizzardData } from '../active_lib';
+import { ActiveWizzardData,do_active } from '../active_lib';
 
 class FinalCheckDlg extends HTMLElement {
     constructor() {
@@ -8,7 +8,7 @@ class FinalCheckDlg extends HTMLElement {
     }
 
     async do_active(wizzard_data:ActiveWizzardData):Promise<boolean> {
-        return true;
+        return await do_active(wizzard_data);
     }
 
     connectedCallback() {
