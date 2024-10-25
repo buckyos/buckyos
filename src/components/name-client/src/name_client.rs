@@ -1,8 +1,10 @@
-use serde::{Deserialize, Serialize};
+#![allow(unused)]
 
-use crate::{DIDDocumentTrait, EncodedDocument, NSProvider, NSResult, NameInfo};
+use name_lib::*;
 use crate::dns_provider::DNSProvider;  
+use crate::zone_provider::ZoneProvider;
 use crate::name_query::NameQuery;
+use crate::NameInfo;
 
 
 pub struct NameClientConfig {
@@ -33,6 +35,7 @@ impl NameClient {
     pub fn new(config:NameClientConfig) -> Self {
         let mut name_query = NameQuery::new();
         name_query.add_provider(Box::new(DNSProvider::new(None)));
+        //name_query.add_provider(Box::new(ZoneProvider::new()));
         let cache_size = config.cache_size;
 
         Self { 
@@ -43,8 +46,17 @@ impl NameClient {
         }
     }
 
+    pub fn enable_zone_provider(&mut self,this_device: Option<&DeviceInfo>,session_token: Option<&String>,is_gateway:bool) {
+        self.name_query.add_provider(Box::new(ZoneProvider::new(this_device,session_token,is_gateway)));
+    }
+
     pub fn add_did_cache(&self, did: &str, doc:EncodedDocument) -> NSResult<()> {
         self.doc_cache.insert(did.to_string(), doc);
+        Ok(())
+    }
+
+    pub fn add_nameinfo_cache(&self, name: &str, info:NameInfo) -> NSResult<()> {
+        self.cache.insert(name.to_string(), info);
         Ok(())
     }
 

@@ -4,11 +4,13 @@ import templateContent from './checkbox.template?raw';
 
 class BuckyCheckBox extends HTMLElement {
     _checked: boolean;
+    _disabled: boolean;
     _lable: string;
 
     constructor() {
       super();
       this._checked = false;
+      this._disabled = false;
       this._lable = '';
     }
 
@@ -44,6 +46,18 @@ class BuckyCheckBox extends HTMLElement {
         return this._checked;
     }
 
+    set disabled(value) {
+        this._disabled = value;
+        const _element = this.shadowRoot.getElementById('check_box');
+        if (_element) {
+            _element.disabled = this._disabled;
+        }
+    }
+
+    get disabled() {
+        return this._disabled;
+    }
+
     connectedCallback() {
         const template = document.createElement('template');
         template.innerHTML = templateContent;
@@ -52,6 +66,15 @@ class BuckyCheckBox extends HTMLElement {
 
         this.lable = this.getAttribute('lable') || 'checkbox';
         this.checked = this.getAttribute('check') === 'true';
+        this.disabled = this.getAttribute('disabled') === 'true';
+
+        const _element = this.shadowRoot.getElementById('check_box');
+        if (_element) {
+            _element.addEventListener('click', () => {
+                this.checked = !this.checked;
+                this.dispatchEvent(new Event('click', { bubbles: true }));
+            });
+        }
       }
 
     attributeChangedCallback(attributeName:string, oldValue:string, newValue:string) {

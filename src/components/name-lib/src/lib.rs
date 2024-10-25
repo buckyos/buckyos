@@ -2,44 +2,23 @@
 #![allow(unused)]
 
 mod utility;
-mod provider;
-mod name_client;
-mod name_query;
-mod dns_provider;
 mod did;
 mod config;
+mod device_info;
 
+pub use did::*;
+pub use config::*;
+pub use utility::*;
+pub use device_info::*;
+
+use std::net::IpAddr;
 use once_cell::sync::Lazy;
 use tokio::sync::Mutex;
 use once_cell::sync::OnceCell;
 
-static GLOBAL_NAME_CLIENT: Lazy<Mutex<NameClient>> = Lazy::new(|| {
-    Mutex::new(NameClient::new(NameClientConfig::default()))
-});
 
 pub static CURRENT_ZONE_CONFIG: OnceCell<ZoneConfig> = OnceCell::new();
-
-pub use did::*;
-pub use config::*;
-pub use provider::*;
-pub use dns_provider::*;
-pub use utility::*;
-pub use name_client::*;
-
-pub async fn resolve(name: &str, record_type: Option<&str>) -> NSResult<NameInfo> {
-    let client = GLOBAL_NAME_CLIENT.lock().await;
-    client.resolve(name, record_type).await
-}
-
-pub async fn resolve_did(did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {
-    let client = GLOBAL_NAME_CLIENT.lock().await;
-    client.resolve_did(did,fragment).await
-}
-
-pub async fn add_did_cache(did: &str, doc:EncodedDocument) -> NSResult<()> {
-    let client = GLOBAL_NAME_CLIENT.lock().await;
-    client.add_did_cache(did, doc)
-}
+pub static CURRENT_DEVICE_CONFIG: OnceCell<DeviceConfig> = OnceCell::new();
 
 #[cfg(test)]
 mod tests {
@@ -51,25 +30,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resolve_nameinfo() {
-        let name_info = resolve("buckyos.io",Some("DID")).await.unwrap();
-        println!("name_info: {:?}",name_info);
-    }
-
-    fn test_resolve_did() {
-
-    }
-
-    fn test_progress() {
-        //get zone_config from dns
-        
-        //
-    }
-
-    #[tokio::test]
     async fn test_get_device_info() {
-        let mut device_info = DeviceInfo::new("");
-        device_info.auto_fill_by_system_info().await;
+        let mut device_info = DeviceInfo::new("ood1",None);
+        device_info.auto_fill_by_system_info().await.unwrap();
         println!("device_info: {:?}",device_info);
     }
 

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::fs;
 use futures::stream::StreamExt;
@@ -27,8 +28,9 @@ async fn handle_request(
     router: Arc<Router>,
     tls_config: Option<Arc<ServerConfig>>,
     req: Request<Body>,
+    client_ip:SocketAddr,
 ) -> Result<Response<Body>, hyper::Error> {
-    match router.route(req).await {
+    match router.route(req,client_ip).await {
         Ok(response) => Ok(response),
         Err(e) => {
             error!("Error handling request: {:?}", e);
@@ -79,9 +81,10 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
         let tls_configs = tls_configs.clone();
         let sni_hostname = conn.get_ref().1.server_name().unwrap_or_default().to_owned();
         let tls_config = tls_configs.get(&sni_hostname).cloned();
+        let client_ip = conn.get_ref().0.peer_addr().unwrap();
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
-                handle_request(router.clone(), tls_config.clone(), req)
+                handle_request(router.clone(), tls_config.clone(), req,client_ip)
             }))
         }
     });
@@ -117,7 +120,7 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
 
     let acceptor = from_stream(incoming_tls_stream);
     let server = Server::builder(acceptor).serve(make_svc);
-    info!("HTTPS Server running on https://{}", https_bind_addr);
+    info!("cyfs-warp HTTPs Server running on https://{}", https_bind_addr);
 
     tokio::task::spawn(async move {
         let http_bind_addr = format!("{}:{}",bind_addr,config.http_port);
@@ -125,16 +128,17 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
         let listener_http = listener_http.unwrap();
         let listener_stream_http = TcpListenerStream::new(listener_http);
         let http_acceptor = from_stream(listener_stream_http);
-        let make_svc = make_service_fn(move |conn| {
+        let make_svc = make_service_fn(move |conn: &tokio::net::TcpStream| {
             let router = router2.clone();
+            let client_ip = conn.peer_addr().unwrap();
             async move {
                 Ok::<_, hyper::Error>(service_fn(move |req| {
-                    handle_request(router.clone(), None, req)
+                    handle_request(router.clone(), None, req,client_ip)
                 }))
             }
         });
         let server_http = Server::builder(http_acceptor).serve(make_svc);
-        info!("HTTP Server running on http://{}", http_bind_addr);
+        info!("cyfs-warp HTTP Server running on http://{}", http_bind_addr);
         let _ = server_http.await;
     });
 

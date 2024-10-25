@@ -41,7 +41,7 @@ mod test {
 }        
         "#;
         let warp_config:WarpServerConfig = serde_json::from_str(config_str).unwrap();
-        init_logging();
+        //init_logging();
         let start_result = start_cyfs_warp_server(warp_config).await;
         println!("result: {:?}", start_result);
         assert!(start_result.is_ok());

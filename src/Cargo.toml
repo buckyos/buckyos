@@ -6,6 +6,7 @@ members = [
     #"./components/gateway-lib",
 
     "./components/name-lib",
+    "./components/name-client",
     "./components/package-manager",
     "./components/buckyos-kit",
 

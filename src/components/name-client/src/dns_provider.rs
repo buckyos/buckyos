@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
@@ -5,8 +7,8 @@ use hickory_resolver::{config::*, Resolver};
 use hickory_resolver::proto::rr::record_type;
 use hickory_resolver::TokioAsyncResolver;
 
-use crate::{EncodedDocument, NSError, NSProvider, NSResult, NameInfo, NameProof};
-
+use crate::{NSProvider, NameInfo, NameProof};
+use name_lib::*;
 pub struct DNSProvider {
     dns_server: Option<String>,
 }
@@ -70,7 +72,11 @@ impl NSProvider for DNSProvider {
         let record_type = record_type.unwrap_or("A");
         match record_type {
             "TXT" => {
-                let response = resolver.txt_lookup(name).await.unwrap();
+                let response = resolver.txt_lookup(name).await;
+                if response.is_err() {
+                    return Err(NSError::Failed(format!("lookup txt failed! {}",response.err().unwrap())));
+                }
+                let response = response.unwrap();
                 let mut whole_txt = String::new();
                 for record in response.iter() {
                     let txt = record.txt_data().iter().map(|s| -> String {
@@ -93,7 +99,11 @@ impl NSProvider for DNSProvider {
                 return Ok(name_info);
             },
             "A" | "AAAA" => {
-                let response = resolver.lookup_ip(name).await.unwrap();
+                let response = resolver.lookup_ip(name).await;
+                if response.is_err() {
+                    return Err(NSError::Failed(format!("lookup ip failed! {}",response.err().unwrap())));
+                }
+                let response = response.unwrap();
                 let mut addrs = Vec::new();
                 for ip in response.iter() {
                     addrs.push(ip);
@@ -111,7 +121,11 @@ impl NSProvider for DNSProvider {
                 return Ok(name_info);
             },
             "DID"=>{
-                let response: hickory_resolver::lookup::TxtLookup = resolver.txt_lookup(name).await.unwrap();
+                let response = resolver.txt_lookup(name).await;
+                if response.is_err() {
+                    return Err(NSError::Failed(format!("lookup txt failed! {}",response.err().unwrap())));
+                }
+                let response = response.unwrap();
                 //let mut did_tx:String;
                 //let mut did_doc = DIDSimpleDocument::new();
 
@@ -147,8 +161,6 @@ impl NSProvider for DNSProvider {
             }
         }
         
-        Err(NSError::Failed("Failed to query DNS".to_string()))
-       
     }
 
     async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {

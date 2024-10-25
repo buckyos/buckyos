@@ -1,7 +1,7 @@
 
 #![allow(unused)]
 
-use crate::{DatagramServer, DatagramServerBox,StreamListener,TunnelBuilder, Tunnel,TunnelBox,TunnelError, TunnelResult};
+use crate::{DatagramServer, DatagramServerBox, RTcpStack, StreamListener, Tunnel, TunnelBox, TunnelBuilder, TunnelError, TunnelResult};
 use serde_json::Value;
 use url::Url;
 use std::collections::HashMap;
@@ -9,6 +9,11 @@ use std::sync::{Arc};
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
 use log::*;
+use name_lib::*;
+
+lazy_static!{
+    static ref RTCP_BUILDER_MAP:Arc<Mutex<HashMap<String, RTcpStack >>> = Arc::new(Mutex::new(HashMap::new()));
+}
 
 #[derive(Debug,PartialEq, Eq)]
 pub enum ProtocolCategory {
@@ -28,7 +33,9 @@ pub fn get_protocol_category(str_protocol:&str) -> TunnelResult<ProtocolCategory
     }
 }
 
-pub fn get_tunnel_builder_by_protocol(protocol:&str) -> TunnelResult<Box<dyn TunnelBuilder>> {
+
+
+pub async fn get_tunnel_builder_by_protocol(protocol:&str) -> TunnelResult<Box<dyn TunnelBuilder>> {
     match protocol {
         "tcp" => {
             return Ok(Box::new(crate::IPTunnelBuilder::new()))
@@ -37,7 +44,24 @@ pub fn get_tunnel_builder_by_protocol(protocol:&str) -> TunnelResult<Box<dyn Tun
             return Ok(Box::new(crate::IPTunnelBuilder::new()))
         },
         "rtcp" => {
-            return Ok(Box::new(crate::RTcpTunnelBuilder::new("cyfs_gateway".to_string(),2980)))
+            let this_device_config = CURRENT_DEVICE_CONFIG.get();
+            if this_device_config.is_none() {
+                return Err(TunnelError::BindError("CURRENT_DEVICE_CONFIG not set".to_string()));
+            }
+            let this_device_did = this_device_config.unwrap().did.clone();
+            let mut builder_map = RTCP_BUILDER_MAP.lock().await;
+            let builder = builder_map.get(&this_device_did);
+            if builder.is_some() {
+                let result_builder = builder.unwrap().to_owned();
+                return Ok(Box::new(result_builder));
+            }
+            let device_did = this_device_did.clone();
+            //let device_did = device_did.replace(":", ".");
+            info!("create rtcp stack for {}",device_did);
+            let mut result_build = crate::RTcpStack::new(device_did.clone(),2980);
+            result_build.start().await;
+            builder_map.insert(this_device_did,result_build.clone());
+            return Ok(Box::new(result_build));
         }
         _ => return Err(TunnelError::UnknowProtocol(protocol.to_string()))
     }
@@ -52,29 +76,30 @@ lazy_static!{
 pub async fn get_tunnel(target_url:&Url,enable_tunnel:Option<Vec<String>>) 
     -> TunnelResult<Box<dyn TunnelBox>> 
 {
-    let mut all_tunnel = TUNNEL_MAP.lock().await;
-    let tunnel = all_tunnel.get(target_url.to_string().as_str());
-    if tunnel.is_some() {
-        return Ok(tunnel.unwrap().clone());
-    }
+    //let mut all_tunnel = TUNNEL_MAP.lock().await;
+    //let tunnel_key = format!("{}:{}",target_url.scheme(),target_url.host().unwrap());
+    //let tunnel = all_tunnel.get(target_url.to_string().as_str());
+    //if tunnel.is_some() {
+    //    return Ok(tunnel.unwrap().clone());
+    //}
     info!("try create tunnel for {}", target_url);
     //url like tcp://deviceid 
-    let builder = get_tunnel_builder_by_protocol(target_url.scheme())?;
+    let builder = get_tunnel_builder_by_protocol(target_url.scheme()).await?;
     let tunnel = builder.create_tunnel(target_url).await?;
-    all_tunnel.insert(target_url.to_string(),tunnel.clone());
+    //all_tunnel.insert(target_url.to_string(),tunnel.clone());
     info!("create tunnel for {} success,add to tunnel cache", target_url);
     return Ok(tunnel);
 }
 
 
 pub async fn create_listner_by_url(bind_url:&Url) -> TunnelResult<Box<dyn StreamListener>> {
-    let builder = get_tunnel_builder_by_protocol(bind_url.scheme())?;
+    let builder = get_tunnel_builder_by_protocol(bind_url.scheme()).await?;
     let listener = builder.create_listener(bind_url).await?;
     return Ok(listener);
 }
 
 pub async fn create_datagram_server_by_url(bind_url:&Url) -> TunnelResult<Box<dyn DatagramServerBox>> {
-    let builder = get_tunnel_builder_by_protocol(bind_url.scheme())?;
+    let builder = get_tunnel_builder_by_protocol(bind_url.scheme()).await?;
     let server = builder.create_datagram_server(bind_url).await?;
     return Ok(server);
 }

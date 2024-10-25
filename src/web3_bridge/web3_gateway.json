@@ -1,0 +1,65 @@
+{
+    "inner_services":{
+        "main_sn" : {
+            "type" : "cyfs_sn",
+            "host":"web3.buckyos.io",
+            "ip":"192.168.1.188"
+        }
+    },
+    "servers":{
+        "main_http_server":{
+            "type":"cyfs-warp",
+            "bind":"0.0.0.0",
+            "http_port":80,
+            "tls_port":443,
+            "hosts": {
+                "web3.buckyos.io": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/kapi/sn":{
+                            "inner_service":"main_sn"
+                        }
+                    }
+                },
+                "*.web3.buckyos.io": {
+                    "routes": {
+                        "/":{
+                            "tunnel_selector":"main_sn"
+                        }
+                    }
+                }
+            }
+        },
+        "main_dns_server":{
+            "type":"cyfs-dns",
+            "bind":"0.0.0.0",
+            "port":2053,
+            "resolver_chain": [
+                {
+                  "type": "SN",
+                  "server_id": "main_sn"
+                },
+                {
+                    "type": "dns",
+                    "cache": true
+                }
+            ],
+            "fallback": ["8.8.8.8","6.6.6.6"]
+        }
+    },
+    
+    "dispatcher" : {
+        "udp://0.0.0.0:53":{
+            "type":"server",
+            "id":"main_dns_server"
+        },
+        "tcp://0.0.0.0:80":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://0.0.0.0:443":{
+            "type":"server",
+            "id":"main_http_server"
+        }
+    }
+}

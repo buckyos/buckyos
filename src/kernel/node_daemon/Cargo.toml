@@ -9,6 +9,7 @@ authors = ["BuckyOS DAO","@waterflier"]
 [dependencies]
 # 3rd party dependencies
 toml = "*"
+clap = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 log = "*"
@@ -21,9 +22,13 @@ lazy_static = "*"
 jsonwebtoken = "*"  
 num_cpus = "*"
 time = { version = "^0.3", features = ["formatting"] }
+sysinfo = "*"
 
+cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
+cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
+name-client = { path = "../../components/name-client" }
 package-manager = { path = "../../components/package-manager" }
 kRPC = { path = "../../kernel/kRPC" }
 sys-config = { path = "../sys-config" }

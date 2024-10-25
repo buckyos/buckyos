@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+
 sysinfo = "*"
 thiserror = "*"
 log = "*"   
@@ -17,6 +18,7 @@ hickory-resolver = { version = "*", features = ["dns-over-rustls"] }
 tokio = { version = "*", features = ["full"] }
 mini-moka = "*" 
 jsonwebtoken = "*"
+ed25519-dalek = { version = "*", features = ["rand_core"] } 
 base64="*"
 once_cell="*"
 lazy_static="*"

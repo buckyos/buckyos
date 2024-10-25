@@ -1,0 +1,27 @@
+[package]
+name = "name-client"
+version = "0.2.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sysinfo = "*"
+thiserror = "*"
+log = "*"   
+rand = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+async-trait = "*"
+hickory-resolver = { version = "*", features = ["dns-over-rustls"] }
+tokio = { version = "*", features = ["full"] }
+mini-moka = "*" 
+jsonwebtoken = "*"
+base64="*"
+once_cell="*"
+lazy_static="*"
+name-lib = { path = "../name-lib" }
+buckyos-kit = { path = "../buckyos-kit" }
+kRPC = { path = "../../kernel/kRPC" }
+sys-config = { path = "../../kernel/sys-config" }
+

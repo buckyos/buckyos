@@ -1,9 +1,6 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
+use std::net::IpAddr;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use crate::{DIDDocumentTrait, EncodedDocument , NSError, NSResult};
-
+use name_lib::*;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct EndPointInfo {
@@ -32,6 +29,20 @@ pub struct NameInfo {
     pub proof_type:NameProof,
     pub create_time: u64,
     pub ttl: Option<u32>,
+}
+
+
+impl NameInfo {
+    pub fn from_address(name:&str,address:IpAddr) -> Self {
+        let ttl = 5*60;
+        Self {name:name.to_string(),address:vec![address],cname:None,txt:None,did_document:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
+    }
+
+    pub fn from_zone_config_str(name:&str,zone_config_str:&str) -> Self {
+        let txt_string = format!("DID={};",zone_config_str);
+        let ttl = 3600;
+        Self {name:name.to_string(),address:vec![],cname:None,txt:Some(txt_string),did_document:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
+    }
 }
 
 

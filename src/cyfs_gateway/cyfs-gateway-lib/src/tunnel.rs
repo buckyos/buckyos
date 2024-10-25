@@ -5,12 +5,8 @@ use std::{net::SocketAddr, sync::Arc};
 use async_trait::async_trait;
 use log::*;
 
-use hyper::client::connect::Connection;
-
 use crate::{TunnelError, TunnelResult};
 
-pub trait AsyncStreamConnection: AsyncStream + Connection {}
-impl<T: AsyncStream + Connection> AsyncStreamConnection for T {}
 
 #[derive(Hash, Eq, PartialEq, Debug,Clone)]
 pub struct TunnelEndpoint {
@@ -113,6 +109,12 @@ pub trait TunnelBuilder : Send
     async fn create_tunnel(&self,target:&Url) -> TunnelResult<Box<dyn TunnelBox>>;
     async fn create_listener(&self,bind_url:&Url) -> TunnelResult<Box<dyn StreamListener>>;
     async fn create_datagram_server(&self,bind_url:&Url) -> TunnelResult<Box<dyn DatagramServerBox>>;
+}
+
+#[async_trait]
+pub trait TunnelSelector 
+{
+    async fn select_tunnel_for_http_upstream(&self, req_host:&str,req_path:&str) -> Option<String>;
 }
 
 // ***************** Implementations of IP Tunnel *****************

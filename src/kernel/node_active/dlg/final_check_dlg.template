@@ -26,8 +26,8 @@
     }
 </style>
 <div class="frame">
+    <h3>激活前最后确认</h3>
     <div class="container">
-        <h2>激活前最后确认</h2>
         <div style="margin-top: 0px; margin-left: 28px;">
             <ul>
                 <li>访问链路:使用buckyos.io提供的中转服务</li>
@@ -37,9 +37,7 @@
         </div>
         <p>请妥善保管以下私钥,激活后将无法再次查看 <a id="copyButton" href="#">(复制)</a></p>
         <div style="margin-top: 0px; margin-left: 28px;" id="txt_private_key" class="styled-paragraph">
------BEGIN PRIVATE KEY-----<br>
-MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp<br>
------END PRIVATE KEY-----<br>
+
         </div>
     </div>
     <p></p>

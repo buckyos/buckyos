@@ -11,12 +11,29 @@ import '@material/web/radio/radio.js';
 import '@material/web/textfield/outlined-text-field.js';
 
 import "./components/checkbox/index";
-import "./components/wizzard-dlg/index";   
+import './components/wizzard-dlg/index';
 
 import "./dlg/config_gateway_dlg";
 import "./dlg/config_zone_id_dlg";
+import "./dlg/config_system_dlg";
 import "./dlg/final_check_dlg";
 import "./dlg/active_result_dlg";
 
+import {demo_jwt, GatewayType, ActiveWizzardData, generate_key_pair } from './active_lib';
 
 
+
+
+//after dom loaded
+window.onload = async () => {
+    const {publicKey, privateKey} = await generate_key_pair();
+    const wizzard_data : ActiveWizzardData = {
+        sn_active_code : "",
+        sn_user_name : "",
+        gatewy_type : GatewayType.BuckyForward,
+    }
+    
+    const activeWizzard = document.getElementById('active-wizzard');
+    activeWizzard.wizzard_data = wizzard_data;
+    //activeWizzard.pushDlg(document.createElement('config-gateway-dlg'));
+}

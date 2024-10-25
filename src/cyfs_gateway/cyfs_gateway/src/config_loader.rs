@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use cyfs_gateway_lib::DNSServerConfig;
 use cyfs_gateway_lib::DispatcherConfig;
 use cyfs_gateway_lib::ServerConfig;
 use cyfs_gateway_lib::WarpServerConfig;
@@ -45,9 +46,11 @@ impl GatewayConfig {
                                 return Err(format!("Invalid sn config: {}",sn_config.err().unwrap()));
                             }
                             let sn_config = sn_config.unwrap();
+                            let sn_server = SNServer::new(Some(sn_config));
+                            register_sn_server(server_id, sn_server.clone()).await;
                             info!("Register sn server: {:?}",server_id);
                             register_inner_service_builder(server_id, move || {  
-                                Box::new(SNServer::new(Some(sn_config)))
+                                Box::new(sn_server.clone())
                             }).await;
                         },
                         _ => {
@@ -57,9 +60,10 @@ impl GatewayConfig {
                 }
             }
         }
-        register_inner_service_builder("cyfs_sn",|| {
-            Box::new(SNServer::new(None))
-        }).await;
+
+        //register_inner_service_builder("cyfs_sn",|| {
+        //    Box::new(SNServer::new(None))
+        //}).await;
         
         //load servers
         let servers = json_value.get("servers").unwrap();
@@ -84,6 +88,14 @@ impl GatewayConfig {
                         }
                         let warp_config = warp_config.unwrap();
                         self.servers.insert(k.clone(),ServerConfig::Warp(warp_config));
+                    },
+                    "cyfs-dns" => {
+                        let dns_config = serde_json::from_value::<DNSServerConfig>(v.clone());
+                        if dns_config.is_err() {
+                            return Err(format!("Invalid dns config: {}",dns_config.err().unwrap()));
+                        }
+                        let dns_config = dns_config.unwrap();
+                        self.servers.insert(k.clone(),ServerConfig::DNS(dns_config));
                     },
                     _ => {
                         return Err(format!("Invalid server type: {}",server_type));

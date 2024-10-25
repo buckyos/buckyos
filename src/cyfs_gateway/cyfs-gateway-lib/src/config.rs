@@ -8,8 +8,16 @@ use url::Url;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct HostConfig {
+    #[serde(default)]
+    pub enable_cors: bool,
     pub routes: HashMap<String, RouteConfig>,
     pub tls: Option<TlsConfig>,
+}
+
+impl Default for HostConfig {
+    fn default() -> Self {
+        HostConfig { enable_cors: false, routes: HashMap::new(), tls: None }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -17,6 +25,8 @@ pub struct RouteConfig {
     pub upstream: Option<String>,
     pub local_dir: Option<String>,
     pub inner_service: Option<String>,
+    pub tunnel_selector: Option<String>,
+    pub bucky_service: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -41,10 +51,13 @@ impl WarpServerConfig {
     }
 }
 
+
+
 #[derive(Deserialize, Debug,Clone)]
 pub enum DNSProviderType {
     #[serde(rename = "dns")]
     DNS,//query name info by system
+    SN,//query name info by sn server
 }
 
 #[derive(Deserialize,Clone)]

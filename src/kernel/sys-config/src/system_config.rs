@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use std::sync::Arc;
 use tokio::sync::OnceCell;
-use name_lib::*;
+
 
 #[derive(Error, Debug)]
 pub enum SystemConfigError {
@@ -27,82 +27,32 @@ pub type Result<T> = std::result::Result<T, SystemConfigError>;
 pub struct SystemConfigClient {
     client: OnceCell<Arc<kRPC>>,
     session_token: Option<String>,
-    this_device: Option<DeviceInfo>,
 }
 
 impl SystemConfigClient {
-    pub fn new(this_device:Option<&DeviceInfo>,session_token:&Option<String>) -> Self {
-        //zone_config is none,this is sys_client@ood
-        if this_device.is_none() {
-            let client = kRPC::new("http://127.0.0.1:3200/kapi/system_config", session_token);
-            let client = Arc::new(client);
-            SystemConfigClient {
-                client:OnceCell::new_with(Some(client)),
-                session_token: session_token.clone(),
-                this_device: None,
-            }
+    pub fn new(service_url:Option<&str>,session_token:Option<&str>) -> Self {
+        let real_session_token : Option<String>;
+        if session_token.is_some() {
+            real_session_token = Some(session_token.unwrap().to_string());
         } else {
-            //http://$device_name:3080/systemconfig
-            SystemConfigClient {
-                client:OnceCell::new(),
-                session_token: session_token.clone(),
-                this_device: Some(this_device.unwrap().clone()),
-            }
+            real_session_token = None;
+        }
+
+        let client = kRPC::new(service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"), real_session_token.clone());
+        let client = Arc::new(client);
+
+        SystemConfigClient {
+            client:OnceCell::new_with(Some(client)),
+            session_token: real_session_token,
         }
     }
 
     async fn get_krpc_client(&self) -> Result<Arc<kRPC>> {
-        if let Some(client) = self.client.get() {
-            return Ok(client.clone());
+        let client = self.client.get();
+        if client.is_none() {
+            return Err(SystemConfigError::ReasonError("krpc client not found!".to_string()));
         }
-
-        let zone_config = CURRENT_ZONE_CONFIG.get();
-        if zone_config.is_none() {
-            return Err(SystemConfigError::ReasonError("zone config is none!".to_string()));
-        }
-        let zone_config = zone_config.unwrap();
-        let this_device : &DeviceInfo = self.this_device.as_ref().unwrap();
-        let ood_info_str = zone_config.select_same_subnet_ood(this_device);
-        if ood_info_str.is_some() {
-
-            let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str());
-            info!("try connect to same subnet ood: {}",ood_info.hostname);
-            let ood_ip = ood_info.resolve_ip().await;
-            if ood_ip.is_ok() {
-                let ood_ip = ood_ip.unwrap();
-                let server_url = format!("http://{}:3200/kapi/system_config",ood_ip);
-                let client = kRPC::new(server_url.as_str(), &self.session_token);
-                let client = Arc::new(client);
-                self.client.set(client.clone()).ok();
-                return Ok(client);
-            }
-        } 
-
-        let ood_info_str = zone_config.select_wan_ood();
-        if ood_info_str.is_some() {
-            //try connect to wan ood
-
-            let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str());
-            info!("try connect to wan ood: {}",ood_info.hostname);
-            let ood_ip = ood_info.resolve_ip().await;
-            if ood_ip.is_ok() {
-                let ood_ip = ood_ip.unwrap();
-                let server_url = format!("http://{}:3200/kapi/system_config",ood_ip);
-                let client = kRPC::new(server_url.as_str(), &self.session_token);
-                let client = Arc::new(client);
-                self.client.set(client.clone()).ok();
-                return Ok(client);
-            }
-        }
-
-        //connect to local cyfs_gateway
-        warn!("cann't connect to ood directly, try connect to local cyfs_gateway");
-        //TODO 是否需要3200端口？
-        let client = kRPC::new("http://127.0.0.1:3180/kapi/system_config", &self.session_token);
-        let client = Arc::new(client);
-        self.client.set(client.clone());
-
-        return Ok(client);
+        Ok(client.unwrap().clone())
     }
 
     pub async fn get(&self, key: &str) -> Result<(String,u64)> {

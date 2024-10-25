@@ -2,7 +2,7 @@
 import os
 import shutil
 build_dir = os.path.dirname(os.path.abspath(__file__))
-os.system(f"python {build_dir}/killall.py")
+os.system(f"python3 {build_dir}/killall.py")
 
 print('install files to /opt/buckyos')
 shutil.rmtree("/opt/buckyos")

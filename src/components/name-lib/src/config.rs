@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::net::SocketAddr;
 
 use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
@@ -8,9 +9,10 @@ use serde::{Serialize,Deserialize};
 use serde_json::json;
 use buckyos_kit::*;
 use once_cell::sync::OnceCell;
+use crate::DID;
+use crate::DeviceInfo;
 
-
-use crate::{DeviceInfo,DIDDocumentTrait,EncodedDocument};
+use crate::{DIDDocumentTrait,EncodedDocument};
 use crate::{NSResult,NSError};
 use crate::{decode_json_from_jwt_with_pk,decode_jwt_claim_without_verify,decode_json_from_jwt_with_default_pk};
 
@@ -27,7 +29,7 @@ pub struct VerifyHubInfo {
 pub struct ZoneConfig {
     pub did: String,//full did
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    pub name: Option<String>,//domain name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,6 +56,22 @@ pub struct ZoneConfig {
 }
 
 impl ZoneConfig {
+    pub fn get_zone_short_name(&self) -> String {
+        let did = DID::from_str(self.did.as_str());
+        if did.is_some() {
+            let did = did.unwrap();
+            return did.id.clone();
+        }
+        
+        if self.name.is_some() {
+            let name = self.name.as_ref().unwrap();
+            let short_name = name.split('.').next().unwrap_or(name);
+            return short_name.to_string();
+        }
+
+        return self.did.clone();
+    }
+
     pub fn get_test_config() -> ZoneConfig {
         let jwk = json!(
             {
@@ -79,12 +97,27 @@ impl ZoneConfig {
         }
     }
 
+    pub fn get_node_host_name(&self,node_name:&str) -> String {
+        let zone_short_name = self.get_zone_short_name();
+        let host_name = format!("{}-{}",zone_short_name,node_name);
+        return host_name;
+    }
+
+    pub fn get_ood_string(&self,node_name:&str) -> Option<String> {
+        for ood in self.oods.iter() {
+            if ood.starts_with(node_name) {
+                return Some(ood.clone());
+            }
+        }
+        return None;
+    }
+    
     pub fn select_same_subnet_ood(&self,device_info:&DeviceInfo) -> Option<String> {
         let mut ood_list = self.oods.clone();
         ood_list.shuffle(&mut rand::thread_rng());
 
         for ood in ood_list.iter() {
-            let ood_device_info = DeviceInfo::new(ood);
+            let ood_device_info = DeviceInfo::new(ood,None);
             if ood_device_info.net_id == device_info.net_id {
                 return Some(ood.clone());
             }
@@ -97,7 +130,7 @@ impl ZoneConfig {
         let mut ood_list = self.oods.clone();
         ood_list.shuffle(&mut rand::thread_rng());
         for ood in self.oods.iter() {
-            let device_info = DeviceInfo::new(ood);
+            let device_info = DeviceInfo::new(ood,None);
             if device_info.is_wan_device() {
                 return Some(ood.clone());
             }
@@ -257,11 +290,11 @@ pub struct DeviceConfig {
     pub did: String,
 
     pub name: String,//host name
-    pub device_type: String,
+    pub device_type: String,//[ood,node,sensor
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip:Option<IpAddr>,//main_ip
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub net_id:Option<String>,
+    pub net_id:Option<String>,//[lan1,wlan]
     pub auth_key : Jwk,
 
     pub iss:String,
@@ -270,6 +303,51 @@ pub struct DeviceConfig {
 }
 
 impl DeviceConfig {
+    pub fn new(name:&str,pkx:Option<String>) -> Self {
+        if pkx.is_some() {
+                let did = format!("did:dev:{}",pkx.as_ref().unwrap());
+                let jwk = json!(
+                {
+                    "kty": "OKP",
+                    "crv": "Ed25519",
+                    "x": pkx
+                }
+            );
+            let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
+            DeviceConfig {
+                did: did,
+                name: name.to_string(),
+                device_type: "node".to_string(),
+                ip: None,
+                net_id: None,
+                auth_key: public_key_jwk,
+                iss: "".to_string(),
+                exp: 0,
+                iat: 0,
+            }
+        } else {
+            let jwk = json!(
+                {
+                    "kty": "OKP",
+                    "crv": "Ed25519",
+                    "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
+                }
+            );
+            let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
+            DeviceConfig {
+                did: name.to_string(),
+                name: name.to_string(),
+                device_type: "node".to_string(),
+                ip: None,
+                net_id: None,
+                auth_key: public_key_jwk,
+                iss: "".to_string(),
+                exp: 0,
+                iat: 0,
+            } 
+        }
+    }
+
     pub fn get_test_config() -> DeviceConfig {
         let jwk = json!(
             {
@@ -440,6 +518,7 @@ mod tests {
     use std::{alloc::System, time::{SystemTime, UNIX_EPOCH}};
 
     use super::*;
+    use super::DeviceInfo;
     use serde::de;
     use serde_json::json;
     #[test]
@@ -461,12 +540,12 @@ mod tests {
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         let zone_config = ZoneConfig {
-            did: "did:ens:waterflier".to_string(),
+            did: "did:ens:lzc".to_string(),
             name: None,
             owner_name: None,
             gateway: None,
             auth_key: None, 
-            oods: vec!["ood01".to_string()],
+            oods: vec!["ood1".to_string()],
             services: None,
             sn: Some("web3.buckyos.io".to_string()),
             vlan: None,
@@ -489,8 +568,8 @@ mod tests {
         assert_eq!(encoded,token2);
     }
 
-    #[test]
-    fn test_device_config() {
+    #[tokio::test]
+    async fn test_device_config() {
         let owner_private_key_pem = r#"
         -----BEGIN PRIVATE KEY-----
         MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
@@ -506,13 +585,23 @@ mod tests {
         let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(owner_jwk).unwrap();
         let private_key: EncodingKey = EncodingKey::from_ed_pem(owner_private_key_pem.as_bytes()).unwrap();
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
-
+        
+        
+        
+        let ood_public_key = json!(
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
+            }
+        );
+        let ood_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(ood_public_key).unwrap();
         let device_config = DeviceConfig {
             did: "did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
-            name: "ood01".to_string(),
+            name: "ood1".to_string(),
             device_type: "ood".to_string(),
-            auth_key: public_key_jwk,
-            iss: "waterfllier".to_string(),
+            auth_key: ood_key_jwk,
+            iss: "lzc".to_string(),
             ip:None,
             net_id:None,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
@@ -520,13 +609,95 @@ mod tests {
         };
 
         let json_str = serde_json::to_string(&device_config).unwrap();
-        println!("json_str: {:?}",json_str);
+        println!("ood json_str: {:?}",json_str);
 
         let encoded = device_config.encode(Some(&private_key)).unwrap();
-        println!("encoded: {:?}",encoded);
+        println!("ood encoded: {:?}",encoded);
 
         let decoded = DeviceConfig::decode(&encoded,Some(&public_key)).unwrap();
-        println!("decoded: {:?}",serde_json::to_string(&decoded).unwrap());
+        println!("ood decoded: {:?}",serde_json::to_string(&decoded).unwrap());
+        let token2 = decoded.encode(Some(&private_key)).unwrap();
+
+        let mut device_info_ood = DeviceInfo::from_device_doc(&decoded);
+        device_info_ood.auto_fill_by_system_info().await;
+        let device_info_str = serde_json::to_string(&device_info_ood).unwrap();
+        println!("ood device_info: {}",device_info_str);
+
+        assert_eq!(device_config,decoded);
+        assert_eq!(encoded,token2); 
+
+    
+        // Public Key (JWK base64URL): 
+        //  M3-pAdhs0uFkWmmjdHLBfs494R91QmQeXzCEhEHP-tI
+        // Private Key (DER): 
+        //-----BEGIN PRIVATE KEY-----
+        // MC4CAQAwBQYDK2VwBCIEIGdfBOWv07OemQY4BGe7LYqDOVY+qvwpcbAeI1d1VRBo
+        // -----END PRIVATE KEY-----
+        let gateway_public_key = json!(
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "M3-pAdhs0uFkWmmjdHLBfs494R91QmQeXzCEhEHP-tI"
+            }
+        );
+        let gateway_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(gateway_public_key).unwrap();
+        let device_config = DeviceConfig {
+            did: "did:dev:M3-pAdhs0uFkWmmjdHLBfs494R91QmQeXzCEhEHP-tI".to_string(),
+            name: "gateway".to_string(),
+            device_type: "node".to_string(),
+            auth_key: gateway_key_jwk,
+            iss: "waterfllier".to_string(),
+            ip:Some("23.239.23.54".parse().unwrap()),
+            net_id:Some("wlan".to_string()),
+            exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
+            iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
+        };
+
+        let json_str = serde_json::to_string(&device_config).unwrap();
+        println!("gateway json_str: {:?}",json_str);
+
+        let encoded = device_config.encode(Some(&private_key)).unwrap();
+        println!("gateway encoded: {:?}",encoded);
+
+        let decoded = DeviceConfig::decode(&encoded,Some(&public_key)).unwrap();
+        println!("gateway decoded: {:?}",serde_json::to_string(&decoded).unwrap());
+        let token2 = decoded.encode(Some(&private_key)).unwrap();
+
+        assert_eq!(device_config,decoded);
+        assert_eq!(encoded,token2); 
+
+        //Public Key (JWK base64URL): LBgzvFCD4VqQxTsO2LCZjs9FPVaQV2Dt0Q5W_lr4mr0
+        //Private Key (DER): 
+        //-----BEGIN PRIVATE KEY-----
+        //MC4CAQAwBQYDK2VwBCIEIHb18syrSj0BELLwDLJKugmj+63JUzDPIay6gZqUaBeM
+        //-----END PRIVATE KEY-----
+        let server_public_key = json!(
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "LBgzvFCD4VqQxTsO2LCZjs9FPVaQV2Dt0Q5W_lr4mr0"
+            }
+        );
+        let server_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(server_public_key).unwrap();
+        let device_config = DeviceConfig {
+            did: "did:dev:LBgzvFCD4VqQxTsO2LCZjs9FPVaQV2Dt0Q5W_lr4mr0".to_string(),
+            name: "server1".to_string(),
+            device_type: "node".to_string(),
+            auth_key: server_key_jwk,
+            iss: "waterfllier".to_string(),
+            ip:None,
+            net_id:None,
+            exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
+            iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
+        };
+        let json_str = serde_json::to_string(&device_config).unwrap();
+        println!("server json_str: {:?}",json_str);
+
+        let encoded = device_config.encode(Some(&private_key)).unwrap();
+        println!("server encoded: {:?}",encoded);
+
+        let decoded = DeviceConfig::decode(&encoded,Some(&public_key)).unwrap();
+        println!("server decoded: {:?}",serde_json::to_string(&decoded).unwrap());
         let token2 = decoded.encode(Some(&private_key)).unwrap();
 
         assert_eq!(device_config,decoded);

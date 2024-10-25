@@ -1,5 +1,6 @@
-use std::time::Duration;
-use crate::{DIDDocumentTrait, EncodedDocument, NSError, NSProvider, NSResult, NameInfo};
+
+use name_lib::*;
+use crate::{NSProvider,NameInfo};
 
 pub struct NameQuery {
     providers: Vec<Box<dyn NSProvider>>,
@@ -21,12 +22,14 @@ impl NameQuery {
             return Err(NSError::Failed(format!("no provider for {}", name)));
         }
 
-        for provider in self.providers.iter() {
-            match provider.query(name,record_type).await {
+        let record_type = record_type.unwrap_or("A");
+
+        for provider in self.providers.iter().rev() {
+            match provider.query(name,Some(record_type)).await {
                 Ok(info) => {
                     return Ok(info);
                 },
-                Err(e) => {
+                Err(_e) => {
                     //log::error!("query err {}", e);
                     continue;
                 }
@@ -45,7 +48,7 @@ impl NameQuery {
                 Ok(info) => {
                     return Ok(info);
                 },
-                Err(e) => {
+                Err(_e) => {
                     //log::error!("query err {}", e);
                     continue;
                 }

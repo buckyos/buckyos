@@ -407,7 +407,7 @@ mod test {
     
         sleep(Duration::from_millis(1000)).await;
 
-        let client = kRPC::new("http://127.0.0.1:3200/kapi/system_config",&Some(jwt));
+        let client = kRPC::new("http://127.0.0.1:3200/kapi/system_config",Some(jwt));
         //test create
         println!("test create");
         client.call("sys_config_create", json!( {"key":"users/alice/test_key","value":"test_value_create"})).await.unwrap();

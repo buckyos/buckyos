@@ -3,12 +3,15 @@ mod tunnel;
 mod tunnel_connector;
 mod tunnel_mgr;
 mod rtcp_tunnel;
+mod aes_stream;
+
 
 pub use config::*;
 pub use tunnel::*;
 pub use tunnel_connector::*;
 pub use tunnel_mgr::*;
 pub use rtcp_tunnel::*;
+pub use aes_stream::*;
 
 use thiserror::Error;
 

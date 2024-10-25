@@ -16,12 +16,13 @@ use hickory_server::authority::{Catalog, MessageRequest, MessageResponse, Messag
 use hickory_proto::serialize::binary::{BinEncodable,BinDecodable};
 
 use anyhow::Result;
-use name_lib::{DNSProvider, NSProvider, NameInfo};
+use name_client::{DNSProvider, NSProvider, NameInfo};
 use cyfs_gateway_lib::*;
 use tokio::time::timeout;
 use url::Url;
 use std::time::Duration;
-
+use cyfs_sn::get_sn_server_by_id;
+use futures::stream::{self, StreamExt};
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Name not found: {0:}")]
@@ -41,11 +42,33 @@ pub struct DnsServer {
     resolver_chain: Vec<Box<dyn NSProvider>>,
 }
 
-pub fn create_ns_provider(provider_config: &DNSProviderConfig) -> Result<Box<dyn NSProvider>> {
+pub async fn create_ns_provider(provider_config: &DNSProviderConfig) -> Result<Box<dyn NSProvider>> {
     match provider_config.provider_type {
         DNSProviderType::DNS => {
             let dns_provider = DNSProvider::new(None);
             Ok(Box::new(dns_provider))
+        },
+        DNSProviderType::SN => {
+            let sn_server_id = provider_config.config.get("server_id");
+            if sn_server_id.is_none() {
+                error!("server_id is none");
+                return Err(anyhow::anyhow!("server_id is none"));
+            }
+            let sn_server_id = sn_server_id.unwrap();
+            let sn_server_id = sn_server_id.as_str();
+            if sn_server_id.is_none() {
+                error!("server_id is none");
+                return Err(anyhow::anyhow!("server_id is none"));
+            }
+            let sn_server_id = sn_server_id.unwrap();
+            let sn_server = get_sn_server_by_id(sn_server_id).await;
+            //let sn_server = SNServer::new(sn_server_id);
+            if sn_server.is_none() {
+                error!("sn_server not found:{}", sn_server_id);
+                return Err(anyhow::anyhow!("sn_server not found:{}", sn_server_id));
+            }
+            let sn_server = sn_server.unwrap();
+            Ok(Box::new(sn_server))
         },
         _ => {
             Err(anyhow::anyhow!("Unknown provider type: {:?}", provider_config.provider_type))
@@ -114,18 +137,17 @@ fn nameinfo_to_rdata(record_type:&str,name_info: &NameInfo) -> Result<RData> {
 }
 
 impl DnsServer {
-    pub fn new(config: DNSServerConfig) -> Result<Self> {
+    pub async fn new(config: DNSServerConfig) -> Result<Self> {
         let mut resolver_chain : Vec<Box<dyn NSProvider>> = Vec::new();
-        config.resolver_chain.iter().try_for_each(|provider_config| {
-            let provider = create_ns_provider(provider_config);
+
+        for provider_config in config.resolver_chain.iter() {
+            let provider = create_ns_provider(provider_config).await;
             if provider.is_err() {
                 error!("Failed to create provider: {}", provider_config.config);
-                Err(provider.err().unwrap())
             } else {
                 resolver_chain.push(provider.unwrap());
-                Ok(())
             }
-        })?;
+        }
 
         Ok(DnsServer {
             config,
@@ -175,7 +197,7 @@ impl DnsServer {
 
         // WARN!!! 
         // Be careful to handle the request that may be delivered to the DNS-Server again to avoid the dead cycle
-
+        
         let name = request.query().name().to_string();
         let record_type = request.query().query_type().to_string();
         info!("|==>DNS query name:{},record_type:{}", name,record_type);
@@ -233,26 +255,31 @@ impl RequestHandler for DnsServer {
         response: R,
     ) -> ResponseInfo {
         // try to handle request
+        let mut resp2 = response.clone();
         match self.do_handle_request(request, response).await {
             Ok(info) => {
                 info
             },
             Err(error) => {
                 error!("Error in RequestHandler: {error}");
-                let mut header = Header::new();
-                header.set_response_code(ResponseCode::ServFail);
+                let mut builder = MessageResponseBuilder::from_message_request(request);
+                let mut header = Header::response_from_request(request.header());
+                header.set_response_code(ResponseCode::NXDomain);
+                let records = vec![];
+                let mut message = builder.build(header,records.iter(),&[],&[],&[]);
+                resp2.send_response(message).await;
                 header.into()
             }
         }  
     }
 }
 
-pub async fn start_dns_server(config:DNSServerConfig) -> anyhow::Result<()> {
+pub async fn start_cyfs_dns_server(config:DNSServerConfig) -> anyhow::Result<()> {
     let bind_addr = config.bind.clone().unwrap_or("0.0.0.0".to_string());
     let addr = format!("{}:{}", bind_addr,config.port);
-    info!("cyfs-dns-server bind at:{}", addr);
+    info!("cyfs-dns-server try bind at:{}", addr);
     let udp_socket = UdpSocket::bind(addr.clone()).await?;
-    let handler = DnsServer::new(config)?;
+    let handler = DnsServer::new(config).await?;
     let mut server = ServerFuture::new(handler);
     server.register_socket(udp_socket);
 
