@@ -242,7 +242,7 @@ impl NSProvider for ZoneProvider {
         "zone provider".to_string()
     }
 
-    async fn query(&self, name: &str,record_type:Option<&str>) -> NSResult<NameInfo> {
+    async fn query(&self, name: &str,record_type:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<NameInfo> {
         let record_type = record_type.unwrap_or("A");
         if record_type != "A"  {
             return Err(NSError::NotFound("only support A record now".to_string()));
@@ -303,7 +303,7 @@ impl NSProvider for ZoneProvider {
         Err(NSError::NotFound(format!("cann't resolve ip for {}",name)))
     }
 
-    async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {
+    async fn query_did(&self, did: &str,fragment:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<EncodedDocument> {
         let zone_config = CURRENT_ZONE_CONFIG.get();
         if zone_config.is_none() {
             return Err(NSError::NotFound("zone config not found".to_string()));

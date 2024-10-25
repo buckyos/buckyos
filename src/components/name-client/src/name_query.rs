@@ -25,7 +25,7 @@ impl NameQuery {
         let record_type = record_type.unwrap_or("A");
 
         for provider in self.providers.iter().rev() {
-            match provider.query(name,Some(record_type)).await {
+            match provider.query(name,Some(record_type),None).await {
                 Ok(info) => {
                     return Ok(info);
                 },
@@ -44,7 +44,7 @@ impl NameQuery {
         }
 
         for provider in self.providers.iter() {
-            match provider.query_did(did,None).await {
+            match provider.query_did(did,None,None).await {
                 Ok(info) => {
                     return Ok(info);
                 },

@@ -428,13 +428,13 @@ enum RTcpTunnelPackage {
 }
 
 impl RTcpTunnelPackage {
-    pub async fn read_package<'a,S>(mut stream:Pin<&'a mut S>,is_first_package:bool) -> Result<RTcpTunnelPackage,std::io::Error> 
+    pub async fn read_package<'a,S>(mut stream:Pin<&'a mut S>,is_first_package:bool,source_info:&str) -> Result<RTcpTunnelPackage,std::io::Error> 
         where S: AsyncReadExt + 'a,
     {
         let mut buf = [0; 2];
         stream.read_exact(&mut buf).await?;
         let len = u16::from_be_bytes(buf);
-        info!("|==> read rtcp package, len:{}",len);
+        info!("{}==> rtcp package, len:{}",source_info,len);
         if len == 0 {
             if !is_first_package {
                 error!("HelloStream MUST be first package.");
@@ -666,6 +666,7 @@ impl RTcpTunnel {
     }
 
     async fn run(self) {
+        let source_info = self.target.get_id_str();
         loop {
             //等待超时 或 收到一个package
             //超时，基于last_active发送ping包,3倍超时时间后，关闭连接
@@ -676,7 +677,8 @@ impl RTcpTunnel {
             let mut read_stream = read_stream.lock().await;
             let mut read_stream = Pin::new(&mut *read_stream);
             //info!("rtcp tunnel try read package from {}",self.peer_addr.to_string());
-            let package = RTcpTunnelPackage::read_package(read_stream,false).await;
+            
+            let package = RTcpTunnelPackage::read_package(read_stream,false,source_info.as_str()).await;
             //info!("rtcp tunnel read package from {} ok",self.target.as_str());
             if package.is_err() {
                 error!("read package error:{:?}",package.err().unwrap());
@@ -838,7 +840,8 @@ impl RTcpStack {
                 let this_device2 = this_device.clone();
                 let notify_clone = NOTIFY_ROPEN_STREAM.clone();
                 task::spawn(async move {
-                    let first_package = RTcpTunnelPackage::read_package(Pin::new(&mut stream),true).await;
+                    let source_info = addr.to_string();
+                    let first_package = RTcpTunnelPackage::read_package(Pin::new(&mut stream),true,source_info.as_str()).await;
                     if first_package.is_err() {
                         error!("read first package error:{}",first_package.err().unwrap());
                         return;

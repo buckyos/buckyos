@@ -294,9 +294,10 @@ impl NSProvider for SNServer {
         "sn_ns_provider".to_string()
     } 
 
-    async fn query(&self, name: &str,record_type:Option<&str>) -> NSResult<NameInfo> {
+    async fn query(&self, name: &str,record_type:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<NameInfo> {
         info!("sn server dns process name query: {}, record_type: {:?}",name,record_type);
         let record_str = record_type.unwrap_or("A");
+        let from_ip = from_ip.unwrap_or(self.server_ip);
         let mut is_support = false;
         if record_str == "A" || record_str == "AAAA" || record_str == "TXT" {
             is_support = true;
@@ -344,26 +345,50 @@ impl NSProvider for SNServer {
                     let device_info = self.get_device_info(username, "ood1").await;
                     if device_info.is_some() {
                         let (device_info,device_ip) = device_info.unwrap();
+                        let mut address_vec:Vec<IpAddr> = Vec::new();
+                        let device_report_ip = device_info.ip;
                         if device_info.is_wan_device() {
-                            let device_report_ip = device_info.ip.unwrap();
-                            match device_report_ip {
-                                IpAddr::V4(ip) => {
-                                    if ip.is_private() {
-                                        info!("device {} is wan device with private ip, return ip {} ",name,device_ip);
-                                        return Ok(NameInfo::from_address(name, device_ip));
-                                    } else {
-                                        info!("device {} is wan device with public ip, return ip {} ",name,device_report_ip);
-                                        return Ok(NameInfo::from_address(name, device_report_ip));
+
+                            if device_report_ip.is_some() {
+                                let device_report_ip = device_report_ip.unwrap();
+                                match device_report_ip {
+                                    IpAddr::V4(ip) => {
+                                        if ip.is_private() {
+                                            if from_ip == device_ip {
+                                                info!("device {} is wan device and query from some lan, return lan_ip {} and device_ip {}",name,device_report_ip,device_ip);
+                                                address_vec.push(device_report_ip);
+                                                address_vec.push(device_ip);
+                                            } else {
+                                                info!("device {} is wan device with lan_ip, return device_ip {}",name,device_ip);
+                                                address_vec.push(device_ip);
+                                            }
+                                        } else {
+                                            info!("device {} is wan device with public_v4ip, return report ip {} ",name,device_report_ip);
+                                            address_vec.push(device_report_ip);
+                                        }
+                                    }
+                                    IpAddr::V6(ip) => {
+                                        info!("device {} is wan device with v6, return report ip {} ",name,device_report_ip);
+                                        address_vec.push(device_report_ip);
                                     }
                                 }
-                                IpAddr::V6(ip) => {
-                                    info!("device {} is wan device with public ip, return ip {} ",name,device_ip);
-                                    return Ok(NameInfo::from_address(name, device_report_ip));
-                                }
+                            } else {
+                                info!("device {} is wan device without self-report ip, return device_ip {}",name,device_ip);
+                                address_vec.push(device_ip);
+                            }
+                        } else {
+                            if from_ip == device_ip  && device_report_ip.is_some() {
+                                let device_report_ip = device_report_ip.unwrap();
+                                info!("device {} is lan device and query from some lan, return self la_ip {} and sn_ip ",name,device_report_ip);
+                                address_vec.push(device_report_ip);
+                                address_vec.push(self.server_ip);
+                            } else {
+                                info!("device {} is lan device , return sn_ip",name);
+                                address_vec.push(self.server_ip);
                             }
                         }
-                        info!("device {} is lan device, return sn'sip {} ",name,self.server_ip);
-                        let result_name_info = NameInfo::from_address(name, self.server_ip);
+
+                        let result_name_info = NameInfo::from_address_vec(name, address_vec);
                         return Ok(result_name_info);
                     } else {
                         return Err(NSError::NotFound(name.to_string()));
@@ -379,7 +404,7 @@ impl NSProvider for SNServer {
         }
     }
 
-    async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {
+    async fn query_did(&self, did: &str,fragment:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<EncodedDocument> {
         return Err(NSError::NotFound("sn-server not support did query".to_string()));
     }
 }
