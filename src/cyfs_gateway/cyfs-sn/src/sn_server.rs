@@ -361,6 +361,7 @@ impl NSProvider for SNServer {
                                             } else {
                                                 info!("device {} is wan device with lan_ip, return device_ip {}",name,device_ip);
                                                 address_vec.push(device_ip);
+                                                address_vec.push(device_report_ip);
                                             }
                                         } else {
                                             info!("device {} is wan device with public_v4ip, return report ip {} ",name,device_report_ip);
@@ -385,6 +386,10 @@ impl NSProvider for SNServer {
                             } else {
                                 info!("device {} is lan device , return sn_ip",name);
                                 address_vec.push(self.server_ip);
+                                if device_report_ip.is_some() {
+                                    let device_report_ip = device_report_ip.unwrap();
+                                    address_vec.push(device_report_ip);
+                                }
                             }
                         }
 
