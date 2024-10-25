@@ -215,6 +215,7 @@ impl Router {
         if upstream_url.is_err() {
             return Err(anyhow::anyhow!("Failed to parse upstream url: {}", upstream_url.err().unwrap()));
         }
+        //TODO:support url rewrite
         let upstream_url = upstream_url.unwrap();
         let scheme = upstream_url.scheme();
         match scheme {

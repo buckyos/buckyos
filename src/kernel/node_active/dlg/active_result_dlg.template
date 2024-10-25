@@ -3,6 +3,8 @@
         display: flex;
         flex-direction: column;
         gap: 10px;
+        justify-content: center; /* 水平居中 */
+        align-items: center
     }
 
     .frame {
@@ -13,21 +15,23 @@
     }
 
     .button-container {
-        display: flex;
-        justify-content: center; 
+        position: absolute;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
     }
 </style>
 <div class="frame">
     <div class="container">
         <h2>激活成功!</h2>
-        <img src="/res/success.png" style="width: 100px;height: 100px;margin-left: 28px;"/>
+        <img src="success.png" style="width: 120px;height: 120px;"/>
         <p>您的Personal Server已成功激活</p>
-        <p>您可以通过 <a href="https://www.buckyos.io/node/index.html">https://www.buckyos.io/node/index.html</a> 访问您的Personal Server</p>
+        <p>点击 <a href="http://{{sn_user_name}}.web3.buckyos.io/index.html">https://{{sn_user_name}}.web3.buckyos.io/index.html</a> 访问</p>
     </div>
     
     <p></p>
     <p></p>
     <div class="button-container">
-        <md-filled-button id="btn_end" style="width: 150px;">Close</md-filled-button>
+        <md-filled-button id="btn_end">启动Personal Server</md-filled-button>
     </div>
 </div>

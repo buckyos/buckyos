@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use buckyos_kit::*;
 use serde_json::{Value,json};
-use std::net::IpAddr;
+use std::{net::IpAddr, process::exit};
 use std::result::Result;
 use ::kRPC::*;
 use cyfs_gateway_lib::*;
@@ -33,8 +33,11 @@ impl ActiveServer {
             .map_err(|e|RPCErrors::ReasonError(format!("Failed to rename device identity: {}",e.to_string())))?;
         tokio::task::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            restart_program();
+            exit(0);
         });
+
+        //rename this device's hostname to  $username-ood1
+        //change root user buckyos to admin password
         Ok(RPCResponse::new(RPCResult::Success(json!({})),req.seq))
     }
 

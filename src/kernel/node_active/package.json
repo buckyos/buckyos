@@ -24,11 +24,12 @@
   "dependencies": {
     "@material/web": "^2.2.0",
     "bcryptjs": "^2.4.3",
+    "buckyos": "file:../buckyos_sdk/",
+    "handlebars": "^4.7.8",
     "lit-element": "^4.1.0",
     "path": "^0.12.7",
     "terser": "^5.34.1",
     "tweetnacl": "^1.0.3",
-    "tweetnacl-util": "^0.15.1",
-    "buckyos":"file:../buckyos_sdk/"
+    "tweetnacl-util": "^0.15.1"
   }
 }

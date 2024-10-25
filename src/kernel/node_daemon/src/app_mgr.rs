@@ -40,6 +40,7 @@ pub struct AppInfo {
     //gateway settings
     pub host_name: Option<String>,
     pub port : Option<u16>,//main port 
+    pub org_port : Option<u16>,//original port
 }
 
 #[derive(Serialize, Deserialize)]

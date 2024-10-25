@@ -1,0 +1,10 @@
+Package: buckyos
+Version: 0.2.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: buckyos.org
+Depends: docker.io,python3,pip,curl,openssl,psmisc
+Description: buckyos system software.
+ include node_daemon,node_activecyfs_gateway,app_loader,system_config_service,verify_hub.
+ with default config files.

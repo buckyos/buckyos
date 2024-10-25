@@ -21,16 +21,17 @@ async fn generate_app_config(user_name:&str) -> Result<HashMap<String,String>> {
         "pkg_id" : "home_station",
         "username" : user_name.to_string(),
         "service_docker_images" : {
-            "x86_server" : "buckyos/home_station:latest"
+            "x86_server" : "filebrowser/filebrowser:s6"
         },
-        "data_mount_point" : "/home/data",
-        "cache_mount_point" : "/home/cache",
-        "local_cache_mount_point" : "/home/local_cache",
+        "data_mount_point" : "/srv",
+        "cache_mount_point" : "/database/",
+        "local_cache_mount_point" : "/config/",
         "max_cpu_num" : Some(4),
         "max_cpu_percent" : Some(80),
         "memory_quota" : 1024*1024*1024*1, //1GB
         "host_name" : Some("home".to_string()),
-        "port" : 20080
+        "port" : 20080,
+        "org_port" : 80
     })).unwrap();
     init_list.insert(format!("users/{}/apps/{}/config",user_name.to_string(),"buckyos.home_station"),config_str);
     Ok(init_list)
