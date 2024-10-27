@@ -12,16 +12,28 @@
             "bind":"0.0.0.0",
             "http_port":80,
             "tls_port":443,
+            "default_tls_host":"*.web3.buckyos.io",
             "hosts": {
                 "web3.buckyos.io": {
+                    "tls": {
+                        "cert_path": "fullchain.pem",
+                        "key_path": "privkey.pem"
+                    },
                     "enable_cors":true,
                     "routes": {
                         "/kapi/sn":{
                             "inner_service":"main_sn"
+                        },
+                        "/static":{
+                            "local_dir":"/tmp"
                         }
                     }
                 },
                 "*.web3.buckyos.io": {
+                    "tls": {
+                        "cert_path": "fullchain.pem",
+                        "key_path": "privkey.pem"
+                    },
                     "routes": {
                         "/":{
                             "tunnel_selector":"main_sn"

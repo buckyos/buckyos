@@ -17,7 +17,9 @@ use tokio::sync::{Mutex, OnceCell};
 use serde_json::json;
 use ::kRPC::*;
 use lazy_static::lazy_static;
-
+use std::fs::File;
+use std::io::BufReader;
+use rustls_pemfile::{certs, pkcs8_private_keys};
 use cyfs_sn::*;
 
 lazy_static!{
@@ -283,16 +285,44 @@ impl Router {
 
 pub struct SNIResolver {
     configs: HashMap<String, Arc<ServerConfig>>,
+    default_tls_host: String,
 }
 
 impl SNIResolver {
-    pub fn new(configs: HashMap<String, Arc<ServerConfig>>) -> Self {
-        SNIResolver { configs }
+    pub fn new(configs: HashMap<String, Arc<ServerConfig>>,default_tls_host:String) -> Self {
+        SNIResolver { configs,default_tls_host }
+    }
+
+    
+    fn get_config_by_host(&self,host:&str) -> Option<&Arc<ServerConfig>> {
+        let host_config = self.configs.get(host);
+        if host_config.is_some() {
+            return host_config;
+        }
+
+        for (key,value) in self.configs.iter() {
+            if key.starts_with("*.") {
+                if host.ends_with(&key[2..]) {
+                    return Some(value);
+                }
+            }
+        }
+
+        return self.configs.get("*");
     }
 }
 
 impl rustls::server::ResolvesServerCert for SNIResolver {
     fn resolve(&self, client_hello: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
-        unimplemented!()
+        let server_name = client_hello.server_name().unwrap_or(self.default_tls_host.as_str()).to_string();
+        info!("try reslove tls certifiled key for : {}", server_name);
+
+        let config = self.get_config_by_host(&server_name);
+        if config.is_some() {
+            return config.unwrap().cert_resolver.resolve(client_hello);
+        } else {
+            warn!("No tls config found for server_name: {}", server_name);
+            return None;
+        }
     }
 }
