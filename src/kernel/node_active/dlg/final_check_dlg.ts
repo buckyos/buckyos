@@ -43,6 +43,7 @@ class FinalCheckDlg extends HTMLElement {
                     const activeWizzard = document.getElementById('active-wizzard') as WizzardDlg;
                     const active_result_dlg = document.createElement('active-result-dlg');
                     activeWizzard.pushDlg(active_result_dlg);
+                    activeWizzard.disableBackButton();
                 }
             });
         });

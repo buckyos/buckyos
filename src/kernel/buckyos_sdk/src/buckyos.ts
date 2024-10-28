@@ -12,7 +12,7 @@ export class BuckyOS {
         this.token = this.loadToken();
     }
 
-    async login() {
+    async login(parms) {
         if (this.token) {
             return this.token;
         }

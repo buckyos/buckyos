@@ -32,6 +32,6 @@
     <p></p>
     <p></p>
     <div class="button-container">
-        <md-filled-button id="btn_end">启动Personal Server</md-filled-button>
+        <md-filled-button id="btn_end">完成</md-filled-button>
     </div>
 </div>

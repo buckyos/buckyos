@@ -19,14 +19,8 @@ class ActiveResultDlg extends HTMLElement {
 
         let btn_end = shadow.getElementById('btn_end');
         btn_end.addEventListener('click',() => {
-          btn_end.disabled = true;
-          end_active().then((success) => {
-            btn_end.disabled = false;
-            if (success) {
-              alert("启动成功,即将跳转到Personal Server");
-              window.location.href = `http://${wizzard_data.sn_user_name}.web3.buckyos.io/index.html`;
-            }
-          });
+            alert("即将跳转到您的Personal Server主页,默认用户名密码是admin/admin");
+            window.location.href = `http://${wizzard_data.sn_user_name}.web3.buckyos.io/`;
         });
     }
 

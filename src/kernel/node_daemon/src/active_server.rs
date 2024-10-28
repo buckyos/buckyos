@@ -32,7 +32,7 @@ impl ActiveServer {
         //tokio::fs::rename(old_device_identity_file,new_device_identity_file).await
         //    .map_err(|e|RPCErrors::ReasonError(format!("Failed to rename device identity: {}",e.to_string())))?;
         tokio::task::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             exit(0);
         });
 
@@ -127,7 +127,14 @@ zone_nonce = "1234567890"
         tokio::fs::write(start_params_file,start_params_str.as_bytes()).await
             .map_err(|_|RPCErrors::ReasonError("Failed to write start params".to_string()))?;
 
+            
         info!("Write Active files [.device_private_key.pem,.device_identity.toml,start_config.json] success");
+        
+        tokio::task::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            exit(0);
+        });
+        
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "code":0
         })),req.seq))
