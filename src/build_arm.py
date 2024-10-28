@@ -31,6 +31,8 @@ if len(args) > 0:
         cargo_command = f'cargo clean --target-dir "{target_dir}"'
         os.system(cargo_command)
 
+
+os.environ["RUSTFLAGS"] = "-C target-feature=+crt-static"
 cargo_command = f'cargo build --target aarch64-unknown-linux-gnu --release --target-dir "{target_dir}"'
 build_result = os.system(cargo_command)
 if build_result != 0:
@@ -49,16 +51,33 @@ print(f'npm build success at: {vite_build_dir}')
 print('copying files to rootfs')
 destination_dir = os.path.join(build_dir, "rootfs/bin")
 shutil.copy(os.path.join(target_dir, "release", "node_daemon"), destination_dir)
+strip_cmd = f'aarch64-linux-gnu-strip {os.path.join(target_dir, "release", "node_daemon")}'
+os.system(strip_cmd)
+
 destination_dir = os.path.join(build_dir, "rootfs/bin/system_config")
 shutil.copy(os.path.join(target_dir, "release", "system_config"), destination_dir)
+strip_cmd = f'aarch64-linux-gnu-strip {os.path.join(target_dir, "release", "system_config")}'
+os.system(strip_cmd)
+
 destination_dir = os.path.join(build_dir, "rootfs/bin/verify_hub")
 shutil.copy(os.path.join(target_dir, "release", "verify_hub"), destination_dir)
+strip_cmd = f'aarch64-linux-gnu-strip {os.path.join(target_dir, "release", "verify_hub")}'
+os.system(strip_cmd)
+
 destination_dir = os.path.join(build_dir, "rootfs/bin/scheduler")
 shutil.copy(os.path.join(target_dir, "release", "scheduler"), destination_dir)
+strip_cmd = f'aarch64-linux-gnu-strip {os.path.join(target_dir, "release", "scheduler")}'
+os.system(strip_cmd)
+
 destination_dir = os.path.join(build_dir, "rootfs/bin/cyfs_gateway")
 shutil.copy(os.path.join(target_dir, "release", "cyfs_gateway"), destination_dir)
+strip_cmd = f'aarch64-linux-gnu-strip {os.path.join(target_dir, "release", "cyfs_gateway")}'
+os.system(strip_cmd)
+
 destination_dir = os.path.join(build_dir, "./web3_bridge/web3_gateway")
 shutil.copy(os.path.join(target_dir, "release", "cyfs_gateway"), destination_dir)
+strip_cmd = f'aarch64-linux-gnu-strip {os.path.join(target_dir, "release", "cyfs_gateway")}'
+os.system(strip_cmd)
 
 destination_dir = os.path.join(build_dir, "rootfs/bin")
 shutil.copy(os.path.join(build_dir, "killall.py"), destination_dir)

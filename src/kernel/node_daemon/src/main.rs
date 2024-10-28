@@ -720,6 +720,8 @@ async fn async_main() -> std::result::Result<(), String> {
                 error!("start system_config_service failed! {}", err);
                 return String::from("start system_config_service failed!");
             })?;
+            info!("start system_config_service OK!,result:{},wait 5 seconds...",start_result);
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
 
         syc_cfg_client = SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()));
