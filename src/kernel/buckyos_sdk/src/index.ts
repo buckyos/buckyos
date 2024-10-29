@@ -1,7 +1,9 @@
 import { kRPCClient } from "./krpc_client";
+import { AuthClient } from "./buckyos";
 
 const buckyos = {
-    kRPCClient
+    kRPCClient,
+    AuthClient
 }
 
 export default buckyos;

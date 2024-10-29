@@ -10,6 +10,8 @@ use name_lib::*;
 use name_client::*;
 use log::*;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
+use ::kRPC::*;
+use sys_config::*;
 
 #[derive(Clone)]
 struct ActiveServer {
@@ -52,6 +54,7 @@ impl ActiveServer {
         let friend_passcode = req.params.get("friend_passcode");
         let device_public_key = req.params.get("device_public_key");
         let device_private_key = req.params.get("device_private_key");
+        let sn_url = req.params.get("sn_url");
         //let device_info = req.params.get("device_info");  
         if user_name.is_none() || zone_name.is_none() || gateway_type.is_none() || owner_public_key.is_none() || owner_private_key.is_none() || device_public_key.is_none() || device_private_key.is_none() {
             return Err(RPCErrors::ParseRequestError("Invalid params, user_name, zone_name, gateway_type, owner_public_key, owner_private_key, device_public_key or device_private_key is none".to_string()));
@@ -89,7 +92,7 @@ impl ActiveServer {
         }
 
         let device_config:DeviceConfig = DeviceConfig {
-            did: device_did,
+            did: device_did.clone(),
             name: "ood1".to_string(),
             device_type: "ood".to_string(),
             auth_key: device_public_jwk,
@@ -130,6 +133,35 @@ zone_nonce = "1234567890"
             
         info!("Write Active files [.device_private_key.pem,.device_identity.toml,start_config.json] success");
         
+        if sn_url.is_some() {
+            //register to sn 
+            let sn_url = sn_url.unwrap().as_str().unwrap();
+            info!("Register OOD to sn: {}",sn_url);
+
+            let rpc_token = ::kRPC::RPCSessionToken {
+                token_type : ::kRPC::RPCSessionTokenType::JWT,
+                nonce : None,
+                userid : Some(user_name.to_string()),
+                appid:Some("kernel".to_string()),
+                exp:Some(buckyos_get_unix_timestamp() + 60),
+                iss:Some(user_name.to_string()),
+                token:None,
+            };
+            let user_rpc_token = rpc_token.generate_jwt(None,&owner_private_key_pem)
+                .map_err(|_| {
+                    warn!("Failed to generate user rpc token");
+                    RPCErrors::ReasonError("Failed to generate user rpc token".to_string())})?;
+            
+            let mut device_info = DeviceInfo::new("ood1",None);
+            device_info.auto_fill_by_system_info().await.unwrap();
+            let device_info_json = serde_json::to_string(&device_info).unwrap();
+            let device_ip = device_info.ip.unwrap().to_string();
+
+            sn_register_device(sn_url, Some(user_rpc_token.to_string()), 
+                user_name, "ood1", &device_did.as_str(), &device_ip, device_info_json.as_str()).await;
+        }
+
+
         tokio::task::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             exit(0);

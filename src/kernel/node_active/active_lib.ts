@@ -153,7 +153,7 @@ export type ActiveWizzardData = {
     friend_passcode:string;
     enable_guest_access : boolean;
 
-    owner_public_key : JsonValue;
+    owner_public_key : string;
     owner_private_key : string;
     zone_config_jwt : string;
 
@@ -250,7 +250,7 @@ export async function get_thisdevice_info():Promise<JsonValue> {
 }
 
 export async function active_ood(user_name:string,zone_name:string,gateway_type:GatewayType,
-    owner_public_key:JsonValue,owner_private_key:string,device_public_key:JsonValue,device_private_key:string,
+    owner_public_key:string,owner_private_key:string,device_public_key:JsonValue,device_private_key:string,
     admin_password_hash:string,enable_guest_access:boolean,friend_passcode:string):Promise<boolean> {
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
     let result = await rpc_client.call("do_active",{
@@ -264,6 +264,7 @@ export async function active_ood(user_name:string,zone_name:string,gateway_type:
         admin_password_hash:admin_password_hash,
         guest_access:enable_guest_access,
         friend_passcode:friend_passcode,
+        sn_url:"http://web3.buckyos.io/kapi/sn"
     });
     return result["code"] == 0;
 }
@@ -312,17 +313,17 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
     }
 
     //get device info
-    let device_info = await get_thisdevice_info();
-    // register ood to sn
-    let register_ood_result =await register_sn_main_ood(
-        data.sn_user_name,
-        "ood1",
-        device_did,
-        device_info["ip"],
-        JSON.stringify(device_info));
-    if (!register_ood_result) {
-        return false;
-    }
+    //let device_info = await get_thisdevice_info();
+    // register ood to sn(move to active ood implement?)
+    //let register_ood_result =await register_sn_main_ood(
+    //    data.sn_user_name,
+    //    "ood1",
+    //    device_did,
+    //    device_info["ip"],
+    //    JSON.stringify(device_info));
+    //if (!register_ood_result) {
+    //    return false;
+    //}
     return true;
 }
 

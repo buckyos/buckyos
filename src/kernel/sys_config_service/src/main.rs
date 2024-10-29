@@ -242,7 +242,7 @@ fn init_log_config() {
 async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
     if token.is_self_verify() {
         let trust_keys = TRUST_KEYS.lock().await;
-        token.do_self_verify(&trust_keys)?;
+        token.verify_by_key_map(&trust_keys)?;
     }
     info!("verify_session_token: {:?}",token);
     Ok(())

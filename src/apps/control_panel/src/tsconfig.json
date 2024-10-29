@@ -1,0 +1,29 @@
+{
+    "include": ["components", "utils", "test",  "**/*.ts", "typing.d.ts"],
+    "exclude": ["node_modules/**", "dist/**", "res", "public"],
+    "compilerOptions": {
+      "module": "ESNext",
+      "moduleResolution": "bundler",
+      "esModuleInterop": true,
+      "target": "ESNext",
+      "declaration": true,
+      "outDir": "dist",
+      "types": ["./typings.d.ts"],
+      "forceConsistentCasingInFileNames": true,
+      "noFallthroughCasesInSwitch": true,
+      "isolatedModules": false,
+      "strict": true,
+      "skipLibCheck": true,
+      "noImplicitAny": true,
+      "useUnknownInCatchVariables": false,
+      "inlineSourceMap": true,
+      "baseUrl": ".",
+      "experimentalDecorators": true,
+      "emitDecoratorMetadata": true,
+      "noEmitOnError": false,
+      "paths": {
+        "@/components/*": ["components/*"],
+        "@/utils/*": ["utils/*"]
+      }
+    }
+  }
