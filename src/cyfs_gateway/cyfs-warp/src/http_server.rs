@@ -13,6 +13,7 @@ use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::TcpListenerStream;
+use tokio::time::{timeout, Duration};
 use anyhow::Result;
 use log::*;
 
@@ -26,7 +27,7 @@ use crate::router::*;
 
 
 
-async fn handle_request(
+async fn _handle_request(
     router: Arc<Router>,
     tls_config: Option<Arc<ServerConfig>>,
     req: Request<Body>,
@@ -45,6 +46,24 @@ async fn handle_request(
     }
 }
 
+async fn handle_request(
+    router: Arc<Router>,
+    tls_config: Option<Arc<ServerConfig>>,
+    req: Request<Body>,
+    client_ip:SocketAddr,
+) -> Result<Response<Body>, hyper::Error> {
+    let timeout_duration = Duration::from_secs(30);
+    let result = timeout(timeout_duration, _handle_request(router, tls_config, req, client_ip)).await;
+    match result {
+        Ok(res) => res,
+        Err(_) => {
+            Ok(Response::builder()
+            .status(500)
+            .body(Body::from("Internal Server Error:process timeout"))
+            .unwrap())
+        }
+    }
+}
 
 pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
     let router = Arc::new(Router::new(config.clone()));
@@ -100,16 +119,13 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
 
             let make_svc = make_service_fn(move |conn: &tokio_rustls::server::TlsStream<tokio::net::TcpStream>| {
                 let router = router.clone();
-                //let tls_configs = tls_configs.clone();
                 let sni_hostname = conn.get_ref().1.server_name().unwrap_or(default_tls_host.as_str()).to_owned();
-                info!("tls accpet: sni_hostname:{}",sni_hostname);
-                //let tls_config = tls_configs.get(&sni_hostname).cloned();
                 let client_ip = conn.get_ref().0.peer_addr().unwrap();
                 let tls_cfg = tls_cfg.clone();
-
+                
                 async move {
                     Ok::<_, hyper::Error>(service_fn(move |req| {
-                        handle_request(router.clone(), Some(tls_cfg.clone()), req, client_ip)
+                        handle_request(router.clone(), Some(tls_cfg.clone()), req,client_ip)
                     }))
                 }
             });
@@ -127,18 +143,22 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
             let tls_acceptor = Arc::new(tls_acceptor);
 
             let incoming_tls_stream = listener_stream.filter_map(|conn| {
+                info!("tls accept a new tcp stream ...");
                 let tls_acceptor = tls_acceptor.clone();
                 async move {
                     match conn {
                         Ok(stream) => {
                             match tls_acceptor.accept(stream).await {
-                                Ok(tls_stream) => Some(Ok::<_, std::io::Error>(tls_stream)),
+                                Ok(tls_stream) => {
+                                    info!("tls accept a new tls from tcp stream OK!");
+                                    Some(Ok::<_, std::io::Error>(tls_stream))
+                                },
                                 Err(e) => {
                                     warn!("TLS handshake failed: {:?}", e);
                                     None // Ignore failed connections
                                 }
                             }
-                        },
+                        }
                         Err(e) => {
                             warn!("TLS Connection acceptance failed: {:?}", e);
                             None
