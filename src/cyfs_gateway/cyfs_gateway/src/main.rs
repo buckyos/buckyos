@@ -57,24 +57,42 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
             let keep_tunnel = keep_tunnel.unwrap();
             let keep_tunnel: Vec<String> = keep_tunnel.map(|s| s.to_owned()).collect();
             
-            task::spawn(async move {
-                loop {
-                    for tunnel in keep_tunnel.iter() {
-                        let tunnel_url = format!("rtcp://{}",tunnel);
-                        info!("keep tunnel: {}", tunnel_url);
-                        let tunnel_url = Url::parse(tunnel_url.as_str()).unwrap();
-                        
+            for tunnel in keep_tunnel.iter() {
+                let tunnel_url = format!("rtcp://{}",tunnel);
+                info!("keep tunnel: {}", tunnel_url);
+                let tunnel_url = Url::parse(tunnel_url.as_str());
+                if tunnel_url.is_err() {
+                    warn!("Invalid tunnel url: {}", tunnel_url.err().unwrap());
+                    continue;
+                }
+                
+                task::spawn(async move {
+                    let tunnel_url = tunnel_url.unwrap();
+                    loop {
+                        let last_ok;
                         let tunnle = get_tunnel(&tunnel_url,None).await;
                         if tunnle.is_err() {
                             warn!("Error getting tunnel: {}", tunnle.err().unwrap());
-                            continue;
+                            last_ok = false;
+                        } else {
+                            let tunnel = tunnle.unwrap();
+                            let ping_result = tunnel.ping().await;
+                            if ping_result.is_err() {
+                                warn!("Error pinging tunnel: {}", ping_result.err().unwrap());
+                                last_ok = false;
+                            } else {
+                                last_ok = true;
+                            }
                         }
-                        let tunnel = tunnle.unwrap();
-                        let _ = tunnel.ping().await;
+
+                        if last_ok {
+                            tokio::time::sleep(std::time::Duration::from_secs(60*2)).await;
+                        } else {
+                            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                        }
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                }
-            });
+                });
+            }
         }
     } else {
         info!("disable buckyos,set device config for test");

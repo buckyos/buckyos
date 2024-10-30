@@ -66,6 +66,14 @@ class WizzardDlg extends HTMLElement {
       this.updateBackButton();
     }
 
+    disableBackButton() {
+      if (!this.shadowRoot)
+        return;
+
+      const backButton = this.shadowRoot.querySelector('#back-button') as HTMLButtonElement;
+      backButton.style.display = 'none';
+    }
+
     private updateBackButton() {
       if (!this.shadowRoot) 
         return;

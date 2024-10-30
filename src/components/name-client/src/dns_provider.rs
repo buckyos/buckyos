@@ -51,7 +51,7 @@ impl NSProvider for DNSProvider {
     fn get_id(&self) -> String {
         return  "dns provider".to_string();
     }
-    async fn query(&self, name: &str,record_type:Option<&str>) -> NSResult<NameInfo> {
+    async fn query(&self, name: &str,record_type:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<NameInfo> {
         let mut server_config = ResolverConfig::default();
         if self.dns_server.is_some() {
             let dns_server = self.dns_server.clone().unwrap();
@@ -163,7 +163,7 @@ impl NSProvider for DNSProvider {
         
     }
 
-    async fn query_did(&self, did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {
+    async fn query_did(&self, did: &str,fragment:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<EncodedDocument> {
         return Err(NSError::Failed("Not implemented".to_string()));
     }
 }

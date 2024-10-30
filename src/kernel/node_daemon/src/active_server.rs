@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use buckyos_kit::*;
 use serde_json::{Value,json};
-use std::net::IpAddr;
+use std::{net::IpAddr, process::exit};
 use std::result::Result;
 use ::kRPC::*;
 use cyfs_gateway_lib::*;
@@ -24,17 +24,20 @@ impl ActiveServer {
         let write_dir = get_buckyos_system_etc_dir();
         let old_device_private_key_file = write_dir.join(".device_private_key.pem");
         let new_device_private_key_file = write_dir.join("node_private_key.pem");
-        tokio::fs::rename(old_device_private_key_file,new_device_private_key_file).await
-            .map_err(|e|RPCErrors::ReasonError(format!("Failed to rename device private key: {}",e.to_string())))?;
+        //tokio::fs::rename(old_device_private_key_file,new_device_private_key_file).await
+        //    .map_err(|e|RPCErrors::ReasonError(format!("Failed to rename device private key: {}",e.to_string())))?;
 
         let old_device_identity_file = write_dir.join(".device_identity.toml");
         let new_device_identity_file = write_dir.join("node_identity.toml");
-        tokio::fs::rename(old_device_identity_file,new_device_identity_file).await
-            .map_err(|e|RPCErrors::ReasonError(format!("Failed to rename device identity: {}",e.to_string())))?;
+        //tokio::fs::rename(old_device_identity_file,new_device_identity_file).await
+        //    .map_err(|e|RPCErrors::ReasonError(format!("Failed to rename device identity: {}",e.to_string())))?;
         tokio::task::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            restart_program();
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            exit(0);
         });
+
+        //rename this device's hostname to  $username-ood1
+        //change root user buckyos to admin password
         Ok(RPCResponse::new(RPCResult::Success(json!({})),req.seq))
     }
 
@@ -101,7 +104,7 @@ impl ActiveServer {
         
         //write device private key 
         let write_dir = get_buckyos_system_etc_dir();
-        let device_private_key_file = write_dir.join(".device_private_key.pem");
+        let device_private_key_file = write_dir.join("node_private_key.pem");
         tokio::fs::write(device_private_key_file,device_private_key.as_bytes()).await.unwrap();
         let owner_public_key_str = owner_public_key.to_string();
         let owner_public_key_str = owner_public_key_str.replace(":", "=");
@@ -114,7 +117,7 @@ device_doc_jwt = "{}"
 zone_nonce = "1234567890"
         "#,zone_name,owner_public_key_str,user_name,device_doc_jwt.to_string());
 
-        let device_identity_file = write_dir.join(".device_identity.toml");
+        let device_identity_file = write_dir.join("node_identity.toml");
         tokio::fs::write(device_identity_file,device_identity_str.as_bytes()).await
             .map_err(|_|RPCErrors::ReasonError("Failed to write device identity".to_string()))?;
 
@@ -124,7 +127,14 @@ zone_nonce = "1234567890"
         tokio::fs::write(start_params_file,start_params_str.as_bytes()).await
             .map_err(|_|RPCErrors::ReasonError("Failed to write start params".to_string()))?;
 
+            
         info!("Write Active files [.device_private_key.pem,.device_identity.toml,start_config.json] success");
+        
+        tokio::task::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            exit(0);
+        });
+        
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "code":0
         })),req.seq))

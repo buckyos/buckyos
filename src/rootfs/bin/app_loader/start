@@ -69,8 +69,9 @@ memory_quota = config.get("memory_quota", "")
 print(f"Image Name: {image_name}")
 
 port = config.get("port", "")
+org_port = config.get("org_port", "")
 if port:
-    port = f"-p {port}:{port} "
+    port = f"-p {port}:{org_port} "
 
 # 构造docker命令
 docker_command = f"docker run --rm {port} --name {username}-{appid} -e {full_appid}.config -e {full_appid}.token -d "

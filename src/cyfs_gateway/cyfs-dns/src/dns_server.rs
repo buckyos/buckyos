@@ -77,42 +77,63 @@ pub async fn create_ns_provider(provider_config: &DNSProviderConfig) -> Result<B
 }
 
 //TODO: dns_provider is realy a demo implementation, must refactor before  used in a offical server.
-fn nameinfo_to_rdata(record_type:&str,name_info: &NameInfo) -> Result<RData> {
+fn nameinfo_to_rdata(record_type:&str, name_info: &NameInfo) -> Result<Vec<RData>> {
     match record_type {
         "A"=> {
-            if name_info.address.len() < 1 {
+            if name_info.address.is_empty() {
                 return Err(anyhow::anyhow!("Address is none"));
             }
-            let addr = name_info.address[0];
-            match addr {
-                IpAddr::V4(addr) => {
-                    return Ok(RData::A(A::from(addr)));
-                },
-                _ => {
-                    return Err(anyhow::anyhow!("Address is not ipv4"));
+            
+            let mut records = Vec::new();
+            // Convert all IPv4 addresses to A records
+            for addr in name_info.address.iter() {
+                match addr {
+                    IpAddr::V4(addr) => {
+                        records.push(RData::A(A::from(*addr)));
+                    },
+                    _ => {
+                        debug!("Skipping non-IPv4 address");
+                        continue;
+                    }
                 }
             }
+            
+            if records.is_empty() {
+                return Err(anyhow::anyhow!("No valid IPv4 addresses found"));
+            }
+            Ok(records)
         },
         "AAAA"=> {
-            if name_info.address.len() < 1 {
+            if name_info.address.is_empty() {
                 return Err(anyhow::anyhow!("Address is none"));
             }
-            let addr = name_info.address[0];
-            match addr {
-                IpAddr::V6(addr) => {
-                    return Ok(RData::AAAA(AAAA::from(addr)));
-                },
-                _ => {
-                    return Err(anyhow::anyhow!("Address is not ipv6"));
+            let mut records = Vec::new();
+            // Convert all IPv6 addresses to AAAA records
+            for addr in name_info.address.iter() {
+                match addr {
+                    IpAddr::V6(addr) => {
+                        records.push(RData::AAAA(AAAA::from(*addr)));
+                    },
+                    _ => {
+                        debug!("Skipping non-IPv6 address");
+                        continue;
+                    }
                 }
             }
+            
+            if records.is_empty() {
+                return Err(anyhow::anyhow!("No valid IPv6 addresses found"));
+            }
+            Ok(records)
         },
         "CNAME"=> {
             if name_info.cname.is_none() {
                 return Err(anyhow::anyhow!("CNAME is none")); 
             }
             let cname = name_info.cname.clone().unwrap();
-            return Ok(RData::CNAME(CNAME(Name::from_str(cname.as_str()).unwrap())));
+            let mut records = Vec::new();
+            records.push(RData::CNAME(CNAME(Name::from_str(cname.as_str()).unwrap())));
+            return Ok(records);
 
         },
         "TXT"=> {
@@ -121,14 +142,17 @@ fn nameinfo_to_rdata(record_type:&str,name_info: &NameInfo) -> Result<RData> {
                 return Err(anyhow::anyhow!("TXT is none"));
             }
             let txt = name_info.txt.clone().unwrap();
+            let mut records = Vec::new();
             if txt.len() > 255 {
                 warn!("TXT is too long, split it");
                 let s1 = txt[0..254].to_string();
                 let s2 = txt[254..].to_string();
-                return Ok(RData::TXT(TXT::new(vec![s1,s2])));
+                
+                records.push(RData::TXT(TXT::new(vec![s1,s2])));
             } else {
-                return Ok(RData::TXT(TXT::new(vec![txt])));
-            }            
+                records.push(RData::TXT(TXT::new(vec![txt])));
+            }    
+            return Ok(records);        
         },
         _ => {
             return Err(anyhow::anyhow!("Unknown record type:{}", record_type));
@@ -183,8 +207,9 @@ impl DnsServer {
     async fn do_handle_request<R: ResponseHandler>(
         &self,
         request: &Request,
-        mut response: R,
+        mut response: R
     ) -> Result<ResponseInfo, Error> {
+
         // make sure the request is a query
         if request.op_code() != OpCode::Query {
             return Err(Error::InvalidOpCode(request.op_code()));
@@ -195,6 +220,8 @@ impl DnsServer {
             return Err(Error::InvalidMessageType(request.message_type()));
         }
 
+        let from_ip = request.src().ip();
+    
         // WARN!!! 
         // Be careful to handle the request that may be delivered to the DNS-Server again to avoid the dead cycle
         
@@ -203,29 +230,26 @@ impl DnsServer {
         info!("|==>DNS query name:{},record_type:{}", name,record_type);
         //foreach provider in resolver_chain 
         for provider in self.resolver_chain.iter() {
-            let name_info = provider.query(name.as_str(),Some(record_type.as_str())).await;
+            let name_info = provider.query(name.as_str(),Some(record_type.as_str()),Some(from_ip)).await;
             if name_info.is_err() {
                 trace!("Provider {} can't resolve name:{}", provider.get_id(), name);
                 continue;
             }
-            //cover nameinfo to response
-            let name_info = name_info.unwrap(); 
-            let rdata = nameinfo_to_rdata(record_type.as_str(),&name_info);
-            if rdata.is_err() {
-                error!("Failed to convert nameinfo to rdata:{}", rdata.err().unwrap());
+
+            let name_info = name_info.unwrap();
+            let rdata_vec = nameinfo_to_rdata(record_type.as_str(),&name_info);
+            if rdata_vec.is_err() {
+                error!("Failed to convert nameinfo to rdata:{}", rdata_vec.err().unwrap());
                 continue;
             }
 
-            let rdata = rdata.unwrap();
+            let rdata_vec = rdata_vec.unwrap();
             let mut builder = MessageResponseBuilder::from_message_request(request);
             let mut header = Header::response_from_request(request.header());
             header.set_response_code(ResponseCode::NoError);
 
-            let mut ttl = 600;
-            if name_info.ttl.is_some() {
-                ttl = name_info.ttl.unwrap();
-            }
-            let records = vec![Record::from_rdata(request.query().name().into(),ttl, rdata)];
+            let mut ttl = name_info.ttl.unwrap_or(600);
+            let records = rdata_vec.into_iter().map(|rdata| Record::from_rdata(request.query().name().into(), ttl, rdata)).collect::<Vec<_>>();
             let mut message = builder.build(header,records.iter(),&[],&[],&[]);
             response.send_response(message).await;
             info!("<==|name:{} {} resolved by provider:{}", name, record_type,provider.get_id());

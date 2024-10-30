@@ -16,7 +16,7 @@ pub struct HostConfig {
 
 impl Default for HostConfig {
     fn default() -> Self {
-        HostConfig { enable_cors: false, routes: HashMap::new(), tls: None }
+        HostConfig { enable_cors: false, routes: HashMap::new(), tls: None}
     }
 }
 
@@ -40,6 +40,7 @@ pub struct WarpServerConfig {
     pub tls_port:u16,
     pub http_port:u16,
     pub bind:Option<String>,
+    pub default_tls_host: Option<String>,
     pub hosts: HashMap<String, HostConfig>,
 }
 

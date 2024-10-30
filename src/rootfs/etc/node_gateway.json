@@ -8,14 +8,11 @@
             "hosts": {
                 "*": {
                     "routes": {
-                        "/static": {
-                            "local_dir": "/tmp/"
-                        },
                         "/kapi/system_config":{
-                            "upstream":"tcp://127.0.0.1:3200"
+                            "upstream":"http://127.0.0.1:3200"
                         },
-                        "/home/":{
-                            "upstream":"tcp://127.0.0.1:20080"
+                        "/":{
+                            "upstream":"http://127.0.0.1:20080"
                         }
                     }
                 }

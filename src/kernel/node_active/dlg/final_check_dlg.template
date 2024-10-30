@@ -13,32 +13,30 @@
     }
 
     .button-container {
-        display: flex;
-        justify-content: center; 
+        position: absolute;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
     }
 
-    .styled-paragraph {
-        word-wrap: break-word; 
-        border: 1px solid lightgray; 
-        padding: 5px; 
-        border-radius: 5px; /* 圆角边框 */
-        background-color: #f9f9f9; /* 淡灰色背景 */
-    }
 </style>
 <div class="frame">
-    <h3>激活前最后确认</h3>
+    <h3>4. 激活前最后确认</h3>
     <div class="container">
-        <div style="margin-top: 0px; margin-left: 28px;">
+        <div style="margin-top: 0px; margin-left:5px;gap:4px">
             <ul>
-                <li>访问链路:使用buckyos.io提供的中转服务</li>
-                <li>域名: $name.g.buckyos.io</li>
-                <li>OOD主机名:waterflier-ood</li>
+                <li>用户名:{{sn_user_name}}</li>
+                <li>访问域名: <a href="http://{{sn_user_name}}.web3.buckyos.io">http://{{sn_user_name}}.web3.buckyos.io</a> (激活完成后可用)</li>
+                <li>访问链路:使用buckyos.io提供的Web3网桥</li>
+                <li>Personal Server主机名:{{sn_user_name}}-ood</li>
             </ul>
         </div>
-        <p>请妥善保管以下私钥,激活后将无法再次查看 <a id="copyButton" href="#">(复制)</a></p>
-        <div style="margin-top: 0px; margin-left: 28px;" id="txt_private_key" class="styled-paragraph">
+        <p>请再次确认已妥善保管以下私钥,激活后将无法查看！<a id="copyButton" href="#">(复制)</a></p>
 
-        </div>
+        <md-filled-text-field id="txt_private_key" type="textarea" label="Owner Private Key" disabled="true"
+        value="{{owner_private_key}}"
+        rows="5">
+        </md-filled-text-field>
     </div>
     <p></p>
     <p></p>

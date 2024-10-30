@@ -271,7 +271,7 @@ export async function active_ood(user_name:string,zone_name:string,gateway_type:
 export async function end_active():Promise<boolean> {
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
     let result = await rpc_client.call("end_active",{});
-    return result["success"];
+    return true;
 }
 
 export async function do_active(data:ActiveWizzardData):Promise<boolean> {

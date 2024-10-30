@@ -31,6 +31,7 @@ class ConfigZoneIdDlg extends HTMLElement {
             }
             wizzard_data.sn_user_name = txt_name.value;
             wizzard_data.sn_active_code = txt_bucky_sn_token.value;
+            return true;
         }
        
         if (chk_use_self_name.checked){
@@ -42,9 +43,9 @@ class ConfigZoneIdDlg extends HTMLElement {
             }
             wizzard_data.use_self_domain = true;
             wizzard_data.self_domain = txt_domain.value;
+            return true;
         }
-        
-        return true;
+        return false;
     }
 
     connectedCallback() {
@@ -81,7 +82,7 @@ class ConfigZoneIdDlg extends HTMLElement {
                 }
                 
                 generate_zone_config_jwt(txt_name.value,sn,wizzard_data.owner_private_key).then((zone_config_jwt) => {
-                        shadow.getElementById('txt_zone_id_value').textContent = "DID="+zone_config_jwt+";";
+                        shadow.getElementById('txt_zone_id_value').value = "DID="+zone_config_jwt+";";
                         wizzard_data.zone_config_jwt = zone_config_jwt;
                 });
             }
@@ -108,16 +109,18 @@ class ConfigZoneIdDlg extends HTMLElement {
 
         this.shadowRoot.getElementById('copyButton').addEventListener('click', (event) => {
             event.preventDefault(); // 阻止默认行为
-            var textToCopy = shadow.getElementById('txt_zone_id_value').textContent;
-            navigator.clipboard.writeText(textToCopy).then(function() {
+            console.log(navigator.clipboard); 
+            let textToCopy = shadow.getElementById('txt_zone_id_value').value;
+            navigator.clipboard.writeText(textToCopy).then(() => {
                 alert('内容已复制到剪贴板');
-            }).catch(function(err) {
+            }).catch(err => {
                 console.error('复制失败', err);
             });
         });
+
         let btn_next = this.shadowRoot.getElementById('btn_next');
         btn_next.addEventListener('click', (event) => {
-            event.preventDefault();
+            //event.preventDefault();
             btn_next.disabled = true;
             this.get_data_from_ui(wizzard_data).then((result) => {
                 btn_next.disabled = false;
@@ -125,6 +128,9 @@ class ConfigZoneIdDlg extends HTMLElement {
                     var config_system_dlg = document.createElement('config-system-dlg');
                     activeWizzard.pushDlg(config_system_dlg);
                 }
+            },(err) => {
+                btn_next.disabled = false;
+                alert(err);
             });
         });
     }

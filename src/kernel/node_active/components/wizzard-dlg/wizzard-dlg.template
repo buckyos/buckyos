@@ -7,6 +7,8 @@
       overflow: hidden;
     }
 
+
+
     #back-button {
       position: absolute;
       top: 10px;
@@ -16,7 +18,7 @@
 
   </style>
   <div id="dlg-frame" >
-    <md-outlined-icon-button id="back-button" aria-label="Back">
+    <md-outlined-icon-button id="back-button" aria-label="back">
         <md-icon>arrow_back</md-icon>
     </md-outlined-icon-button>
     <slot id="dlg-content"></slot>
