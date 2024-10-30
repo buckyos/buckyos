@@ -12,5 +12,6 @@ log = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 thiserror = "*"
+openssl = { version = "*", features = ["vendored"] }
 reqwest = {version = "*", features = ["json", "rustls-tls"]}
 jsonwebtoken = "*"

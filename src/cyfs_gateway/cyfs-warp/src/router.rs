@@ -293,16 +293,17 @@ impl SNIResolver {
         SNIResolver { configs,default_tls_host }
     }
 
-    
     fn get_config_by_host(&self,host:&str) -> Option<&Arc<ServerConfig>> {
         let host_config = self.configs.get(host);
         if host_config.is_some() {
+            info!("find tls config for host: {}",host);
             return host_config;
         }
 
         for (key,value) in self.configs.iter() {
             if key.starts_with("*.") {
                 if host.ends_with(&key[2..]) {
+                    info!("find tls config for host: {} ==> key:{}",host,key);
                     return Some(value);
                 }
             }

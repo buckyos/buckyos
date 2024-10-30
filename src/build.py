@@ -19,14 +19,15 @@ if len(args) > 0:
         cargo_command = f'cargo clean --target-dir "{target_dir}"'
         os.system(cargo_command)
 
-#os.environ["RUSTFLAGS"] = "-C target-feature=+crt-static"
-cargo_command = f'cargo build --release --target-dir "{target_dir}"'
+os.environ["OPENSSL_STATIC"] = "1"
+os.environ["RUSTFLAGS"] = "-C target-feature=+crt-static"
+cargo_command = f'cargo build --target x86_64-unknown-linux-musl --release --target-dir "{target_dir}"'
 build_result = os.system(cargo_command)
 if build_result != 0:
     print(f'build failed: {build_result}')
     exit(1)
 
-
+target_dir = os.path.join(temp_dir, "rust_build", project_name,"x86_64-unknown-linux-musl")
 print(f'build success at: {target_dir}')
 
 vite_build_dir = os.path.join(build_dir, "kernel/node_active")

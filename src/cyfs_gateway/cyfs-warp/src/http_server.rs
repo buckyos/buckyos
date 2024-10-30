@@ -106,12 +106,13 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
                 //let tls_config = tls_configs.get(&sni_hostname).cloned();
                 let client_ip = conn.get_ref().0.peer_addr().unwrap();
                 let tls_cfg = tls_cfg.clone();
+
                 async move {
                     Ok::<_, hyper::Error>(service_fn(move |req| {
-                        handle_request(router.clone(), Some(tls_cfg.clone()), req,client_ip)
+                        handle_request(router.clone(), Some(tls_cfg.clone()), req, client_ip)
                     }))
                 }
-                });
+            });
         
             
             let https_bind_addr = format!("{}:{}",bind_addr,config.tls_port);
@@ -137,7 +138,7 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
                                     None // Ignore failed connections
                                 }
                             }
-                        }
+                        },
                         Err(e) => {
                             warn!("TLS Connection acceptance failed: {:?}", e);
                             None
