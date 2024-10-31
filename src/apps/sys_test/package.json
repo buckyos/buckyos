@@ -1,5 +1,5 @@
 {
-  "name": "control_panel",
+  "name": "sys_test",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -24,7 +24,7 @@
   "dependencies": {
     "@material/web": "^2.2.0",
     "bcryptjs": "^2.4.3",
-    "buckyos": "file:../../../kernel/buckyos_sdk/",
+    "buckyos": "file:../../kernel/buckyos_sdk/",
     "handlebars": "^4.7.8",
     "lit-element": "^4.1.0",
     "path": "^0.12.7",

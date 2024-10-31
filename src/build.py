@@ -28,12 +28,23 @@ if build_result != 0:
 
 
 print(f'build success at: {target_dir}')
+print("for buckyos developer: YOU MUST npm build and install buckyos_sdk manually")
 
-vite_build_dir = os.path.join(build_dir, "kernel/node_active")
-vite_build_cmd = f'cd {vite_build_dir} && npm run build'
-os.system(vite_build_cmd)
+npm_build_dir_active = os.path.join(build_dir, "kernel/node_active")
+npm_build_cmd = f'cd {npm_build_dir_active} && npm run build'
+os.system(npm_build_cmd)
+print(f'npm build success at: {npm_build_dir_active}')
 
-print(f'npm build success at: {vite_build_dir}')
+npm_build_dir_control_panel = os.path.join(build_dir, "apps/control_panel/src")
+npm_build_cmd = f'cd {npm_build_dir_control_panel} && npm run build'
+os.system(npm_build_cmd)
+print(f'npm build success at: {npm_build_dir_control_panel}')
+
+npm_build_dir_sys_test = os.path.join(build_dir, "apps/sys_test")
+npm_build_cmd = f'cd {npm_build_dir_sys_test} && npm run build'
+os.system(npm_build_cmd)
+print(f'npm build success at: {npm_build_dir_sys_test}')
+
 
 print('copying files to rootfs')
 destination_dir = os.path.join(build_dir, "rootfs/bin")
@@ -69,11 +80,24 @@ os.system(strip_cmd)
 destination_dir = os.path.join(build_dir, "rootfs/bin")
 shutil.copy(os.path.join(build_dir, "killall.py"), destination_dir)
 
-src_dir = os.path.join(vite_build_dir, "dist")
+src_dir = os.path.join(npm_build_dir_active, "dist")
 destination_dir = os.path.join(build_dir, "rootfs/bin/active")
 print(f'copying vite build {src_dir} to {destination_dir}')
 shutil.rmtree(destination_dir)
 shutil.copytree(src_dir, destination_dir)
+
+src_dir = os.path.join(npm_build_dir_control_panel, "dist")
+destination_dir = os.path.join(build_dir, "rootfs/bin/control_panel")
+print(f'copying vite build {src_dir} to {destination_dir}')
+shutil.rmtree(destination_dir)
+shutil.copytree(src_dir, destination_dir)
+
+src_dir = os.path.join(npm_build_dir_sys_test, "dist")
+destination_dir = os.path.join(build_dir, "rootfs/bin/sys_test")
+print(f'copying vite build {src_dir} to {destination_dir}')
+shutil.rmtree(destination_dir)
+shutil.copytree(src_dir, destination_dir)
+
 print('copying files to rootfs & web3_bridge done')
 
 

@@ -15,7 +15,22 @@
                             "upstream":"http://127.0.0.1:20080"
                         }
                     }
+                },
+                "sys.*":{
+                    "routes":{
+                        "/":{
+                            "local_dir":"/opt/buckyos/bin/control_panel"
+                        }
+                    }
+                },
+                "test.*":{
+                    "routes":{
+                        "/":{
+                            "local_dir":"/opt/buckyos/bin/sys_test"
+                        }
+                    }
                 }
+
             }
         }
     },

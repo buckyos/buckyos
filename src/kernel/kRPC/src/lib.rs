@@ -28,7 +28,10 @@ pub enum RPCErrors {
     TokenExpired(String),
     #[error("No permission:{0}")]
     NoPermission(String),
-
+    #[error("Invalid password")]
+    InvalidPassword,
+    #[error("User Not Found:{0}")]
+    UserNotFound(String),
 }
 pub type Result<T> = std::result::Result<T, RPCErrors>;
 pub struct kRPC {

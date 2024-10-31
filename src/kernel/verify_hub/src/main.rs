@@ -7,6 +7,8 @@ use tokio::sync::{Mutex, RwLock};
 use lazy_static::lazy_static;
 use warp::{Filter};
 use serde_json::{Value};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
+use sha2::{Sha256, Digest};
 
 use jsonwebtoken::{Validation, EncodingKey, DecodingKey};
 use name_lib::*;
@@ -51,9 +53,9 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     };
 }
 
-async fn generate_session_token(appid:&str,userid:&str,login_nonce:u64) -> RPCSessionToken {
+async fn generate_session_token(appid:&str,userid:&str,login_nonce:u64,duration:u64) -> RPCSessionToken {
     let now = buckyos_get_unix_timestamp();
-    let exp = now + 3600*24*7;
+    let exp = now + duration;
     let login_nonce = login_nonce;
     
     let mut session_token = RPCSessionToken {
@@ -233,11 +235,72 @@ async fn handle_login_by_jwt(params:Value,_login_nonce:u64) -> Result<RPCSession
         }
     }
 
-    let session_token = generate_session_token(appid,userid,create_nonce).await;
+    let session_token = generate_session_token(appid,userid,create_nonce,3600*24*30).await;
     //store session token to cache
     cache_token(key.as_str(),create_nonce,session_token.clone()).await;
 
     return Ok(session_token);
+}
+
+async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
+    let password = params.get("password")
+        .ok_or(RPCErrors::ParseRequestError("Missing password".to_string()))?;
+    let password = password.as_str().ok_or(RPCErrors::ReasonError("Invalid password".to_string()))?;
+    let username = params.get("username")
+        .ok_or(RPCErrors::ParseRequestError("Missing username".to_string()))?;
+    let username = username.as_str().ok_or(RPCErrors::ReasonError("Invalid username".to_string()))?;
+    let appid = params.get("appid")
+        .ok_or(RPCErrors::ParseRequestError("Missing appid".to_string()))?;
+    let appid = appid.as_str().ok_or(RPCErrors::ReasonError("Invalid appid".to_string()))?;
+    let nonce = params.get("nonce")
+        .ok_or(RPCErrors::ParseRequestError("Missing nonce".to_string()))?;
+    let nonce = nonce.as_u64().ok_or(RPCErrors::ReasonError("Invalid nonce".to_string()))?;
+    let source_url = params.get("source_url")
+        .ok_or(RPCErrors::ParseRequestError("Missing source_url".to_string()))?;
+    let source_url = source_url.as_str().ok_or(RPCErrors::ParseRequestError("Invalid source_url".to_string()))?;
+    
+    let now = buckyos_get_unix_timestamp()*1000;
+    let abs_diff = now.abs_diff(nonce);
+    info!("login nonce and now abs_diff:{}",abs_diff);
+    if now.abs_diff(nonce) > 3600*1000*8 {
+        warn!("login nonce is too old,abs_diff:{},this is a possible ATTACK?",abs_diff);
+        return Err(RPCErrors::ParseRequestError("Invalid nonce".to_string()));
+    }
+
+    //TODO:verify appid && source_url
+    
+    //read account info from system config service
+    let user_info_path = format!("users/{}/info",username);
+    let token_from_device = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().token_from_device.clone();
+    let system_config_client = SystemConfigClient::new(None,Some(token_from_device.as_str()));
+    let user_info_result = system_config_client.get(user_info_path.as_str()).await;
+    if user_info_result.is_err() {
+        warn!("handle_login_by_password:user info not found {}",user_info_path);
+        return Err(RPCErrors::UserNotFound(username.to_string()));
+    }
+    let (user_info,_version) = user_info_result.unwrap();
+    let user_info:serde_json::Value = serde_json::from_str(&user_info)
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    let store_password = user_info.get("password")
+        .ok_or(RPCErrors::ReasonError("password not set,cann't login by password".to_string()))?;
+    let store_password = store_password.as_str()
+        .ok_or(RPCErrors::ReasonError("Invalid password".to_string()))?;
+    
+    //encode password with nonce and check it is right
+    let password_hash_input = STANDARD.decode(password)
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    
+    let salt = format!("{}{}",store_password,nonce);
+    let hash = Sha256::digest(salt).to_vec();
+    if hash != password_hash_input {
+        return Err(RPCErrors::InvalidPassword);
+    }
+
+    //generate session token
+    info!("login success, generate session token for user:{}",username);
+    let session_token = generate_session_token(appid,username,nonce,3600*24*7).await;
+    return Ok(session_token);
+    
 }
 
 // async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
@@ -305,6 +368,10 @@ async fn handle_login(params:Value,login_nonce:u64) -> Result<Value> {
             let session_token = handle_login_by_jwt(params,login_nonce).await?;
             return Ok(Value::String(session_token.to_string()));
         },
+        LoginType::ByPassword => {
+            let session_token = handle_login_by_password(params,login_nonce).await?;
+            return Ok(Value::String(session_token.to_string()));
+        }
         // LoginType::BySignature => {
         //     let session_token =  handle_login_by_signature(params,login_nonce).await?;
         //     return Ok(Value::String(session_token.to_string()));
@@ -316,10 +383,10 @@ async fn handle_login(params:Value,login_nonce:u64) -> Result<Value> {
 }
 
 
-async fn process_request(method:String,param:Value,trace_id:u64) -> ::kRPC::Result<Value> {
+async fn process_request(method:String,param:Value,req_seq:u64) -> ::kRPC::Result<Value> {
     match method.as_str() {
         "login" => {
-            return handle_login(param,trace_id).await;
+            return handle_login(param,req_seq).await;
         },
         "verify_token" => {
             return handle_verify_session_token(param).await;

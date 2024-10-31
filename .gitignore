@@ -18,3 +18,6 @@ src/rootfs/bin/node_daemon
 src/apps/control_panel/src/node_modules/.modules.yaml
 src/apps/control_panel/src/node_modules/.bin/handlebars
 src/apps/control_panel/src/node_modules/
+src/apps/control_panel/src/dist/
+src/apps/sys_test/dist/
+src/apps/sys_test/node_modules/

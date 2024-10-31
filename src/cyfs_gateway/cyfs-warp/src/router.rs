@@ -60,6 +60,12 @@ impl Router {
                     return Some(value);
                 }
             }
+
+            if key.ends_with(".*") {
+                if host.starts_with(&key[..key.len()-2]) {
+                    return Some(value);
+                }
+            }
         }
 
         return self.config.hosts.get("*");
