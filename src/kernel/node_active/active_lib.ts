@@ -156,6 +156,7 @@ export type ActiveWizzardData = {
     owner_public_key : string;
     owner_private_key : string;
     zone_config_jwt : string;
+    sn_url :string;
 
 }
 
@@ -264,7 +265,8 @@ export async function active_ood(user_name:string,zone_name:string,gateway_type:
         admin_password_hash:admin_password_hash,
         guest_access:enable_guest_access,
         friend_passcode:friend_passcode,
-        sn_url:"http://web3.buckyos.io/kapi/sn"
+        sn_url:"http://web3.buckyos.io/kapi/sn",
+        sn_host:"web3.buckyos.io"
     });
     return result["code"] == 0;
 }

@@ -19,6 +19,7 @@ use crate::{decode_json_from_jwt_with_pk,decode_jwt_claim_without_verify,decode_
 
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct VerifyHubInfo {
+    pub port:u16,
     pub node_name:String,
     pub public_key:Jwk,
 }

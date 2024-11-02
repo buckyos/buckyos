@@ -116,8 +116,10 @@ impl RPCSessionToken {
         let header: jsonwebtoken::Header = jsonwebtoken::decode_header(token_str).map_err(|error| {
             RPCErrors::InvalidToken(format!("JWT decode header error : {}",error))
         })?;
+        
         if header.kid.is_some() {
-            return Err(RPCErrors::InvalidToken("JWT kid is not allowed at specific key verify_model".to_string()));
+            warn!("JWT kid could be none at specific key verify model");
+            //return Err(RPCErrors::InvalidToken("JWT kid is not allowed at specific key verify_model".to_string()));
         }
 
         let validation = Validation::new(header.alg);

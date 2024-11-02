@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::process::exit;
 use log::*;
 use serde_json::json;
-use upon::Engine;
+//use upon::Engine;
 
 use name_lib::*;
 use name_client::*;
@@ -100,8 +100,10 @@ async fn generate_ood_config(ood_name:&str,owner_name:&str) -> Result<HashMap<St
 async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
     //load start_parms from active_service.
     let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
+    println!("start_params_file_path:{}",start_params_file_path.to_string_lossy());
+    info!("try load start_params from :{}",start_params_file_path.to_string_lossy());
     let start_params_str = tokio::fs::read_to_string(start_params_file_path).await?;
-    let start_params:serde_json::Value = serde_json::from_str(&start_params_str)?;
+    let mut start_params:serde_json::Value = serde_json::from_str(&start_params_str)?;
 
     let mut template_type_str = "nat_ood_and_sn".to_string();
     //load template by zone_type from start params.
@@ -112,20 +114,27 @@ async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
 
     let template_file_path = get_buckyos_system_etc_dir().join("scheduler").join(format!("{}.template.toml",template_type_str));
     let template_str = tokio::fs::read_to_string(template_file_path).await?;
-    
-    // 创建模板引擎
+
+    //generate dynamic params 
+    let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
+    start_params["verify_hub_key"] = json!(private_key_pem);
+    start_params["verify_hub_public_key"] = json!(public_key_jwk.to_string());
+
     let mut engine = upon::Engine::new();
-    
-    // 添加模板
     engine.add_template("config", &template_str)?;
-    
-    // 渲染模板
     let result = engine
         .template("config")
         .render(&start_params)
         .to_string()?;
 
-    // 解析结果为HashMap
+    if result.find("{{").is_some() {
+        return Err("template contains unescaped double curly braces".into());
+    }
+
+    //wwrite result to file
+    //let result_file_path = get_buckyos_system_etc_dir().join("scheduler_boot.toml");
+    //tokio::fs::write(result_file_path, result.clone()).await?;
+
     let config: HashMap<String, String> = toml::from_str(&result)?;
     
     Ok(config)
@@ -191,6 +200,7 @@ async fn do_boot_scheduler() -> Result<()> {
         //generate verify_hub key pairs
         let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
         let verify_hub_info = VerifyHubInfo {
+            port:3300,
             node_name: ood_name.clone(),
             public_key: serde_json::from_value(public_key_jwk).unwrap(),
         };
@@ -304,5 +314,20 @@ mod test {
     #[tokio::test]
     async fn test_schedule_loop() {
         service_main(true).await;
+    }
+
+    #[tokio::test]
+    async fn test_template() {
+        let start_params = create_init_list_by_template().await.unwrap();
+        for (key,value) in start_params.iter() {
+            let json_value= serde_json::from_str(value);
+            if json_value.is_ok() {
+                let json_value:serde_json::Value = json_value.unwrap();
+                println!("{}:\t{:?}",key,json_value);
+            } else {
+                println!("{}:\t{}",key,value);
+            }
+        }
+        //println!("start_params:{}",serde_json::to_string(&start_params).unwrap());
     }
 }

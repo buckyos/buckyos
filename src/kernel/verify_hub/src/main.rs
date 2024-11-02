@@ -257,13 +257,16 @@ async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<RPCSes
     let nonce = nonce.as_u64().ok_or(RPCErrors::ReasonError("Invalid nonce".to_string()))?;
     let source_url = params.get("source_url")
         .ok_or(RPCErrors::ParseRequestError("Missing source_url".to_string()))?;
-    let source_url = source_url.as_str().ok_or(RPCErrors::ParseRequestError("Invalid source_url".to_string()))?;
+    let source_url = source_url.as_str()
+        .ok_or(RPCErrors::ParseRequestError("Invalid source_url".to_string()))?;
     
+
+
     let now = buckyos_get_unix_timestamp()*1000;
     let abs_diff = now.abs_diff(nonce);
-    info!("login nonce and now abs_diff:{}",abs_diff);
+    info!("{} login nonce and now abs_diff:{},from:{}",username,abs_diff,source_url);
     if now.abs_diff(nonce) > 3600*1000*8 {
-        warn!("login nonce is too old,abs_diff:{},this is a possible ATTACK?",abs_diff);
+        warn!("{} login nonce is too old,abs_diff:{},this is a possible ATTACK?",username,abs_diff);
         return Err(RPCErrors::ParseRequestError("Invalid nonce".to_string()));
     }
 

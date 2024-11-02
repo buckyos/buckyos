@@ -2,6 +2,11 @@
 
 
 （cargo build的过程中要根据提示安装一些apt 依赖，待补充）
+apt install libssl-dev pkg-config nodejs npm
+
+cd ./src/kernel/node_active
+npm install
+
 ```bash
 cd ./src
 python3 reinstall.py

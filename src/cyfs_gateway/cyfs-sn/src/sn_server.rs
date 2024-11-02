@@ -167,12 +167,18 @@ impl SNServer {
             warn!("user {} not found",user_name);
             return Err(RPCErrors::ParseRequestError("user not found".to_string()));
         }
-        let user_public_key = user_public_key.unwrap();
-        let user_public_key = DecodingKey::from_ed_components(user_public_key.as_str())
+        let user_public_key_str = user_public_key.unwrap();
+        let user_public_key : jsonwebtoken::jwk::Jwk = serde_json::from_str(user_public_key_str.as_str())
+            .map_err(|e|{
+                error!("Failed to parse user public key: {:?}",e);
+                RPCErrors::ParseRequestError(e.to_string())
+            })?;
+        let user_public_key = DecodingKey::from_jwk(&user_public_key)
             .map_err(|e|{
                 error!("Failed to decode user public key: {:?}",e);
                 RPCErrors::ParseRequestError(e.to_string())
             })?;
+
         rpc_session_token.verify_by_key(&user_public_key)?;
         if rpc_session_token.appid.is_none() || rpc_session_token.appid.unwrap() != "active_service" {
             return Err(RPCErrors::ParseRequestError("invalid appid".to_string()));

@@ -198,7 +198,9 @@ fn load_device_private_key(node_id: &str) -> Result<(EncodingKey)> {
 
 async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneConfig> {
     //If local files exist, priority loads local files
-    let json_config_path = format!("{}.zconfig.json", node_identity.zone_name);
+    let etc_dir = get_buckyos_system_etc_dir();
+    let json_config_path = format!("{}/{}_zone_config.json",etc_dir.to_string_lossy(),node_identity.zone_name);
+    info!("try load zone config from {} for debug",json_config_path.as_str());
     let json_config = std::fs::read_to_string(json_config_path.clone());
     if json_config.is_ok() {
         let zone_config = serde_json::from_str(&json_config.unwrap());
@@ -206,7 +208,7 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
             warn!("debug load zone config from {} success!",json_config_path.as_str());
             return Ok(zone_config.unwrap());
         } else {
-            error!("parse debug zone config from local file failed! {}", json_config_path.as_str());
+            error!("parse debug zone config {} failed! {}", json_config_path.as_str(),zone_config.err().unwrap());
             return Err(NodeDaemonErrors::ReasonError("parse debug zone config from local file failed!".to_string()));
         }
     }
@@ -274,15 +276,18 @@ async fn load_app_info(app_id: &str,username: &str,sys_config_client: &SystemCon
     let app_key = format!("users/{}/apps/{}/config", username,app_id);
     let (app_cfg_result,rversion) = sys_config_client.get(app_key.as_str()).await
         .map_err(|error| {
-            warn!("get app config failed from system_config! {}", error);
-            return NodeDaemonErrors::SystemConfigError("get app config failed from etcd!".to_string());
+            let err_str = format!("get app config failed from system_config! {}", error);
+            warn!("{}",err_str.as_str());
+            return NodeDaemonErrors::SystemConfigError(err_str);
         })?;
     
     let app_info = serde_json::from_str(&app_cfg_result);
     if app_info.is_ok() {
         return Ok(app_info.unwrap());
     }
-    return Err(NodeDaemonErrors::SystemConfigError("get app info failed!".to_string()));
+    let err_str = format!("parse app info failed! {}", app_info.err().unwrap());
+    warn!("{}",err_str.as_str());
+    return Err(NodeDaemonErrors::SystemConfigError(err_str));
 }
 
 
@@ -290,11 +295,14 @@ async fn get_node_config(node_host_name: &str,sys_config_client: &SystemConfigCl
     let json_config_path = format!("{}_node_config.json", node_host_name);
     let json_config = std::fs::read_to_string(json_config_path);
     if json_config.is_ok() {
-        let node_config = NodeConfig::from_json_str(&json_config.unwrap());
-        if node_config.is_ok() {
-            warn!("Debug load node config from ./{}_node_config.json success!",node_host_name);
-            return node_config;
-        }
+        let json_config = json_config.unwrap();
+        let node_config = serde_json::from_str(json_config.as_str()).map_err(|err| {
+            error!("parse DEBUG node config failed! {}", err);
+            return NodeDaemonErrors::SystemConfigError("parse DEBUG node config failed!".to_string());
+        })?;
+
+        warn!("Debug load node config from ./{}_node_config.json success!",node_host_name);
+        return Ok(node_config);
     }
 
     let node_key = format!("nodes/{}/config", node_host_name);
@@ -304,7 +312,7 @@ async fn get_node_config(node_host_name: &str,sys_config_client: &SystemConfigCl
             return NodeDaemonErrors::SystemConfigError("get node config failed from etcd!".to_string());
         })?;
 
-    let node_config = NodeConfig::from_json_str(&node_cfg_result).map_err(|err| {
+    let node_config = serde_json::from_str(&node_cfg_result).map_err(|err| {
         error!("parse node config failed! {}", err);
         return NodeDaemonErrors::SystemConfigError("parse node config failed!".to_string());
     })?;

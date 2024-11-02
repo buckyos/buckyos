@@ -45,6 +45,10 @@ class FinalCheckDlg extends HTMLElement {
                     activeWizzard.pushDlg(active_result_dlg);
                     activeWizzard.disableBackButton();
                 }
+            }).catch((err) => {
+                console.error('激活失败', err);
+                next_btn.disabled = false;
+                alert('激活失败:' + err);
             });
         });
     }
