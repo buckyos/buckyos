@@ -1,4 +1,3 @@
-
 use std::env;
 use std::sync::{Arc};
 use std::collections::HashMap;
@@ -252,9 +251,7 @@ async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<RPCSes
     let appid = params.get("appid")
         .ok_or(RPCErrors::ParseRequestError("Missing appid".to_string()))?;
     let appid = appid.as_str().ok_or(RPCErrors::ReasonError("Invalid appid".to_string()))?;
-    let nonce = params.get("nonce")
-        .ok_or(RPCErrors::ParseRequestError("Missing nonce".to_string()))?;
-    let nonce = nonce.as_u64().ok_or(RPCErrors::ReasonError("Invalid nonce".to_string()))?;
+
     let source_url = params.get("source_url")
         .ok_or(RPCErrors::ParseRequestError("Missing source_url".to_string()))?;
     let source_url = source_url.as_str()
@@ -263,9 +260,9 @@ async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<RPCSes
 
 
     let now = buckyos_get_unix_timestamp()*1000;
-    let abs_diff = now.abs_diff(nonce);
+    let abs_diff = now.abs_diff(login_nonce);
     info!("{} login nonce and now abs_diff:{},from:{}",username,abs_diff,source_url);
-    if now.abs_diff(nonce) > 3600*1000*8 {
+    if now.abs_diff(login_nonce) > 3600*1000*8 {
         warn!("{} login nonce is too old,abs_diff:{},this is a possible ATTACK?",username,abs_diff);
         return Err(RPCErrors::ParseRequestError("Invalid nonce".to_string()));
     }
@@ -293,15 +290,16 @@ async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<RPCSes
     let password_hash_input = STANDARD.decode(password)
         .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
     
-    let salt = format!("{}{}",store_password,nonce);
-    let hash = Sha256::digest(salt).to_vec();
+    let salt = format!("{}{}",store_password,login_nonce);
+    let hash = Sha256::digest(salt.clone()).to_vec();
     if hash != password_hash_input {
+        warn!("{} login by password failed,password is wrong! stored_password:{},salt:{},input_password:{},real_input:{:?},my_hash:{:?}",username,store_password,salt,password,password_hash_input,hash);
         return Err(RPCErrors::InvalidPassword);
     }
 
     //generate session token
     info!("login success, generate session token for user:{}",username);
-    let session_token = generate_session_token(appid,username,nonce,3600*24*7).await;
+    let session_token = generate_session_token(appid,username,login_nonce,3600*24*7).await;
     return Ok(session_token);
     
 }
@@ -385,7 +383,10 @@ async fn handle_login(params:Value,login_nonce:u64) -> Result<Value> {
     }
 }
 
-
+/**
+ curl -X POST http://127.0.0.1/kapi/verify_hub -H "Content-Type: application/json" -d '{"method": "login","params":{"type":"jwt","jwt":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL3d3dy53aGl0ZS5ib3Vjay5pbyIsImF1ZCI6Imh0dHBzOi8vd3d3LndoaXRlLmJvdWNrLmlvIiwiZXhwIjoxNzI3NzIwMDAwLCJpYXQiOjE3Mjc3MTY0MDAsInVzZXJpZCI6ImRpZDpleGFtcGxlOjEyMzQ1Njc4OTAiLCJhcHBpZCI6InN5c3RvbSIsInVzZXJuYW1lIjoiYWxpY2UifQ.6XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ5"}}'
+curl -X POST http://127.0.0.1:3300/kapi/verify_hub -H "Content-Type: application/json" -d '{"method": "login","params":{"type":"password","username":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL3d3dy53aGl0ZS5ib3Vjay5pbyIsImF1ZCI6Imh0dHBzOi8vd3d3LndoaXRlLmJvdWNrLmlvIiwiZXhwIjoxNzI3NzIwMDAwLCJpYXQiOjE3Mjc3MTY0MDAsInVzZXJpZCI6ImRpZDpleGFtcGxlOjEyMzQ1Njc4OTAiLCJhcHBpZCI6InN5c3RvbSIsInVzZXJuYW1lIjoiYWxpY2UifQ.6XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ56XQ5"}}'
+ */
 async fn process_request(method:String,param:Value,req_seq:u64) -> ::kRPC::Result<Value> {
     match method.as_str() {
         "login" => {
@@ -457,40 +458,53 @@ async fn service_main() -> i32 {
     );
     //load cache from service_cache@dfs:// and service_local_cache@fs://
 
+    let cors_response = warp::path!("kapi" / "verify_hub")
+        .and(warp::options())
+        .map(|| {
+            info!("Handling OPTIONS request");
+            warp::http::Response::builder()
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Access-Control-Allow-Methods", "POST, OPTIONS")
+                .header("Access-Control-Allow-Headers", "Content-Type")
+                .body("")
+        });
+
     let rpc_route = warp::path!("kapi" / "verify_hub")
-    .and(warp::post())
-    .and(warp::body::json())
-    .and_then(|req: RPCRequest| async {
-        info!("|==>Received request: {}", serde_json::to_string(&req).unwrap());
-
-        let process_result =  process_request(req.method,req.params,req.seq).await;
-        
-        let rpc_response : RPCResponse;
-        match process_result {
-            Ok(result) => {
-                rpc_response = RPCResponse {
-                    result: RPCResult::Success(result),
-                    seq:req.seq,
-                    token:None,
-                    trace_id:req.trace_id,
-                };
-            },
-            Err(err) => {
-                rpc_response = RPCResponse {
-                    result: RPCResult::Failed(err.to_string()),
-                    seq:req.seq,
-                    token:None,
-                    trace_id:req.trace_id,
-                };
+        .and(warp::post())
+        .and(warp::body::json())
+        .and_then(|req: RPCRequest| async move {
+            info!("|==>Received request: {}", serde_json::to_string(&req).unwrap());
+            
+            let process_result =  process_request(req.method,req.params,req.seq).await;
+            
+            let rpc_response : RPCResponse;
+            match process_result {
+                Ok(result) => {
+                    rpc_response = RPCResponse {
+                        result: RPCResult::Success(result),
+                        seq:req.seq,
+                        token:None,
+                        trace_id:req.trace_id,
+                    };
+                },
+                Err(err) => {
+                    rpc_response = RPCResponse {
+                        result: RPCResult::Failed(err.to_string()),
+                        seq:req.seq,
+                        token:None,
+                        trace_id:req.trace_id,
+                    };
+                }
             }
-        }
-        
-        info!("<==|Response: {}", serde_json::to_string(&rpc_response).unwrap());
-        Ok::<_, warp::Rejection>(warp::reply::json(&rpc_response))
-    });
+            
+            info!("<==|Response: {}", serde_json::to_string(&rpc_response).unwrap());
+            Ok::<_, warp::Rejection>(warp::reply::json(&rpc_response))
+        });
 
+    let routes = cors_response.or(rpc_route);
+    
     info!("verify_hub service initialized");
-    warp::serve(rpc_route).run(([127, 0, 0, 1], 3300)).await;
+    warp::serve(routes).run(([127, 0, 0, 1], 3300)).await;
     return 0;
 }
 

@@ -165,82 +165,13 @@ async fn do_boot_scheduler() -> Result<()> {
         return Err("boot/config already exists, boot scheduler failed".into());
     }
 
-    let init_list_from_template = create_init_list_by_template().await;
+    let init_list = create_init_list_by_template().await
+        .map_err(|e| {
+            error!("create_init_list_by_template failed: {:?}", e);
+            e
+        })?;
     
-    if init_list_from_template.is_err() {
-        //generate ood config
-        if zone_config.oods.len() !=1 {
-            return Err("only one ood in zone config is supported".into());
-        }
-            //add default user
-        let mut owner_name = zone_config.owner_name.clone().unwrap();
-
-        if is_did(&owner_name) {
-            let owner_did = DID::from_str(&owner_name);
-            if owner_did.is_some() {
-                owner_name = owner_did.unwrap().id.to_string();
-            }
-        }
-        let owner_str = serde_json::to_string(&json!(   
-            {
-                "type":"admin"
-            }
-        )).unwrap();
-
-        init_list.insert(format!("users/{}/info",owner_name),owner_str);
-        let app_config = generate_app_config(&owner_name).await?;
-        init_list.extend(app_config);
-
-
-        let ood_name = zone_config.oods[0].clone();
-        let ood_config = generate_ood_config(&ood_name,&owner_name).await?;
-        init_list.extend(ood_config);
-
-        //generate verify_hub service config
-        //generate verify_hub key pairs
-        let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
-        let verify_hub_info = VerifyHubInfo {
-            port:3300,
-            node_name: ood_name.clone(),
-            public_key: serde_json::from_value(public_key_jwk).unwrap(),
-        };
-        zone_config.verify_hub_info = Some(verify_hub_info);
-        init_list.insert("system/verify_hub/key".to_string(),private_key_pem);
-        let verify_hub_info_str = serde_json::to_string(&json!(
-            {
-                "endpoints" :[
-                    format!("{}:3300",ood_name)
-                ]
-            }
-        )).unwrap();
-        init_list.insert("services/verify_hub/info".to_string(),verify_hub_info_str);
-        let verify_hub_setting_str = serde_json::to_string(&json!(
-            {
-                "trust_keys" : []
-            }
-        )).unwrap();
-        init_list.insert("services/verify_hub/setting".to_string(),verify_hub_setting_str);
-
-        //scheduer
-        let scheduler_info_str = serde_json::to_string(&json!(
-            {
-                "endpoints" :[
-                    format!("{}:3400",ood_name)
-                ]
-            }
-        )).unwrap();
-        init_list.insert("services/scheduler/info".to_string(),scheduler_info_str);
-
-
-        //write zone config 
-        init_list.insert("boot/config".to_string(),serde_json::to_string(&zone_config).unwrap());
-        init_list.insert("system/rbac/model".to_string(),rbac::DEFAULT_MODEL.to_string());
-        init_list.insert("system/rbac/policy".to_string(),rbac::DEFAULT_POLICY.to_string());
-    } else {
-        init_list = init_list_from_template.unwrap();
-        info!("use init list from template to do boot scheduler");
-    }
-
+    info!("use init list from template to do boot scheduler");
     //write to system_config
     for (key,value) in init_list.iter() {
         system_config_client.create(key,value).await?;

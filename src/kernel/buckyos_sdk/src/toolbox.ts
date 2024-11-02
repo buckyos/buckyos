@@ -31,7 +31,7 @@ function get_zone_host_name(hostname:string) : string|null {
     for (let bridge_hostname of _all_web3_bridges) {
         if (hostname.endsWith(bridge_hostname)) {
             //if *.lzc.web3.buckyos.io and bridge_hostname is web3.buckyos.io,return lzc.web3.buckyos.io
-            let prefix = hostname.substring(0, hostname.length - bridge_hostname.length);
+            let prefix = hostname.substring(0, hostname.length - bridge_hostname.length -1);
             let sub_hosts = prefix.split(".");
             if (sub_hosts.length > 1) {
                 return sub_hosts[sub_hosts.length - 1] + "." + bridge_hostname;

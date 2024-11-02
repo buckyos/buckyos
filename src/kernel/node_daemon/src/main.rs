@@ -336,7 +336,6 @@ async fn node_main(node_host_name: &str,
         return Ok(false);
     }
 
-
     let kernel_stream = stream::iter(node_config.kernel);
     kernel_stream.for_each_concurrent(1, |(kernel_service_name, kernel_cfg)| async move {
             let kernel_run_item = KernelServiceRunItem::new(
@@ -554,8 +553,6 @@ async fn start_cyfs_gateway_service(node_id: &String,device_doc: &DeviceConfig, 
 
     Ok(())
 }
-
-
 
 
 async fn async_main() -> std::result::Result<(), String> {

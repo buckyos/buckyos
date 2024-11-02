@@ -7,9 +7,13 @@
             "tls_port":443,
             "hosts": {
                 "*": {
+                    "enable_cors":true,
                     "routes": {
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/kapi/verify_hub":{
+                            "upstream":"http://127.0.0.1:3300"
                         },
                         "/":{
                             "upstream":"http://127.0.0.1:20080"

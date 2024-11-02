@@ -19,10 +19,7 @@ import "./dlg/config_system_dlg";
 import "./dlg/final_check_dlg";
 import "./dlg/active_result_dlg";
 
-import {demo_jwt, GatewayType, ActiveWizzardData, generate_key_pair } from './active_lib';
-
-
-
+import {GatewayType, ActiveWizzardData} from './active_lib';
 
 //after dom loaded
 window.onload = async () => {

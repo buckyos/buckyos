@@ -1,4 +1,4 @@
-
+import jsSHA from 'jssha';
 
 export class AuthClient {
     zone_base_url:string;
@@ -13,6 +13,20 @@ export class AuthClient {
         this.clientId = appId;
         this.authWindow = null;
         this.token = token
+    }
+
+    static async hash_password(username:string,password:string,nonce:number|null=null):Promise<string> {
+        const shaObj = new jsSHA("SHA-256", "TEXT", { encoding: "UTF8" });
+        shaObj.update(password+username+".buckyos");
+        let org_password_hash_str = shaObj.getHash("B64");
+        if (nonce == null) {
+            return org_password_hash_str;
+        }
+        const shaObj2 = new jsSHA("SHA-256", "TEXT", { encoding: "UTF8" });
+        let salt = org_password_hash_str + nonce.toString();
+        shaObj2.update(salt);
+        let result = shaObj2.getHash("B64");
+        return result;
     }
 
     async login(redirect_uri:string|null=null) {

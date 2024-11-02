@@ -315,6 +315,17 @@ async fn service_main() {
     init_by_boot_config().await.unwrap();
     // Select the rear end storage, here you can switch different implementation
 
+    let cors_response = warp::path!("kapi" / "system_config")
+    .and(warp::options())
+    .map(|| {
+        info!("Handling OPTIONS request");
+        warp::http::Response::builder()
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            .header("Access-Control-Allow-Headers", "Content-Type")
+            .body("")
+    });
+
     let rpc_route = warp::path!("kapi" / "system_config")
     .and(warp::post())
     .and(warp::body::json())
@@ -348,7 +359,7 @@ async fn service_main() {
     });
 
     info!("Starting system config service");
-    warp::serve(rpc_route).run(([0, 0, 0, 0], 3200)).await;
+    warp::serve(cors_response.or(rpc_route)).run(([0, 0, 0, 0], 3200)).await;
 }
 
 #[tokio::main]

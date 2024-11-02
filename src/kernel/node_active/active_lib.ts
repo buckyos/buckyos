@@ -1,5 +1,3 @@
-import { stringify } from "querystring";
-import bcrypt from 'bcryptjs';
 import nacl from 'tweetnacl';
 import nacl_util from 'tweetnacl-util';
 import buckyos from 'buckyos';
@@ -157,6 +155,7 @@ export type ActiveWizzardData = {
     owner_private_key : string;
     zone_config_jwt : string;
     sn_url :string;
+    sn_host : string;
 
 }
 
@@ -230,17 +229,6 @@ export async function generate_zone_config_jwt(zone_short_id:string,sn:string,ow
 export function isValidDomain(domain: string): boolean {
     const domainRegex = /^(?!:\/\/)([a-zA-Z0-9-_]{1,63}\.)+[a-zA-Z]{2,}$/;
     return domainRegex.test(domain);
-}
-
-export async function hash_password(password:string):Promise<string> {
-    const saltRounds = 11;
-    const salt = bcrypt.genSaltSync(saltRounds);
-    const hash_result = bcrypt.hashSync(password, salt);
-    return hash_result;
-}
-
-export async function verify_password(password:string,hash:string):Promise<boolean> {
-    return await bcrypt.compare(password,hash);
 }
 
 export async function get_thisdevice_info():Promise<JsonValue> {

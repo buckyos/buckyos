@@ -2,7 +2,8 @@ import templateContent from './config_system_dlg.template?raw';
 import { MdOutlinedTextField } from '@material/web/textfield/outlined/outlined-text-field';
 import { BuckyCheckbox } from '../components/checkbox';
 import { WizzardDlg } from '../components/wizzard_dlg';
-import { ActiveWizzardData, hash_password } from '../active_lib';
+import { ActiveWizzardData} from '../active_lib';
+import buckyos from 'buckyos';
 
 class ConfigSystemDlg extends HTMLElement {
     constructor() {
@@ -27,7 +28,7 @@ class ConfigSystemDlg extends HTMLElement {
                 return false;
             }
         }
-        wizzard_data.admin_password_hash = await hash_password(txt_admin_password.value);
+        wizzard_data.admin_password_hash = await buckyos.AuthClient.hash_password(wizzard_data.sn_user_name,txt_admin_password.value);
         wizzard_data.friend_passcode = txt_friend_code.value;
         wizzard_data.enable_guest_access = (shadow.getElementById('chk_enable_guest') as BuckyCheckbox).checked;
         console.log(wizzard_data);

@@ -16,19 +16,18 @@ import buckyos from 'buckyos';
 
 
 async function doLogin(username:string, password:string,appId:string,source_url:string) {    
-    let login_nonce = Date.now() * 1000;
-    let org_password_hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(password+username+".buckyos"));
-    let hash_array = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(org_password_hash + login_nonce.toString())));
-    let password_hash = btoa(String.fromCharCode.apply(null, hash_array));
+    let login_nonce = Date.now();
+    let password_hash = await buckyos.AuthClient.hash_password(username,password,login_nonce);
     console.log("password_hash: ", password_hash);
 
     try {
         let verify_hub_url = buckyos.get_verify_rpc_url();
         let rpc_client = new buckyos.kRPCClient(verify_hub_url,null,login_nonce);
         let result = await rpc_client.call("login", {
+            type: "password",
             username: username,
             password: password_hash,
-            appId: appId,
+            appid: appId,
             source_url:source_url
         });
         return result;
@@ -40,10 +39,16 @@ async function doLogin(username:string, password:string,appId:string,source_url:
 
 //after dom loaded
 window.onload = async () => {
-    const source_url =  window.opener.location.href
+    buckyos.add_web3_bridge("web3.buckyos.io");
+    let zone_host = buckyos.get_zone_host_name(window.location.host);
+    buckyos.init_buckyos(zone_host);
+    console.log(zone_host);
+
+    const source_url = document.referrer;
     const parsedUrl = new URL(window.location.href);
     var url_appid:string|null = parsedUrl.searchParams.get('client_id');
     console.log("url_appid: ", url_appid);
+    
         
     if (url_appid == null) {
        alert("client_id(appid) is null");

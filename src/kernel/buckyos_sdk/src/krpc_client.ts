@@ -37,10 +37,8 @@ enum RPCProtocolType {
   
 
     private async _call(method: string, params: any): Promise<any> {
-
-      this.seq += 1;
       const currentSeq = this.seq;
-  
+      this.seq += 1;
       const requestBody = {
         method,
         params,
