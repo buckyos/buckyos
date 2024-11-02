@@ -1,24 +1,31 @@
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use aes::Aes256;
-use aes::cipher::{BlockEncrypt, BlockDecrypt, KeyInit};
+use aes::cipher::{KeyIvInit, StreamCipher};
+use ctr::Ctr128BE;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use futures::ready;
+use log::*;
 
-struct EncryptedStream<S> {
+// 定义AES-256 CTR模式类型
+type AesCtr = Ctr128BE<aes::Aes256>;
+
+pub struct EncryptedStream<S> {
     inner: S,
-    cipher: Aes256,
-    buffer: Vec<u8>,
+    cipher: AesCtr,
+    read_buffer: Vec<u8>,
     pos: usize,
 }
 
 impl<S> EncryptedStream<S> {
-    fn new(inner: S, key: &[u8; 32]) -> Self {
-        let cipher = Aes256::new(key.into());
+    pub fn new(inner: S, key: &[u8; 32]) -> Self {
+        // CTR模式需要一个IV(nonce)
+        let iv = [0u8; 16]; // 在实际使用时应该随机生成
+        let cipher = AesCtr::new(key.into(), &iv.into());
+        
         Self {
             inner,
             cipher,
-            buffer: Vec::new(),
+            read_buffer: Vec::new(),
             pos: 0,
         }
     }
@@ -31,15 +38,15 @@ impl<S: AsyncRead + Unpin> AsyncRead for EncryptedStream<S> {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         // 如果buffer中还有数据,先读取buffer
-        if self.pos < self.buffer.len() {
-            let bytes_to_copy = std::cmp::min(buf.remaining(), self.buffer.len() - self.pos);
-            buf.put_slice(&self.buffer[self.pos..self.pos + bytes_to_copy]);
+        if self.pos < self.read_buffer.len() {
+            let bytes_to_copy = std::cmp::min(buf.remaining(), self.read_buffer.len() - self.pos);
+            buf.put_slice(&self.read_buffer[self.pos..self.pos + bytes_to_copy]);
             self.pos += bytes_to_copy;
             return Poll::Ready(Ok(()));
         }
 
-        // 读取新的数据块
-        let mut temp_buf = vec![0u8; 16]; // AES块大小
+        // 读取新的数据
+        let mut temp_buf = vec![0u8; buf.remaining()];
         let mut temp_read_buf = ReadBuf::new(&mut temp_buf);
         
         ready!(Pin::new(&mut self.inner).poll_read(cx, &mut temp_read_buf))?;
@@ -50,14 +57,11 @@ impl<S: AsyncRead + Unpin> AsyncRead for EncryptedStream<S> {
 
         // 解密数据
         let mut block = temp_read_buf.filled().to_vec();
-        self.cipher.decrypt_block(block.as_mut_slice().into());
+        self.cipher.apply_keystream(&mut block); // CTR模式直接处理任意长度
+        //info!("aes stream decrypted data: {}",block.len());
         
-        // 存入buffer
-        self.buffer = block;
-        self.pos = 0;
-        
-        // 递归调用以读取解密后的数据
-        self.poll_read(cx, buf)
+        buf.put_slice(&block);
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -67,24 +71,11 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for EncryptedStream<S> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        // 确保数据块对齐
-        let chunk_size = 16;
-        let bytes_to_write = std::cmp::min(buf.len(), chunk_size);
-        
-        if bytes_to_write == 0 {
-            return Poll::Ready(Ok(0));
-        }
-
-        let mut block = vec![0u8; chunk_size];
-        block[..bytes_to_write].copy_from_slice(&buf[..bytes_to_write]);
-        
-        // 加密数据
-        self.cipher.encrypt_block(block.as_mut_slice().into());
-        
-        // 写入加密后的数据
-        ready!(Pin::new(&mut self.inner).poll_write(cx, &block))?;
-        
-        Poll::Ready(Ok(bytes_to_write))
+        let mut encrypted = buf.to_vec();
+        self.cipher.apply_keystream(&mut encrypted); // CTR模式直接处理任意长度
+        //info!("aes stream encrypted data: {}",encrypted.len());
+        ready!(Pin::new(&mut self.inner).poll_write(cx, &encrypted))?;
+        Poll::Ready(Ok(buf.len()))
     }
 
     fn poll_flush(
@@ -103,7 +94,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for EncryptedStream<S> {
 }
 
 // 使用示例
-async fn encrypted_copy_bidirectional<S1, S2>(
+pub async fn encrypted_copy_bidirectional<S1, S2>(
     stream1: S1,
     stream2: S2,
     key: &[u8; 32]
