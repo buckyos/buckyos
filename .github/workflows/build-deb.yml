@@ -1,0 +1,37 @@
+name: Build Buckyos Deb Package
+on: 
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version of the package'
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.x'
+        cache: 'npm'
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+    - name: build bin
+      working-directory: ./src
+      run: python3 build.py
+    - name: make deb
+      working-directory: ./src
+      run: python3 make_deb.py {{inputs.version}}
+    - name: Upload deb
+      uses: actions/upload-artifact@v4
+      with:
+        name: buckyos-{{inputs.version}}.deb
+        path: ./src/buckyos.deb
+        if-no-files-found: error
