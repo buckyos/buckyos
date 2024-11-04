@@ -10,6 +10,12 @@ temp_dir = tempfile.gettempdir()
 
 print("make sure YOU already run build.py!!!")
 
+version = "0.2.0"
+if len(sys.argv) > 1:
+    version = sys.argv[1]
+
+print(f"make deb with version: {version}")
+
 # Copy publish directory
 src_dir = os.path.join(build_dir, "publish") 
 dest_dir = os.path.join(temp_dir, "deb_build")
@@ -17,6 +23,15 @@ if os.path.exists(dest_dir):
     shutil.rmtree(dest_dir)
 shutil.copytree(src_dir, dest_dir)
 print(f"copy publish to {dest_dir}")
+
+# change version
+control_file = os.path.join(dest_dir, "deb/DEBIAN/control")
+f = open(control_file, "r")
+new_content = f.read().replace("{{package version here}}", version)
+f.close()
+f = open(control_file, "w")
+f.write(new_content)
+f.close()
 
 # Copy rootfs directory
 src_dir = os.path.join(build_dir, "rootfs")

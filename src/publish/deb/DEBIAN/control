@@ -1,5 +1,5 @@
 Package: buckyos
-Version: 0.2.0
+Version: {{package version here}}
 Section: utils
 Priority: optional
 Architecture: amd64
