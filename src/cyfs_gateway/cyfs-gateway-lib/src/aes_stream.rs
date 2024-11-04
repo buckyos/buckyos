@@ -58,7 +58,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for EncryptedStream<S> {
         // 解密数据
         let mut block = temp_read_buf.filled().to_vec();
         self.cipher.apply_keystream(&mut block); // CTR模式直接处理任意长度
-        //info!("aes stream decrypted data: {}",block.len());
+        info!("aes stream decrypted data: {}",block.len());
         
         buf.put_slice(&block);
         Poll::Ready(Ok(()))
@@ -73,7 +73,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for EncryptedStream<S> {
     ) -> Poll<std::io::Result<usize>> {
         let mut encrypted = buf.to_vec();
         self.cipher.apply_keystream(&mut encrypted); // CTR模式直接处理任意长度
-        //info!("aes stream encrypted data: {}",encrypted.len());
+        info!("aes stream encrypted data: {}",encrypted.len());
         ready!(Pin::new(&mut self.inner).poll_write(cx, &encrypted))?;
         Poll::Ready(Ok(buf.len()))
     }

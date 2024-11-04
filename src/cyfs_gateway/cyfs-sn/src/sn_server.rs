@@ -533,10 +533,14 @@ impl TunnelSelector for SNServer {
                 //let device_did = device_info.unwrap().0.did;
                 let device_did = device_info.unwrap().0.did;
                 if device_did.is_some() {
-                    let device_did = device_did.unwrap().replace(":", ".");
-                    let result_str = format!("rtcp://{}",device_did.as_str());
-                    //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
-                    return Some(result_str);
+                    let device_did_str = device_did.unwrap();
+                    let device_did = DID::from_str(device_did_str.as_str());
+                    if device_did.is_some() {
+                        let device_host_name = device_did.unwrap().to_host_name();
+                        let result_str = format!("rtcp://{}",device_host_name.as_str());
+                        //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
+                        return Some(result_str);
+                    }
                 } else {
                     warn!("ood1 device did not found for {} in sn server",username);
                 }

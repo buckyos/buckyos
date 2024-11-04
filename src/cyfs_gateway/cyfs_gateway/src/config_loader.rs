@@ -3,14 +3,18 @@ use cyfs_gateway_lib::DNSServerConfig;
 use cyfs_gateway_lib::DispatcherConfig;
 use cyfs_gateway_lib::ServerConfig;
 use cyfs_gateway_lib::WarpServerConfig;
+use cyfs_gateway_lib::CURRENT_DEVICE_RRIVATE_KEY;
 use cyfs_sn::*;
 use cyfs_warp::register_inner_service_builder;
 use url::Url;
 use serde_json::from_value;
 use log::*;
+use name_lib::load_pem_private_key;
+
 pub struct GatewayConfig {
     pub dispatcher : HashMap<Url,DispatcherConfig>,
     pub servers : HashMap<String,ServerConfig>,
+    pub device_key_path: Option<String>,
     //tunnel_builder_config : HashMap<String,TunnelBuilderConfig>,
 }
 
@@ -19,10 +23,24 @@ impl GatewayConfig {
         GatewayConfig {
             dispatcher : HashMap::new(),
             servers : HashMap::new(),
+            device_key_path: None,
         }
     } 
 
     pub async fn load_from_json_value(&mut self, json_value: serde_json::Value) -> Result<(),String> {
+        let device_key_path = json_value.get("device_key_path");
+        if device_key_path.is_some() {
+            let device_key_path = device_key_path.unwrap().as_str();
+            if device_key_path.is_some() {
+                let device_key_path = device_key_path.unwrap();
+                self.device_key_path = Some(device_key_path.to_string());
+                let private_key_array = load_pem_private_key(device_key_path)
+                    .map_err(|e| format!("load device private key failed! {}",e))?;
+                CURRENT_DEVICE_RRIVATE_KEY.set(private_key_array).unwrap();
+                info!("load device private key success!");
+            }
+        }
+        
         //register inner serveric
         let inner_services = json_value.get("inner_services");
         if inner_services.is_some() {

@@ -341,8 +341,9 @@ async fn service_main() {
                     result: RPCResult::Success(result),
                     seq: req.seq,
                     token: None,
-                    trace_id: req.trace_id
+                    trace_id: req.trace_id.clone()
                 };
+                info!("<==|Response: OK {} {}", req.seq,req.trace_id.as_deref().unwrap_or(""));
             },
             Err(err) => {
                 rpc_response = RPCResponse {
@@ -351,10 +352,10 @@ async fn service_main() {
                     token: None,
                     trace_id: req.trace_id
                 };
+                info!("<==|Response: {}", serde_json::to_string(&rpc_response).unwrap());
             }
         }
-        
-        info!("<==|Response: {}", serde_json::to_string(&rpc_response).unwrap());
+    
         Ok::<_, warp::Rejection>(warp::reply::json(&rpc_response))
     });
 

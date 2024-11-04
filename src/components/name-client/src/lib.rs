@@ -4,6 +4,8 @@ mod name_query;
 mod dns_provider;
 mod zone_provider;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
+use jsonwebtoken::{jwk::Jwk, DecodingKey};
 pub use provider::*;
 pub use name_client::*;
 pub use name_query::*;
@@ -128,6 +130,51 @@ pub async fn resolve(name: &str, record_type: Option<&str>) -> NSResult<NameInfo
     let client = client.unwrap();
     client.resolve(name, record_type).await
 }
+
+
+pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<[u8; 32]> {
+    //return #auth-key
+    let did = DID::from_host_name(hostname);
+    if did.is_some(){
+        let did = did.unwrap();
+        if let Some(auth_key) = did.get_auth_key() {
+            return Ok(auth_key);
+        }
+
+        return Err(NSError::NotFound("Auth key not found".to_string()));
+    }
+
+    let client = get_name_client();
+    if client.is_none() {
+        return Err(NSError::NotFound("Name client not init".to_string()));
+    }
+    let did_doc = client.unwrap().resolve_did(hostname,None).await?;
+    //try conver did_doc to DeviceConfig
+    match did_doc {
+        EncodedDocument::JsonLd(value) => {
+            let device_config = serde_json::from_value::<DeviceConfig>(value);
+            if device_config.is_ok() {
+                let device_config = device_config.unwrap();
+                let auth_key = serde_json::to_value(&device_config.auth_key);
+                if auth_key.is_ok() {
+                    let auth_key = auth_key.unwrap();
+                    let x = auth_key.get("x");
+                    if x.is_some() {
+                        let x = x.unwrap();
+                        let x = x.as_str().unwrap();
+                        let auth_key = URL_SAFE_NO_PAD.decode(x).unwrap();
+                        return Ok(auth_key.try_into().unwrap());
+                    }
+                }
+            }
+            return Err(NSError::NotFound("Auth key not found".to_string()));
+        }
+        _ => {
+            return Err(NSError::NotFound("Invalid did document".to_string()));
+        }
+    }
+}
+
 
 pub async fn resolve_did(did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {
     let client = get_name_client();

@@ -1,4 +1,5 @@
 {
+    "device_key_path":"/opt/web3_bridge/device_key.pem",
     "inner_services":{
         "main_sn" : {
             "type" : "cyfs_sn",

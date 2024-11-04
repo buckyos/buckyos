@@ -7,6 +7,9 @@ use serde::{Serialize, Deserialize};
 use serde_json::json;
 use thiserror::*;
 use ed25519_dalek::{ed25519::signature::SignerMut, SigningKey};
+use ed25519_dalek::{PublicKey, Verifier};
+
+use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 use rand::rngs::OsRng;
 use base64;
 
@@ -96,6 +99,43 @@ pub fn generate_key_pair() {
     println!("Genereate Private Key (PEM): {}", private_key_pem);
     println!("Generate Public Key (JWK): {}", public_key_jwk);
 }
+
+/// 生成并加密AES密钥的函数
+// pub fn generate_and_encrypt_aes_key(
+//     their_ed25519_public: &PublicKey,
+// ) -> Result<(Vec<u8>, [u8; 32]), Box<dyn Error>> {
+    // // 生成一个随机的32字节AES密钥
+    // let mut aes_key = [0u8; 32];
+    // OsRng.fill_bytes(&mut aes_key);
+    
+    // // 将Ed25519公钥转换为X25519公钥
+    // // 注意：这一步在实际使用中需要确保对方的公钥是可信的
+    // let their_x25519_public = convert_ed25519_to_x25519(their_ed25519_public)?;
+    
+    // // 生成自己的X25519密钥对
+    // let my_secret = StaticSecret::new(OsRng);
+    // let my_public = x25519_dalek::PublicKey::from(&my_secret);
+    
+    // // 计算共享密钥
+    // let shared_secret = my_secret.diffie_hellman(&their_x25519_public);
+    
+    // // 使用共享密钥加密AES密钥
+    // let cipher = Aes256Gcm::new_from_slice(shared_secret.as_bytes())?;
+    // let nonce = Nonce::from_slice(&[0u8; 12]); // 在实际使用中应该使用随机nonce
+    
+    // // 加密AES密钥
+    // let encrypted_key = cipher
+    //     .encrypt(nonce, aes_key.as_ref())
+    //     .map_err(|e| KeyExchangeError::EncryptionError(e.to_string()))?;
+    
+    // // 返回加密后的AES密钥和我们的公钥
+    // // 接收方需要这个公钥来重建共享密钥
+    // let mut response = Vec::with_capacity(32 + encrypted_key.len());
+    // response.extend_from_slice(my_public.as_bytes());
+    // response.extend_from_slice(&encrypted_key);
+    
+    // Ok((response, aes_key))
+// }
 
 fn main() {
     generate_key_pair();

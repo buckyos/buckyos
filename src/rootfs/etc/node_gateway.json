@@ -1,4 +1,5 @@
 {
+    "device_key_path":"/opt/buckyos/etc/node_private_key.pem",
     "servers":{
         "main_http_server":{
             "type":"cyfs-warp",

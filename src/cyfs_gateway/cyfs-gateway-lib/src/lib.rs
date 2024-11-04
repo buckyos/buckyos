@@ -25,7 +25,10 @@ pub enum TunnelError {
     BindError(String),
     #[error("Connect Error: {0}")]
     ConnectError(String),
-
+    #[error("DIDDocument Error: {0}")]
+    DocumentError(String),
+    #[error("Reason Error: {0}")]
+    ReasonError(String),
 }
 
 pub type TunnelResult<T> = std::result::Result<T, TunnelError>;

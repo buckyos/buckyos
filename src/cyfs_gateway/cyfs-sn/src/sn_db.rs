@@ -6,12 +6,13 @@
 #[allow(dead_code)]
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use rand::Rng;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
 use log::*;
 use buckyos_kit::*;
 
 pub fn get_sn_db_conn() -> Result<Connection> {
-    let db_path = get_buckyos_service_data_dir("sn").join("sn_db.sqlite3");
+    let base_dir = PathBuf::from("/opt/web3_bridge/");
+    let db_path = base_dir.join("sn_db.sqlite3");
     //make sure the dir exists
     let dir = db_path.parent().unwrap();
     if !dir.exists() {
