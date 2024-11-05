@@ -32,22 +32,22 @@ jobs:
       run: python3 build.py
     - name: make deb
       working-directory: ./src
-      run: python3 make_deb.py {{inputs.version}}
+      run: python3 make_deb.py ${{inputs.version}}
     - name: build aarch64 bin
       working-directory: ./src
       run: python3 build_arm.py
     - name: make aarch64 deb
       working-directory: ./src
-      run: python3 make_deb_arm.py {{inputs.version}}
+      run: python3 make_deb_arm.py ${{inputs.version}}
     - name: Upload deb
       uses: actions/upload-artifact@v4
       with:
-        name: buckyos-x86_64-{{inputs.version}}.deb
+        name: buckyos-x86_64-${{inputs.version}}.deb
         path: ./src/buckyos.deb
         if-no-files-found: error
     - name: Upload aarch64 deb
       uses: actions/upload-artifact@v4
       with:
-        name: buckyos-aarch64-{{inputs.version}}.deb
+        name: buckyos-aarch64-${{inputs.version}}.deb
         path: ./src/buckyos_aarch64.deb
         if-no-files-found: error
