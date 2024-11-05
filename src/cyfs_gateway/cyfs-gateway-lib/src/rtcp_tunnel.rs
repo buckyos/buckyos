@@ -1029,7 +1029,7 @@ impl RTcpStack {
         let bind_addr = format!("0.0.0.0:{}",self.tunnel_port);
         let rtcp_listener = TcpListener::bind(bind_addr).await?;
         let this_device = self.this_device_hostname.clone();
-        info!("rtcp stack this_device hostname: {}",this_device);
+        //info!("rtcp stack this_device hostname: {}",this_device);
         let this_device_x25519_sk2 = self.this_device_x25519_sk.clone().unwrap();
         task::spawn(async move {
             loop {

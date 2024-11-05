@@ -46,15 +46,13 @@ pub async fn get_tunnel_builder_by_protocol(protocol:&str) -> TunnelResult<Box<d
             return Ok(Box::new(crate::IPTunnelBuilder::new()))
         },
         "rtcp" => {
+
+            //info!("this_device_private_key: {:?}",this_device_private_key);
             let this_device_config = CURRENT_DEVICE_CONFIG.get();
-            let this_device_private_key = CURRENT_DEVICE_RRIVATE_KEY.get();
-            if this_device_config.is_none() || this_device_private_key.is_none() {
-                return Err(TunnelError::BindError("CURRENT_DEVICE_CONFIG or CURRENT_DEVICE_PRIVATE_KEY not set".to_string()));
+            if this_device_config.is_none()  {
+                return Err(TunnelError::BindError("CURRENT_DEVICE_CONFIG not set".to_string()));
             }
             let this_device_config = this_device_config.unwrap();
-            info!("RTCP stack will init by this_device_config: {:?}",this_device_config);
-            let this_device_private_key = this_device_private_key.unwrap().clone();
-            //info!("this_device_private_key: {:?}",this_device_private_key);
             let this_device_hostname:String;
             let this_device_did = DID::from_str(this_device_config.did.as_str());
             if this_device_did.is_none() {
@@ -62,7 +60,6 @@ pub async fn get_tunnel_builder_by_protocol(protocol:&str) -> TunnelResult<Box<d
             } else {
                 this_device_hostname = this_device_did.unwrap().to_host_name();
             }
-            info!("this_device_hostname: {}",this_device_hostname);
 
             let mut rtcp_stack_map = RTCP_STACK_MAP.lock().await;
             let rtcp_stack = rtcp_stack_map.get(this_device_hostname.as_str());
@@ -72,6 +69,14 @@ pub async fn get_tunnel_builder_by_protocol(protocol:&str) -> TunnelResult<Box<d
             }
             //let device_did = device_did.replace(":", ".");
             info!("create rtcp stack for {}",this_device_hostname.as_str());
+            let this_device_private_key = CURRENT_DEVICE_RRIVATE_KEY.get();
+            if this_device_private_key.is_none() {
+                return Err(TunnelError::BindError("CURRENT_DEVICE_PRIVATE_KEY not set".to_string()));
+            }
+
+            info!("RTCP stack will init by this_device_config: {:?}",this_device_config);
+            let this_device_private_key = this_device_private_key.unwrap().clone();
+
             let mut result_rtcp_stack = crate::RTcpStack::new(this_device_hostname.clone(),2980,Some(this_device_private_key));
             result_rtcp_stack.start().await;
             rtcp_stack_map.insert(this_device_hostname.clone(),result_rtcp_stack.clone());

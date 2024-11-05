@@ -13,8 +13,6 @@ pub struct EncryptedStream<S> {
     inner: S,
     encrypt_cipher: AesCtr,  // 用于写入的cipher
     decrypt_cipher: AesCtr,  // 用于读取的cipher
-    read_buffer: Vec<u8>,
-    pos: usize,
 }
 
 impl<S> EncryptedStream<S> {
@@ -23,8 +21,6 @@ impl<S> EncryptedStream<S> {
             inner,
             encrypt_cipher: AesCtr::new(key.into(), iv.into()),
             decrypt_cipher: AesCtr::new(key.into(), iv.into()),
-            read_buffer: Vec::new(),
-            pos: 0,
         }
     }
 }
@@ -35,14 +31,6 @@ impl<S: AsyncRead + Unpin> AsyncRead for EncryptedStream<S> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        // 如果buffer中还有数据,先读取buffer
-        if self.pos < self.read_buffer.len() {
-            let bytes_to_copy = std::cmp::min(buf.remaining(), self.read_buffer.len() - self.pos);
-            buf.put_slice(&self.read_buffer[self.pos..self.pos + bytes_to_copy]);
-            self.pos += bytes_to_copy;
-            return Poll::Ready(Ok(()));
-        }
-
         // 读取新的数据
         let mut temp_buf = vec![0u8; buf.remaining()];
         let mut temp_read_buf = ReadBuf::new(&mut temp_buf);
@@ -54,11 +42,11 @@ impl<S: AsyncRead + Unpin> AsyncRead for EncryptedStream<S> {
         }
 
         // 解密数据
-        let mut block = temp_read_buf.filled().to_vec();
-        self.decrypt_cipher.apply_keystream(&mut block);
+        let block = temp_read_buf.filled_mut();
+        self.decrypt_cipher.apply_keystream(block);
         //info!("aes stream decrypted data: {}", block.len());
         
-        buf.put_slice(&block);
+        buf.put_slice(block);
         Poll::Ready(Ok(()))
     }
 }
@@ -72,8 +60,16 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for EncryptedStream<S> {
         let mut encrypted = buf.to_vec();
         self.encrypt_cipher.apply_keystream(&mut encrypted); // 使用encrypt_cipher进行加密
         //info!("aes stream encrypted data: {}", encrypted.len());
-        ready!(Pin::new(&mut self.inner).poll_write(cx, &encrypted))?;
-        Poll::Ready(Ok(buf.len()))
+        match ready!(Pin::new(&mut self.inner).poll_write(cx, &encrypted)) {
+            Ok(n) => {
+                if n < encrypted.len() {
+                    Poll::Ready(Ok(n))
+                } else {
+                    Poll::Ready(Ok(buf.len()))
+                }
+            }
+            Err(e) => Poll::Ready(Err(e))
+        }
     }
 
     fn poll_flush(
