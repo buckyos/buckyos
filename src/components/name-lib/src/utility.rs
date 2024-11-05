@@ -110,7 +110,7 @@ fn build_pkcs8(private_key: &[u8]) -> Vec<u8> {
     pkcs8
 }
 
-fn from_pkcs8(pkcs8: &[u8]) -> NSResult<[u8;32]> {
+pub fn from_pkcs8(pkcs8: &[u8]) -> NSResult<[u8;32]> {
     // Check if input has the minimum required length (16 bytes header + 32 bytes key)
     if pkcs8.len() < 48 {
         return Err(NSError::Failed("Invalid PKCS#8 data length".to_string()));
@@ -133,7 +133,7 @@ fn from_pkcs8(pkcs8: &[u8]) -> NSResult<[u8;32]> {
 }
 
 //TODO: would use a PEM parser library
-pub fn load_pem_private_key(file_path: &str) -> NSResult<[u8;32]> {
+pub fn load_pem_private_key(file_path: &str) -> NSResult<[u8;48]> {
     // load from /etc/buckyos/node_private_key.toml
     let contents = std::fs::read_to_string(file_path).map_err(|err| {
         error!("read private key failed! {}", err);
@@ -151,8 +151,9 @@ pub fn load_pem_private_key(file_path: &str) -> NSResult<[u8;32]> {
     let b64content = b64content.trim();
     let private_key_bytes = STANDARD.decode(b64content)
         .map_err(|err| NSError::Failed(format!("base64 decode error:{}",err)))?;
-    
-    from_pkcs8(&private_key_bytes)
+
+    //from_pkcs8(&private_key_bytes)
+    Ok(private_key_bytes.try_into().unwrap())
 }
 
 pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
@@ -181,9 +182,28 @@ pub fn generate_x25519_key_pair() -> (PublicKey, StaticSecret) {
     
     let private_key_bytes = signing_key.to_bytes();
     let public_key_bytes = signing_key.verifying_key().to_bytes();
+    println!("public_key_bytes: {:?}",public_key_bytes);
+    println!("private_key_bytes: {:?}",private_key_bytes);
+
+    let public_key_jwk = json!({
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": URL_SAFE_NO_PAD.encode(public_key_bytes),
+    });
+    println!("{}",public_key_jwk);
+
+    let pkcs8_bytes = build_pkcs8(&private_key_bytes);
+    let private_key_pem = format!(
+        "\n-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+        STANDARD.encode(&pkcs8_bytes)
+    );
+    println!("{}",private_key_pem);
+
 
     let x25519_public_key = ed25519_to_curve25519::ed25519_pk_to_curve25519(public_key_bytes);
+    println!("x25519_public_key: {:?}",x25519_public_key);
     let x25519_private_key = ed25519_to_curve25519::ed25519_sk_to_curve25519(private_key_bytes);
+    println!("x25519_private_key: {:?}",x25519_private_key);
 
     let x25519_public_key = x25519_dalek::PublicKey::from(x25519_public_key);
     let x25519_private_key = x25519_dalek::StaticSecret::from(x25519_private_key);
@@ -212,6 +232,8 @@ pub fn get_device_did_from_ed25519_jwk(public_key: &serde_json::Value) -> NSResu
 
 
 mod test {
+    use crate::DID;
+
     use super::*;
 
     #[test]
@@ -233,6 +255,53 @@ mod test {
         let (private_key, public_key) = generate_ed25519_key_pair();
         println!("private_key: {}",private_key);
         println!("public_key: {}",serde_json::to_string(&public_key).unwrap());
-        load_pem_private_key("d:\\temp\\device_key.pem").unwrap();
+
+    }
+
+    #[test]
+    fn test_load_pem_private_key() {
+        let private_key = load_pem_private_key("d:\\temp\\device_key.pem").unwrap();
+        println!("private_key: {:?}",private_key);
+        let private_key_der = from_pkcs8(&private_key).unwrap();
+        println!("private_key_der: {:?}",private_key_der);
+
+        let private_key_x25519 = ed25519_to_curve25519::ed25519_sk_to_curve25519(private_key_der);
+        println!("private_key_x25519: {:?}",private_key_x25519);
+
+        let file_content = std::fs::read_to_string("d:\\temp\\device_key.pem").unwrap();
+        println!("file_content: {}",file_content);
+
+        //let encoding_key = EncodingKey::from_ed_pem(file_content.as_bytes()).unwrap();
+        let encoding_key = EncodingKey::from_ed_der(&private_key);
+        let encoding_key2 = EncodingKey::from_ed_pem(file_content.as_bytes()).unwrap();
+        let test_payload = json!({
+            "sub": "1234567890",
+            "name": "John Doe",
+            "iat": 135790
+        });
+        let mut header = Header::new(Algorithm::EdDSA);
+
+        let token = encode(&header, &test_payload, &encoding_key).unwrap();
+        let token2 = encode(&header, &test_payload, &encoding_key2).unwrap();
+        println!("token: {}",token);
+        println!("token2: {}",token2);
+        assert_eq!(token, token2);
+
+        //let sn_public_key 
+        let did_str ="8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no.dev.did";
+        let sn_did = DID::from_host_name(did_str).unwrap();
+        let sn_public_key = sn_did.get_auth_key().unwrap();
+        println!("sn_public_key: {:?}",sn_public_key);
+        let sn_x25519_public_key = ed25519_to_curve25519::ed25519_pk_to_curve25519(sn_public_key);
+        println!("sn_x_public_key: {:?}",sn_x25519_public_key);
+        let sn_x_public_key = x25519_dalek::PublicKey::from(sn_x25519_public_key);
+
+        let my_secret = EphemeralSecret::random();
+        let my_public = PublicKey::from(&my_secret);
+        let share_secret1 = my_secret.diffie_hellman(&sn_x_public_key);
+
+        let sn_x25519_sk = x25519_dalek::StaticSecret::from(private_key_x25519);
+        let share_secret2 = sn_x25519_sk.diffie_hellman(&my_public);
+        assert_eq!(share_secret1.to_bytes(), share_secret2.to_bytes());
     }
 }

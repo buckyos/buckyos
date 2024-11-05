@@ -7,24 +7,22 @@ use futures::ready;
 use log::*;
 
 // 定义AES-256 CTR模式类型
-type AesCtr = Ctr128BE<aes::Aes256>;
+pub type AesCtr = Ctr128BE<aes::Aes256>;
 
 pub struct EncryptedStream<S> {
     inner: S,
-    cipher: AesCtr,
+    encrypt_cipher: AesCtr,  // 用于写入的cipher
+    decrypt_cipher: AesCtr,  // 用于读取的cipher
     read_buffer: Vec<u8>,
     pos: usize,
 }
 
 impl<S> EncryptedStream<S> {
-    pub fn new(inner: S, key: &[u8; 32]) -> Self {
-        // CTR模式需要一个IV(nonce)
-        let iv = [0u8; 16]; // 在实际使用时应该随机生成
-        let cipher = AesCtr::new(key.into(), &iv.into());
-        
+    pub fn new(inner: S, key: &[u8; 32], iv: &[u8; 16]) -> Self {
         Self {
             inner,
-            cipher,
+            encrypt_cipher: AesCtr::new(key.into(), iv.into()),
+            decrypt_cipher: AesCtr::new(key.into(), iv.into()),
             read_buffer: Vec::new(),
             pos: 0,
         }
@@ -57,8 +55,8 @@ impl<S: AsyncRead + Unpin> AsyncRead for EncryptedStream<S> {
 
         // 解密数据
         let mut block = temp_read_buf.filled().to_vec();
-        self.cipher.apply_keystream(&mut block); // CTR模式直接处理任意长度
-        info!("aes stream decrypted data: {}",block.len());
+        self.decrypt_cipher.apply_keystream(&mut block);
+        //info!("aes stream decrypted data: {}", block.len());
         
         buf.put_slice(&block);
         Poll::Ready(Ok(()))
@@ -72,8 +70,8 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for EncryptedStream<S> {
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         let mut encrypted = buf.to_vec();
-        self.cipher.apply_keystream(&mut encrypted); // CTR模式直接处理任意长度
-        info!("aes stream encrypted data: {}",encrypted.len());
+        self.encrypt_cipher.apply_keystream(&mut encrypted); // 使用encrypt_cipher进行加密
+        //info!("aes stream encrypted data: {}", encrypted.len());
         ready!(Pin::new(&mut self.inner).poll_write(cx, &encrypted))?;
         Poll::Ready(Ok(buf.len()))
     }
@@ -93,20 +91,20 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for EncryptedStream<S> {
     }
 }
 
-// 使用示例
-pub async fn encrypted_copy_bidirectional<S1, S2>(
-    stream1: S1,
-    stream2: S2,
-    key: &[u8; 32]
-) -> std::io::Result<()>
-where
-    S1: AsyncRead + AsyncWrite + Unpin,
-    S2: AsyncRead + AsyncWrite + Unpin,
-{
-    let mut encrypted_stream1 = EncryptedStream::new(stream1, key);
-    let mut encrypted_stream2 = EncryptedStream::new(stream2, key);
+
+// pub async fn encrypted_copy_bidirectional<S1, S2>(
+//     stream1: S1,
+//     stream2: S2,
+//     key: &[u8; 32]
+// ) -> std::io::Result<()>
+// where
+//     S1: AsyncRead + AsyncWrite + Unpin,
+//     S2: AsyncRead + AsyncWrite + Unpin,
+// {
+//     let mut encrypted_stream1 = EncryptedStream::new(stream1, key);
+//     let mut encrypted_stream2 = EncryptedStream::new(stream2, key);
     
-    tokio::io::copy_bidirectional(&mut encrypted_stream1, &mut encrypted_stream2).await?;
+//     tokio::io::copy_bidirectional(&mut encrypted_stream1, &mut encrypted_stream2).await?;
     
-    Ok(())
-}
+//     Ok(())
+// }

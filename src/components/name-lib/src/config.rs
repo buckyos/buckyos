@@ -306,8 +306,8 @@ pub struct DeviceConfig {
 impl DeviceConfig {
     pub fn new(name:&str,pkx:Option<String>) -> Self {
         if pkx.is_some() {
-                let did = format!("did:dev:{}",pkx.as_ref().unwrap());
-                let jwk = json!(
+            let did = format!("did:dev:{}",pkx.as_ref().unwrap());
+            let jwk = json!(
                 {
                     "kty": "OKP",
                     "crv": "Ed25519",

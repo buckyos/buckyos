@@ -15,7 +15,7 @@ lazy_static!{
     static ref RTCP_STACK_MAP:Arc<Mutex<HashMap<String, RTcpStack >>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
-pub static CURRENT_DEVICE_RRIVATE_KEY: OnceCell<[u8;32]> = OnceCell::new();
+pub static CURRENT_DEVICE_RRIVATE_KEY: OnceCell<[u8;48]> = OnceCell::new();
 
 #[derive(Debug,PartialEq, Eq)]
 pub enum ProtocolCategory {
@@ -51,14 +51,18 @@ pub async fn get_tunnel_builder_by_protocol(protocol:&str) -> TunnelResult<Box<d
             if this_device_config.is_none() || this_device_private_key.is_none() {
                 return Err(TunnelError::BindError("CURRENT_DEVICE_CONFIG or CURRENT_DEVICE_PRIVATE_KEY not set".to_string()));
             }
+            let this_device_config = this_device_config.unwrap();
+            info!("RTCP stack will init by this_device_config: {:?}",this_device_config);
             let this_device_private_key = this_device_private_key.unwrap().clone();
+            //info!("this_device_private_key: {:?}",this_device_private_key);
             let this_device_hostname:String;
-            let this_device_did = DID::from_str(this_device_config.unwrap().did.as_str());
+            let this_device_did = DID::from_str(this_device_config.did.as_str());
             if this_device_did.is_none() {
-                this_device_hostname = this_device_config.unwrap().did.clone();
+                this_device_hostname = this_device_config.did.clone();
             } else {
                 this_device_hostname = this_device_did.unwrap().to_host_name();
             }
+            info!("this_device_hostname: {}",this_device_hostname);
 
             let mut rtcp_stack_map = RTCP_STACK_MAP.lock().await;
             let rtcp_stack = rtcp_stack_map.get(this_device_hostname.as_str());

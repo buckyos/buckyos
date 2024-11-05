@@ -60,6 +60,8 @@ use std::pin::Pin;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
 use buckyos_kit::buckyos_get_unix_timestamp;
+use ctr::Ctr128BE;
+use aes::cipher::{KeyIvInit, StreamCipher};
 use hex::ToHex;
 use ed25519_dalek::SigningKey;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
@@ -90,7 +92,7 @@ use name_lib::*;
 
 use crate::{ tunnel, TunnelEndpoint, TunnelError, TunnelResult};
 use crate::tunnel::{AsyncStream, DatagramClientBox, DatagramServerBox, StreamListener, Tunnel, TunnelBox, TunnelBuilder};
-use crate::aes_stream::EncryptedStream;
+use crate::aes_stream::{EncryptedStream, AesCtr};
 
 pub const DEFAULT_RTCP_STACK_PORT:u16 = 2980;
 
@@ -484,7 +486,7 @@ impl RTcpTunnelPackage {
         where S: AsyncReadExt + 'a,
     {
         let mut buf = [0; 2];
-        info!("try read 2 bytespackage len");
+        //info!("try read 2 bytespackage len");
         stream.read_exact(&mut buf).await?;
         let len = u16::from_be_bytes(buf);
         info!("{}==> rtcp package, len:{}",source_info,len);
@@ -502,7 +504,7 @@ impl RTcpTunnelPackage {
         } else {
             let _len = len - 2;
             let mut buf = vec![0; _len as usize];
-            info!("read package data len:{}",_len);
+            //info!("read package data len:{}",_len);
             stream.read_exact(&mut buf).await?;
 
             let mut pos = 0;
@@ -524,11 +526,10 @@ impl RTcpTunnelPackage {
             //start read json
             let _len = json_pos -2;
             let mut read_buf = &buf[(_len as usize)..];
-            
             //let base64_str: std::borrow::Cow<'_, str> = String::from_utf8_lossy(read_buf);
-            //let json_str = URL_SAFE_NO_PAD.decode(base64_str.as_ref()).unwrap();
             let json_str = String::from_utf8_lossy(read_buf);
-            info!("read json:{}",json_str);
+            
+            //info!("read json:{}",json_str);
             let package_value = serde_json::from_str(json_str.as_ref());
             if package_value.is_err() {
                 error!("parse package error:{}",package_value.err().unwrap());
@@ -576,10 +577,12 @@ impl RTcpTunnelPackage {
             S: AsyncWriteExt   
     {
         //encode package to json
-        let json_str = serde_json::to_string(&pkg.body).unwrap();
+        let json_body = serde_json::to_string(&pkg.body).unwrap();
+        let body_bytes = json_body.as_bytes();
+        
         //let base64_str = URL_SAFE_NO_PAD.encode(json_str.as_bytes());
         let json_pos:u8 = 2 + 1 + 1 + 4;
-        let total_len = 2 + 1 + 1 + 4 + json_str.len();
+        let total_len = 2 + 1 + 1 + 4 + body_bytes.len();
         if total_len > 0xffff {
             error!("package too long");
             return Err(anyhow::format_err!("package too long"));
@@ -592,8 +595,9 @@ impl RTcpTunnelPackage {
         write_buf.extend(std::iter::once(pkg.cmd as u8));
         let bytes = u32::to_be_bytes(pkg.seq);
         write_buf.extend_from_slice(&bytes);
-        write_buf.extend_from_slice(json_str.as_bytes());
-        info!("send package {} len:{} buflen:{}",json_str.as_str(),total_len,write_buf.len());
+        write_buf.extend_from_slice(body_bytes);
+
+        info!("send package {} len:{} buflen:{}",json_body.as_str(),total_len,write_buf.len());
         stream.write_all(&write_buf).await?;
 
         Ok(())
@@ -616,22 +620,24 @@ pub struct RTcpTunnel {
     can_direct: bool,
     peer_addr : SocketAddr,
     this_device:String,
-    aes_key:Option<[u8;32]>,
+    aes_key:[u8;32],
+    //random_pk:[u8;32],
     //write_stream:Arc<Mutex<WriteHalf<EncryptedStream<TcpStream>>>>,
     //read_stream:Arc<Mutex<ReadHalf<EncryptedStream<TcpStream>>>>,
 
 
-    write_stream:Arc<Mutex<WriteHalf<TcpStream>>>,
-    read_stream:Arc<Mutex<ReadHalf<TcpStream>>>,
+    write_stream:Arc<Mutex<WriteHalf<EncryptedStream<TcpStream>>>>,
+    read_stream:Arc<Mutex<ReadHalf<EncryptedStream<TcpStream>>>>,
 }
 
 impl RTcpTunnel {
-    fn new(this_device:String,target: &RTcpTarget,  can_direct: bool,stream:TcpStream,aes_key:Option<[u8;32]>) -> Self {
+    fn new(this_device:String,target: &RTcpTarget,  can_direct: bool,stream:TcpStream,aes_key:[u8;32],random_pk:[u8;32]) -> Self {
         let peer_addr = stream.peer_addr().unwrap();    
-
-        //let encrypted_stream = EncryptedStream::new(stream, &aes_key);
-        //let (read_stream, write_stream) = tokio::io::split(encrypted_stream);
-        let (read_stream,write_stream) =  tokio::io::split(stream);
+        let mut iv = [0u8; 16];
+        iv.copy_from_slice(&random_pk[..16]);
+        let encrypted_stream = EncryptedStream::new(stream, &aes_key,&iv);
+        let (read_stream, write_stream) = tokio::io::split(encrypted_stream);
+        //let (read_stream,write_stream) =  tokio::io::split(stream);
         let mut this_target = target.clone();
         this_target.target_port = 0;
         RTcpTunnel {
@@ -642,6 +648,8 @@ impl RTcpTunnel {
             aes_key:aes_key,
             read_stream : Arc::new(Mutex::new(read_stream)),
             write_stream : Arc::new(Mutex::new(write_stream)),
+            
+            //random_pk:random_pk,
         }
     }
 
@@ -652,10 +660,7 @@ impl RTcpTunnel {
     }
 
     pub fn get_key(&self)-> &[u8;32] {
-        if let Some(aes_key) = &self.aes_key {
-            return aes_key;
-        }
-        return &TUNNEL_KEY_DEFAULT;
+        return &self.aes_key;
     }
 
     async fn process_package(&self,package:RTcpTunnelPackage) -> Result<(),anyhow::Error> {
@@ -673,6 +678,11 @@ impl RTcpTunnel {
                 //TODO: will support connect to other ip
                 let target_addr = format!("127.0.0.1:{}",ropen_package.body.dest_port);
                 info!("rtcp tunnel ropen: open real target stream to {}",target_addr);
+                let nonce_bytes: [u8; 16] =  hex::decode(ropen_package.body.streamid.as_str())
+                    .map_err(|op| anyhow::format_err!("decode streamid error:{}",op))?
+                    .try_into()
+                    .map_err(|op| anyhow::format_err!("decode streamid error"))?;
+
                 let mut raw_stream_to_target = tokio::net::TcpStream::connect(target_addr.clone()).await;
                 if raw_stream_to_target.is_err() {
                     error!("open raw tcp stream to target {} error:{}",target_addr,raw_stream_to_target.err().unwrap());
@@ -703,11 +713,14 @@ impl RTcpTunnel {
                 RTcpTunnelPackage::send_package(write_stream, ropen_resp_package).await?;
 
                 let mut rtcp_stream = rtcp_stream.unwrap();
+                //let random_bytes: [u8; 16] = 
                 RTcpTunnelPackage::send_hello_stream(&mut rtcp_stream,ropen_package.body.streamid.as_str()).await?;
                 let aes_key = self.get_key().clone();
                 //4. 绑定两个stream
+                ;
+
                 task::spawn(async move {
-                    let mut aes_stream = EncryptedStream::new(rtcp_stream, &aes_key);
+                    let mut aes_stream = EncryptedStream::new(rtcp_stream, &aes_key,&nonce_bytes);
                     let _copy_result = tokio::io::copy_bidirectional(&mut aes_stream,&mut raw_stream_to_target).await;
                     if _copy_result.is_err() {
                         error!("copy aes_rtcp_stream to raw_tcp_stream error:{}",_copy_result.err().unwrap());
@@ -745,9 +758,10 @@ impl RTcpTunnel {
            
            
             let mut read_stream = Pin::new(&mut *read_stream);
-            info!("rtcp tunnel try read package from {}",self.peer_addr.to_string());
+            //info!("rtcp tunnel try read package from {}",self.peer_addr.to_string());
+
             let package = RTcpTunnelPackage::read_package(read_stream,false,source_info.as_str()).await;
-            info!("rtcp tunnel read package from {} ok",source_info.as_str());
+            //info!("rtcp tunnel read package from {} ok",source_info.as_str());
             if package.is_err() {
                 error!("read package error:{:?}",package.err().unwrap());
                 break;
@@ -827,7 +841,7 @@ impl Tunnel for RTcpTunnel {
             self.post_ropen(dest_port,session_key.as_str()).await;
             //wait new stream with session_key fomr target
             let stream = self.wait_ropen_stream(&session_key.as_str()).await?;
-            let aes_stream = EncryptedStream::new(stream, &self.get_key());
+            let aes_stream = EncryptedStream::new(stream, &self.get_key(),&random_bytes);
 
             Ok(Box::new(aes_stream))
         }
@@ -892,14 +906,20 @@ lazy_static! {
 }
 
 impl RTcpStack {
-    pub fn new(this_device_hostname:String,port:u16,private_key_bytes:Option<[u8;32]>) -> RTcpStack {
+    pub fn new(this_device_hostname:String,port:u16,private_key_pkcs8_bytes:Option<[u8;48]>) -> RTcpStack {
         let mut this_device_x25519_sk = None;
         let mut this_device_ed25519_sk = None;
-        if private_key_bytes.is_some() {
-            let private_key_bytes = private_key_bytes.unwrap();
-            let encoding_key = EncodingKey::from_ed_der(&private_key_bytes);
+        if private_key_pkcs8_bytes.is_some() {
+            let private_key_pkcs8_bytes = private_key_pkcs8_bytes.unwrap();
+            //info!("rtcp stack ed25519 private_key pkcs8 bytes: {:?}",private_key_pkcs8_bytes);
+            let encoding_key = EncodingKey::from_ed_der(&private_key_pkcs8_bytes);
             this_device_ed25519_sk = Some(encoding_key);
+
+            let private_key_bytes = from_pkcs8(&private_key_pkcs8_bytes).unwrap();
+            //info!("rtcp stack ed25519 private_key  bytes: {:?}",private_key_bytes);
+
             let x25519_private_key = ed25519_to_curve25519::ed25519_sk_to_curve25519(private_key_bytes);
+            //info!("rtcp stack x25519 private_key_bytes: {:?}",x25519_private_key);
             this_device_x25519_sk = Some(x25519_dalek::StaticSecret::from(x25519_private_key));
         }
 
@@ -912,30 +932,34 @@ impl RTcpStack {
         return result;
     }
 
-    //return (tunnel_token,aes_key)
-    pub async fn generate_tunnel_token(&self,target_hostname:String) -> Result<(String,[u8;32]),TunnelError> {
+    //return (tunnel_token,aes_key,my_public_bytes)
+    pub async fn generate_tunnel_token(&self,target_hostname:String) -> Result<(String,[u8;32],[u8;32]),TunnelError> {
         if self.this_device_ed25519_sk.is_none() {
             return Err(TunnelError::DocumentError("this device ed25519 sk is none".to_string()));
         }
 
-        let auth_key = resolve_ed25519_auth_key(target_hostname.as_str()).await;
-        if auth_key.is_err() {
-            warn!("cann't resolve target device {} auth key.",target_hostname.as_str());
-            return Err(TunnelError::DocumentError(format!("cann't resolve target device {} auth key.",target_hostname.as_str())));
-        }
-        let auth_key = auth_key.unwrap();
-        
+        let (auth_key,remote_did_id) = resolve_ed25519_auth_key(target_hostname.as_str()).await
+            .map_err(|op| TunnelError::DocumentError(format!("cann't resolve target device {} auth key:{}",target_hostname.as_str(),op)))?;
+
+        //info!("remote ed25519 auth_key: {:?}",auth_key);
+        let remote_x25519_pk = ed25519_to_curve25519::ed25519_pk_to_curve25519(auth_key);
+        //info!("remote x25519 pk: {:?}",remote_x25519_pk);
+
         let my_secret = EphemeralSecret::random();
         let my_public = PublicKey::from(&my_secret);
+        let my_public_bytes = my_public.to_bytes();
         let my_public_hex = my_public.encode_hex();
-        let aes_key = RTcpStack::generate_aes256_key(my_secret,auth_key);
+        //info!("my_public_hex: {:?}",my_public_hex);
+        let aes_key = RTcpStack::generate_aes256_key(my_secret,remote_x25519_pk);
+        //info!("aes_key: {:?}",aes_key);
         //create jwt by tunnel token payload
         let tunnel_token_payload = TunnelTokenPayload {
-            to: target_hostname.clone(),
+            to: remote_did_id,
             from: self.this_device_hostname.clone(),
             xpub: my_public_hex,
             exp: buckyos_get_unix_timestamp() + 3600*2,
         };
+        info!("send tunnel_token_payload: {:?}",tunnel_token_payload);
         let payload = serde_json::to_value(&tunnel_token_payload)
             .map_err(|op| TunnelError::ReasonError(format!("encode tunnel token payload error:{}",op)))?;
         
@@ -949,11 +973,11 @@ impl RTcpStack {
         }
         let tunnel_token = tunnel_token.unwrap();
 
-        Ok((tunnel_token,aes_key))
+        Ok((tunnel_token,aes_key,my_public_bytes))
     }
 
-    pub fn generate_aes256_key(this_private_key:EphemeralSecret,target_ed25519_auth_key:[u8;32]) -> [u8;32] {
-        let x25519_public_key = ed25519_to_curve25519::ed25519_pk_to_curve25519(target_ed25519_auth_key);
+    pub fn generate_aes256_key(this_private_key:EphemeralSecret,x25519_public_key:[u8;32]) -> [u8;32] {
+        //info!("will create share sec with remote x25519 pk: {:?}",x25519_public_key);
         let x25519_public_key = x25519_dalek::PublicKey::from(x25519_public_key);
         let shared_secret = this_private_key.diffie_hellman(&x25519_public_key);
         
@@ -961,16 +985,14 @@ impl RTcpStack {
         hasher.update(shared_secret.as_bytes());
         let key_bytes = hasher.finalize();
         return key_bytes.try_into().unwrap();
+        //return shared_secret.as_bytes().clone();
     }
 
-    pub async fn decode_tunnel_token(this_private_key:&StaticSecret,token:String,from_hostname:String) -> Result<[u8;32],TunnelError> {
+    pub async fn decode_tunnel_token(this_private_key:&StaticSecret,token:String,from_hostname:String) -> Result<([u8;32],[u8;32]),TunnelError> {
 
-        let ed25519_pk = resolve_ed25519_auth_key(from_hostname.as_str()).await;
-        if ed25519_pk.is_err() {
-            return Err(TunnelError::DocumentError(format!("cann't resolve from device {} auth key.",from_hostname.as_str())));
-        }
+        let (ed25519_pk,from_did) = resolve_ed25519_auth_key(from_hostname.as_str()).await
+            .map_err(|op| TunnelError::DocumentError(format!("cann't resolve from device {} auth key:{}",from_hostname.as_str(),op)))?;
         
-        let ed25519_pk = ed25519_pk.unwrap();
         let from_public_key = DecodingKey::from_ed_der(&ed25519_pk);
 
         let tunnel_token_payload = decode::<TunnelTokenPayload>(token.as_str(), &from_public_key, &Validation::new(Algorithm::EdDSA));
@@ -979,23 +1001,27 @@ impl RTcpStack {
         }
         let tunnel_token_payload = tunnel_token_payload.unwrap();
         let tunnel_token_payload = tunnel_token_payload.claims;
+        //info!("tunnel_token_payload: {:?}",tunnel_token_payload);
         let remomte_x25519_pk = hex::decode(tunnel_token_payload.xpub).unwrap();
+        
         let remomte_x25519_pk: [u8;32] = remomte_x25519_pk.try_into()
             .map_err(|op| TunnelError::ReasonError(format!("decode remote x25519 hex error")))?;
-        
-        let aes_key = RTcpStack::get_aes256_key(this_private_key,remomte_x25519_pk);
-        Ok(aes_key)
+        //info!("remomte_x25519_pk: {:?}",remomte_x25519_pk);
+        let aes_key = RTcpStack::get_aes256_key(this_private_key,remomte_x25519_pk.clone());
+        //nfo!("aes_key: {:?}",aes_key);
+        Ok((aes_key,remomte_x25519_pk))
     }
 
-    pub fn get_aes256_key(this_private_key:&StaticSecret,target_ed25519_auth_key:[u8;32]) -> [u8;32] {
-        let x25519_public_key = ed25519_to_curve25519::ed25519_pk_to_curve25519(target_ed25519_auth_key);
-        let x25519_public_key = x25519_dalek::PublicKey::from(x25519_public_key);
+    pub fn get_aes256_key(this_private_key:&StaticSecret,remote_x25519_auth_key:[u8;32]) -> [u8;32] {
+        //info!("will get share sec with remote x25519 temp pk: {:?}",remote_x25519_auth_key);
+        let x25519_public_key = x25519_dalek::PublicKey::from(remote_x25519_auth_key);
         let shared_secret = this_private_key.diffie_hellman(&x25519_public_key);
         
         let mut hasher = Sha256::new();
         hasher.update(shared_secret.as_bytes());
         let key_bytes = hasher.finalize();
         return key_bytes.try_into().unwrap();
+        //return shared_secret.as_bytes().clone();
     }
 
     pub async fn start(&mut self) -> Result<(), std::io::Error> {
@@ -1003,6 +1029,7 @@ impl RTcpStack {
         let bind_addr = format!("0.0.0.0:{}",self.tunnel_port);
         let rtcp_listener = TcpListener::bind(bind_addr).await?;
         let this_device = self.this_device_hostname.clone();
+        info!("rtcp stack this_device hostname: {}",this_device);
         let this_device_x25519_sk2 = self.this_device_x25519_sk.clone().unwrap();
         task::spawn(async move {
             loop {
@@ -1023,7 +1050,6 @@ impl RTcpStack {
                     match package {
                         RTcpTunnelPackage::HelloStream(session_key) => {
                             //find waiting ropen stream by session_key
-                            //bind stream to session
                             let mut wait_streams = WAIT_ROPEN_STREAM_MAP.lock().await;
                             let clone_map : Vec<String> = wait_streams.keys().cloned().collect();
                             let real_key = format!("{}_{}",this_device2.as_str(),session_key.as_str());
@@ -1033,19 +1059,13 @@ impl RTcpStack {
                                 let _ = stream.shutdown();
                                 return;
                             }
+                            //bind stream to session
                             let mut wait_session = wait_session.unwrap();
                             *wait_session = WaitStream::OK(stream);
                             notify_clone.notify_waiters();
                             return;
                         },
                         RTcpTunnelPackage::Hello(hello_package) => {
-                            //verify hello.to is self
-                            //info!("hello.to_id {} is self",hello_package.body.to_id);
-                            if hello_package.body.to_id != this_device2 {
-                                error!("hello.to_id {} is not this device",hello_package.body.to_id);
-                                return;
-                            }
-
                             //decode hello.body.tunnel_token
                             if hello_package.body.tunnel_token.is_none() {
                                 error!("hello.body.tunnel_token is none");
@@ -1057,7 +1077,7 @@ impl RTcpStack {
                                 error!("decode tunnel token error:{}",aes_key.err().unwrap());
                                 return;
                             }
-                            let aes_key = aes_key.unwrap();
+                            let (aes_key,random_pk) = aes_key.unwrap();
                             let target = RTcpTarget::new(hello_package.body.from_id.as_str(),hello_package.body.my_port,80);
                             if target.is_err() {
                                 error!("parser remote did error:{}",target.err().unwrap());
@@ -1069,7 +1089,8 @@ impl RTcpStack {
                                 &target,
                                 false,
                                 stream,
-                                Some(aes_key),
+                                aes_key,
+                                random_pk,
                             );
 
                             let tunnel_key = format!("{}_{}",this_device2.as_str(),hello_package.body.from_id.as_str());
@@ -1150,7 +1171,7 @@ impl TunnelBuilder for RTcpStack {
             return Err(TunnelError::ConnectError(format!("connect to {} error.",remote_addr)));
         }
         //create tunnel token
-        let (tunnel_token,aes_key) = self.generate_tunnel_token(target_id_str.clone()).await?;
+        let (tunnel_token,aes_key,random_pk) = self.generate_tunnel_token(target_id_str.clone()).await?;
 
         //send hello to target
         let mut tunnel_stream = tunnel_stream.unwrap();
@@ -1168,7 +1189,7 @@ impl TunnelBuilder for RTcpStack {
         }
 
         //create tunnel and add to map
-        let tunnel = RTcpTunnel::new(self.this_device_hostname.clone(),&target,true,tunnel_stream,Some(aes_key));
+        let tunnel = RTcpTunnel::new(self.this_device_hostname.clone(),&target,true,tunnel_stream,aes_key,random_pk);
         all_tunnel.insert(tunnel_key.clone(),tunnel.clone());
         info!("create tunnel {} ok,remote addr is {}",tunnel_key.as_str(),remote_addr.as_str());
         drop(all_tunnel);
@@ -1255,38 +1276,5 @@ mod tests {
         let stream2 = tunnel2.open_stream(7890).await.unwrap();
         info!("stream2 ok ");
         tokio::time::sleep(Duration::from_secs(20)).await;
-    }
-
-
-    async fn test_generate_tunnel_token() {
-        let target_hostname = "web3.buckyos.io".to_string();
-        let from = "M3-pAdhs0uFkWmmjdHLBfs494R91QmQeXzCEhEHP-tI.dev.did".to_string();
-        //let auth_key = resolve_ed25519_auth_key(target_hostname.as_str()).await;
-        let remote_auth_key = "M3-pAdhs0uFkWmmjdHLBfs494R91QmQeXzCEhEHP-tI".to_string();
-        let auth_key:[u8;32] = vec![0u8;32].try_into().unwrap();
-        
-        let my_secret = EphemeralSecret::random();
-        let my_public = PublicKey::from(&my_secret);
-        let my_public_hex = my_public.encode_hex();
-        let aes_key = RTcpStack::generate_aes256_key(my_secret,auth_key);
-        //create jwt by tunnel token payload
-        let tunnel_token_payload = TunnelTokenPayload {
-            to: target_hostname.clone(),
-            from: from,
-            xpub: my_public_hex,
-            exp: buckyos_get_unix_timestamp() + 3600*2,
-        };
-        let payload = serde_json::to_value(&tunnel_token_payload)
-            .map_err(|op| TunnelError::ReasonError(format!("encode tunnel token payload error:{}",op)))?;
-        
-        let mut header = Header::new(Algorithm::EdDSA);        
-        header.kid = None;
-        header.typ = None;
-        let tunnel_token = encode(&header, &payload, &self.this_device_ed25519_sk.as_ref().unwrap());
-        if tunnel_token.is_err() {
-            let err_str = tunnel_token.err().unwrap().to_string();
-            println!("encode tunnel token error:{}",err_str);
-        }
-        let tunnel_token = tunnel_token.unwrap();
     }
 }

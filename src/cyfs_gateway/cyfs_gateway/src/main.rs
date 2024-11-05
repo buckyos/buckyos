@@ -95,8 +95,8 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
             }
         }
     } else {
-        info!("disable buckyos,set device config for test");
-        let this_device_config = DeviceConfig::new("web3.buckyos.io",None);
+        info!("TODO:disable buckyos,set device config for test");
+        let this_device_config = DeviceConfig::new("web3.buckyos.io",Some("8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no".to_string()));
         // load device config from config files
         let set_result = CURRENT_DEVICE_CONFIG.set(this_device_config);
         if set_result.is_err() {

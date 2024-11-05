@@ -132,13 +132,13 @@ pub async fn resolve(name: &str, record_type: Option<&str>) -> NSResult<NameInfo
 }
 
 
-pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<[u8; 32]> {
+pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],String)> {
     //return #auth-key
     let did = DID::from_host_name(hostname);
     if did.is_some(){
         let did = did.unwrap();
         if let Some(auth_key) = did.get_auth_key() {
-            return Ok(auth_key);
+            return Ok((auth_key,hostname.to_string()));
         }
 
         return Err(NSError::NotFound("Auth key not found".to_string()));
@@ -162,8 +162,9 @@ pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<[u8; 32]> {
                     if x.is_some() {
                         let x = x.unwrap();
                         let x = x.as_str().unwrap();
+                        let did_id = format!("did:dev:{}",x);
                         let auth_key = URL_SAFE_NO_PAD.decode(x).unwrap();
-                        return Ok(auth_key.try_into().unwrap());
+                        return Ok((auth_key.try_into().unwrap(),did_id));
                     }
                 }
             }

@@ -1,5 +1,5 @@
 {
-    "did": "did:dev:GryTu5VAD6QmD5cW7ogE8eVtOrPuhrwUlUMmXBghejY",
+    "did": "did:dev:8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no",
     "name": "web3.buckyos.io",
     "device_type": "server",
     "ip": "23.239.23.54",
@@ -7,7 +7,7 @@
     "auth_key": {
       "kty": "OKP",
       "crv": "Ed25519",
-      "x": "GryTu5VAD6QmD5cW7ogE8eVtOrPuhrwUlUMmXBghejY"
+      "x": "8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no"
     },
     "iss": "did:bns:buckyos",
     "exp": 2044721109,
