@@ -19,14 +19,15 @@
         <h3>3.设置系统访问权限</h3>
         <div>设置管理密码</div>
         <md-outlined-text-field  id="txt_admin_password" placeholder="设置管理密码" type="password"></md-outlined-text-field >
-        <div>设置好友访问码后,凭借该代码可访问"好友可见内容"</div>
-        <md-outlined-text-field  id="txt_friend_code" placeholder="设置好友访问码"></md-outlined-text-field >
+        <p>再次输入密码</p>
+        <md-outlined-text-field  id="txt_password_again" placeholder="再次输入密码" type="password"></md-outlined-text-field >
+        <div>设置好友访问码后,凭访问码可访问"好友可见内容"</div>
+        <md-outlined-text-field  id="txt_friend_code" placeholder="功能暂未实现,可随意设置"></md-outlined-text-field >
         <bucky-checkbox id="chk_enable_guest" lable="启用访客模式" check="true"></bucky-checkbox>
-        <div style="margin-top: 0px; margin-left: 28px;">启用访客模式后,任何人都可以访问您的Personal Server上的公开内容</div>
-        <p> ** 当前版本权限控制暂未激活,请不要放置敏感的个人内容 **</p>
+        <div style="margin-top: 0px; margin-left: 28px;">启用访客模式后,任何人都可以访问您的公开内容</div>
     </div>
     <div class="button-container">
-        <md-filled-button id="btn_next" style="width: 150px;">Next</md-filled-button>
+        <md-filled-button id="btn_next" style="width: 150px;">下一步</md-filled-button>
     </div>
 </div>
 

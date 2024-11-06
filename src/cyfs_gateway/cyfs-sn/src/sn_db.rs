@@ -54,13 +54,13 @@ pub fn check_active_code(conn: &Connection, active_code: &str) -> Result<bool> {
     Ok(used.unwrap() == 0)
 }
 
-pub fn register_user(conn: &Connection, activation_code: &str, username: &str, public_key: &str, zone_config: &str) -> Result<bool> {
+pub fn register_user(conn: &Connection, activation_code: &str, username: &str, public_key: &str, zone_config: &str, user_domain: Option<String>) -> Result<bool> {
     let mut stmt = conn.prepare("SELECT used FROM activation_codes WHERE code = ?1")?;
     let used: Option<i32> = stmt.query_row(params![activation_code], |row| row.get(0))?;
 
     if let Some(0) = used {
-        let mut stmt = conn.prepare("INSERT INTO users (username, public_key, activation_code, zone_config) VALUES (?1, ?2, ?3, ?4)")?;
-        stmt.execute(params![username, public_key, activation_code, zone_config])?;
+        let mut stmt = conn.prepare("INSERT INTO users (username, public_key, activation_code, zone_config, user_domain) VALUES (?1, ?2, ?3, ?4, ?5)")?;
+        stmt.execute(params![username, public_key, activation_code, zone_config, user_domain])?;
         
         let mut stmt = conn.prepare("UPDATE activation_codes SET used = 1 WHERE code = ?1")?;
         stmt.execute(params![activation_code])?;
@@ -154,21 +154,22 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
         [],
     )?;
 
-    // 创建用户表，并添加激活码字段
+    // 创建用户表，并添加激活码字段和user_domain唯一约束
     conn.execute(
         "CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
             public_key TEXT NOT NULL,
             activation_code TEXT,
             zone_config TEXT,
+            user_domain TEXT UNIQUE,
             FOREIGN KEY(activation_code) REFERENCES activation_codes(code)
         )",
         [],
     )?;
 
-    // 为激活码字段创建索引
+    // 为user_domain字段创建索引
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_users_activation_code ON users (activation_code)",
+        "CREATE INDEX IF NOT EXISTS idx_users_domain ON users (user_domain)",
         [],
     )?;
 
@@ -186,7 +187,7 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
         [],
     )?;
 
-    // 为设备表的owner字段创建索引
+
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_devices_owner ON devices (owner)",
         [],
@@ -196,7 +197,13 @@ pub fn initialize_database(conn: &Connection) -> Result<()> {
 }
 
 
-
+pub fn get_user_info_by_domain(conn: &Connection, domain: &str) -> Result<Option<(String, String, String)>> {
+    let mut stmt = conn.prepare("SELECT username, public_key, zone_config FROM users WHERE ? = user_domain OR ? LIKE '%.' || user_domain")?;
+    let user_info = stmt.query_row(params![domain, domain], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    }).optional()?;
+    Ok(user_info)
+}
 
 #[cfg(test)]
 mod tests {
@@ -204,6 +211,12 @@ mod tests {
     
     #[test]
     fn test_main() -> Result<()> {
+        //let base_dir = PathBuf::from("/opt/web3_bridge/");
+        //let db_path = base_dir.join("sn_db.sqlite3");
+        //println!("db_path: {}",db_path.to_str().unwrap());
+        //remove db file
+        let _ = std::fs::remove_file(db_path);
+
         let conn = get_sn_db_conn()?;
         initialize_database(&conn)?;
         // Example usage
@@ -212,7 +225,7 @@ mod tests {
         let first_code = codes.first().unwrap();
         let registration_success = register_user(&conn, first_code.as_str(), 
             "lzc", "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8", 
-            "eyJhbGciOiJFZERTQSJ9.eyJkaWQiOiJkaWQ6ZW5zOmx6YyIsIm9vZHMiOlsib29kMSJdLCJzbiI6IndlYjMuYnVja3lvcy5pbyIsImV4cCI6MjA0NDgyMzMzNn0.Xqd-4FsDbqZt1YZOIfduzsJik5UZmuylknMiAxLToB2jBBzHHccn1KQptLhhyEL5_Y-89YihO9BX6wO7RoqABw")?;
+            "eyJhbGciOiJFZERTQSJ9.eyJkaWQiOiJkaWQ6ZW5zOmx6YyIsIm9vZHMiOlsib29kMSJdLCJzbiI6IndlYjMuYnVja3lvcy5pbyIsImV4cCI6MjA0NDgyMzMzNn0.Xqd-4FsDbqZt1YZOIfduzsJik5UZmuylknMiAxLToB2jBBzHHccn1KQptLhhyEL5_Y-89YihO9BX6wO7RoqABw", Some("www.zhicong.me".to_string()))?;
         if registration_success {
             println!("User registered successfully.");
         } else {
@@ -229,6 +242,9 @@ mod tests {
             println!("Device not found.");
         }
         
+        let user_info = get_user_info_by_domain(&conn, "app1.www.zhicong.me")?;
+        println!("user_info: {:?}", user_info);
+
         Ok(())
     }
 }

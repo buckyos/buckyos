@@ -115,6 +115,7 @@ impl SNServer {
         let public_key = req.params.get("public_key");
         let active_code = req.params.get("active_code");
         let zone_config_jwt = req.params.get("zone_config");
+        let user_domain = req.params.get("user_domain");
         if user_name.is_none() || public_key.is_none() || active_code.is_none() || zone_config_jwt.is_none() {
             return Err(RPCErrors::ParseRequestError("Invalid params, user_name or public_key or active_code or zone_config (jwt) is none".to_string()));
         }
@@ -123,8 +124,17 @@ impl SNServer {
         let active_code = active_code.unwrap().as_str().unwrap();
         let zone_config_jwt = zone_config_jwt.unwrap().as_str().unwrap();
 
+        let mut real_user_domain = None;
+        if user_domain.is_some() {
+           let user_domain = user_domain.unwrap();
+           let user_domain_str = user_domain.as_str();
+           if user_domain_str.is_some() {
+                real_user_domain = Some(user_domain_str.unwrap().to_string());
+           }
+        }
+
         let conn = sn_db::get_sn_db_conn().unwrap();
-        let ret = sn_db::register_user(&conn, active_code, user_name, public_key, zone_config_jwt);
+        let ret = sn_db::register_user(&conn, active_code, user_name, public_key, zone_config_jwt, real_user_domain);
         if ret.is_err() {
             let err_str = ret.err().unwrap().to_string();
             warn!("Failed to register user {}: {:?}",user_name,err_str.as_str());
@@ -346,6 +356,50 @@ impl SNServer {
         }
         return None;
     }
+
+    async fn get_user_zonegate_address(&self, username: &str) -> Option<Vec<IpAddr>> {
+        let device_info = self.get_device_info(username, "ood1").await;
+        if device_info.is_some() {
+            let (device_info,device_ip) = device_info.unwrap();
+            let mut address_vec:Vec<IpAddr> = Vec::new();
+            let device_report_ip = device_info.ip;
+            if device_info.is_wan_device() {
+                if device_report_ip.is_some() {
+                    let device_report_ip = device_report_ip.unwrap();
+                    match device_report_ip {
+                        IpAddr::V4(ip) => {
+                            if ip.is_private() {
+                                address_vec.push(device_ip);
+                                address_vec.push(device_report_ip);
+                            } else {
+                                info!("device {} is wan device with public_v4ip, return report ip {} ",username,device_report_ip);
+                                address_vec.push(device_report_ip);
+                            }
+                        },
+                        IpAddr::V6(ip) => {
+                            info!("device {} is wan device with v6, return report ip {} ",username,device_report_ip);
+                            address_vec.push(device_report_ip);
+                            address_vec.push(device_ip);
+                        }
+                    }
+                } else {
+                    info!("device {} is wan device without self-report ip, return device_ip {}",username,device_ip);
+                    address_vec.push(device_ip);
+                }
+            } else {
+                if device_report_ip.is_some() {
+                    let device_report_ip = device_report_ip.unwrap();
+                    info!("device {} is lan device and query from some lan, return self la_ip {} and sn_ip ",username,device_report_ip);
+                    address_vec.push(self.server_ip);
+                    address_vec.push(device_report_ip);
+                } else {
+                    address_vec.push(self.server_ip);
+                }
+            }
+            return Some(address_vec);
+        }
+        return None;
+    }
 }
 
 #[async_trait]
@@ -353,6 +407,8 @@ impl NSProvider for SNServer {
     fn get_id(&self) -> String {
         "sn_ns_provider".to_string()
     } 
+
+
 
     async fn query(&self, name: &str,record_type:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<NameInfo> {
         info!("sn server dns process name query: {}, record_type: {:?}",name,record_type);
@@ -381,7 +437,6 @@ impl NSProvider for SNServer {
         //如果用户存在，则返回用户的ZoneConfig
         let end_string = format!(".{}.",self.server_host.as_str());
         if name.ends_with(&end_string) {
-            
             let sub_name = name[0..name.len()-end_string.len()].to_string();
             //split sub_name by "."
             let subs:Vec<&str> = sub_name.split(".").collect();
@@ -402,57 +457,9 @@ impl NSProvider for SNServer {
                     }
                 },
                 "A" | "AAAA" => {
-                    let device_info = self.get_device_info(username, "ood1").await;
-                    if device_info.is_some() {
-                        let (device_info,device_ip) = device_info.unwrap();
-                        let mut address_vec:Vec<IpAddr> = Vec::new();
-                        let device_report_ip = device_info.ip;
-                        if device_info.is_wan_device() {
-
-                            if device_report_ip.is_some() {
-                                let device_report_ip = device_report_ip.unwrap();
-                                match device_report_ip {
-                                    IpAddr::V4(ip) => {
-                                        if ip.is_private() {
-                                            if from_ip == device_ip {
-                                                info!("device {} is wan device and query from some lan, return lan_ip {} and device_ip {}",name,device_report_ip,device_ip);
-                                                address_vec.push(device_report_ip);
-                                                address_vec.push(device_ip);
-                                            } else {
-                                                info!("device {} is wan device with lan_ip, return device_ip {}",name,device_ip);
-                                                address_vec.push(device_ip);
-                                                address_vec.push(device_report_ip);
-                                            }
-                                        } else {
-                                            info!("device {} is wan device with public_v4ip, return report ip {} ",name,device_report_ip);
-                                            address_vec.push(device_report_ip);
-                                        }
-                                    }
-                                    IpAddr::V6(ip) => {
-                                        info!("device {} is wan device with v6, return report ip {} ",name,device_report_ip);
-                                        address_vec.push(device_report_ip);
-                                    }
-                                }
-                            } else {
-                                info!("device {} is wan device without self-report ip, return device_ip {}",name,device_ip);
-                                address_vec.push(device_ip);
-                            }
-                        } else {
-                            if from_ip == device_ip  && device_report_ip.is_some() {
-                                let device_report_ip = device_report_ip.unwrap();
-                                info!("device {} is lan device and query from some lan, return self la_ip {} and sn_ip ",name,device_report_ip);
-                                address_vec.push(device_report_ip);
-                                address_vec.push(self.server_ip);
-                            } else {
-                                info!("device {} is lan device , return sn_ip",name);
-                                address_vec.push(self.server_ip);
-                                if device_report_ip.is_some() {
-                                    let device_report_ip = device_report_ip.unwrap();
-                                    address_vec.push(device_report_ip);
-                                }
-                            }
-                        }
-
+                    let address_vec = self.get_user_zonegate_address(username).await;
+                    if address_vec.is_some() {
+                        let address_vec = address_vec.unwrap();
                         let result_name_info = NameInfo::from_address_vec(name, address_vec);
                         return Ok(result_name_info);
                     } else {
@@ -465,6 +472,31 @@ impl NSProvider for SNServer {
             }
             
         } else {
+            let real_domain_name = name[0..name.len()-1].to_string();
+            let conn = sn_db::get_sn_db_conn().unwrap();
+            let user_info = sn_db::get_user_info_by_domain(&conn, real_domain_name.as_str()).unwrap();
+            if user_info.is_none() {
+                return Err(NSError::NotFound(name.to_string()));
+            }
+            let (username,public_key,zone_config) = user_info.unwrap();
+            match record_str {
+                "TXT" => {
+                    let result_name_info = NameInfo::from_zone_config_str(name, zone_config.as_str());
+                    return Ok(result_name_info);
+                },
+                "A" | "AAAA" => {
+                    let address_vec = self.get_user_zonegate_address(&username).await;
+                    if address_vec.is_some() {
+                        let address_vec = address_vec.unwrap();
+                        let result_name_info = NameInfo::from_address_vec(name, address_vec);
+                        return Ok(result_name_info);
+                    }
+                },
+                _ => {
+                    return Err(NSError::NotFound(format!("sn-server not support record type {}",record_str)));
+                }
+            }
+
             return Err(NSError::NotFound(name.to_string()));
         }
     }
@@ -528,6 +560,33 @@ impl TunnelSelector for SNServer {
             let username = username.unwrap();
             
             let device_info = self.get_device_info(username, "ood1").await;
+            if device_info.is_some() {
+                //info!("ood1 device info found for {} in sn server",username);
+                //let device_did = device_info.unwrap().0.did;
+                let device_did = device_info.unwrap().0.did;
+                if device_did.is_some() {
+                    let device_did_str = device_did.unwrap();
+                    let device_did = DID::from_str(device_did_str.as_str());
+                    if device_did.is_some() {
+                        let device_host_name = device_did.unwrap().to_host_name();
+                        let result_str = format!("rtcp://{}",device_host_name.as_str());
+                        //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
+                        return Some(result_str);
+                    }
+                } else {
+                    warn!("ood1 device did not found for {} in sn server",username);
+                }
+            } else {
+                warn!("ood1 device info not found for {} in sn server",username);
+            }
+        } else {
+            let conn = sn_db::get_sn_db_conn().unwrap();
+            let user_info = sn_db::get_user_info_by_domain(&conn, req_host).unwrap();
+            if user_info.is_none() {
+                return None;
+            }
+            let (username,public_key,zone_config) = user_info.unwrap();
+            let device_info = self.get_device_info(username.as_str(), "ood1").await;
             if device_info.is_some() {
                 //info!("ood1 device info found for {} in sn server",username);
                 //let device_did = device_info.unwrap().0.did;

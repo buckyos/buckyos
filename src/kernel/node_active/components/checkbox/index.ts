@@ -1,6 +1,6 @@
 
 import templateContent from './checkbox.template?raw';
-
+import {MdCheckbox} from '@material/web/checkbox/checkbox.js';
 
 class BuckyCheckBox extends HTMLElement {
     _checked: boolean;
@@ -36,7 +36,7 @@ class BuckyCheckBox extends HTMLElement {
             return;
         }
 
-        const _element = this.shadowRoot.getElementById('check_box');
+        const _element = this.shadowRoot.getElementById('check_box') as MdCheckbox;
         if (_element) {
             _element.checked = this._checked;
         }
@@ -48,7 +48,11 @@ class BuckyCheckBox extends HTMLElement {
 
     set disabled(value) {
         this._disabled = value;
-        const _element = this.shadowRoot.getElementById('check_box');
+        if (!this.shadowRoot) {
+            return;
+        }
+
+        const _element = this.shadowRoot.getElementById('check_box') as MdCheckbox;
         if (_element) {
             _element.disabled = this._disabled;
         }
@@ -68,7 +72,7 @@ class BuckyCheckBox extends HTMLElement {
         this.checked = this.getAttribute('check') === 'true';
         this.disabled = this.getAttribute('disabled') === 'true';
 
-        const _element = this.shadowRoot.getElementById('check_box');
+        const _element = shadow.getElementById('check_box');
         if (_element) {
             _element.addEventListener('click', () => {
                 this.checked = !this.checked;
@@ -90,3 +94,4 @@ class BuckyCheckBox extends HTMLElement {
 
 customElements.define("bucky-checkbox", BuckyCheckBox);
 
+export {BuckyCheckBox};

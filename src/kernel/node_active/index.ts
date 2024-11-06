@@ -11,7 +11,7 @@ import '@material/web/radio/radio.js';
 import '@material/web/textfield/outlined-text-field.js';
 import '@material/web/textfield/filled-text-field.js';
 import "./components/checkbox/index";
-import './components/wizzard-dlg/index';
+import {WizzardDlg} from './components/wizzard-dlg/index';
 
 import "./dlg/config_gateway_dlg";
 import "./dlg/config_zone_id_dlg";
@@ -27,9 +27,19 @@ window.onload = async () => {
         sn_active_code : "",
         sn_user_name : "",
         gatewy_type : GatewayType.BuckyForward,
+        use_self_domain : false,
+        self_domain : "",
+        admin_password_hash : "",
+        friend_passcode : "",
+        enable_guest_access : false,
+        owner_public_key : "",
+        owner_private_key : "",
+        zone_config_jwt : "",
+        sn_url : "",
+        sn_host : "",
     }
     
-    const activeWizzard = document.getElementById('active-wizzard');
+    const activeWizzard = document.getElementById('active-wizzard') as WizzardDlg;
     activeWizzard.wizzard_data = wizzard_data;
     //activeWizzard.pushDlg(document.createElement('config-gateway-dlg'));
 }

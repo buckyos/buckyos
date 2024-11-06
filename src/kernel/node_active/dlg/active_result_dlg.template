@@ -26,12 +26,18 @@
         <h2>激活成功!</h2>
         <img src="success.png" style="width: 120px;height: 120px;"/>
         <p>您的Personal Server已成功激活</p>
-        <p>点击 <a href="http://{{sn_user_name}}.web3.buckyos.io/index.html">https://{{sn_user_name}}.web3.buckyos.io/index.html</a> 访问</p>
+        {{#if use_self_domain}}
+        <p>点击 <a href="http://{{self_domain}}/index.html">http://{{self_domain}}/index.html</a> 访问</p>
+        {{else}}
+        <p>点击 <a href="http://{{sn_user_name}}.web3.buckyos.io/index.html">http://{{sn_user_name}}.web3.buckyos.io/index.html</a> 访问</p>
+        {{/if}}
+        <p>默认用户名密码是admin/admin.</p>
+        <p>首次打开页面如有错误请多刷新几次.</p>
     </div>
     
     <p></p>
     <p></p>
     <div class="button-container">
-        <md-filled-button id="btn_end">完成</md-filled-button>
+        <md-filled-button id="btn_end">关闭并跳转</md-filled-button>
     </div>
 </div>

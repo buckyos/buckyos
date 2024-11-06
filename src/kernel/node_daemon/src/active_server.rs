@@ -22,27 +22,6 @@ impl ActiveServer {
         ActiveServer {}
     }
 
-    async fn handle_end_active(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
-        let write_dir = get_buckyos_system_etc_dir();
-        let old_device_private_key_file = write_dir.join(".device_private_key.pem");
-        let new_device_private_key_file = write_dir.join("node_private_key.pem");
-        //tokio::fs::rename(old_device_private_key_file,new_device_private_key_file).await
-        //    .map_err(|e|RPCErrors::ReasonError(format!("Failed to rename device private key: {}",e.to_string())))?;
-
-        let old_device_identity_file = write_dir.join(".device_identity.toml");
-        let new_device_identity_file = write_dir.join("node_identity.toml");
-        //tokio::fs::rename(old_device_identity_file,new_device_identity_file).await
-        //    .map_err(|e|RPCErrors::ReasonError(format!("Failed to rename device identity: {}",e.to_string())))?;
-        tokio::task::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            exit(0);
-        });
-
-        //rename this device's hostname to  $username-ood1
-        //change root user buckyos to admin password
-        Ok(RPCResponse::new(RPCResult::Success(json!({})),req.seq))
-    }
-
     async fn handel_do_active(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
         let user_name = req.params.get("user_name");
         let zone_name = req.params.get("zone_name");
@@ -224,7 +203,6 @@ impl kRPCHandler for ActiveServer {
             "get_device_info" => self.handle_get_device_info(req).await,
             "generate_zone_config" => self.handle_generate_zone_config_jwt(req).await,
             "do_active" => self.handel_do_active(req).await,
-            "end_active" => self.handle_end_active(req).await,
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }
     }

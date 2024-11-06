@@ -1,4 +1,5 @@
 import templateContent from './wizzard-dlg.template?raw';
+import {MdOutlinedIconButton} from '@material/web/iconbutton/outlined-icon-button';
 
 //该组件，可以往里push dlg(另一个component).当有dlg时，左上角有back按钮。每次push时，当前的dlg会往左淡出，新的dlg从右边进场。 
 
@@ -16,14 +17,20 @@ class WizzardDlg extends HTMLElement {
       const shadow = this.attachShadow({ mode: 'open' });
       shadow.appendChild(template.content.cloneNode(true));
 
-      const backButton = this.shadowRoot.getElementById('back-button');
-      backButton.addEventListener('click', () => { 
-        console.log('backButton clicked');
-        this.popDlg()
-      });
+      const backButton = this.shadowRoot?.getElementById('back-button') as MdOutlinedIconButton | null;
+      if (backButton) {
+        backButton.addEventListener('click', () => { 
+          console.log('backButton clicked');
+          this.popDlg()
+        });
+      }
 
-      const slot = this.shadowRoot.getElementById('dlg-content') as HTMLSlotElement;
-      const dlgContent = slot.assignedElements();
+      const slot = this.shadowRoot?.getElementById('dlg-content') as HTMLSlotElement | null;
+      if (!slot) {
+        return;
+      }
+
+      const dlgContent = slot.assignedElements() as HTMLElement[];
       this.dlgStack.push(dlgContent[0]);
       
     }
@@ -85,4 +92,4 @@ class WizzardDlg extends HTMLElement {
 
 customElements.define('bucky-wizzard-dlg', WizzardDlg);
 
-export default WizzardDlg;
+export {WizzardDlg};

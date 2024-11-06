@@ -26,12 +26,20 @@
         <div style="margin-top: 0px; margin-left:5px;gap:4px">
             <ul>
                 <li>用户名:{{sn_user_name}}</li>
-                <li>访问域名: <a href="http://{{sn_user_name}}.web3.buckyos.io">http://{{sn_user_name}}.web3.buckyos.io</a> (激活完成后可用)</li>
+                {{#if use_self_domain}}
+                <li>访问域名: <a href="http://{{self_domain}}">http://{{self_domain}}</a> </li>
+                {{else}}
+                <li>访问域名: <a href="http://{{sn_user_name}}.web3.buckyos.io">http://{{sn_user_name}}.web3.buckyos.io</a> </li>
+                {{/if}}
+                {{#if (eq gatewy_type "BuckyForward")}}
                 <li>访问链路:使用buckyos.io提供的Web3网桥</li>
-                <li>Personal Server主机名:{{sn_user_name}}-ood</li>
+                {{else}}
+                <li>访问链路:直接连接到您的Personal Server</li>
+                {{/if}}
             </ul>
         </div>
-        <p>请再次确认已妥善保管以下私钥,激活后将无法查看！<a id="copyButton" href="#">(复制)</a></p>
+        <p>请妥善保管以下私钥,激活后将无法查看!</p>
+        <p>私钥丢失后将无法激活,激活后将无法查看!</p>
 
         <md-filled-text-field id="txt_private_key" type="textarea" label="Owner Private Key" disabled="true"
         value="{{owner_private_key}}"
@@ -41,7 +49,7 @@
     <p></p>
     <p></p>
     <div class="button-container">
-        <md-filled-button id="btn_next" style="width: 150px;">Active!</md-filled-button>
+        <md-filled-button id="btn_next" style="width: 150px;">激活!</md-filled-button>
     </div>
 </div>
 

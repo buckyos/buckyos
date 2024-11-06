@@ -40,6 +40,9 @@
                             "tunnel_selector":"main_sn"
                         }
                     }
+                },
+                "*":{
+                    "tunnel_selector":"main_sn"
                 }
             }
         },
