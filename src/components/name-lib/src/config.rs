@@ -43,7 +43,7 @@ pub struct ZoneConfig {
     
     //因为所有的Node上的Gateway都是同质的，所以这里可以不用配置？DNS记录解析到哪个Node，哪个Node的Gateway就是ZoneGateway
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub gateway:Option<String>,//default gateway node name for this zone,like gate@210.22.12.3#wlan
+    pub gateway:Option<String>,//default gateway node name for this zone,like gate@210.22.12.3#wan
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sn:Option<String>,//
@@ -151,14 +151,6 @@ impl ZoneConfig {
                 return Some(format!("http://{}/kapi/sn",self.sn.as_ref().unwrap()));
             } else {
                 return Some(format!("http://{}:{}/kapi/sn",self.sn.as_ref().unwrap(),sn_port));
-            }
-        }
-
-        if self.name.is_some() {
-            if sn_port == 80 {
-                return Some(format!("http://{}/kapi/sn",self.name.as_ref().unwrap()));
-            } else {
-                return Some(format!("http://{}:{}/kapi/sn",self.name.as_ref().unwrap(),sn_port));
             }
         }
 
@@ -295,7 +287,9 @@ pub struct DeviceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip:Option<IpAddr>,//main_ip
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub net_id:Option<String>,//[lan1,wlan]
+    pub net_id:Option<String>,// lan1 | wan
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ddns_sn_url:Option<String>,
     pub auth_key : Jwk,
 
     pub iss:String,
@@ -321,6 +315,7 @@ impl DeviceConfig {
                 device_type: "node".to_string(),
                 ip: None,
                 net_id: None,
+                ddns_sn_url: None,
                 auth_key: public_key_jwk,
                 iss: "".to_string(),
                 exp: 0,
@@ -341,6 +336,7 @@ impl DeviceConfig {
                 device_type: "node".to_string(),
                 ip: None,
                 net_id: None,
+                ddns_sn_url: None,
                 auth_key: public_key_jwk,
                 iss: "".to_string(),
                 exp: 0,
@@ -364,6 +360,7 @@ impl DeviceConfig {
             device_type: "ood".to_string(),
             ip:None,
             net_id:None,
+            ddns_sn_url: None,
             auth_key: public_key_jwk,
             iss: "waterfllier".to_string(),
             exp: buckyos_get_unix_timestamp() + 3600*24*365, 
@@ -649,7 +646,7 @@ mod tests {
             auth_key: gateway_key_jwk,
             iss: "waterfllier".to_string(),
             ip:Some("23.239.23.54".parse().unwrap()),
-            net_id:Some("wlan".to_string()),
+            net_id:Some("wan".to_string()),
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };

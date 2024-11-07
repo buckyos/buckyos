@@ -413,7 +413,7 @@ async fn register_device_doc(device_doc:&DeviceConfig,sys_config_client: &System
     let device_key = sys_config_get_device_path(device_doc.name.as_str());
     let device_doc_str = serde_json::to_string(&device_doc).unwrap();
     let device_key = format!("{}/doc",sys_config_get_device_path(device_doc.name.as_str()));
-    let put_result = sys_config_client.set(device_key.as_str(),device_doc_str.as_str()).await;
+    let put_result = sys_config_client.create(device_key.as_str(),device_doc_str.as_str()).await;
     if put_result.is_err() {
         error!("register device doc to system_config failed! {}", put_result.err().unwrap());
     } else {
@@ -487,17 +487,26 @@ async fn do_boot_scheduler() -> std::result::Result<(),String> {
 async fn start_update_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
     //try register ood's device_info to sn,
     // TODO: move this logic to cyfs-gateway service?
-    let sn_url = zone_config.get_sn_url();
-    if sn_url.is_none() {
-        error!("sn url is none!");
-        return Err(String::from("sn url is none!"));
+    let mut need_sn = false;
+    let mut sn_url = zone_config.get_sn_url();
+    if sn_url.is_some() {
+        need_sn = true;
+    } else {
+        if device_doc.ddns_sn_url.is_some() {
+            need_sn = true;
+            sn_url = device_doc.ddns_sn_url.clone();
+        }
     }
+    if !need_sn {
+        return Err(String::from("no sn url to update ood info!"));
+    }
+    
     let sn_url = sn_url.unwrap();
 
     let ood_string = zone_config.get_ood_string(device_doc.name.as_str());
     if ood_string.is_none() {
-        error!("ood string is none!");
-        return Err(String::from("ood string is none!"));
+        error!("this device is not in zone's ood list!");
+        return Err(String::from("this device is not in zone's ood list!"));
     }
 
     let ood_string = ood_string.unwrap();

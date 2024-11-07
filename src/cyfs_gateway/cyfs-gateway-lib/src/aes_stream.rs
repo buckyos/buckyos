@@ -54,7 +54,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for EncryptedStream<S> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        let write_nonce = thread_rng().gen::<u64>();
+        //let write_nonce = thread_rng().gen::<u64>();
         let mut encrypted = buf.to_vec();
         let org_pos:usize = self.encrypt_cipher.current_pos();
         self.encrypt_cipher.apply_keystream(&mut encrypted);
@@ -63,8 +63,8 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for EncryptedStream<S> {
         match Pin::new(&mut self.inner).poll_write(cx, &encrypted) {
             Poll::Ready(Ok(written)) => {
                 if written < encrypted.len() {
-                    warn!("{} aes stream encrypted data partial write, expect:{} actual:{},seek_pos:{}", 
-                        write_nonce,encrypted.len(), written,org_pos+written); 
+                    //warn!("{} aes stream encrypted data partial write, expect:{} actual:{},seek_pos:{}", 
+                    //    write_nonce,encrypted.len(), written,org_pos+written); 
                     self.encrypt_cipher.seek(org_pos+written);
                 }
                 //info!("{} aes stream encrypted data write OK: [{}-{}]", write_nonce, org_pos, org_pos+written);

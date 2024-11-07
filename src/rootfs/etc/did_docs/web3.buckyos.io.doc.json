@@ -3,7 +3,7 @@
     "name": "web3.buckyos.io",
     "device_type": "server",
     "ip": "23.239.23.54",
-    "net_id": "wlan",
+    "net_id": "wan",
     "auth_key": {
       "kty": "OKP",
       "crv": "Ed25519",

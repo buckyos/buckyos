@@ -27,6 +27,7 @@ class ConfigZoneIdDlg extends HTMLElement {
             txt_name.errorText = "名字长度必须大于4";
             return false;
         }
+        wizzard_data.sn_user_name = txt_name.value;
 
         if (chk_use_buckyos_name.checked){
             if (!await check_bucky_username(txt_name.value)) {
@@ -35,7 +36,6 @@ class ConfigZoneIdDlg extends HTMLElement {
                 return false;
             }
             let txt_bucky_sn_token = shadow.getElementById('txt_bucky_sn_token') as MdOutlinedTextField;
-            wizzard_data.sn_user_name = txt_name.value;
             wizzard_data.sn_active_code = txt_bucky_sn_token.value;
             return true;
         }

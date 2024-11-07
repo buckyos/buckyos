@@ -57,13 +57,19 @@ impl ActiveServer {
         let device_public_jwk = serde_json::from_value(device_public_key.clone()).unwrap();
         let device_ip:Option<IpAddr> = None;
         let mut net_id:Option<String> = None;
+        let mut ddns_sn_url:Option<String> = None;
+        let mut need_sn = false;
         //create device doc ,and sign it with owner private key
         match gateway_type {
             "BuckyForward" => {
                 net_id = None;
             },
             "PortForward" => {
-                net_id = Some("wlan".to_string());
+                if zone_name.ends_with(".web3.buckyos.io") {
+                    need_sn = true;
+                    ddns_sn_url = Some("http://web3.buckyos.io/kapi/sn".to_string());
+                }
+                net_id = Some("wan".to_string());
             },
             _ => {
                 return Err(RPCErrors::ReasonError("Invalid gateway type".to_string()));
@@ -78,18 +84,27 @@ impl ActiveServer {
             iss: user_name.to_string(),
             ip:None,
             net_id:net_id,
+            ddns_sn_url:ddns_sn_url,
             exp: buckyos_get_unix_timestamp() + 3600*24*365*10, 
             iat: buckyos_get_unix_timestamp() as u64,
         };
         let device_doc_jwt = device_config.encode(Some(&owner_private_key_pem))
             .map_err(|_|RPCErrors::ReasonError("Failed to encode device config".to_string()))?;
         
-   
         if sn_url.is_some() {
             //register to sn 
             let sn_url = sn_url.unwrap().as_str().unwrap();
+            if !sn_url.is_empty() {
+                if sn_url.starts_with("http://") || sn_url.starts_with("https://") {
+                    need_sn = true;
+                }
+            }
+        }
+        
+            
+        if need_sn {
+            let sn_url = "http://web3.buckyos.io/kapi/sn";
             info!("Register OOD to sn: {}",sn_url);
-
             let rpc_token = ::kRPC::RPCSessionToken {
                 token_type : ::kRPC::RPCSessionTokenType::JWT,
                 nonce : None,
@@ -104,7 +119,7 @@ impl ActiveServer {
                     warn!("Failed to generate user rpc token");
                     RPCErrors::ReasonError("Failed to generate user rpc token".to_string())})?;
             
-            let mut device_info = DeviceInfo::new("ood1",None);
+            let mut device_info = DeviceInfo::from_device_doc(&device_config);
             device_info.auto_fill_by_system_info().await.unwrap();
             let device_info_json = serde_json::to_string(&device_info).unwrap();
             let device_ip = device_info.ip.unwrap().to_string();

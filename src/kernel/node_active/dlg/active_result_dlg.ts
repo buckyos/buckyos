@@ -1,5 +1,5 @@
 import templateContent from './active_result_dlg.template?raw';  
-import { WizzardDlg } from '../components/wizzard-dlg';
+import { BuckyWizzardDlg } from '../components/wizzard-dlg';
 import { MdFilledButton } from '@material/web/button/filled-button.js';
 import { ActiveWizzardData,do_active } from '../active_lib';
 import Handlebars from 'handlebars';
@@ -10,7 +10,7 @@ class ActiveResultDlg extends HTMLElement {
     }
 
     connectedCallback() {
-      const wizzard_data = (document.getElementById('active-wizzard') as WizzardDlg).wizzard_data as ActiveWizzardData;
+      const wizzard_data = (document.getElementById('active-wizzard') as BuckyWizzardDlg).wizzard_data as ActiveWizzardData;
 
       const template = document.createElement('template');
       const template_compiled = Handlebars.compile(templateContent);
