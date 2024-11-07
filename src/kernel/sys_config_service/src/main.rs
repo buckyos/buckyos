@@ -242,7 +242,7 @@ fn init_log_config() {
 async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
     if token.is_self_verify() {
         let trust_keys = TRUST_KEYS.lock().await;
-        token.do_self_verify(&trust_keys)?;
+        token.verify_by_key_map(&trust_keys)?;
     }
     info!("verify_session_token: {:?}",token);
     Ok(())
@@ -315,6 +315,17 @@ async fn service_main() {
     init_by_boot_config().await.unwrap();
     // Select the rear end storage, here you can switch different implementation
 
+    let cors_response = warp::path!("kapi" / "system_config")
+    .and(warp::options())
+    .map(|| {
+        info!("Handling OPTIONS request");
+        warp::http::Response::builder()
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            .header("Access-Control-Allow-Headers", "Content-Type")
+            .body("")
+    });
+
     let rpc_route = warp::path!("kapi" / "system_config")
     .and(warp::post())
     .and(warp::body::json())
@@ -330,8 +341,9 @@ async fn service_main() {
                     result: RPCResult::Success(result),
                     seq: req.seq,
                     token: None,
-                    trace_id: req.trace_id
+                    trace_id: req.trace_id.clone()
                 };
+                info!("<==|Response: OK {} {}", req.seq,req.trace_id.as_deref().unwrap_or(""));
             },
             Err(err) => {
                 rpc_response = RPCResponse {
@@ -340,15 +352,15 @@ async fn service_main() {
                     token: None,
                     trace_id: req.trace_id
                 };
+                info!("<==|Response: {}", serde_json::to_string(&rpc_response).unwrap());
             }
         }
-        
-        info!("<==|Response: {}", serde_json::to_string(&rpc_response).unwrap());
+    
         Ok::<_, warp::Rejection>(warp::reply::json(&rpc_response))
     });
 
     info!("Starting system config service");
-    warp::serve(rpc_route).run(([0, 0, 0, 0], 3200)).await;
+    warp::serve(cors_response.or(rpc_route)).run(([0, 0, 0, 0], 3200)).await;
 }
 
 #[tokio::main]

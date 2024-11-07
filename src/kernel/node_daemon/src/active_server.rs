@@ -10,6 +10,8 @@ use name_lib::*;
 use name_client::*;
 use log::*;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
+use ::kRPC::*;
+use sys_config::*;
 
 #[derive(Clone)]
 struct ActiveServer {
@@ -18,27 +20,6 @@ struct ActiveServer {
 impl ActiveServer {
     pub fn new() -> Self {
         ActiveServer {}
-    }
-
-    async fn handle_end_active(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
-        let write_dir = get_buckyos_system_etc_dir();
-        let old_device_private_key_file = write_dir.join(".device_private_key.pem");
-        let new_device_private_key_file = write_dir.join("node_private_key.pem");
-        //tokio::fs::rename(old_device_private_key_file,new_device_private_key_file).await
-        //    .map_err(|e|RPCErrors::ReasonError(format!("Failed to rename device private key: {}",e.to_string())))?;
-
-        let old_device_identity_file = write_dir.join(".device_identity.toml");
-        let new_device_identity_file = write_dir.join("node_identity.toml");
-        //tokio::fs::rename(old_device_identity_file,new_device_identity_file).await
-        //    .map_err(|e|RPCErrors::ReasonError(format!("Failed to rename device identity: {}",e.to_string())))?;
-        tokio::task::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            exit(0);
-        });
-
-        //rename this device's hostname to  $username-ood1
-        //change root user buckyos to admin password
-        Ok(RPCResponse::new(RPCResult::Success(json!({})),req.seq))
     }
 
     async fn handel_do_active(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
@@ -52,6 +33,7 @@ impl ActiveServer {
         let friend_passcode = req.params.get("friend_passcode");
         let device_public_key = req.params.get("device_public_key");
         let device_private_key = req.params.get("device_private_key");
+        let sn_url = req.params.get("sn_url");
         //let device_info = req.params.get("device_info");  
         if user_name.is_none() || zone_name.is_none() || gateway_type.is_none() || owner_public_key.is_none() || owner_private_key.is_none() || device_public_key.is_none() || device_private_key.is_none() {
             return Err(RPCErrors::ParseRequestError("Invalid params, user_name, zone_name, gateway_type, owner_public_key, owner_private_key, device_public_key or device_private_key is none".to_string()));
@@ -75,13 +57,19 @@ impl ActiveServer {
         let device_public_jwk = serde_json::from_value(device_public_key.clone()).unwrap();
         let device_ip:Option<IpAddr> = None;
         let mut net_id:Option<String> = None;
+        let mut ddns_sn_url:Option<String> = None;
+        let mut need_sn = false;
         //create device doc ,and sign it with owner private key
         match gateway_type {
             "BuckyForward" => {
                 net_id = None;
             },
             "PortForward" => {
-                net_id = Some("wlan".to_string());
+                if zone_name.ends_with(".web3.buckyos.io") {
+                    need_sn = true;
+                    ddns_sn_url = Some("http://web3.buckyos.io/kapi/sn".to_string());
+                }
+                net_id = Some("wan".to_string());
             },
             _ => {
                 return Err(RPCErrors::ReasonError("Invalid gateway type".to_string()));
@@ -89,19 +77,60 @@ impl ActiveServer {
         }
 
         let device_config:DeviceConfig = DeviceConfig {
-            did: device_did,
+            did: device_did.clone(),
             name: "ood1".to_string(),
             device_type: "ood".to_string(),
             auth_key: device_public_jwk,
             iss: user_name.to_string(),
             ip:None,
             net_id:net_id,
+            ddns_sn_url:ddns_sn_url,
             exp: buckyos_get_unix_timestamp() + 3600*24*365*10, 
             iat: buckyos_get_unix_timestamp() as u64,
         };
         let device_doc_jwt = device_config.encode(Some(&owner_private_key_pem))
             .map_err(|_|RPCErrors::ReasonError("Failed to encode device config".to_string()))?;
         
+        if sn_url.is_some() {
+            //register to sn 
+            let sn_url = sn_url.unwrap().as_str().unwrap();
+            if !sn_url.is_empty() {
+                if sn_url.starts_with("http://") || sn_url.starts_with("https://") {
+                    need_sn = true;
+                }
+            }
+        }
+        
+            
+        if need_sn {
+            let sn_url = "http://web3.buckyos.io/kapi/sn";
+            info!("Register OOD to sn: {}",sn_url);
+            let rpc_token = ::kRPC::RPCSessionToken {
+                token_type : ::kRPC::RPCSessionTokenType::JWT,
+                nonce : None,
+                userid : Some(user_name.to_string()),
+                appid:Some("active_service".to_string()),
+                exp:Some(buckyos_get_unix_timestamp() + 60),
+                iss:Some(user_name.to_string()),
+                token:None,
+            };
+            let user_rpc_token = rpc_token.generate_jwt(None,&owner_private_key_pem)
+                .map_err(|_| {
+                    warn!("Failed to generate user rpc token");
+                    RPCErrors::ReasonError("Failed to generate user rpc token".to_string())})?;
+            
+            let mut device_info = DeviceInfo::from_device_doc(&device_config);
+            device_info.auto_fill_by_system_info().await.unwrap();
+            let device_info_json = serde_json::to_string(&device_info).unwrap();
+            let device_ip = device_info.ip.unwrap().to_string();
+
+            let sn_result = sn_register_device(sn_url, Some(user_rpc_token.to_string()), 
+                user_name, "ood1", &device_did.as_str(), &device_ip, device_info_json.as_str()).await;
+            if sn_result.is_err() {
+                return Err(RPCErrors::ReasonError(format!("Failed to register device to sn: {}",sn_result.err().unwrap())));
+            }
+        }
+
         //write device private key 
         let write_dir = get_buckyos_system_etc_dir();
         let device_private_key_file = write_dir.join("node_private_key.pem");
@@ -189,7 +218,6 @@ impl kRPCHandler for ActiveServer {
             "get_device_info" => self.handle_get_device_info(req).await,
             "generate_zone_config" => self.handle_generate_zone_config_jwt(req).await,
             "do_active" => self.handel_do_active(req).await,
-            "end_active" => self.handle_end_active(req).await,
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }
     }

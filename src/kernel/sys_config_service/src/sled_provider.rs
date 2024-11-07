@@ -26,7 +26,7 @@ impl KVStoreProvider for SledStore {
             Some(value) => {
                 let result = String::from_utf8(value.to_vec())
                     .map_err(|_err| KVStoreErrors::InternalError("Invalid UTF-8 sequence".to_string()))?;
-                info!("Sled Get key:[{}] value:[{}]", key, result);
+                info!("Sled Get key:[{}] value length:[{}]", key, result.len());
                 Ok(Some(result))
             },
             None => Ok(None)

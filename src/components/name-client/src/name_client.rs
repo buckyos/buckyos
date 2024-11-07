@@ -1,11 +1,13 @@
 #![allow(unused)]
 
+use buckyos_kit::get_buckyos_system_etc_dir;
 use name_lib::*;
 use crate::dns_provider::DNSProvider;  
 use crate::zone_provider::ZoneProvider;
 use crate::name_query::NameQuery;
 use crate::NameInfo;
 
+use log::*;
 
 pub struct NameClientConfig {
     enable_cache: bool,
@@ -18,7 +20,7 @@ impl Default for NameClientConfig {
     fn default() -> Self {
         Self {
             enable_cache: true,
-            local_cache_dir: None,
+            local_cache_dir: Some(get_buckyos_system_etc_dir().join("did_docs").to_string_lossy().to_string()),
             max_ttl: 3600*24*7,
             cache_size: 1024*1024,
         }
@@ -90,8 +92,26 @@ impl NameClient {
             }
         }
 
-        let did_doc = self.name_query.query_did(did).await?;
-
+        let did_doc = self.name_query.query_did(did).await;
+        if did_doc.is_err() {
+            if self.config.local_cache_dir.is_some() {
+                let cache_dir = self.config.local_cache_dir.as_ref().unwrap();
+                let file_path = format!("{}/{}.doc.json",cache_dir,did);
+                let did_doc = std::fs::read_to_string(file_path.as_str());
+                if did_doc.is_ok() {
+                    let did_doc = serde_json::from_str(&did_doc.unwrap());
+                    if did_doc.is_ok() {
+                        info!("load did doc from local cache: {}",file_path);
+                        let did_doc : DeviceConfig = did_doc.unwrap();
+                        let did_doc_value = serde_json::to_value(&did_doc).unwrap();
+                        let encoded_doc = EncodedDocument::JsonLd(did_doc_value);
+                        return Ok(encoded_doc);
+                    }
+                }
+            }
+            return did_doc;
+        }
+        let did_doc = did_doc.unwrap();
         self.doc_cache.insert(did.to_string(), did_doc.clone());
         return Ok(did_doc);
     }

@@ -17,6 +17,7 @@ url = "*"
 rusqlite =  { version = "*", features = ["bundled"] }
 rand = "*"
 once_cell = "*"
+jsonwebtoken = "*"
 
 buckyos-kit = { path = "../../components/buckyos-kit" }
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }

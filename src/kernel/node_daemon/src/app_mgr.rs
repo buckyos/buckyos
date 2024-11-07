@@ -20,7 +20,7 @@ pub struct AppInfo {
     pub app_id : String,
     pub app_name : String,
     pub app_description : String,
-    pub vendor_id : String,
+    pub vendor_did : String,
     pub pkg_id : String,
     pub username: String,
     //service name -> full image url 

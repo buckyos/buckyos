@@ -11,5 +11,7 @@ jsonwebtoken = "*"
 thiserror = "*"
 base64 = "*"
 ed25519-dalek = { version = "*", features = ["rand_core"] } 
+x25519-dalek = "*"
+curve25519-dalek = "*"
 pkcs8 = "*"
 rand = "*"

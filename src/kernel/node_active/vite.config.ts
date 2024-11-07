@@ -4,22 +4,18 @@ import dts from 'vite-plugin-dts'
 
 
 export default defineConfig({
+  root: '.',
   publicDir:'res',
-  optimizeDeps: {
-    exclude: ['@mapbox/node-pre-gyp', 'mock-aws-s3', 'aws-sdk', 'nock']
-  },
   build: {
-    minify: 'terser',
+    outDir: 'dist',
+    minify: false,
     sourcemap: true,
     rollupOptions: {
-      external: ['@mapbox/node-pre-gyp','mock-aws-s3', 'aws-sdk', 'nock'],
-    },
-    lib: {
-      entry: resolve(__dirname,"index.html"),  // 配置入口文件路径
-      name: "node_active",
-      fileName: "node_active",
-      formats: ["es", "umd"], // 打包生成的格式
-    },
+      input: {
+        main: "index.html",
+      }
+    }
+
   },
   resolve: {
     alias: {

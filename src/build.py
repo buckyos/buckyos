@@ -29,16 +29,23 @@ if build_result != 0:
 
 target_dir = os.path.join(temp_dir, "rust_build", project_name,"x86_64-unknown-linux-musl")
 print(f'build success at: {target_dir}')
+print("for buckyos developer: YOU MUST npm build and install buckyos_sdk manually")
 
-sdk_build_dir = os.path.join(build_dir, "kernel/buckyos_sdk")
-sdk_build_cmd = f'cd {sdk_build_dir} && npm i && npm run build'
-os.system(sdk_build_cmd)
+npm_build_dir_active = os.path.join(build_dir, "kernel/node_active")
+npm_build_cmd = f'cd {npm_build_dir_active} && pnpm run build'
+os.system(npm_build_cmd)
+print(f'pnpm build success at: {npm_build_dir_active}')
 
-vite_build_dir = os.path.join(build_dir, "kernel/node_active")
-vite_build_cmd = f'cd {vite_build_dir} && npm i && npm run build'
-os.system(vite_build_cmd)
+npm_build_dir_control_panel = os.path.join(build_dir, "apps/control_panel/src")
+npm_build_cmd = f'cd {npm_build_dir_control_panel} && pnpm run build'
+os.system(npm_build_cmd)
+print(f'pnpm build success at: {npm_build_dir_control_panel}')
 
-print(f'npm build success at: {vite_build_dir}')
+npm_build_dir_sys_test = os.path.join(build_dir, "apps/sys_test")
+npm_build_cmd = f'cd {npm_build_dir_sys_test} && pnpm run build'
+os.system(npm_build_cmd)
+print(f'pnpm build success at: {npm_build_dir_sys_test}')
+
 
 print('copying files to rootfs')
 destination_dir = os.path.join(build_dir, "rootfs/bin")
@@ -74,8 +81,23 @@ os.system(strip_cmd)
 destination_dir = os.path.join(build_dir, "rootfs/bin")
 shutil.copy(os.path.join(build_dir, "killall.py"), destination_dir)
 
-src_dir = os.path.join(vite_build_dir, "dist")
+src_dir = os.path.join(npm_build_dir_active, "dist")
 destination_dir = os.path.join(build_dir, "rootfs/bin/active")
+os.makedirs(destination_dir, exist_ok=True)
+print(f'copying vite build {src_dir} to {destination_dir}')
+shutil.rmtree(destination_dir)
+shutil.copytree(src_dir, destination_dir)
+
+src_dir = os.path.join(npm_build_dir_control_panel, "dist")
+destination_dir = os.path.join(build_dir, "rootfs/bin/control_panel")
+os.makedirs(destination_dir, exist_ok=True)
+print(f'copying vite build {src_dir} to {destination_dir}')
+shutil.rmtree(destination_dir)
+shutil.copytree(src_dir, destination_dir)
+
+src_dir = os.path.join(npm_build_dir_sys_test, "dist")
+destination_dir = os.path.join(build_dir, "rootfs/bin/sys_test")
+os.makedirs(destination_dir, exist_ok=True)
 print(f'copying vite build {src_dir} to {destination_dir}')
 if os.path.exists(destination_dir):
     shutil.rmtree(destination_dir)
