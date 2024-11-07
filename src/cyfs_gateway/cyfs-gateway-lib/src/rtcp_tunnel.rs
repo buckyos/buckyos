@@ -717,17 +717,18 @@ impl RTcpTunnel {
                 RTcpTunnelPackage::send_hello_stream(&mut rtcp_stream,ropen_package.body.streamid.as_str()).await?;
                 let aes_key = self.get_key().clone();
                 //4. 绑定两个stream
-                ;
-
                 task::spawn(async move {
                     let mut aes_stream = EncryptedStream::new(rtcp_stream, &aes_key,&nonce_bytes);
+                    info!("start copy aes_rtcp_stream to raw_tcp_stream,aes_key:{},nonce_bytes:{}",hex::encode(aes_key),hex::encode(nonce_bytes));
                     let _copy_result = tokio::io::copy_bidirectional(&mut aes_stream,&mut raw_stream_to_target).await;
                     if _copy_result.is_err() {
                         error!("copy aes_rtcp_stream to raw_tcp_stream error:{}",_copy_result.err().unwrap());
+                    } else {
+                        let copy_len = _copy_result.unwrap();
+                        info!("copy aes_rtcp_stream to raw_tcp_stream ok,len:{:?}",copy_len);
                     }
                 });
 
-       
                 return Ok(());
             },
             RTcpTunnelPackage::ROpenResp(ropen_resp_package) => {
@@ -842,7 +843,7 @@ impl Tunnel for RTcpTunnel {
             //wait new stream with session_key fomr target
             let stream = self.wait_ropen_stream(&session_key.as_str()).await?;
             let aes_stream = EncryptedStream::new(stream, &self.get_key(),&random_bytes);
-
+            info!("wait ropen stream ok,return aes stream: aes_key:{},nonce_bytes:{}",hex::encode(self.get_key()),hex::encode(random_bytes));
             Ok(Box::new(aes_stream))
         }
     }
@@ -951,7 +952,7 @@ impl RTcpStack {
         let my_public_hex = my_public.encode_hex();
         //info!("my_public_hex: {:?}",my_public_hex);
         let aes_key = RTcpStack::generate_aes256_key(my_secret,remote_x25519_pk);
-        //info!("aes_key: {:?}",aes_key);
+        info!("aes_key: {:?}",aes_key);
         //create jwt by tunnel token payload
         let tunnel_token_payload = TunnelTokenPayload {
             to: remote_did_id,
@@ -1008,7 +1009,7 @@ impl RTcpStack {
             .map_err(|op| TunnelError::ReasonError(format!("decode remote x25519 hex error")))?;
         //info!("remomte_x25519_pk: {:?}",remomte_x25519_pk);
         let aes_key = RTcpStack::get_aes256_key(this_private_key,remomte_x25519_pk.clone());
-        //nfo!("aes_key: {:?}",aes_key);
+        info!("aes_key: {:?}",aes_key);
         Ok((aes_key,remomte_x25519_pk))
     }
 

@@ -7,10 +7,9 @@
     }
 
     .button-container {
-        position: absolute;
-        bottom: 24px;
-        left: 50%;
-        transform: translateX(-50%);
+        display: flex;
+        justify-content: center; 
+        align-items: center;
     }
 </style>
 <div class="frame">

@@ -11,7 +11,7 @@ import '@material/web/radio/radio.js';
 import '@material/web/textfield/outlined-text-field.js';
 import '@material/web/textfield/filled-text-field.js';
 import "./components/checkbox/index";
-import {WizzardDlg} from './components/wizzard-dlg/index';
+import {BuckyWizzardDlg} from './components/wizzard-dlg/index';
 
 import "./dlg/config_gateway_dlg";
 import "./dlg/config_zone_id_dlg";
@@ -24,6 +24,7 @@ import {GatewayType, ActiveWizzardData} from './active_lib';
 //after dom loaded
 window.onload = async () => {
     const wizzard_data : ActiveWizzardData = {
+        is_direct_connect : false,
         sn_active_code : "",
         sn_user_name : "",
         gatewy_type : GatewayType.BuckyForward,
@@ -39,7 +40,7 @@ window.onload = async () => {
         sn_host : "",
     }
     
-    const activeWizzard = document.getElementById('active-wizzard') as WizzardDlg;
+    const activeWizzard = document.getElementById('active-wizzard') as BuckyWizzardDlg;
     activeWizzard.wizzard_data = wizzard_data;
     //activeWizzard.pushDlg(document.createElement('config-gateway-dlg'));
 }

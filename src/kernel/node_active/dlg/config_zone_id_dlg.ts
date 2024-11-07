@@ -58,7 +58,7 @@ class ConfigZoneIdDlg extends HTMLElement {
     connectedCallback() {
         const activeWizzard = document.getElementById('active-wizzard') as WizzardDlg;
         var wizzard_data:ActiveWizzardData = activeWizzard.wizzard_data;
-        if(wizzard_data.owner_public_key != ""){
+        if(wizzard_data.owner_public_key == ""){
             console.log("generate owner key pair");
             generate_key_pair().then((data) => {
                 wizzard_data.owner_public_key = data[0];
@@ -87,7 +87,7 @@ class ConfigZoneIdDlg extends HTMLElement {
             }
         }
 
-        
+
         txt_name.addEventListener('input', (event) => {
             txt_name.error = false;
             txt_name.errorText = "";

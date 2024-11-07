@@ -31,16 +31,16 @@
                 {{else}}
                 <li>访问域名: <a href="http://{{sn_user_name}}.web3.buckyos.io">http://{{sn_user_name}}.web3.buckyos.io</a> </li>
                 {{/if}}
-                {{#if (eq gatewy_type "BuckyForward")}}
-                <li>访问链路:使用buckyos.io提供的Web3网桥</li>
-                {{else}}
+                {{#if is_direct_connect}}
                 <li>访问链路:直接连接到您的Personal Server</li>
+                {{else}}
+                <li>访问链路:使用buckyos.io提供的Web3网桥</li>
                 {{/if}}
             </ul>
         </div>
         <p>请妥善保管以下私钥,激活后将无法查看!</p>
-        <p>私钥丢失后将无法激活,激活后将无法查看!</p>
-
+        <p>私钥丢失后将无法找回,会造成不可挽回的损失,请务必妥善保管.</p>
+        <p>私钥泄露后会造成数据或财产的损失,因此请使用非电子方式保管秘钥.</p>
         <md-filled-text-field id="txt_private_key" type="textarea" label="Owner Private Key" disabled="true"
         value="{{owner_private_key}}"
         rows="5">

@@ -42,7 +42,11 @@
                     }
                 },
                 "*":{
-                    "tunnel_selector":"main_sn"
+                    "routes": {
+                        "/":{
+                            "tunnel_selector":"main_sn"
+                        }
+                    }
                 }
             }
         },

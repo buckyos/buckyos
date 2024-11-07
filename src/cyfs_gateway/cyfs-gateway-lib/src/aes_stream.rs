@@ -1,10 +1,17 @@
 use aes::cipher::{KeyIvInit, StreamCipher};
+use cipher::StreamCipherSeek;
 use ctr::Ctr128BE;
+use rand::thread_rng;
+
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use futures::ready;
 use log::*;
+use rand::Rng;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 // 定义AES-256 CTR模式类型
 pub type AesCtr = Ctr128BE<aes::Aes256>;
@@ -31,22 +38,12 @@ impl<S: AsyncRead + Unpin> AsyncRead for EncryptedStream<S> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        // 读取新的数据
-        let mut temp_buf = vec![0u8; buf.remaining()];
-        let mut temp_read_buf = ReadBuf::new(&mut temp_buf);
-        
-        ready!(Pin::new(&mut self.inner).poll_read(cx, &mut temp_read_buf))?;
-        
-        if temp_read_buf.filled().is_empty() {
-            return Poll::Ready(Ok(()));
+        let original_filled = buf.filled().len();
+        ready!(Pin::new(&mut self.inner).poll_read(cx, buf))?;
+        let newly_filled = &mut buf.filled_mut()[original_filled..];
+        if !newly_filled.is_empty() {
+            self.decrypt_cipher.apply_keystream(newly_filled);
         }
-
-        // 解密数据
-        let block = temp_read_buf.filled_mut();
-        self.decrypt_cipher.apply_keystream(block);
-        //info!("aes stream decrypted data: {}", block.len());
-        
-        buf.put_slice(block);
         Poll::Ready(Ok(()))
     }
 }
@@ -57,18 +54,29 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for EncryptedStream<S> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
+        let write_nonce = thread_rng().gen::<u64>();
         let mut encrypted = buf.to_vec();
-        self.encrypt_cipher.apply_keystream(&mut encrypted); // 使用encrypt_cipher进行加密
-        //info!("aes stream encrypted data: {}", encrypted.len());
-        match ready!(Pin::new(&mut self.inner).poll_write(cx, &encrypted)) {
-            Ok(n) => {
-                if n < encrypted.len() {
-                    Poll::Ready(Ok(n))
-                } else {
-                    Poll::Ready(Ok(buf.len()))
+        let org_pos:usize = self.encrypt_cipher.current_pos();
+        self.encrypt_cipher.apply_keystream(&mut encrypted);
+        //info!("{} aes stream encrypted data: [{}-{}]", write_nonce, org_pos, org_pos+buf.len());
+        
+        match Pin::new(&mut self.inner).poll_write(cx, &encrypted) {
+            Poll::Ready(Ok(written)) => {
+                if written < encrypted.len() {
+                    warn!("{} aes stream encrypted data partial write, expect:{} actual:{},seek_pos:{}", 
+                        write_nonce,encrypted.len(), written,org_pos+written); 
+                    self.encrypt_cipher.seek(org_pos+written);
                 }
+                //info!("{} aes stream encrypted data write OK: [{}-{}]", write_nonce, org_pos, org_pos+written);
+                return Poll::Ready(Ok(written));
+            },
+            Poll::Ready(Err(e)) => {
+                return Poll::Ready(Err(e));
+            },
+            Poll::Pending => {
+                self.encrypt_cipher.seek(org_pos);
+                return Poll::Pending;
             }
-            Err(e) => Poll::Ready(Err(e))
         }
     }
 

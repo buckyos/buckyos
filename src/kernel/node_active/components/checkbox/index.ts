@@ -2,7 +2,7 @@
 import templateContent from './checkbox.template?raw';
 import {MdCheckbox} from '@material/web/checkbox/checkbox.js';
 
-class BuckyCheckBox extends HTMLElement {
+export class BuckyCheckBox extends HTMLElement {
     _checked: boolean;
     _disabled: boolean;
     _lable: string;
@@ -93,5 +93,3 @@ class BuckyCheckBox extends HTMLElement {
 }
 
 customElements.define("bucky-checkbox", BuckyCheckBox);
-
-export {BuckyCheckBox};

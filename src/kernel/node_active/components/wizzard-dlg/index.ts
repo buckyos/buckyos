@@ -3,7 +3,7 @@ import {MdOutlinedIconButton} from '@material/web/iconbutton/outlined-icon-butto
 
 //该组件，可以往里push dlg(另一个component).当有dlg时，左上角有back按钮。每次push时，当前的dlg会往左淡出，新的dlg从右边进场。 
 
-class WizzardDlg extends HTMLElement {
+export class BuckyWizzardDlg extends HTMLElement {
     private dlgStack: HTMLElement[] = [];
     public wizzard_data: any = {};
 
@@ -90,6 +90,6 @@ class WizzardDlg extends HTMLElement {
     }
 }
 
-customElements.define('bucky-wizzard-dlg', WizzardDlg);
+customElements.define('bucky-wizzard-dlg', BuckyWizzardDlg);
 
-export {WizzardDlg};
+

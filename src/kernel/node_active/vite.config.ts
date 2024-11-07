@@ -4,15 +4,16 @@ import dts from 'vite-plugin-dts'
 
 
 export default defineConfig({
+  root: '.',
   publicDir:'res',
-  optimizeDeps: {
-    exclude: ['@mapbox/node-pre-gyp', 'mock-aws-s3', 'aws-sdk', 'nock']
-  },
   build: {
-    minify: 'terser',
+    outDir: 'dist',
+    minify: false,
     sourcemap: true,
     rollupOptions: {
-      external: ['@mapbox/node-pre-gyp','mock-aws-s3', 'aws-sdk', 'nock'],
+      input: {
+        main: "index.html",
+      }
     }
 
   },

@@ -9,6 +9,7 @@ type JsonValue = Record<string, any>;
 
 export type ActiveWizzardData = {
     gatewy_type : GatewayType;
+    is_direct_connect : boolean;
 
     sn_active_code : string;
     sn_user_name : string;
