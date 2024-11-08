@@ -14,10 +14,15 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: "latest"
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '22.x'
+        cache: 'pnpm'
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
@@ -27,23 +32,26 @@ jobs:
       run: |
         sudo apt update
         sudo apt install -y musl-tools gcc-aarch64-linux-gnu
-    - name: build bin
+    - name: build web apps
       working-directory: ./src
-      run: python3 build.py
+      run: python3 scripts/build_web_apps.py
+    - name: build x64 bin
+      working-directory: ./src
+      run: python3 scripts/build.py x64 --no-build-web-apps
     - name: make deb
       working-directory: ./src
-      run: python3 make_deb.py ${{inputs.version}}
+      run: python3 scripts/make_deb.py amd64 ${{inputs.version}}
     - name: build aarch64 bin
       working-directory: ./src
-      run: python3 build_arm.py
+      run: python3 scripts/build.py aarch64 --no-build-web-apps
     - name: make aarch64 deb
       working-directory: ./src
-      run: python3 make_deb_arm.py ${{inputs.version}}
+      run: python3 scripts/make_deb.py aarch64 ${{inputs.version}}
     - name: Upload deb
       uses: actions/upload-artifact@v4
       with:
         name: buckyos-x86_64-${{inputs.version}}.deb
-        path: ./src/buckyos.deb
+        path: ./src/buckyos_amd64.deb
         if-no-files-found: error
     - name: Upload aarch64 deb
       uses: actions/upload-artifact@v4
