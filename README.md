@@ -1,4 +1,103 @@
-# BuckyOS Launch!
+# BuckyOS Alpha1 Launch!
+
+This is our first public preview release for developers. After countless days and nights of development and testing, BuckyOS is now ready to meet the world. Although the Alpha1 version is not perfect, it represents our vision and showcases some of our core ideas and technical implementations for a distributed operating system.
+
+The goal of Alpha1 is to bring the BuckyOS kernel from design to reality, so there may not be "too many features" from the user's perspective just yet:
+
+- BuckyOS is an easy-to-install personal server (cluster).
+- The system includes three applications, with FileBrowser as the default app, allowing you to browse files on your personal server through a mobile-friendly webpage.
+- You can use your own domain or a subdomain of `web3.buckyos.io` (our test Web3 bridge) to access your personal server from anywhere.
+- Uses the `rtcp` protocol (part of the CYFS protocol family) for `did-based zero-trust reverse connections`, allowing HTTP access to personal servers behind NAT.
+
+Of course, Alpha1 is just the beginning, and we know it's far from perfect. We would love to hear your feedback, whether it's about bugs, suggestions, or ideas for future features. Every voice matters to us.
+
+Join us on this journey! Please feel free to submit issues or pull requests! Let's build the next generation of distributed operating systems together!
+
+## Let's Get Started
+
+### No Docker Installation Method
+
+We know everyone loves Docker!
+
+However, since BuckyOS can be considered a "home Kubernetes that requires no professional maintenance," it relies on container technology but shouldn't run inside Docker itself. To provide a Docker-like experience, BuckyOS releases all binaries as statically linked files, so in 99% of cases, you won't face "environment issues."
+
+### Installing from deb
+
+Suitable for x86_64 Linux distributions using apt and WSL2. Depending on your internet speed, the process takes around 5-10 minutes.
+
+Run the following command to download and install buckyos.deb:
+
+```bash
+wget http://web3.buckyos.io/static/buckyos.deb && apt install ./buckyos.deb
+```
+
+If you're installing on ARM devices like Raspberry Pi, use buckyos_aarch64.deb:
+
+```bash
+wget http://web3.buckyos.io/static/buckyos_aarch64.deb && apt install ./buckyos_aarch64.deb
+```
+
+The installation process will automatically download dependencies and default application Docker images, so make sure you have a stable internet connection that can access apt/pip/Docker repositories.
+
+During installation, you may see some permission errors, but most of them are not significant. After installation, open your browser and go to:
+
+```
+http://<your_server_ip>:3180/index.html
+```
+
+You will see the BuckyOS startup setup page, follow the instructions to complete the setup, and you're good to go! During the Alpha testing phase, using the `web3.buckyos.io` relay and D-DNS services requires an invitation code, which you can obtain from our issue page. (If you have your own domain and have set up port forwarding on your router, you don't need any of the services from `web3.buckyos.io` and can try it without an invitation code.)
+
+### Common Installation Issues
+
+Due to limited resources, we've only tested buckyos.deb on mainstream Linux distributions. If you encounter dependency issues during the apt installation, try forcing the installation with the following command:
+
+```bash
+dpkg -i --force-depends ./buckyos.deb
+```
+
+After forcing the installation, run the following command to check if the installation was successful:
+
+```bash
+sudo /opt/buckyos/bin/node_daemon --enable_active
+```
+
+BuckyOS only depends on Python3, Docker, and the Python3 Docker library, which is common in most engineers' Linux environments.
+BuckyOS uses systemd to register services, but if your Linux system lacks systemd, you can manually register the above startup command with your service management system.
+
+### Overwriting Installation
+
+Due to limited resources, we haven't yet implemented rigorous overwriting installation logic. If you need to overwrite an existing installation, manually retain the `/opt/buckyos/etc` directory and the `/opt/buckys/data` directory.
+
+## Installing from a Virtual Machine
+
+We are preparing related images to support running BuckyOS on Windows, macOS, and major NAS brands that do not have WSL environments. We promise to complete this work before the Alpha2 release.
+
+## Installing from Source Code
+
+Installing from source is a great way to learn more about BuckyOS and is the first step towards contributing. By installing from source, you can also install BuckyOS on macOS.
+
+(Needs improvement: The current script doesn't include building the development environment. You'll need to install Rust toolchain, pkg-config, OpenSSL, etc.)
+
+```bash
+git clone https://github.com/buckyos/buckyos.git && cd buckyos && python3 build_env.py && python3 build.py && python3 make_deb.py
+```
+
+If you want to build an installation package for Raspberry Pi from source, execute:
+
+```bash
+python3 build_env.py && python3 build_arm.py && python3 make_deb_arm.py
+```
+
+Once the build script completes, the installation is done on your local machine (for convenience, it includes test identity information by default). Run the following commands to start BuckyOS in its initial state:
+
+```bash
+sudo rm /opt/buckyos/etc/*.pem
+sudo rm /opt/buckyos/etc/*.toml
+sudo /opt/buckyos/bin/node_daemon --enable_active
+```
+
+In fact, `build.py` is the script we use most often during daily development.
+
 
 ## Why BuckyOS?
 
@@ -248,14 +347,14 @@ Currently, the BuckyOS DAO contract plans to deploy on Polygon, with a total of 
 
 #### 2024
 - **0.1 Demo:** 2.5% (Done)
-- **0.2 PoC:** 2.5%
-- **0.3 Pre-Alpha:** 5% (First complete version)
-- **0.4 Alpha:** 2.5% (2024 Q4)
+- **0.2 PoC:**  2.5% (Done)
+- **0.3 Alpha1:** 5% (First version)
+- **0.4 Alpha2:** 2.5% (2024 Q4)
 
 #### 2025
-- **0.5 Beta:** 2.5%
-- **0.6 RC:** 5% (First public release version)
-- **0.7 First Release:** 2.5% (2025 Q3)
+- **0.5 Alpha3:** 2.5% (2025Q1 First Public Test)
+- **0.6 Beta** 5% (First public release version)
+- **0.7 Release:** 2.5% (2025 Q3)
 
 ## License
 

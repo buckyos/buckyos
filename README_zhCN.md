@@ -1,4 +1,113 @@
-# BuckyOS 启动！
+# BuckyOS Alpha1 发布
+
+这是我们面向开发者的首个公开预览版本。经过无数个昼夜的开发和测试，BuckyOS 终于和大家见面了。Alpha1 版本虽然还不完善，但它代表了我们的愿景，展示了我们对分布式操作系统的一些核心理念和技术实现。
+
+Alpha1 的目标是将 BuckyOS 的内核从设计图纸走向实际应用，因此目前可能还没有“太多的功能”：
+- BuckyOS 是易于安装和设置的个人服务器（集群）。
+- 系统内置了三个应用，其中 FileBrowser 是默认应用，可以通过手机友好的网页来浏览个人服务器上的文件。
+- 可以选择使用自有域名或 `web3.buckyos.io`（测试用 Web3 网桥）的二级域名，从任何地方访问你的个人服务器。
+- 通过 `rtcp` 协议（来自 CYFS 协议族）实现基于身份（DID）的反向连接中转，让 NAT 后的个人服务器也可以被 HTTP 访问。
+
+当然，Alpha1 只是一个起点，我们知道它还不完美。我们非常期待你的反馈，无论是 bug、建议，还是对未来功能的想法，都非常宝贵。
+
+快来加入我们的旅程吧！欢迎你提出 Issue 或提交 PR！让我们一起打造下一代分布式操作系统！
+
+## 功能介绍
+
+BuckyOS Alpha1 是面向开发者发布的首个版本。我们计划在未来 3-4 个月内完成 BuckyOS 的 Alpha 版发布。按计划，Alpha2 将是面向消费者的首个版本，Alpha3 将是第一个集成 AI 功能（OpenDAN）的版本。
+
+目前版本的核心是让 BuckyOS 的内核从设计走向实际，因此从用户的角度看，暂时可能没有“太多的功能”：
+
+- BuckyOS 是易于安装和设置的个人服务器（集群）。
+- 系统内置了三个应用，其中 FileBrowser 是默认应用，可以通过手机友好的网页来浏览个人服务器上的文件。
+- 可以选择使用自有域名或 `web3.buckyos.io`（测试用 Web3 网桥）的二级域名，从任何地方访问你的个人服务器。
+- 通过 `rtcp` 协议（来自 CYFS 协议族）实现基于身份（DID）的反向连接中转，让 NAT 后的个人服务器也可以被 HTTP 访问。
+
+## 让我们开始吧
+
+### 没有 Docker 安装 :(
+
+我们知道大家喜欢 Docker！
+
+但由于 BuckyOS 本身可以看作一个“无需专业运维的家庭 K8S”，它依赖容器技术，但不应该运行在 Docker 中。为了实现类似 Docker 的体验，BuckyOS 采用静态链接的方式发布所有的二进制文件，99% 的情况下你不会遇到“环境问题”。
+
+### 从 deb 安装
+
+适用于使用 apt 的 x86_64 Linux 发行版和 WSL2，视网速全程大概需要 5-10 分钟。
+
+运行以下命令下载并安装 buckyos.deb：
+
+```bash
+wget http://web3.buckyos.io/static/buckyos.deb && apt install ./buckyos.deb
+```
+
+如果要在树莓派等 ARM 设备上安装，请使用 buckyos_aarch64.deb：
+
+```bash
+wget http://web3.buckyos.io/static/buckyos_aarch64.deb && apt install ./buckyos_aarch64.deb
+```
+
+安装过程会自动下载依赖和默认应用的 Docker 镜像，因此请确保在安装过程中网络连接稳定，能够访问 apt/pip/Docker 仓库。
+
+安装过程中可能会出现一些权限错误，大部分都是无关紧要的。安装完成后，使用浏览器打开：
+
+```
+http://<your_server_ip>:3180/index.html
+```
+
+你将看到 BuckyOS 的启动设置页面，按提示完成设置后即可开始使用！目前 Alpha 测试阶段使用 `web3.buckyos.io` 的中转服务和 D-DNS 服务需要邀请码，可以在我们的 Issue 页面找到获取邀请码的方法。（如果你有自己的域名并配置了路由器的端口转发，就不依赖 `web3.buckyos.io` 的任何服务，无需邀请码即可试用）。
+
+### 常见安装问题解决方法
+
+由于我们的精力有限，目前只在主流 Linux 发行版上测试了 buckyos.deb。如果在安装 apt 的过程中遇到依赖问题，可以尝试以下命令强制安装：
+
+```bash
+dpkg -i --force-depends ./buckyos.deb
+```
+
+强制安装后，运行以下命令检查是否安装成功：
+
+```bash
+sudo /opt/buckyos/bin/node_daemon --enable_active
+```
+
+BuckyOS 的运行只依赖 Python3、Docker 以及 Python3 的 Docker 库，这对大多数工程师的 Linux 环境来说都是现成的。
+BuckyOS 使用 systemd 注册服务，如果你的 Linux 没有 systemd，可以手动将上述启动命令注册到你的服务管理系统。
+
+### 覆盖安装
+
+目前由于精力有限，我们尚未实现严谨的覆盖安装逻辑。因此如果你需要覆盖安装，请手动保留 `/opt/buckyos/etc` 目录和 `/opt/buckys/data` 目录。
+
+## 从虚拟机安装
+
+我们正在准备相关的镜像，以支持在没有 WSL 环境的 Windows、macOS 以及主流品牌 NAS 设备上运行 BuckyOS。我们承诺会在 Alpha2 发布前完成这项工作。
+
+## 从源代码安装
+
+通过源码安装可以更好地了解 BuckyOS，是参与开发的第一步。通过源码安装，你也可以将 BuckyOS 安装在 macOS 上。
+
+（需要完善：目前的脚本中没有包含开发环境的构建，需要安装 Rust 工具链、pkg-config、OpenSSL 等库）
+
+```bash
+git clone https://github.com/buckyos/buckyos.git && cd buckyos && python3 build_env.py && python3 build.py && python3 make_deb.py
+```
+
+如果要从源码构建树莓派的安装包，请执行：
+
+```bash
+python3 build_env.py && python3 build_arm.py && python3 make_deb_arm.py
+```
+
+在 build 脚本执行完成后，本机已完成安装（为了方便开发，默认包含测试用的身份信息）。通过以下命令可以以初始状态运行 BuckyOS：
+
+```bash
+sudo rm /opt/buckyos/etc/*.pem
+sudo rm /opt/buckyos/etc/*.toml
+sudo /opt/buckyos/bin/node_daemon --enable_active
+```
+
+事实上，`build.py` 是日常开发中最常用的脚本。
+
 
 
 ## Why BuckyOS?
@@ -286,15 +395,15 @@ Basic Operation Process
 基本思路：基本按一个季度一个版本来，每年有一个主版本 5% Token
 ```
 ---- 2024年 ----
-0.1 Demo            2.5% (Done)
-0.2 PoC             2.5% 
-0.3 Pre-Alpha       5% （首个完整版本）
-0.4 Alpha           2.5% (2024Q4）
+0.1 Demo             2.5% (Done)
+0.2 PoC              2.5% (Done)
+0.3 Alpha1           5% （首个集成版本）
+0.4 Alpha2           2.5% (2024Q4）
 
 ---- 2025年 ----
-0.5 Beta            2.5%
-0.6 RC              5% （首个公共发布版本）
-0.7 First Release!  2.5% （2025年Q3）
+0.5 Alpha3            2.5% (2025 Q1,首个公开测试版本)
+0.6 Beta              5% （首个产品级发布版本）
+0.7 Release!  2.5% （2025年Q3）
 ```
 
 ## 许可证
