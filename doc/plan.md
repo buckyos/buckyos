@@ -22,7 +22,7 @@ This phase is planned to be completed in 2024 through the following minor versio
 
 - **0.1 Demo:** 2.5% (Done)
 - **0.2 PoC :** 2.5% (Internal Release ,Done)
-- **0.3 Pre-Alpha1:** 5% (Last Release!)
+- **0.3 Pre-Alpha1:** 2.5% (Last Release!)
 - **0.4 Alpha2:** 2.5% (🔥🔥🔥 `Current Version` Available for user testing, Q4 2024)
 
 ### Phase 2: Integration of AI (Beta, Q2 2025)
@@ -146,6 +146,7 @@ Functions marked with `*` are those I believe must be completed in the next rele
     - [x] kRPC Client (A1,@waterflier)
     - [ ] *File Share Client
     - [ ] Payment Gateway
+- *BuckyOS offical website (S2)
 - DCFS Formal architecture design is ongoing based on the Demo phase research results.
 
 

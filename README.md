@@ -348,11 +348,11 @@ Currently, the BuckyOS DAO contract plans to deploy on Polygon, with a total of 
 #### 2024
 - **0.1 Demo:** 2.5% (Done)
 - **0.2 PoC:**  2.5% (Done)
-- **0.3 Alpha1:** 5% (First version)
+- **0.3 Alpha1:** 2.5% (First version)
 - **0.4 Alpha2:** 2.5% (2024 Q4)
 
 #### 2025
-- **0.5 Alpha3:** 2.5% (2025Q1 First Public Test)
+- **0.5 Alpha3:** 5% (2025Q1 First Public Test)
 - **0.6 Beta** 5% (First public release version)
 - **0.7 Release:** 2.5% (2025 Q3)
 
