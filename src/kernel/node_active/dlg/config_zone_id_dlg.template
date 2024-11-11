@@ -8,8 +8,8 @@
 
     .button-container {
         display: flex;
-        justify-content: center; /* 水平居中 */
-        align-items: center; /* 如果需要垂直居中也可以加上这行 */
+        justify-content: center; 
+        align-items: center;
     }
 
     md-filled-text-field {
@@ -21,12 +21,12 @@
     <h3>2. 设置访问Personal Server使用的域名</h3>
     <p>您的名字:</p>
     <md-outlined-text-field id="txt_name" placeholder="用户名" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
-    <p>下面基于您的用户名构建域名,域名一旦创建无法修改!</p>
+    <p>基于您的名字构建的域名,创建后无法修改!</p>
     <div class="container">
-        <bucky-checkbox id="chk_use_buckyos_name" lable="使用buckyos.io提供的Web3网桥服务" check="true"></bucky-checkbox>
+        <bucky-checkbox id="chk_use_buckyos_name" lable="使用buckyos.io的二级域名" check="true"></bucky-checkbox>
         <div>* 激活完成后,您将通过下面域名访问您的Personal Server</div> 
         <div id="show_buckyos_name"> - http://$name.web3.buckyos.io </div>
-        <div>- Alpha测试期间,免费使用buckyos.io的Web3网桥服务需要邀请码:</div>
+        <div>- Alpha测试期间,使用buckyos.io的二级域名服务需要邀请码:</div>
         <md-outlined-text-field id="txt_bucky_sn_token"  placeholder="请输入邀请码" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
     </div>
     <p></p>
@@ -34,10 +34,9 @@
         <bucky-checkbox id="chk_use_self_name" lable="使用自己拥有的域名"></bucky-checkbox>
         <md-outlined-text-field id="txt_domain" placeholder="输入将使用的域名" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
         <div style="margin-top: 0px; margin-left: 28px;">
-        <p>您需要购买一个域名,并在域名提供商处设置以下解析记录:</p>
+        <p>您需要通过域名提供商进行以下设置:</p>
         <ul>
-        <li>设置A记录: 设置为您的Personal Server的公网IP</li>
-        <li>设置CNAME: 如果您使用buckyos.io的Web3网桥,则不设置A地址,配置CNAME到web3.buckyos.io</li>
+        <li id="txt_dns_tip">设置A记录: 设置为您的Personal Server的公网IP</li>
         <li>设置TXT记录: 为您的域名添加TXT记录,值为:<a id="copyButton" href="#">(复制)</a></li>
         </ul>
         <md-filled-text-field id="txt_zone_id_value" type="textarea" label="TXT Record" disabled="true"

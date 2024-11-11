@@ -1,0 +1,15 @@
+{
+    "did": "did:dev:8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no",
+    "name": "web3.buckyos.io",
+    "device_type": "server",
+    "ip": "23.239.23.54",
+    "net_id": "wan",
+    "auth_key": {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no"
+    },
+    "iss": "did:bns:buckyos",
+    "exp": 2044721109,
+    "iat": 1729361109
+  }

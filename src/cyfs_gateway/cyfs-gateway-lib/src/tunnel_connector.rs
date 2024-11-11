@@ -83,26 +83,30 @@ impl Service<Uri> for TunnelConnector {
 
     fn call(&mut self, uri: Uri) -> Self::Future {
         Box::pin(async move {
-            info!("HTTP upstream TunnelConnector will open stream to {}", uri.to_string());
-            let target = Url::parse(uri.to_string().as_str()).map_err(|e| Box::new(e) as Box<dyn StdError + Send + Sync>)?;
-            let tunnel_host = target.host();
-            let target_port = target.port();
-            if tunnel_host.is_none() {
-                warn!("TunnelConnector Get tunnel failed! {}", "tunnel host is none");
-                return Err(anyhow::anyhow!("TunnelConnector Get tunnel failed!").context("tunnel host is none").into()); 
-            }
+            //info!("HTTP upstream TunnelConnector will open stream to {}", uri.to_string());
+            // let target = Url::parse(uri.to_string().as_str())
+            //     .map_err(|e| Box::new(e) as Box<dyn StdError + Send + Sync>)?;
 
-            let tunnel_host = tunnel_host.unwrap();
-            let tunnel_url = format!("rtcp://{}",tunnel_host);
-            let tunnel_url = Url::parse(&tunnel_url).unwrap();
-            let target_tunnel = get_tunnel(&tunnel_url, None).await;
+            // let tunnel_host = target.host();
+            // let target_port = target.port();
+            // if tunnel_host.is_none() {
+            //     warn!("TunnelConnector Get tunnel failed! {}", "tunnel host is none");
+            //     return Err(anyhow::anyhow!("TunnelConnector Get tunnel failed!").context("tunnel host is none").into()); 
+            // }
+
+            // let tunnel_host = tunnel_host.unwrap();
+            // let tunnel_url = format!("rtcp://{}",tunnel_host);
+            // let tunnel_url = Url::parse(&tunnel_url).unwrap();
+            let target_url = Url::parse(uri.to_string().as_str()).unwrap();
+            let target_tunnel = get_tunnel(&target_url, None).await;
             if let Err(err) = target_tunnel {
                 warn!("TunnelConnector Get tunnel failed! {}", err);
                 return Err(Box::new(err) as Box<dyn StdError + Send + Sync>);
             }
+            let target_port = uri.port_u16().unwrap_or(80);
             let target_tunnel = target_tunnel.unwrap();
             //info!("TunnelConnector Get tunnel OK! {}", target.to_string());
-            let target_stream = target_tunnel.open_stream(target_port.unwrap_or(80)).await
+            let target_stream = target_tunnel.open_stream(target_port).await
                 .map_err(|e| Box::new(e) as Box<dyn StdError + Send + Sync>)?;
             Ok(TunnelStreamConnection::new(target_stream))
         })

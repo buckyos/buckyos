@@ -7,50 +7,46 @@
     }
 
     .button-container {
-        position: absolute;
-        bottom: 24px;
-        left: 50%;
-        transform: translateX(-50%);
+        display: flex;
+        justify-content: center; 
+        align-items: center;
     }
 </style>
 <div class="frame">
-    <h3>1. 设置访问Personal Server使用的链路</h3>
+    <h3>1. 设置Personal Server的访问链路</h3>
     <div class="container">
         <bucky-checkbox id="chk_enable_bucky_forward" lable="使用buckyos.io提供的中转服务" check="true"></bucky-checkbox>
         <div style="margin-top: 0px; margin-left: 28px;">
             * 通过buckyos.io的Web3网桥中转流量到 Personal Server.
             <p>
-                - 无需进行任何设置,让您的Personal Server拥有稳定的可访问性。
+                - 简单配置即可让您的Personal Server拥有稳定的公网可访问性。
             </p>
             <p>
-                - 启用后,Personal Server的公网访问性能会有一定的影响。
+                - Personal Server的公网访问性能会受到中转服务器可用带宽的影响。
             </p>
-            <p>- Alpha测试期间,免费使用buckyos.io的Web3网桥服务需要邀请码:</p>
+            <p>- Alpha测试期间,使用buckyos.io的中转服务需要邀请码:</p>
         </div>
 
         <md-outlined-text-field id="txt_bucky_sn_token" placeholder="请输入邀请码" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
     </div>
     <p></p>
     <div class="container">
-        <bucky-checkbox id="chk_enable_port_forward" lable="我已配置好到Personal Server的端口映射"'></bucky-checkbox>
-        <div style="margin-top: 0px; margin-left: 28px;">* 启动端口映射后流量将<b>不经过任何中转</b>到达 Personal Server</div>
-        <div style="margin-top: 0px; margin-left: 28px;">&nbsp;&nbsp;开启端口映射的方法:(如您不能完全理解下面含义请不要选择此项):
+        <bucky-checkbox id="chk_enable_port_forward" lable="不使用中转服务,直连Personal Server"'></bucky-checkbox>
+        <div style="margin-top: 0px; margin-left: 28px;">* 选择后公网访问将<b>不经过任何中转</b>到达 Personal Server</div>
+        <div style="margin-top: 0px; margin-left: 28px;">&nbsp;&nbsp;请再次确认您的网络环境是否满足以下条件:(如您不能完全理解下面选项的含义请不要选择此项):
             <ul style="margin-top: 12px;">
-                <li>路由器拨号后拥有一个公网IPv4地址</li>
-                <li>将路由器的80,443 端口映射到Personal Server的80,443 端口</li>
-                <li>如使用其它D-DNS服务,请确认路由器上的相关服务已开启</li>
-                <li>如果Personal Server运行在公网上,拥有独立公网IP,选择此项</li>
+                <li>我的路由器拨号后拥有一个公网IPv4地址</li>
+                <li>我已经将路由器的80,443 端口映射到Personal Server的80,443 端口</li>
+                <li>Personal Server运行在有固定IP的VPS上,无需设置路由器</li>
             </ul>
         </div>
-
-
     </div>
     <div class="container">
-        <bucky-checkbox id="chk_enable_self_forwoard" lable="使用自己或其它服务商架设的cyfs-gateway" disabled='true'></bucky-checkbox>
+        <bucky-checkbox id="chk_enable_self_forwoard" lable="使用自己或其它服务商架设的中转服务(Coming Soon)" disabled='true'></bucky-checkbox>
     </div>
     <p></p>
     <p></p>
     <div class="button-container">
-        <md-filled-button id="btn_next" style="width: 150px;">Next</md-filled-button>
+        <md-filled-button id="btn_next" style="width: 150px;">下一步</md-filled-button>
     </div>
 </div>

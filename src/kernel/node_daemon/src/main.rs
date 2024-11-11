@@ -198,7 +198,9 @@ fn load_device_private_key(node_id: &str) -> Result<(EncodingKey)> {
 
 async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneConfig> {
     //If local files exist, priority loads local files
-    let json_config_path = format!("{}.zconfig.json", node_identity.zone_name);
+    let etc_dir = get_buckyos_system_etc_dir();
+    let json_config_path = format!("{}/{}_zone_config.json",etc_dir.to_string_lossy(),node_identity.zone_name);
+    info!("try load zone config from {} for debug",json_config_path.as_str());
     let json_config = std::fs::read_to_string(json_config_path.clone());
     if json_config.is_ok() {
         let zone_config = serde_json::from_str(&json_config.unwrap());
@@ -206,7 +208,7 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
             warn!("debug load zone config from {} success!",json_config_path.as_str());
             return Ok(zone_config.unwrap());
         } else {
-            error!("parse debug zone config from local file failed! {}", json_config_path.as_str());
+            error!("parse debug zone config {} failed! {}", json_config_path.as_str(),zone_config.err().unwrap());
             return Err(NodeDaemonErrors::ReasonError("parse debug zone config from local file failed!".to_string()));
         }
     }
@@ -274,15 +276,18 @@ async fn load_app_info(app_id: &str,username: &str,sys_config_client: &SystemCon
     let app_key = format!("users/{}/apps/{}/config", username,app_id);
     let (app_cfg_result,rversion) = sys_config_client.get(app_key.as_str()).await
         .map_err(|error| {
-            warn!("get app config failed from system_config! {}", error);
-            return NodeDaemonErrors::SystemConfigError("get app config failed from etcd!".to_string());
+            let err_str = format!("get app config failed from system_config! {}", error);
+            warn!("{}",err_str.as_str());
+            return NodeDaemonErrors::SystemConfigError(err_str);
         })?;
     
     let app_info = serde_json::from_str(&app_cfg_result);
     if app_info.is_ok() {
         return Ok(app_info.unwrap());
     }
-    return Err(NodeDaemonErrors::SystemConfigError("get app info failed!".to_string()));
+    let err_str = format!("parse app info failed! {}", app_info.err().unwrap());
+    warn!("{}",err_str.as_str());
+    return Err(NodeDaemonErrors::SystemConfigError(err_str));
 }
 
 
@@ -290,11 +295,14 @@ async fn get_node_config(node_host_name: &str,sys_config_client: &SystemConfigCl
     let json_config_path = format!("{}_node_config.json", node_host_name);
     let json_config = std::fs::read_to_string(json_config_path);
     if json_config.is_ok() {
-        let node_config = NodeConfig::from_json_str(&json_config.unwrap());
-        if node_config.is_ok() {
-            warn!("Debug load node config from ./{}_node_config.json success!",node_host_name);
-            return node_config;
-        }
+        let json_config = json_config.unwrap();
+        let node_config = serde_json::from_str(json_config.as_str()).map_err(|err| {
+            error!("parse DEBUG node config failed! {}", err);
+            return NodeDaemonErrors::SystemConfigError("parse DEBUG node config failed!".to_string());
+        })?;
+
+        warn!("Debug load node config from ./{}_node_config.json success!",node_host_name);
+        return Ok(node_config);
     }
 
     let node_key = format!("nodes/{}/config", node_host_name);
@@ -304,7 +312,7 @@ async fn get_node_config(node_host_name: &str,sys_config_client: &SystemConfigCl
             return NodeDaemonErrors::SystemConfigError("get node config failed from etcd!".to_string());
         })?;
 
-    let node_config = NodeConfig::from_json_str(&node_cfg_result).map_err(|err| {
+    let node_config = serde_json::from_str(&node_cfg_result).map_err(|err| {
         error!("parse node config failed! {}", err);
         return NodeDaemonErrors::SystemConfigError("parse node config failed!".to_string());
     })?;
@@ -327,7 +335,6 @@ async fn node_main(node_host_name: &str,
     if !node_config.is_running {
         return Ok(false);
     }
-
 
     let kernel_stream = stream::iter(node_config.kernel);
     kernel_stream.for_each_concurrent(1, |(kernel_service_name, kernel_cfg)| async move {
@@ -406,7 +413,7 @@ async fn register_device_doc(device_doc:&DeviceConfig,sys_config_client: &System
     let device_key = sys_config_get_device_path(device_doc.name.as_str());
     let device_doc_str = serde_json::to_string(&device_doc).unwrap();
     let device_key = format!("{}/doc",sys_config_get_device_path(device_doc.name.as_str()));
-    let put_result = sys_config_client.set(device_key.as_str(),device_doc_str.as_str()).await;
+    let put_result = sys_config_client.create(device_key.as_str(),device_doc_str.as_str()).await;
     if put_result.is_err() {
         error!("register device doc to system_config failed! {}", put_result.err().unwrap());
     } else {
@@ -477,20 +484,29 @@ async fn do_boot_scheduler() -> std::result::Result<(),String> {
 }
 
 //if register OK then return sn's URL
-async fn start_update_ood_info_to_sn(device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
+async fn start_update_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
     //try register ood's device_info to sn,
     // TODO: move this logic to cyfs-gateway service?
-    let sn_url = zone_config.get_sn_url();
-    if sn_url.is_none() {
-        error!("sn url is none!");
-        return Err(String::from("sn url is none!"));
+    let mut need_sn = false;
+    let mut sn_url = zone_config.get_sn_url();
+    if sn_url.is_some() {
+        need_sn = true;
+    } else {
+        if device_doc.ddns_sn_url.is_some() {
+            need_sn = true;
+            sn_url = device_doc.ddns_sn_url.clone();
+        }
     }
+    if !need_sn {
+        return Err(String::from("no sn url to update ood info!"));
+    }
+    
     let sn_url = sn_url.unwrap();
 
     let ood_string = zone_config.get_ood_string(device_doc.name.as_str());
     if ood_string.is_none() {
-        error!("ood string is none!");
-        return Err(String::from("ood string is none!"));
+        error!("this device is not in zone's ood list!");
+        return Err(String::from("this device is not in zone's ood list!"));
     }
 
     let ood_string = ood_string.unwrap();
@@ -503,7 +519,7 @@ async fn start_update_ood_info_to_sn(device_doc: &DeviceConfig, device_private_k
 
     info!("ood info: {:?}",ood_info);
 
-    sn_update_device_info(sn_url.as_str(), None, 
+    sn_update_device_info(sn_url.as_str(), Some(device_token_jwt.to_string()), 
     &zone_config.get_zone_short_name(),device_doc.name.as_str(), &ood_info, ).await;
 
     info!("update ood info to sn {} success!",sn_url.as_str());
@@ -546,8 +562,6 @@ async fn start_cyfs_gateway_service(node_id: &String,device_doc: &DeviceConfig, 
 
     Ok(())
 }
-
-
 
 
 async fn async_main() -> std::result::Result<(), String> {
@@ -678,10 +692,10 @@ async fn async_main() -> std::result::Result<(), String> {
         token:None,
     };
 
-    let device_session_token_jwt = device_session_token.generate_jwt(Some(device_doc.did.clone()),&device_private_key).map_err(|err| {
+    let device_session_token_jwt = device_session_token.generate_jwt(Some(device_doc.did.clone()),&device_private_key)
+        .map_err(|err| {
         error!("generate device session token failed! {}", err);
-        return String::from("generate device session token failed!");
-    })?;
+        return String::from("generate device session token failed!");})?;
 
     let device_info = DeviceInfo::from_device_doc(&device_doc);
     enable_zone_provider(Some(&device_info),Some(&device_session_token_jwt),false).await.map_err(|err| {
@@ -700,7 +714,7 @@ async fn async_main() -> std::result::Result<(), String> {
     let mut syc_cfg_client: SystemConfigClient;
     let boot_config: serde_json::Value; 
     if is_ood {
-        start_update_ood_info_to_sn(&device_doc, &device_private_key,&zone_config).await;
+        start_update_ood_info_to_sn(&device_doc, &device_session_token_jwt.as_str(),&zone_config).await;
 
         let mut sys_config_service_pkg = ServicePkg::new("system_config".to_string(),get_buckyos_system_bin_dir());
         let _ = sys_config_service_pkg.load().await.map_err(|err| {

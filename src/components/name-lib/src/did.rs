@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use async_trait::async_trait;
 use crate::NSResult;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
+#[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct DID {
     pub method: String,
     pub id: String,
@@ -19,9 +21,23 @@ impl DID {
             id: id.to_string(),
         }
     }
+
+    pub fn get_auth_key(&self) -> Option<[u8; 32]> {
+        if self.method == "dev" {
+            let auth_key = URL_SAFE_NO_PAD.decode(self.id.as_str()).unwrap();
+            return Some(auth_key.try_into().unwrap());
+        }
+        None
+    }
     
     pub fn from_str(did: &str) -> Option<Self> {
         let parts: Vec<&str> = did.split(':').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        if parts[0] != "did" {
+            return None;
+        }
         Some(DID {
             method: parts[1].to_string(),
             id: parts[2].to_string(),
@@ -30,6 +46,24 @@ impl DID {
 
     pub fn to_string(&self) -> String {
         format!("did:{}:{}", self.method, self.id)
+    }
+
+    pub fn to_host_name(&self) -> String {
+        format!("{}.{}.did",self.id,self.method)
+    }
+
+    pub fn from_host_name(host_name: &str) -> Option<Self> {
+        let parts: Vec<&str> = host_name.split('.').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        if parts[2] != "did" {
+            return None;
+        }
+        Some(DID {
+            id: parts[0].to_string(),
+            method: parts[1].to_string(),
+        })
     }
 }
 

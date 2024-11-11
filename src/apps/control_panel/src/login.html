@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BuckyOS Control Panel</title>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Outlined" rel="stylesheet">
+    <style>
+        body {
+            /* 使用纹理背景 */
+            background-image: url('bkg.png');
+            background-repeat: repeat;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content:center
+            
+        }
+
+        #background {
+            display: flex;
+            flex-direction: column;
+            min-width: 480px;
+            max-width: 800px;
+            gap: 10px;
+        }
+
+    </style>
+</head>
+<body>
+    <div id="background">
+        <div>appid: <span id="appid"></span>正请求登陆:</div>
+        <md-outlined-text-field id="txt-username" label="Username">
+        </md-outlined-text-field>
+        <md-outlined-text-field id="txt-password" label="Password" type="password">
+        </md-outlined-text-field>
+        <md-filled-button id="btn-login">Login</md-filled-button>
+    </div>  
+    <script src="./login.ts" type="module"></script>  
+</body>
+</html>

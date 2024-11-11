@@ -18,6 +18,8 @@ warp = "*"
 lazy_static = "*"
 thiserror = "*"
 jsonwebtoken = "*"
+base64 = "*"
+sha2 = "*"
 # rocksdb = "*"
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }

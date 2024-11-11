@@ -1,11 +1,11 @@
-
 import os
 import shutil
 build_dir = os.path.dirname(os.path.abspath(__file__))
 os.system(f"python3 {build_dir}/killall.py")
 
 print('install files to /opt/buckyos')
-shutil.rmtree("/opt/buckyos")
+if os.path.exists("/opt/buckyos"):
+    shutil.rmtree("/opt/buckyos")
 # if /opt/buckyos not exist, copy rootfs to /opt/buckyos
 if not os.path.exists("/opt/buckyos"):
     print('copying rootfs to /opt/buckyos')

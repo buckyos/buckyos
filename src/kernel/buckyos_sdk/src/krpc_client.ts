@@ -20,12 +20,12 @@ enum RPCProtocolType {
     private sessionToken: string | null;
     private initToken: string | null;
   
-    constructor(url: string, token?: string) {
+    constructor(url: string, token: string|null=null,seq:number|null=null) {
       //this.client = fetch;
       this.serverUrl = url;
       this.protocolType = RPCProtocolType.HttpPostJson;
       // 使用毫秒时间戳作为初始序列号
-      this.seq = Date.now() * 1000;
+      this.seq = seq ? seq : Date.now() * 1000;
       this.sessionToken = token || null;
       this.initToken = token || null;
     }
@@ -37,10 +37,8 @@ enum RPCProtocolType {
   
 
     private async _call(method: string, params: any): Promise<any> {
-
-      this.seq += 1;
       const currentSeq = this.seq;
-  
+      this.seq += 1;
       const requestBody = {
         method,
         params,

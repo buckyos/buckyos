@@ -21,9 +21,9 @@
 This phase is planned to be completed in 2024 through the following minor versions:
 
 - **0.1 Demo:** 2.5% (Done)
-- **0.2 PoC (Pre-Alpha1):** 2.5% (🔥🔥🔥 `Current Version`)
-- **0.3 Pre-Alpha2:** 5% (First complete version)
-- **0.4 Alpha:** 2.5% (Available for user testing, Q4 2024)
+- **0.2 PoC :** 2.5% (Internal Release ,Done)
+- **0.3 Pre-Alpha1:** 2.5% (Last Release!)
+- **0.4 Alpha2:** 2.5% (🔥🔥🔥 `Current Version` Available for user testing, Q4 2024)
 
 ### Phase 2: Integration of AI (Beta, Q2 2025)
 
@@ -47,72 +47,76 @@ AI-driven media processing. Support for download, streaming, and other traffic s
 
 ## Overall Plan for the Alpha Phase
 
-Functions marked with `*` are those I believe must be completed in the next release version 0.2 (PoC). Functions without `*` may depend on some basic components.
+Functions marked with `*` are those I believe must be completed in the next release version 0.4 (Alpha2). Functions without `*` may depend on some basic components.
 
-- Kernel Models
-  - [x] *node_daemon (A4 @waterflier)
-    - [x] *app & service loader (A4 @waterflier), implement formal permission management and container isolation
-    - [ ] node task execute system (A4), usually used for maintenance tasks; implement if unavoidable
+- Kernel Models (modules run before(support) system boot)
+  - [x] node_daemon (A4 @waterflier)
+    - [x] app & service loader (A4 @waterflier), implement formal permission management and container isolation
+    - [ ] *node task execute system (A4), usually used for maintenance tasks; implement if unavoidable
+  - [x] node_active (A4 @waterflier), System setup web pages and functions
   - [x] system config service(A2 @waterflier)
     - [ ] *Support etcd in more than 3 OOD clusters through scalable backends (A2)
-    - [x] *system-config lib (A2 @waterflier)
-    - [x] *rbac libs (A4 @waterflier), basic rbac usage and management
-    - [ ] *system config event support (A2 @waterflier), use websocket for config-change notification
+    - [x] system-config lib (A2 @waterflier)
+    - [x] rbac libs (A4 @waterflier), basic rbac usage and management
+    - [ ] system config event support (A2 @waterflier), use websocket for config-change notification
+    - [ ] *Integrate with cyfs-gateway's VPN service (A2 @waterflier)
+  - [x] verify_hub service  (A2,@waterflier)
   - system status for system status monitoring
   - kRPC @waterflier
-    - [x] *rust kRPC libs (A4,@waterflier)
-    - [ ] *typescript kRPC libs (A2)
-    - [x] *verify_hub service  (A2,@waterflier)
-      - [ ] improve user and device register logical. (A2)
-  - kLog, a reliable logging library, is the foundation for automatic fault diagnosis in the system.
-    - [ ] *kLog lib (A4), defines the basic interfaces for kLog output and reliable behavior logic, can handle server downtime
-    - [ ] *kLog server (S2), PoC version should implement a simple version to ensure reliability
-  - kMQ message queue, supports custom event systems
-  - pkg system
-    - [x] *Improve lib (S2,@waterflier) to facilitate use by other components
-    - [ ] Integrate with the task system (A4,@glen0125)
-- Kernel Services
+    - [x] rust kRPC libs (A4,@waterflier)
+    - [x] typescript kRPC libs (A2,@waterflier)
+      - [x] Improve user and device register  logical. (A2)
+      - [x] Support Traditional user passwords log in and implement OAUTH compatible SDK (A2)
   - [x] *scheduler (A2 @waterflier), a key module to be implemented in the PoC version, automatically generating node_config and establishing an initial extensible framework
-    - [x] *boot scheduler (A2), the first scheduler to be implemented, mainly for system initialization
+    - [x] *boot scheduler (A2,@waterflier), the first scheduler to be implemented, mainly for system initialization
+    - [x] *scheduler template support(A1,@waterflier)
     - [ ] *Making scheduling logic for single OOD(A2)
     - [ ] *Implement the scheduling logic for multi-OOD(A2)
     - [ ] *When single OOD scale to multiple OOD, realize the scheduling logic with OP task(A4)
+  - kLog, a reliable logging library, is the foundation for automatic fault diagnosis in the system.
+    - [ ] *kLog lib (A4), defines the basic interfaces for kLog output and reliable behavior logic, can handle server downtime
+    - [ ] *kLog server (S2), PoC version should implement a simple version to ensure reliability
+  - pkg system
+    - [x] Improve lib (S2,@waterflier) to facilitate use by other components
+    - [ ] Integrate with the task system (A4,@glen0125)
+- Kernel Services
   - [ ] *Task Manager (A4), providing a general stateful background task management service, supporting reliable execution of critical tasks
   - DFS
     - [ ] *glusterFS (A2) integrated with rbac
+    - [ ] *glusterFS Support soft RAID: 4 hard disks can damage any hard disk without losing data （A4)
+    - [ ] *glusterFS Support SSD Cache (A2)
     - DCFS (listed separately)
-  - dApp manager, the `apt` tool in BuckyOS, provides basic reliable pkg management capabilities for the system.
+  - *dApp manager, the `apt` tool in BuckyOS, provides basic reliable pkg management capabilities for the system.
     - [ ] *basic API support (A4,@glen0125), source management, installed management, permission configuration, installer
     - [ ] *CLI tools (S4,@glen0125), command-line tools similar to apt based on basic API
     - [ ] *in-zone pkg repo service (S4,@glen0125), a stable repo service running within the zone
     - [ ] *Installer UI (A4), meets the minimum requirements for dApp permission control in the system
   - backup system (listed separately)
   - cyfs-gateway (listed separately)
+  - kMQ message queue, supports custom event systems
 - Frame Services
   - [ ] *smb-service (A2), integrated with ACL
   - [ ] k8s-service, integrated with ACL
-  - [ ] *http-fs-service (A2), integrated with ACL
   - [ ] Notify Manager
   - [ ] *msg_bus(S4), the user's system inbox, where all applications can send messages
-  - [ ] dApp Store
+  - [ ] *dApp Store
   - [ ] *Control panel (S8) Provide basic system management functions according to the requirements document (including related web pages), can be further divided.
-- Demo dApps 
-  - [ ] *Home Station App(A4),home page app for user.
-- [ ] *CyberChat App (A4), BuckyOS control app modified based on the CYFS wallet app.
-  - [ ] *Account management (S4), mainly local DID account management, much logic can be reused from CYFS wallet
-  - [ ] *Name management (S4), manage friendly names owned
-  - [ ] *Zone management (S2), support relevant requirements of the first version
-  - [ ] *Storage management (S2), pure display in the first version
-  - [ ] *File UI (S4), provide basic UI to access DFS
-- Web2.5 Services
-  - [ ] *BuckyOS Web general lib design (A4 @waterflier), the basic library used by all web pages
-  - [ ] *Account management + signature service (A2), including signature history
-  - [ ] *did resolution and name resolution (S2), mainly implemented in cyfs-gateway, this mainly handles formal online operations
-  - [ ] *Name application and management (S4), allowing users to easily and freely own a $name.buckyos.org name, obtained during account registration
-  - [ ] gateway service (subscription management)
+- Default dApps
+  - [x] Home Station App(A2,@waterflier),home page app for user, (Transform from https://github.com/filebrowser/filebrowser)
+  - [x] System Control Panel App (A1,@waterflier)
+    - [ ] *Account management (S4), mainly local DID account management, much logic can be reused from CYFS wallet
+    - [ ] *Name management (S4), manage friendly names owned
+    - [ ] *Zone management (S2), support relevant requirements of the first version
+    - [ ] *Storage management (S2), pure display in the first version
+  - [ ] CyberChat App (A4), BuckyOS control app modified based on the CYFS wallet app.
+- Web3 bridge Services(Test: web3.buckyos.io,Officially web3.buckyos.org)
+  - [x] Account management + signature service (A2), including signature history
+  - [x] did resolution and name resolution (S2), mainly implemented in cyfs-gateway, this mainly handles formal online operations
+  - [x] NAME manager (S4), allowing users to easily and freely own a $name.buckyos.org name, obtained during account registration,support d-dns
+  - [x] rtcp network reply service (A2 @waterflier) (subscription management) 
+    - [ ] rtcp network reply service Support billing and subscription (S4)
+  - [ ] *WebUI (S4), a simple web page for users to manage their accounts and names annd subscriptions
   - [ ] *http backup server (S2), mainly functions from BuckyOS Backup Suite, simple online operation at first (with size restrictions), followed by subscription implementation
-  - [ ] Cloud zone support: two research approaches
-  - [ ] Support migration from Web2.5 to Web3
 - [ ] *BuckyOS Backup Suite (independent product with separate points, additional rewards from the DMC fund), an independent cross-platform backup software, refer to its independent PRD.
   - [ ] Backup Service
   - [ ] UI
@@ -121,24 +125,32 @@ Functions marked with `*` are those I believe must be completed in the next rele
   - [ ] http DAV target server
   - [ ] dmc target client
   - [ ] dmc target server
-- [ ] *CYFS Gateway (independent product with separate points), detailed requirements document is still being written
-  - [ ] *Support buckyos demo needs: TAP Device-based VPN, allowing needed services to work transparently with the main OOD in the same LAN
-  - [ ] *Expose FrameService/dApp services to the outside of the Zone securely via reverse proxy
-  - [ ] *Establish a basic framework, including rule engine, tunnel management, and support for reverse proxy https server
-  - [ ] *cyfs-nameservice service, supporting our name system and did-document system
-- CI/CD Support
-  - [ ] *Nightly CI/CD system (A4), based on Github Action
-  - [ ] *Rapid cloud development environment setup (A4), referencing Github's CodeSpace
+- [x] CYFS Gateway (A2,@waterflier) (would be a independent product after 0.4)
+  - [x] tunnel framework (A2,@waterflier), A URL-based scalable Tunnel protocol framework, separating the business logic and protocol expansion of CYFS-Gateway
+  - [x] rtcp protocol (A6,@waterflier),Based on TCP, a credible encrypted communication is realized based on DID, and OOD after the SN is transformed into NAT provides stable penetration access capabilities
+  - [x] cyfs-dns (A1, @waterflier), supporting our name system and did-document system
+  - [x] cyfs-warp (A4,@waterflier), A HTTP service that is base on Tunnel Framework can be regarded as Nginx-Lite
+  - [ ] *cyfs-socks service(A3), Through the rules engine, the qualified traffic is forwarded to a specific Tunnel
+  - [ ] *TAP Device-based VPN (A2), allowing needed services to work transparently with the main OOD in the same LAN
+  - [ ] *cyfs protocl (A4), http extension only, support the chunk transfer logic used by backup system.
+- CI/CD Publish Support
+  - [x] Nightly CI/CD system (A4,@weiqiushi), based on Github Action
+  - [x] deb(include arm) package builder (S2,@waterflier)
+  - [ ] Virtual Machine Image builder (S2,@weiqiushi), based on Packer?
+  - [ ] Rapid cloud development environment setup (A4), referencing Github's CodeSpace
   - [ ] Rapid independent CI/CD environment setup based on specific branches
   - [ ] Set up typical responsible test environments
+- BuckyOS SDK 
+  - [x] TypeScript SDK (A1,@waterflier)
+    - [x] Auth Client (A2,@waterflier)
+    - [x] kRPC Client (A1,@waterflier)
+    - [ ] *File Share Client
+    - [ ] Payment Gateway
+- *BuckyOS offical website (S2)
 - DCFS Formal architecture design is ongoing based on the Demo phase research results.
-- SDK Initially integrated according to internal needs, formal planning will begin in version 0.3.
 
-(TODO: Continuously improve the brief introduction of each module)
 
 ## Project Management Process
-
-0.2 PoC is the first relatively official version of BuckyOS. To ensure quality, we have formulated the following project management process based on the actual situation:
 
 ### Step 1: Read Existing Documents and Discuss
 

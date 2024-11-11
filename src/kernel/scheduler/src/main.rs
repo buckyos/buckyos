@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::process::exit;
 use log::*;
 use serde_json::json;
+//use upon::Engine;
 
 use name_lib::*;
 use name_client::*;
@@ -96,104 +97,87 @@ async fn generate_ood_config(ood_name:&str,owner_name:&str) -> Result<HashMap<St
     Ok(init_list)
 }
 
+async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
+    //load start_parms from active_service.
+    let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
+    println!("start_params_file_path:{}",start_params_file_path.to_string_lossy());
+    info!("try load start_params from :{}",start_params_file_path.to_string_lossy());
+    let start_params_str = tokio::fs::read_to_string(start_params_file_path).await?;
+    let mut start_params:serde_json::Value = serde_json::from_str(&start_params_str)?;
+
+    let mut template_type_str = "nat_ood_and_sn".to_string();
+    //load template by zone_type from start params.
+    let template_type = start_params.get("zone_type");
+    if template_type.is_some() {
+        template_type_str = template_type.unwrap().as_str().unwrap().to_string();
+    }
+
+    let template_file_path = get_buckyos_system_etc_dir().join("scheduler").join(format!("{}.template.toml",template_type_str));
+    let template_str = tokio::fs::read_to_string(template_file_path).await?;
+
+    //generate dynamic params 
+    let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
+    start_params["verify_hub_key"] = json!(private_key_pem);
+    start_params["verify_hub_public_key"] = json!(public_key_jwk.to_string());
+
+    let mut engine = upon::Engine::new();
+    engine.add_template("config", &template_str)?;
+    let result = engine
+        .template("config")
+        .render(&start_params)
+        .to_string()?;
+
+    if result.find("{{").is_some() {
+        return Err("template contains unescaped double curly braces".into());
+    }
+
+    //wwrite result to file
+    //let result_file_path = get_buckyos_system_etc_dir().join("scheduler_boot.toml");
+    //tokio::fs::write(result_file_path, result.clone()).await?;
+
+    let config: HashMap<String, String> = toml::from_str(&result)?;
+    
+    Ok(config)
+}
+
 
 async fn do_boot_scheduler() -> Result<()> {
     let mut init_list : HashMap<String,String> = HashMap::new();
     let zone_config_str = std::env::var("BUCKY_ZONE_CONFIG");
-    
-    if zone_config_str.is_ok() {
-        info!("zone_config_str:{}",zone_config_str.as_ref().unwrap());
-        let mut zone_config:ZoneConfig = serde_json::from_str(&zone_config_str.unwrap()).unwrap();
-        let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN"); 
-        if rpc_session_token_str.is_ok() {
-            let rpc_session_token = rpc_session_token_str.unwrap();
-            let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
-            let boot_config = system_config_client.get("boot/config").await;
-            if boot_config.is_ok() {
-                return Err("boot/config already exists, boot scheduler failed".into());
-            }
 
-            //generate ood config
-            if zone_config.oods.len() ==1 {
-                //add default user
-                let mut owner_name = zone_config.owner_name.clone().unwrap();
+    if zone_config_str.is_err() {
+        warn!("BUCKY_ZONE_CONFIG is not set, use default zone config");
+        return Err("BUCKY_ZONE_CONFIG is not set".into());
+    }    
 
-                if is_did(&owner_name) {
-                    let owner_did = DID::from_str(&owner_name);
-                    if owner_did.is_some() {
-                        owner_name = owner_did.unwrap().id.to_string();
-                    }
-                }
-                let owner_str = serde_json::to_string(&json!(   
-                    {
-                        "type":"admin"
-                    }
-                )).unwrap();
-                
-                init_list.insert(format!("users/{}/info",owner_name),owner_str);
-                let app_config = generate_app_config(&owner_name).await?;
-                init_list.extend(app_config);
-       
+    info!("zone_config_str:{}",zone_config_str.as_ref().unwrap());
+    let mut zone_config:ZoneConfig = serde_json::from_str(&zone_config_str.unwrap()).unwrap();
+    let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN"); 
 
-                let ood_name = zone_config.oods[0].clone();
-                let ood_config = generate_ood_config(&ood_name,&owner_name).await?;
-                init_list.extend(ood_config);
-
-                //generate verify_hub service config
-                //generate verify_hub key pairs
-                let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
-                let verify_hub_info = VerifyHubInfo {
-                    node_name: ood_name.clone(),
-                    public_key: serde_json::from_value(public_key_jwk).unwrap(),
-                };
-                zone_config.verify_hub_info = Some(verify_hub_info);
-                init_list.insert("system/verify_hub/key".to_string(),private_key_pem);
-                let verify_hub_info_str = serde_json::to_string(&json!(
-                    {
-                        "endpoints" :[
-                            format!("{}:3300",ood_name)
-                        ]
-                    }
-                )).unwrap();
-                init_list.insert("services/verify_hub/info".to_string(),verify_hub_info_str);
-                let verify_hub_setting_str = serde_json::to_string(&json!(
-                    {
-                        "trust_keys" : []
-                    }
-                )).unwrap();
-                init_list.insert("services/verify_hub/setting".to_string(),verify_hub_setting_str);
-
-                //scheduer
-                let scheduler_info_str = serde_json::to_string(&json!(
-                    {
-                        "endpoints" :[
-                            format!("{}:3400",ood_name)
-                        ]
-                    }
-                )).unwrap();
-                init_list.insert("services/scheduler/info".to_string(),scheduler_info_str);
-
-
-                //write zone config 
-                init_list.insert("boot/config".to_string(),serde_json::to_string(&zone_config).unwrap());
-                init_list.insert("system/rbac/model".to_string(),rbac::DEFAULT_MODEL.to_string());
-                init_list.insert("system/rbac/policy".to_string(),rbac::DEFAULT_POLICY.to_string());
-
-                //write to system_config
-                for (key,value) in init_list.iter() {
-                    system_config_client.create(key,value).await?;
-                }
-                info!("boot scheduler success");
-                return Ok(());
-                
-            } else {
-                error!("only one ood in zone config is supported");
-                return Err("only one ood in zone config is supported".into());
-            }
-        }
+    if rpc_session_token_str.is_err() {
+        return Err("SCHEDULER_SESSION_TOKEN is not set".into());
     }
 
-    Err("boot scheduler failed".into())
+    let rpc_session_token = rpc_session_token_str.unwrap();
+    let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
+    let boot_config = system_config_client.get("boot/config").await;
+    if boot_config.is_ok() {
+        return Err("boot/config already exists, boot scheduler failed".into());
+    }
+
+    let init_list = create_init_list_by_template().await
+        .map_err(|e| {
+            error!("create_init_list_by_template failed: {:?}", e);
+            e
+        })?;
+    
+    info!("use init list from template to do boot scheduler");
+    //write to system_config
+    for (key,value) in init_list.iter() {
+        system_config_client.create(key,value).await?;
+    }
+    info!("boot scheduler success");
+    return Ok(());
 }
 
 async fn schedule_loop() -> Result<()> {
@@ -261,5 +245,20 @@ mod test {
     #[tokio::test]
     async fn test_schedule_loop() {
         service_main(true).await;
+    }
+
+    #[tokio::test]
+    async fn test_template() {
+        let start_params = create_init_list_by_template().await.unwrap();
+        for (key,value) in start_params.iter() {
+            let json_value= serde_json::from_str(value);
+            if json_value.is_ok() {
+                let json_value:serde_json::Value = json_value.unwrap();
+                println!("{}:\t{:?}",key,json_value);
+            } else {
+                println!("{}:\t{}",key,value);
+            }
+        }
+        //println!("start_params:{}",serde_json::to_string(&start_params).unwrap());
     }
 }
