@@ -23,6 +23,7 @@ use tokio::task;
 use url::Url;
 use name_client::*;
 use name_lib::*;
+use console_subscriber;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -173,6 +174,10 @@ fn main() {
             .long("disable-buckyos")
             .help("disable init buckyos system services")
             .action(ArgAction::SetTrue))
+        .arg(Arg::new("debug")
+            .long("debug")
+            .help("enable debug mode")
+            .action(ArgAction::SetTrue))
         .get_matches();
 
     // init log
@@ -189,6 +194,11 @@ fn main() {
     info!("Gateway config: {}", config);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
+
+    if matches.get_flag("debug") {
+        info!("Debug mode enabled");
+        console_subscriber::init();
+    }
 
     rt.block_on(async {
         if let Err(e) = service_main(&config,&matches).await {

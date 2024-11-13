@@ -182,7 +182,7 @@ impl DnsServer {
     async fn handle_fallback<R: ResponseHandler> (
         &self, request: &Request,server_name:&str,
         mut response: R
-    ) -> Result<ResponseInfo, Error> {
+    ) -> Result<Message, Error> {
         let message = request.to_bytes();
         let message = message.unwrap();
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
@@ -199,9 +199,15 @@ impl DnsServer {
         let mut resp_len = 512;
         let proxy_result = timeout(Duration::from_secs(5), 
             socket.recv_from(&mut buf)).await;
-        let resp_vec =buf[0..resp_len].to_vec();
-
-        unimplemented!("handle_fallback");
+        //let resp_vec =buf[0..resp_len].to_vec();
+        let resp_message = Message::from_vec(&buf[0..resp_len]);
+        if resp_message.is_err() {
+            return Err(Error::NameNotFound("".to_string()));
+        }
+        let resp_message = resp_message.unwrap();
+        let resp_info = resp_message.into();
+        return Ok(resp_info);
+        //unimplemented!("handle_fallback");
     }
 
     async fn do_handle_request<R: ResponseHandler>(
@@ -257,16 +263,22 @@ impl DnsServer {
             return Ok(header.into());
         }
 
-        info!("All providers can't resolve name:{} enter fallback", name);
         
-        // for server_name in self.config.fallback.iter() {
-        //     let resp_info = self.handle_fallback(request,server_name,response.clone()).await;
-        //     if resp_info.is_ok() {
-        //         return resp_info;
-        //     }
-        // }
+        if let Some(server_name) = self.config.this_name.as_ref() {
+            if !name.ends_with(server_name.as_str()) {
+                info!("All providers can't resolve name:{} enter fallback", name);
+                // for server_name in self.config.fallback.iter() {
+                //     let resp_message = self.handle_fallback(request,server_name,response.clone()).await;
+                //     if resp_message.is_ok() {
+                        
+                //         return resp_info;
+                //     }
+                // }
+            }
+        }
 
-        warn!("All providers can't resolve name:{} and fallback failed", name);
+
+        warn!("All providers can't resolve name:{}", name);
         return Err(Error::NameNotFound("".to_string()));
     }
 }

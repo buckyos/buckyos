@@ -77,6 +77,7 @@ pub struct DNSServerConfig {
     //doh_port : u16,
     //tls: Option<TlsConfig>, include cert.pem and key.pem
     //dnssec: bool,
+    pub this_name:Option<String>,
     pub resolver_chain : Vec<DNSProviderConfig>,
     pub fallback : Vec<String>,//fallback dns servers
 }

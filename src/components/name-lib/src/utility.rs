@@ -35,6 +35,8 @@ pub enum NSError {
     ReadLocalFileError(String),
     #[error("Failed to decode jwt {0}")]
     DecodeJWTError(String),
+    #[error("Final Error: {0}")]
+    FinalError(String),
 }
 
 pub type NSResult<T> = Result<T, NSError>;

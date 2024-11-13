@@ -9,7 +9,8 @@ authors = ["BuckyOS DAO","@waterflier","@lurenpluto"]
 thiserror = "*"
 log = "*"
 url = "*"
-tokio = { version = "*", features = ["full"] }
+tokio = { version = "*", features = ["full","tracing"] }
+console-subscriber = { version = "*" }
 async-trait = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
@@ -27,3 +28,6 @@ name-lib = { path = "../../components/name-lib" }
 cyfs-warp = { path= "../cyfs-warp"}
 cyfs-sn = { path = "../cyfs-sn" }
 cyfs-dns = { path = "../cyfs-dns" }
+
+
+

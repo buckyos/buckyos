@@ -27,7 +27,7 @@ use crate::router::*;
 
 
 
-async fn _handle_request(
+async fn handle_request(
     router: Arc<Router>,
     tls_config: Option<Arc<ServerConfig>>,
     req: Request<Body>,
@@ -46,14 +46,14 @@ async fn _handle_request(
     }
 }
 
-async fn handle_request(
+async fn _handle_request(
     router: Arc<Router>,
     tls_config: Option<Arc<ServerConfig>>,
     req: Request<Body>,
     client_ip:SocketAddr,
 ) -> Result<Response<Body>, hyper::Error> {
     let timeout_duration = Duration::from_secs(30);
-    let result = timeout(timeout_duration, _handle_request(router, tls_config, req, client_ip)).await;
+    let result = timeout(timeout_duration, handle_request(router, tls_config, req, client_ip)).await;
     match result {
         Ok(res) => res,
         Err(_) => {
