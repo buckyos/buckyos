@@ -1,4 +1,4 @@
-<mxfile host="Electron" modified="2024-10-08T04:33:11.425Z" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/22.1.2 Chrome/114.0.5735.289 Electron/25.9.4 Safari/537.36" etag="djD6YjhhxmtS7ruw9jL0" version="22.1.2" type="device" pages="12">
+<mxfile host="Electron" modified="2024-11-14T00:59:39.417Z" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/22.1.2 Chrome/114.0.5735.289 Electron/25.9.4 Safari/537.36" etag="jSUJF8sp_M7ioWJAKmmi" version="22.1.2" type="device" pages="13">
   <diagram id="oIMGCOtcYAl4cptAXmcz" name="Architecture">
     <mxGraphModel dx="2896" dy="1168" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
@@ -229,11 +229,11 @@
     </mxGraphModel>
   </diagram>
   <diagram id="iOcJLOFx5TQZdEkecl_a" name="MainLoop">
-    <mxGraphModel dx="2098" dy="717" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2896" dy="1168" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="68Tao7XhbEayZiMnRGVD-14" value="cyfs-gateway Loop" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;verticalAlign=top;" vertex="1" parent="1">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-14" value="cyfs-gateway Loop" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;verticalAlign=top;" parent="1" vertex="1">
           <mxGeometry x="-810" y="333.25" width="170" height="253.5" as="geometry" />
         </mxCell>
         <mxCell id="JNShnxTUHkuAeDjjDzT3-16" value="node loop @node_daemon:" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;fontSize=14;" parent="1" vertex="1">
@@ -263,10 +263,10 @@
         <mxCell id="w76EHTxTQfi9PKH68CeN-3" value="load zone config&lt;br&gt;from NameService" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="-585" y="321" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="w76EHTxTQfi9PKH68CeN-6" target="68Tao7XhbEayZiMnRGVD-3">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="w76EHTxTQfi9PKH68CeN-6" target="68Tao7XhbEayZiMnRGVD-3" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-8" value="Y" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="w76EHTxTQfi9PKH68CeN-6" target="w76EHTxTQfi9PKH68CeN-56">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-8" value="Y" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="w76EHTxTQfi9PKH68CeN-6" target="w76EHTxTQfi9PKH68CeN-56" edge="1">
           <mxGeometry x="0.0076" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="-410" y="608" />
@@ -373,7 +373,7 @@
         <mxCell id="w76EHTxTQfi9PKH68CeN-56" value="is etcd&#39;s data complete?" style="rhombus;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-310" y="310" width="150" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="w76EHTxTQfi9PKH68CeN-57" target="68Tao7XhbEayZiMnRGVD-9">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="w76EHTxTQfi9PKH68CeN-57" target="68Tao7XhbEayZiMnRGVD-9" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="w76EHTxTQfi9PKH68CeN-57" value="generate other etcd node url by zone_config" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
@@ -481,58 +481,58 @@
         <mxCell id="w76EHTxTQfi9PKH68CeN-102" value="scheduling loop @scheduler service:" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;fontSize=14;" parent="1" vertex="1">
           <mxGeometry x="110" y="35" width="270" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="68Tao7XhbEayZiMnRGVD-1" target="w76EHTxTQfi9PKH68CeN-6">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="68Tao7XhbEayZiMnRGVD-1" target="w76EHTxTQfi9PKH68CeN-6" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="68Tao7XhbEayZiMnRGVD-1" target="68Tao7XhbEayZiMnRGVD-14">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="68Tao7XhbEayZiMnRGVD-1" target="68Tao7XhbEayZiMnRGVD-14" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-1" value="start cyfs-gateway&lt;br&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" vertex="1" parent="1">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-1" value="start cyfs-gateway&lt;br&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" parent="1" vertex="1">
           <mxGeometry x="-585" y="430" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="68Tao7XhbEayZiMnRGVD-3" target="68Tao7XhbEayZiMnRGVD-4">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="68Tao7XhbEayZiMnRGVD-3" target="68Tao7XhbEayZiMnRGVD-4" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-3" value="generate sys_config urls by zone_config" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-3" value="generate sys_config urls by zone_config" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="-585" y="677" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="68Tao7XhbEayZiMnRGVD-4" target="w76EHTxTQfi9PKH68CeN-8">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="68Tao7XhbEayZiMnRGVD-4" target="w76EHTxTQfi9PKH68CeN-8" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-4" value="ood_ip = read_from_config(zone_config)&lt;br&gt;ood_ip = mDNS.resolve(host_name)&lt;br&gt;ood_ip = 127.0.0.1,port=80&lt;br&gt;ood_ip = zone_config.sn.get_device_info(ood_name,zoneid)&lt;br style=&quot;border-color: var(--border-color);&quot;&gt;http://ood_ip:sys_config" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" vertex="1" parent="1">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-4" value="ood_ip = read_from_config(zone_config)&lt;br&gt;ood_ip = mDNS.resolve(host_name)&lt;br&gt;ood_ip = 127.0.0.1,port=80&lt;br&gt;ood_ip = zone_config.sn.get_device_info(ood_name,zoneid)&lt;br style=&quot;border-color: var(--border-color);&quot;&gt;http://ood_ip:sys_config" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" parent="1" vertex="1">
           <mxGeometry x="-690" y="760" width="330" height="140" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.561;entryY=0.021;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="68Tao7XhbEayZiMnRGVD-9" target="68Tao7XhbEayZiMnRGVD-17">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.561;entryY=0.021;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="68Tao7XhbEayZiMnRGVD-9" target="68Tao7XhbEayZiMnRGVD-17" edge="1">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="-107" y="910" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-9" value="http://$ood_host_name:etcd_port (no SN)&lt;br&gt;http://$ood_host_name.d.$zoneid:etcd_port (have SN-DNS)&lt;br&gt;bdt://$ood_device_id:etcd_port (not support yet)&lt;br&gt;&lt;br&gt;ood_ip = zone_config.sn.get_device_info(ood_name,zoneid)&lt;br&gt;http://device_ip:etcd_port" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" vertex="1" parent="1">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-9" value="http://$ood_host_name:etcd_port (no SN)&lt;br&gt;http://$ood_host_name.d.$zoneid:etcd_port (have SN-DNS)&lt;br&gt;bdt://$ood_device_id:etcd_port (not support yet)&lt;br&gt;&lt;br&gt;ood_ip = zone_config.sn.get_device_info(ood_name,zoneid)&lt;br&gt;http://device_ip:etcd_port" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" parent="1" vertex="1">
           <mxGeometry x="-300" y="653" width="385" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-12" value="if this is ood&lt;br&gt;keep tunnel to other ood&#39;s cyfs-gateway" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" vertex="1" parent="1">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-12" value="if this is ood&lt;br&gt;keep tunnel to other ood&#39;s cyfs-gateway" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" parent="1" vertex="1">
           <mxGeometry x="-780" y="439" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-13" value="keep tunnel to ZoneGateway &#39;s cyfs-gateway" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" vertex="1" parent="1">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-13" value="keep tunnel to ZoneGateway &#39;s cyfs-gateway" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" parent="1" vertex="1">
           <mxGeometry x="-780" y="510" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="68Tao7XhbEayZiMnRGVD-17" target="w76EHTxTQfi9PKH68CeN-10">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="68Tao7XhbEayZiMnRGVD-17" target="w76EHTxTQfi9PKH68CeN-10" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-17" value="connect to sys_config@thisnode" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-17" value="connect to sys_config@thisnode" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-175" y="933" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-19" value="if zone.sn exists,try register self to SN" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" vertex="1" parent="1">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-19" value="if zone.sn exists,try register self to SN" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" parent="1" vertex="1">
           <mxGeometry x="-780" y="370" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="68Tao7XhbEayZiMnRGVD-20" value="用bdt连接 sys_config?" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="68Tao7XhbEayZiMnRGVD-20" value="用bdt连接 sys_config?" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="-800" y="790" width="80" height="30" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
   <diagram id="q0N88BQaiHxRkIq5dT2b" name="App Container">
-    <mxGraphModel dx="2910" dy="1183" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2896" dy="1168" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -2309,7 +2309,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="JvShwL8G7op1oZlSJPBe" name="一些流程">
-    <mxGraphModel dx="1177" dy="676" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2046" dy="1168" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -2655,46 +2655,46 @@
         <mxCell id="Uhl6TVcSV4RiziGJbxAS-113" value="和k8s不同，我们并不在小的Zone里启用“编排”，而是更多以固定配置来运行应用服务" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.text.stickyNote2;fontColor=#666666;mainText=;fontSize=17;whiteSpace=wrap;fillColor=#ffffcc;strokeColor=#F62E00;" parent="1" vertex="1">
           <mxGeometry x="1180" y="1370" width="200" height="200" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="tug6-lGKLGd_aUpJzQRX-1" target="tug6-lGKLGd_aUpJzQRX-2">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="tug6-lGKLGd_aUpJzQRX-1" target="tug6-lGKLGd_aUpJzQRX-2" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-1" value="read zone_name from node_identifiy" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-1" value="read zone_name from node_identifiy" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="130" y="130" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="tug6-lGKLGd_aUpJzQRX-2" target="tug6-lGKLGd_aUpJzQRX-4">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="tug6-lGKLGd_aUpJzQRX-2" target="tug6-lGKLGd_aUpJzQRX-4" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="tug6-lGKLGd_aUpJzQRX-2" target="tug6-lGKLGd_aUpJzQRX-7">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="tug6-lGKLGd_aUpJzQRX-2" target="tug6-lGKLGd_aUpJzQRX-7" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-2" value="zone_name is did?" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-2" value="zone_name is did?" style="rhombus;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="110" y="255" width="160" height="95" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-3" value="zone_cofing = name_client.resolve_did(zone_id)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-3" value="zone_cofing = name_client.resolve_did(zone_id)" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="90" y="510" width="200" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="tug6-lGKLGd_aUpJzQRX-4" target="tug6-lGKLGd_aUpJzQRX-16">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="tug6-lGKLGd_aUpJzQRX-4" target="tug6-lGKLGd_aUpJzQRX-16" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-4" value="name_info = name_client.resolve_name(zone_name)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-4" value="name_info = name_client.resolve_name(zone_name)" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="330" y="277.5" width="260" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="tug6-lGKLGd_aUpJzQRX-6" target="tug6-lGKLGd_aUpJzQRX-3">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="tug6-lGKLGd_aUpJzQRX-6" target="tug6-lGKLGd_aUpJzQRX-3" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-6" value="parser name_info, &lt;br&gt;get zone_id&lt;br&gt;might get zone_did_document&amp;nbsp;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-6" value="parser name_info, &lt;br&gt;get zone_id&lt;br&gt;might get zone_did_document&amp;nbsp;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="375" y="510" width="170" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="tug6-lGKLGd_aUpJzQRX-7" target="tug6-lGKLGd_aUpJzQRX-3">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="tug6-lGKLGd_aUpJzQRX-7" target="tug6-lGKLGd_aUpJzQRX-3" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-7" value="zone_id = zone_name" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-7" value="zone_id = zone_name" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="130" y="407.5" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="tug6-lGKLGd_aUpJzQRX-16" target="tug6-lGKLGd_aUpJzQRX-6">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="tug6-lGKLGd_aUpJzQRX-16" target="tug6-lGKLGd_aUpJzQRX-6" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="tug6-lGKLGd_aUpJzQRX-16" value="provider do query and verify result" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="tug6-lGKLGd_aUpJzQRX-16" value="provider do query and verify result" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="375" y="380" width="170" height="60" as="geometry" />
         </mxCell>
       </root>
@@ -2746,6 +2746,95 @@
         </mxCell>
         <mxCell id="jOEf7tCecbJKnrepLAmB-12" value="verfiy did-doc &lt;br&gt;after resolve&lt;br&gt;did &amp;lt;-&amp;gt; doc&lt;br&gt;doc.proof" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;" vertex="1" parent="1">
           <mxGeometry x="735" y="230" width="190" height="100" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="yT246MxJrNwgLdexHOI-" name="Page-13">
+    <mxGraphModel dx="2261" dy="806" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="soKJ22ut9W6iChpHjKMU-1" value="安装app&lt;br&gt;bpm install buckyos-filebrowser" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="65" y="80" width="230" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-2" value="升级frame&lt;br&gt;bpm upgrade dfs" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="-200" y="80" width="230" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-3" value="升级系统&lt;br&gt;bpm upgrade" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="-470" y="80" width="230" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-4" value="自动执行，bpm update&lt;br&gt;同步pakcage index&lt;br&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="90" y="220" width="170" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-5" value="repo server&lt;br&gt;（other repo）" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="620" y="200" width="160" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.999;entryY=0.433;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="soKJ22ut9W6iChpHjKMU-5" target="soKJ22ut9W6iChpHjKMU-4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-7" value="得到buckyos-filebrowser的defualt 版本id" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="90" y="330" width="170" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-8" value="发起下载任务,并等待任务结束" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="90" y="430" width="170" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-13" value="更新zone repo中的 index,让buckyos-filebrowser的版本号指向新版本" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="90" y="530" width="170" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-14" value="zone-repo-server的操作完成" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="90" y="630" width="170" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="soKJ22ut9W6iChpHjKMU-15" target="soKJ22ut9W6iChpHjKMU-8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-17" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="50" y="170" width="260" height="550" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-15" value="oods&lt;br&gt;(other repo)" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="415" width="160" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-18" value="repo install pkg" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="130" y="180" width="100" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-19" value="Bucky Store.install app" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="50" y="770" width="260" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-21" value="询问zone-repo 对应的pkg是否已经就绪" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="820" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-22" value="等待用户Confirm Install (有参数配置)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="890" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-23" value="写入SystemConfig" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="960" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-24" value="由repo server组成的network" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="380" y="330" width="195" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-25" value="唤醒调度器，调度器构造node-config" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1020" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-26" value="node_daemon&lt;br&gt;&lt;br&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="50" y="1150" width="260" height="350" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-27" value="启动app service(有更精细的pkgid)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1190" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-28" value="尝试load 指定版本的pkg" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1270" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-29" value="如load 失败，则去本地的repo-server上下载pkg" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1350" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-30" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.998;entryY=0.37;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="soKJ22ut9W6iChpHjKMU-17" target="soKJ22ut9W6iChpHjKMU-29">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-31" value="再次尝试启动" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1430" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="soKJ22ut9W6iChpHjKMU-32" value="一个应用的安装，会给系统里添加多个pkg" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="365" y="1240" width="155" height="30" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

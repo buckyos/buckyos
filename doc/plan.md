@@ -57,10 +57,13 @@ Functions marked with `*` are those I believe must be completed in the next rele
   - [x] system config service(A2 @waterflier)
     - [ ] *Support etcd in more than 3 OOD clusters through scalable backends (A2)
     - [x] system-config lib (A2 @waterflier)
-    - [x] rbac libs (A4 @waterflier), basic rbac usage and management
+
     - [ ] system config event support (A2 @waterflier), use websocket for config-change notification
     - [ ] *Integrate with cyfs-gateway's VPN service (A2 @waterflier)
   - [x] verify_hub service  (A2,@waterflier)
+    - [x] rbac libs (A4 @waterflier), basic rbac usage and management
+    - [ ] add "sudo" role
+    - [ ] Detailed permission explanation documentation
   - system status for system status monitoring
   - kRPC @waterflier
     - [x] rust kRPC libs (A4,@waterflier)
