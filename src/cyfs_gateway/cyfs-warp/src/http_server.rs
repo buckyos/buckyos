@@ -141,21 +141,32 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
             let listener = listener.unwrap();
             let listener_stream = TcpListenerStream::new(listener);
             let tls_acceptor = Arc::new(tls_acceptor);
-
+        
             let incoming_tls_stream = listener_stream.filter_map(|conn| {
                 info!("tls accept a new tcp stream ...");
                 let tls_acceptor = tls_acceptor.clone();
                 async move {
                     match conn {
                         Ok(stream) => {
-                            match tls_acceptor.accept(stream).await {
-                                Ok(tls_stream) => {
+                            // 设置 TCP 连接参数
+                            stream.set_nodelay(true).unwrap_or_default();
+                            
+                            // 添加超时控制
+                            let timeout_duration = Duration::from_secs(30);
+                            match timeout(timeout_duration, tls_acceptor.accept(stream)).await {
+                                Ok(Ok(tls_stream)) => {
                                     info!("tls accept a new tls from tcp stream OK!");
                                     Some(Ok::<_, std::io::Error>(tls_stream))
                                 },
-                                Err(e) => {
+                                Ok(Err(e)) => {
                                     warn!("TLS handshake failed: {:?}", e);
-                                    None // Ignore failed connections
+                                    // 确保资源被释放
+                                    None
+                                },
+                                Err(_) => {
+                                    warn!("TLS handshake timeout");
+                                    // 超时情况下确保资源被释放
+                                    None
                                 }
                             }
                         }
@@ -166,7 +177,7 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
                     }    
                 }
             });
-        
+
             let acceptor = from_stream(incoming_tls_stream);
             let server = Server::builder(acceptor).serve(make_svc);
             info!("cyfs-warp HTTPs Server running on https://{}", https_bind_addr);
