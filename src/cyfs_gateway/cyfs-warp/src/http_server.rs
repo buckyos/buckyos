@@ -186,22 +186,48 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
     }
 
     let http_bind_addr = format!("{}:{}",bind_addr_http,config.http_port);
-    let listener_http = TcpListener::bind(http_bind_addr.clone()).await;
-    let listener_http = listener_http.unwrap();
+    let listener_http = TcpListener::bind(http_bind_addr.clone()).await?;
     let listener_stream_http = TcpListenerStream::new(listener_http);
-    let http_acceptor = from_stream(listener_stream_http);
+
+    // Add timeout and error handling for TCP streams
+    let http_stream = listener_stream_http.filter_map(|conn| {
+        async move {
+            match conn {
+                Ok(stream) => {
+                    // Set TCP connection parameters
+                    stream.set_nodelay(true).unwrap_or_default();
+                    Some(Ok::<_, std::io::Error>(stream))
+                }
+                Err(e) => {
+                    warn!("HTTP Connection acceptance failed: {:?}", e);
+                    None
+                }
+            }
+        }
+    });
+
+    let http_acceptor = from_stream(http_stream);
     let make_svc = make_service_fn(move |conn: &tokio::net::TcpStream| {
         let router = router2.clone();
         let client_ip = conn.peer_addr().unwrap();
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
-                handle_request(router.clone(), None, req,client_ip)
+                // Use _handle_request which includes timeout instead of handle_request
+                _handle_request(router.clone(), None, req, client_ip)
             }))
         }
     });
-    let server_http = Server::builder(http_acceptor).serve(make_svc);
+
+    let server_http = Server::builder(http_acceptor)
+        .serve(make_svc);
+
     info!("cyfs-warp HTTP Server running on http://{}", http_bind_addr);
-    let _ = server_http.await;
+
+    // Add error handling for the server
+    match server_http.await {
+        Ok(_) => info!("HTTP server shutdown gracefully"),
+        Err(e) => error!("HTTP server error: {:?}", e),
+    }
 
     Ok(())
 }
