@@ -1,10 +1,12 @@
+use std::pin::Pin;
 // 每个Local Chunk Store基于一个目录独立存在
 // Chunk Manage由多个Local Chunk Store组成(目前版本先搞定单OOD)
 use std::{collections::HashMap, io::SeekFrom};
 use std::time::{SystemTime, UNIX_EPOCH};
+
 use tokio::{
     fs::{self, File,OpenOptions}, 
-    io::{self, AsyncRead, AsyncSeek, AsyncSeekExt}, 
+    io::{self, AsyncRead,AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeek, AsyncSeekExt}, 
 };
 use log::*;
 use rusqlite::{params, Connection, Result as SqliteResult};
@@ -77,7 +79,7 @@ impl ChunkItem {
         Self { 
             chunk_id: chunk_id.clone(),
             chunk_size,
-            chunk_state: ChunkState::New,
+            chunk_state: ChunkState::Completed,
             already_write_size: 0,
             create_uid: create_uid.unwrap_or("").to_string(),
             create_appid: create_appid.unwrap_or("kernel").to_string(),
@@ -137,7 +139,31 @@ impl ChunkDb {
         })
     }
 
-    async fn put_chunk(&self, chunk_item: &ChunkItem) -> ChunkResult<()> {
+
+    async fn append_chunk_data(&self, chunk_id: &ChunkId, size: u64,is_completed: bool)->ChunkResult<()> {
+        //更新chunk_items的已完成大小和状态
+        let mut conn = self.conn.lock().await;
+        if is_completed {
+            conn.execute(
+                "UPDATE chunk_items SET already_write_size = already_write_size + ?1, chunk_state = ?2 WHERE chunk_id = ?3",
+                params![size, "completed", chunk_id.to_string()],
+            ).map_err(|e| {
+                warn!("ChunkDb: append chunk data failed! {}", e.to_string());
+                ChunkError::DbError(e.to_string())
+            })?;
+        } else {
+            conn.execute(
+                "UPDATE chunk_items SET already_write_size = already_write_size + ?1 WHERE chunk_id = ?2",
+                params![size, chunk_id.to_string()],
+            ).map_err(|e| {
+                warn!("ChunkDb: append chunk data failed! {}", e.to_string());
+                ChunkError::DbError(e.to_string())
+            })?;
+        }
+        Ok(())
+    }
+
+    async fn set_chunk_item(&self, chunk_item: &ChunkItem) -> ChunkResult<()> {
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT OR REPLACE INTO chunk_items 
@@ -147,7 +173,7 @@ impl ChunkDb {
             params![
                 chunk_item.chunk_id.to_string(),
                 chunk_item.chunk_size,
-                format!("{:?}", chunk_item.chunk_state),
+                chunk_item.chunk_state,
                 chunk_item.already_write_size,
                 chunk_item.create_uid,
                 chunk_item.create_appid,
@@ -339,50 +365,74 @@ impl ChunkDb {
     }
 }
 
+
+
 struct ChunkStore {
-    store_id: String,
-    store_desc: String,
-    chunk_db: ChunkDb,
-    base_dir: String,
-    enable_symlink: bool,//是否启用符号链接，不同的文件系统对符号链接的支持不一样，默认不启用
-    auto_add_to_db: bool,//是否自动将符合命名规范的chunkid添加到db中，默认不自动添加
+    pub store_id: String,
+    pub store_desc: String,
+    pub chunk_db: ChunkDb,
+    pub base_dir: String,
+    pub enable_symlink: bool,//是否启用符号链接，不同的文件系统对符号链接的支持不一样，默认不启用
+    pub auto_add_to_db: bool,//是否自动将符合命名规范的chunkid添加到db中，默认不自动添加
 }
 
+// Create a new trait that combines AsyncRead and AsyncSeek
+trait ChunkReadSeek: AsyncRead + AsyncSeek {}
+// Blanket implementation for any type that implements both traits
+impl<T: AsyncRead + AsyncSeek> ChunkReadSeek for T {}
 
 impl ChunkStore {
+    async fn new(base_dir: String)->ChunkResult<Self> {
+        let chunk_db_path = format!("{}/.cstore/chunk.db",base_dir.clone());
+        //创建dir
+        fs::create_dir_all(format!("{}/.cstore",base_dir.clone())).await
+            .map_err(|e| {
+                warn!("ChunkStore: create dir failed! {}",e.to_string());
+                ChunkError::IoError(e.to_string())
+            })?;
+
+        let chunk_db = ChunkDb::new(chunk_db_path)?;
+        Ok(Self {
+            store_id: "".to_string(),
+            store_desc: "".to_string(),
+            chunk_db,
+            base_dir,
+            enable_symlink: true,
+            auto_add_to_db: true,
+        })
+    }
+
     fn get_chunk_path(&self, chunk_id: &ChunkId)->String {
         //根据ChunkId的HashResult,产生一个三层的目录结构
-        let dir1 = &chunk_id.hash_hex_string[0..3];
-        let dir2 = &chunk_id.hash_hex_string[3..6];
-        let dir3 = &chunk_id.hash_hex_string[6..9];
-        let file_name = &chunk_id.hash_hex_string[6..];
+        let dir1 = &chunk_id.hash_hex_string[0..2];
+        let dir2 = &chunk_id.hash_hex_string[2..4];
+        let file_name = &chunk_id.hash_hex_string[4..];
         
-        format!("{}/{}/{}/{}/{}.{}",
+        format!("{}/{}/{}/{}.{}",
             self.base_dir,
             dir1,
             dir2,
-            dir3,
             file_name,
             chunk_id.hash_type)
     }
 
-    async fn is_real_chunk_exist(&self, chunk_id: &ChunkId)->ChunkResult<bool> {
+    async fn is_real_chunk_exist(&self, chunk_id: &ChunkId)->ChunkResult<(bool,u64)> {
         let chunk_item = self.chunk_db.get_chunk(chunk_id).await;
         if chunk_item.is_ok() {
             let chunk_item = chunk_item.unwrap();
             if chunk_item.chunk_state == ChunkState::Completed {
-                return Ok(true);
+                return Ok((true,chunk_item.chunk_size));
             }
         }
-        Ok(false)
+        Ok((false,0))
     }
 
-    pub async fn is_chunk_exist(&self, chunk_id: &ChunkId,is_auto_add: Option<bool>)->ChunkResult<bool> {
+    pub async fn is_chunk_exist(&self, chunk_id: &ChunkId,is_auto_add: Option<bool>)->ChunkResult<(bool,u64)> {
         let chunk_item = self.chunk_db.get_chunk(chunk_id).await;
         if chunk_item.is_ok() {
             let chunk_item = chunk_item.unwrap();
             if chunk_item.chunk_state == ChunkState::Completed {
-                return Ok(true);
+                return Ok((true,chunk_item.chunk_size));
             }
         }
 
@@ -409,26 +459,98 @@ impl ChunkStore {
                 let hash_bytes = chunk_hasher.calc_from_reader(&mut reader).await?;
                 if !chunk_id.is_equal(&hash_bytes) {
                     warn!("auto add chunk failed! chunk_id not equal file content! {} ", chunk_id.to_string());
-                    return Ok(false);
+                    return Ok((false,0));
                 }
                 let chunk_item = ChunkItem::new(&chunk_id, file_size, None, None, None);
-                self.chunk_db.put_chunk(&chunk_item).await?;
-                return Ok(true);
+                self.chunk_db.set_chunk_item(&chunk_item).await?;
+                return Ok((true,file_size));
             }
         }
 
         warn!("chunk not exist! {}", chunk_id.to_string());
-        Ok(false)
+        Ok((false,0))
     }
 
     pub async fn get_chunk_state(&self, chunk_id: &ChunkId) -> ChunkResult<ChunkState> {
         unimplemented!()
     }
+
     //查询多个chunk的状态
     pub async fn query_chunk_state_by_list(&self, chunk_list: &mut Vec<ChunkItem>)->ChunkResult<()> {
         unimplemented!()
         
     }
+
+    //针对小于1MB的 chunk,推荐直接返回内存
+    pub async fn get_chunk_data(&self, chunk_id: &ChunkId)->ChunkResult<Vec<u8>> {
+        let chunk_item = self.chunk_db.get_chunk(chunk_id).await;
+        if chunk_item.is_err() {
+            return Err(ChunkError::ChunkNotFound(format!("chunk not found! {}",chunk_id.to_string())));
+        }
+        let chunk_item = chunk_item.unwrap();
+        if chunk_item.chunk_state != ChunkState::Completed {
+            return Err(ChunkError::InComplete(format!("chunk not completed! {}",chunk_id.to_string())));
+        }
+        
+        let chunk_path = self.get_chunk_path(&chunk_id);
+        let file_meta = fs::metadata(&chunk_path).await.map_err(|e| {
+            warn!("get_chunk_data: get metadata failed! {}", e.to_string());
+            ChunkError::IoError(e.to_string())
+        })?;
+
+        if file_meta.len() != chunk_item.chunk_size {
+            return Err(ChunkError::InComplete(format!("chunk size not match! {}",chunk_id.to_string())));
+        }
+
+        if file_meta.len() > 1024 * 1024 {
+            warn!("get_chunk_data: chunk size is greater than 1MB! {}", chunk_id.to_string());
+        }
+
+        let mut file = File::open(&chunk_path).await.map_err(|e| {
+            warn!("get_chunk_data: open file failed! {}", e.to_string());
+            ChunkError::IoError(e.to_string())
+        })?;
+
+        let mut buffer = Vec::with_capacity(file_meta.len() as usize);
+        tokio::io::copy(&mut file, &mut buffer).await.map_err(|e| {
+            warn!("get_chunk_data: read file failed! {}", e.to_string());
+            ChunkError::IoError(e.to_string())
+        })?;
+
+        Ok(buffer)
+    }
+
+    pub async fn get_chunk_piece(&self, chunk_id: &ChunkId, offset:SeekFrom, piece_size: u32)->ChunkResult<Vec<u8>> {
+        let mut reader = self.get_chunk_reader(chunk_id).await?;
+        reader.seek(offset).await.map_err(|e| {
+            warn!("get_chunk_piece: seek file failed! {}", e.to_string());
+            ChunkError::IoError(e.to_string())
+        })?;
+        let mut buffer = vec![0u8; piece_size as usize];
+        reader.read_exact(&mut buffer).await.map_err(|e| {
+            warn!("get_chunk_piece: read file failed! {}", e.to_string());
+            ChunkError::IoError(e.to_string())
+       })?;
+       Ok(buffer)   
+    }
+
+    pub async fn get_chunk_reader(&self, chunk_id: &ChunkId) -> ChunkResult<Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>> {
+        let chunk_item = self.chunk_db.get_chunk(chunk_id).await;
+        if chunk_item.is_ok() {
+            let chunk_item = chunk_item.unwrap();
+            if chunk_item.chunk_state != ChunkState::Completed {
+                return Err(ChunkError::InComplete(format!("chunk not completed! {}",chunk_id.to_string())));
+            }
+        }
+        
+        let chunk_path = self.get_chunk_path(&chunk_id);
+        let file = File::open(&chunk_path).await.map_err(|e| {
+            warn!("get_chunk_reader: open file failed! {}", e.to_string());
+            ChunkError::IoError(e.to_string())
+        })?;
+        Ok(Box::pin(file))
+    }
+
     //一口气写入一组chunk(通常是小chunk)
     pub async fn put_chunklist(&self, chunk_list: HashMap<ChunkId, Vec<u8>>,need_verify: bool)->ChunkResult<()> {
         for (chunk_id, data) in chunk_list {
@@ -477,13 +599,13 @@ impl ChunkStore {
 
         // Create and store chunk metadata
         let chunk_item = ChunkItem::new(&chunk_id, chunk_data.len() as u64, None, None, None);
-        self.chunk_db.put_chunk(&chunk_item).await?;
+        self.chunk_db.set_chunk_item(&chunk_item).await?;
 
         Ok(())
     }
 
     //使用reader写入一个完整的chunk
-    pub async fn put_by_reader<T>(&self, chunk_id: &ChunkId, mut chunk_reader: T)->ChunkResult<()>
+    pub async fn put_by_reader<T>(&self, chunk_id: &ChunkId, mut chunk_reader: T,need_verify: bool)->ChunkResult<()>
         where T: AsyncRead + Unpin + Send + Sync + 'static
     {
         let chunk_path = self.get_chunk_path(&chunk_id);
@@ -514,13 +636,58 @@ impl ChunkStore {
 
         // Create and store chunk metadata
         let chunk_item = ChunkItem::new(&chunk_id, bytes_written, None, None, None);
-        self.chunk_db.put_chunk(&chunk_item).await?;
+        self.chunk_db.set_chunk_item(&chunk_item).await?;
 
         Ok(())
     }
 
-    //写入chunk的一部分数据(可用作部分更新)
-    pub async fn write_chunk_part(&self, chunk_id: &ChunkId, offset: SeekFrom, chunk_data: &[u8], is_completed: bool)->ChunkResult<()> {
+    pub async fn new_chunk_for_write(&self, chunk_id: &ChunkId, chunk_size: u64)->ChunkResult<()> {
+        let mut chunk_item = ChunkItem::new(&chunk_id, chunk_size, None, None, None);
+        chunk_item.chunk_state = ChunkState::New;
+        self.chunk_db.set_chunk_item(&chunk_item).await?;
+        let chunk_path = self.get_chunk_path(&chunk_id);
+        //创建目录
+        if let Some(parent) = std::path::Path::new(&chunk_path).parent() {
+            fs::create_dir_all(parent).await.map_err(|e| {
+                warn!("new_chunk_for_write: create dir failed! {}",e.to_string());
+                ChunkError::IoError(e.to_string())
+            })?;
+        }
+        Ok(())
+    }
+
+    pub async fn open_chunk_writer(&self, chunk_id: &ChunkId)->ChunkResult<Box<dyn AsyncWrite + Send + Sync + Unpin>> 
+    {
+        //TODO 是否要限制同一个chunk_id只能有一个writer？
+        let chunk_path = self.get_chunk_path(&chunk_id);
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&chunk_path)
+            .await
+            .map_err(|e| {
+                warn!("open_chunk_writer: create file failed! {}",e.to_string());
+                ChunkError::IoError(e.to_string())
+            })?;
+
+
+        Ok(Box::new(file))
+    }
+
+    pub async fn close_chunk_writer(&self, chunk_id: &ChunkId)->ChunkResult<()> {
+        let mut chunk_item = self.chunk_db.get_chunk(chunk_id).await;
+        if chunk_item.is_err() {
+            return Err(ChunkError::ChunkNotFound(format!("chunk not found! {}",chunk_id.to_string())));
+        }
+        let mut chunk_item = chunk_item.unwrap();
+        chunk_item.chunk_state = ChunkState::Completed;
+        self.chunk_db.set_chunk_item(&chunk_item).await?;
+        Ok(())
+    }
+
+    //从简单可靠的角度考虑，修改成只允许append数据，复杂写入用open_writer
+    pub async fn append_chunk_data(&self, chunk_id: &ChunkId, chunk_data: &[u8], is_completed: bool)->ChunkResult<()> {
         let chunk_path = self.get_chunk_path(&chunk_id);
 
         // Create parent directories if needed
@@ -544,8 +711,8 @@ impl ChunkStore {
                 ChunkError::IoError(e.to_string())
             })?;
 
-        // Seek to offset
-        file.seek(offset).await
+        // Seek to end
+        file.seek(SeekFrom::End(0)).await
             .map_err(|e| {
                 warn!("put_chunk: seek file failed! {}",e.to_string());
                 ChunkError::IoError(e.to_string())
@@ -558,25 +725,13 @@ impl ChunkStore {
                 ChunkError::IoError(e.to_string())
             })?;
 
-        // Update chunk metadata
-        let mut chunk_item = match self.chunk_db.get_chunk(&chunk_id).await {
-            Ok(item) => item,
-            Err(_) => ChunkItem::new(&chunk_id, 0, None, None, None),
-        };
-
-        chunk_item.already_write_size += chunk_data.len() as u64;
-        if is_completed {
-            chunk_item.chunk_state = ChunkState::Completed;
-        }
-
-        self.chunk_db.put_chunk(&chunk_item).await?;
-
+        self.chunk_db.append_chunk_data(&chunk_id, chunk_data.len() as u64, is_completed).await?;
+        info!("append_chunk_data: {} {}",chunk_id.to_string(),chunk_data.len());
         Ok(())
     }
 
-
         
-    //path操作的核心是上传diff文件，并说明  chunkid2 = chunkid1 + diff_id, 该操作要成功的前提是local store中存在chunkid1
+    //path操作的核心是写入iff文件，并说明  chunkid2 = chunkid1 + diff_id, 该操作要成功的前提是local store中存在chunkid1
     //操作成功后，查询chunkid1和chunkid2和diff_id的chunk状态，应该都是exist
     //该函数是否应该上移到chunk_mgr中？
     // pub async fn patch<T>(&self, chunk_id: &str, chunk_reader:  T)->ChunkResult<()>
@@ -603,7 +758,8 @@ impl ChunkStore {
     //link成功后，查询target_chunk_id和new_chunk_id的状态，应该都是exist
     pub async fn link_chunkid(&self, target_chunk_id: &ChunkId, new_chunk_id: &ChunkId)->ChunkResult<()> {
         // Verify target chunk exists
-        if !self.is_real_chunk_exist(&target_chunk_id).await? {
+        let (is_exist,target_size) = self.is_real_chunk_exist(&target_chunk_id).await?;
+        if !is_exist {
             return Err(ChunkError::ChunkNotFound(format!("target_chunk_id not exist! {}",target_chunk_id.to_string())));
         }
 
@@ -641,16 +797,145 @@ impl ChunkStore {
 
     pub async fn remove_chunk_link(&self, chunk_id: &ChunkId)->ChunkResult<()> {
         // Remove symlink if it exists
-
-        let chunk_path = self.get_chunk_path(&chunk_id);
-        if let Err(e) = fs::remove_file(&chunk_path).await {
-            warn!("Failed to remove symlink {}: {}", chunk_path, e);
+        if self.enable_symlink {
+            let chunk_path = self.get_chunk_path(&chunk_id);
+            if let Err(e) = fs::remove_file(&chunk_path).await {
+                warn!("Failed to remove symlink {}: {}", chunk_path, e);
+            }
         }
-
-
         // Remove link from database
         self.chunk_db.remove_link(&chunk_id).await?;
         
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use buckyos_kit::*;
+    
+    // Helper function to create a test ChunkStore
+
+    async fn create_test_store() -> ChunkResult<ChunkStore> {
+        init_logging("ndn-lib test");
+        let temp_dir = tempdir().unwrap();
+        let result_store = ChunkStore::new(temp_dir.path().to_str().unwrap().to_string()).await;
+        if result_store.is_err() {
+            let err = result_store.err().unwrap();
+            warn!("create_test_store: create store failed! {:?}",&err);
+            return Err(err);
+        }
+        info!("create_test_store: store created! {}",temp_dir.path().to_str().unwrap());
+        result_store
+    }
+
+    #[tokio::test]
+    async fn test_put_and_get_chunk() -> ChunkResult<()> {
+        let store = create_test_store().await?;
+        let data = b"test data".to_vec();
+        let mut chunk_hasher = ChunkHasher::new(None);
+        let hash_bytes = chunk_hasher.calc_from_bytes(&data);
+        let chunk_id = ChunkId::from_sha256_result(&hash_bytes);
+
+        // Test putting chunk
+        store.put_chunk(&chunk_id, &data, true).await?;
+
+        // Verify chunk exists
+        let (is_exist,size) = store.is_chunk_exist(&chunk_id, None).await?;
+        assert!(is_exist);
+        assert_eq!(size, data.len() as u64);
+
+        let mut reader = store.get_chunk_reader(&chunk_id).await?;
+        let mut buffer = vec![0u8; data.len()];
+        reader.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(buffer, data);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_append_chunk_data() -> ChunkResult<()> {
+        let store = create_test_store().await?;
+        let chunk_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
+        let data1 = b"first part".to_vec();
+        let data2 = b" second part".to_vec();
+        store.new_chunk_for_write(&chunk_id, data1.len() as u64 + data2.len() as u64).await?;
+        
+        // Append first part
+        store.append_chunk_data(&chunk_id, &data1, false).await?;
+
+        // Append second part
+        store.append_chunk_data(&chunk_id, &data2, true).await?;
+
+        // Verify chunk exists and is complete
+        let (is_exist,size) = store.is_chunk_exist(&chunk_id, None).await?;
+        assert!(is_exist);
+        assert_eq!(size, data1.len() as u64 + data2.len() as u64);
+
+        let mut reader = store.get_chunk_reader(&chunk_id).await?;
+        let mut buffer = vec![0u8; data1.len() + data2.len()];
+        reader.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(buffer, data1.iter().chain(data2.iter()).cloned().collect::<Vec<u8>>());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_chunk_linking() -> ChunkResult<()> {
+        let store = create_test_store().await?;
+        let original_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
+        let linked_id = ChunkId::new("qcid:2223232323232323").unwrap();
+
+        // Create original chunk
+        let data = b"original data".to_vec();
+        store.put_chunk(&original_id, &data, false).await?;
+
+        // Create link
+        store.link_chunkid(&original_id, &linked_id).await?;    
+
+        // Verify both chunks exist
+        let (is_exist,size) = store.is_chunk_exist(&original_id, None).await?;
+        assert!(is_exist);
+        assert_eq!(size, data.len() as u64);
+        let (is_exist,size) = store.is_chunk_exist(&linked_id, None).await?;
+        assert!(is_exist);
+        assert_eq!(size, data.len() as u64);
+        Ok(())
+    }
+
+    //测试 open_chunk_writer
+    #[tokio::test]
+    async fn test_open_chunk_writer() -> ChunkResult<()> {
+        let store = create_test_store().await?;
+        let chunk_id = ChunkId::new("sha256:abcdef1234567890").unwrap();
+        let data = b"chunk writer test data".to_vec();
+
+        store.new_chunk_for_write(&chunk_id, data.len() as u64).await?;
+        // Open chunk writer
+        let mut writer = store.open_chunk_writer(&chunk_id).await?;
+
+        // Write data to chunk
+        writer.write_all(&data).await.map_err(|e| {
+            warn!("test_open_chunk_writer: write data failed! {}", e.to_string());
+            ChunkError::IoError(e.to_string())
+        })?;
+        writer.flush().await.map_err(|e| {
+            warn!("test_open_chunk_writer: flush data failed! {}", e.to_string());
+            ChunkError::IoError(e.to_string())
+        })?;
+        info!("test_open_chunk_writer: write data ok!");
+        drop(writer);
+        store.close_chunk_writer(&chunk_id).await?;
+        // Verify chunk exists and data is correct
+        let (is_exist, size) = store.is_chunk_exist(&chunk_id,Some(false)).await?;
+        assert!(is_exist);
+        assert_eq!(size, data.len() as u64);
+
+        let mut reader = store.get_chunk_reader(&chunk_id).await?;
+        let mut buffer = vec![0u8; data.len()];
+        reader.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(buffer, data);
+
         Ok(())
     }
 }

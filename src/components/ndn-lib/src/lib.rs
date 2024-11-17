@@ -27,6 +27,8 @@ pub enum ChunkError {
     IoError(String),
     #[error("db error: {0}")]
     DbError(String),
+    #[error("chunk not completed: {0}")]
+    InComplete(String),
 }
 
 
