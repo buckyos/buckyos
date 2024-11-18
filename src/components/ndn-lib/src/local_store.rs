@@ -3,11 +3,11 @@ use std::pin::Pin;
 // Chunk Manage由多个Local Chunk Store组成(目前版本先搞定单OOD)
 use std::{collections::HashMap, io::SeekFrom};
 use std::time::{SystemTime, UNIX_EPOCH};
-
 use tokio::{
     fs::{self, File,OpenOptions}, 
     io::{self, AsyncRead,AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeek, AsyncSeekExt}, 
 };
+
 use log::*;
 use rusqlite::{params, Connection, Result as SqliteResult};
 use rusqlite::types::{ToSql, FromSql, ValueRef};
@@ -367,17 +367,18 @@ impl ChunkDb {
 
 
 
-struct ChunkStore {
+pub struct ChunkStore {
     pub store_id: String,
     pub store_desc: String,
-    pub chunk_db: ChunkDb,
-    pub base_dir: String,
     pub enable_symlink: bool,//是否启用符号链接，不同的文件系统对符号链接的支持不一样，默认不启用
     pub auto_add_to_db: bool,//是否自动将符合命名规范的chunkid添加到db中，默认不自动添加
+    chunk_db: ChunkDb,
+    base_dir: String,
+    read_only: bool,
 }
 
 // Create a new trait that combines AsyncRead and AsyncSeek
-trait ChunkReadSeek: AsyncRead + AsyncSeek {}
+pub trait ChunkReadSeek: AsyncRead + AsyncSeek {}
 // Blanket implementation for any type that implements both traits
 impl<T: AsyncRead + AsyncSeek> ChunkReadSeek for T {}
 
@@ -399,6 +400,7 @@ impl ChunkStore {
             base_dir,
             enable_symlink: true,
             auto_add_to_db: true,
+            read_only: false,
         })
     }
 
@@ -656,9 +658,10 @@ impl ChunkStore {
         Ok(())
     }
 
+    //Maybe it is more appropriate to return the file directly
     pub async fn open_chunk_writer(&self, chunk_id: &ChunkId)->ChunkResult<Box<dyn AsyncWrite + Send + Sync + Unpin>> 
     {
-        //TODO 是否要限制同一个chunk_id只能有一个writer？
+        //TODO: Do we have to limit the same chunk_id can only have one writer?
         let chunk_path = self.get_chunk_path(&chunk_id);
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)

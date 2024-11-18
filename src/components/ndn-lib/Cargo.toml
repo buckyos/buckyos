@@ -20,6 +20,8 @@ rusqlite = { version = "*", features = ["bundled"] }
 sqlx = { version = '*', features = ["runtime-tokio-rustls", "sqlite"]}
 futures = "*"  
 hex = "*"
+url = "*"
+memmap = "*"
 buckyos-kit = { path = "../buckyos-kit" }
 
 [dev-dependencies]

@@ -3,6 +3,7 @@
 mod chunk;
 mod local_store;
 mod chunk_mgr;
+mod ndn_client;
 
 pub use chunk::*;
 pub use local_store::*;
