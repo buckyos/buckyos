@@ -690,16 +690,34 @@ impl ChunkStore {
     }
 
     //从简单可靠的角度考虑，修改成只允许append数据，复杂写入用open_writer
-    pub async fn append_chunk_data(&self, chunk_id: &ChunkId, chunk_data: &[u8], is_completed: bool)->ChunkResult<()> {
+    pub async fn append_chunk_data(&self, chunk_id: &ChunkId, offset_from_begin: u64, chunk_data: &[u8], is_completed: bool) -> ChunkResult<()> {
         let chunk_path = self.get_chunk_path(&chunk_id);
 
-        // Create parent directories if needed
-        if let Some(parent) = std::path::Path::new(&chunk_path).parent() {
-            fs::create_dir_all(parent).await
-                .map_err(|e| {
-                    warn!("append_chunk_data: create dir failed! {}",e.to_string());
-                    ChunkError::IoError(e.to_string())
-                })?;
+        // Open file first to check its size
+        let file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&chunk_path)
+            .await
+            .map_err(|e| {
+                warn!("append_chunk_data: open file failed! {}", e.to_string());
+                ChunkError::IoError(e.to_string())
+            })?;
+
+        // Get current file size
+        let metadata = file.metadata().await.map_err(|e| {
+            warn!("append_chunk_data: get metadata failed! {}", e.to_string());
+            ChunkError::IoError(e.to_string())
+        })?;
+        
+        // Check if offset is valid
+        if offset_from_begin > metadata.len() {
+            return Err(ChunkError::IoError(format!(
+                "Invalid offset: {} exceeds file size: {}", 
+                offset_from_begin, 
+                metadata.len()
+            )));
         }
 
         // Write the chunk data from reader
@@ -714,8 +732,8 @@ impl ChunkStore {
                 ChunkError::IoError(e.to_string())
             })?;
 
-        // Seek to end
-        file.seek(SeekFrom::End(0)).await
+        // Seek to offset
+        file.seek(SeekFrom::Start(offset_from_begin)).await
             .map_err(|e| {
                 warn!("append_chunk_data: seek file failed! {}",e.to_string());
                 ChunkError::IoError(e.to_string())
@@ -866,10 +884,10 @@ mod tests {
         store.new_chunk_for_write(&chunk_id, data1.len() as u64 + data2.len() as u64).await?;
         
         // Append first part
-        store.append_chunk_data(&chunk_id, &data1, false).await?;
+        store.append_chunk_data(&chunk_id, 0,&data1, false).await?;
 
         // Append second part
-        store.append_chunk_data(&chunk_id, &data2, true).await?;
+        store.append_chunk_data(&chunk_id, data1.len() as u64,&data2, true).await?;
 
         // Verify chunk exists and is complete
         let (is_exist,size) = store.is_chunk_exist(&chunk_id, None).await?;
