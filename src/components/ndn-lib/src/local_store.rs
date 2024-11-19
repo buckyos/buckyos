@@ -383,7 +383,7 @@ pub trait ChunkReadSeek: AsyncRead + AsyncSeek {}
 impl<T: AsyncRead + AsyncSeek> ChunkReadSeek for T {}
 
 impl ChunkStore {
-    async fn new(base_dir: String)->ChunkResult<Self> {
+    pub async fn new(base_dir: String)->ChunkResult<Self> {
         let chunk_db_path = format!("{}/.cstore/chunk.db",base_dir.clone());
         //创建dir
         fs::create_dir_all(format!("{}/.cstore",base_dir.clone())).await
