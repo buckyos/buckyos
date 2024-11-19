@@ -453,14 +453,14 @@ impl ChunkStore {
                 let file_size = file_meta.unwrap().len();
                 let mut reader = File::open(&chunk_path).await
                 .map_err(|e| {
-                    warn!("ChunkStore: open file failed! {}", e.to_string());
+                    warn!("is_chunk_exist: open file failed! {}", e.to_string());
                     ChunkError::IoError(e.to_string())
                 })?;
 
                 let mut chunk_hasher = ChunkHasher::new(None);
                 let hash_bytes = chunk_hasher.calc_from_reader(&mut reader).await?;
                 if !chunk_id.is_equal(&hash_bytes) {
-                    warn!("auto add chunk failed! chunk_id not equal file content! {} ", chunk_id.to_string());
+                    warn!("is_chunk_exist:auto add chunk failed! chunk_id not equal file content! {} ", chunk_id.to_string());
                     return Ok((false,0));
                 }
                 let chunk_item = ChunkItem::new(&chunk_id, file_size, None, None, None);
@@ -589,13 +589,13 @@ impl ChunkStore {
             .open(&chunk_path)
             .await
             .map_err(|e| {
-                warn!("put_chunk: create file failed! {}", e.to_string());
+                warn!("put_chunk: {} create file failed! {}", chunk_path, e.to_string());
                 ChunkError::IoError(e.to_string())
             })?;
 
         tokio::io::copy(&mut chunk_data.as_ref(), &mut file).await
             .map_err(|e| {
-                warn!("put_chunk: write file failed! {}",e.to_string());
+                warn!("put_chunk: {} write file failed! {}", chunk_path, e.to_string());
                 ChunkError::IoError(e.to_string())
             })?;
 
@@ -615,7 +615,7 @@ impl ChunkStore {
         // Create parent directories
         if let Some(parent) = std::path::Path::new(&chunk_path).parent() {
             fs::create_dir_all(parent).await.map_err(|e| {
-                warn!("put_chunk: create dir failed! {}",e.to_string());
+                warn!("put_by_reader: create dir failed! {}",e.to_string());
                 ChunkError::IoError(e.to_string())
             })?;
         }
@@ -627,12 +627,12 @@ impl ChunkStore {
             .open(&chunk_path)
             .await
             .map_err(|e| {
-                warn!("put_chunk: create file failed! {}", e.to_string());
+                warn!("put_by_reader: create file failed! {}", e.to_string());
                 ChunkError::IoError(e.to_string())
             })?;
         let bytes_written = tokio::io::copy(&mut chunk_reader, &mut file).await
             .map_err(|e| {
-                warn!("put_chunk: write file failed! {}",e.to_string());
+                warn!("put_by_reader: write file failed! {}",e.to_string());
                 ChunkError::IoError(e.to_string())
             })?;
 
@@ -697,7 +697,7 @@ impl ChunkStore {
         if let Some(parent) = std::path::Path::new(&chunk_path).parent() {
             fs::create_dir_all(parent).await
                 .map_err(|e| {
-                    warn!("put_chunk: create dir failed! {}",e.to_string());
+                    warn!("append_chunk_data: create dir failed! {}",e.to_string());
                     ChunkError::IoError(e.to_string())
                 })?;
         }
@@ -710,21 +710,21 @@ impl ChunkStore {
             .open(&chunk_path)
             .await
             .map_err(|e| {
-                warn!("put_chunk: create file failed! {}", e.to_string());
+                warn!("append_chunk_data: create file failed! {}", e.to_string());
                 ChunkError::IoError(e.to_string())
             })?;
 
         // Seek to end
         file.seek(SeekFrom::End(0)).await
             .map_err(|e| {
-                warn!("put_chunk: seek file failed! {}",e.to_string());
+                warn!("append_chunk_data: seek file failed! {}",e.to_string());
                 ChunkError::IoError(e.to_string())
             })?;
 
         // Write data
         tokio::io::copy(&mut chunk_data.as_ref(), &mut file).await
             .map_err(|e| {
-                warn!("put_chunk: write file failed! {}",e.to_string());
+                warn!("append_chunk_data: write file failed! {}",e.to_string());
                 ChunkError::IoError(e.to_string())
             })?;
 
