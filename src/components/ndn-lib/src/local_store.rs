@@ -690,18 +690,31 @@ impl ChunkStore {
     }
 
     //从简单可靠的角度考虑，修改成只允许append数据，复杂写入用open_writer
-    pub async fn append_chunk_data(&self, chunk_id: &ChunkId, offset_from_begin: u64, chunk_data: &[u8], is_completed: bool) -> ChunkResult<()> {
+    pub async fn append_chunk_data(&self, chunk_id: &ChunkId, offset_from_begin: u64, chunk_data: &[u8], is_completed: bool,chunk_size:Option<u64>) -> ChunkResult<()> {
         let chunk_path = self.get_chunk_path(&chunk_id);
+        if offset_from_begin == 0 {
+            let chunk_size = chunk_size.unwrap_or(chunk_data.len() as u64);
+            if let Some(parent) = std::path::Path::new(&chunk_path).parent() {
+                fs::create_dir_all(parent).await.map_err(|e| {
+                    warn!("append_chunk_data: at 0 offsetcreate dir failed! {}",e.to_string());
+                    ChunkError::IoError(e.to_string())
+                })?;
 
-        // Open file first to check its size
-        let file = tokio::fs::OpenOptions::new()
-            .read(true)
+                let mut chunk_item = ChunkItem::new(&chunk_id, chunk_size, None, None, None);
+                chunk_item.chunk_state = ChunkState::New;
+                self.chunk_db.set_chunk_item(&chunk_item).await?;
+            }
+        }
+
+        // Write the chunk data from reader
+        let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&chunk_path)
             .await
             .map_err(|e| {
-                warn!("append_chunk_data: open file failed! {}", e.to_string());
+                warn!("append_chunk_data: create file failed! {}", e.to_string());
                 ChunkError::IoError(e.to_string())
             })?;
 
@@ -720,17 +733,7 @@ impl ChunkStore {
             )));
         }
 
-        // Write the chunk data from reader
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&chunk_path)
-            .await
-            .map_err(|e| {
-                warn!("append_chunk_data: create file failed! {}", e.to_string());
-                ChunkError::IoError(e.to_string())
-            })?;
+
 
         // Seek to offset
         file.seek(SeekFrom::Start(offset_from_begin)).await
@@ -881,13 +884,14 @@ mod tests {
         let chunk_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
         let data1 = b"first part".to_vec();
         let data2 = b" second part".to_vec();
-        store.new_chunk_for_write(&chunk_id, data1.len() as u64 + data2.len() as u64).await?;
+        let data_len = data1.len() as u64 + data2.len() as u64;
+        //store.new_chunk_for_write(&chunk_id, data1.len() as u64 + data2.len() as u64).await?;
         
         // Append first part
-        store.append_chunk_data(&chunk_id, 0,&data1, false).await?;
+        store.append_chunk_data(&chunk_id, 0,&data1, false,Some(data_len)).await?;
 
         // Append second part
-        store.append_chunk_data(&chunk_id, data1.len() as u64,&data2, true).await?;
+        store.append_chunk_data(&chunk_id, data1.len() as u64,&data2, true,None).await?;
 
         // Verify chunk exists and is complete
         let (is_exist,size) = store.is_chunk_exist(&chunk_id, None).await?;
