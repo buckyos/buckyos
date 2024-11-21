@@ -81,7 +81,7 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
                     panic!("No certificates found in cert file");
                 }
                 let mut cert:Vec<Certificate> = certs.into_iter().map(Certificate).collect();
-                let cert = cert.remove(0);
+                //let cert = cert.remove(0);
                 info!("load tls cert: {:?} OK",cert);
                 default_cert = Some(cert.clone());
 
@@ -96,7 +96,7 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
                 let mut config = ServerConfig::builder()
                     .with_safe_defaults()
                     .with_no_client_auth()
-                    .with_single_cert(vec![cert], key)
+                    .with_single_cert(cert, key)
                     .unwrap();
                 config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
                 (host.clone(), Arc::new(config))
