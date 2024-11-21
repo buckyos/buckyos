@@ -152,7 +152,7 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
                             stream.set_nodelay(true).unwrap_or_default();
                             
                             // 添加超时控制
-                            let timeout_duration = Duration::from_secs(30);
+                            let timeout_duration = Duration::from_secs(15);
                             match timeout(timeout_duration, tls_acceptor.accept(stream)).await {
                                 Ok(Ok(tls_stream)) => {
                                     info!("tls accept a new tls from tcp stream OK!");
@@ -213,7 +213,7 @@ pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {
         async move {
             Ok::<_, hyper::Error>(service_fn(move |req| {
                 // Use _handle_request which includes timeout instead of handle_request
-                _handle_request(router.clone(), None, req, client_ip)
+                handle_request(router.clone(), None, req, client_ip)
             }))
         }
     });
