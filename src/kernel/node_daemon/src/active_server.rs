@@ -67,7 +67,7 @@ impl ActiveServer {
             "PortForward" => {
                 if zone_name.ends_with(".web3.buckyos.io") {
                     need_sn = true;
-                    ddns_sn_url = Some("http://web3.buckyos.io/kapi/sn".to_string());
+                    ddns_sn_url = Some("https://web3.buckyos.io/kapi/sn".to_string());
                 }
                 net_id = Some("wan".to_string());
             },
@@ -103,7 +103,7 @@ impl ActiveServer {
         
             
         if need_sn {
-            let sn_url = "http://web3.buckyos.io/kapi/sn";
+            let sn_url = "https://web3.buckyos.io/kapi/sn";
             info!("Register OOD to sn: {}",sn_url);
             let rpc_token = ::kRPC::RPCSessionToken {
                 token_type : ::kRPC::RPCSessionTokenType::JWT,
