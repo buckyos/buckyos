@@ -24,5 +24,7 @@ members = [
     "./kernel/sys_config_service", 
     "./kernel/verify_hub",   
     "./kernel/node_daemon",
-    "./kernel/scheduler",
+    "./kernel/scheduler", 
+    #"components/repo-service", 
+    #"components/index-lib",
 ]

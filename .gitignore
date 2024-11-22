@@ -25,3 +25,4 @@ src/apps/sys_test/node_modules/
 /src/rootfs/bin/control_panel/
 /src/rootfs/bin/sys_test/
 /src/scripts/__pycache__/
+/src/target

@@ -1,0 +1,28 @@
+[package]
+name = "repo-service"
+version = "0.1.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@Song"]
+
+[dependencies]
+time = { version = "^0.3", features = ["formatting"] }
+async-trait = "*"
+log = "*"
+simplelog = "*"
+serde = "*"
+serde_json = "*"
+url = "*"
+tokio = { version = "*", features = ["full"] }
+sled = "*"
+lazy_static = "*"
+thiserror = "*"
+version-compare = "*"
+semver = "*"
+index-lib = { path = "../index-lib" }
+ndn-lib = { path = "../ndn-lib" }
+#jsonwebtoken = "*" 
+#buckyos-kit = { path = "../buckyos-kit" }
+#name-lib = { path = "../name-lib" }
+#kRPC ={ path = "../../kernel/kRPC" }
+#rbac = { path = "../../kernel/rbac" }
+#warp = "*"
