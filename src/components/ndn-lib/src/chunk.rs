@@ -63,10 +63,15 @@ impl ChunkId {
 
 
 pub struct ChunkHasher {
-    hasher: Sha256,
+    hash_type:String,
+    sha_hasher: Option<Sha256>,
+    //can extend other hash type in the future
 }
 
+
+
 impl ChunkHasher {
+
     pub fn new(hash_type: Option<&str>) -> ChunkResult<Self> {
         //default is sha256
         let hasher = match hash_type {
@@ -76,11 +81,21 @@ impl ChunkHasher {
         };
 
         Ok(Self {
-            hasher: hasher,
+            hash_type:hash_type.unwrap_or("sha256").to_string(),
+            sha_hasher: Some(hasher),
         })
     }
 
+    pub fn restore_from_state(state_json:serde_json::Value) -> ChunkResult<Self> {
+        unimplemented!()
+    }
+
+    pub fn save_state(&self) -> serde_json::Value {
+        unimplemented!()
+    }
+
     pub async fn calc_from_reader<T: AsyncRead + Unpin>(&mut self, reader: &mut T) -> ChunkResult<Vec<u8>> {
+        //TODO: add other hash type support
         let mut hasher = Sha256::new();
         let mut buffer = vec![0u8; CACL_HASH_PIECE_SIZE as usize];
         loop {
@@ -106,14 +121,17 @@ impl ChunkHasher {
     }
 
     pub fn update_from_bytes(&mut self, bytes: &[u8]) {
-        self.hasher.update(bytes);
+        let mut hasher = self.sha_hasher.as_mut().unwrap();
+        hasher.update(bytes);
     }
 
     pub fn finalize(self) -> Vec<u8> {
-        self.hasher.finalize().to_vec()
+        let hasher = self.sha_hasher.unwrap();
+        hasher.finalize().to_vec()
     }
 }
 
+//quick hash is only for qcid
 pub async fn calc_quick_hash<T: AsyncRead + AsyncSeek + Unpin>(reader: &mut T, length: Option<u64>) -> ChunkResult<ChunkId> {
     let length = if let Some(length) = length {
         length
