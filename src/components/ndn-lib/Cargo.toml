@@ -13,12 +13,14 @@ serde = { version = "*", features = ["derive"] }
 serde_json = "*" 
 async-trait = "*"
 tokio = { version = "*", features = ["full"] }
+tokio-util = "*"
+reqwest = {version = "*", features = ["json", "rustls-tls"]}
 surf = "*"  
 tide = "*" 
 http-types = '*'
 rusqlite = { version = "*", features = ["bundled"] }
-sqlx = { version = '*', features = ["runtime-tokio-rustls", "sqlite"]}
 futures = "*"  
+futures-util = "*"
 hex = "*"
 url = "*"
 memmap = "*"

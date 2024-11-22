@@ -9,6 +9,11 @@ use log::*;
 use rustls::ServerConfig;
 use url::Url;
 use std::net::IpAddr;
+use std::io::SeekFrom;
+use tokio::{
+    fs::{self, File,OpenOptions}, 
+    io::{self, AsyncRead,AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeek, AsyncSeekExt}, 
+};
 use std::{net::SocketAddr, sync::Arc};
 use std::path::Path;
 use std::collections::HashMap;
@@ -17,10 +22,10 @@ use tokio::sync::{Mutex, OnceCell};
 use serde_json::json;
 use ::kRPC::*;
 use lazy_static::lazy_static;
-use std::fs::File;
 use std::io::BufReader;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use cyfs_sn::*;
+use ndn_lib::*;
 
 lazy_static!{
     static ref INNER_SERVICES_BUILDERS: Arc<Mutex< HashMap<String, Arc<dyn Fn () -> Box<dyn kRPCHandler + Send + Sync>+ Send + Sync>>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -152,6 +157,10 @@ impl Router {
                 tunnel_selector: Some(tunnel_selector),
                 ..
             } => self.handle_upstream_selector(tunnel_selector.as_str(), req, &host,  client_ip).await,
+            RouteConfig {
+                chunk_mgr: Some(chunk_mgr),
+                ..
+            } => self.handle_chunk_mgr(chunk_mgr, req, &host,  client_ip).await,
             _ => Err(anyhow::anyhow!("Invalid route configuration")),
         }.map(|mut resp| {
             if host_config.enable_cors {
@@ -162,6 +171,75 @@ impl Router {
             }
             resp
         })
+    }
+
+    async fn handle_chunk_mgr(&self, chunk_mgr: &ChunkMgrConfig, req: Request<Body>, host: &str, client_ip:IpAddr) -> Result<Response<Body>> {
+        if req.method() != hyper::Method::GET {
+            return Err(anyhow::anyhow!("Invalid method: {}", req.method()));
+        }
+        //get chunkid    
+        let chunk_id;
+        if chunk_mgr.path_mode {
+            //get chunkid by path
+            let path = req.uri().path();
+            //let sub_path = path.trim_start_matches(path);
+            chunk_id = ChunkId::from_hostname(path).unwrap();
+        } else {
+            //get chunkid by hostname
+            let chunk_id_result = ChunkId::from_hostname(host);
+            if chunk_id_result.is_err() {
+                warn!("Invalid chunk id: {}", chunk_id_result.err().unwrap());
+                return Err(anyhow::anyhow!("Invalid chunk id"));
+            }
+            chunk_id = chunk_id_result.unwrap();
+        }
+        let chunk_mgr_id = chunk_mgr.chunk_mgr_id.clone();
+        let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(chunk_mgr_id.as_str()).await;
+        if chunk_mgr.is_none() {
+            warn!("Chunk manager not found: {}", chunk_mgr_id);
+            return Err(anyhow::anyhow!("Chunk manager not found: {}", chunk_mgr_id));
+        }
+        let chunk_mgr = chunk_mgr.unwrap();
+
+        let chunk_reader = chunk_mgr.get_chunk_reader(&chunk_id,true).await;
+        if chunk_reader.is_err() {
+            warn!("Failed to get chunk reader: {}", chunk_reader.err().unwrap());
+            return Err(anyhow::anyhow!("Failed to get chunk reader:"));
+        }
+        let (mut chunk_reader,chunk_size) = chunk_reader.unwrap();
+        //TODO:根据ObjectId的类型结合path得到mime_type
+        let mime_type = "application/octet-stream";
+        // 处理Range请求
+        if let Some(range_header) = req.headers().get(hyper::header::RANGE) {
+            if let Ok(range_str) = range_header.to_str() {
+                if let Ok((start, end)) = parse_range(range_str, chunk_size) {
+                    chunk_reader.seek(SeekFrom::Start(start)).await?;
+                    
+                    let content_length = end - start + 1;
+                    let stream = tokio_util::io::ReaderStream::with_capacity(
+                        chunk_reader,
+                        content_length as usize
+                    );
+
+                    return Ok(Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header("Content-Type", mime_type)
+                        .header("Content-Length", content_length)
+                        .header("Content-Range", format!("bytes {}-{}/{}", start, end, chunk_size))
+                        .header("Accept-Ranges", "bytes")
+                        .body(Body::wrap_stream(stream))?);
+                }
+            }
+        } 
+
+        let stream = tokio_util::io::ReaderStream::with_capacity(chunk_reader, chunk_size as usize);
+        return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", mime_type)
+                .header("Content-Length", chunk_size)
+                .header("Accept-Ranges", "bytes")
+                .body(Body::wrap_stream(stream))?);
+
     }
 
     async fn handle_inner_service(&self, inner_service_name: &str, req: Request<Body>, client_ip:IpAddr) -> Result<Response<Body>> {
@@ -263,7 +341,7 @@ impl Router {
         let path = req.uri().path();
         let sub_path = path.trim_start_matches(route_path);
         let file_path = format!("{}/{}", local_dir, sub_path);
-        info!("handle_local_dir will load file:{}",file_path);
+        info!("handle_local_dir will load file:{}", file_path);
         let path = Path::new(&file_path);
 
         if path.is_file() {
@@ -273,20 +351,76 @@ impl Router {
                     .status(StatusCode::NOT_FOUND)
                     .body(Body::from("File not found"))?),
             };
-            let mime_type = mime_guess::from_path(&file_path).first_or_octet_stream();
-            let stream = tokio_util::io::ReaderStream::new(file);
-            let body = Body::wrap_stream(stream);
 
+            let file_meta = file.metadata().await.map_err(|e| {
+                warn!("Failed to get file metadata: {}", e);
+                anyhow::anyhow!("Failed to get file metadata: {}", e)
+            })?;
+            let file_size = file_meta.len();
+            let mime_type = mime_guess::from_path(&file_path).first_or_octet_stream();
+
+            // 处理Range请求
+            if let Some(range_header) = req.headers().get(hyper::header::RANGE) {
+                if let Ok(range_str) = range_header.to_str() {
+                    if let Ok((start, end)) = parse_range(range_str, file_size) {
+                        let mut file = tokio::io::BufReader::new(file);
+                        // 设置读取位置
+                        tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(start)).await?;
+                        
+                        let content_length = end - start + 1;
+                        let stream = tokio_util::io::ReaderStream::with_capacity(
+                            file.take(content_length),
+                            content_length as usize
+                        );
+
+                        return Ok(Response::builder()
+                            .status(StatusCode::PARTIAL_CONTENT)
+                            .header("Content-Type", mime_type.as_ref())
+                            .header("Content-Length", content_length)
+                            .header("Content-Range", format!("bytes {}-{}/{}", start, end, file_size))
+                            .header("Accept-Ranges", "bytes")
+                            .body(Body::wrap_stream(stream))?);
+                    }
+                }
+            }
+
+            // 非Range请求返回完整文件
+            let stream = tokio_util::io::ReaderStream::with_capacity(file, file_size as usize);
+            
             Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", mime_type.as_ref())
-                .body(body)?)
+                .header("Content-Length", file_size)
+                .header("Accept-Ranges", "bytes")
+                .body(Body::wrap_stream(stream))?)
         } else {
             Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::from("File not found"))?)
         }
     }
+}
+
+// 辅助函数：解析Range header
+fn parse_range(range: &str, file_size: u64) -> Result<(u64, u64)> {
+    // 解析 "bytes=start-end" 格式
+    let range = range.trim_start_matches("bytes=");
+    let mut parts = range.split('-');
+    
+    let start = parts.next()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+        
+    let end = parts.next()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(file_size - 1);
+
+    // 验证范围有效性
+    if start >= file_size || end >= file_size || start > end {
+        return Err(anyhow::anyhow!("Invalid range"));
+    }
+
+    Ok((start, end))
 }
 
 pub struct SNIResolver {

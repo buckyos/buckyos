@@ -10,6 +10,9 @@ use log::*;
 use crate::{ChunkStore,ChunkId,ChunkResult,ChunkReadSeek,ChunkError};
 use memmap::Mmap;
 use std::pin::Pin;
+
+
+
 pub struct ChunkMgr {
     local_store_list:Vec<ChunkStore>,
     local_cache:Option<ChunkStore>,
@@ -19,6 +22,10 @@ pub struct ChunkMgr {
 }
 
 impl ChunkMgr {
+    pub async fn get_chunk_mgr_by_id(chunk_mgr_id:&str)->Option<Self> {
+        None
+    }
+
     pub fn new()->Self {
         Self {
             local_store_list:vec![],
@@ -29,10 +36,11 @@ impl ChunkMgr {
     }
 
     fn get_cache_mmap_path(&self, chunk_id:&ChunkId)->Option<String> {
-        unimplemented!()
+        None
     }
 
-    pub async fn get_chunk_reader(&self, chunk_id:&ChunkId,auto_cache:bool)->ChunkResult<Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>> {
+    //得到已经存在chunk的reader
+    pub async fn get_chunk_reader(&self, chunk_id:&ChunkId,auto_cache:bool)->ChunkResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64)> {
         //at first ,do access control
 
         let mcache_file_path = self.get_cache_mmap_path(chunk_id);
@@ -40,8 +48,10 @@ impl ChunkMgr {
             let mcache_file_path = mcache_file_path.unwrap();
             let file = File::open(mcache_file_path.clone()).await;
             if file.is_ok() {
+                let file = file.unwrap();
+                let file_meta = file.metadata().await.unwrap();
                 info!("get_chunk_reader:return tmpfs cache file:{}", mcache_file_path);
-                return Ok(Box::pin(file.unwrap()));
+                return Ok((Box::pin(file),file_meta.len()));
             }
         }
 
@@ -66,6 +76,10 @@ impl ChunkMgr {
         }
 
         Err(ChunkError::ChunkNotFound(chunk_id.to_string()))
+    }
+
+    pub async fn open_chunk_writer(&self, chunk_id:&ChunkId,chunk_size:u64,append:bool)->ChunkResult<(Pin<Box<dyn AsyncWrite + Send + Sync + Unpin>>,u64)> {
+        Err(ChunkError::Internal("no chunk mgr".to_string()))
     }
 
 }

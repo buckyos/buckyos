@@ -457,7 +457,7 @@ impl ChunkStore {
                     ChunkError::IoError(e.to_string())
                 })?;
 
-                let mut chunk_hasher = ChunkHasher::new(None);
+                let mut chunk_hasher = ChunkHasher::new(None)?;
                 let hash_bytes = chunk_hasher.calc_from_reader(&mut reader).await?;
                 if !chunk_id.is_equal(&hash_bytes) {
                     warn!("is_chunk_exist:auto add chunk failed! chunk_id not equal file content! {} ", chunk_id.to_string());
@@ -523,7 +523,7 @@ impl ChunkStore {
     }
 
     pub async fn get_chunk_piece(&self, chunk_id: &ChunkId, offset:SeekFrom, piece_size: u32)->ChunkResult<Vec<u8>> {
-        let mut reader = self.get_chunk_reader(chunk_id).await?;
+        let (mut reader,chunk_size) = self.get_chunk_reader(chunk_id).await?;
         reader.seek(offset).await.map_err(|e| {
             warn!("get_chunk_piece: seek file failed! {}", e.to_string());
             ChunkError::IoError(e.to_string())
@@ -536,13 +536,15 @@ impl ChunkStore {
        Ok(buffer)   
     }
 
-    pub async fn get_chunk_reader(&self, chunk_id: &ChunkId) -> ChunkResult<Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>> {
+    pub async fn get_chunk_reader(&self, chunk_id: &ChunkId) -> ChunkResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64)> {
         let chunk_item = self.chunk_db.get_chunk(chunk_id).await;
+        let mut chunk_size = 0;
         if chunk_item.is_ok() {
             let chunk_item = chunk_item.unwrap();
             if chunk_item.chunk_state != ChunkState::Completed {
                 return Err(ChunkError::InComplete(format!("chunk not completed! {}",chunk_id.to_string())));
             }
+            chunk_size = chunk_item.chunk_size;
         }
         
         let chunk_path = self.get_chunk_path(&chunk_id);
@@ -550,7 +552,10 @@ impl ChunkStore {
             warn!("get_chunk_reader: open file failed! {}", e.to_string());
             ChunkError::IoError(e.to_string())
         })?;
-        Ok(Box::pin(file))
+        if chunk_size == 0 {
+            chunk_size = file.metadata().await.unwrap().len();
+        }
+        Ok((Box::pin(file),chunk_size))
     }
 
     //一口气写入一组chunk(通常是小chunk)
@@ -565,7 +570,7 @@ impl ChunkStore {
         let chunk_path = self.get_chunk_path(&chunk_id);
         
         if need_verify {
-            let mut chunk_hasher = ChunkHasher::new(None);
+            let mut chunk_hasher = ChunkHasher::new(None)?;
             let hash_bytes = chunk_hasher.calc_from_bytes(&chunk_data);
             if !chunk_id.is_equal(&hash_bytes) {
                 warn!("put_chunk: chunk_id not equal hash_bytes! {}",chunk_id.to_string());
@@ -871,7 +876,7 @@ mod tests {
         assert!(is_exist);
         assert_eq!(size, data.len() as u64);
 
-        let mut reader = store.get_chunk_reader(&chunk_id).await?;
+        let (mut reader,chunk_size) = store.get_chunk_reader(&chunk_id).await?;
         let mut buffer = vec![0u8; data.len()];
         reader.read_exact(&mut buffer).await.unwrap();
         assert_eq!(buffer, data);
@@ -898,7 +903,7 @@ mod tests {
         assert!(is_exist);
         assert_eq!(size, data1.len() as u64 + data2.len() as u64);
 
-        let mut reader = store.get_chunk_reader(&chunk_id).await?;
+        let (mut reader,chunk_size) = store.get_chunk_reader(&chunk_id).await?;
         let mut buffer = vec![0u8; data1.len() + data2.len()];
         reader.read_exact(&mut buffer).await.unwrap();
         assert_eq!(buffer, data1.iter().chain(data2.iter()).cloned().collect::<Vec<u8>>());
@@ -956,7 +961,7 @@ mod tests {
         assert!(is_exist);
         assert_eq!(size, data.len() as u64);
 
-        let mut reader = store.get_chunk_reader(&chunk_id).await?;
+        let (mut reader,chunk_size) = store.get_chunk_reader(&chunk_id).await?;
         let mut buffer = vec![0u8; data.len()];
         reader.read_exact(&mut buffer).await.unwrap();
         assert_eq!(buffer, data);

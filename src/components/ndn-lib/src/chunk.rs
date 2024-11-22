@@ -6,8 +6,9 @@ use hex;
 use log::*;
 use crate::{ChunkResult, ChunkError};
 
-const CACL_HASH_PIECE_SIZE: u64 = 1024*1024;
-const QCID_HASH_PIECE_SIZE: u64 = 4096;
+pub const CACL_HASH_PIECE_SIZE: u64 = 1024*1024;
+pub const QCID_HASH_PIECE_SIZE: u64 = 4096;
+pub const MAX_CHUNK_SIZE: u64 = 1024*1024*1024*4;
 
 //We support 3 types of chunktype:qcid, sha256, mix at this time
 //单个
@@ -36,6 +37,20 @@ impl ChunkId {
         format!("{}:{}", self.hash_type, self.hash_hex_string)
     }
 
+    pub fn to_hostname(&self) -> String {
+        format!("{}-{}", self.hash_hex_string, self.hash_type)
+    }
+
+    pub fn from_hostname(hostname: &str) -> ChunkResult<Self> {
+        let sub_host = hostname.split(".").collect::<Vec<&str>>();
+        let first_part = sub_host[0];
+
+        let pos = first_part.rfind("-").unwrap();
+        let hash_hex_string = &first_part[..pos];
+        let hash_type = &first_part[pos+1..];
+        Ok(Self { hash_hex_string:hash_hex_string.to_string(), hash_type:hash_type.to_string() })   
+    }
+
     pub fn get_length(&self) -> Option<u64> {
         //mix hash can get length from hash_hex_string
         None
@@ -52,11 +67,17 @@ pub struct ChunkHasher {
 }
 
 impl ChunkHasher {
-    pub fn new(hash_type: Option<&str>) -> Self {
+    pub fn new(hash_type: Option<&str>) -> ChunkResult<Self> {
         //default is sha256
-        Self {
-            hasher: Sha256::new(),
-        }
+        let hasher = match hash_type {
+            Some("sha256") => Sha256::new(),
+            None => Sha256::new(),
+            _ => return Err(ChunkError::Internal(format!("invalid hash type:{}",hash_type.unwrap_or("")))),
+        };
+
+        Ok(Self {
+            hasher: hasher,
+        })
     }
 
     pub async fn calc_from_reader<T: AsyncRead + Unpin>(&mut self, reader: &mut T) -> ChunkResult<Vec<u8>> {
@@ -72,6 +93,7 @@ impl ChunkHasher {
                 break;
             }
             hasher.update(&buffer[..n]);
+            
         }
 
         Ok(hasher.finalize().to_vec())
@@ -160,3 +182,18 @@ pub async fn calc_quick_hash_by_buffer(buffer_begin: &[u8],buffer_mid: &[u8],buf
 }
 
 //strcut ChunkData ?
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+
+    #[test]
+    fn test_chunk_id_from_hostname() {
+        let chunk_id = ChunkId::from_hostname("1234567890abcdef-sha256.ndn.buckyos.org").unwrap();
+        assert_eq!(chunk_id.to_string(), "sha256:1234567890abcdef");
+
+        let chunk_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
+        assert_eq!(chunk_id.to_hostname(), "1234567890abcdef-sha256");
+    }
+}

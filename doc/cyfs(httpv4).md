@@ -46,5 +46,23 @@ Tunnel 有一点保活的成本
 ## NDN传输
 
 
+
+### GET Chunk 
+
+Host mode:
+http://$chunkid.[ndn.$zoneid]/index.html?ref=www.buckyos.org
+我们在表达chunkid时，要注意其在host中的合法性。
+
+Path mode(不推荐):
+http://[$zoneid/ndn/]$chunkid/index.html?ref=www.buckyos.org
+
+括号内的信息是可配置的，上述URL等价于
+cyfs://$chunkid/index.html?ref=www.qq.com
+
+通过chunkid定位到一个确定的文件后，http range也是有效的
+
+
+### PUT Chunk
+
 ## 传输证明
 

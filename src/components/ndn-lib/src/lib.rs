@@ -30,6 +30,8 @@ pub enum ChunkError {
     DbError(String),
     #[error("chunk not completed: {0}")]
     InComplete(String),
+    #[error("get from url failed: {0}")]
+    GetFromRemoteError(String),
 }
 
 
