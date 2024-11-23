@@ -1,9 +1,13 @@
 import os
 import shutil
+import platform
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
 def install():
+    if platform.system() == "Windows":
+        print("Windows not support install")
+        return
     # if /opt/buckyos not exist, copy rootfs to /opt/buckyos
     if not os.path.exists("/opt/buckyos"):
         print('copying rootfs to /opt/buckyos')

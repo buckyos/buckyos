@@ -1,6 +1,7 @@
 import tempfile
 import os
 import sys
+import platform
 
 import build_web_apps
 import build_rust
@@ -22,7 +23,16 @@ def build(skip_web_app, skip_install, target):
 if __name__ == "__main__":
     skip_web_app = False
     skip_install = False
-    target = "x86_64-unknown-linux-musl"
+    system = platform.system()
+    arch = platform.machine()
+    target = ""
+    if system == "Linux" and arch == "AMD64":
+        target = "x86_64-unknown-linux-musl"
+    elif system == "Windows" and arch == "AMD64":
+        target = "x86_64-pc-windows-msvc"
+    elif system == "Linux" and arch == "aarch64":
+        target = "aarch64-unknown-linux-gnu"
+
     for arg in sys.argv:
         if arg == "--no-build-web-apps":
             skip_web_app = True
