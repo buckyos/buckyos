@@ -1,5 +1,6 @@
 use base58::{ToBase58, FromBase58};
 use sha2::{Sha256, Digest};
+use crypto_common::hazmat::{SerializedState, SerializableState};
 use tokio::io::{self, AsyncRead, AsyncSeek, AsyncSeekExt, AsyncReadExt};
 use std::io::SeekFrom;
 use hex;
@@ -87,11 +88,24 @@ impl ChunkHasher {
     }
 
     pub fn restore_from_state(state_json:serde_json::Value) -> ChunkResult<Self> {
-        unimplemented!()
+        let serialized_state = hex::decode(
+            &state_json.as_str().ok_or(ChunkError::Internal("invalid hasher state json".to_string()))?)
+            .map_err(|e| ChunkError::Internal(format!("invalid hasher state json:{}",e.to_string())))?;
+        let hasher = Sha256::deserialize(
+            &SerializedState::<Sha256>::try_from(&serialized_state[..]).map_err(|e| ChunkError::Internal(format!("invalid hasher state json:{}",e.to_string())))?)
+            .map_err(|e| ChunkError::Internal(format!("invalid hasher state json:{}",e.to_string())))?;
+        Ok(Self {
+            hash_type: "sha256".to_string(),
+            sha_hasher: Some(hasher),
+        })
     }
 
     pub fn save_state(&self) -> serde_json::Value {
-        unimplemented!()
+        if let Some(hasher) = &self.sha_hasher {
+            serde_json::Value::String(hex::encode(hasher.serialize()))
+        } else {
+            serde_json::Value::Null
+        }
     }
 
     pub async fn calc_from_reader<T: AsyncRead + Unpin>(&mut self, reader: &mut T) -> ChunkResult<Vec<u8>> {
@@ -204,7 +218,7 @@ pub async fn calc_quick_hash_by_buffer(buffer_begin: &[u8],buffer_mid: &[u8],buf
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use rand::Rng;
 
     #[test]
     fn test_chunk_id_from_hostname() {
@@ -213,5 +227,29 @@ mod tests {
 
         let chunk_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
         assert_eq!(chunk_id.to_hostname(), "1234567890abcdef-sha256");
+    }
+
+    #[test]
+    fn test_chunk_hasher_save_state() {
+        let mut buffer = vec![0u8; 2048];
+        let mut rng = rand::thread_rng();
+        rng.fill(&mut buffer[..]);
+
+        let mut chunk_hasher = ChunkHasher::new(None).unwrap();
+        let hash_result = chunk_hasher.calc_from_bytes(&buffer);
+
+        let hash_result_restored = {
+            let mut chunk_hasher = ChunkHasher::new(None).unwrap();
+            chunk_hasher.update_from_bytes(&buffer[..1024]);
+            let state_json = chunk_hasher.save_state();
+
+
+            let mut chunk_hasher_restored = ChunkHasher::restore_from_state(state_json).unwrap();
+            chunk_hasher_restored.update_from_bytes(&buffer[1024..]);
+            chunk_hasher_restored.finalize()
+        };
+
+        assert_eq!(hash_result, hash_result_restored);
+       
     }
 }

@@ -7,7 +7,6 @@ edition = "2021"
 log = "*"
 thiserror = "*" 
 anyhow = "*"
-sha2 = "*"
 base58 = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*" 
@@ -24,7 +23,10 @@ futures-util = "*"
 hex = "*"
 url = "*"
 memmap = "*"
+sha2 = { version = ">=0.11.0-pre.4" }
+crypto-common = { version = ">=0.2.0-rc.1" }
 buckyos-kit = { path = "../buckyos-kit" }
 
 [dev-dependencies]
 tempfile = "*"
+rand = "*"
