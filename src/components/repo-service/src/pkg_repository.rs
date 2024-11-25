@@ -1,7 +1,7 @@
 use crate::error::{RepoError, RepoResult};
 use log::*;
 use ndn_lib::ChunkId;
-use package_manager::{IndexStore, PackageMeta, Verifier as PkgVerifier};
+use package_lib::{IndexStore, PackageMeta, Verifier as PkgVerifier};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};

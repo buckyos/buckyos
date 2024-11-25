@@ -1,28 +1,27 @@
 use async_trait::async_trait;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 use crate::run_item::*;
-use package_manager::*;
 use buckyos_kit::*;
+use package_lib::*;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FrameServiceConfig {
-    pub target_state : RunItemTargetState,
+    pub target_state: RunItemTargetState,
     //pub name : String, // service name
-    pub pkg_id : String,
-    pub operations : HashMap<String, RunItemControlOperation>,
+    pub pkg_id: String,
+    pub operations: HashMap<String, RunItemControlOperation>,
 
     //不支持serizalize
     #[serde(skip)]
-    service_pkg : Option<MediaInfo>,
-
+    service_pkg: Option<MediaInfo>,
 }
 
 //service include kernel_service and frame_service,not include app_service
@@ -38,11 +37,16 @@ impl RunItemControl for FrameServiceConfig {
         let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
         let media_info = env.load(&self.pkg_id).await;
         if media_info.is_ok() {
-            self.execute_operation(&media_info.unwrap(),"deploy").await?;
+            self.execute_operation(&media_info.unwrap(), "deploy")
+                .await?;
             return Ok(());
         } else {
             //TODO: 补充从env中安装pkg的流程
-            error!("deploy service {} error: env.install({}) error.", self.pkg_id.as_str(),self.pkg_id);
+            error!(
+                "deploy service {} error: env.install({}) error.",
+                self.pkg_id.as_str(),
+                self.pkg_id
+            );
             return Err(ControlRuntItemErrors::ExecuteError(
                 format!("deploy service {} error", self.pkg_id.as_str()),
                 "install package error".to_string(),
@@ -59,11 +63,12 @@ impl RunItemControl for FrameServiceConfig {
     //     Ok(())
     // }
 
-    async fn start(&self, control_key:&EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
+    async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
         let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
         let media_info = env.load(&self.pkg_id).await;
         if media_info.is_ok() {
-            self.execute_operation(&media_info.unwrap(),"start").await?;
+            self.execute_operation(&media_info.unwrap(), "start")
+                .await?;
         }
         Ok(())
     }
@@ -72,7 +77,7 @@ impl RunItemControl for FrameServiceConfig {
         let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
         let media_info = env.load(&self.pkg_id).await;
         if media_info.is_ok() {
-            self.execute_operation(&media_info.unwrap(),"stop").await?;
+            self.execute_operation(&media_info.unwrap(), "stop").await?;
         }
         Ok(())
     }
@@ -83,7 +88,9 @@ impl RunItemControl for FrameServiceConfig {
         if media_info.is_err() {
             return Ok(ServiceState::NotExist);
         }
-        let ret_code = self.execute_operation(&media_info.unwrap(),"status").await?;
+        let ret_code = self
+            .execute_operation(&media_info.unwrap(), "status")
+            .await?;
         if ret_code == 0 {
             Ok(ServiceState::Started)
         } else if ret_code > 0 {
@@ -98,9 +105,17 @@ impl FrameServiceConfig {
     async fn execute_operation(&self, media_info: &MediaInfo, op_name: &str) -> Result<i32> {
         let op = self.operations.get(op_name);
         if op.is_none() {
-            warn!("{} service execuite op {} error:  operation not found", self.pkg_id.as_str(),op_name);
+            warn!(
+                "{} service execuite op {} error:  operation not found",
+                self.pkg_id.as_str(),
+                op_name
+            );
             return Err(ControlRuntItemErrors::ExecuteError(
-                format!("{} service execuite op {} error", self.pkg_id.as_str(), op_name),
+                format!(
+                    "{} service execuite op {} error",
+                    self.pkg_id.as_str(),
+                    op_name
+                ),
                 "deploy operation not found".to_string(),
             ));
         }
@@ -110,13 +125,19 @@ impl FrameServiceConfig {
         //run_cmd(deploy_sh_file)
         let ret = execute(
             &op_sh_file,
-            5,  
-            None,//TODO: 补充op的params
+            5,
+            None, //TODO: 补充op的params
             None,
-            None
-        ).await.map_err(|error| {
+            None,
+        )
+        .await
+        .map_err(|error| {
             ControlRuntItemErrors::ExecuteError(
-                format!("{} service execuite op {} error", self.pkg_id.as_str(), op_name),
+                format!(
+                    "{} service execuite op {} error",
+                    self.pkg_id.as_str(),
+                    op_name
+                ),
                 format!("{}", error),
             )
         })?;

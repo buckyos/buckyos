@@ -7,7 +7,7 @@ members = [
 
     "./components/name-lib",
     "./components/name-client",
-    "./components/package-manager",
+    "./components/package-lib",
     "./components/buckyos-kit",
     "./components/ndn-lib",
 

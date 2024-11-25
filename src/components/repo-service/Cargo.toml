@@ -19,7 +19,7 @@ thiserror = "*"
 version-compare = "*"
 semver = "*"
 ndn-lib = { path = "../ndn-lib" }
-package-manager = { path = "../package-manager" }
+package-lib = { path = "../package-lib" }
 #jsonwebtoken = "*" 
 #buckyos-kit = { path = "../buckyos-kit" }
 #name-lib = { path = "../name-lib" }

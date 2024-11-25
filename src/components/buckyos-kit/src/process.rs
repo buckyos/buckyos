@@ -1,14 +1,14 @@
-use tokio::time::{timeout, Duration};
-use tokio::process::{Command};
 use log::*;
-use thiserror::Error;
-use tokio::fs::File;
-use tokio::io::{BufReader, AsyncBufReadExt, AsyncReadExt, AsyncRead};
+use package_lib::*;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Stdio};
-use package_manager::*;
+use thiserror::Error;
+use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 #[derive(Error, Debug)]
 pub enum ServiceControlError {
@@ -29,24 +29,31 @@ pub enum ServiceState {
     //DeployFailed(String,u32), //error message,failed count
     NotExist,
     Started,
-    Stopped, 
+    Stopped,
 }
 
 type Result<T> = std::result::Result<T, ServiceControlError>;
 
 pub fn restart_program() -> std::io::Result<()> {
     let current_exe = env::current_exe()?;
-    
-    Command::new(current_exe)
-        .args(env::args().skip(1)) 
-        .spawn()?; 
 
-    exit(0); 
+    Command::new(current_exe)
+        .args(env::args().skip(1))
+        .spawn()?;
+
+    exit(0);
 }
 
-pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String>>,
-                    current_dir: Option<&PathBuf>, env_vars: Option<&HashMap<String, String>>) -> Result<(i32, Vec<u8>)> {
-    let file = File::open(path).await.map_err(|e| ServiceControlError::FileNotFound(e.to_string()))?;
+pub async fn execute(
+    path: &PathBuf,
+    timeout_secs: u64,
+    args: Option<&Vec<String>>,
+    current_dir: Option<&PathBuf>,
+    env_vars: Option<&HashMap<String, String>>,
+) -> Result<(i32, Vec<u8>)> {
+    let file = File::open(path)
+        .await
+        .map_err(|e| ServiceControlError::FileNotFound(e.to_string()))?;
     let mut reader = BufReader::new(file);
     let command_str: String;
     let mut command = Command::new(path.to_str().unwrap_or_default());
@@ -68,14 +75,17 @@ pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String
     }
 
     if !read_first_line {
-        let extension = Path::new(path).extension().and_then(|s| s.to_str()).unwrap_or("");
+        let extension = Path::new(path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
         let mut is_known_script = true;
         match extension {
             "py" => command_str = "python3".to_string(),
             "js" => command_str = "node".to_string(),
             "sh" => {
                 command_str = "sh".to_string();
-            },
+            }
             _ => {
                 command_str = path.to_str().unwrap_or_default().to_string();
                 is_known_script = false;
@@ -85,7 +95,7 @@ pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String
         command = Command::new(command_str);
         if is_known_script {
             command.arg(path);
-        }     
+        }
     }
 
     if let Some(args) = args {
@@ -106,8 +116,10 @@ pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String
     //println!("{:?}", command);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    
-    let mut child = command.spawn().map_err(|e| ServiceControlError::ReasonError(e.to_string()))?;
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| ServiceControlError::ReasonError(e.to_string()))?;
 
     let stdout = child.stdout.take().expect("Failed to capture stdout");
     let stderr = child.stderr.take().expect("Failed to capture stderr");
@@ -136,7 +148,9 @@ pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String
         Err(_) => {
             // Timeout occurred, try to kill the process
             let _ = child.kill().await;
-            Err(ServiceControlError::Timeout("Script execution timed out".to_string()))
+            Err(ServiceControlError::Timeout(
+                "Script execution timed out".to_string(),
+            ))
         }
     }
 }
@@ -148,7 +162,7 @@ async fn read_stream<R: AsyncRead + Unpin>(mut reader: R) -> std::io::Result<Vec
 }
 
 pub struct ServicePkg {
-    pub pkg_id : String,
+    pub pkg_id: String,
     pub pkg_env: PackageEnv,
     pub current_dir: Option<PathBuf>,
     pub env_vars: HashMap<String, String>,
@@ -167,7 +181,7 @@ impl Default for ServicePkg {
     }
 }
 impl ServicePkg {
-    pub fn new(pkg_id: String,env_path: PathBuf) -> Self {
+    pub fn new(pkg_id: String, env_path: PathBuf) -> Self {
         Self {
             pkg_id,
             pkg_env: PackageEnv::new(env_path),
@@ -178,13 +192,20 @@ impl ServicePkg {
     }
 
     pub async fn load(&mut self) -> Result<MediaInfo> {
-        let media_info = self.pkg_env.load(&self.pkg_id)
-            .await.map_err(|e| ServiceControlError::ReasonError(e.to_string()))?;
+        let media_info = self
+            .pkg_env
+            .load(&self.pkg_id)
+            .await
+            .map_err(|e| ServiceControlError::ReasonError(e.to_string()))?;
         self.media_info = Some(media_info.clone());
         Ok(media_info)
     }
 
-    pub fn set_context(&mut self,current_dir:Option<&PathBuf>,env_vars:Option<&HashMap<String, String>>) {
+    pub fn set_context(
+        &mut self,
+        current_dir: Option<&PathBuf>,
+        env_vars: Option<&HashMap<String, String>>,
+    ) {
         if let Some(current_dir) = current_dir {
             self.current_dir = Some(current_dir.clone());
         }
@@ -193,36 +214,49 @@ impl ServicePkg {
         }
     }
 
-    async fn execute_operation(&self, op_name: &str,params:Option<&Vec<String>>) -> Result<i32> {
+    async fn execute_operation(&self, op_name: &str, params: Option<&Vec<String>>) -> Result<i32> {
         if self.media_info.is_none() {
-            return Err(ServiceControlError::ReasonError("media info is not loaded".to_string()));
+            return Err(ServiceControlError::ReasonError(
+                "media info is not loaded".to_string(),
+            ));
         }
         let media_info = self.media_info.clone().unwrap();
         let op_file = media_info.full_path.join(op_name);
         //info!("start execute {} ...", op_file.display());
-        let (result, output) = execute(&op_file, 5, params,
-            self.current_dir.as_ref(), Some(&self.env_vars)).await?;
-        info!("execute {} ==> result: {} \n\t {}", op_file.display(), result, String::from_utf8_lossy(&output));
+        let (result, output) = execute(
+            &op_file,
+            5,
+            params,
+            self.current_dir.as_ref(),
+            Some(&self.env_vars),
+        )
+        .await?;
+        info!(
+            "execute {} ==> result: {} \n\t {}",
+            op_file.display(),
+            result,
+            String::from_utf8_lossy(&output)
+        );
         Ok(result)
     }
 
-    pub async fn start(&self,params:Option<&Vec<String>>) -> Result<i32> {
-        let result = self.execute_operation("start",params).await?;
+    pub async fn start(&self, params: Option<&Vec<String>>) -> Result<i32> {
+        let result = self.execute_operation("start", params).await?;
         Ok(result)
     }
 
-    pub async fn stop(&self,params:Option<&Vec<String>>) -> Result<i32> {
-        let result = self.execute_operation("stop",params).await?;
+    pub async fn stop(&self, params: Option<&Vec<String>>) -> Result<i32> {
+        let result = self.execute_operation("stop", params).await?;
         Ok(result)
     }
 
-    pub async fn status(&self,params:Option<&Vec<String>>) -> Result<ServiceState> {
-        let result = self.execute_operation("status",params).await?;
+    pub async fn status(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
+        let result = self.execute_operation("status", params).await?;
         match result {
             0 => Ok(ServiceState::Started),
             -1 => Ok(ServiceState::NotExist),
             -2 => Ok(ServiceState::Deploying),
-            _ => Ok(ServiceState::Stopped)
+            _ => Ok(ServiceState::Stopped),
         }
     }
 }

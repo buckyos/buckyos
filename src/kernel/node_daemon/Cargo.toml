@@ -29,7 +29,7 @@ cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
-package-manager = { path = "../../components/package-manager" }
+package-lib = { path = "../../components/package-lib" }
 kRPC = { path = "../../kernel/kRPC" }
 sys-config = { path = "../sys-config" }
 
