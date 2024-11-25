@@ -18,11 +18,11 @@ lazy_static = "*"
 thiserror = "*"
 version-compare = "*"
 semver = "*"
-ndn-lib = { path = "../ndn-lib" }
-package-lib = { path = "../package-lib" }
+ndn-lib = { path = "../../components/ndn-lib" }
+package-lib = { path = "../../components/package-lib" }
 #jsonwebtoken = "*" 
-#buckyos-kit = { path = "../buckyos-kit" }
-#name-lib = { path = "../name-lib" }
+#buckyos-kit = { path = "../../components/buckyos-kit" }
+#name-lib = { path = "../../components/name-lib" }
 #kRPC ={ path = "../../kernel/kRPC" }
 #rbac = { path = "../../kernel/rbac" }
 #warp = "*"

@@ -176,6 +176,9 @@ impl PackageRepository {
     }
 
     pub async fn pull_pkg(&self, meta_info: &PackageMeta) -> RepoResult<()> {
+        if self.check_exist(meta_info).await? {
+            return Ok(());
+        }
         if let Err(e) =
             PkgVerifier::verify(&meta_info.author, &meta_info.chunk_id, &meta_info.sign).await
         {
@@ -183,9 +186,6 @@ impl PackageRepository {
                 "verify failed, meta:{:?}, err:{}",
                 meta_info, e
             )));
-        }
-        if self.check_exist(meta_info).await? {
-            return Ok(());
         }
         unimplemented!("pull from other zone")
     }
