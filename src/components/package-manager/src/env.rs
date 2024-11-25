@@ -53,7 +53,7 @@ pub struct PackageEnv {
   类型（dir or file）
   完整路径
 */
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub enum MediaType {
     Dir,
     File,
@@ -107,7 +107,7 @@ impl PackageEnv {
         &self.work_dir
     }
 
-    pub async fn build(&self, update: bool) -> PkgSysResult<()> {
+    pub async fn build(&self, update: bool) -> PkgResult<()> {
         // 检查lock文件是否需要更新
         info!("Begin build env, force update: {}", update);
         let need_update = self.check_lock_need_update()?;
@@ -118,9 +118,9 @@ impl PackageEnv {
         }
         let lock_file_path = self.work_dir.join("pkg.lock");
         let lock_packages = Self::parse_toml(&lock_file_path)?;
-        let package_list: PackageLockList = lock_packages.try_into().map_err(|err| {
-            PackageSystemErrors::ParseError("pkg.lock".to_string(), err.to_string())
-        })?;
+        let package_list: PackageLockList = lock_packages
+            .try_into()
+            .map_err(|err| PkgError::ParseError("pkg.lock".to_string(), err.to_string()))?;
         let dest_dir = self.get_install_dir();
         let pkg_cache_dir = self.get_pkg_cache_dir();
         std::fs::create_dir_all(&dest_dir)?;
@@ -165,7 +165,7 @@ impl PackageEnv {
 
                     if let Some(error) = state.error {
                         warn!("Download {} error: {}", url, error);
-                        return Err(PackageSystemErrors::DownloadError(url, error));
+                        return Err(PkgError::DownloadError(url, error));
                     }
                     if state.downloaded_size == state.total_size && state.total_size > 0 {
                         // 下载完成，验证文件
@@ -223,22 +223,22 @@ impl PackageEnv {
     }
 
     // load 一个包，从env的依赖根目录中查找目标pkg，找到了就返回一个MediaInfo结构
-    pub async fn load(&self, pkg_id_str: &str) -> PkgSysResult<MediaInfo> {
+    pub async fn load(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
         let pkg_id = Parser::parse(pkg_id_str)?;
 
         // 先解析lock文件，获取所有的包信息
         let lock_file_path = self.work_dir.join("pkg.lock");
         if !lock_file_path.exists() {
-            return Err(PackageSystemErrors::LoadError(
+            return Err(PkgError::LoadError(
                 pkg_id_str.to_owned(),
                 "pkg.lock not found".to_string(),
             ));
         }
 
         let lock_data = Self::parse_toml(&lock_file_path)?;
-        let package_list: PackageLockList = lock_data.try_into().map_err(|err| {
-            PackageSystemErrors::ParseError("pkg.lock".to_string(), err.to_string())
-        })?;
+        let package_list: PackageLockList = lock_data
+            .try_into()
+            .map_err(|err| PkgError::ParseError("pkg.lock".to_string(), err.to_string()))?;
 
         let mut target_pkg = Some(pkg_id.name.clone());
         let all_version = "*".to_string();
@@ -278,22 +278,22 @@ impl PackageEnv {
                         media_type,
                     })
                 } else {
-                    Err(PackageSystemErrors::LoadError(
+                    Err(PkgError::LoadError(
                         pkg_id_str.to_owned(),
                         format!("Package file not found: {}", target_path.display()),
                     ))
                 }
             }
-            None => Err(PackageSystemErrors::LoadError(
+            None => Err(PkgError::LoadError(
                 pkg_id_str.to_owned(),
                 "No matched package found".to_string(),
             )),
         }
     }
 
-    fn verify_package(dest_file: &PathBuf, sha256: String) -> PkgSysResult<()> {
+    fn verify_package(dest_file: &PathBuf, sha256: String) -> PkgResult<()> {
         if !dest_file.exists() {
-            return Err(PackageSystemErrors::VerifyError(format!(
+            return Err(PkgError::VerifyError(format!(
                 "Verify package {} failed, file not exists",
                 dest_file.display()
             )));
@@ -304,7 +304,7 @@ impl PackageEnv {
         let hash_result = hasher.finalize();
         let hash_str = format!("{:x}", hash_result);
         if hash_str != sha256 {
-            return Err(PackageSystemErrors::VerifyError(format!(
+            return Err(PkgError::VerifyError(format!(
                 "Verify package {} failed, sha256 not match, expect: {}, actual: {}",
                 dest_file.display(),
                 sha256,
@@ -327,7 +327,7 @@ impl PackageEnv {
         Ok(())
     }
 
-    fn make_symlink_for_deps(&self) -> PkgSysResult<()> {
+    fn make_symlink_for_deps(&self) -> PkgResult<()> {
         // 删除deps_dir下面除.bkzs之外所有的文件和文件夹（几乎都是软链接）
         let deps_dir = self.get_deps_dir();
         for entry in fs::read_dir(&deps_dir)? {
@@ -363,7 +363,7 @@ impl PackageEnv {
     }
 
     // 检查lock文件是否符合当前package.toml的版本和依赖要求
-    pub fn check_lock_need_update(&self) -> PkgSysResult<bool> {
+    pub fn check_lock_need_update(&self) -> PkgResult<bool> {
         let package_data = Self::parse_toml(&self.work_dir.join("package.toml"))?;
         let lock_file_path = self.work_dir.join("pkg.lock");
         if !lock_file_path.exists() {
@@ -371,9 +371,9 @@ impl PackageEnv {
         }
 
         let lock_data = Self::parse_toml(&lock_file_path)?;
-        let package_list: PackageLockList = lock_data.try_into().map_err(|err| {
-            PackageSystemErrors::ParseError("pkg.lock".to_string(), err.to_string())
-        })?;
+        let package_list: PackageLockList = lock_data
+            .try_into()
+            .map_err(|err| PkgError::ParseError("pkg.lock".to_string(), err.to_string()))?;
 
         if let Some(dependencies) = package_data.get("dependencies").and_then(|d| d.as_table()) {
             for (dep_name, dep_version) in dependencies {
@@ -403,7 +403,7 @@ impl PackageEnv {
         dep_version: &str,
         lock_packages: &PackageLockList,
         checked: &mut HashSet<String>, // 记录哪些已经check过了，避免有环，但是要有警告
-    ) -> PkgSysResult<bool> {
+    ) -> PkgResult<bool> {
         /*这里理论上只需查找一层，因为如果顶层的满足条件，那么子依赖也会满足条件
          *因为上次生成lock文件时，子依赖都是根据条件生成的
          这里是有可能有环的，要规避 TODO
@@ -458,7 +458,7 @@ impl PackageEnv {
         Ok(true)
     }
 
-    pub fn update_lock_file(&self) -> PkgSysResult<()> {
+    pub fn update_lock_file(&self) -> PkgResult<()> {
         let package_data = Self::parse_toml(&self.work_dir.join("package.toml"))?;
         let index_db = self.get_index()?;
 
@@ -486,7 +486,7 @@ impl PackageEnv {
 
         let lock_file_path = self.work_dir.join("pkg.lock");
         let new_lock_content = toml::to_string(&package_list).map_err(|err| {
-            PackageSystemErrors::UpdateError(format!("Update lock file error: {}", err.to_string()))
+            PkgError::UpdateError(format!("Update lock file error: {}", err.to_string()))
         })?;
 
         fs::write(lock_file_path, new_lock_content)?;
@@ -495,18 +495,18 @@ impl PackageEnv {
     }
 
     // 通过lock文件获取所有package.toml中声明的直接依赖
-    fn get_direct_deps_with_lock(&self) -> PkgSysResult<Vec<String>> {
+    fn get_direct_deps_with_lock(&self) -> PkgResult<Vec<String>> {
         let mut result: Vec<String> = Vec::new();
         let lock_file_path = self.work_dir.join("pkg.lock");
         if !lock_file_path.exists() {
-            return Err(PackageSystemErrors::FileNotFoundError(
+            return Err(PkgError::FileNotFoundError(
                 lock_file_path.display().to_string(),
             ));
         }
         let lock_packages = Self::parse_toml(&lock_file_path)?;
-        let package_list: PackageLockList = lock_packages.try_into().map_err(|err| {
-            PackageSystemErrors::ParseError("pkg.lock".to_string(), err.to_string())
-        })?;
+        let package_list: PackageLockList = lock_packages
+            .try_into()
+            .map_err(|err| PkgError::ParseError("pkg.lock".to_string(), err.to_string()))?;
 
         let deps = Self::parse_toml(&self.work_dir.join("package.toml"))?;
 
@@ -536,7 +536,7 @@ impl PackageEnv {
                 if let Some(version) = matched_version {
                     result.push(format!("{}_{}", dep_name, version));
                 } else {
-                    return Err(PackageSystemErrors::VersionNotFoundError(format!(
+                    return Err(PkgError::VersionNotFoundError(format!(
                         "{}_{}",
                         dep_name,
                         dep_version.as_str().unwrap()
@@ -555,7 +555,7 @@ impl PackageEnv {
         dep_version: &str,
         new_lock_data: &mut Vec<PackageLockInfo>,
         generated: &mut HashSet<String>,
-    ) -> PkgSysResult<()> {
+    ) -> PkgResult<()> {
         //先判断new_lock_data里面是不是已经有满足条件的包了，如果有是可以兼容共用的，就不用额外添加了
         //比如已经有指定a#2.0.3了，那么如果当前是a#>=2.0.0，哪也是满足的
         //还是先把这段逻辑去掉，因为如果有a#*，那是应该用兼容的a#2.0.3还是说需要用最新的a#3.0.0呢？
@@ -599,7 +599,7 @@ impl PackageEnv {
         &self,
         index_db: &IndexDB,
         pkg_id_str: &str,
-    ) -> PkgSysResult<PackageLockInfo> {
+    ) -> PkgResult<PackageLockInfo> {
         // 只获取一层，即本层和直接依赖，不用获取依赖的依赖
         let pkg_id = Parser::parse(pkg_id_str)?;
 
@@ -607,10 +607,7 @@ impl PackageEnv {
             Ok(version) => version,
             Err(err) => {
                 error!("Failed to find exact version for {}: {}", pkg_id_str, err);
-                return Err(PackageSystemErrors::VersionNotFoundError(format!(
-                    "{:?}",
-                    pkg_id
-                )));
+                return Err(PkgError::VersionNotFoundError(format!("{:?}", pkg_id)));
             }
         };
 
@@ -621,7 +618,7 @@ impl PackageEnv {
             .get(&pkg_id.name)
             .and_then(|deps| deps.get(&exact_version))
             .ok_or_else(|| {
-                PackageSystemErrors::VersionNotFoundError(format!(
+                PkgError::VersionNotFoundError(format!(
                     "Version {} not found for package {}",
                     exact_version, pkg_id.name
                 ))
@@ -655,7 +652,7 @@ impl PackageEnv {
                         err.to_string()
                     );
                     error!("{}", err_msg);
-                    return Err(PackageSystemErrors::VersionNotFoundError(err_msg));
+                    return Err(PkgError::VersionNotFoundError(err_msg));
                 }
             };
         }
@@ -663,11 +660,7 @@ impl PackageEnv {
         Ok(lock_info)
     }
 
-    pub fn find_exact_version(
-        &self,
-        pkg_id: &PackageId,
-        index_db: &IndexDB,
-    ) -> PkgSysResult<String> {
+    pub fn find_exact_version(&self, pkg_id: &PackageId, index_db: &IndexDB) -> PkgResult<String> {
         if let Some(pkg_list) = index_db.packages.get(&pkg_id.name) {
             if let Some(sha256) = &pkg_id.sha256 {
                 for (version, meta_info) in pkg_list.iter() {
@@ -676,18 +669,12 @@ impl PackageEnv {
                     }
                 }
 
-                return Err(PackageSystemErrors::VersionNotFoundError(format!(
-                    "{:?}",
-                    pkg_id
-                )));
+                return Err(PkgError::VersionNotFoundError(format!("{:?}", pkg_id)));
             }
             // 将pkg_deps的key组成Vec，并从大到小排序
             let mut versions: Vec<String> = pkg_list.keys().cloned().collect();
             if versions.is_empty() {
-                return Err(PackageSystemErrors::VersionNotFoundError(format!(
-                    "{:?}",
-                    pkg_id
-                )));
+                return Err(PkgError::VersionNotFoundError(format!("{:?}", pkg_id)));
             }
             // 理论上不应该出现重合的，所以不处理Ge和Le，Ne，版本高的排在前面
             versions.sort_by(|a, b| {
@@ -702,14 +689,11 @@ impl PackageEnv {
 
             self.get_matched_version(&pkg_id.name, &pkg_id.version, &versions)
         } else {
-            Err(PackageSystemErrors::VersionNotFoundError(format!(
-                "{:?}",
-                pkg_id
-            )))
+            Err(PkgError::VersionNotFoundError(format!("{:?}", pkg_id)))
         }
     }
 
-    pub fn get_deps(&self, pkg_id: &str) -> PkgSysResult<Vec<PackageId>> {
+    pub fn get_deps(&self, pkg_id: &str) -> PkgResult<Vec<PackageId>> {
         /* 先看env中是否有index.db (暂时只用一个json文件代替)，如果有，直接从index.db中获取依赖关系
          * 如果没有，看看%user%/buckyos/index下是否有index.db，如果有，从中获取依赖关系
          * 如果没有，创建相应目录并且下载index.db，然后从中获取依赖关系
@@ -736,7 +720,7 @@ impl PackageEnv {
         index_db: &IndexDB,
         result: &mut Vec<PackageId>,
         parsed: &mut HashSet<String>,
-    ) -> PkgSysResult<()> {
+    ) -> PkgResult<()> {
         let pkg_id = Parser::parse(pkg_id_str)?;
 
         if let Some(pkg_list) = index_db.packages.get(&pkg_id.name) {
@@ -753,10 +737,7 @@ impl PackageEnv {
                 // 将pkg_deps的key组成Vec，并从大到小排序
                 let mut versions: Vec<String> = pkg_list.keys().cloned().collect();
                 if versions.is_empty() {
-                    return Err(PackageSystemErrors::VersionNotFoundError(format!(
-                        "{:?}",
-                        pkg_id
-                    )));
+                    return Err(PkgError::VersionNotFoundError(format!("{:?}", pkg_id)));
                 }
                 // 理论上不应该出现重合的，所以不处理Ge和Le，Ne，版本高的排在前面
                 versions.sort_by(|a, b| {
@@ -784,7 +765,7 @@ impl PackageEnv {
 
             if matched_version.is_none() {
                 error!("Failed to get matched version for {}", pkg_id_str);
-                return Err(PackageSystemErrors::VersionNotFoundError(format!(
+                return Err(PkgError::VersionNotFoundError(format!(
                     "Failed to get matched version for {}",
                     pkg_id_str
                 )));
@@ -802,7 +783,7 @@ impl PackageEnv {
             parsed.insert(exact_pkg_id_str);
 
             let package_meta_info = pkg_list.get(&matched_version).ok_or_else(|| {
-                PackageSystemErrors::VersionNotFoundError(format!(
+                PkgError::VersionNotFoundError(format!(
                     "Version {} not found for package {}",
                     matched_version, pkg_id.name
                 ))
@@ -822,7 +803,7 @@ impl PackageEnv {
 
             Ok(())
         } else {
-            return Err(PackageSystemErrors::VersionNotFoundError(format!(
+            return Err(PkgError::VersionNotFoundError(format!(
                 "No information found for the package named {}.",
                 pkg_id.name
             )));
@@ -835,9 +816,9 @@ impl PackageEnv {
         pkg_name: &str,
         version_condition: &Option<String>,
         versions: &[String],
-    ) -> PkgSysResult<String> {
+    ) -> PkgResult<String> {
         if versions.is_empty() {
-            return Err(PackageSystemErrors::VersionNotFoundError(format!(
+            return Err(PkgError::VersionNotFoundError(format!(
                 "{}#{:?}",
                 pkg_name, version_condition
             )));
@@ -856,26 +837,24 @@ impl PackageEnv {
         }
     }
 
-    pub fn get_index_path(&self) -> PkgSysResult<PathBuf> {
-        let user_dir =
-            dirs::home_dir().ok_or(PackageSystemErrors::UnknownError("No home dir".to_string()))?;
+    pub fn get_index_path(&self) -> PkgResult<PathBuf> {
+        let user_dir = dirs::home_dir().ok_or(PkgError::UnknownError("No home dir".to_string()))?;
         let index_path = user_dir.join("buckyos/index/index.json");
 
         Ok(index_path)
     }
 
-    pub fn get_index(&self) -> PkgSysResult<IndexDB> {
+    pub fn get_index(&self) -> PkgResult<IndexDB> {
         let index_file_path = self.get_index_path()?;
 
         let index_str = std::fs::read_to_string(index_file_path)?;
-        let index_db: IndexDB = serde_json::from_str(&index_str).map_err(|err| {
-            PackageSystemErrors::ParseError("index.json".to_string(), err.to_string())
-        })?;
+        let index_db: IndexDB = serde_json::from_str(&index_str)
+            .map_err(|err| PkgError::ParseError("index.json".to_string(), err.to_string()))?;
 
         Ok(index_db)
     }
 
-    pub async fn update_index(&self) -> PkgSysResult<()> {
+    pub async fn update_index(&self) -> PkgResult<()> {
         //update只更新global的index，这里index只是一个文件
         //实际在实现时，index应该是一组文件，按需更新
         let index_file_path = self.get_index_path()?;
@@ -900,13 +879,11 @@ impl PackageEnv {
                 })),
             )
             .await
-            .map_err(|err| {
-                PackageSystemErrors::DownloadError(index_url.to_string(), err.to_string())
-            })?;
+            .map_err(|err| PkgError::DownloadError(index_url.to_string(), err.to_string()))?;
 
         // 等待下载完成信号
         let download_result = rx.await.map_err(|_| {
-            PackageSystemErrors::DownloadError(
+            PkgError::DownloadError(
                 index_url.to_string(),
                 "Failed to receive download result".to_string(),
             )
@@ -925,36 +902,30 @@ impl PackageEnv {
             }
             Err(e) => {
                 warn!("Download index.json failed. url:{}. err:{}", index_url, e);
-                return Err(PackageSystemErrors::DownloadError(index_url.to_string(), e));
+                return Err(PkgError::DownloadError(index_url.to_string(), e));
             }
         }
 
         Ok(())
     }
 
-    fn parse_toml(file_path: &PathBuf) -> PkgSysResult<Value> {
+    fn parse_toml(file_path: &PathBuf) -> PkgResult<Value> {
         let content = fs::read_to_string(file_path)?;
         let value = content.parse::<Value>().map_err(|err| {
-            PackageSystemErrors::ParseError(
-                file_path.to_string_lossy().to_string(),
-                err.to_string(),
-            )
+            PkgError::ParseError(file_path.to_string_lossy().to_string(), err.to_string())
         })?;
         Ok(value)
     }
 
-    fn parse_json(file_path: &PathBuf) -> PkgSysResult<JsonValue> {
+    fn parse_json(file_path: &PathBuf) -> PkgResult<JsonValue> {
         let content = fs::read_to_string(file_path)?;
         let value = serde_json::from_str(&content).map_err(|err| {
-            PackageSystemErrors::ParseError(
-                file_path.to_string_lossy().to_string(),
-                err.to_string(),
-            )
+            PkgError::ParseError(file_path.to_string_lossy().to_string(), err.to_string())
         })?;
         Ok(value)
     }
 
-    fn create_symlink(target_path: &Path, source_path: &Path) -> PkgSysResult<()> {
+    fn create_symlink(target_path: &Path, source_path: &Path) -> PkgResult<()> {
         // 如果目标路径已经存在，先删除它
         if target_path.exists() {
             fs::remove_file(target_path)?;
@@ -989,7 +960,7 @@ impl PackageEnv {
                     {
                         Ok(output) => {
                             if !output.status.success() {
-                                return Err(PackageSystemErrors::InstallError(
+                                return Err(PkgError::InstallError(
                                     target_path.to_string_lossy().to_string(),
                                     format!(
                                         "Failed to create junction: {}",
@@ -999,7 +970,7 @@ impl PackageEnv {
                             }
                         }
                         Err(e) => {
-                            return Err(PackageSystemErrors::InstallError(
+                            return Err(PkgError::InstallError(
                                 target_path.to_string_lossy().to_string(),
                                 e.to_string(),
                             ));

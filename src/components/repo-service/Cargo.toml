@@ -18,8 +18,8 @@ lazy_static = "*"
 thiserror = "*"
 version-compare = "*"
 semver = "*"
-index-lib = { path = "../index-lib" }
 ndn-lib = { path = "../ndn-lib" }
+package-manager = { path = "../package-manager" }
 #jsonwebtoken = "*" 
 #buckyos-kit = { path = "../buckyos-kit" }
 #name-lib = { path = "../name-lib" }

@@ -8,24 +8,24 @@ use version_compare::{compare as version_compare, Cmp};
 pub mod version_util {
     use super::*;
 
-    pub fn compare(a: &str, b: &str) -> PkgSysResult<Ordering> {
-        cmp_to_ordering(version_compare(a, b).map_err(|_| {
-            PackageSystemErrors::VersionError(format!("Version compare error: {} {}", a, b))
-        })?)
+    pub fn compare(a: &str, b: &str) -> PkgResult<Ordering> {
+        cmp_to_ordering(
+            version_compare(a, b).map_err(|_| {
+                PkgError::VersionError(format!("Version compare error: {} {}", a, b))
+            })?,
+        )
     }
 
-    fn cmp_to_ordering(cmp: Cmp) -> PkgSysResult<Ordering> {
+    fn cmp_to_ordering(cmp: Cmp) -> PkgResult<Ordering> {
         match cmp {
             Cmp::Lt => Ok(Ordering::Less),
             Cmp::Eq => Ok(Ordering::Equal),
             Cmp::Gt => Ok(Ordering::Greater),
-            _ => Err(PackageSystemErrors::VersionError(
-                "Invalid compare result".to_string(),
-            )),
+            _ => Err(PkgError::VersionError("Invalid compare result".to_string())),
         }
     }
 
-    pub fn matches(version_expression: &str, version: &str) -> PkgSysResult<bool> {
+    pub fn matches(version_expression: &str, version: &str) -> PkgResult<bool> {
         /*version_condition可能为以下几种情况：
         *
         >0.1.4  >=0.1.4
@@ -45,7 +45,7 @@ pub mod version_util {
         }
 
         let version = Version::parse(version).map_err(|err| {
-            PackageSystemErrors::VersionError(format!("Invalid version:{}, err:{}", version, err))
+            PkgError::VersionError(format!("Invalid version:{}, err:{}", version, err))
         })?;
 
         match Parser::get_version_conditions(version_expression) {
@@ -60,7 +60,7 @@ pub mod version_util {
                                 return Ok(version_req.matches(&version));
                             }
                             Err(err) => {
-                                return Err(PackageSystemErrors::ParseError(
+                                return Err(PkgError::ParseError(
                                     version_expression.to_string(),
                                     err.to_string(),
                                 ))
@@ -70,7 +70,7 @@ pub mod version_util {
                 } else {
                     for condition in conditions {
                         let version_req = VersionReq::parse(&condition).map_err(|err| {
-                            PackageSystemErrors::VersionError(format!(
+                            PkgError::VersionError(format!(
                                 "VersionReq parse error: {}, err:{}",
                                 condition, err
                             ))
@@ -86,17 +86,14 @@ pub mod version_util {
         }
     }
 
-    pub fn find_matched_version(
-        version_condition: &str,
-        versions: &[String],
-    ) -> PkgSysResult<String> {
+    pub fn find_matched_version(version_condition: &str, versions: &[String]) -> PkgResult<String> {
         for version in versions {
             if matches(version_condition, version)? {
                 return Ok(version.to_string());
             }
         }
 
-        Err(PackageSystemErrors::VersionError(
+        Err(PkgError::VersionError(
             "No matched version found".to_string(),
         ))
     }

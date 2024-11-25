@@ -1,3 +1,5 @@
+#![allow(unused, dead_code)]
+
 mod error;
 mod kv_provider;
 mod pkg_repository;

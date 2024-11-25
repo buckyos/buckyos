@@ -30,3 +30,4 @@ warp = "*"
 tar = "*"
 sha2 = "*"
 flate2 = "*"
+rusqlite =  { version = "*", features = ["bundled"] }

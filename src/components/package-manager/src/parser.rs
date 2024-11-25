@@ -1,4 +1,4 @@
-use crate::error::{PackageSystemErrors, PkgSysResult};
+use crate::error::{PkgError, PkgResult};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +21,7 @@ pub struct PackageId {
 }
 
 impl Parser {
-    pub fn parse(pkg_id: &str) -> PkgSysResult<PackageId> {
+    pub fn parse(pkg_id: &str) -> PkgResult<PackageId> {
         let name;
         let mut version = None;
         let mut sha256 = None;
@@ -30,7 +30,7 @@ impl Parser {
         if let Some(name_part) = parts.next() {
             name = name_part.to_string();
         } else {
-            return Err(PackageSystemErrors::ParseError(
+            return Err(PkgError::ParseError(
                 pkg_id.to_string(),
                 "No name".to_string(),
             ));
@@ -43,7 +43,7 @@ impl Parser {
                 let version_part = version_part.replace(" ", "").replace(",", "");
 
                 if !Self::is_valid_version_expression(&version_part) {
-                    return Err(PackageSystemErrors::ParseError(
+                    return Err(PkgError::ParseError(
                         pkg_id.to_string(),
                         "Invalid version expression".to_string(),
                     ));
@@ -62,7 +62,7 @@ impl Parser {
         })
     }
 
-    pub fn get_version_conditions(version_expression: &str) -> PkgSysResult<Vec<String>> {
+    pub fn get_version_conditions(version_expression: &str) -> PkgResult<Vec<String>> {
         if version_expression == "*" {
             return Ok(vec![version_expression.to_string()]);
         }
@@ -72,7 +72,7 @@ impl Parser {
             match Version::parse(version_expression) {
                 Ok(_) => return Ok(vec![version_expression.to_string()]),
                 Err(err) => {
-                    return Err(PackageSystemErrors::ParseError(
+                    return Err(PkgError::ParseError(
                         version_expression.to_string(),
                         err.to_string(),
                     ));
@@ -99,7 +99,7 @@ impl Parser {
             }
         }
 
-        Err(PackageSystemErrors::ParseError(
+        Err(PkgError::ParseError(
             version_expression.to_string(),
             "Invalid version expression".to_string(),
         ))

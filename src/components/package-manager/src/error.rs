@@ -3,7 +3,7 @@ use thiserror::Error;
 
 #[allow(dead_code)]
 #[derive(Error, Debug)]
-pub enum PackageSystemErrors {
+pub enum PkgError {
     #[error("Download {0} error: {1}")]
     DownloadError(String, String),
     #[error("Install {0} error: {1}")]
@@ -32,6 +32,8 @@ pub enum PackageSystemErrors {
     UnknownError(String),
     #[error("IO Error: {0}")]
     IOError(#[from] io::Error),
+    #[error("DB Error: {0}")]
+    DbError(#[from] rusqlite::Error),
 }
 
-pub type PkgSysResult<T> = std::result::Result<T, PackageSystemErrors>;
+pub type PkgResult<T> = std::result::Result<T, PkgError>;

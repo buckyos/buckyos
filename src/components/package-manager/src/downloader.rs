@@ -36,8 +36,8 @@ pub trait Downloader {
         url: &str,
         target: &PathBuf,
         callback: Option<Box<dyn FnOnce(DownloadResult) + Send>>,
-    ) -> PkgSysResult<TaskId>;
-    fn get_task_state(&self, task_id: TaskId) -> PkgSysResult<DownloadTask>;
+    ) -> PkgResult<TaskId>;
+    fn get_task_state(&self, task_id: TaskId) -> PkgResult<DownloadTask>;
 }
 
 #[derive(Clone)]
@@ -66,7 +66,7 @@ impl Downloader for FakeDownloader {
         url: &str,
         target: &PathBuf,
         callback: Option<Box<dyn FnOnce(DownloadResult) + Send>>,
-    ) -> PkgSysResult<TaskId> {
+    ) -> PkgResult<TaskId> {
         let state = self.state.clone();
         let url = url.to_string();
         let target = target.clone();
@@ -229,12 +229,12 @@ impl Downloader for FakeDownloader {
         Ok(task_id)
     }
 
-    fn get_task_state(&self, task_id: TaskId) -> PkgSysResult<DownloadTask> {
+    fn get_task_state(&self, task_id: TaskId) -> PkgResult<DownloadTask> {
         let tasks = self.state.tasks.lock().unwrap();
         if let Some(task) = tasks.get(task_id) {
             Ok(task.clone())
         } else {
-            Err(PackageSystemErrors::DownloadError(
+            Err(PkgError::DownloadError(
                 task_id.to_string(),
                 format!("task_id {} not found", task_id),
             ))

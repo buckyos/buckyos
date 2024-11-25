@@ -3,7 +3,7 @@ use thiserror::Error;
 
 #[allow(dead_code)]
 #[derive(Error, Debug)]
-pub enum PkgError {
+pub enum RepoError {
     #[error("Download {0} error: {1}")]
     DownloadError(String, String),
     #[error("Install {0} error: {1}")]
@@ -40,4 +40,4 @@ pub enum PkgError {
     DbError(String),
 }
 
-pub type PkgResult<T> = std::result::Result<T, PkgError>;
+pub type RepoResult<T> = std::result::Result<T, RepoError>;

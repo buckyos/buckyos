@@ -1,11 +1,9 @@
 use crate::PackageMeta;
+use crate::Verifier;
+use crate::{PkgError, PkgResult};
 use log::*;
-use rusqlite::{params, Connection, OptionalExtension, Result};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
-use std::{
-    str,
-    time::{SystemTime, UNIX_EPOCH},
-};
 
 pub struct IndexStore {
     db_path: String,
@@ -18,7 +16,7 @@ impl IndexStore {
         }
     }
 
-    pub fn open(&self) -> Result<Connection> {
+    pub fn open(&self) -> PkgResult<Connection> {
         let conn = Connection::open(&self.db_path)?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS pkg_db (
@@ -52,20 +50,28 @@ impl IndexStore {
         Ok(conn)
     }
 
-    pub fn insert_pkg_meta(&self, pkg_meta: &PackageMeta) -> Result<()> {
+    pub async fn insert_pkg_meta(&self, pkg_meta: &PackageMeta) -> PkgResult<()> {
         let conn = self.open()?;
-        conn.execute(
-            "INSERT INTO pkg_db (name, version, author, chunk_id, dependencies, sign, pub_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                pkg_meta.name,
-                pkg_meta.version,
-                pkg_meta.author,
-                pkg_meta.chunk_id,
-                pkg_meta.dependencies.to_string(),
-                pkg_meta.sign,
-                pkg_meta.pub_time
-            ],
-        )?;
+        match Verifier::verify(&pkg_meta.author, &pkg_meta.chunk_id, &pkg_meta.sign).await {
+            Ok(_) => {
+                conn.execute(
+                    "INSERT INTO pkg_db (name, version, author, chunk_id, dependencies, sign, pub_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        pkg_meta.name,
+                        pkg_meta.version,
+                        pkg_meta.author,
+                        pkg_meta.chunk_id,
+                        pkg_meta.dependencies.to_string(),
+                        pkg_meta.sign,
+                        pkg_meta.pub_time
+                    ],
+                )?;
+            }
+            Err(e) => {
+                error!("verify failed: {:?}", e);
+                return Err(PkgError::VerifyError(e.to_string()));
+            }
+        }
         Ok(())
     }
 
@@ -75,7 +81,7 @@ impl IndexStore {
         name: &str,
         version_desc: &str,
         is_desc_chunk_id: bool,
-    ) -> Result<()> {
+    ) -> PkgResult<()> {
         let conn = self.open()?;
         let sql = if is_desc_chunk_id {
             "DELETE FROM pkg_db WHERE name = ?1 AND chunk_id = ?2"
@@ -92,7 +98,7 @@ impl IndexStore {
         name: &str,
         version_desc: &str,
         is_desc_chunk_id: bool,
-    ) -> Result<Option<PackageMeta>> {
+    ) -> PkgResult<Option<PackageMeta>> {
         let conn = self.open()?;
         let mut stmt;
         if is_desc_chunk_id {
@@ -120,7 +126,7 @@ impl IndexStore {
         Ok(meta_info)
     }
 
-    pub fn get_default_pkg_meta(&self, name: &str) -> Result<Option<PackageMeta>> {
+    pub fn get_default_pkg_meta(&self, name: &str) -> PkgResult<Option<PackageMeta>> {
         let conn = self.open()?;
         // TODO: 精确的做法是选出所有，找到version最大的，暂时先以pub_time最大的为准
         let mut stmt = conn.prepare("SELECT name, version, author, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE name = ?1 ORDER BY pub_time DESC LIMIT 1")?;
@@ -144,7 +150,7 @@ impl IndexStore {
         Ok(meta_info)
     }
 
-    pub fn get_all_pkg_version(&self, name: &str) -> Result<Vec<String>> {
+    pub fn get_all_pkg_version(&self, name: &str) -> PkgResult<Vec<String>> {
         let conn = self.open()?;
         let mut stmt = conn.prepare("SELECT version FROM pkg_db WHERE name = ?1")?;
         let versions = stmt
