@@ -20,6 +20,7 @@ version-compare = "*"
 semver = "*"
 ndn-lib = { path = "../../components/ndn-lib" }
 package-lib = { path = "../../components/package-lib" }
+index-lib = { path = "../../components/index-lib" }
 #jsonwebtoken = "*" 
 #buckyos-kit = { path = "../../components/buckyos-kit" }
 #name-lib = { path = "../../components/name-lib" }

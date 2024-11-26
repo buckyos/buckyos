@@ -1,21 +1,31 @@
+#![allow(unused, dead_code)]
+
 use std::io;
 use thiserror::Error;
 
-#[allow(dead_code)]
+mod index_store;
+mod verifier;
+
+pub use index_store::*;
+pub use verifier::*;
+
+use serde_json::Value;
+
+#[derive(Clone, Debug)]
+pub struct PackageMeta {
+    pub name: String,
+    pub version: String,
+    pub author: String, //author did
+    pub chunk_id: String,
+    pub dependencies: Value,
+    pub sign: String, //sign of the chunk_id
+    pub pub_time: u64,
+}
+
 #[derive(Error, Debug)]
-pub enum PkgError {
-    #[error("Download {0} error: {1}")]
-    DownloadError(String, String),
-    #[error("Install {0} error: {1}")]
-    InstallError(String, String),
-    #[error("Load {0} error: {1}")]
-    LoadError(String, String),
+pub enum IndexError {
     #[error("Parse {0} error: {1}")]
     ParseError(String, String),
-    #[error("Execute cmd {0} error: {1}")]
-    ExecuteError(String, String),
-    #[error("Config parser error: {0}")]
-    ParserConfigError(String),
     #[error("Network Error: {0}")]
     NetworkError(String),
     #[error("Version Not Found: {0}")]
@@ -32,6 +42,8 @@ pub enum PkgError {
     UnknownError(String),
     #[error("IO Error: {0}")]
     IOError(#[from] io::Error),
+    #[error("DB Error: {0}")]
+    DbError(#[from] rusqlite::Error),
 }
 
-pub type PkgResult<T> = std::result::Result<T, PkgError>;
+pub type IndexResult<T> = std::result::Result<T, IndexError>;

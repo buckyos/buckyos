@@ -1,0 +1,16 @@
+[package]
+name = "index-lib"
+version = "0.1.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@Song"]
+
+[dependencies]
+async-trait = "*"
+log = "*"
+thiserror = "*"
+rusqlite =  { version = "*", features = ["bundled"] }
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+name-client = { path = "../name-client" }
+ed25519-dalek = { version = "*", features = ["rand_core"] } 
+base64 = "*"

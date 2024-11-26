@@ -26,4 +26,5 @@ members = [
     "./kernel/node_daemon",
     "./kernel/scheduler", 
     "./frame/repo-service", 
+    "./components/index-lib", 
 ]
