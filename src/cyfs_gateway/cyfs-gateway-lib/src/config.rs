@@ -6,14 +6,14 @@ use serde::Deserialize;
 use url::Url;
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct ChunkMgrConfig {
+pub struct ChunkMgrRouteConfig {
     pub chunk_mgr_id : String,
     pub read_only:bool,
     pub guest_access:bool,// 是否允许zone外访问
     pub path_mode:bool,// 是否使用路径模式
 }
 
-impl Default for ChunkMgrConfig {
+impl Default for ChunkMgrRouteConfig {
     fn default()->Self {
         Self { 
             chunk_mgr_id:"default".to_string(), 
@@ -46,7 +46,7 @@ pub struct RouteConfig {
     pub inner_service: Option<String>,
     pub tunnel_selector: Option<String>,
     pub bucky_service: Option<String>,
-    pub chunk_mgr: Option<ChunkMgrConfig>,
+    pub chunk_mgr: Option<ChunkMgrRouteConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

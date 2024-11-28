@@ -30,3 +30,11 @@ pub fn get_buckyos_log_dir(service: &str) -> PathBuf {
 pub fn get_buckyos_service_data_dir(service_name: &str) -> PathBuf {
     get_buckyos_root_dir().join("data").join(service_name)
 }
+
+pub fn get_buckyos_chunk_data_dir(mgr_id: Option<&str>) -> PathBuf {
+    if mgr_id.is_none() {
+        get_buckyos_root_dir().join("data").join("chunk")
+    } else {
+        get_buckyos_root_dir().join("data").join("chunk").join(mgr_id.unwrap())
+    }
+}

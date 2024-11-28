@@ -173,7 +173,7 @@ impl Router {
         })
     }
 
-    async fn handle_chunk_mgr(&self, chunk_mgr: &ChunkMgrConfig, req: Request<Body>, host: &str, client_ip:IpAddr) -> Result<Response<Body>> {
+    async fn handle_chunk_mgr(&self, chunk_mgr: &ChunkMgrRouteConfig, req: Request<Body>, host: &str, client_ip:IpAddr) -> Result<Response<Body>> {
         if req.method() != hyper::Method::GET {
             return Err(anyhow::anyhow!("Invalid method: {}", req.method()));
         }
@@ -194,18 +194,20 @@ impl Router {
             chunk_id = chunk_id_result.unwrap();
         }
         let chunk_mgr_id = chunk_mgr.chunk_mgr_id.clone();
-        let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(chunk_mgr_id.as_str()).await;
+        let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(Some(chunk_mgr_id.as_str())).await;
         if chunk_mgr.is_none() {
             warn!("Chunk manager not found: {}", chunk_mgr_id);
             return Err(anyhow::anyhow!("Chunk manager not found: {}", chunk_mgr_id));
         }
         let chunk_mgr = chunk_mgr.unwrap();
+        let chunk_mgr = chunk_mgr.lock().await;
 
         let chunk_reader = chunk_mgr.get_chunk_reader(&chunk_id,true).await;
         if chunk_reader.is_err() {
             warn!("Failed to get chunk reader: {}", chunk_reader.err().unwrap());
             return Err(anyhow::anyhow!("Failed to get chunk reader:"));
         }
+        drop(chunk_mgr);
         let (mut chunk_reader,chunk_size) = chunk_reader.unwrap();
         //TODO:根据ObjectId的类型结合path得到mime_type
         let mime_type = "application/octet-stream";

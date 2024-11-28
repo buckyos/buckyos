@@ -7,26 +7,38 @@ use tokio_util::io::StreamReader;
 use futures_util::StreamExt;
 use std::pin::Pin;
 use tokio::io::{BufReader,BufWriter};
+use std::collections::HashMap;
+
+pub enum ChunkWorkState {
+    Idle,
+    Downloading(u64,u64),//complete size / total size
+    DownloadError(String),//error message
+}
 
 use crate::{MAX_CHUNK_SIZE};
 use crate::{ChunkId,ChunkResult,ChunkMgr,ChunkError,ChunkReadSeek,ChunkHasher};
 pub struct NdnClient {
     chunk_mgr:Option<ChunkMgr>,
+    session_token:Option<String>,
     default_remote_url:Option<String>,
     enable_mutil_remote:bool,
     enable_remote_pull:bool,
     enable_zone_pull:bool,
+    chunk_work_state:HashMap<ChunkId,ChunkWorkState>,
 }
+
 
 //暂时只实现get接口
 impl NdnClient {
-    pub fn new(default_remote_url:String,chunk_mgr:Option<ChunkMgr>)->Self {
+    pub fn new(default_remote_url:String,session_token:Option<String>,chunk_mgr:Option<ChunkMgr>)->Self {
         Self {
             chunk_mgr,
+            session_token,
             default_remote_url:Some(default_remote_url),
             enable_mutil_remote:false,
             enable_remote_pull:false,
             enable_zone_pull:false,
+            chunk_work_state:HashMap::new(),
         }
     }
 
@@ -177,9 +189,12 @@ impl NdnClient {
         Err(ChunkError::Internal("no chunk mgr".to_string()))
     }
 
+    pub async fn get_chunk_state(&self,chunk_id:ChunkId)->ChunkResult<ChunkWorkState> {
+        unimplemented!()
+    }
+
     //pull的语义是将chunk下载并添加到指定chunk_mgr中
     pub async fn pull_chunk(&self, chunk_urls:Vec<Url>,mgr_id:Option<String>)->ChunkResult<u64> {
-        
         unimplemented!()
     }
 
