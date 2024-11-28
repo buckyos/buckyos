@@ -1,29 +1,24 @@
 
 import os
+import platform
 
-if os.system("killall node_daemon") != 0:
-    print("node_daemon not running")
-else:
-    print("node_daemon killed")
+system = platform.system()
+ext = ""
+killall_command = "killall"
+if system == "Windows":
+    ext = ".exe"
+    killall_command = "taskkill /IM"
 
-if os.system("killall scheduler") != 0:
-    print("scheduler not running")
-else:
-    print("scheduler killed")
+def kill_process(name):
+    if os.system(f"{killall_command} {name}{ext}") != 0:
+        print(f"{name} not running")
+    else:
+        print(f"{name} killed")
 
-if os.system("killall verify_hub") != 0:
-    print("verify_hub not running")
-else:
-    print("verify_hub killed")
-
-if os.system("killall system_config") != 0:
-    print("system_config not running")
-else:
-    print("system_config killed")
-
-if os.system("killall cyfs_gateway") != 0:
-    print("cyfs_gateway not running")
-else:
-    print("cyfs_gateway killed")
+kill_process("node_daemon")
+kill_process("scheduler")
+kill_process("verify_hub")
+kill_process("system_config")
+kill_process("cyfs_gateway")
 
 

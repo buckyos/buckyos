@@ -1,22 +1,12 @@
 #!/bin/python3
-
 import os
-import subprocess
-
-def check_process_exists(process_name):
-    try:
-        output = subprocess.check_output(["ps", "-A"]).decode()
-        if process_name in output:
-            return True
-        else:
-            return False
-    except subprocess.CalledProcessError:
-        return False
-
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts import util
 
 if __name__ == "__main__":
     process_name = "cyfs_gateway"
-    if check_process_exists(process_name):
+    if util.check_process_exists(process_name):
         print(f"{process_name} is running")
         exit(0)
             
