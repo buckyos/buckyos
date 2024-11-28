@@ -1,5 +1,5 @@
 
-use buckyos_kit::get_buckyos_root_dir;
+use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use serde::{Serialize,Deserialize};
 //chunk_mgr默认是机器级别的，即多个进程可以共享同一个chunk_mgr
 //chunk_mgr使用共享内存/filemap等技术来实现跨进程的读数据共享，比使用127.0.0.1的http协议更高效
@@ -132,6 +132,87 @@ impl ChunkMgrDB {
 
         tx.commit().map_err(|e| {
             warn!("ChunkMgrDB: create path failed! {}", e.to_string());
+            ChunkError::DbError(e.to_string())
+        })?;
+        Ok(())
+    }
+
+    pub fn set_path(&self, path: String,new_chunk_id:&ChunkId,app_id:&str,user_id:&str) -> ChunkResult<()> {
+        //如果不存在路径则创建，否则更新已经存在的路径指向的chunk
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| {
+            warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+            ChunkError::DbError(e.to_string())
+        })?;
+
+        // Check if the path exists
+        let existing_chunk_id: Result<String, _> = tx.query_row(
+            "SELECT chunk_id FROM paths WHERE path = ?1",
+            [&path],
+            |row| row.get(0),
+        );
+
+        match existing_chunk_id {
+            Ok(chunk_id) => {
+                // Path exists, update the chunk_id
+                tx.execute(
+                    "UPDATE paths SET chunk_id = ?1, app_id = ?2, user_id = ?3 WHERE path = ?4",
+                    [&new_chunk_id.to_string(), app_id, user_id, &path],
+                ).map_err(|e| {
+                    warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+                    ChunkError::DbError(e.to_string())
+                })?;
+
+                // Decrease ref_count of the old chunk
+                tx.execute(
+                    "UPDATE chunks SET ref_count = ref_count - 1 WHERE chunk_id = ?1",
+                    [&chunk_id],
+                ).map_err(|e| {
+                    warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+                    ChunkError::DbError(e.to_string())
+                })?;
+
+                // Remove the old chunk if ref_count becomes 0
+                tx.execute(
+                    "DELETE FROM chunks WHERE chunk_id = ?1 AND ref_count <= 0",
+                    [&chunk_id],
+                ).map_err(|e| {
+                    warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+                    ChunkError::DbError(e.to_string())
+                })?;
+            },
+            Err(_) => {
+                // Path does not exist, create a new path
+                tx.execute(
+                    "INSERT INTO paths (path, chunk_id, app_id, user_id) VALUES (?1, ?2, ?3, ?4)",
+                    [&path, &new_chunk_id.to_string(), app_id, user_id],
+                ).map_err(|e| {
+                    warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+                    ChunkError::DbError(e.to_string())
+                })?;
+            }
+        }
+
+        // Increase ref_count of the new chunk
+        tx.execute(
+            "INSERT OR IGNORE INTO chunks (chunk_id, ref_count, access_time) 
+             VALUES (?1, 0, strftime('%s','now'))",
+            [&new_chunk_id.to_string()],
+        ).map_err(|e| {
+            warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+            ChunkError::DbError(e.to_string())
+        })?;
+
+        tx.execute(
+            "UPDATE chunks SET ref_count = ref_count + 1 WHERE chunk_id = ?1",
+            [&new_chunk_id.to_string()],
+        ).map_err(|e| {
+            warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+            ChunkError::DbError(e.to_string())
+        })?;
+
+        tx.commit().map_err(|e| {
+            warn!("ChunkMgrDB: set path failed! {}", e.to_string());
             ChunkError::DbError(e.to_string())
         })?;
         Ok(())
@@ -350,10 +431,59 @@ impl ChunkMgr {
         None
     }
 
+    pub async fn get_chunk_reader_by_path(&self, path:String,user_id:&str,app_id:&str)->ChunkResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64)> {
+        let chunk_id = self.db.get_path_target_chunk(&path);
+        if chunk_id.is_err() {
+            warn!("get_chunk_reader_by_path: no chunk_id for path:{}", path);
+            return Err(ChunkError::ChunkNotFound(path));
+        }
+        let chunk_id = chunk_id.unwrap();
+        let access_time = buckyos_get_unix_timestamp();
+        self.db.update_chunk_access_time(&chunk_id, access_time)?;
+        self.get_chunk_reader(&chunk_id, false).await
+    }
+
+    pub async fn create_file(&self, path:String,chunk_id:&ChunkId,app_id:&str,user_id:&str)->ChunkResult<()> {
+        self.db.create_path(chunk_id, path.clone(), app_id, user_id).map_err(|e| {
+            warn!("create_file: create path failed! {}", e.to_string());
+            e
+        })?;
+        info!("create path:{} ==> {}", path, chunk_id.to_string());
+        Ok(())
+    }
+
+    pub async fn set_file(&self, path:String,new_chunk_id:&ChunkId,app_id:&str,user_id:&str)->ChunkResult<()> {
+        self.db.set_path(path.clone(), new_chunk_id, app_id, user_id).map_err(|e| {
+            warn!("update_file: update path failed! {}", e.to_string());
+            e
+        })?;
+        info!("update path:{} ==> {}", path, new_chunk_id.to_string());
+        Ok(())
+    }
+
+    pub async fn remove_file(&self, path:String)->ChunkResult<()> {
+        self.db.remove_path(path.clone()).map_err(|e| {
+            warn!("remove_file: remove path failed! {}", e.to_string());
+            e
+        })?;
+        info!("remove path:{}", path);
+        Ok(())
+
+        //TODO: 这里不立刻删除chunk,而是等统一的GC来删除
+    }
+
+    pub async fn remove_dir(&self, path:String)->ChunkResult<()> {
+        self.db.remove_dir_path(path.clone()).map_err(|e| {
+            warn!("remove_dir: remove dir path failed! {}", e.to_string());
+            e
+        })?;
+        info!("remove dir path:{}", path);
+        Ok(())
+    }
+
     //得到已经存在chunk的reader
     pub async fn get_chunk_reader(&self, chunk_id:&ChunkId,auto_cache:bool)->ChunkResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64)> {
         //at first ,do access control
-
         let mcache_file_path = self.get_cache_mmap_path(chunk_id);
         if mcache_file_path.is_some() {
             let mcache_file_path = mcache_file_path.unwrap();
@@ -392,6 +522,11 @@ impl ChunkMgr {
     pub async fn open_chunk_writer(&self, chunk_id:&ChunkId,chunk_size:u64,append:bool)->ChunkResult<(Pin<Box<dyn AsyncWrite + Send + Sync + Unpin>>,u64)> {
         Err(ChunkError::Internal("no chunk mgr".to_string()))
     }
+
+    pub async fn close_chunk_writer(&self, chunk_id:&ChunkId)->ChunkResult<()> {
+        Err(ChunkError::Internal("no chunk mgr".to_string()))
+    }
+
 
 }
 
