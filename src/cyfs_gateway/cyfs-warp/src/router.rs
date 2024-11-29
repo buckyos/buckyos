@@ -173,27 +173,24 @@ impl Router {
         })
     }
 
-    async fn handle_chunk_mgr(&self, chunk_mgr: &ChunkMgrRouteConfig, req: Request<Body>, host: &str, client_ip:IpAddr) -> Result<Response<Body>> {
+    async fn handle_chunk_mgr(&self, chunk_mgr_config: &ChunkMgrRouteConfig, req: Request<Body>, host: &str, client_ip:IpAddr) -> Result<Response<Body>> {
         if req.method() != hyper::Method::GET {
             return Err(anyhow::anyhow!("Invalid method: {}", req.method()));
         }
         //get chunkid    
-        let chunk_id;
-        if chunk_mgr.path_mode {
-            //get chunkid by path
-            let path = req.uri().path();
+        let chunk_id_result;
+        let path = req.uri().path();
+        if chunk_mgr_config.is_chunk_id_in_path {
             //let sub_path = path.trim_start_matches(path);
-            chunk_id = ChunkId::from_hostname(path).unwrap();
+            chunk_id_result = ChunkId::from_url_path(path);
         } else {
             //get chunkid by hostname
-            let chunk_id_result = ChunkId::from_hostname(host);
-            if chunk_id_result.is_err() {
-                warn!("Invalid chunk id: {}", chunk_id_result.err().unwrap());
-                return Err(anyhow::anyhow!("Invalid chunk id"));
-            }
-            chunk_id = chunk_id_result.unwrap();
+            chunk_id_result = ChunkId::from_hostname(host);
         }
-        let chunk_mgr_id = chunk_mgr.chunk_mgr_id.clone();
+        let user_id = "guest";
+        let app_id = "unknown";
+
+        let chunk_mgr_id = chunk_mgr_config.chunk_mgr_id.clone();
         let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(Some(chunk_mgr_id.as_str())).await;
         if chunk_mgr.is_none() {
             warn!("Chunk manager not found: {}", chunk_mgr_id);
@@ -201,15 +198,31 @@ impl Router {
         }
         let chunk_mgr = chunk_mgr.unwrap();
         let chunk_mgr = chunk_mgr.lock().await;
-
-        let chunk_reader = chunk_mgr.get_chunk_reader(&chunk_id,true).await;
-        if chunk_reader.is_err() {
-            warn!("Failed to get chunk reader: {}", chunk_reader.err().unwrap());
-            return Err(anyhow::anyhow!("Failed to get chunk reader:"));
+   
+        let mut chunk_reader;
+        let chunk_size;
+        let chunk_id;
+        if chunk_id_result.is_err() {
+            if chunk_mgr_config.enable_mgr_file_path {
+                (chunk_reader,chunk_size,chunk_id) = chunk_mgr.get_chunk_reader_by_path(path.to_string(),user_id,app_id).await.map_err(|e| {
+                    warn!("Failed to get chunk reader by path: {}", e);
+                    anyhow::anyhow!("Failed to get chunk reader by path: {}", e)
+                })?;
+                info!("get chunk reader by path:{} OK",path);
+            } else {
+                return Err(anyhow::anyhow!("failed to get chunk id from request!"));
+            }
+        } else {
+            chunk_id = chunk_id_result.unwrap();
+            (chunk_reader,chunk_size) = chunk_mgr.get_chunk_reader(&chunk_id,true).await.map_err(|e| {
+                warn!("Failed to get chunk reader: {}", e);
+                anyhow::anyhow!("Failed to get chunk reader: {}", e)
+            })?;
+            info!("get chunk reader by chunkid:{} OK",chunk_id.to_string());
         }
+
         drop(chunk_mgr);
-        let (mut chunk_reader,chunk_size) = chunk_reader.unwrap();
-        //TODO:根据ObjectId的类型结合path得到mime_type
+        //TODO:更合理的得到mime_type
         let mime_type = "application/octet-stream";
         // 处理Range请求
         if let Some(range_header) = req.headers().get(hyper::header::RANGE) {
@@ -229,6 +242,8 @@ impl Router {
                         .header("Content-Length", content_length)
                         .header("Content-Range", format!("bytes {}-{}/{}", start, end, chunk_size))
                         .header("Accept-Ranges", "bytes")
+                        .header("Cache-Control", "public,max-age=31536000")
+                        .header("ChunkId", chunk_id.to_string())
                         .body(Body::wrap_stream(stream))?);
                 }
             }
@@ -240,6 +255,8 @@ impl Router {
                 .header("Content-Type", mime_type)
                 .header("Content-Length", chunk_size)
                 .header("Accept-Ranges", "bytes")
+                .header("Cache-Control", "public,max-age=31536000")
+                .header("ChunkId", chunk_id.to_string())
                 .body(Body::wrap_stream(stream))?);
 
     }

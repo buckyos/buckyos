@@ -429,6 +429,8 @@ impl ChunkStore {
         Ok((false,0))
     }
 
+    //只有chunk完整准备好了，才是存在。写入到一半的chunk不会算存在。
+    //通过get_chunk_state可以得到更准确的chunk状态
     pub async fn is_chunk_exist(&self, chunk_id: &ChunkId,is_auto_add: Option<bool>)->ChunkResult<(bool,u64)> {
         let chunk_item = self.chunk_db.get_chunk(chunk_id).await;
         if chunk_item.is_ok() {
@@ -648,6 +650,7 @@ impl ChunkStore {
         Ok(())
     }
 
+    //得到一个新chunk的writer,此时chunk_id在系统中不存在才算成功
     pub async fn new_chunk_for_write(&self, chunk_id: &ChunkId, chunk_size: u64)->ChunkResult<()> {
         let mut chunk_item = ChunkItem::new(&chunk_id, chunk_size, None, None, None);
         chunk_item.chunk_state = ChunkState::New;
@@ -664,7 +667,7 @@ impl ChunkStore {
     }
 
     //Maybe it is more appropriate to return the file directly
-    pub async fn open_chunk_writer(&self, chunk_id: &ChunkId)->ChunkResult<Box<dyn AsyncWrite + Send + Sync + Unpin>> 
+    pub async fn open_chunk_writer(&self, chunk_id: &ChunkId)->ChunkResult<Pin<Box<dyn AsyncWrite + Send + Sync + Unpin>>> 
     {
         //TODO: Do we have to limit the same chunk_id can only have one writer?
         let chunk_path = self.get_chunk_path(&chunk_id);
@@ -680,9 +683,10 @@ impl ChunkStore {
             })?;
 
 
-        Ok(Box::new(file))
+        Ok(Box::pin(file))
     }
 
+    //writer已经写入完成，此时可以进行一次可选的hash校验
     pub async fn close_chunk_writer(&self, chunk_id: &ChunkId)->ChunkResult<()> {
         let mut chunk_item = self.chunk_db.get_chunk(chunk_id).await;
         if chunk_item.is_err() {
@@ -769,7 +773,7 @@ impl ChunkStore {
     //     unimplemented!()
     // }
 
-    //删除chunkid对应的文件（注意一定会带来文件的删除，即使这个chunkid有多个link指向，这些link也会被删除）
+    //删除chunkid对应的文件,注意一定会带来文件的删除
     async fn remove(&self, chunk_list: Vec<ChunkId>)->ChunkResult<()> {
         for chunk_id in chunk_list {
             // Remove the physical file

@@ -50,8 +50,16 @@ S1 --Objec1 --> S2 --Object2 --> S3 ....
 
 
 
+## Named Data 和 Named Object 的区别
+objtype:objid
 
-## 动机
+objtype 为hashtype时,objid为chunkid
+
+
+
+## 通过ObjId构建Web3语义网的逻辑
+
+
 
 
 ## 概述

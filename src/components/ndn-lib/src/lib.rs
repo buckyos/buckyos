@@ -1,6 +1,7 @@
 #![allow(unused, dead_code)]
 
 mod chunk;
+mod object;
 mod local_store;
 mod chunk_mgr;
 mod ndn_client;

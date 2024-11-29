@@ -1,4 +1,3 @@
-
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use serde::{Serialize,Deserialize};
 //chunk_mgr默认是机器级别的，即多个进程可以共享同一个chunk_mgr
@@ -409,7 +408,13 @@ impl ChunkMgr {
         let db = ChunkMgrDB::new(db_path)?;
         let mut local_store_list = vec![];
         for local_store_path in config.local_stores.iter() {
-            let local_store = ChunkStore::new(local_store_path.clone()).await?;
+            let real_local_store_path;
+            if local_store_path.starts_with(".") {
+                real_local_store_path = root_path.join(local_store_path);
+            } else {
+                real_local_store_path = PathBuf::from(local_store_path);
+            }
+            let local_store = ChunkStore::new(real_local_store_path.to_str().unwrap().to_string()).await?;
             local_store_list.push(local_store);
         }
         let local_cache;
@@ -431,7 +436,7 @@ impl ChunkMgr {
         None
     }
 
-    pub async fn get_chunk_reader_by_path(&self, path:String,user_id:&str,app_id:&str)->ChunkResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64)> {
+    pub async fn get_chunk_reader_by_path(&self, path:String,user_id:&str,app_id:&str)->ChunkResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64,ChunkId)> {
         let chunk_id = self.db.get_path_target_chunk(&path);
         if chunk_id.is_err() {
             warn!("get_chunk_reader_by_path: no chunk_id for path:{}", path);
@@ -440,7 +445,8 @@ impl ChunkMgr {
         let chunk_id = chunk_id.unwrap();
         let access_time = buckyos_get_unix_timestamp();
         self.db.update_chunk_access_time(&chunk_id, access_time)?;
-        self.get_chunk_reader(&chunk_id, false).await
+        let (chunk_reader,chunk_size) = self.get_chunk_reader(&chunk_id, false).await?;
+        Ok((chunk_reader,chunk_size,chunk_id))
     }
 
     pub async fn create_file(&self, path:String,chunk_id:&ChunkId,app_id:&str,user_id:&str)->ChunkResult<()> {
@@ -481,6 +487,16 @@ impl ChunkMgr {
         Ok(())
     }
 
+    pub async fn is_chunk_exist(&self, chunk_id:&ChunkId)->ChunkResult<bool> {
+        for local_store in self.local_store_list.iter() {
+            let (is_exist,chunk_size) = local_store.is_chunk_exist(chunk_id,None).await?;
+            if is_exist {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     //得到已经存在chunk的reader
     pub async fn get_chunk_reader(&self, chunk_id:&ChunkId,auto_cache:bool)->ChunkResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64)> {
         //at first ,do access control
@@ -519,15 +535,165 @@ impl ChunkMgr {
         Err(ChunkError::ChunkNotFound(chunk_id.to_string()))
     }
 
-    pub async fn open_chunk_writer(&self, chunk_id:&ChunkId,chunk_size:u64,append:bool)->ChunkResult<(Pin<Box<dyn AsyncWrite + Send + Sync + Unpin>>,u64)> {
-        Err(ChunkError::Internal("no chunk mgr".to_string()))
+    pub async fn open_chunk_writer(&self, chunk_id:&ChunkId,chunk_size:u64,append:bool)
+        ->ChunkResult<Pin<Box<dyn AsyncWrite + Send + Sync + Unpin>>> 
+    {
+        let default_store = self.local_store_list.first().unwrap();
+        if !append {
+            default_store.new_chunk_for_write(chunk_id, chunk_size).await?;
+        } 
+
+        let writer = default_store.open_chunk_writer(chunk_id).await?;
+        Ok(writer)
     }
 
     pub async fn close_chunk_writer(&self, chunk_id:&ChunkId)->ChunkResult<()> {
-        Err(ChunkError::Internal("no chunk mgr".to_string()))
+        let default_store = self.local_store_list.first().unwrap();
+        default_store.close_chunk_writer(chunk_id).await
     }
 
 
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use std::io::SeekFrom;
+
+    #[tokio::test]
+    async fn test_basic_chunk_operations() -> ChunkResult<()> {
+        // Create a temporary directory for testing
+        let test_dir = tempdir().unwrap();
+        let config = ChunkMgrConfig {
+            local_stores: vec![test_dir.path().to_str().unwrap().to_string()],
+            local_cache: None,
+            mmap_cache_dir: None,
+        };
+
+        let chunk_mgr = ChunkMgr::from_config(
+            Some("test".to_string()),
+            test_dir.path().to_path_buf(),
+            config
+        ).await?;
+
+        // Create test data
+        let test_data = b"Hello, World!";
+        let chunk_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
+        
+        // Write chunk
+        let mut writer = chunk_mgr.open_chunk_writer(&chunk_id, test_data.len() as u64, false).await.unwrap();
+        writer.write_all(test_data).await.unwrap();
+        chunk_mgr.close_chunk_writer(&chunk_id).await.unwrap();
+
+        // Read and verify chunk
+        let (mut reader, size) = chunk_mgr.get_chunk_reader(&chunk_id, false).await.unwrap();
+        assert_eq!(size, test_data.len() as u64);
+
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, test_data);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_chunk_with_path_operations() -> ChunkResult<()> {
+        // Create a temporary directory for testing
+        let test_dir = tempdir().unwrap();
+        let config = ChunkMgrConfig {
+            local_stores: vec![test_dir.path().to_str().unwrap().to_string()],
+            local_cache: None,
+            mmap_cache_dir: None,
+        };
+
+        let chunk_mgr = ChunkMgr::from_config(
+            Some("test".to_string()),
+            test_dir.path().to_path_buf(),
+            config
+        ).await?;
+
+        // Create test data
+        let test_data = b"Hello, Path Test!";
+        let chunk_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
+        let test_path = "/test/file.txt".to_string();
+        
+        // Write chunk
+        let mut writer = chunk_mgr.open_chunk_writer(&chunk_id, test_data.len() as u64, false).await?;
+        writer.write_all(test_data).await.unwrap();
+        chunk_mgr.close_chunk_writer(&chunk_id).await.unwrap();
+
+        // Bind chunk to path
+        chunk_mgr.create_file(
+            test_path.clone(),
+            &chunk_id,
+            "test_app",
+            "test_user"
+        ).await?;
+
+        // Read through path and verify
+        let (mut reader, size, retrieved_chunk_id) = chunk_mgr.get_chunk_reader_by_path(
+            test_path.clone(),
+            "test_user",
+            "test_app"
+        ).await?;
+
+        assert_eq!(size, test_data.len() as u64);
+        assert_eq!(retrieved_chunk_id, chunk_id);
+
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, test_data);
+
+        // Test remove file
+        chunk_mgr.remove_file(test_path.clone()).await.unwrap();
+
+        // Verify path is removed
+        let result = chunk_mgr.get_chunk_reader_by_path(
+            test_path.clone(),
+            "test_user",
+            "test_app"
+        ).await;
+        assert!(result.is_err());
+
+        Ok(())
+    }
+
+
+    //test get_chunk_mgr_by_id，然后再创建并写入一个chunk，再读取
+    #[tokio::test]
+    async fn test_get_chunk_mgr_by_id() -> ChunkResult<()> {
+        // Get ChunkMgr by id
+        let chunk_mgr_id = None;
+        let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(chunk_mgr_id).await;
+        assert!(chunk_mgr.is_some());
+        let chunk_mgr = chunk_mgr.unwrap();
+
+        // Create test data
+        let test_data = b"Hello, ChunkMgr Test!";
+        let chunk_id = ChunkId::new("sha256:abcdef1234567890").unwrap();
+        
+        // Write chunk
+        {
+            let mut chunk_mgr = chunk_mgr.lock().await;
+            let mut writer = chunk_mgr.open_chunk_writer(&chunk_id, test_data.len() as u64, false).await.unwrap();
+            writer.write_all(test_data).await.unwrap();
+            chunk_mgr.close_chunk_writer(&chunk_id).await.unwrap();
+        }
+
+        // Read chunk and verify
+        {
+            let chunk_mgr = chunk_mgr.lock().await;
+            let (mut reader, size) = chunk_mgr.get_chunk_reader(&chunk_id, true).await?;
+            assert_eq!(size, test_data.len() as u64);
+
+            let mut buffer = Vec::new();
+            reader.read_to_end(&mut buffer).await.unwrap();
+            assert_eq!(&buffer, test_data);
+        }
+
+        Ok(())
+    }
+}
 

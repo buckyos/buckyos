@@ -10,7 +10,11 @@ pub struct ChunkMgrRouteConfig {
     pub chunk_mgr_id : String,
     pub read_only:bool,
     pub guest_access:bool,// 是否允许zone外访问
-    pub path_mode:bool,// 是否使用路径模式
+    //是否将chunkid放在路径的第一级，
+    //如果为true，则使用https://ndn.$zoneid/$chunkid/index.html?ref=www.buckyos.org 
+    //如果为false，则将chunkid放在host的第一段https://$chunkid.ndn.$zoneid/index.html?ref=www.buckyos.org 
+    pub is_chunk_id_in_path:bool,
+    pub enable_mgr_file_path:bool,// 是否使用mgr路径模式
 }
 
 impl Default for ChunkMgrRouteConfig {
@@ -19,7 +23,8 @@ impl Default for ChunkMgrRouteConfig {
             chunk_mgr_id:"default".to_string(), 
             read_only:true, 
             guest_access:true, 
-            path_mode:false 
+            is_chunk_id_in_path:true,
+            enable_mgr_file_path:true
         }
     }
 }

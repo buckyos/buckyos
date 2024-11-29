@@ -39,6 +39,11 @@ impl ChunkId {
         format!("{}:{}", self.hash_type, self.hash_hex_string)
     }
 
+    pub fn to_did_string(&self) -> String {
+        format!("did:{}:{}", self.hash_type, self.hash_hex_string)
+    }
+    
+
     pub fn to_hostname(&self) -> String {
         format!("{}-{}", self.hash_hex_string, self.hash_type)
     }
@@ -51,6 +56,12 @@ impl ChunkId {
         let hash_hex_string = &first_part[..pos];
         let hash_type = &first_part[pos+1..];
         Ok(Self { hash_hex_string:hash_hex_string.to_string(), hash_type:hash_type.to_string() })   
+    }
+
+    pub fn from_url_path(path:&str) -> ChunkResult<Self> {
+        let path_parts = path.split("/").collect::<Vec<&str>>();
+        let first_part = path_parts[0];
+        return Self::new(first_part);
     }
 
     pub fn get_length(&self) -> Option<u64> {
