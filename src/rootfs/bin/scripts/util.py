@@ -37,7 +37,7 @@ def check_port(port) -> bool:
 def kill_process(name):
     killall_command = "killall"
     if system == "Windows":
-        killall_command = "taskkill /IM"
+        killall_command = "taskkill /F /IM"
 
     if os.system(f"{killall_command} {name}{ext}") != 0:
         print(f"{name} not running")
@@ -46,7 +46,10 @@ def kill_process(name):
 
 def nohup_start(run_cmd):
     cmd = f"nohup {run_cmd} > /dev/null 2>&1 &"
+    creationflags = 0
     if system == "Windows":
         cmd = f"start /min {run_cmd}"
+        creationflags = subprocess.DETACHED_PROCESS|subprocess.CREATE_NEW_PROCESS_GROUP|subprocess.CREATE_NO_WINDOW
     print(f"will rum cmd {cmd} on system {system}")
-    os.system(cmd)
+    subprocess.run(cmd, shell=True, creationflags=creationflags)
+    # os.system(cmd)
