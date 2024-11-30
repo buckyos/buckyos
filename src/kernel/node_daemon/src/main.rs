@@ -387,7 +387,7 @@ async fn node_main(node_host_name: &str,
             });
     }).await;
 
-    info!("node daemon main succes end.");
+    info!("node daemon main success end.");
     Ok(true)
 }
 
@@ -677,6 +677,10 @@ async fn async_main() -> std::result::Result<(), String> {
     std::env::set_var("BUCKY_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
     std::env::set_var("BUCKY_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
 
+    info!("set var BUCKY_ZONE_OWNER to {}", env::var("BUCKY_ZONE_OWNER").unwrap());
+    info!("set var BUCKY_ZONE_CONFIG to {}", env::var("BUCKY_ZONE_CONFIG").unwrap());
+    info!("set var BUCKY_THIS_DEVICE to {}", env::var("BUCKY_THIS_DEVICE").unwrap());
+
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH)
         .expect("Time went backwards");
@@ -705,6 +709,7 @@ async fn async_main() -> std::result::Result<(), String> {
     
     //init kernel_service:cyfs-gateway service
     std::env::set_var("GATEWAY_SESSIONT_TOKEN",device_session_token_jwt.clone());
+    info!("set var GATEWAY_SESSIONT_TOKEN to {}", device_session_token_jwt);
     start_cyfs_gateway_service(node_id,&device_doc, &device_private_key,&zone_config).await.map_err(|err| {
         error!("init cyfs_gateway service failed! {}", err);
         return String::from("init cyfs_gateway service failed!");
@@ -744,6 +749,7 @@ async fn async_main() -> std::result::Result<(), String> {
             sys_config::Result::Err(SystemConfigError::KeyNotFound(_)) => {
                 warn!("boot config is not exist, try first scheduler to generate it!");
                 std::env::set_var("SCHEDULER_SESSION_TOKEN", device_session_token_jwt.clone());
+                info!("set var SCHEDULER_SESSION_TOKEN {}", device_session_token_jwt);
                 do_boot_scheduler().await.map_err(|err| {
                     error!("do boot scheduler failed! {}", err);
                     return String::from("do boot scheduler failed!");
