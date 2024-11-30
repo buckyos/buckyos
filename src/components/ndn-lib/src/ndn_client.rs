@@ -24,12 +24,12 @@ pub struct NdnClient {
     enable_mutil_remote:bool,
     enable_remote_pull:bool,
     enable_zone_pull:bool,
-    chunk_work_state:HashMap<ChunkId,ChunkWorkState>,
+    chunk_work_state:HashMap<ChunkId,ChunkWorkState>,//
 }
 
 
 //暂时只实现get接口
-//NdnClient自己是无状态的，任何状态的保存都依赖于ChunkMgr
+//NdnClient自己是无持久化状态的，任何状态的保存都依赖于ChunkMgr
 impl NdnClient {
     pub fn new(default_remote_url:String,session_token:Option<String>,chunk_mgr_id:Option<String>)->Self {
         Self {
