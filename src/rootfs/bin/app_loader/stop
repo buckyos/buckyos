@@ -2,15 +2,24 @@
 
 import os
 import sys
+import platform
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
 appid = sys.argv[1]
 username = sys.argv[2]
 
 container_id = f"{username}-{appid}"
 
-if os.system(f"docker stop {container_id}") != 0:
-    print(f"Failed to stop container {container_id}")
-    exit(1)
+# 当前默认windows上不支持docker，利用run file机制做一个假启动
+# TODO: 考虑在经过某些手工配置后，windows上也可以支持docker
+
+if platform.system() == "Windows":
+    print(f"Windows is not supported for docker, fake stop {container_id}")
+    os.remove(f"{current_dir}/{container_id}.win")
+else:
+    if os.system(f"docker stop {container_id}") != 0:
+        print(f"Failed to stop container {container_id}")
+        exit(1)
 
 print(f"Container {container_id} stopped")
 exit(0)

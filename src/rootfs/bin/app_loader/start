@@ -3,6 +3,7 @@
 import os
 import sys
 import json
+import platform
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -26,15 +27,25 @@ if app_config is None:
 
 config = json.loads(app_config)
 
+container_id = f"{username}-{appid}"
+
+# 当前默认windows上不支持docker，利用run file机制做一个假启动
+# TODO: 考虑在经过某些手工配置后，windows上也可以支持docker
+
+if platform.system() == "Windows":
+    print(f"Windows is not supported for docker, fake start {container_id}")
+    open(f"{current_dir}/{container_id}.win", "w").close()
+    exit(0)
+
 # 如果镜像已经在运行，则先停止再启动
 print(f"Before start, try stopping container: {username}-{appid}")
-docker_command = f"docker kill  {full_appid}"
+docker_command = f"docker kill {container_id}"
 os.system(docker_command)
 
 # 如果容器已经存在，则直接用docker start命令
-ret = os.system(f"docker start {full_appid}")
+ret = os.system(f"docker start {container_id}")
 if ret == 0:
-    print(f"Container {full_appid} is already running, skip building")
+    print(f"Container {container_id} is already running, skip building")
     exit(0)
 
 
@@ -74,7 +85,7 @@ if port:
     port = f"-p {port}:{org_port} "
 
 # 构造docker命令
-docker_command = f"docker run --rm {port} --name {username}-{appid} -e {full_appid}.config -e {full_appid}.token -d "
+docker_command = f"docker run --rm {port} --name {container_id} -e {full_appid}.config -e {full_appid}.token -d "
 
 if volume_mapping:
     docker_command += volume_mapping
