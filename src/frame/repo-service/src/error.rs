@@ -37,7 +37,7 @@ pub enum RepoError {
     #[error("IO Error: {0}")]
     IOError(#[from] io::Error),
     #[error("DB Error: {0}")]
-    DbError(String),
+    DbError(#[from] rusqlite::Error),
 }
 
 pub type RepoResult<T> = std::result::Result<T, RepoError>;

@@ -1,8 +1,13 @@
 #![allow(unused, dead_code)]
 
 mod error;
+mod index_store;
 mod kv_provider;
-mod pkg_repository;
+//mod pkg_repository;
+mod downloader;
+mod source_manager;
+mod source_node;
+mod verifier;
 
 use std::collections::HashMap;
 use std::fs::File;
