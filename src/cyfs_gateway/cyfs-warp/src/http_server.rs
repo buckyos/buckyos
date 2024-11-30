@@ -54,15 +54,12 @@ async fn _handle_request(
 ) -> Result<Response<Body>, hyper::Error> {
     let timeout_duration = Duration::from_secs(30);
     let result = timeout(timeout_duration, handle_request(router, tls_config, req, client_ip)).await;
-    match result {
-        Ok(res) => res,
-        Err(_) => {
-            Ok(Response::builder()
+    result.unwrap_or_else(|_| {
+        Ok(Response::builder()
             .status(500)
             .body(Body::from("Internal Server Error:process timeout"))
             .unwrap())
-        }
-    }
+    })
 }
 
 pub async fn start_cyfs_warp_server(config:WarpServerConfig) -> Result<()> {

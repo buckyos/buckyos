@@ -2,7 +2,8 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::str::FromStr;
 use tokio::net::UdpSocket;
 use std::net::ToSocketAddrs;
-use serde::{Serialize,Deserialize};
+use std::path::Path;
+use serde::{Serialize, Deserialize};
 use serde_json::json;
 use thiserror::Error;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
@@ -135,11 +136,11 @@ pub fn from_pkcs8(pkcs8: &[u8]) -> NSResult<[u8;32]> {
 }
 
 //TODO: would use a PEM parser library
-pub fn load_pem_private_key(file_path: &str) -> NSResult<[u8;48]> {
+pub fn load_pem_private_key<P: AsRef<Path>>(file_path: P) -> NSResult<[u8;48]> {
     // load from /etc/buckyos/node_private_key.toml
-    let contents = std::fs::read_to_string(file_path).map_err(|err| {
+    let contents = std::fs::read_to_string(&file_path).map_err(|err| {
         error!("read private key failed! {}", err);
-        return NSError::ReadLocalFileError(file_path.to_string());
+        return NSError::ReadLocalFileError(file_path.as_ref().to_string_lossy().to_string());
     })?;
 
     let start_pos = contents.find("-----BEGIN PRIVATE KEY-----");
