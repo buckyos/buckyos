@@ -7,7 +7,7 @@ ext = ""
 killall_command = "killall"
 if system == "Windows":
     ext = ".exe"
-    killall_command = "taskkill /IM"
+    killall_command = "taskkill /F /IM"
 
 def kill_process(name):
     if os.system(f"{killall_command} {name}{ext}") != 0:
