@@ -1,5 +1,5 @@
+use crate::def::*;
 use crate::error::*;
-use crate::source_manager::SourceMeta;
 use crate::verifier::*;
 use std::path::PathBuf;
 
@@ -22,8 +22,4 @@ pub async fn chunk_to_local_file(
     local_file: &PathBuf,
 ) -> RepoResult<()> {
     unimplemented!("chunk_to_local_file")
-}
-
-pub async fn get_remote_source_meta(url: &str) -> RepoResult<SourceMeta> {
-    unimplemented!("get_remote_source_meta")
 }

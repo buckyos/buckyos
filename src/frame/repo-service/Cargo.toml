@@ -18,7 +18,7 @@ lazy_static = "*"
 thiserror = "*"
 version-compare = "*"
 semver = "*"
-#ndn-lib = { path = "../../components/ndn-lib" }
+ndn-lib = { path = "../../components/ndn-lib" }
 package-lib = { path = "../../components/package-lib" }
 name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }

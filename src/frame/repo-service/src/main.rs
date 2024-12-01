@@ -4,6 +4,7 @@ mod error;
 mod index_store;
 mod kv_provider;
 //mod pkg_repository;
+mod def;
 mod downloader;
 mod source_manager;
 mod source_node;
