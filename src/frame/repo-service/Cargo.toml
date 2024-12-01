@@ -18,12 +18,16 @@ lazy_static = "*"
 thiserror = "*"
 version-compare = "*"
 semver = "*"
-ndn-lib = { path = "../../components/ndn-lib" }
+#ndn-lib = { path = "../../components/ndn-lib" }
 package-lib = { path = "../../components/package-lib" }
-index-lib = { path = "../../components/index-lib" }
+name-lib = { path = "../../components/name-lib" }
+name-client = { path = "../../components/name-client" }
+ed25519-dalek = { version = "*", features = ["rand_core"] } 
+base64 = "*"
+rusqlite =  { version = "*", features = ["bundled"] }
+buckyos-kit = { path = "../../components/buckyos-kit" }
+
 #jsonwebtoken = "*" 
-#buckyos-kit = { path = "../../components/buckyos-kit" }
-#name-lib = { path = "../../components/name-lib" }
 #kRPC ={ path = "../../kernel/kRPC" }
 #rbac = { path = "../../kernel/rbac" }
 #warp = "*"

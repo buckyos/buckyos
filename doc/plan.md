@@ -82,7 +82,7 @@ Functions marked with `*` are those I believe must be completed in Alpha2. Funct
     - [ ] *kLog server (S2), PoC version should implement a simple version to ensure reliability
   - *pkg system
     - [x] Improve lib (S2,@waterflier) to facilitate use by other components
-    - [ ] DID-based trusted package verification flow (A2,@glen0125,)
+    - [ ] DID-based trusted package verification flow (A2,@glen0125)
     - [ ] Integrate with the task system (A2,@glen0125)
   - [ ] *ndn-lib, Named Data Network lib (A1,@waterflier)
     - [ ] Chunk & ChunkId lib（A1,@photosssa）
@@ -107,8 +107,8 @@ Functions marked with `*` are those I believe must be completed in Alpha2. Funct
   - cyfs-gateway (listed separately)
   - kMQ message queue, supports custom event systems & user's system inbox,
 - Frame Services
-  - [ ] *smb-service (A1,wugren), integrated with ACL
-  - [ ] k8s-service, integrated with ACL
+  - [ ] *smb-service (A1,wugren), integrated with rbac
+  - [ ] k8s-service, integrated with rbac
   - [ ] Notify Manager
   - [ ] Device-Sim,When connecting to the mobile phone/computer through the USB-C/Lightning interface, it can simulate it as a high-speed storage device
 - Default dApps
@@ -131,13 +131,13 @@ Functions marked with `*` are those I believe must be completed in Alpha2. Funct
   - [x] rtcp network reply service (A2 @waterflier) (subscription management) 
     - [ ] rtcp network reply service Support billing and subscription (S3,@wugren)
   - [ ] *WebUI (S2,@wugren), a simple web page for users to manage their accounts and names annd subscriptions
-  - [ ] *http chunk backup server (S2), mainly functions from BuckyOS Backup Suite, simple online operation at first (with size restrictions), followed by subscription implementation
+  - [ ] *http chunk backup server （backend is S3） (S2), mainly functions from BuckyOS Backup Suite, simple online operation at first (with size restrictions), followed by subscription implementation
 - BuckyOS Backup Suite (independent product with separate points, additional rewards from the DMC fund), an independent cross-platform backup software, refer to its independent PRD.
   - [ ] *Backup Suite Framework (A4,@waterflier)
   - [ ] *Backup basic libs (A1,@waterflier)
   - [ ] *General high-performance dir backup source (A2,@waterflier)
   - [ ] *Web UI（S3，@streetycat,）
-  - [ ] *DMC Backup Target (A6,@photosssa)
+  - [ ] DMC Backup Target (Alpha3) (A6,@photosssa)
   - [ ] http DAV target server
   - [ ] *Installation package (A1,@streetycat)
   - [ ] *Integrated with BuckyOS (S1,@waterflier)

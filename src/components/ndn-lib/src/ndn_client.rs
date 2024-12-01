@@ -7,26 +7,39 @@ use tokio_util::io::StreamReader;
 use futures_util::StreamExt;
 use std::pin::Pin;
 use tokio::io::{BufReader,BufWriter};
+use std::collections::HashMap;
 
-use crate::{MAX_CHUNK_SIZE};
+pub enum ChunkWorkState {
+    Idle,
+    Downloading(u64,u64),//complete size / total size
+    DownloadError(String),//error message
+}
+
+use crate::{chunk, chunk_mgr, MAX_CHUNK_SIZE};
 use crate::{ChunkId,ChunkResult,ChunkMgr,ChunkError,ChunkReadSeek,ChunkHasher};
 pub struct NdnClient {
-    chunk_mgr:Option<ChunkMgr>,
+    default_chunk_mgr_id:Option<String>,
+    session_token:Option<String>,
     default_remote_url:Option<String>,
     enable_mutil_remote:bool,
     enable_remote_pull:bool,
     enable_zone_pull:bool,
+    chunk_work_state:HashMap<ChunkId,ChunkWorkState>,//
 }
 
+
 //暂时只实现get接口
+//NdnClient自己是无持久化状态的，任何状态的保存都依赖于ChunkMgr
 impl NdnClient {
-    pub fn new(default_remote_url:String,chunk_mgr:Option<ChunkMgr>)->Self {
+    pub fn new(default_remote_url:String,session_token:Option<String>,chunk_mgr_id:Option<String>)->Self {
         Self {
-            chunk_mgr,
+            default_chunk_mgr_id:chunk_mgr_id,
+            session_token,
             default_remote_url:Some(default_remote_url),
             enable_mutil_remote:false,
             enable_remote_pull:false,
             enable_zone_pull:false,
+            chunk_work_state:HashMap::new(),
         }
     }
 
@@ -87,10 +100,16 @@ impl NdnClient {
             warn!("get_chunk: auto_add is false, will not download to local");
             return Err(ChunkError::Internal("auto_add is false".to_string()));
         }
-
-        if self.chunk_mgr.is_some() {
-            let chunk_mgr = self.chunk_mgr.as_ref().unwrap();
-            let reader = chunk_mgr.get_chunk_reader(&chunk_id,auto_add).await;
+ 
+        if self.default_chunk_mgr_id.is_some() {
+            let chunk_mgr_id = self.default_chunk_mgr_id.clone().unwrap();
+            let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(Some(chunk_mgr_id.as_str())).await;
+            if chunk_mgr.is_none() {
+                return Err(ChunkError::Internal("no chunk mgr".to_string()));
+            }
+            let chunk_mgr = chunk_mgr.unwrap();
+            let real_chunk_mgr = chunk_mgr.lock().await;
+            let reader = real_chunk_mgr.get_chunk_reader(&chunk_id,auto_add).await;
             if reader.is_ok() {
                 let (reader,len) = reader.unwrap();
                 return Ok(reader);
@@ -108,9 +127,16 @@ impl NdnClient {
         let mut download_buffer:Vec<u8> = vec![];
         let is_downlaod_to_mgr;
 
-        if auto_add && self.chunk_mgr.is_some() {
-            let chunk_mgr = self.chunk_mgr.as_ref().unwrap();
-            let (mut chunk_writer,complete_size) = chunk_mgr.open_chunk_writer(&chunk_id,0,true).await
+        if auto_add && self.default_chunk_mgr_id.is_some() {
+            let chunk_mgr_id = self.default_chunk_mgr_id.clone().unwrap();
+            let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(Some(chunk_mgr_id.as_str())).await;
+            if chunk_mgr.is_none() {
+                return Err(ChunkError::Internal("no chunk mgr".to_string()));
+            }
+            let chunk_mgr = chunk_mgr.unwrap();
+            let real_chunk_mgr = chunk_mgr.lock().await;
+            let complete_size = 0;//TODO restore from hasher state
+            let chunk_writer = real_chunk_mgr.open_chunk_writer(&chunk_id,0,true).await
                 .map_err(|e| {
                     warn!("get_chunk: open chunk writer failed:{}",e.to_string());
                     e
@@ -130,6 +156,7 @@ impl NdnClient {
         let mut remote_reader = None;
         if self.enable_zone_pull {
             //TODO:从Zone的Chunk Mgr中读取（别的设备上的Chunk Mgr）
+            unimplemented!()
         }
 
         if self.enable_remote_pull {
@@ -165,8 +192,11 @@ impl NdnClient {
         info!("download chunk {} from remote success and verifyed",chunk_id.to_string());
         
         if is_downlaod_to_mgr {
-            let chunk_mgr = self.chunk_mgr.as_ref().unwrap();
-            let (reader,len) = chunk_mgr.get_chunk_reader(&chunk_id,false).await
+            let chunk_mgr_id = self.default_chunk_mgr_id.clone().unwrap();
+            let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(Some(chunk_mgr_id.as_str())).await.unwrap();
+            let real_chunk_mgr = chunk_mgr.lock().await;
+            real_chunk_mgr.close_chunk_writer(&chunk_id).await?;
+            let (reader,len) = real_chunk_mgr.get_chunk_reader(&chunk_id,false).await
                 .map_err(|e| {
                     warn!("get_chunk: get chunk reader failed:{}",e.to_string());
                     e
@@ -177,10 +207,33 @@ impl NdnClient {
         Err(ChunkError::Internal("no chunk mgr".to_string()))
     }
 
-    //pull的语义是将chunk下载并添加到指定chunk_mgr中
-    pub async fn pull_chunk(&self, chunk_urls:Vec<Url>,mgr_id:Option<String>)->ChunkResult<u64> {
-        
+    pub async fn get_chunk_state(&self,chunk_id:ChunkId)->ChunkResult<ChunkWorkState> {
         unimplemented!()
+    }
+
+    //pull的语义是将chunk下载并添加到指定chunk_mgr中，返回的是本次pull传输的字节数
+    pub async fn pull_chunk(&self, chunk_id:ChunkId,mgr_id:Option<&str>)->ChunkResult<u64> {
+        let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(mgr_id).await;
+        if chunk_mgr.is_none() {
+            return Err(ChunkError::Internal("no chunk mgr".to_string()));
+        }
+        let chunk_mgr = chunk_mgr.unwrap();
+        let mut chunk_mgr = chunk_mgr.lock().await;
+        let is_exist = chunk_mgr.is_chunk_exist(&chunk_id).await?;
+        if is_exist {
+            return Err(ChunkError::ChunkExists(chunk_id.to_string()));
+        }
+
+        let chunk_url = Self::gen_chunk_url(&chunk_id,None);
+        let (mut reader,len) = self.get_chunk_from_url(chunk_url,None).await?;
+        let mut writer = chunk_mgr.open_chunk_writer(&chunk_id,len,true).await?;
+        tokio::io::copy(&mut reader,&mut writer).await
+            .map_err(|e| {
+                warn!("pull_chunk: copy chunk {} from remote failed:{}",chunk_id.to_string(),e.to_string());
+                ChunkError::IoError(e.to_string())
+            })?;
+        chunk_mgr.close_chunk_writer(&chunk_id).await?;
+        Ok(len)
     }
 
 }

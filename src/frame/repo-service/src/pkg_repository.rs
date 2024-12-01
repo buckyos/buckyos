@@ -194,4 +194,8 @@ impl PackageRepository {
         //TODO: 通过chunk manager查询chunk是否存在
         unimplemented!("check_exist")
     }
+
+    pub async fn update_net_index() -> RepoResult<()> {
+        unimplemented!()
+    }
 }

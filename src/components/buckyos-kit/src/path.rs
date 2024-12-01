@@ -38,3 +38,11 @@ pub fn adjust_path(old_path: &str) -> std::io::Result<PathBuf> {
 
     std::path::absolute(new_path)?.canonicalize()
 }
+
+pub fn get_buckyos_chunk_data_dir(mgr_id: Option<&str>) -> PathBuf {
+    if mgr_id.is_none() {
+        get_buckyos_root_dir().join("data").join("chunk")
+    } else {
+        get_buckyos_root_dir().join("data").join("chunk").join(mgr_id.unwrap())
+    }
+}
