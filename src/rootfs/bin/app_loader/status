@@ -1,7 +1,9 @@
 #!/bin/python3
-
-import docker
 import sys
+import platform
+import os
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
 
 appid = sys.argv[1]
 username = sys.argv[2]
@@ -9,6 +11,14 @@ username = sys.argv[2]
 container_id = f"{username}-{appid}"
 
 def is_container_running(container_name):
+    # 当前默认windows上不支持docker，利用run file机制做一个假启动
+    # TODO: 考虑在经过某些手工配置后，windows上也可以支持docker
+
+    if platform.system() == "Windows":
+        print(f"Windows is not supported for docker, fake check {container_id}")
+        return os.path.exists(f"{current_dir}/{container_id}.win")
+    
+    import docker
     # 连接到本地 Docker 客户端
     client = docker.from_env()
 

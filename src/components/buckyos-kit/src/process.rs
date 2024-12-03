@@ -44,64 +44,55 @@ pub fn restart_program() -> std::io::Result<()> {
     exit(0);
 }
 
-pub async fn execute(
-    path: &PathBuf,
-    timeout_secs: u64,
-    args: Option<&Vec<String>>,
-    current_dir: Option<&PathBuf>,
-    env_vars: Option<&HashMap<String, String>>,
-) -> Result<(i32, Vec<u8>)> {
-    let file = File::open(path)
-        .await
-        .map_err(|e| ServiceControlError::FileNotFound(e.to_string()))?;
+pub async fn parse_script_file(path: &PathBuf) -> Result<(String, bool)> {
+    let file = File::open(path).await.map_err(|e| ServiceControlError::FileNotFound(e.to_string()))?;
     let mut reader = BufReader::new(file);
-    let command_str: String;
-    let mut command = Command::new(path.to_str().unwrap_or_default());
-
     let mut first_line = String::new();
-    let mut read_first_line = false;
-    let read_result = reader.read_line(&mut first_line).await;
-    if read_result.is_ok() {
+    let mut script_engine = String::new();
+    let mut is_script = true;
+    if let Ok(_) = reader.read_line(&mut first_line).await {
         if first_line.starts_with("#!") {
-            let script_engine = first_line.trim_start_matches("#!").trim();
-            //得到脚本引擎的可执行文件名
-            let script_engine_path = Path::new(script_engine);
-            //执行脚本引擎
-            command = Command::new(script_engine_path.file_name().unwrap().to_str().unwrap());
-            command.arg(path);
-            read_first_line = true;
-            //info!("start run script execute {} {}...", script_engine_path.file_name().unwrap().to_str().unwrap(),path.to_string_lossy());
+            script_engine = first_line.trim_start_matches("#!").trim().to_owned();
+            // try to adjust script engine file path on windows
+            if cfg!(target_os = "windows") {
+                if let Some(name) = Path::new(&script_engine).file_name() {
+                    script_engine = String::from(name.to_string_lossy());
+                }
+            }
         }
     }
 
-    if !read_first_line {
-        let extension = Path::new(path)
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let mut is_known_script = true;
+    if script_engine.is_empty() {
+        let extension = Path::new(path).extension().and_then(|s| s.to_str()).unwrap_or("");
         match extension {
-            "py" => command_str = "python3".to_string(),
-            "js" => command_str = "node".to_string(),
-            "sh" => {
-                command_str = "sh".to_string();
-            }
+            "py" => script_engine = "python3".to_string(),
+            "js" => script_engine = "node".to_string(),
+            "sh" => script_engine = "sh".to_string(),
             _ => {
-                command_str = path.to_str().unwrap_or_default().to_string();
-                is_known_script = false;
+                script_engine = path.to_str().unwrap_or_default().to_string();
+                is_script = false;
             }
         }
+    }
 
-        command = Command::new(command_str);
-        if is_known_script {
-            command.arg(path);
-        }
+    if script_engine == "python3" {
+        // on windows, python3 always has name "python.exe"
+        script_engine = String::from("python");
+    }
+
+    Ok((script_engine, is_script))
+}
+
+pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String>>,
+                    current_dir: Option<&PathBuf>, env_vars: Option<&HashMap<String, String>>) -> Result<(i32, Vec<u8>)> {
+    let (script_engine, is_script) = parse_script_file(path).await?;
+    let mut command = Command::new(script_engine);
+    if is_script {
+        command.arg(path);
     }
 
     if let Some(args) = args {
-        for arg in args {
-            command.arg(arg);
-        }
+        command.args(args);
     }
 
     if let Some(current_dir) = current_dir {
@@ -116,6 +107,9 @@ pub async fn execute(
     //println!("{:?}", command);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
+
+    info!("Executing: {:?}", command);
+
 
     let mut child = command
         .spawn()

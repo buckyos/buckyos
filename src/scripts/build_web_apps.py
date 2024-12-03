@@ -15,7 +15,6 @@ def build_web_apps():
     build("apps/control_panel/src")
     build("apps/sys_test")
 
-print(f'build web apps success')
-
 if __name__ == "__main__":
     build_web_apps()
+    print(f'build web apps success')

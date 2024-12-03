@@ -36,13 +36,13 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
 
 
     //load config
-    let mut config_loader = config_loader::GatewayConfig::new();
-    let load_result = config_loader.load_from_json_value(_json).await;
+    let load_result = config_loader::GatewayConfig::load_from_json_value(_json).await;
     if load_result.is_err() {
         let msg = format!("Error loading config: {}", load_result.err().unwrap());
         error!("{}", msg);
         std::process::exit(1);
     }
+    let config_loader = load_result.unwrap();
     
     let disable_buckyos = matches.get_flag("disable-buckyos");
     if !disable_buckyos {

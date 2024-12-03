@@ -2,17 +2,25 @@ import os
 import shutil
 import sys
 import tempfile
+import platform
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 root_bin_dir = os.path.join(src_dir, "rootfs/bin")
+system = platform.system()
+ext = ""
+if system == "Windows":
+    ext = ".exe"
 
 def strip_and_copy_rust_file(rust_target_dir, name, dest, need_dir=False):
     src_file = os.path.join(rust_target_dir, "release", name)
     if need_dir:
         dest = os.path.join(dest, name)
         os.makedirs(dest, exist_ok=True)
-    shutil.copy(src_file, dest)
-    os.system(f"strip {os.path.join(dest, name)}")
+    shutil.copy(src_file+ext, dest)
+
+    # no need strip symbol on windows
+    if system == "Linux":
+        os.system(f"strip {os.path.join(dest, name)}")
 
 def copy_web_apps(src, target):
     dist_dir = os.path.join(src_dir, src, "dist")
@@ -32,7 +40,10 @@ def copy_files(rust_target_dir):
     strip_and_copy_rust_file(rust_target_dir, "cyfs_gateway", root_bin_dir, True)
 
     strip_and_copy_rust_file(rust_target_dir, "cyfs_gateway", os.path.join(src_dir, "./web3_bridge"))
-    os.rename(os.path.join(src_dir, "./web3_bridge", "cyfs_gateway"), os.path.join(src_dir, "./web3_bridge", "web3_gateway"))
+    
+    if os.path.exists(os.path.join(src_dir, "./web3_bridge", "web3_gateway"+ext)):
+        os.remove(os.path.join(src_dir, "./web3_bridge", "web3_gateway"+ext))
+    os.rename(os.path.join(src_dir, "./web3_bridge", "cyfs_gateway"+ext), os.path.join(src_dir, "./web3_bridge", "web3_gateway"+ext))
     
     shutil.copy(os.path.join(src_dir, "killall.py"), root_bin_dir)
 

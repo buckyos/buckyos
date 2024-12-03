@@ -31,6 +31,14 @@ pub fn get_buckyos_service_data_dir(service_name: &str) -> PathBuf {
     get_buckyos_root_dir().join("data").join(service_name)
 }
 
+pub fn adjust_path(old_path: &str) -> std::io::Result<PathBuf> {
+    let mut new_path= old_path.replace("{BUCKYOS_ROOT}", &get_buckyos_root_dir().to_string_lossy());
+    // can adjust other Placeholders
+    new_path = new_path.replace("{BUCKYOS_BIN}", &get_buckyos_system_bin_dir().to_string_lossy());
+
+    std::path::absolute(new_path)?.canonicalize()
+}
+
 pub fn get_buckyos_chunk_data_dir(mgr_id: Option<&str>) -> PathBuf {
     if mgr_id.is_none() {
         get_buckyos_root_dir().join("data").join("chunk")

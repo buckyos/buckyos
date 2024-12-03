@@ -1,11 +1,13 @@
 #!/bin/python3
 
 import os
-
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts import util
 current_dir = os.path.dirname(os.path.abspath(__file__))
 # 考虑上一个进程可能是卡死的，因此需要先kill掉
 print("try to kill system_config")
-os.system("killall system_config")
+util.kill_process("system_config")
 
 # 读取必要的环境变量，确保关键的环境变量已经设置
 BUCKY_ZONE_CONFIG = os.getenv("BUCKY_ZONE_CONFIG")
@@ -27,5 +29,5 @@ if len(BUCKY_ZONE_OWNER) == 0:
 #print("BUCKY_ZONE_OWNER is:",BUCKY_ZONE_OWNER)
 
 # 启动新的进程，注意使用nohup模式
-os.system(f"nohup {current_dir}/system_config > /dev/null 2>&1 &")
+util.nohup_start(f"{current_dir}/system_config")
 print("system_config service started")
