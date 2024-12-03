@@ -37,7 +37,9 @@ pub enum RepoError {
     #[error("IO Error: {0}")]
     IOError(#[from] io::Error),
     #[error("DB Error: {0}")]
-    DbError(#[from] rusqlite::Error),
+    DbError(#[from] sqlx::Error),
+    #[error("Json Error: {0}")]
+    JsonError(#[from] serde_json::Error),
 }
 
 pub type RepoResult<T> = std::result::Result<T, RepoError>;

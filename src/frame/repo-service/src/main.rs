@@ -1,8 +1,8 @@
 #![allow(unused, dead_code)]
 
 mod error;
-mod index_store;
 mod kv_provider;
+mod sled_provider;
 //mod pkg_repository;
 mod def;
 mod downloader;
@@ -12,33 +12,30 @@ mod verifier;
 
 use std::collections::HashMap;
 use std::fs::File;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use def::PackageMeta;
+use kv::source;
 use log::*;
 
 use lazy_static::lazy_static;
 use serde_json::Value;
 use simplelog::*;
+use source_manager::SourceManager;
 use tokio::sync::Mutex;
 
-#[tokio::main]
-async fn main() {}
-
-/*
-mod sled_provider;
+use ::kRPC::*;
+use buckyos_kit::*;
+use jsonwebtoken::DecodingKey;
+use name_lib::*;
+use rbac::*;
+use warp::Filter;
 
 use kv_provider::KVStoreProvider;
 use sled_provider::SledStore;
-use warp::Filter;
-use jsonwebtoken::DecodingKey;
-use ::kRPC::*;
-use buckyos_kit::*;
-use name_lib::*;
-use rbac::*;
-*/
 
-/*
 lazy_static! {
     static ref TRUST_KEYS: Arc<Mutex<HashMap<String, DecodingKey>>> = {
         let hashmap: HashMap<String, DecodingKey> = HashMap::new();
@@ -46,6 +43,11 @@ lazy_static! {
     };
 }
 
+lazy_static! {
+    static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> =
+        { Arc::new(Mutex::new(SledStore::new().unwrap())) };
+}
+/*
 async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
     let key = params.get("key");
     if key.is_none() {
@@ -236,8 +238,14 @@ async fn handle_pub_local(params: Value, session_token: &RPCSessionToken) -> Res
 
     return Ok(Value::Null);
 }
+*/
+
+async fn handle_resolve_deps(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
+    Ok(Value::Null)
+}
 
 async fn process_request(
+    source_mgr: SourceManager,
     method: String,
     param: Value,
     session_token: Option<String>,
@@ -261,24 +269,32 @@ async fn process_request(
         }
         info!("ready to handle request : {}", method.as_str());
         match method.as_str() {
-            "pub_local" => {
-                return handle_pub_local(param, &rpc_session_token).await;
-            }
-            "remove_local" => {
-                return handle_remove_local(param, &rpc_session_token).await;
-            }
-            "pub_remote" => {
-                return handle_pub_remote(param, &rpc_session_token).await;
-            }
+            // "pub_local" => {
+            //     return handle_pub_local(param, &rpc_session_token).await;
+            // }
+            // "remove_local" => {
+            //     return handle_remove_local(param, &rpc_session_token).await;
+            // }
+            // "pub_remote" => {
+            //     return handle_pub_remote(param, &rpc_session_token).await;
+            // }
             "resolve_deps" => {
-                return handle_resolve_deps(param, &rpc_session_token).await;
+                //return handle_resolve_deps(param, &rpc_session_token).await;
+                let mut deps: Vec<PackageMeta> = Vec::new();
+                source_mgr
+                    .resolve_dependencies("name", "version", 0, &mut deps)
+                    .await
+                    .map_err(|e| {
+                        RPCErrors::ReasonError(format!("resolve_dependencies failed: {:?}", e))
+                    });
+                return Ok(Value::Null);
             }
-            "is_pkg_installed" => {
-                return handle_is_pkg_installed(param, &rpc_session_token).await;
-            }
-            "install_pkg" => {
-                return handle_install_pkg(param, &rpc_session_token).await;
-            }
+            // "is_pkg_installed" => {
+            //     return handle_is_pkg_installed(param, &rpc_session_token).await;
+            // }
+            // "install_pkg" => {
+            //     return handle_install_pkg(param, &rpc_session_token).await;
+            // }
             // Add more methods here
             _ => Err(RPCErrors::UnknownMethod(String::from(method))),
         }
@@ -407,6 +423,8 @@ async fn service_main() {
     init_by_boot_config().await.unwrap();
     // Select the rear end storage, here you can switch different implementation
 
+    let source_mgr = SourceManager::new(&PathBuf::from("test")).await.unwrap();
+
     let cors_response = warp::path!("kapi" / "repo").and(warp::options()).map(|| {
         info!("Handling OPTIONS request");
         warp::http::Response::builder()
@@ -419,44 +437,48 @@ async fn service_main() {
     let rpc_route = warp::path!("kapi" / "repo")
         .and(warp::post())
         .and(warp::body::json())
-        .and_then(|req: RPCRequest| async {
-            info!(
-                "|==>Received request: {}",
-                serde_json::to_string(&req).unwrap()
-            );
+        .and_then(move |req: RPCRequest| {
+            let source_mgr_tmp = source_mgr.clone();
+            async {
+                info!(
+                    "|==>Received request: {}",
+                    serde_json::to_string(&req).unwrap()
+                );
 
-            let process_result = process_request(req.method, req.params, req.token).await;
+                let process_result =
+                    process_request(source_mgr_tmp, req.method, req.params, req.token).await;
 
-            let rpc_response: RPCResponse;
-            match process_result {
-                Ok(result) => {
-                    rpc_response = RPCResponse {
-                        result: RPCResult::Success(result),
-                        seq: req.seq,
-                        token: None,
-                        trace_id: req.trace_id.clone(),
-                    };
-                    info!(
-                        "<==|Response: OK {} {}",
-                        req.seq,
-                        req.trace_id.as_deref().unwrap_or("")
-                    );
+                let rpc_response: RPCResponse;
+                match process_result {
+                    Ok(result) => {
+                        rpc_response = RPCResponse {
+                            result: RPCResult::Success(result),
+                            seq: req.seq,
+                            token: None,
+                            trace_id: req.trace_id.clone(),
+                        };
+                        info!(
+                            "<==|Response: OK {} {}",
+                            req.seq,
+                            req.trace_id.as_deref().unwrap_or("")
+                        );
+                    }
+                    Err(err) => {
+                        rpc_response = RPCResponse {
+                            result: RPCResult::Failed(err.to_string()),
+                            seq: req.seq,
+                            token: None,
+                            trace_id: req.trace_id,
+                        };
+                        info!(
+                            "<==|Response: {}",
+                            serde_json::to_string(&rpc_response).unwrap()
+                        );
+                    }
                 }
-                Err(err) => {
-                    rpc_response = RPCResponse {
-                        result: RPCResult::Failed(err.to_string()),
-                        seq: req.seq,
-                        token: None,
-                        trace_id: req.trace_id,
-                    };
-                    info!(
-                        "<==|Response: {}",
-                        serde_json::to_string(&rpc_response).unwrap()
-                    );
-                }
+
+                Ok::<_, warp::Rejection>(warp::reply::json(&rpc_response))
             }
-
-            Ok::<_, warp::Rejection>(warp::reply::json(&rpc_response))
         });
 
     info!("Starting repo service");
@@ -599,4 +621,3 @@ mod test {
         drop(server);
     }
 }
- */

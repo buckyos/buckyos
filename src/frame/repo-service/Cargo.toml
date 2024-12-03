@@ -26,8 +26,9 @@ ed25519-dalek = { version = "*", features = ["rand_core"] }
 base64 = "*"
 rusqlite =  { version = "*", features = ["bundled"] }
 buckyos-kit = { path = "../../components/buckyos-kit" }
-
-#jsonwebtoken = "*" 
-#kRPC ={ path = "../../kernel/kRPC" }
-#rbac = { path = "../../kernel/rbac" }
-#warp = "*"
+sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-native-tls", "macros"] }
+async-recursion = "*"
+jsonwebtoken = "*" 
+kRPC ={ path = "../../kernel/kRPC" }
+rbac = { path = "../../kernel/rbac" }
+warp = "*"
