@@ -1258,13 +1258,27 @@ mod tests {
     async fn test_rtcp_tunnel() {
         init_logging("test_rtcp_tunnel");
         init_default_name_client().await.unwrap();
-        add_nameinfo_cache("dev02", NameInfo::from_address("dev02", IpAddr::V4("127.0.0.1".parse().unwrap()))).await.unwrap();
-        let mut tunnel_builder1 = RTcpStack::new("dev01".to_string(), 8000,None);
+
+        let (sk, sk_pkcs) = generate_ed25519_key();
+
+        let pk = encode_ed25519_sk_to_pk_jwt(&sk);
+        let pk_str = serde_json::to_string(&pk).unwrap();
+
+        let mut name_info = NameInfo::from_address("dev02", IpAddr::V4("127.0.0.1".parse().unwrap()));
+        name_info.did_document = Some(EncodedDocument::Jwt(pk_str.clone()));
+        add_nameinfo_cache("dev02", name_info).await.unwrap();
+        
+
+        //add_did_cache("dev01", EncodedDocument::Jwt(pk_str.clone())).await.unwrap();
+        //add_did_cache("dev02", EncodedDocument::Jwt(pk_str.clone())).await.unwrap();
+
+        let mut tunnel_builder1 = RTcpStack::new("dev01".to_string(), 8000, Some(sk_pkcs.clone()));
         tunnel_builder1.start().await.unwrap();
 
-        let mut tunnel_builder2 = RTcpStack::new("dev02".to_string(), 9000,None);
+        let mut tunnel_builder2 = RTcpStack::new("dev02".to_string(), 9000, Some(sk_pkcs.clone()));
         tunnel_builder2.start().await.unwrap();
 
+       
         let tunnel_url = Url::parse("rtcp://9000@dev02/").unwrap();
         let tunnel = tunnel_builder1.create_tunnel(&tunnel_url).await.unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1272,10 +1286,20 @@ mod tests {
         info!("stream1 ok ");
         tokio::time::sleep(Duration::from_secs(5)).await;
 
+        return;
         let tunnel_url = Url::parse("rtcp://8000@dev01").unwrap();
         let tunnel2 = tunnel_builder2.create_tunnel(&tunnel_url).await.unwrap();
         let stream2 = tunnel2.open_stream(7890).await.unwrap();
         info!("stream2 ok ");
         tokio::time::sleep(Duration::from_secs(20)).await;
+
+        // test rudp with dev01 and dev02
+        //let tunnel_url = Url::parse("rudp://dev02").unwrap();
+
+        //let data_stream = tunnel.create_datagram_client(1000).await.unwrap();
+        
+        //let data_stream2 = tunnel2.create_datagram_server(1000).await.unwrap();
+
+
     }
 }

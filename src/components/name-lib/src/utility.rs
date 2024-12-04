@@ -159,21 +159,37 @@ pub fn load_pem_private_key<P: AsRef<Path>>(file_path: P) -> NSResult<[u8;48]> {
     Ok(private_key_bytes.try_into().unwrap())
 }
 
-pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
+// Generate a random private key and return the PKCS#8 encoded bytes
+pub fn generate_ed25519_key() -> (SigningKey, [u8;48]) {
     let mut csprng = OsRng{};
     let signing_key: SigningKey = SigningKey::generate(&mut csprng);
     let private_key_bytes = signing_key.to_bytes();
     let pkcs8_bytes = build_pkcs8(&private_key_bytes);
+
+    (signing_key, pkcs8_bytes.try_into().unwrap())
+}
+
+// Encode the Ed25519 public key to a JWK
+pub fn encode_ed25519_sk_to_pk_jwt(sk: &SigningKey) -> serde_json::Value {
+    let public_key_jwk = json!({
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": URL_SAFE_NO_PAD.encode(sk.verifying_key().to_bytes()),
+    });
+
+    public_key_jwk
+}
+
+pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
+    
+    let (signing_key, pkcs8_bytes) = generate_ed25519_key();
+
     let private_key_pem = format!(
         "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
         STANDARD.encode(&pkcs8_bytes)
     );
 
-    let public_key_jwk = json!({
-        "kty": "OKP",
-        "crv": "Ed25519",
-        "x": URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes()),
-    });
+    let public_key_jwk = encode_ed25519_sk_to_pk_jwt(&signing_key);
 
     (private_key_pem, public_key_jwk)   
 }
