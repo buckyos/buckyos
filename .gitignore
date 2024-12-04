@@ -3,6 +3,7 @@
 src/kernel/node_active/node_modules/
 test/test_jwt/node_modules/
 *.bkp
+*.exe
 package-lock.json
 src/kernel/node_active/dist/
 src/kernel/buckyos_sdk/dist/
