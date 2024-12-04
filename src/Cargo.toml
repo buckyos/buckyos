@@ -16,7 +16,7 @@ members = [
     "./cyfs_gateway/cyfs-dns",
     "./cyfs_gateway/cyfs-warp",
     "./cyfs_gateway/cyfs-sn",
-    #"./cyfs_gateway/cyfs-socks",
+    "./cyfs_gateway/cyfs-socks",
 
     "./kernel/kRPC",
     "./kernel/rbac",
