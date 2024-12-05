@@ -6,6 +6,7 @@ mod sled_provider;
 //mod pkg_repository;
 mod def;
 mod downloader;
+mod installer;
 mod source_manager;
 mod source_node;
 mod verifier;
@@ -20,10 +21,10 @@ use def::PackageMeta;
 use kv::source;
 use log::*;
 
+use installer::*;
 use lazy_static::lazy_static;
 use serde_json::Value;
 use simplelog::*;
-use source_manager::SourceManager;
 use tokio::sync::Mutex;
 
 use ::kRPC::*;
@@ -129,87 +130,6 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     return Ok(Value::Null);
 }
 
-async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
-    //check params
-    let key = params.get("key");
-    if key.is_none() {
-        return Err(RPCErrors::ReasonError("Missing key".to_string()));
-    }
-    let key = key.unwrap();
-    let key = key.as_str().unwrap();
-
-    let new_value = params.get("value");
-    if new_value.is_none() {
-        return Err(RPCErrors::ReasonError("Missing value".to_string()));
-    }
-    let new_value = new_value.unwrap();
-    let new_value = new_value.as_str().unwrap();
-
-    //check access control
-    if session_token.userid.is_none() {
-        return Err(RPCErrors::NoPermission("No userid".to_string()));
-    }
-    let userid = session_token.userid.as_ref().unwrap();
-    let full_res_path = format!("kv://{}", key);
-    if !enforce(
-        userid,
-        session_token.appid.as_deref(),
-        full_res_path.as_str(),
-        "write",
-    )
-    .await
-    {
-        return Err(RPCErrors::NoPermission("No read permission".to_string()));
-    }
-
-    //do business logic
-    let store = SYS_STORE.lock().await;
-    info!("Create key:[{}] to value:[{}]", key, new_value);
-    store
-        .create(key, new_value)
-        .await
-        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-
-    return Ok(Value::Null);
-}
-
-async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
-    //check params
-    let key = params.get("key");
-    if key.is_none() {
-        return Err(RPCErrors::ReasonError("Missing key".to_string()));
-    }
-    let key = key.unwrap();
-    let key = key.as_str().unwrap();
-
-    //check access control
-    if session_token.userid.is_none() {
-        return Err(RPCErrors::NoPermission("No userid".to_string()));
-    }
-    let userid = session_token.userid.as_ref().unwrap();
-    let full_res_path = format!("kv://{}", key);
-    if !enforce(
-        userid,
-        session_token.appid.as_deref(),
-        full_res_path.as_str(),
-        "write",
-    )
-    .await
-    {
-        return Err(RPCErrors::NoPermission("No read permission".to_string()));
-    }
-
-    //do business logic
-    let store = SYS_STORE.lock().await;
-    info!("Delete key:[{}]", key);
-    store
-        .delete(key)
-        .await
-        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-
-    return Ok(Value::Null);
-}
-
 async fn handle_pub_local(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
     let pkg_name: Option<&Value> = params.get("pkg_name");
     if pkg_name.is_none() {
@@ -245,7 +165,7 @@ async fn handle_resolve_deps(params: Value, session_token: &RPCSessionToken) -> 
 }
 
 async fn process_request(
-    source_mgr: SourceManager,
+    installer: Installer,
     method: String,
     param: Value,
     session_token: Option<String>,
@@ -254,7 +174,7 @@ async fn process_request(
     if session_token.is_some() {
         let session_token = session_token.unwrap();
         let mut rpc_session_token = RPCSessionToken::from_string(session_token.as_str())?;
-        //veruft session token (need access trust did_list)
+        //verify session token (need access trust did_list)
         verify_session_token(&mut rpc_session_token).await?;
         if rpc_session_token.exp.is_some() {
             let now = SystemTime::now()
@@ -280,14 +200,13 @@ async fn process_request(
             // }
             "resolve_deps" => {
                 //return handle_resolve_deps(param, &rpc_session_token).await;
-                let mut deps: Vec<PackageMeta> = Vec::new();
-                source_mgr
-                    .resolve_dependencies("name", "version", 0, &mut deps)
+                let task_id = installer
+                    .start_install_task("pkg_desc")
                     .await
                     .map_err(|e| {
-                        RPCErrors::ReasonError(format!("resolve_dependencies failed: {:?}", e))
-                    });
-                return Ok(Value::Null);
+                        RPCErrors::ReasonError(format!("start install task failed: {}", e))
+                    })?;
+                return Ok(Value::String(task_id));
             }
             // "is_pkg_installed" => {
             //     return handle_is_pkg_installed(param, &rpc_session_token).await;
@@ -423,7 +342,7 @@ async fn service_main() {
     init_by_boot_config().await.unwrap();
     // Select the rear end storage, here you can switch different implementation
 
-    let source_mgr = SourceManager::new(&PathBuf::from("test")).await.unwrap();
+    let pkg_installer = Installer::new().await.unwrap();
 
     let cors_response = warp::path!("kapi" / "repo").and(warp::options()).map(|| {
         info!("Handling OPTIONS request");
@@ -438,7 +357,7 @@ async fn service_main() {
         .and(warp::post())
         .and(warp::body::json())
         .and_then(move |req: RPCRequest| {
-            let source_mgr_tmp = source_mgr.clone();
+            let installer_tmp = pkg_installer.clone();
             async {
                 info!(
                     "|==>Received request: {}",
@@ -446,7 +365,7 @@ async fn service_main() {
                 );
 
                 let process_result =
-                    process_request(source_mgr_tmp, req.method, req.params, req.token).await;
+                    process_request(installer_tmp, req.method, req.params, req.token).await;
 
                 let rpc_response: RPCResponse;
                 match process_result {

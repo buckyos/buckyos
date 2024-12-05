@@ -21,13 +21,20 @@ use tokio::sync::RwLock;
 #[derive(Debug, Clone)]
 pub struct SourceManager {
     pub source_list: Arc<RwLock<Vec<SourceNode>>>,
-    pub source_config_db_path: PathBuf,
     pub pool: SqlitePool,
 }
 
 impl SourceManager {
-    pub async fn new(config_db_path: &PathBuf) -> RepoResult<Self> {
-        let db_url = format!("sqlite://{}", config_db_path.to_str().unwrap());
+    pub async fn new() -> RepoResult<Self> {
+        let repo_dir = get_buckyos_service_data_dir(SERVICE_NAME);
+        if !repo_dir.exists() {
+            std::fs::create_dir_all(&repo_dir)?;
+        }
+        let db_url = format!(
+            "sqlite://{}/{}",
+            repo_dir.to_str().unwrap(),
+            REPO_SOURCE_CONFIG_DB
+        );
         let pool = SqlitePool::connect(&db_url).await?;
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS source_node (
@@ -54,7 +61,6 @@ impl SourceManager {
 
         Ok(Self {
             source_list: Arc::new(RwLock::new(Vec::new())),
-            source_config_db_path: config_db_path.clone(),
             pool,
         })
     }
@@ -131,12 +137,12 @@ impl SourceManager {
 
     async fn build_source_list(&self, update: bool) -> RepoResult<()> {
         let mut need_update_config_list = Vec::new();
-        let source_db_dir = get_buckyos_service_data_dir(SERVICE_NAME).join("source_file");
+        let source_db_dir = get_buckyos_service_data_dir(SERVICE_NAME).join(INDEX_DIR_NAME);
         let source_config_list = self.load_source_config_list().await?;
         let mut new_source_list = Vec::new();
         //先添加一个本地的source，特殊处理
         let local_source_config = Self::local_node_config();
-        let local_source_file = source_db_dir.join("local.db");
+        let local_source_file = source_db_dir.join(LOCAL_INDEX_DB);
         new_source_list.push(SourceNode::new(local_source_config, local_source_file, true).await?);
 
         for mut source_config in source_config_list {
@@ -181,14 +187,16 @@ impl SourceManager {
             }
         }
 
-        {
-            let mut source_list = self.source_list.write().await;
-            *source_list = new_source_list;
-        }
-
+        //先更新配置，即使更新完配置异常退出，下次启动时也会根据最新的配置重新下载
         if !need_update_config_list.is_empty() {
             self.save_source_config_list(&need_update_config_list)
                 .await?;
+        }
+
+        {
+            let mut source_list = self.source_list.write().await;
+            *source_list = new_source_list;
+            //TODO:删除旧的db文件
         }
 
         Ok(())
