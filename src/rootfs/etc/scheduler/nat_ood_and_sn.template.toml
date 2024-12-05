@@ -69,16 +69,26 @@
     "app_description" : "Home Station",
     "vendor_did" : "did:bns:buckyos",
     "pkg_id" : "home-station",
-    "service_docker_images" : {
-        "x86_server" : "filebrowser/filebrowser:s6",
-        "arm64_server" : "filebrowser/filebrowser:s6"
+    "direct": {
+
     },
-    "data_mount_point" : "/srv",
-    "cache_mount_point" : "/database/",
-    "local_cache_mount_point" : "/config/",
-    "max_cpu_num" : 4,
-    "max_cpu_percent" : 80, 
-    "memory_quota" : 1073741824, 
+    "docker": {
+        "service_docker_images" : {
+            "x86_server" : "filebrowser/filebrowser:s6",
+            "arm64_server" : "filebrowser/filebrowser:s6"
+        },
+        "mount": {
+            "data_mount_point" : "/srv",
+            "cache_mount_point" : "/database/",
+            "local_cache_mount_point" : "/config/",
+        },
+        "quota": {
+            "max_cpu_num" : 4,
+            "max_cpu_percent" : 80,
+            "memory" : 1073741824,
+        }
+    }
+
     "host_name" : "www",
     "port" : 20080,
     "org_port" : 80

@@ -15,6 +15,37 @@ use buckyos_kit::*;
 use package_lib::*;
 
 #[derive(Serialize, Deserialize)]
+pub struct DirectAppRunInfo {
+    // no params needed now
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DockerAppRunInfo {
+    //service name -> full image url
+    pub service_docker_images: HashMap<String, String>,
+    pub mount: MountInfo,
+    pub quota: QuotaInfo,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MountInfo {
+    //dfs mount point
+    pub data_mount_point: String,
+    pub cache_mount_point: String,
+    //local fs mount point
+    pub local_cache_mount_point: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct QuotaInfo {
+    pub max_cpu_num: Option<u32>,
+    // 0 - 100
+    pub max_cpu_percent: Option<u32>,
+    // memory quota in bytes
+    pub memory: u64,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct AppInfo {
     pub app_id: String,
     pub app_name: String,
@@ -22,19 +53,9 @@ pub struct AppInfo {
     pub vendor_did: String,
     pub pkg_id: String,
     pub username: String,
-    //service name -> full image url
-    pub service_docker_images: HashMap<String, String>,
-    //dfs mount pint
-    pub data_mount_point: String,
-    pub cache_mount_point: String,
-    //local fs mount point
-    pub local_cache_mount_point: String,
-
-    pub max_cpu_num: Option<u32>,
-    // 0 - 100
-    pub max_cpu_percent: Option<u32>,
-    // memory quota in bytes
-    pub memory_quota: u64,
+    pub direct: Option<DirectAppRunInfo>,
+    pub docker: Option<DockerAppRunInfo>,
+    // may have vm app run info later
 
     //gateway settings
     pub host_name: Option<String>,
@@ -73,6 +94,38 @@ impl AppRunItem {
             device_private_key: device_private_key.clone(),
         }
     }
+
+    pub async fn load(&self) -> bool {
+        // only load once
+        // 防重入
+        let mut loader = self.app_loader.write().await;
+        if loader.is_some() {
+            return true;
+        }
+
+        if cfg!(windows) {
+            if self.app_info.direct.is_some() {
+                let mut app_loader =
+                    ServicePkg::new(self.app_id.clone(), get_buckyos_system_bin_dir());
+                let load_result = app_loader.load().await;
+                if load_result.is_ok() {
+                    loader.replace(app_loader);
+                }
+                load_result.is_ok()
+            } else {
+                warn!("app {} not support direct run on windows", self.app_id);
+                false
+            }
+        } else {
+            let mut app_loader =
+                ServicePkg::new("app_loader".to_string(), get_buckyos_system_bin_dir());
+            let load_result = app_loader.load().await;
+            if load_result.is_ok() {
+                loader.replace(app_loader);
+            }
+            load_result.is_ok()
+        }
+    }
 }
 
 #[async_trait]
@@ -90,6 +143,13 @@ impl RunItemControl for AppRunItem {
     }
 
     async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
+        if !self.load().await {
+            return Err(ControlRuntItemErrors::ExecuteError(
+                "start".to_string(),
+                "failed".to_string(),
+            ));
+        }
+
         let app_loader = self.app_loader.read().await;
         if app_loader.is_some() {
             let timestamp = buckyos_get_unix_timestamp();
@@ -140,12 +200,19 @@ impl RunItemControl for AppRunItem {
                 ));
             }
         }
-        return Err(ControlRuntItemErrors::ExecuteError(
+        Err(ControlRuntItemErrors::ExecuteError(
             "start".to_string(),
             "failed".to_string(),
-        ));
+        ))
     }
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
+        if !self.load().await {
+            return Err(ControlRuntItemErrors::ExecuteError(
+                "start".to_string(),
+                "failed".to_string(),
+            ));
+        }
+
         let app_loader = self.app_loader.read().await;
         if app_loader.is_some() {
             let real_param = vec![self.app_id.clone(), self.app_info.username.clone()];
@@ -169,59 +236,29 @@ impl RunItemControl for AppRunItem {
                 ));
             }
         }
-        return Err(ControlRuntItemErrors::ExecuteError(
+        Err(ControlRuntItemErrors::ExecuteError(
             "stop".to_string(),
             "failed".to_string(),
-        ));
+        ))
     }
 
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
-        let mut need_load_pkg = false;
+        if !self.load().await {
+            return Ok(ServiceState::NotExist);
+        }
         let real_param = vec![self.app_id.clone(), self.app_info.username.clone()];
-        {
-            let app_loader = self.app_loader.read().await;
-            if app_loader.is_none() {
-                need_load_pkg = true;
-            } else {
-                let result_state = app_loader
-                    .as_ref()
-                    .unwrap()
-                    .status(Some(&real_param))
-                    .await
-                    .map_err(|err| {
-                        return ControlRuntItemErrors::ExecuteError(
-                            "get_state".to_string(),
-                            err.to_string(),
-                        );
-                    })?;
-                return Ok(result_state);
-            }
-        }
-
-        if need_load_pkg {
-            let mut app_loader =
-                ServicePkg::new("app_loader".to_string(), get_buckyos_system_bin_dir());
-            let load_result = app_loader.load().await;
-            if load_result.is_ok() {
-                let mut new_app_loader = self.app_loader.write().await;
-                let result = app_loader.status(Some(&real_param)).await.map_err(|err| {
-                    return ControlRuntItemErrors::ExecuteError(
-                        "get_state".to_string(),
-                        err.to_string(),
-                    );
-                })?;
-                *new_app_loader = Some(app_loader);
-                return Ok(result);
-            } else {
-                return Ok(ServiceState::NotExist);
-            }
-        } else {
-            //deead path
-            warn!("DEAD PATH,never enter here");
-            return Err(ControlRuntItemErrors::ExecuteError(
-                "get_state".to_string(),
-                "dead path".to_string(),
-            ));
-        }
+        let app_loader = self.app_loader.read().await;
+        let result_state = app_loader
+            .as_ref()
+            .unwrap()
+            .status(Some(&real_param))
+            .await
+            .map_err(|err| {
+                return ControlRuntItemErrors::ExecuteError(
+                    "get_state".to_string(),
+                    err.to_string(),
+                );
+            })?;
+        Ok(result_state)
     }
 }
