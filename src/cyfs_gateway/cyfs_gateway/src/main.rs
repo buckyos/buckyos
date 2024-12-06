@@ -5,12 +5,16 @@
 //mod interface;
 mod dispatcher;
 mod config_loader;
+mod socks;
+
 //mod peer;
 //mod proxy;
 //mod service;
 //mod storage;
 //mod tunnel;
 
+#[macro_use]
+extern crate log;
 
 use std::path::PathBuf;
 use cyfs_dns::start_cyfs_dns_server;
@@ -121,8 +125,10 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
                 });
             },
             ServerConfig::Socks(socks_config) => {
+                let tunnel_provider = crate::socks::SocksTunnelBuilder::new_ref();
+
                 // let socks_config_param = socks_config.clone();
-                if let Err(e) = cyfs_socks::start_cyfs_socks_server(socks_config).await {
+                if let Err(e) = cyfs_socks::start_cyfs_socks_server(socks_config, tunnel_provider).await {
                     error!("Error starting socks server: {}", e);
                 }
             },

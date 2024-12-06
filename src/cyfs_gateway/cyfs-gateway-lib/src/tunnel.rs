@@ -4,6 +4,7 @@ use url::Url;
 use std::{net::SocketAddr, sync::Arc};
 use async_trait::async_trait;
 use log::*;
+use buckyos_kit::AsyncStream;
 
 use crate::{TunnelError, TunnelResult};
 
@@ -14,8 +15,7 @@ pub struct TunnelEndpoint {
     pub port: u16,
 }
 
-pub trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
-impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncStream for T {}
+
 
 #[async_trait]
 pub trait StreamListener : Send

@@ -1,6 +1,12 @@
-use std::net::SocketAddr;
-use crate::{error::{SocksError, SocksResult}, rule, rule::RuleEngine, RuleResult};
+use crate::{
+    error::{SocksError, SocksResult},
+    rule,
+    rule::RuleEngine,
+    RuleResult,
+};
 use buckyos_kit::get_buckyos_system_etc_dir;
+use std::net::SocketAddr;
+use url::Url;
 
 #[derive(Debug, Clone)]
 pub enum SocksProxyAuth {
@@ -11,10 +17,14 @@ pub enum SocksProxyAuth {
 #[derive(Debug)]
 pub struct SocksProxyConfig {
     pub id: String,
-    
+
     pub bind: Option<String>,
     pub port: u16,
     pub addr: SocketAddr,
+
+    // The target url to proxy
+    pub target: Url,
+    pub enable_tunnel: Option<Vec<String>>,
 
     pub auth: SocksProxyAuth,
 
@@ -39,6 +49,17 @@ impl SocksProxyConfig {
             error!("{}", msg);
             SocksError::InvalidConfig(msg)
         })?;
+
+        let target = config["target"].as_str().ok_or(SocksError::InvalidConfig("target".to_owned()))?;
+        let target = Url::parse(target).map_err(|e| {
+            let msg = format!("Error parsing target: {}, {}", target, e);
+            error!("{}", msg);
+            SocksError::InvalidConfig(msg)
+        })?;
+
+        let enable_tunnel = config["enable_tunnel"]
+            .as_array()
+            .map(|a| a.iter().map(|v| v.as_str().unwrap().to_owned()).collect());
 
         let auth = if let Some(auth) = config.get("auth") {
             if !auth.is_object() {
@@ -74,6 +95,9 @@ impl SocksProxyConfig {
             addr,
 
             auth,
+
+            target,
+            enable_tunnel,
 
             rule_config,
             rule_engine: None,

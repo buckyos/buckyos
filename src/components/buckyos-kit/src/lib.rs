@@ -2,12 +2,13 @@ mod path;
 mod process;
 mod time;
 mod log_util;
+mod stream;
 
 pub use path::*;
 pub use process::*;
 pub use time::*;
 pub use log_util::*;
-
+pub use stream::*;
 
 #[cfg(test)]
 mod test {

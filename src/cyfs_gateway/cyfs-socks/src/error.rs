@@ -38,6 +38,9 @@ pub enum SocksError {
     #[error("Invalid param: {0}")]
     InvalidParam(String),
 
+    #[error("Invalid state: {0}")]
+    InvalidState(String),
+
     #[error("IO error: {0}")]
     IoError(String),
 

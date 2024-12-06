@@ -198,7 +198,12 @@ pub fn gen_demo_gateway_json_config() -> String {
         },
         "main_socks_server":{
             "type":"cyfs-socks",
-            "bind":"localhost:8000",
+            "bind":"localhost",
+            "port":8000,
+
+            "target":"ood02:6000",
+            "enable-tunnel":["direct", "rtcp"]
+
             "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml"
         },
         "main_dns_server":{

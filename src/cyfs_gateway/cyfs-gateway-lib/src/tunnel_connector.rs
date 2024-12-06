@@ -4,7 +4,7 @@ use url::Url;
 use std::error::Error as StdError;
 use std::task::{Context, Poll};
 use hyper::service::Service;
-use crate::AsyncStream;
+use buckyos_kit::AsyncStream;
 use std::pin::Pin;
 use std::future::Future;
 use hyper::Uri;

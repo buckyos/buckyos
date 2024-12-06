@@ -91,8 +91,9 @@ use name_client::*;
 use name_lib::*;
 
 use crate::{ tunnel, TunnelEndpoint, TunnelError, TunnelResult};
-use crate::tunnel::{AsyncStream, DatagramClientBox, DatagramServerBox, StreamListener, Tunnel, TunnelBox, TunnelBuilder};
+use crate::tunnel::{DatagramClientBox, DatagramServerBox, StreamListener, Tunnel, TunnelBox, TunnelBuilder};
 use crate::aes_stream::{EncryptedStream, AesCtr};
+use buckyos_kit::AsyncStream;
 
 pub const DEFAULT_RTCP_STACK_PORT:u16 = 2980;
 

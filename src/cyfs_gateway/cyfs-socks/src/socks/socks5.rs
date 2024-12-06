@@ -1,24 +1,32 @@
+use super::config::{SocksProxyAuth, SocksProxyConfig};
 use super::util::Socks5Util;
+use crate::error::{SocksError, SocksResult};
+use buckyos_kit::AsyncStream;
 use fast_socks5::{
     server::{Config, SimpleUserPassword, Socks5Socket},
     util::target_addr::TargetAddr,
     Socks5Command,
 };
+use once_cell::sync::OnceCell;
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
 };
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::{
     net::{TcpListener, TcpStream},
     task,
     task::JoinHandle,
 };
-use crate::error::{SocksError, SocksResult};
-use super::config::{SocksProxyConfig, SocksProxyAuth};
-use tokio::io::{AsyncRead, AsyncWrite};
+use url::Url;
 
-pub trait SocksDataTunnel: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
-        
+
+#[async_trait::async_trait]
+pub trait SocksDataTunnelProvider: Send + Sync {
+    async fn build(&self, target: &TargetAddr, proxy_target: &Url, enable_tunnel: &Option<Vec<String>>) -> SocksResult<Box<dyn AsyncStream>>;
+}
+
+pub type SocksDataTunnelProviderRef = Arc<Box<dyn SocksDataTunnelProvider>>;
 
 #[derive(Clone)]
 pub struct Socks5Proxy {
@@ -27,12 +35,13 @@ pub struct Socks5Proxy {
 
     // Use to stop the proxy
     task: Arc<Mutex<Option<JoinHandle<()>>>>,
+
+    // The data tunnel provider
+    data_tunnel_provider: Arc<OnceCell<SocksDataTunnelProviderRef>>,
 }
 
 impl Socks5Proxy {
-    pub fn new(
-        config: SocksProxyConfig,
-    ) -> Self {
+    pub fn new(config: SocksProxyConfig) -> Self {
         let mut socks5_config = Config::default();
 
         // We should process the command and dns resolve by ourselves
@@ -41,18 +50,18 @@ impl Socks5Proxy {
 
         let socks5_config = match config.auth {
             SocksProxyAuth::None => socks5_config,
-            SocksProxyAuth::Password(ref username, ref password) => {
-                socks5_config.with_authentication(SimpleUserPassword {
+            SocksProxyAuth::Password(ref username, ref password) => socks5_config
+                .with_authentication(SimpleUserPassword {
                     username: username.clone(),
                     password: password.clone(),
-                })
-            }
+                }),
         };
 
         Self {
             config: Arc::new(config),
             socks5_config: Arc::new(socks5_config),
             task: Arc::new(Mutex::new(None)),
+            data_tunnel_provider: Arc::new(OnceCell::new()),
         }
     }
 
@@ -67,7 +76,17 @@ impl Socks5Proxy {
     pub fn dump(&self) -> serde_json::Value {
         self.config.dump()
     }
-    
+
+    // Should only call once
+    pub fn set_data_tunnel_provider(&self, provider: SocksDataTunnelProviderRef) {
+        if let Err(_) = self.data_tunnel_provider.set(provider) {
+            unreachable!(
+                "Data tunnel provider already set for socks5 proxy: {}",
+                self.config.id
+            );
+        }
+    }
+
     pub async fn start(&self) -> SocksResult<()> {
         let listener = TcpListener::bind(&self.config.addr).await.map_err(|e| {
             let msg = format!("Error socks5 binding to {}: {}", self.config.addr, e);
@@ -172,10 +191,19 @@ impl Socks5Proxy {
         }
     }
 
-    async fn build_data_tunnel(&self, target: &TargetAddr) -> SocksResult<Box<dyn SocksDataTunnel>> {
-        
-        
-        todo!( );
+    async fn build_data_tunnel(
+        &self,
+        target: &TargetAddr,
+    ) -> SocksResult<Box<dyn AsyncStream>> {
+        info!("Will build tunnel to {}", target);
+
+        if let Some(builder) = self.data_tunnel_provider.get() {
+            builder.build(target, &self.config.target, &self.config.enable_tunnel).await
+        } else {
+            let msg = format!("Data tunnel provider not set for socks5 proxy: {}", self.config.id);
+            error!("{}", msg);
+            Err(SocksError::InvalidState(msg))
+        }
     }
 
     async fn process_socket(
