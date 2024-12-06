@@ -20,3 +20,4 @@ regex = "*"
 buckyos-kit = { path = "../../components/buckyos-kit" }
 serde_json = "*"
 serde = "*"
+fast-socks5 = "*"

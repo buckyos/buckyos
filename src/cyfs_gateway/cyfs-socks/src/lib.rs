@@ -1,9 +1,9 @@
 mod error;
 mod rule;
-// mod socks5;
+mod socks;
 
 pub use rule::*;
-// pub use socks5::*;
+pub use socks::*;
 
 #[macro_use]
 extern crate log;

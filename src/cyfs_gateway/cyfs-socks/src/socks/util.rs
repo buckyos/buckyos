@@ -1,5 +1,4 @@
-use gateway_lib::*;
-
+use crate::error::{SocksResult, SocksError};
 use fast_socks5::consts;
 use fast_socks5::server::{SimpleUserPassword, Socks5Socket};
 use fast_socks5::ReplyError;
@@ -38,17 +37,19 @@ impl Socks5Util {
     pub async fn reply_error(
         socket: &mut Socks5Socket<tokio::net::TcpStream, SimpleUserPassword>,
         error: ReplyError,
-    ) -> GatewayResult<()> {
+    ) -> SocksResult<()> {
         let reply = Self::new_reply(error, "0.0.0.0:0".parse().unwrap());
 
         socket.write(&reply).await.map_err(|e| {
-            error!("Error replying socks5 error: {}", e);
-            e
+            let msg = format!("Error replying socks5 error: {}", e);
+            error!("{}", msg);
+            SocksError::IoError(msg)
         })?;
 
         socket.flush().await.map_err(|e| {
-            error!("Error flushing socks5 error: {}", e);
-            e
+            let msg = format!("Error flushing socks5 error: {}", e);
+            error!("{}", msg);
+            SocksError::IoError(msg)
         })?;
 
         Ok(())

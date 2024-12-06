@@ -292,7 +292,7 @@ impl RuleFileLoader {
                     Err(RuleError::InvalidScript(msg))
                 }
             }
-            RuleConfigItem::Include { file } => {
+            RuleConfigItem::Include { file: _} => {
                 // Load the included file
                 let msg = format!("Invalid rule item: {:?}", item);
                 error!("{}", msg);

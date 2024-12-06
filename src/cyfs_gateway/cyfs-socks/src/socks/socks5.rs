@@ -1,10 +1,4 @@
-use crate::Socks5Util;
-use crate::{
-    peer::{NameManagerRef, PeerManagerRef},
-    tunnel::TunnelCombiner,
-};
-use gateway_lib::*;
-
+use super::util::Socks5Util;
 use fast_socks5::{
     server::{Config, SimpleUserPassword, Socks5Socket},
     util::target_addr::TargetAddr,
@@ -19,108 +13,16 @@ use tokio::{
     task,
     task::JoinHandle,
 };
+use crate::error::{SocksError, SocksResult};
+use super::config::{SocksProxyConfig, SocksProxyAuth};
+use tokio::io::{AsyncRead, AsyncWrite};
 
-#[derive(Debug, Clone)]
-pub enum ProxyAuth {
-    None,
-    Password(String, String),
-}
-
-#[derive(Debug, Clone)]
-pub struct ProxyConfig {
-    pub id: String,
-    pub addr: SocketAddr,
-    pub auth: ProxyAuth,
-
-    pub source: ConfigSource,
-}
-
-impl ProxyConfig {
-    pub fn load(config: &serde_json::Value, source: Option<ConfigSource>) -> GatewayResult<Self> {
-        let id = config["id"].as_str().ok_or_else(|| {
-            let msg = "Missing id in socks5 proxy config".to_owned();
-            error!("{}", msg);
-            GatewayError::InvalidConfig(msg)
-        })?;
-
-        let addr = config["addr"]
-            .as_str()
-            .ok_or(GatewayError::InvalidConfig("addr".to_owned()))?;
-        let port = config["port"]
-            .as_u64()
-            .ok_or(GatewayError::InvalidConfig("port".to_owned()))? as u16;
-        let addr = format!("{}:{}", addr, port);
-        let addr = addr.parse().map_err(|e| {
-            let msg = format!("Error parsing addr: {}, {}", addr, e);
-            error!("{}", msg);
-            GatewayError::InvalidConfig(msg)
-        })?;
-
-        let auth = if let Some(auth) = config.get("auth") {
-            if !auth.is_object() {
-                return Err(GatewayError::InvalidConfig("auth".to_owned()));
-            }
-
-            let auth_type = auth["type"]
-                .as_str()
-                .ok_or(GatewayError::InvalidConfig("auth.type".to_owned()))?;
-            match auth_type {
-                "password" => {
-                    let username = auth["username"].as_str().unwrap();
-                    let password = auth["password"].as_str().unwrap();
-                    ProxyAuth::Password(username.to_owned(), password.to_owned())
-                }
-                _ => {
-                    let msg = format!("Unknown auth type: {}", auth_type);
-                    error!("{}", msg);
-                    return Err(GatewayError::InvalidConfig(msg));
-                }
-            }
-        } else {
-            ProxyAuth::None
-        };
-
-        Ok(ProxyConfig {
-            id: id.to_owned(),
-            addr,
-            auth,
-
-            source: source.unwrap_or(ConfigSource::Config),
-        })
-    }
-
-    pub fn dump(&self) -> serde_json::Value {
-        let mut config = serde_json::Map::new();
-        config.insert("block".to_owned(), "proxy".into());
-        config.insert("type".to_owned(), "socks5".into());
-        config.insert("id".to_owned(), self.id.clone().into());
-        config.insert("addr".to_owned(), self.addr.ip().to_string().into());
-        config.insert("port".to_owned(), self.addr.port().into());
-
-        let auth = match &self.auth {
-            ProxyAuth::None => serde_json::Value::Null,
-            ProxyAuth::Password(username, password) => {
-                let mut auth = serde_json::Map::new();
-                auth.insert("type".to_owned(), "password".into());
-                auth.insert("username".to_owned(), username.clone().into());
-                auth.insert("password".to_owned(), password.clone().into());
-                auth.into()
-            }
-        };
-
-        if auth != serde_json::Value::Null {
-            config.insert("auth".to_owned(), auth);
-        }
-
-        config.into()
-    }
-}
+pub trait SocksDataTunnel: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
+        
 
 #[derive(Clone)]
 pub struct Socks5Proxy {
-    name_manager: NameManagerRef,
-    peer_manager: PeerManagerRef,
-    config: ProxyConfig,
+    config: SocksProxyConfig,
     socks5_config: Arc<Config<SimpleUserPassword>>,
 
     // Use to stop the proxy
@@ -129,9 +31,7 @@ pub struct Socks5Proxy {
 
 impl Socks5Proxy {
     pub fn new(
-        config: ProxyConfig,
-        name_manager: NameManagerRef,
-        peer_manager: PeerManagerRef,
+        config: SocksProxyConfig,
     ) -> Self {
         let mut socks5_config = Config::default();
 
@@ -140,8 +40,8 @@ impl Socks5Proxy {
         socks5_config.set_execute_command(false);
 
         let socks5_config = match config.auth {
-            ProxyAuth::None => socks5_config,
-            ProxyAuth::Password(ref username, ref password) => {
+            SocksProxyAuth::None => socks5_config,
+            SocksProxyAuth::Password(ref username, ref password) => {
                 socks5_config.with_authentication(SimpleUserPassword {
                     username: username.clone(),
                     password: password.clone(),
@@ -150,8 +50,6 @@ impl Socks5Proxy {
         };
 
         Self {
-            name_manager,
-            peer_manager,
             config,
             socks5_config: Arc::new(socks5_config),
             task: Arc::new(Mutex::new(None)),
@@ -166,22 +64,18 @@ impl Socks5Proxy {
         &self.config.addr
     }
 
-    pub fn source(&self) -> ConfigSource {
-        self.config.source
-    }
-
     pub fn dump(&self) -> serde_json::Value {
         self.config.dump()
     }
     
-    pub async fn start(&self) -> GatewayResult<()> {
+    pub async fn start(&self) -> SocksResult<()> {
         let listener = TcpListener::bind(&self.config.addr).await.map_err(|e| {
-            let msg = format!("Error binding to {}: {}", self.config.addr, e);
+            let msg = format!("Error socks5 binding to {}: {}", self.config.addr, e);
             error!("{}", msg);
-            GatewayError::Io(e)
+            SocksError::IoError(msg)
         })?;
 
-        info!("Listen for socks connections at {}", &self.config.addr);
+        info!("Listen for socks5 connections at {}", &self.config.addr);
 
         let this = self.clone();
         let proxy_task = task::spawn(async move {
@@ -221,7 +115,7 @@ impl Socks5Proxy {
         }
     }
 
-    async fn run(&self, listener: TcpListener) -> GatewayResult<()> {
+    async fn run(&self, listener: TcpListener) -> SocksResult<()> {
         // Standard TCP loop
         loop {
             match listener.accept().await {
@@ -237,7 +131,7 @@ impl Socks5Proxy {
         }
     }
 
-    async fn on_new_connection(&self, conn: TcpStream, addr: SocketAddr) -> GatewayResult<()> {
+    async fn on_new_connection(&self, conn: TcpStream, addr: SocketAddr) -> SocksResult<()> {
         info!("Socks5 connection from {}", addr);
         let socket = Socks5Socket::new(conn, self.socks5_config.clone());
 
@@ -252,7 +146,7 @@ impl Socks5Proxy {
                         let msg =
                             format!("Error getting socks5 connection target address: {},", addr,);
                         error!("{}", msg);
-                        return Err(GatewayError::InvalidParam(msg));
+                        return Err(SocksError::InvalidParam(msg));
                     }
                 };
 
@@ -273,38 +167,22 @@ impl Socks5Proxy {
             Err(err) => {
                 let msg = format!("Upgrade to socks5 error: {}", err);
                 error!("{}", msg);
-                Err(GatewayError::Socks(err))
+                Err(SocksError::SocksError(msg))
             }
         }
     }
 
-    async fn build_data_tunnel(&self, target: &TargetAddr) -> GatewayResult<TunnelCombiner> {
-        let (device_id, port) = match target {
-            TargetAddr::Ip(addr) => match self.name_manager.get_device_id(&addr.ip()) {
-                Some(device_id) => (device_id, addr.port()),
-                None => {
-                    let msg = format!("Device not found for address: {}", addr);
-                    error!("{}", msg);
-                    return Err(GatewayError::PeerNotFound(msg));
-                }
-            },
-            TargetAddr::Domain(domain, port) => (domain.to_owned(), *port),
-        };
-
-        let peer = self.peer_manager.get_or_init_peer(&device_id, true).await?;
-
-        let (reader, writer) = peer.build_data_tunnel(port).await?;
-
-        let tunnel = TunnelCombiner::new(reader, writer);
-
-        Ok(tunnel)
+    async fn build_data_tunnel(&self, target: &TargetAddr) -> SocksResult<Box<dyn SocksDataTunnel>> {
+        
+        
+        todo!( );
     }
 
     async fn process_socket(
         &self,
         mut socket: fast_socks5::server::Socks5Socket<TcpStream, SimpleUserPassword>,
         target: TargetAddr,
-    ) -> GatewayResult<()> {
+    ) -> SocksResult<()> {
         let mut tunnel = match self.build_data_tunnel(&target).await {
             Ok(tunnel) => {
                 Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::Succeeded).await?;
@@ -325,7 +203,7 @@ impl Socks5Proxy {
             .map_err(|e| {
                 let msg = format!("Error copying data on socks connection: {}, {}", target, e);
                 error!("{}", msg);
-                GatewayError::Io(e)
+                SocksError::IoError(msg)
             })?;
 
         info!(

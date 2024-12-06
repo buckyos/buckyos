@@ -1,10 +1,8 @@
-use url::Url;
-use std::{str::FromStr, sync::Arc};
 use crate::error::RuleResult;
-
+use std::sync::Arc;
+use url::Url;
 
 use super::action::RuleAction;
-
 
 #[derive(Debug, Clone)]
 pub struct RequestSourceInfo {
@@ -23,8 +21,6 @@ pub struct RuleInput {
 pub struct RuleOutput {
     pub actions: Vec<RuleAction>,
 }
-
-
 
 #[async_trait::async_trait]
 pub trait RuleSelector: Sync + Send {

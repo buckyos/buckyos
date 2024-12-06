@@ -2,13 +2,13 @@
 //规则的核心是输入 (来源，目标)，输出 TunnelBuilder
 //TunnelBuilder用于构建一个Tunnel,Tunnel负责转发数
 
+use super::action::RuleAction;
 use super::loader::{RuleFileLoader, RuleItem};
-use super::selector::{RuleInput, RuleOutput};
-use crate::error::{RuleResult, RuleError};
-use std::path::{PathBuf, Path};
+use super::selector::RuleInput;
+use crate::error::{RuleError, RuleResult};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use super::action::RuleAction;
 
 // Manager the rules load from config files
 pub struct RuleEngine {
