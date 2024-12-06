@@ -99,31 +99,6 @@ impl NodeConfig {
     }
 }
 
-fn init_log_config() {
-    // 创建一个日志配置对象
-    let config = ConfigBuilder::new()
-        .set_time_format_custom(format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"))
-        .build();
-       
-    let log_path = get_buckyos_root_dir().join("logs").join("node_daemon.log");
-    // 初始化日志器
-    CombinedLogger::init(vec![
-        // 将日志输出到标准输出，例如终端
-        TermLogger::new(
-            LevelFilter::Info,
-            config.clone(),
-            TerminalMode::Mixed,
-            ColorChoice::Auto,
-        ),
-        WriteLogger::new(
-            LevelFilter::Info,
-            config,
-            File::create(log_path).unwrap(),
-        ),
-    ])
-    .unwrap();
-}
-
 fn load_node_private_key() -> Result<EncodingKey> {
     // load from /etc/buckyos/node_private_key.toml
     let file_path = "node_private_key.pem";
@@ -565,7 +540,7 @@ async fn start_cyfs_gateway_service(node_id: &String,device_doc: &DeviceConfig, 
 
 
 async fn async_main() -> std::result::Result<(), String> {
-    init_log_config();
+    init_logging("node_daemon");
     let matches = Command::new("BuckyOS Node Daemon")
     .arg(
         Arg::new("id")
