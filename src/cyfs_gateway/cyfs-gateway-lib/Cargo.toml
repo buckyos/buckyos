@@ -37,3 +37,4 @@ name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
 ndn-lib = { path = "../../components/ndn-lib" }
+cyfs-socks = { path = "../cyfs-socks" }

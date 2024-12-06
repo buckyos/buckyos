@@ -23,7 +23,7 @@ use tokio::task;
 use url::Url;
 use name_client::*;
 use name_lib::*;
-use console_subscriber;
+use console_subscriber::{self, Server};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -120,11 +120,15 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
                     let _ = start_cyfs_dns_server(dns_config).await;
                 });
             },
-            _ => {
-                error!("Invalid server type: {}", server_id);
+            ServerConfig::Socks(socks_config) => {
+                let socks_config_param = socks_config.clone();
+                if let Err(e) = cyfs_socks::start_cyfs_socks_server(socks_config_param).await {
+                    error!("Error starting socks server: {:?}, {}", socks_config, e);
+                }
             },
         }
     }
+
     //start dispatcher
     let dispatcher = dispatcher::ServiceDispatcher::new(config_loader.dispatcher.clone());
     dispatcher.start().await;

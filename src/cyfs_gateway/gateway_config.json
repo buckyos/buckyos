@@ -46,7 +46,8 @@
         },
         "main_socks_server":{
             "type":"cyfs-socks",
-            "bind":"localhost:8000",
+            "bind":"localhost",
+            "port":8000,
             "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml"
         },
         "main_dns_server":{

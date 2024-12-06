@@ -10,25 +10,25 @@ pub enum SocksProxyAuth {
 #[derive(Debug, Clone)]
 pub struct SocksProxyConfig {
     pub id: String,
+    
+    pub bind: Option<String>,
+    pub port: u16,
     pub addr: SocketAddr,
+
     pub auth: SocksProxyAuth,
 }
 
 impl SocksProxyConfig {
     pub fn load(config: &serde_json::Value) -> SocksResult<Self> {
-        let id = config["id"].as_str().ok_or_else(|| {
-            let msg = "Missing id in socks5 proxy config".to_owned();
-            error!("{}", msg);
-            SocksError::InvalidConfig(msg)
-        })?;
+        let id = config["id"].as_str().unwrap_or("socks5");
 
-        let addr = config["addr"]
-            .as_str()
-            .ok_or(SocksError::InvalidConfig("addr".to_owned()))?;
+        let bind = config["bind"].as_str();
         let port = config["port"]
             .as_u64()
             .ok_or(SocksError::InvalidConfig("port".to_owned()))? as u16;
-        let addr = format!("{}:{}", addr, port);
+
+        let bind = bind.unwrap_or("0.0.0.0");
+        let addr = format!("{}:{}", bind, port);
         let addr = addr.parse().map_err(|e| {
             let msg = format!("Error parsing addr: {}, {}", addr, e);
             error!("{}", msg);
@@ -59,9 +59,13 @@ impl SocksProxyConfig {
             SocksProxyAuth::None
         };
 
-        Ok(SocksProxyConfig {
+        Ok(Self {
             id: id.to_owned(),
+            
+            bind: Some(bind.to_owned()),
+            port,
             addr,
+
             auth,
         })
     }

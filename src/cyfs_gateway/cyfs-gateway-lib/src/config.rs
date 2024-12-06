@@ -4,6 +4,7 @@ use tokio::fs;
 use std::collections::HashMap;
 use serde::Deserialize;
 use url::Url;
+use cyfs_socks::SocksProxyConfig;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChunkMgrRouteConfig {
@@ -107,9 +108,6 @@ pub struct DNSServerConfig {
     pub fallback : Vec<String>,//fallback dns servers
 }
 
-pub struct SocksProxyConfig {
-
-}
 
 pub enum ServerConfig {
     Warp(WarpServerConfig),
