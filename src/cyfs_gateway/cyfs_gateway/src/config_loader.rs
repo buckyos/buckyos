@@ -134,8 +134,14 @@ impl GatewayConfig {
                         servers_cfg.insert(k.clone(), ServerConfig::DNS(dns_config));
                     }
                     "cyfs-socks" => {
-                        let socks_config = SocksProxyConfig::load(v)
+                        let mut socks_config = SocksProxyConfig::load(v)
                             .map_err(|e| format!("load socks config failed! {}", e))?;
+
+                        // Try load rule config
+                        socks_config.load_rules().await.map_err(|e| {
+                            format!("load socks rule config failed! {}", e)
+                        })?;
+                        
                         servers_cfg.insert(k.clone(), ServerConfig::Socks(socks_config));
                     }
                     _ => {

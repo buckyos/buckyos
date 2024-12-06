@@ -75,7 +75,7 @@
                 {
                     "order":3,
                     "type":"rule-dns", 
-                    "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml",
+                    "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml"
                 }
 
             ],

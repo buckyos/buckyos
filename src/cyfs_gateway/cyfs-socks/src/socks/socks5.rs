@@ -22,7 +22,7 @@ pub trait SocksDataTunnel: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
 
 #[derive(Clone)]
 pub struct Socks5Proxy {
-    config: SocksProxyConfig,
+    config: Arc<SocksProxyConfig>,
     socks5_config: Arc<Config<SimpleUserPassword>>,
 
     // Use to stop the proxy
@@ -50,7 +50,7 @@ impl Socks5Proxy {
         };
 
         Self {
-            config,
+            config: Arc::new(config),
             socks5_config: Arc::new(socks5_config),
             task: Arc::new(Mutex::new(None)),
         }

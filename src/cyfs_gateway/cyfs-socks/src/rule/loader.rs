@@ -81,6 +81,10 @@ impl RuleFileTargetLoader {
         }
     }
 
+    pub fn target(&self) -> &RuleFileTarget {
+        &self.target
+    }
+
     // Load the rule file from the target.
     pub async fn load(&self) -> RuleResult<String> {
         let s = match &self.target {
@@ -162,13 +166,17 @@ impl RuleFileTargetLoader {
 pub struct RuleFileLoader {
     // The root dir of the rule file.
     root_dir: PathBuf,
+
+    // The root file name of the rule file, default is root(root.json)
+    root_file_name: String,
 }
 
 impl RuleFileLoader {
-    pub fn new(root_dir: &Path) -> Self {
+    pub fn new(root_dir: &Path, root_file_name: Option<String>) -> Self {
         // Create a new RuleFileParser to parse a rule file content.
         Self {
             root_dir: root_dir.to_owned(),
+            root_file_name: root_file_name.unwrap_or("root".to_owned()),
         }
     }
 
@@ -182,8 +190,8 @@ impl RuleFileLoader {
             return Err(RuleError::NotFound(msg));
         }
 
-        // Load root file to string
-        let s = self.try_load_rule_file("root").await?;
+        // Load root config file to string
+        let s = self.try_load_rule_file(&self.root_file_name).await?;
 
         let items: Vec<RuleConfigItem> = serde_json::from_str(&s).map_err(|e| {
             let msg = format!("Failed to parse rule file: {:?}", e);
@@ -279,18 +287,7 @@ impl RuleFileLoader {
                 // Load the PAC file
                 let target = RuleFileTarget::new(&file);
 
-                let loader = RuleFileTargetLoader::new(target);
-                let content = loader.load().await?;
-
-                let pac_script = PacScriptManager::new(content);
-                if let Ok(_) = pac_script.check_valid() {
-                    let selector = Arc::new(Box::new(pac_script) as Box<dyn RuleSelector>);
-                    Ok(selector)
-                } else {
-                    let msg = format!("Invalid PAC script: {:?}", file);
-                    error!("{}", msg);
-                    Err(RuleError::InvalidScript(msg))
-                }
+                Self::load_pac_selector(target).await
             }
             RuleConfigItem::Include { file: _} => {
                 // Load the included file
@@ -298,6 +295,21 @@ impl RuleFileLoader {
                 error!("{}", msg);
                 Err(RuleError::NotSupport(msg))
             }
+        }
+    }
+
+    pub async fn load_pac_selector(target: RuleFileTarget) -> RuleResult<RuleSelectorRef> {
+        let loader = RuleFileTargetLoader::new(target);
+        let content = loader.load().await?;
+
+        let pac_script = PacScriptManager::new(content);
+        if let Ok(_) = pac_script.check_valid() {
+            let selector = Arc::new(Box::new(pac_script) as Box<dyn RuleSelector>);
+            Ok(selector)
+        } else {
+            let msg = format!("Invalid PAC script: {:?}", loader.target());
+            error!("{}", msg);
+            Err(RuleError::InvalidScript(msg))
         }
     }
 }

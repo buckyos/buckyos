@@ -106,7 +106,7 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
     }
 
     //start servers
-    for (server_id,server_config) in config_loader.servers.iter() {
+    for (server_id,server_config) in config_loader.servers.into_iter() {
         match server_config {
             ServerConfig::Warp(warp_config) => {
                 let warp_config = warp_config.clone();
@@ -121,9 +121,9 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
                 });
             },
             ServerConfig::Socks(socks_config) => {
-                let socks_config_param = socks_config.clone();
-                if let Err(e) = cyfs_socks::start_cyfs_socks_server(socks_config_param).await {
-                    error!("Error starting socks server: {:?}, {}", socks_config, e);
+                // let socks_config_param = socks_config.clone();
+                if let Err(e) = cyfs_socks::start_cyfs_socks_server(socks_config).await {
+                    error!("Error starting socks server: {}", e);
                 }
             },
         }

@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
-use crate::error::{SocksResult, SocksError};
+use crate::{error::{SocksError, SocksResult}, rule, rule::RuleEngine, RuleResult};
+use buckyos_kit::get_buckyos_system_etc_dir;
 
 #[derive(Debug, Clone)]
 pub enum SocksProxyAuth {
@@ -7,7 +8,7 @@ pub enum SocksProxyAuth {
     Password(String, String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SocksProxyConfig {
     pub id: String,
     
@@ -16,6 +17,10 @@ pub struct SocksProxyConfig {
     pub addr: SocketAddr,
 
     pub auth: SocksProxyAuth,
+
+    // The rule config, if not set, use the default rule config in the /{buckyos}/etc/rules/ dir
+    pub rule_config: Option<String>,
+    pub rule_engine: Option<RuleEngine>,
 }
 
 impl SocksProxyConfig {
@@ -59,15 +64,37 @@ impl SocksProxyConfig {
             SocksProxyAuth::None
         };
 
+        let rule_config = config["rule_config"].as_str().map(|s| s.to_owned());
+
         Ok(Self {
             id: id.to_owned(),
-            
+
             bind: Some(bind.to_owned()),
             port,
             addr,
 
             auth,
+
+            rule_config,
+            rule_engine: None,
         })
+    }
+
+    pub async fn load_rules(&mut self) -> RuleResult<()> {
+        assert!(self.rule_engine.is_none());
+
+        let root_dir = get_buckyos_system_etc_dir().join("rules");
+        let rule_engine = RuleEngine::new(&root_dir);
+
+        if let Some(rule_config) = self.rule_config.as_ref() {
+            rule_engine.load_target(rule_config).await?;
+        } else {
+            rule_engine.load_rules().await?;
+        }
+
+        self.rule_engine = Some(rule_engine);
+
+        Ok(())
     }
 
     pub fn dump(&self) -> serde_json::Value {

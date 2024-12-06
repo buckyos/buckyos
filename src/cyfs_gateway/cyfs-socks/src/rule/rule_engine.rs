@@ -3,7 +3,8 @@
 //TunnelBuilder用于构建一个Tunnel,Tunnel负责转发数
 
 use super::action::RuleAction;
-use super::loader::{RuleFileLoader, RuleItem};
+use super::loader::{RuleFileLoader, RuleFileTarget};
+use super::loader::{RuleType, RuleItem};
 use super::selector::RuleInput;
 use crate::error::{RuleError, RuleResult};
 use std::path::{Path, PathBuf};
@@ -16,6 +17,14 @@ pub struct RuleEngine {
     rules: Arc<Mutex<Vec<RuleItem>>>,
 }
 
+impl std::fmt::Debug for RuleEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuleEngine")
+            .field("root_dir", &self.root_dir)
+            .finish()
+    }
+}
+
 impl RuleEngine {
     pub fn new(root_dir: &Path) -> Self {
         Self {
@@ -24,11 +33,40 @@ impl RuleEngine {
         }
     }
 
+    // Load rules from the root dir, this is the default way to load rule, without "rule_config" in the config file
     pub async fn load_rules(&self) -> RuleResult<()> {
-        let loader = RuleFileLoader::new(&self.root_dir);
+        let loader = RuleFileLoader::new(&self.root_dir, None);
         let items = loader.load().await?;
 
         *self.rules.lock().await = items;
+
+        Ok(())
+    }
+
+    // Just load from target string, maybe a file name or a url
+    // If target is a file name, it should be a relative path to the root dir
+    // If target is a url, it should be a http or https url
+    pub async fn load_target(&self, target: &str) -> RuleResult<()> {
+        let target: RuleFileTarget = RuleFileTarget::new(target);
+        match &target {
+            RuleFileTarget::Local(filename) => {
+                let loader = RuleFileLoader::new(
+                    &self.root_dir,
+                    Some(filename.to_string_lossy().to_string()),
+                );
+                let items = loader.load().await?;
+
+                *self.rules.lock().await = items;
+            }
+            RuleFileTarget::Remote(_url) => {
+                let selector = RuleFileLoader::load_pac_selector(target).await?;
+                let item = RuleItem {
+                    _type: RuleType::PAC,
+                    selector: selector,
+                };
+                self.rules.lock().await.push(item);
+            }
+        }
 
         Ok(())
     }
