@@ -1,35 +1,31 @@
-
-use tokio::{io::{AsyncRead, AsyncWrite}, net::UdpSocket};
-use url::Url;
-use std::{net::SocketAddr, sync::Arc};
 use async_trait::async_trait;
-use log::*;
 use buckyos_kit::AsyncStream;
+use log::*;
+use std::{net::SocketAddr, sync::Arc};
+use tokio::{
+    net::UdpSocket,
+};
+use url::Url;
 
 use crate::{TunnelError, TunnelResult};
 
-
-#[derive(Hash, Eq, PartialEq, Debug,Clone)]
+#[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct TunnelEndpoint {
     pub device_id: String,
     pub port: u16,
 }
 
-
-
 #[async_trait]
-pub trait StreamListener : Send
-{
-    async fn accept(&self) -> Result<(Box<dyn AsyncStream>, TunnelEndpoint),std::io::Error>;
+pub trait StreamListener: Send {
+    async fn accept(&self) -> Result<(Box<dyn AsyncStream>, TunnelEndpoint), std::io::Error>;
 }
 
 #[async_trait]
-pub trait DatagramClient : Send  + Sync
-{
-    async fn recv_datagram(&self,buffer:&mut [u8]) -> Result<usize,std::io::Error>;
-    async fn send_datagram(&self,buffer:&[u8]) -> Result<usize,std::io::Error>;
+pub trait DatagramClient: Send + Sync {
+    async fn recv_datagram(&self, buffer: &mut [u8]) -> Result<usize, std::io::Error>;
+    async fn send_datagram(&self, buffer: &[u8]) -> Result<usize, std::io::Error>;
 }
-pub trait DatagramClientBox : DatagramClient {
+pub trait DatagramClientBox: DatagramClient {
     fn clone_box(&self) -> Box<dyn DatagramClientBox>;
 }
 
@@ -49,13 +45,19 @@ impl Clone for Box<dyn DatagramClientBox> {
 }
 
 #[async_trait]
-pub trait DatagramServer  : Send
-{
-    async fn recv_datagram(&self,buffer:&mut [u8]) -> Result<(usize,TunnelEndpoint),std::io::Error>;
-    async fn send_datagram(&self,ep:&TunnelEndpoint,buffer:&[u8]) -> Result<usize,std::io::Error>;
+pub trait DatagramServer: Send {
+    async fn recv_datagram(
+        &self,
+        buffer: &mut [u8],
+    ) -> Result<(usize, TunnelEndpoint), std::io::Error>;
+    async fn send_datagram(
+        &self,
+        ep: &TunnelEndpoint,
+        buffer: &[u8],
+    ) -> Result<usize, std::io::Error>;
 }
 
-pub trait DatagramServerBox : DatagramServer {
+pub trait DatagramServerBox: DatagramServer {
     fn clone_box(&self) -> Box<dyn DatagramServerBox>;
 }
 
@@ -76,17 +78,23 @@ impl Clone for Box<dyn DatagramServerBox> {
 
 // one Tunnel to device
 #[async_trait]
-pub trait Tunnel : Send + Sync
-{
-    async fn ping(&self)->Result<(),std::io::Error>;
-    async fn open_stream(&self,dest_port:u16) -> Result<Box<dyn AsyncStream>, std::io::Error>;
-    async fn create_datagram_client(&self, dest_port:u16) -> Result<Box<dyn DatagramClientBox>,std::io::Error>;
+pub trait Tunnel: Send + Sync {
+    async fn ping(&self) -> Result<(), std::io::Error>;
+    async fn open_stream(
+        &self,
+        dest_port: u16,
+        dest_host: Option<String>,
+    ) -> Result<Box<dyn AsyncStream>, std::io::Error>;
+    async fn create_datagram_client(
+        &self,
+        dest_port: u16,
+    ) -> Result<Box<dyn DatagramClientBox>, std::io::Error>;
 
     //async fn create_listener();
     //async fn create_datagram_server(&self, bind_port:u16) -> Result<Box<dyn DatagramTunnel>,std::io::Error>;
 }
 
-pub trait TunnelBox : Tunnel {
+pub trait TunnelBox: Tunnel {
     fn clone_box(&self) -> Box<dyn TunnelBox>;
 }
 impl<T> TunnelBox for T
@@ -104,17 +112,22 @@ impl Clone for Box<dyn TunnelBox> {
 }
 
 #[async_trait]
-pub trait TunnelBuilder : Send
-{
-    async fn create_tunnel(&self,target:&Url) -> TunnelResult<Box<dyn TunnelBox>>;
-    async fn create_listener(&self,bind_url:&Url) -> TunnelResult<Box<dyn StreamListener>>;
-    async fn create_datagram_server(&self,bind_url:&Url) -> TunnelResult<Box<dyn DatagramServerBox>>;
+pub trait TunnelBuilder: Send {
+    async fn create_tunnel(&self, target: &Url) -> TunnelResult<Box<dyn TunnelBox>>;
+    async fn create_listener(&self, bind_url: &Url) -> TunnelResult<Box<dyn StreamListener>>;
+    async fn create_datagram_server(
+        &self,
+        bind_url: &Url,
+    ) -> TunnelResult<Box<dyn DatagramServerBox>>;
 }
 
 #[async_trait]
-pub trait TunnelSelector 
-{
-    async fn select_tunnel_for_http_upstream(&self, req_host:&str,req_path:&str) -> Option<String>;
+pub trait TunnelSelector {
+    async fn select_tunnel_for_http_upstream(
+        &self,
+        req_host: &str,
+        req_path: &str,
+    ) -> Option<String>;
 }
 
 // ***************** Implementations of IP Tunnel *****************
@@ -125,7 +138,7 @@ pub struct IPTunnel {
 }
 
 impl IPTunnel {
-    pub fn new(target:&Url) -> IPTunnel {
+    pub fn new(target: &Url) -> IPTunnel {
         IPTunnel {
             target: target.clone(),
         }
@@ -140,17 +153,15 @@ pub struct UdpClient {
 }
 
 impl UdpClient {
-    pub async fn new(dest_addr:String,dest_port:u16) -> Result<UdpClient, std::io::Error> {
+    pub async fn new(dest_addr: String, dest_port: u16) -> Result<UdpClient, std::io::Error> {
         let client = UdpSocket::bind("0.0.0.0:0").await?;
         Ok(UdpClient {
-            client:Arc::new(client),
+            client: Arc::new(client),
             dest_port,
             dest_addr,
         })
     }
 }
-
-
 
 #[async_trait]
 impl DatagramClient for UdpClient {
@@ -160,8 +171,8 @@ impl DatagramClient for UdpClient {
     }
 
     async fn send_datagram(&self, buffer: &[u8]) -> Result<usize, std::io::Error> {
-        let server_addr = format!("{}:{}", self.dest_addr, self.dest_port); 
-        let size = self.client.send_to(buffer,server_addr.clone()).await?;
+        let server_addr = format!("{}:{}", self.dest_addr, self.dest_port);
+        let size = self.client.send_to(buffer, server_addr.clone()).await?;
         trace!("udpclient send datagram to {} size:{}", server_addr, size);
         Ok(size)
     }
@@ -174,21 +185,32 @@ impl Tunnel for IPTunnel {
         Ok(())
     }
 
-    async fn open_stream(&self, dest_port: u16) -> Result<Box<dyn AsyncStream>, std::io::Error> {
-        let dest_host = self.target.host_str().unwrap();
-        let dest_addr = format!("{}:{}", dest_host, dest_port);
+    async fn open_stream(
+        &self,
+        dest_port: u16,
+        dest_host: Option<String>,
+    ) -> Result<Box<dyn AsyncStream>, std::io::Error> {
+        let dest_addr = match dest_host {
+            Some(host) => format!("{}:{}", host, dest_port),
+            None => {
+                let dest_host = self.target.host_str().unwrap();
+                format!("{}:{}", dest_host, dest_port)
+            }
+        };
+
         let stream = tokio::net::TcpStream::connect(dest_addr).await?;
         Ok(Box::new(stream))
     }
 
-    async fn create_datagram_client(&self, dest_port: u16) -> Result<Box<dyn DatagramClientBox>, std::io::Error> {
+    async fn create_datagram_client(
+        &self,
+        dest_port: u16,
+    ) -> Result<Box<dyn DatagramClientBox>, std::io::Error> {
         let dest_host = self.target.host_str().unwrap();
-        let client = UdpClient::new(dest_host.to_string(),dest_port).await?;
+        let client = UdpClient::new(dest_host.to_string(), dest_port).await?;
         Ok(Box::new(client))
     }
 }
-
-
 
 pub struct TcpStreamListener {
     bind_addr: Url,
@@ -196,7 +218,7 @@ pub struct TcpStreamListener {
 }
 
 impl TcpStreamListener {
-    pub fn new(bind_addr:&Url) -> TcpStreamListener {
+    pub fn new(bind_addr: &Url) -> TcpStreamListener {
         TcpStreamListener {
             bind_addr: bind_addr.clone(),
             listener: None,
@@ -209,9 +231,8 @@ impl TcpStreamListener {
         let bind_str = format!("{}:{}", host, port);
         info!("TcpStreamListener try bind to {}", bind_str);
         let listener = tokio::net::TcpListener::bind(bind_str.as_str())
-            .await.map_err(|e| {
-                TunnelError::BindError(e.to_string())
-            })?;
+            .await
+            .map_err(|e| TunnelError::BindError(e.to_string()))?;
         info!("TcpStreamListener bind to {} OK", bind_str);
         self.listener = Some(listener);
         Ok(())
@@ -223,16 +244,19 @@ impl StreamListener for TcpStreamListener {
     async fn accept(&self) -> Result<(Box<dyn AsyncStream>, TunnelEndpoint), std::io::Error> {
         let listener = self.listener.as_ref().unwrap();
         let (stream, addr) = listener.accept().await?;
-        Ok((Box::new(stream), TunnelEndpoint {
-            device_id: addr.ip().to_string(),
-            port: addr.port(),
-        }))
+        Ok((
+            Box::new(stream),
+            TunnelEndpoint {
+                device_id: addr.ip().to_string(),
+                port: addr.port(),
+            },
+        ))
     }
 }
 
 #[derive(Clone)]
 pub struct UdpDatagramServer {
-    server_socket : Option<Arc<UdpSocket>>,
+    server_socket: Option<Arc<UdpSocket>>,
 }
 
 impl UdpDatagramServer {
@@ -247,9 +271,8 @@ impl UdpDatagramServer {
         let port = bind_url.port().unwrap();
         let bind_str = format!("{}:{}", host, port);
         let server_socket = tokio::net::UdpSocket::bind(bind_str)
-            .await.map_err(|e| {
-                TunnelError::BindError(e.to_string())
-            })?;
+            .await
+            .map_err(|e| TunnelError::BindError(e.to_string()))?;
         self.server_socket = Some(Arc::new(server_socket));
         Ok(())
     }
@@ -257,35 +280,49 @@ impl UdpDatagramServer {
 
 #[async_trait]
 impl DatagramServer for UdpDatagramServer {
-    async fn recv_datagram(&self, buffer: &mut [u8]) -> Result<(usize, TunnelEndpoint), std::io::Error> {
+    async fn recv_datagram(
+        &self,
+        buffer: &mut [u8],
+    ) -> Result<(usize, TunnelEndpoint), std::io::Error> {
         if self.server_socket.is_none() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "server socket not initialized"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "server socket not initialized",
+            ));
         }
 
         let server_socket = self.server_socket.as_ref().unwrap();
         let (size, addr) = server_socket.recv_from(buffer).await?;
-        Ok((size, TunnelEndpoint {
-            device_id: addr.ip().to_string(),
-            port: addr.port(),
-        }))
+        Ok((
+            size,
+            TunnelEndpoint {
+                device_id: addr.ip().to_string(),
+                port: addr.port(),
+            },
+        ))
     }
 
-    async fn send_datagram(&self, ep: &TunnelEndpoint, buffer: &[u8]) -> Result<usize, std::io::Error> {
+    async fn send_datagram(
+        &self,
+        ep: &TunnelEndpoint,
+        buffer: &[u8],
+    ) -> Result<usize, std::io::Error> {
         if self.server_socket.is_none() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "server socket not initialized"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "server socket not initialized",
+            ));
         }
 
         let server_socket = self.server_socket.as_ref().unwrap();
         let addr = SocketAddr::new(ep.device_id.parse().unwrap(), ep.port);
         let size = server_socket.send_to(buffer, addr).await?;
         trace!("UdpDatagramServer send datagram to {} size:{}", addr, size);
-        Ok(size)    
+        Ok(size)
     }
 }
 
-pub struct IPTunnelBuilder {
-
-}
+pub struct IPTunnelBuilder {}
 
 impl IPTunnelBuilder {
     pub fn new() -> IPTunnelBuilder {
@@ -295,9 +332,12 @@ impl IPTunnelBuilder {
 
 #[async_trait]
 impl TunnelBuilder for IPTunnelBuilder {
-    async fn create_tunnel(&self,target:&Url) -> TunnelResult<Box<dyn TunnelBox>> {
+    async fn create_tunnel(&self, target: &Url) -> TunnelResult<Box<dyn TunnelBox>> {
         if target.scheme() != "tcp" && target.scheme() != "udp" {
-            return Err(TunnelError::UrlParseError(target.scheme().to_string(), "tcp or udp".to_string()));
+            return Err(TunnelError::UrlParseError(
+                target.scheme().to_string(),
+                "tcp or udp".to_string(),
+            ));
         }
         Ok(Box::new(IPTunnel::new(target)))
     }
@@ -308,7 +348,10 @@ impl TunnelBuilder for IPTunnelBuilder {
         Ok(Box::new(result))
     }
 
-    async fn create_datagram_server(&self, bind_url: &Url) -> TunnelResult<Box<dyn DatagramServerBox>> {
+    async fn create_datagram_server(
+        &self,
+        bind_url: &Url,
+    ) -> TunnelResult<Box<dyn DatagramServerBox>> {
         let mut result = UdpDatagramServer::new();
         result.bind(bind_url).await?;
         Ok(Box::new(result))

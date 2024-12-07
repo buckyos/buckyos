@@ -4,8 +4,7 @@ mod name_query;
 mod dns_provider;
 mod zone_provider;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
-use jsonwebtoken::{jwk::Jwk, DecodingKey};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 pub use provider::*;
 pub use name_client::*;
 pub use name_query::*;

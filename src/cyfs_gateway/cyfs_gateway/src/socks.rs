@@ -44,7 +44,12 @@ impl SocksDataTunnelProvider for SocksTunnelBuilder {
             return Err(SocksError::InvalidConfig(msg));
         }
 
-        let target_stream = target_tunnel.open_stream(target_port).await.map_err(|e| {
+        let target_host = match &target {
+            TargetAddr::Ip(ip) => ip.ip().to_string(),
+            TargetAddr::Domain(domain, _) => domain.clone(),
+        };
+
+        let target_stream = target_tunnel.open_stream(target_port, Some(target_host)).await.map_err(|e| {
             let msg = format!("Open target stream failed: {}, {:?}", target, e);
             error!("{}", msg);
             SocksError::IoError(msg)

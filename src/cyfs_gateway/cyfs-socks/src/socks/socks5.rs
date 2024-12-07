@@ -1,7 +1,7 @@
 use super::config::{SocksProxyAuth, SocksProxyConfig};
 use super::util::Socks5Util;
 use crate::error::{SocksError, SocksResult};
-use crate::rule::{RuleAction, RuleInput, RuleSelector};
+use crate::rule::{RuleAction, RuleInput};
 use buckyos_kit::AsyncStream;
 use fast_socks5::{
     server::{Config, SimpleUserPassword, Socks5Socket},

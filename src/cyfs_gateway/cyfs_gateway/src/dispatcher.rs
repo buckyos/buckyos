@@ -85,7 +85,7 @@ impl ServiceDispatcher {
                             continue;
                         }
                         let target_tunnel = target_tunnel.unwrap();
-                        let mut target_stream = target_tunnel.open_stream(target_port).await;
+                        let mut target_stream = target_tunnel.open_stream(target_port, None).await;
                         if target_stream.is_err() {
                             warn!("stream forward service forward connection failed, open target stream failed: {}", target_stream.err().unwrap());
                             continue;
