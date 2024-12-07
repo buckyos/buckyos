@@ -41,7 +41,11 @@ impl SocksProxyConfig {
             .as_u64()
             .ok_or(SocksError::InvalidConfig("port".to_owned()))? as u16;
 
-        let bind = bind.unwrap_or("0.0.0.0");
+        let mut bind = bind.unwrap_or("0.0.0.0");
+        if bind.to_lowercase().trim() == "localhost" {
+            bind = "127.0.0.1";
+        }
+
         let addr = format!("{}:{}", bind, port);
         let addr = addr.parse().map_err(|e| {
             let msg = format!("Error parsing addr: {}, {}", addr, e);

@@ -197,11 +197,11 @@ impl GatewayConfig {
                             return Err("Target url not string".to_string());
                         }
                         let target_url = target_url.unwrap();
-                        let target_url = Url::parse(target_url);
-                        if target_url.is_err() {
-                            return Err("Invalid target url".to_string());
-                        }
-                        let target_url = target_url.unwrap();
+                        let target_url = Url::parse(target_url).map_err(|e| {
+                            let msg = format!("Invalid target url: {}, {}", target_url, e);
+                            msg
+                        })?;
+                        
                         new_config =
                             DispatcherConfig::new_forward(incoming_url, target_url, enable_tunnel);
                     }

@@ -8,6 +8,7 @@ use boa_engine::{
 };
 use boa_runtime::Console;
 use regex::Regex;
+use std::error::Error;
 use std::sync::Arc;
 use std::sync::Mutex;
 use trust_dns_resolver::config::*;
@@ -38,13 +39,19 @@ impl PacScriptExecutor {
         Ok(Self { context })
     }
 
-    // Load the PAC script from the URL.
+    // Evaluate the PAC script
     fn load(&self, src: &str) -> RuleResult<()> {
         let mut context = self.context.lock().unwrap();
 
         let src = Source::from_bytes(src.as_bytes());
         context.eval(src).map_err(|e| {
-            let msg = format!("failed to eval PAC script: {:?}", e);
+            let mut source = e.source();
+            while let Some(err) = source {
+                println!("Caused by: {:?}", err);
+                source = err.source();
+            }
+            
+            let msg = format!("failed to eval PAC script: {:?}, {:?}", e, e.source());
             error!("{}", msg);
             RuleError::InvalidScript(msg)
         })?;

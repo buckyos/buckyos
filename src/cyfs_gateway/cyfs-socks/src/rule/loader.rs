@@ -52,6 +52,10 @@ impl RuleFileTarget {
         }
     }
 
+    pub fn new_local(s: &Path) -> Self {
+        Self::Local(s.to_owned())
+    }
+
     pub fn is_local(&self) -> bool {
         match self {
             RuleFileTarget::Local(_) => true,
@@ -184,7 +188,7 @@ impl RuleFileLoader {
     pub async fn load(&self) -> RuleResult<Vec<RuleItem>> {
         // First load the root rule file and then parse it in json format.
         if !self.root_dir.is_dir() {
-            let msg = format!("Root rule file not found: {:?}", self.root_dir);
+            let msg = format!("Root rule dir not exists: {:?}", self.root_dir);
             error!("{}", msg);
 
             return Err(RuleError::NotFound(msg));
@@ -194,7 +198,7 @@ impl RuleFileLoader {
         let s = self.try_load_rule_file(&self.root_file_name).await?;
 
         let items: Vec<RuleConfigItem> = serde_json::from_str(&s).map_err(|e| {
-            let msg = format!("Failed to parse rule file: {:?}", e);
+            let msg = format!("Failed to parse rule file: {:?} {}", e, s);
             error!("{}", msg);
             RuleError::InvalidFormat(msg)
         })?;
@@ -271,21 +275,17 @@ impl RuleFileLoader {
             RuleError::IoError(msg)
         })?;
 
-        // Parse the rule file content.
-        let content = serde_json::from_str(&s).map_err(|e| {
-            let msg = format!("Failed to parse rule file: {:?}", e);
-            error!("{}", msg);
-            RuleError::InvalidFormat(msg)
-        })?;
-
-        Ok(content)
+        Ok(s)
     }
 
     async fn load_rule_item(&self, item: &RuleConfigItem) -> RuleResult<RuleSelectorRef> {
         match item {
             RuleConfigItem::PAC { file } => {
+                // Make the absolute path
+                let file = self.root_dir.join(file);
+
                 // Load the PAC file
-                let target = RuleFileTarget::new(&file);
+                let target = RuleFileTarget::new_local(&file);
 
                 Self::load_pac_selector(target).await
             }
@@ -310,6 +310,49 @@ impl RuleFileLoader {
             let msg = format!("Invalid PAC script: {:?}", loader.target());
             error!("{}", msg);
             Err(RuleError::InvalidScript(msg))
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_serde() {
+        let s = r#"[
+            {
+                "type": "PAC",
+                "file": "http://example.com/pac.js"
+            },
+            {
+                "type": "Include",
+                "file": "default.json"
+            }
+        ]"#;
+
+        let items: Vec<RuleConfigItem> = serde_json::from_str(s).unwrap();
+        assert_eq!(items.len(), 2);
+
+        let item = &items[0];
+        match item {
+            RuleConfigItem::PAC { file } => {
+                assert_eq!(file, "http://example.com/pac.js");
+            }
+            _ => {
+                panic!("Invalid item: {:?}", item);
+            }
+        }
+
+        let item = &items[1];
+        match item {
+            RuleConfigItem::Include { file } => {
+                assert_eq!(file, "./default.json");
+            }
+            _ => {
+                panic!("Invalid item: {:?}", item);
+            }
         }
     }
 }
