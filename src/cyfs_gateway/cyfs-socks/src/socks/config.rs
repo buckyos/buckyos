@@ -1,6 +1,5 @@
 use crate::{
     error::{SocksError, SocksResult},
-    rule,
     rule::RuleEngine,
     RuleResult,
 };

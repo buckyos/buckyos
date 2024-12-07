@@ -202,7 +202,7 @@ pub fn gen_demo_gateway_json_config() -> String {
             "port":8000,
 
             "target":"ood02:6000",
-            "enable-tunnel":["direct", "rtcp"]
+            "enable-tunnel":["direct", "rtcp"],
 
             "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml"
         },

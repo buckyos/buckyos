@@ -1,6 +1,7 @@
 use super::config::{SocksProxyAuth, SocksProxyConfig};
 use super::util::Socks5Util;
 use crate::error::{SocksError, SocksResult};
+use crate::rule::{RuleAction, RuleInput, RuleSelector};
 use buckyos_kit::AsyncStream;
 use fast_socks5::{
     server::{Config, SimpleUserPassword, Socks5Socket},
@@ -12,7 +13,6 @@ use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
 };
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::{
     net::{TcpListener, TcpStream},
     task,
@@ -20,10 +20,14 @@ use tokio::{
 };
 use url::Url;
 
-
 #[async_trait::async_trait]
 pub trait SocksDataTunnelProvider: Send + Sync {
-    async fn build(&self, target: &TargetAddr, proxy_target: &Url, enable_tunnel: &Option<Vec<String>>) -> SocksResult<Box<dyn AsyncStream>>;
+    async fn build(
+        &self,
+        target: &TargetAddr,
+        proxy_target: &Url,
+        enable_tunnel: &Option<Vec<String>>,
+    ) -> SocksResult<Box<dyn AsyncStream>>;
 }
 
 pub type SocksDataTunnelProviderRef = Arc<Box<dyn SocksDataTunnelProvider>>;
@@ -171,7 +175,9 @@ impl Socks5Proxy {
 
                 let cmd = socket.cmd().as_ref().unwrap();
                 match cmd {
-                    Socks5Command::TCPConnect => self.process_socket(socket, target.clone()).await,
+                    Socks5Command::TCPConnect => {
+                        self.process_socket(socket, addr, target.clone()).await
+                    }
                     _ => {
                         let msg = format!("Unsupported socks5 command: {:?}", cmd);
                         error!("{}", msg);
@@ -191,22 +197,111 @@ impl Socks5Proxy {
         }
     }
 
-    async fn build_data_tunnel(
-        &self,
-        target: &TargetAddr,
-    ) -> SocksResult<Box<dyn AsyncStream>> {
+    async fn build_data_tunnel(&self, target: &TargetAddr) -> SocksResult<Box<dyn AsyncStream>> {
         info!("Will build tunnel to {}", target);
 
         if let Some(builder) = self.data_tunnel_provider.get() {
-            builder.build(target, &self.config.target, &self.config.enable_tunnel).await
+            builder
+                .build(target, &self.config.target, &self.config.enable_tunnel)
+                .await
         } else {
-            let msg = format!("Data tunnel provider not set for socks5 proxy: {}", self.config.id);
+            let msg = format!(
+                "Data tunnel provider not set for socks5 proxy: {}",
+                self.config.id
+            );
             error!("{}", msg);
             Err(SocksError::InvalidState(msg))
         }
     }
 
     async fn process_socket(
+        &self,
+        mut socket: fast_socks5::server::Socks5Socket<TcpStream, SimpleUserPassword>,
+        addr: SocketAddr,
+        target: TargetAddr,
+    ) -> SocksResult<()> {
+        // Select by rule engine
+        if let Some(ref rule_engine) = self.config.rule_engine {
+            let input = RuleInput::new_socks_request(&addr, &target);
+            match rule_engine.select(input).await {
+                Ok(action) => match action {
+                    RuleAction::Direct | RuleAction::Pass => {
+                        info!("Will process socks5 connection to {} directly", target);
+                        self.process_socket_direct(socket, target).await
+                    }
+                    RuleAction::Proxy(proxy_target) => {
+                        info!(
+                            "Will process socks5 connection to {} via proxy {}",
+                            target, proxy_target
+                        );
+                        self.process_socket_via_proxy(socket, target).await
+                    }
+                    RuleAction::Reject => {
+                        let msg = format!("Rule engine blocked connection to {}", target);
+                        error!("{}", msg);
+                        Socks5Util::reply_error(
+                            &mut socket,
+                            fast_socks5::ReplyError::HostUnreachable,
+                        )
+                        .await
+                    }
+                },
+                Err(e) => {
+                    let msg = format!("Error selecting rule: {}", e);
+                    error!("{}", msg);
+                    Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::GeneralFailure)
+                        .await
+                }
+            }
+        } else {
+            warn!(
+                "Rule engine is not set, now Will process socks5 connection to {} directly",
+                target
+            );
+            self.process_socket_direct(socket, target).await
+        }
+    }
+
+    async fn process_socket_direct(
+        &self,
+        mut socket: fast_socks5::server::Socks5Socket<TcpStream, SimpleUserPassword>,
+        target: TargetAddr,
+    ) -> SocksResult<()> {
+        // Connect to target directly
+        let mut stream = match &target {
+            TargetAddr::Ip(ip) => TcpStream::connect(ip).await.map_err(|e| {
+                let msg = format!("Error connecting to target with ip: {}, {}", ip, e);
+                error!("{}", msg);
+                SocksError::IoError(msg)
+            })?,
+            TargetAddr::Domain(domain, port) => {
+                // Resolve domain
+
+                let addr = format!("{}:{}", domain, port);
+                TcpStream::connect(&addr).await.map_err(|e| {
+                    let msg = format!("Error connecting to target with domain: {}, {}", addr, e);
+                    error!("{}", msg);
+                    SocksError::IoError(msg)
+                })?
+            }
+        };
+
+        let (read, write) = tokio::io::copy_bidirectional(&mut stream, &mut socket)
+            .await
+            .map_err(|e| {
+                let msg = format!("Error copying data on socks connection: {}, {}", target, e);
+                error!("{}", msg);
+                SocksError::IoError(msg)
+            })?;
+
+        info!(
+            "socks5 connection to {} closed, {} bytes read, {} bytes written",
+            target, read, write
+        );
+
+        Ok(())
+    }
+    async fn process_socket_via_proxy(
         &self,
         mut socket: fast_socks5::server::Socks5Socket<TcpStream, SimpleUserPassword>,
         target: TargetAddr,
