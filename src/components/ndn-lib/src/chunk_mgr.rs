@@ -8,7 +8,7 @@ use tokio::{
     io::{self, AsyncRead,AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeek, AsyncSeekExt}, 
 };
 use log::*;
-use crate::{ChunkStore,ChunkId,ChunkResult,ChunkReadSeek,ChunkError};
+use crate::{ChunkStore,ChunkId,NdnResult,ChunkReadSeek,NdnError};
 use memmap::Mmap;
 use std::{path::PathBuf, pin::Pin};
 use std::sync::Mutex;
@@ -25,10 +25,10 @@ pub struct ChunkMgrDB {
 }
 
 impl ChunkMgrDB {
-    pub fn new(db_path: String) -> ChunkResult<Self> {
+    pub fn new(db_path: String) -> NdnResult<Self> {
         let conn = Connection::open(&db_path).map_err(|e| {
             warn!("ChunkMgrDB: open db failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         // Create tables if they don't exist
@@ -42,7 +42,7 @@ impl ChunkMgrDB {
             [],
         ).map_err(|e| {
             warn!("ChunkMgrDB: create chunks table failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         conn.execute(
@@ -56,7 +56,7 @@ impl ChunkMgrDB {
             [],
         ).map_err(|e| {
             warn!("ChunkMgrDB: create paths table failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         Ok(Self {
@@ -65,41 +65,41 @@ impl ChunkMgrDB {
         })
     }
 
-    pub fn get_path_target_chunk(&self, path: &str)->ChunkResult<ChunkId> {
+    pub fn get_path_target_chunk(&self, path: &str)->NdnResult<ChunkId> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT chunk_id FROM paths WHERE path = ?1").map_err(|e| {
             warn!("ChunkMgrDB: prepare statement failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         let chunk_id: String = stmt.query_row([path], |row| row.get(0)).map_err(|e| {
             warn!("ChunkMgrDB: query path target chunk failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         ChunkId::new(&chunk_id).map_err(|e| {
             warn!("ChunkMgrDB: invalid chunk_id format! {}", e.to_string());
-            ChunkError::Internal(e.to_string())
+            NdnError::Internal(e.to_string())
         })
     }
 
-    pub fn update_chunk_access_time(&self, chunk_id: &ChunkId, access_time: u64) -> ChunkResult<()> {
+    pub fn update_chunk_access_time(&self, chunk_id: &ChunkId, access_time: u64) -> NdnResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE chunks SET access_time = ?1 WHERE chunk_id = ?2",
             [&access_time.to_string(), &chunk_id.to_string()],
         ).map_err(|e| {
             warn!("ChunkMgrDB: update chunk access time failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    pub fn create_path(&self, chunk_id: &ChunkId, path: String,app_id:&str,user_id:&str) -> ChunkResult<()> {
+    pub fn create_path(&self, chunk_id: &ChunkId, path: String,app_id:&str,user_id:&str) -> NdnResult<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| {
             warn!("ChunkMgrDB: create path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         // Insert or update the chunk entry
@@ -109,7 +109,7 @@ impl ChunkMgrDB {
             [&chunk_id.to_string()],
         ).map_err(|e| {
             warn!("ChunkMgrDB: create path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         // Insert the path and increment ref_count
@@ -118,7 +118,7 @@ impl ChunkMgrDB {
             [&path, &chunk_id.to_string(), app_id, user_id],
         ).map_err(|e| {
             warn!("ChunkMgrDB: create path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         tx.execute(
@@ -126,22 +126,22 @@ impl ChunkMgrDB {
             [&chunk_id.to_string()],
         ).map_err(|e| {
             warn!("ChunkMgrDB: create path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         tx.commit().map_err(|e| {
             warn!("ChunkMgrDB: create path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    pub fn set_path(&self, path: String,new_chunk_id:&ChunkId,app_id:&str,user_id:&str) -> ChunkResult<()> {
+    pub fn set_path(&self, path: String,new_chunk_id:&ChunkId,app_id:&str,user_id:&str) -> NdnResult<()> {
         //如果不存在路径则创建，否则更新已经存在的路径指向的chunk
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| {
             warn!("ChunkMgrDB: set path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         // Check if the path exists
@@ -159,7 +159,7 @@ impl ChunkMgrDB {
                     [&new_chunk_id.to_string(), app_id, user_id, &path],
                 ).map_err(|e| {
                     warn!("ChunkMgrDB: set path failed! {}", e.to_string());
-                    ChunkError::DbError(e.to_string())
+                    NdnError::DbError(e.to_string())
                 })?;
 
                 // Decrease ref_count of the old chunk
@@ -168,7 +168,7 @@ impl ChunkMgrDB {
                     [&chunk_id],
                 ).map_err(|e| {
                     warn!("ChunkMgrDB: set path failed! {}", e.to_string());
-                    ChunkError::DbError(e.to_string())
+                    NdnError::DbError(e.to_string())
                 })?;
 
                 // Remove the old chunk if ref_count becomes 0
@@ -177,7 +177,7 @@ impl ChunkMgrDB {
                     [&chunk_id],
                 ).map_err(|e| {
                     warn!("ChunkMgrDB: set path failed! {}", e.to_string());
-                    ChunkError::DbError(e.to_string())
+                    NdnError::DbError(e.to_string())
                 })?;
             },
             Err(_) => {
@@ -187,7 +187,7 @@ impl ChunkMgrDB {
                     [&path, &new_chunk_id.to_string(), app_id, user_id],
                 ).map_err(|e| {
                     warn!("ChunkMgrDB: set path failed! {}", e.to_string());
-                    ChunkError::DbError(e.to_string())
+                    NdnError::DbError(e.to_string())
                 })?;
             }
         }
@@ -199,7 +199,7 @@ impl ChunkMgrDB {
             [&new_chunk_id.to_string()],
         ).map_err(|e| {
             warn!("ChunkMgrDB: set path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         tx.execute(
@@ -207,21 +207,21 @@ impl ChunkMgrDB {
             [&new_chunk_id.to_string()],
         ).map_err(|e| {
             warn!("ChunkMgrDB: set path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         tx.commit().map_err(|e| {
             warn!("ChunkMgrDB: set path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    pub fn remove_path(&self, path: String) -> ChunkResult<()> {
+    pub fn remove_path(&self, path: String) -> NdnResult<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| {
             warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         // Get the chunk_id for this path
@@ -231,14 +231,14 @@ impl ChunkMgrDB {
             |row| row.get(0),
         ).map_err(|e| {
             warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         // Remove the path
         tx.execute("DELETE FROM paths WHERE path = ?1", [&path])
         .map_err(|e| {
             warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         // Decrease ref_count and remove chunk if ref_count becomes 0
@@ -247,7 +247,7 @@ impl ChunkMgrDB {
             [&chunk_id],
         ).map_err(|e| {
             warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         tx.execute(
@@ -255,21 +255,21 @@ impl ChunkMgrDB {
             [&chunk_id],
         ).map_err(|e| {
             warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         tx.commit().map_err(|e| {
             warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    pub fn remove_dir_path(&self, path: String) -> ChunkResult<()> {
+    pub fn remove_dir_path(&self, path: String) -> NdnResult<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| {
             warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         // Get all paths and their chunk_ids that start with the given directory path
@@ -277,7 +277,7 @@ impl ChunkMgrDB {
             "SELECT path, chunk_id FROM paths WHERE path LIKE ?1"
         ).map_err(|e| {
             warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         let rows = stmt.query_map(
@@ -285,7 +285,7 @@ impl ChunkMgrDB {
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).map_err(|e| {
             warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         let path_chunks: Vec<(String, String)> = rows.filter_map(Result::ok).collect();
@@ -296,7 +296,7 @@ impl ChunkMgrDB {
             tx.execute("DELETE FROM paths WHERE path = ?1", [&path])
             .map_err(|e| {
                 warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
-                ChunkError::DbError(e.to_string())
+                NdnError::DbError(e.to_string())
             })?;
 
             // Decrease ref_count and remove chunk if ref_count becomes 0
@@ -305,7 +305,7 @@ impl ChunkMgrDB {
                 [&chunk_id],
             ).map_err(|e| {
                 warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
-                ChunkError::DbError(e.to_string())
+                NdnError::DbError(e.to_string())
             })?;
 
             tx.execute(
@@ -313,14 +313,14 @@ impl ChunkMgrDB {
                 [&chunk_id],
             ).map_err(|e| {
                 warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
-                ChunkError::DbError(e.to_string())
+                NdnError::DbError(e.to_string())
             })?;
         }
 
         drop(stmt);
         tx.commit().map_err(|e| {
             warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         Ok(())
@@ -403,7 +403,7 @@ impl ChunkMgr {
         return Some(result_mgr);
     }
 
-    pub async fn from_config(mgr_id:Option<String>,root_path:PathBuf,config:ChunkMgrConfig)->ChunkResult<Self> {
+    pub async fn from_config(mgr_id:Option<String>,root_path:PathBuf,config:ChunkMgrConfig)->NdnResult<Self> {
         let db_path = root_path.join("chunk_mgr.db").to_str().unwrap().to_string();
         let db = ChunkMgrDB::new(db_path)?;
         let mut local_store_list = vec![];
@@ -436,11 +436,11 @@ impl ChunkMgr {
         None
     }
 
-    pub async fn get_chunk_reader_by_path(&self, path:String,user_id:&str,app_id:&str)->ChunkResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64,ChunkId)> {
+    pub async fn get_chunk_reader_by_path(&self, path:String,user_id:&str,app_id:&str)->NdnResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64,ChunkId)> {
         let chunk_id = self.db.get_path_target_chunk(&path);
         if chunk_id.is_err() {
             warn!("get_chunk_reader_by_path: no chunk_id for path:{}", path);
-            return Err(ChunkError::ChunkNotFound(path));
+            return Err(NdnError::NotFound(path));
         }
         let chunk_id = chunk_id.unwrap();
         let access_time = buckyos_get_unix_timestamp();
@@ -449,7 +449,7 @@ impl ChunkMgr {
         Ok((chunk_reader,chunk_size,chunk_id))
     }
 
-    pub async fn create_file(&self, path:String,chunk_id:&ChunkId,app_id:&str,user_id:&str)->ChunkResult<()> {
+    pub async fn create_file(&self, path:String,chunk_id:&ChunkId,app_id:&str,user_id:&str)->NdnResult<()> {
         self.db.create_path(chunk_id, path.clone(), app_id, user_id).map_err(|e| {
             warn!("create_file: create path failed! {}", e.to_string());
             e
@@ -458,7 +458,7 @@ impl ChunkMgr {
         Ok(())
     }
 
-    pub async fn set_file(&self, path:String,new_chunk_id:&ChunkId,app_id:&str,user_id:&str)->ChunkResult<()> {
+    pub async fn set_file(&self, path:String,new_chunk_id:&ChunkId,app_id:&str,user_id:&str)->NdnResult<()> {
         self.db.set_path(path.clone(), new_chunk_id, app_id, user_id).map_err(|e| {
             warn!("update_file: update path failed! {}", e.to_string());
             e
@@ -467,7 +467,7 @@ impl ChunkMgr {
         Ok(())
     }
 
-    pub async fn remove_file(&self, path:String)->ChunkResult<()> {
+    pub async fn remove_file(&self, path:String)->NdnResult<()> {
         self.db.remove_path(path.clone()).map_err(|e| {
             warn!("remove_file: remove path failed! {}", e.to_string());
             e
@@ -478,7 +478,7 @@ impl ChunkMgr {
         //TODO: 这里不立刻删除chunk,而是等统一的GC来删除
     }
 
-    pub async fn remove_dir(&self, path:String)->ChunkResult<()> {
+    pub async fn remove_dir(&self, path:String)->NdnResult<()> {
         self.db.remove_dir_path(path.clone()).map_err(|e| {
             warn!("remove_dir: remove dir path failed! {}", e.to_string());
             e
@@ -487,7 +487,7 @@ impl ChunkMgr {
         Ok(())
     }
 
-    pub async fn is_chunk_exist(&self, chunk_id:&ChunkId)->ChunkResult<bool> {
+    pub async fn is_chunk_exist(&self, chunk_id:&ChunkId)->NdnResult<bool> {
         for local_store in self.local_store_list.iter() {
             let (is_exist,chunk_size) = local_store.is_chunk_exist(chunk_id,None).await?;
             if is_exist {
@@ -498,7 +498,7 @@ impl ChunkMgr {
     }
 
     //得到已经存在chunk的reader
-    pub async fn get_chunk_reader(&self, chunk_id:&ChunkId,auto_cache:bool)->ChunkResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64)> {
+    pub async fn get_chunk_reader(&self, chunk_id:&ChunkId,auto_cache:bool)->NdnResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64)> {
         //at first ,do access control
         let mcache_file_path = self.get_cache_mmap_path(chunk_id);
         if mcache_file_path.is_some() {
@@ -532,11 +532,11 @@ impl ChunkMgr {
             }
         }
 
-        Err(ChunkError::ChunkNotFound(chunk_id.to_string()))
+        Err(NdnError::NotFound(chunk_id.to_string()))
     }
 
     pub async fn open_chunk_writer(&self, chunk_id:&ChunkId,chunk_size:u64,append:bool)
-        ->ChunkResult<Pin<Box<dyn AsyncWrite + Send + Sync + Unpin>>> 
+        ->NdnResult<Pin<Box<dyn AsyncWrite + Send + Sync + Unpin>>> 
     {
         let default_store = self.local_store_list.first().unwrap();
         if !append {
@@ -547,7 +547,7 @@ impl ChunkMgr {
         Ok(writer)
     }
 
-    pub async fn close_chunk_writer(&self, chunk_id:&ChunkId)->ChunkResult<()> {
+    pub async fn close_chunk_writer(&self, chunk_id:&ChunkId)->NdnResult<()> {
         let default_store = self.local_store_list.first().unwrap();
         default_store.close_chunk_writer(chunk_id).await
     }
@@ -563,7 +563,7 @@ mod tests {
     use std::io::SeekFrom;
 
     #[tokio::test]
-    async fn test_basic_chunk_operations() -> ChunkResult<()> {
+    async fn test_basic_chunk_operations() -> NdnResult<()> {
         // Create a temporary directory for testing
         let test_dir = tempdir().unwrap();
         let config = ChunkMgrConfig {
@@ -599,7 +599,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_chunk_with_path_operations() -> ChunkResult<()> {
+    async fn test_chunk_with_path_operations() -> NdnResult<()> {
         // Create a temporary directory for testing
         let test_dir = tempdir().unwrap();
         let config = ChunkMgrConfig {
@@ -663,7 +663,7 @@ mod tests {
 
     //test get_chunk_mgr_by_id，然后再创建并写入一个chunk，再读取
     #[tokio::test]
-    async fn test_get_chunk_mgr_by_id() -> ChunkResult<()> {
+    async fn test_get_chunk_mgr_by_id() -> NdnResult<()> {
         // Get ChunkMgr by id
         let chunk_mgr_id = None;
         let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(chunk_mgr_id).await;

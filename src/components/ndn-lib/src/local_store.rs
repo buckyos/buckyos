@@ -14,7 +14,8 @@ use rusqlite::types::{ToSql, FromSql, ValueRef};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::{ChunkError, ChunkId, ChunkResult, ChunkHasher};
+use name_lib::EncodedDocument;
+use crate::{ChunkHasher, ChunkId, LinkData, NdnError, NdnResult, ObjId, ObjectLink, ObjectState};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChunkState {
@@ -58,6 +59,8 @@ impl FromSql for ChunkState {
     }
 }
 
+
+
 pub struct ChunkItem {
     pub chunk_id: ChunkId,
     pub chunk_size: u64,
@@ -90,16 +93,16 @@ impl ChunkItem {
     }
 }
 
-struct ChunkDb {
+struct NamedObjectDb {
     db_path: String,
     conn: Mutex<Connection>,
 }
 
-impl ChunkDb {
-    fn new(db_path: String) -> ChunkResult<Self> {
+impl NamedObjectDb {
+    fn new(db_path: String) -> NdnResult<Self> {
         let conn = Connection::open(&db_path).map_err(|e| {
             warn!("ChunkDb: open db failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         // Create tables if they don't exist
@@ -118,7 +121,7 @@ impl ChunkDb {
             [],
         ).map_err(|e| {
             warn!("ChunkDb: create table failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         conn.execute(
@@ -130,7 +133,31 @@ impl ChunkDb {
             [],
         ).map_err(|e| {
             warn!("ChunkDb: create table failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
+        })?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS objects (
+                obj_id TEXT PRIMARY KEY,
+                obj_type TEXT NOT NULL,
+                obj_data TEXT NOT NULL,
+                create_time INTEGER NOT NULL,
+            )",
+            [],
+        ).map_err(|e| {
+            warn!("ChunkDb: create object table failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS object_links (
+                link_obj_id TEXT PRIMARY KEY,
+                obj_link TEXT NOT NULL,
+            )",
+            [],
+        ).map_err(|e| {
+            warn!("ChunkDb: create object links table failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
         })?;
 
         Ok(Self { 
@@ -140,7 +167,7 @@ impl ChunkDb {
     }
 
 
-    async fn append_chunk_data(&self, chunk_id: &ChunkId, size: u64,is_completed: bool)->ChunkResult<()> {
+    async fn append_chunk_data(&self, chunk_id: &ChunkId, size: u64,is_completed: bool)->NdnResult<()> {
         //更新chunk_items的已完成大小和状态
         let mut conn = self.conn.lock().await;
         if is_completed {
@@ -149,7 +176,7 @@ impl ChunkDb {
                 params![size, "completed", chunk_id.to_string()],
             ).map_err(|e| {
                 warn!("ChunkDb: append chunk data failed! {}", e.to_string());
-                ChunkError::DbError(e.to_string())
+                NdnError::DbError(e.to_string())
             })?;
         } else {
             conn.execute(
@@ -157,13 +184,13 @@ impl ChunkDb {
                 params![size, chunk_id.to_string()],
             ).map_err(|e| {
                 warn!("ChunkDb: append chunk data failed! {}", e.to_string());
-                ChunkError::DbError(e.to_string())
+                NdnError::DbError(e.to_string())
             })?;
         }
         Ok(())
     }
 
-    async fn set_chunk_item(&self, chunk_item: &ChunkItem) -> ChunkResult<()> {
+    async fn set_chunk_item(&self, chunk_item: &ChunkItem) -> NdnResult<()> {
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT OR REPLACE INTO chunk_items 
@@ -183,18 +210,18 @@ impl ChunkDb {
             ],
         ).map_err(|e| {
             warn!("ChunkDb: insert chunk failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    async fn get_chunk(&self, chunk_id: &ChunkId) -> ChunkResult<ChunkItem> {
+    async fn get_chunk(&self, chunk_id: &ChunkId) -> NdnResult<ChunkItem> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT * FROM chunk_items WHERE chunk_id = ?1"
         ).map_err(|e| {
             warn!("ChunkDb: query chunk failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         let chunk = stmt.query_row(params![chunk_id.to_string()], |row| {
@@ -211,17 +238,17 @@ impl ChunkDb {
             })
         }).map_err(|e| {
             warn!("ChunkDb: query chunk failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         Ok(chunk)
     }
 
-    async fn put_chunk_list(&self, chunk_list: Vec<ChunkItem>) -> ChunkResult<()> {
+    async fn put_chunk_list(&self, chunk_list: Vec<ChunkItem>) -> NdnResult<()> {
         let mut conn = self.conn.lock().await;
         let tx = conn.transaction().map_err(|e| {
             warn!("ChunkDb: transaction failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         for chunk in chunk_list {
@@ -243,23 +270,23 @@ impl ChunkDb {
                 ],
             ).map_err(|e| {
                 warn!("ChunkDb: insert chunk failed! {}", e.to_string());
-                ChunkError::DbError(e.to_string())
+                NdnError::DbError(e.to_string())
             })?;
         }
         
         tx.commit().map_err(|e| {
             warn!("ChunkDb: commit failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
 
         Ok(())
     }
 
-    async fn remove_chunk(&self, chunk_id: &ChunkId) -> ChunkResult<()> {
+    async fn remove_chunk(&self, chunk_id: &ChunkId) -> NdnResult<()> {
         let mut conn = self.conn.lock().await;
         let tx = conn.transaction().map_err(|e| {
             warn!("ChunkDb: transaction failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         // First remove any links pointing to this chunk
@@ -268,7 +295,7 @@ impl ChunkDb {
             params![chunk_id.to_string()],
         ).map_err(|e| {
             warn!("ChunkDb: delete link failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         // Then remove the chunk itself
@@ -277,21 +304,21 @@ impl ChunkDb {
             params![chunk_id.to_string()],
         ).map_err(|e| {
             warn!("ChunkDb: delete chunk failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         tx.commit().map_err(|e| {
             warn!("ChunkDb: commit failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    async fn remove_chunk_list(&self, chunk_list: Vec<ChunkId>) -> ChunkResult<()> {
+    async fn remove_chunk_list(&self, chunk_list: Vec<ChunkId>) -> NdnResult<()> {
         let mut conn = self.conn.lock().await;
         let tx = conn.transaction().map_err(|e| {
             warn!("ChunkDb: transaction failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         for chunk_id in chunk_list {
@@ -300,7 +327,7 @@ impl ChunkDb {
                 params![chunk_id.to_string()],
             ).map_err(|e| {
                 warn!("ChunkDb: delete link failed! {}", e.to_string());
-                ChunkError::DbError(e.to_string())
+                NdnError::DbError(e.to_string())
             })?;
             
             tx.execute(
@@ -308,18 +335,18 @@ impl ChunkDb {
                 params![chunk_id.to_string()],
             ).map_err(|e| {
                 warn!("ChunkDb: delete chunk failed! {}", e.to_string());
-                ChunkError::DbError(e.to_string())
+                NdnError::DbError(e.to_string())
             })?;
         }
         
         tx.commit().map_err(|e| {
             warn!("ChunkDb: commit failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    async fn link_chunk(&self, target_chunk_id: &ChunkId, new_chunk_id: &ChunkId) -> ChunkResult<()> {
+    async fn link_chunk(&self, target_chunk_id: &ChunkId, new_chunk_id: &ChunkId) -> NdnResult<()> {
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT OR REPLACE INTO chunk_links (link_chunk_id, target_chunk_id)
@@ -327,30 +354,30 @@ impl ChunkDb {
             params![new_chunk_id.to_string(), target_chunk_id.to_string()],
         ).map_err(|e| {
             warn!("ChunkDb: link chunk failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    async fn remove_link(&self, link_chunk_id: &ChunkId) -> ChunkResult<()> {
+    async fn remove_link(&self, link_chunk_id: &ChunkId) -> NdnResult<()> {
         let conn = self.conn.lock().await;
         conn.execute(
             "DELETE FROM chunk_links WHERE link_chunk_id = ?1",
             params![link_chunk_id.to_string()],
         ).map_err(|e| {
             warn!("ChunkDb: remove link failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    async fn get_link_target(&self, chunk_id: &ChunkId) -> ChunkResult<ChunkId> {
+    async fn get_link_target(&self, chunk_id: &ChunkId) -> NdnResult<ChunkId> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT target_chunk_id FROM chunk_links WHERE link_chunk_id = ?1"
         ).map_err(|e| {
             warn!("ChunkDb: query link failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         let target_id = stmt.query_row(
@@ -358,10 +385,117 @@ impl ChunkDb {
             |row| row.get::<_, String>(0)
         ).map_err(|e| {
             warn!("ChunkDb: query link failed! {}", e.to_string());
-            ChunkError::DbError(e.to_string())
+            NdnError::DbError(e.to_string())
         })?;
         
         Ok(ChunkId::new(&target_id).unwrap())
+    }
+
+    async fn set_object(&self, obj_id: &ObjId, obj_type:u8,obj_str: &str) -> NdnResult<()> {
+        let now_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT OR REPLACE INTO objects (obj_id, obj_type, obj_data, create_time, update_time)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                obj_id.to_string(),
+                obj_type,
+                obj_str,
+                now_time,
+                now_time
+            ],
+        ).map_err(|e| {
+            warn!("ChunkDb: insert object failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+        Ok(())
+    }
+
+    async fn get_object(&self, obj_id: &ObjId) -> NdnResult<(u8,String)> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT obj_type,obj_data FROM objects WHERE obj_id = ?1"
+        ).map_err(|e| {
+            warn!("ChunkDb: query object failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+        
+        let obj_data = stmt.query_row(
+            params![obj_id.to_string()],
+            |row| {
+                Ok((row.get::<_, u8>(0)?,row.get::<_, String>(1)?))
+            }
+        ).map_err(|e| {
+            warn!("ChunkDb: query object failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+        
+        Ok(obj_data)
+    }
+
+    async fn remove_object(&self, obj_id: &ObjId) -> NdnResult<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "DELETE FROM objects WHERE obj_id = ?1",
+            params![obj_id.to_string()],
+        ).map_err(|e| {
+            warn!("ChunkDb: remove object failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+
+        Ok(())
+    }
+
+    async fn set_object_link(&self, obj_id: &ObjId, obj_link: &ObjectLink) -> NdnResult<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT OR REPLACE INTO object_links (link_obj_id, obj_link)
+             VALUES (?1, ?2)",
+            params![
+                obj_id.to_string(),
+                obj_link.to_string()
+            ],
+        ).map_err(|e| {
+            warn!("ChunkDb: insert object link failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+        Ok(())
+    }
+
+    async fn get_object_link(&self, obj_id: &ObjId) -> NdnResult<String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT obj_link FROM objects WHERE obj_id = ?1"
+        ).map_err(|e| {
+            warn!("ChunkDb: query object link failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+
+        let obj_link = stmt.query_row(
+            params![obj_id.to_string()],
+            |row| row.get::<_, String>(0)
+        ).map_err(|e| {
+            warn!("ChunkDb: query object link failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+        Ok(obj_link)
+    }
+
+
+    async fn remove_object_link(&self, obj_id: &ObjId) -> NdnResult<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "DELETE FROM object_links WHERE link_obj_id = ?1",
+            params![obj_id.to_string()],
+        ).map_err(|e| {
+            warn!("ChunkDb: remove object link failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+        Ok(())
     }
 }
 
@@ -372,7 +506,7 @@ pub struct ChunkStore {
     pub store_desc: String,
     pub enable_symlink: bool,//是否启用符号链接，不同的文件系统对符号链接的支持不一样，默认不启用
     pub auto_add_to_db: bool,//是否自动将符合命名规范的chunkid添加到db中，默认不自动添加
-    chunk_db: ChunkDb,
+    chunk_db: NamedObjectDb,
     base_dir: String,
     read_only: bool,
 }
@@ -383,16 +517,9 @@ pub trait ChunkReadSeek: AsyncRead + AsyncSeek {}
 impl<T: AsyncRead + AsyncSeek> ChunkReadSeek for T {}
 
 impl ChunkStore {
-    pub async fn new(base_dir: String)->ChunkResult<Self> {
-        let chunk_db_path = format!("{}/.cstore/chunk.db",base_dir.clone());
-        //创建dir
-        fs::create_dir_all(format!("{}/.cstore",base_dir.clone())).await
-            .map_err(|e| {
-                warn!("ChunkStore: create dir failed! {}",e.to_string());
-                ChunkError::IoError(e.to_string())
-            })?;
-
-        let chunk_db = ChunkDb::new(chunk_db_path)?;
+    pub async fn new(base_dir: String)->NdnResult<Self> {
+        let chunk_db_path = format!("{}/objstroe.db",base_dir.clone());
+        let chunk_db = NamedObjectDb::new(chunk_db_path)?;
         Ok(Self {
             store_id: "".to_string(),
             store_desc: "".to_string(),
@@ -418,7 +545,71 @@ impl ChunkStore {
             chunk_id.hash_type)
     }
 
-    async fn is_real_chunk_exist(&self, chunk_id: &ChunkId)->ChunkResult<(bool,u64)> {
+    pub async fn is_object_exist(&self, obj_id: &ObjId) -> NdnResult<bool> {
+        let obj_state = self.query_object_by_id(obj_id).await?;
+        match obj_state {
+            ObjectState::Exist => Ok(true),
+            ObjectState::Link(_) => Ok(true),
+            ObjectState::Object(_) => Ok(true),
+            ObjectState::Reader(_,_) => Ok(true),
+            _ => Ok(false)
+        }
+    }
+
+    pub async fn query_object_by_id(&self, obj_id: &ObjId) -> NdnResult<ObjectState> {
+        let real_obj_result = self.chunk_db.get_object(obj_id).await;
+        if real_obj_result.is_ok() {
+            let (obj_type,obj_str) = real_obj_result.unwrap();
+            return Ok(ObjectState::Object(obj_str));
+        }
+
+        let link_obj_result = self.chunk_db.get_object_link(obj_id).await;
+        if link_obj_result.is_ok() {
+            let link_obj = link_obj_result.unwrap();
+            let obj_link = LinkData::from_string(&link_obj)?;
+            return Ok(ObjectState::Link(obj_link));
+        }
+
+        return Ok(ObjectState::NotExist);
+    }
+
+    pub async fn get_object(&self, obj_id: &ObjId) -> NdnResult<EncodedDocument> {
+        let obj_state = self.query_object_by_id(obj_id).await?;
+        match obj_state {
+            ObjectState::Object(obj_str) => {
+                let doc = EncodedDocument::from_str(obj_str)
+                    .map_err(|e| {
+                        warn!("get_object: decode object failed! {}", e.to_string());
+                        NdnError::DecodeError(e.to_string())
+                    })?;
+                Ok(doc)
+            },
+            ObjectState::Link(obj_link) => {
+                match obj_link {
+                    LinkData::SameAs(link_obj_id) => Box::pin(self.get_object(&link_obj_id)).await,
+                    _ => Err(NdnError::InvalidLink(format!("object link not supported! {}",obj_id.to_string())))
+                }
+            }
+            _ => Err(NdnError::NotFound(format!("object not found! {}",obj_id.to_string())))
+        }
+    }
+
+    pub async fn put_object(&self, obj_id: &ObjId, obj_str: &str, need_verify: bool) -> NdnResult<()> {
+        if need_verify {
+            // Add verification logic here if needed
+            let build_obj_id = crate::build_obj_id("sha256",obj_str);
+            if obj_id.obj_id != build_obj_id.obj_id {
+                return Err(NdnError::InvalidId(format!("object id not match! {}",obj_id.to_string())));
+            }
+        }
+        self.chunk_db.set_object(obj_id,obj_id.get_known_obj_type(),obj_str).await
+    }
+
+    pub async fn link_object(&self, obj_id: &ObjId, link: ObjectLink) -> NdnResult<()> {
+        self.chunk_db.set_object_link(obj_id, &link).await
+    }
+
+    async fn is_real_chunk_exist(&self, chunk_id: &ChunkId)->NdnResult<(bool,u64)> {
         let chunk_item = self.chunk_db.get_chunk(chunk_id).await;
         if chunk_item.is_ok() {
             let chunk_item = chunk_item.unwrap();
@@ -431,7 +622,7 @@ impl ChunkStore {
 
     //只有chunk完整准备好了，才是存在。写入到一半的chunk不会算存在。
     //通过get_chunk_state可以得到更准确的chunk状态
-    pub async fn is_chunk_exist(&self, chunk_id: &ChunkId,is_auto_add: Option<bool>)->ChunkResult<(bool,u64)> {
+    pub async fn is_chunk_exist(&self, chunk_id: &ChunkId,is_auto_add: Option<bool>)->NdnResult<(bool,u64)> {
         let chunk_item = self.chunk_db.get_chunk(chunk_id).await;
         if chunk_item.is_ok() {
             let chunk_item = chunk_item.unwrap();
@@ -456,7 +647,7 @@ impl ChunkStore {
                 let mut reader = File::open(&chunk_path).await
                 .map_err(|e| {
                     warn!("is_chunk_exist: open file failed! {}", e.to_string());
-                    ChunkError::IoError(e.to_string())
+                    NdnError::IoError(e.to_string())
                 })?;
 
                 let mut chunk_hasher = ChunkHasher::new(None)?;
@@ -475,35 +666,35 @@ impl ChunkStore {
         Ok((false,0))
     }
 
-    pub async fn get_chunk_state(&self, chunk_id: &ChunkId) -> ChunkResult<ChunkState> {
+    pub async fn get_chunk_state(&self, chunk_id: &ChunkId) -> NdnResult<ChunkState> {
         unimplemented!()
     }
 
     //查询多个chunk的状态
-    pub async fn query_chunk_state_by_list(&self, chunk_list: &mut Vec<ChunkItem>)->ChunkResult<()> {
+    pub async fn query_chunk_state_by_list(&self, chunk_list: &mut Vec<ChunkItem>)->NdnResult<()> {
         unimplemented!()
         
     }
 
     //针对小于1MB的 chunk,推荐直接返回内存
-    pub async fn get_chunk_data(&self, chunk_id: &ChunkId)->ChunkResult<Vec<u8>> {
+    pub async fn get_chunk_data(&self, chunk_id: &ChunkId)->NdnResult<Vec<u8>> {
         let chunk_item = self.chunk_db.get_chunk(chunk_id).await;
         if chunk_item.is_err() {
-            return Err(ChunkError::ChunkNotFound(format!("chunk not found! {}",chunk_id.to_string())));
+            return Err(NdnError::NotFound(format!("chunk not found! {}",chunk_id.to_string())));
         }
         let chunk_item = chunk_item.unwrap();
         if chunk_item.chunk_state != ChunkState::Completed {
-            return Err(ChunkError::InComplete(format!("chunk not completed! {}",chunk_id.to_string())));
+            return Err(NdnError::InComplete(format!("chunk not completed! {}",chunk_id.to_string())));
         }
         
         let chunk_path = self.get_chunk_path(&chunk_id);
         let file_meta = fs::metadata(&chunk_path).await.map_err(|e| {
             warn!("get_chunk_data: get metadata failed! {}", e.to_string());
-            ChunkError::IoError(e.to_string())
+            NdnError::IoError(e.to_string())
         })?;
 
         if file_meta.len() != chunk_item.chunk_size {
-            return Err(ChunkError::InComplete(format!("chunk size not match! {}",chunk_id.to_string())));
+            return Err(NdnError::InComplete(format!("chunk size not match! {}",chunk_id.to_string())));
         }
 
         if file_meta.len() > 1024 * 1024 {
@@ -512,39 +703,39 @@ impl ChunkStore {
 
         let mut file = File::open(&chunk_path).await.map_err(|e| {
             warn!("get_chunk_data: open file failed! {}", e.to_string());
-            ChunkError::IoError(e.to_string())
+            NdnError::IoError(e.to_string())
         })?;
 
         let mut buffer = Vec::with_capacity(file_meta.len() as usize);
         tokio::io::copy(&mut file, &mut buffer).await.map_err(|e| {
             warn!("get_chunk_data: read file failed! {}", e.to_string());
-            ChunkError::IoError(e.to_string())
+            NdnError::IoError(e.to_string())
         })?;
 
         Ok(buffer)
     }
 
-    pub async fn get_chunk_piece(&self, chunk_id: &ChunkId, offset:SeekFrom, piece_size: u32)->ChunkResult<Vec<u8>> {
+    pub async fn get_chunk_piece(&self, chunk_id: &ChunkId, offset:SeekFrom, piece_size: u32)->NdnResult<Vec<u8>> {
         let (mut reader,chunk_size) = self.get_chunk_reader(chunk_id).await?;
         reader.seek(offset).await.map_err(|e| {
             warn!("get_chunk_piece: seek file failed! {}", e.to_string());
-            ChunkError::IoError(e.to_string())
+            NdnError::IoError(e.to_string())
         })?;
         let mut buffer = vec![0u8; piece_size as usize];
         reader.read_exact(&mut buffer).await.map_err(|e| {
             warn!("get_chunk_piece: read file failed! {}", e.to_string());
-            ChunkError::IoError(e.to_string())
+            NdnError::IoError(e.to_string())
        })?;
        Ok(buffer)   
     }
 
-    pub async fn get_chunk_reader(&self, chunk_id: &ChunkId) -> ChunkResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64)> {
+    pub async fn get_chunk_reader(&self, chunk_id: &ChunkId) -> NdnResult<(Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>,u64)> {
         let chunk_item = self.chunk_db.get_chunk(chunk_id).await;
         let mut chunk_size = 0;
         if chunk_item.is_ok() {
             let chunk_item = chunk_item.unwrap();
             if chunk_item.chunk_state != ChunkState::Completed {
-                return Err(ChunkError::InComplete(format!("chunk not completed! {}",chunk_id.to_string())));
+                return Err(NdnError::InComplete(format!("chunk not completed! {}",chunk_id.to_string())));
             }
             chunk_size = chunk_item.chunk_size;
         }
@@ -552,7 +743,7 @@ impl ChunkStore {
         let chunk_path = self.get_chunk_path(&chunk_id);
         let file = File::open(&chunk_path).await.map_err(|e| {
             warn!("get_chunk_reader: open file failed! {}", e.to_string());
-            ChunkError::IoError(e.to_string())
+            NdnError::IoError(e.to_string())
         })?;
         if chunk_size == 0 {
             chunk_size = file.metadata().await.unwrap().len();
@@ -561,14 +752,14 @@ impl ChunkStore {
     }
 
     //一口气写入一组chunk(通常是小chunk)
-    pub async fn put_chunklist(&self, chunk_list: HashMap<ChunkId, Vec<u8>>,need_verify: bool)->ChunkResult<()> {
+    pub async fn put_chunklist(&self, chunk_list: HashMap<ChunkId, Vec<u8>>,need_verify: bool)->NdnResult<()> {
         for (chunk_id, data) in chunk_list {
             self.put_chunk(&chunk_id, &data,need_verify).await?;
         }
         Ok(())
     }
     //写入一个在内存中的完整的chunk
-    pub async fn put_chunk(&self, chunk_id: &ChunkId, chunk_data: &[u8],need_verify: bool)->ChunkResult<()> {
+    pub async fn put_chunk(&self, chunk_id: &ChunkId, chunk_data: &[u8],need_verify: bool)->NdnResult<()> {
         let chunk_path = self.get_chunk_path(&chunk_id);
         
         if need_verify {
@@ -576,7 +767,7 @@ impl ChunkStore {
             let hash_bytes = chunk_hasher.calc_from_bytes(&chunk_data);
             if !chunk_id.is_equal(&hash_bytes) {
                 warn!("put_chunk: chunk_id not equal hash_bytes! {}",chunk_id.to_string());
-                return Err(ChunkError::InvalidId(format!("chunk_id not equal hash_bytes! {}",chunk_id.to_string())));
+                return Err(NdnError::InvalidId(format!("chunk_id not equal hash_bytes! {}",chunk_id.to_string())));
             }
         }
 
@@ -585,7 +776,7 @@ impl ChunkStore {
             fs::create_dir_all(parent).await
                 .map_err(|e| {
                     warn!("put_chunk: create dir failed! {}",e.to_string());
-                    ChunkError::IoError(e.to_string())
+                    NdnError::IoError(e.to_string())
                 })?;
         }
 
@@ -597,13 +788,13 @@ impl ChunkStore {
             .await
             .map_err(|e| {
                 warn!("put_chunk: {} create file failed! {}", chunk_path, e.to_string());
-                ChunkError::IoError(e.to_string())
+                NdnError::IoError(e.to_string())
             })?;
 
         tokio::io::copy(&mut chunk_data.as_ref(), &mut file).await
             .map_err(|e| {
                 warn!("put_chunk: {} write file failed! {}", chunk_path, e.to_string());
-                ChunkError::IoError(e.to_string())
+                NdnError::IoError(e.to_string())
             })?;
 
         // Create and store chunk metadata
@@ -614,7 +805,7 @@ impl ChunkStore {
     }
 
     //使用reader写入一个完整的chunk
-    pub async fn put_by_reader<T>(&self, chunk_id: &ChunkId, mut chunk_reader: T,need_verify: bool)->ChunkResult<()>
+    pub async fn put_by_reader<T>(&self, chunk_id: &ChunkId, mut chunk_reader: T,need_verify: bool)->NdnResult<()>
         where T: AsyncRead + Unpin + Send + Sync + 'static
     {
         let chunk_path = self.get_chunk_path(&chunk_id);
@@ -623,7 +814,7 @@ impl ChunkStore {
         if let Some(parent) = std::path::Path::new(&chunk_path).parent() {
             fs::create_dir_all(parent).await.map_err(|e| {
                 warn!("put_by_reader: create dir failed! {}",e.to_string());
-                ChunkError::IoError(e.to_string())
+                NdnError::IoError(e.to_string())
             })?;
         }
 
@@ -635,12 +826,12 @@ impl ChunkStore {
             .await
             .map_err(|e| {
                 warn!("put_by_reader: create file failed! {}", e.to_string());
-                ChunkError::IoError(e.to_string())
+                NdnError::IoError(e.to_string())
             })?;
         let bytes_written = tokio::io::copy(&mut chunk_reader, &mut file).await
             .map_err(|e| {
                 warn!("put_by_reader: write file failed! {}",e.to_string());
-                ChunkError::IoError(e.to_string())
+                NdnError::IoError(e.to_string())
             })?;
 
         // Create and store chunk metadata
@@ -651,7 +842,7 @@ impl ChunkStore {
     }
 
     //得到一个新chunk的writer,此时chunk_id在系统中不存在才算成功
-    pub async fn new_chunk_for_write(&self, chunk_id: &ChunkId, chunk_size: u64)->ChunkResult<()> {
+    pub async fn new_chunk_for_write(&self, chunk_id: &ChunkId, chunk_size: u64)->NdnResult<()> {
         let mut chunk_item = ChunkItem::new(&chunk_id, chunk_size, None, None, None);
         chunk_item.chunk_state = ChunkState::New;
         self.chunk_db.set_chunk_item(&chunk_item).await?;
@@ -660,14 +851,14 @@ impl ChunkStore {
         if let Some(parent) = std::path::Path::new(&chunk_path).parent() {
             fs::create_dir_all(parent).await.map_err(|e| {
                 warn!("new_chunk_for_write: create dir failed! {}",e.to_string());
-                ChunkError::IoError(e.to_string())
+                NdnError::IoError(e.to_string())
             })?;
         }
         Ok(())
     }
 
     //Maybe it is more appropriate to return the file directly
-    pub async fn open_chunk_writer(&self, chunk_id: &ChunkId)->ChunkResult<Pin<Box<dyn AsyncWrite + Send + Sync + Unpin>>> 
+    pub async fn open_chunk_writer(&self, chunk_id: &ChunkId)->NdnResult<Pin<Box<dyn AsyncWrite + Send + Sync + Unpin>>> 
     {
         //TODO: Do we have to limit the same chunk_id can only have one writer?
         let chunk_path = self.get_chunk_path(&chunk_id);
@@ -679,7 +870,7 @@ impl ChunkStore {
             .await
             .map_err(|e| {
                 warn!("open_chunk_writer: create file failed! {}",e.to_string());
-                ChunkError::IoError(e.to_string())
+                NdnError::IoError(e.to_string())
             })?;
 
 
@@ -687,10 +878,10 @@ impl ChunkStore {
     }
 
     //writer已经写入完成，此时可以进行一次可选的hash校验
-    pub async fn close_chunk_writer(&self, chunk_id: &ChunkId)->ChunkResult<()> {
+    pub async fn close_chunk_writer(&self, chunk_id: &ChunkId)->NdnResult<()> {
         let mut chunk_item = self.chunk_db.get_chunk(chunk_id).await;
         if chunk_item.is_err() {
-            return Err(ChunkError::ChunkNotFound(format!("chunk not found! {}",chunk_id.to_string())));
+            return Err(NdnError::NotFound(format!("chunk not found! {}",chunk_id.to_string())));
         }
         let mut chunk_item = chunk_item.unwrap();
         chunk_item.chunk_state = ChunkState::Completed;
@@ -699,14 +890,14 @@ impl ChunkStore {
     }
 
     //从简单可靠的角度考虑，修改成只允许append数据，复杂写入用open_writer
-    pub async fn append_chunk_data(&self, chunk_id: &ChunkId, offset_from_begin: u64, chunk_data: &[u8], is_completed: bool,chunk_size:Option<u64>) -> ChunkResult<()> {
+    pub async fn append_chunk_data(&self, chunk_id: &ChunkId, offset_from_begin: u64, chunk_data: &[u8], is_completed: bool,chunk_size:Option<u64>) -> NdnResult<()> {
         let chunk_path = self.get_chunk_path(&chunk_id);
         if offset_from_begin == 0 {
             let chunk_size = chunk_size.unwrap_or(chunk_data.len() as u64);
             if let Some(parent) = std::path::Path::new(&chunk_path).parent() {
                 fs::create_dir_all(parent).await.map_err(|e| {
                     warn!("append_chunk_data: at 0 offsetcreate dir failed! {}",e.to_string());
-                    ChunkError::IoError(e.to_string())
+                    NdnError::IoError(e.to_string())
                 })?;
 
                 let mut chunk_item = ChunkItem::new(&chunk_id, chunk_size, None, None, None);
@@ -724,18 +915,18 @@ impl ChunkStore {
             .await
             .map_err(|e| {
                 warn!("append_chunk_data: create file failed! {}", e.to_string());
-                ChunkError::IoError(e.to_string())
+                NdnError::IoError(e.to_string())
             })?;
 
         // Get current file size
         let metadata = file.metadata().await.map_err(|e| {
             warn!("append_chunk_data: get metadata failed! {}", e.to_string());
-            ChunkError::IoError(e.to_string())
+            NdnError::IoError(e.to_string())
         })?;
         
         // Check if offset is valid
         if offset_from_begin > metadata.len() {
-            return Err(ChunkError::IoError(format!(
+            return Err(NdnError::IoError(format!(
                 "Invalid offset: {} exceeds file size: {}", 
                 offset_from_begin, 
                 metadata.len()
@@ -748,14 +939,14 @@ impl ChunkStore {
         file.seek(SeekFrom::Start(offset_from_begin)).await
             .map_err(|e| {
                 warn!("append_chunk_data: seek file failed! {}",e.to_string());
-                ChunkError::IoError(e.to_string())
+                NdnError::IoError(e.to_string())
             })?;
 
         // Write data
         tokio::io::copy(&mut chunk_data.as_ref(), &mut file).await
             .map_err(|e| {
                 warn!("append_chunk_data: write file failed! {}",e.to_string());
-                ChunkError::IoError(e.to_string())
+                NdnError::IoError(e.to_string())
             })?;
 
         self.chunk_db.append_chunk_data(&chunk_id, chunk_data.len() as u64, is_completed).await?;
@@ -765,7 +956,7 @@ impl ChunkStore {
 
         
     //path操作的核心是写入iff文件，并说明  chunkid2 = chunkid1 + diff_id, 该操作要成功的前提是local store中存在chunkid1
-    //操作成功后，查询chunkid1和chunkid2和diff_id的chunk状态，应该都是exist
+    //操作成后，查询chunkid1和chunkid2和diff_id的chunk状态，应该都是exist
     //该函数是否应该上移到chunk_mgr中？
     // pub async fn patch<T>(&self, chunk_id: &str, chunk_reader:  T)->ChunkResult<()>
     //     where T: AsyncRead + Unpin + Send + Sync + 'static
@@ -774,7 +965,7 @@ impl ChunkStore {
     // }
 
     //删除chunkid对应的文件,注意一定会带来文件的删除
-    async fn remove(&self, chunk_list: Vec<ChunkId>)->ChunkResult<()> {
+    async fn remove(&self, chunk_list: Vec<ChunkId>)->NdnResult<()> {
         for chunk_id in chunk_list {
             // Remove the physical file
             let chunk_path = self.get_chunk_path(&chunk_id);
@@ -788,12 +979,12 @@ impl ChunkStore {
         Ok(())
     }
     //说明两个chunk id是同一个chunk.实现者可以自己决定是否校验
-    //link成功后，查询target_chunk_id和new_chunk_id的状态，应该都是exist
-    pub async fn link_chunkid(&self, target_chunk_id: &ChunkId, new_chunk_id: &ChunkId)->ChunkResult<()> {
+    //link成功后，查询target_chunk_id和new_chunk_id的状态应该都是exist
+    pub async fn link_chunkid(&self, target_chunk_id: &ChunkId, new_chunk_id: &ChunkId)->NdnResult<()> {
         // Verify target chunk exists
         let (is_exist,target_size) = self.is_real_chunk_exist(&target_chunk_id).await?;
         if !is_exist {
-            return Err(ChunkError::ChunkNotFound(format!("target_chunk_id not exist! {}",target_chunk_id.to_string())));
+            return Err(NdnError::NotFound(format!("target_chunk_id not exist! {}",target_chunk_id.to_string())));
         }
 
         // Create the link in database
@@ -807,7 +998,7 @@ impl ChunkStore {
             if let Some(parent) = std::path::Path::new(&new_path).parent() {
                 fs::create_dir_all(parent).await.map_err(|e| {
                     warn!("link_chunkid: create dir failed! {}",e.to_string());
-                    ChunkError::IoError(e.to_string())
+                    NdnError::IoError(e.to_string())
                 })?;
             }
             
@@ -815,20 +1006,20 @@ impl ChunkStore {
             std::os::unix::fs::symlink(&target_path, &new_path)
                 .map_err(|e| {
                     warn!("link_chunkid: create symlink failed! {}",e.to_string());
-                    ChunkError::IoError(e.to_string())
+                    NdnError::IoError(e.to_string())
                 })?;
             #[cfg(windows)] 
             std::os::windows::fs::symlink_file(&target_path, &new_path)
                 .map_err(|e| {
                     warn!("link_chunkid: create symlink failed! {}",e.to_string());
-                    ChunkError::IoError(e.to_string())
+                    NdnError::IoError(e.to_string())
                 })?;
         }
 
         Ok(())
     }
 
-    pub async fn remove_chunk_link(&self, chunk_id: &ChunkId)->ChunkResult<()> {
+    pub async fn remove_chunk_link(&self, chunk_id: &ChunkId)->NdnResult<()> {
         // Remove symlink if it exists
         if self.enable_symlink {
             let chunk_path = self.get_chunk_path(&chunk_id);
@@ -851,7 +1042,7 @@ mod tests {
     
     // Helper function to create a test ChunkStore
 
-    async fn create_test_store() -> ChunkResult<ChunkStore> {
+    async fn create_test_store() -> NdnResult<ChunkStore> {
         init_logging("ndn-lib test");
         let temp_dir = tempdir().unwrap();
         let result_store = ChunkStore::new(temp_dir.path().to_str().unwrap().to_string()).await;
@@ -865,7 +1056,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_put_and_get_chunk() -> ChunkResult<()> {
+    async fn test_put_and_get_chunk() -> NdnResult<()> {
         let store = create_test_store().await?;
         let data = b"test data".to_vec();
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();
@@ -888,7 +1079,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_append_chunk_data() -> ChunkResult<()> {
+    async fn test_append_chunk_data() -> NdnResult<()> {
         let store = create_test_store().await?;
         let chunk_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
         let data1 = b"first part".to_vec();
@@ -915,7 +1106,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_chunk_linking() -> ChunkResult<()> {
+    async fn test_chunk_linking() -> NdnResult<()> {
         let store = create_test_store().await?;
         let original_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
         let linked_id = ChunkId::new("qcid:2223232323232323").unwrap();
@@ -939,7 +1130,7 @@ mod tests {
 
     //测试 open_chunk_writer
     #[tokio::test]
-    async fn test_open_chunk_writer() -> ChunkResult<()> {
+    async fn test_open_chunk_writer() -> NdnResult<()> {
         let store = create_test_store().await?;
         let chunk_id = ChunkId::new("sha256:abcdef1234567890").unwrap();
         let data = b"chunk writer test data".to_vec();
@@ -951,11 +1142,11 @@ mod tests {
         // Write data to chunk
         writer.write_all(&data).await.map_err(|e| {
             warn!("test_open_chunk_writer: write data failed! {}", e.to_string());
-            ChunkError::IoError(e.to_string())
+            NdnError::IoError(e.to_string())
         })?;
         writer.flush().await.map_err(|e| {
             warn!("test_open_chunk_writer: flush data failed! {}", e.to_string());
-            ChunkError::IoError(e.to_string())
+            NdnError::IoError(e.to_string())
         })?;
         info!("test_open_chunk_writer: write data ok!");
         drop(writer);
@@ -969,6 +1160,33 @@ mod tests {
         let mut buffer = vec![0u8; data.len()];
         reader.read_exact(&mut buffer).await.unwrap();
         assert_eq!(buffer, data);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_object_operations() -> NdnResult<()> {
+        let store = create_test_store().await?;
+        let obj_id = ObjId::new("test:object1").unwrap();
+        let obj_str = r#"{"name": "test object", "data": "test data"}"#;
+
+        // Test putting object
+        store.put_object(&obj_id, obj_str, false).await?;
+
+        // Verify object exists
+        assert!(store.is_object_exist(&obj_id).await?);
+
+        // Test getting object
+        let retrieved_obj = store.get_object(&obj_id).await?;
+        assert_eq!(retrieved_obj.to_string(), obj_str);
+
+        // Test object linking
+        let linked_id = ObjId::new("test:linked_object").unwrap();
+        let link = ObjectLink { link_obj_id: linked_id.clone() };
+        store.link_object(&obj_id, link).await?;
+
+        // Verify linked object exists
+        assert!(store.is_object_exist(&linked_id).await?);
 
         Ok(())
     }

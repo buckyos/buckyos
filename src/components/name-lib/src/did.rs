@@ -4,7 +4,7 @@ use jsonwebtoken::{jwk::Jwk, DecodingKey, EncodingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use async_trait::async_trait;
-use crate::NSResult;
+use crate::{NSError, NSResult};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct DID {
@@ -81,6 +81,15 @@ impl EncodedDocument {
             EncodedDocument::Jwt(jwt) => jwt.clone(),
             EncodedDocument::JsonLd(value) => serde_json::to_string(value).unwrap(),
         }
+    }
+
+    pub fn from_str(doc_str: String) -> NSResult<Self> {
+        if doc_str.starts_with("{") {
+            let real_value = serde_json::from_str(&doc_str)
+                .map_err(|e| NSError::DecodeJWTError(e.to_string()))?;
+            return Ok(EncodedDocument::JsonLd(real_value));
+        }
+        return Ok(EncodedDocument::Jwt(doc_str));
     }
 }
 
