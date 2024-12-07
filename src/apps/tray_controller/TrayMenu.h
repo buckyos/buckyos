@@ -18,6 +18,7 @@ class TrayMenu
 {
 public:
 	TrayMenu(HWND hwnd, UINT_PTR menu_id_homepage, UINT_PTR menu_id_start, UINT_PTR menu_id_about, UINT_PTR menu_id_exit, UINT_PTR app_menu_id_begin);
+	~TrayMenu();
 
 	void popup(POINT &display_pos, bool is_buckyos_running);
 

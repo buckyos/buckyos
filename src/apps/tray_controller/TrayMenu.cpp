@@ -17,6 +17,12 @@ TrayMenu::TrayMenu(HWND hwnd, UINT_PTR menu_id_homepage, UINT_PTR menu_id_start,
 	this->m_menu_proc_map[menu_id_exit] = proc_exit;
 }
 
+TrayMenu::~TrayMenu() {
+	if (this->m_timerId != 0) {
+		KillTimer(this->m_hwnd, this->m_timerId);
+	}
+}
+
 void TrayMenu::popup(POINT& display_pos, bool is_buckyos_running) {
 	this->m_seq++;
 	this->m_is_popup = false;

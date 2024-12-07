@@ -128,9 +128,11 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="SystemState.cpp" />
     <ClCompile Include="TrayMenu.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="SystemState.h" />
     <ClInclude Include="TrayMenu.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
