@@ -96,7 +96,7 @@ Functions marked with `*` are those I believe must be completed in Alpha2. Funct
     - [ ] cyfs-gateway support ndn-route(A1,@waterflier)
     - [ ] ndn-client(A1,@waterflier)
 - Kernel Services
-  - [ ] *Task Manager (A4), providing a general stateful background task management service, supporting reliable execution of critical tasks
+  - [ ] *Task Manager (A4,@alexsunxl), providing a general stateful background task management service, supporting reliable execution of critical tasks
   - DFS (wugren & photosssa)
     - [ ] Select the underlying solution and conduct research on key needs(A2,@wugren,@photosssa)
     - [ ] DFS (A1) integrated with rbac
