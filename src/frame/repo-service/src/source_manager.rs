@@ -2,6 +2,7 @@ use crate::def::*;
 use crate::downloader::*;
 use crate::error::*;
 use crate::source_node::*;
+use crate::task_manager::REPO_TASK_MANAGER;
 use crate::verifier::*;
 use async_recursion::async_recursion;
 use buckyos_kit::get_buckyos_service_data_dir;
@@ -9,6 +10,7 @@ use kv::source;
 use log::warn;
 use log::*;
 use ndn_lib::ChunkId;
+use package_lib::PackageId;
 use rusqlite::{params, Connection};
 use serde::ser;
 use sqlx::{Executor, Pool, Sqlite, SqlitePool};
@@ -17,6 +19,7 @@ use std::fmt::format;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::task;
 
 #[derive(Debug, Clone)]
 pub struct SourceManager {
@@ -268,5 +271,72 @@ impl SourceManager {
                 .await?;
         }
         Ok(())
+    }
+
+    pub async fn install_pkg(&self, package_id: PackageId) -> RepoResult<String> {
+        let task_id = REPO_TASK_MANAGER.start_install_task(package_id.clone())?;
+        let task_id_tmp = task_id.clone();
+        let self_clone = self.clone();
+        task::spawn(async move {
+            if let Err(e) = self_clone.do_install(package_id, &task_id_tmp).await {
+                error!("do_install failed: {:?}", e);
+                REPO_TASK_MANAGER
+                    .set_task_status(&task_id_tmp, TaskStatus::Error, &e.to_string())
+                    .unwrap();
+            }
+        });
+        Ok(task_id)
+    }
+
+    pub async fn do_install(&self, package_id: PackageId, task_id: &str) -> RepoResult<()> {
+        REPO_TASK_MANAGER.set_task_status(
+            task_id,
+            TaskStatus::Running,
+            "Resolving dependencies",
+        )?;
+        let version_desc = if let Some(version) = &package_id.version {
+            version.clone()
+        } else {
+            if let Some(sha256) = &package_id.sha256 {
+                format!("sha256:{}", sha256)
+            } else {
+                "*".to_string()
+            }
+        };
+        let mut dependencies = vec![];
+        self.resolve_dependencies(&package_id.name, &version_desc, 0, &mut dependencies)
+            .await?;
+        REPO_TASK_MANAGER.set_task_deps(task_id, dependencies.clone())?;
+        for dep in dependencies {
+            let dep_id = format!("{}#{}", dep.name, dep.version);
+            REPO_TASK_MANAGER.set_task_status(
+                task_id,
+                TaskStatus::Running,
+                &format!("Downloading {}", dep_id),
+            )?;
+            self.pull_pkg(&dep).await?;
+        }
+        REPO_TASK_MANAGER.set_task_status(task_id, TaskStatus::Finished, "Finished")?;
+        Ok(())
+    }
+
+    pub async fn pull_pkg(&self, meta_info: &PackageMeta) -> RepoResult<()> {
+        if self.check_exist(meta_info).await? {
+            return Ok(());
+        }
+        if let Err(e) =
+            Verifier::verify(&meta_info.author, &meta_info.chunk_id, &meta_info.sign).await
+        {
+            return Err(RepoError::VerifyError(format!(
+                "verify failed, meta:{:?}, err:{}",
+                meta_info, e
+            )));
+        }
+        unimplemented!("pull from other zone")
+    }
+
+    pub async fn check_exist(&self, meta_info: &PackageMeta) -> RepoResult<bool> {
+        //TODO: 通过chunk manager查询chunk是否存在
+        unimplemented!("check_exist")
     }
 }

@@ -6,10 +6,12 @@ mod sled_provider;
 //mod pkg_repository;
 mod def;
 mod downloader;
-mod installer;
+//mod installer;
 mod source_manager;
 mod source_node;
+mod task_manager;
 mod verifier;
+use package_lib::PackageId;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -19,12 +21,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use def::PackageMeta;
 use kv::source;
-use log::*;
-
-use installer::*;
 use lazy_static::lazy_static;
+use log::*;
 use serde_json::Value;
 use simplelog::*;
+use source_manager::SourceManager;
 use tokio::sync::Mutex;
 
 use ::kRPC::*;
@@ -165,7 +166,7 @@ async fn handle_resolve_deps(params: Value, session_token: &RPCSessionToken) -> 
 }
 
 async fn process_request(
-    installer: Installer,
+    source_mgr: SourceManager,
     method: String,
     param: Value,
     session_token: Option<String>,
@@ -200,8 +201,12 @@ async fn process_request(
             // }
             "resolve_deps" => {
                 //return handle_resolve_deps(param, &rpc_session_token).await;
-                let task_id = installer
-                    .start_install_task("pkg_desc")
+                let task_id = source_mgr
+                    .install_pkg(PackageId {
+                        name: "test".to_string(),
+                        version: Some("1.0.0".to_string()),
+                        sha256: None,
+                    })
                     .await
                     .map_err(|e| {
                         RPCErrors::ReasonError(format!("start install task failed: {}", e))
@@ -342,7 +347,7 @@ async fn service_main() {
     init_by_boot_config().await.unwrap();
     // Select the rear end storage, here you can switch different implementation
 
-    let pkg_installer = Installer::new().await.unwrap();
+    let source_mgr = source_manager::SourceManager::new().await.unwrap();
 
     let cors_response = warp::path!("kapi" / "repo").and(warp::options()).map(|| {
         info!("Handling OPTIONS request");
@@ -357,7 +362,7 @@ async fn service_main() {
         .and(warp::post())
         .and(warp::body::json())
         .and_then(move |req: RPCRequest| {
-            let installer_tmp = pkg_installer.clone();
+            let source_mgr_tmp = source_mgr.clone();
             async {
                 info!(
                     "|==>Received request: {}",
@@ -365,7 +370,7 @@ async fn service_main() {
                 );
 
                 let process_result =
-                    process_request(installer_tmp, req.method, req.params, req.token).await;
+                    process_request(source_mgr_tmp, req.method, req.params, req.token).await;
 
                 let rpc_response: RPCResponse;
                 match process_result {

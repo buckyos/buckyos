@@ -1,6 +1,7 @@
 use crate::error::{PkgError, PkgResult};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 pub struct Parser {}
 
@@ -18,6 +19,29 @@ pub struct PackageId {
     pub name: String,
     pub version: Option<String>,
     pub sha256: Option<String>,
+}
+
+impl FromStr for PackageId {
+    type Err = PkgError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Parser::parse(s)
+    }
+}
+
+impl ToString for PackageId {
+    fn to_string(&self) -> String {
+        let mut result = self.name.clone();
+        if let Some(version) = &self.version {
+            result.push_str("#");
+            result.push_str(version);
+        }
+        if let Some(sha256) = &self.sha256 {
+            result.push_str("#sha256:");
+            result.push_str(sha256);
+        }
+        result
+    }
 }
 
 impl Parser {

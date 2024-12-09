@@ -1,3 +1,4 @@
+use package_lib::PackageId;
 use serde_json::Value;
 use sqlx::FromRow;
 
@@ -34,4 +35,34 @@ pub struct SourceNodeConfig {
     pub author: String,
     pub chunk_id: String,
     pub sign: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskStatus {
+    Pending,
+    Running,
+    Finished,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub enum Task {
+    InstallTask {
+        id: String,
+        package_id: PackageId,
+        status: TaskStatus,
+        status_msg: Option<String>,
+        error: Option<String>,
+        deps: Vec<PackageMeta>,
+        start_time: u64,  //任务开始时间,用来计算超时
+        finish_time: u64, //任务完成时间,0表示未完成,定期会清理已完成的任务
+    },
+    IndexUpdateTask {
+        id: String,
+        status: TaskStatus,
+        status_msg: Option<String>,
+        error: Option<String>,
+        start_time: u64,
+        finish_time: u64,
+    },
 }
