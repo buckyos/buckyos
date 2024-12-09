@@ -80,14 +80,14 @@
         "mount": {
             "data_mount_point" : "/srv",
             "cache_mount_point" : "/database/",
-            "local_cache_mount_point" : "/config/",
+            "local_cache_mount_point" : "/config/"
         },
         "quota": {
             "max_cpu_num" : 4,
             "max_cpu_percent" : 80,
-            "memory" : 1073741824,
+            "memory" : 1073741824
         }
-    }
+    },
 
     "host_name" : "www",
     "port" : 20080,
