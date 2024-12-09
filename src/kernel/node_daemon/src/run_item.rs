@@ -35,7 +35,7 @@ pub struct RunItemControlOperation {
     pub params : Option<Vec<String>>,
 }
 #[async_trait]
-pub trait RunItemControl {
+pub trait RunItemControl: Send + Sync {
     fn get_item_name(&self) -> Result<String>;
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()>;
     //async fn remove(&self, params: Option<&RunItemParams>) -> Result<()>;
