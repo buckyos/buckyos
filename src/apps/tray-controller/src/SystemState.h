@@ -1,4 +1,5 @@
-#pragma once
+#ifndef _SYSTEM_STATE_H_
+#define _SYSTEM_STATE_H_
 
 #include <windows.h>
 
@@ -35,3 +36,4 @@ private:
     DWORD m_last_query_tick_count;
 };
 
+#endif

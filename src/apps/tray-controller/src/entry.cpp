@@ -1,4 +1,4 @@
-#include <string.h>
+Ôªø#include <string.h>
 #include <windows.h>
 #include <shellapi.h>
 
@@ -24,7 +24,6 @@ void on_status_changed_callback(SystemState::Status new_status, SystemState::Sta
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_CREATE:
-        // ≥ı ºªØÕ–≈ÃÕº±Í
         g_tray_icon_nid.cbSize = sizeof(NOTIFYICONDATA);
         g_tray_icon_nid.hWnd = hwnd;
         g_tray_icon_nid.uID = ID_TRAY_APP_ICON;
@@ -59,11 +58,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     return 0;
 }
 
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nShowCmd) {
-    hInst = hInstance;
+extern "C" void entry() {
+    hInst = GetModuleHandle(NULL);
     WNDCLASS wc = {};
     wc.lpfnWndProc = WindowProc;
-    wc.hInstance = hInstance;
+    wc.hInstance = hInst;
     wc.lpszClassName = L"BuckyOSController";
 
     RegisterClass(&wc);
@@ -71,7 +70,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nShowCmd) {
     HWND hwnd = CreateWindowExW(
         0, L"BuckyOSController", L"BuckyOS Controller", 0,
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-        NULL, NULL, hInstance, NULL
+        NULL, NULL, hInst, NULL
     );
 
     g_menu = new TrayMenu(hwnd, ID_TRAY_HOMEPAGE, ID_TRAY_START, ID_TRAY_ABOUT, ID_TRAY_EXIT, ID_TRAY_APP_SUBMENU_BEGIN);
@@ -83,8 +82,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nShowCmd) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
-
-    return 0;
 }
 
 void on_status_changed_callback(SystemState::Status new_status, SystemState::Status old_status, void* userdata) {
@@ -106,3 +103,5 @@ void on_status_changed_callback(SystemState::Status new_status, SystemState::Sta
     g_tray_icon_nid.hIcon = LoadIcon(NULL, strIconId);
     Shell_NotifyIcon(NIM_MODIFY, &g_tray_icon_nid);
 }
+
+// extern "C" void entry() {}

@@ -1,4 +1,5 @@
-#pragma once
+#ifndef _TRAY_MENU_H_
+#define _TRAY_MENU_H_
 
 #include <windows.h>
 #include <string>
@@ -58,3 +59,4 @@ private:
 	UINT_PTR m_menu_id_exit;
 };
 
+#endif

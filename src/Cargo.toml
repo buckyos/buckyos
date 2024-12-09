@@ -27,4 +27,5 @@ members = [
     "./kernel/scheduler", 
     "./frame/repo-service", 
     "./components/index-lib",
+    "./apps/tray-controller"
 ]

@@ -129,6 +129,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="entry.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="SystemState.cpp" />
     <ClCompile Include="TrayMenu.cpp" />
