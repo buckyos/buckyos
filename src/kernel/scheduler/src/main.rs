@@ -12,91 +12,6 @@ use sys_config::SystemConfigClient;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-async fn generate_app_config(user_name:&str) -> Result<HashMap<String,String>> {
-    let mut init_list : HashMap<String,String> = HashMap::new();
-    let config_str = serde_json::to_string(&json!({
-        "app_id":"buckyos.home_station",
-        "app_name" : "Home Station",
-        "app_description" : "Home Station",
-        "vendor_id" : "buckyos",
-        "pkg_id" : "home_station",
-        "username" : user_name.to_string(),
-        "service_docker_images" : {
-            "x86_server" : "filebrowser/filebrowser:s6"
-        },
-        "data_mount_point" : "/srv",
-        "cache_mount_point" : "/database/",
-        "local_cache_mount_point" : "/config/",
-        "max_cpu_num" : Some(4),
-        "max_cpu_percent" : Some(80),
-        "memory_quota" : 1024*1024*1024*1, //1GB
-        "host_name" : Some("home".to_string()),
-        "port" : 20080,
-        "org_port" : 80
-    })).unwrap();
-    init_list.insert(format!("users/{}/apps/{}/config",user_name.to_string(),"buckyos.home_station"),config_str);
-    Ok(init_list)
-}
-
-async fn generate_ood_config(ood_name:&str,owner_name:&str) -> Result<HashMap<String,String>> {
-    let mut init_list : HashMap<String,String> = HashMap::new();
-    let config_str = serde_json::to_string(&json!({
-        "is_running":true,
-        "revision" : 0,
-        "kernel" : {
-            "verify_hub" : {
-                "target_state":"Running",
-                "pkg_id":"verify_hub",
-                "operations":{
-                    "status":{
-                        "command":"status",
-                        "params":[]
-                    },
-                    "start":{
-                        "command":"start",
-                        "params":[]
-                    },
-                    "stop":{
-                        "command":"stop",
-                        "params":[]
-                    },
-                }
-            },
-            "scheduler" : {
-                "target_state":"Running",
-                "pkg_id":"scheduler",
-                "operations":{
-                    "status":{
-                        "command":"status",
-                        "params":[]
-                    },
-                    "start":{
-                        "command":"start",
-                        "params":[]
-                    },
-                    "stop":{
-                        "command":"stop",
-                        "params":[]
-                    },
-                }
-            }
-        },
-        "services":{
-        },
-        "apps":{
-            format!("{}#buckyos.home_station",owner_name):{
-                "target_state":"Running",
-                "app_id":"buckyos.home_station",
-                "username":owner_name,
-            }
-        }
-    })).unwrap();
-    //init ood config
-    init_list.insert(format!("nodes/{}/config",ood_name),config_str);
-    
-    Ok(init_list)
-}
-
 async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
     //load start_parms from active_service.
     let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
@@ -131,6 +46,8 @@ async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
         return Err("template contains unescaped double curly braces".into());
     }
 
+    info!("parsed template: {}", result);
+
     //wwrite result to file
     //let result_file_path = get_buckyos_system_etc_dir().join("scheduler_boot.toml");
     //tokio::fs::write(result_file_path, result.clone()).await?;
@@ -142,17 +59,7 @@ async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
 
 
 async fn do_boot_scheduler() -> Result<()> {
-    let mut init_list : HashMap<String,String> = HashMap::new();
-    let zone_config_str = std::env::var("BUCKY_ZONE_CONFIG");
-
-    if zone_config_str.is_err() {
-        warn!("BUCKY_ZONE_CONFIG is not set, use default zone config");
-        return Err("BUCKY_ZONE_CONFIG is not set".into());
-    }    
-
-    info!("zone_config_str:{}",zone_config_str.as_ref().unwrap());
-    let mut zone_config:ZoneConfig = serde_json::from_str(&zone_config_str.unwrap()).unwrap();
-    let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN"); 
+    let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
 
     if rpc_session_token_str.is_err() {
         return Err("SCHEDULER_SESSION_TOKEN is not set".into());
@@ -175,6 +82,7 @@ async fn do_boot_scheduler() -> Result<()> {
     //write to system_config
     for (key,value) in init_list.iter() {
         system_config_client.create(key,value).await?;
+        info!("on boot, create system config {} => {}", key, value);
     }
     info!("boot scheduler success");
     return Ok(());
