@@ -10,7 +10,8 @@ members = [
     "./components/package-lib",
     "./components/buckyos-kit",
     "./components/ndn-lib",
-
+    "./components/index-lib",
+    
     "./cyfs_gateway/cyfs-gateway-lib",
     "./cyfs_gateway/cyfs_gateway",
     "./cyfs_gateway/cyfs-dns",
@@ -26,6 +27,6 @@ members = [
     "./kernel/node_daemon",
     "./kernel/scheduler", 
     "./frame/repo-service", 
-    "./components/index-lib",
-    "./apps/tray-controller"
+
+    #"./apps/tray-controller"
 ]

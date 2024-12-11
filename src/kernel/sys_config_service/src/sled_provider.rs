@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use sled::{Db, IVec};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use crate::kv_provider::*;
 use log::*;
 use buckyos_kit::*;
@@ -72,4 +72,34 @@ impl KVStoreProvider for SledStore {
         info!("Sled Delete key:[{}]", key);
         Ok(())
     }
+
+    async fn list_data(&self,key_perfix:&str) -> Result<HashMap<String,String>> {
+        let mut result = HashMap::new();
+        let iter = self.db.scan_prefix(key_perfix.to_string());
+        for item in iter {
+            if item.is_ok() {
+                let (key,value) = item.unwrap();
+                let key_str = String::from_utf8(key.to_vec())
+                    .map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
+                let value_str = String::from_utf8(value.to_vec())
+                    .map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
+                result.insert(key_str,value_str);
+            }
+        }
+        Ok(result)
+    }
+
+    async fn list_keys(&self, key_prefix: &str) -> Result<Vec<String>> {
+        let mut result = Vec::new();
+        let iter = self.db.scan_prefix(key_prefix.to_string()).keys();
+        for key in iter {
+            if let Ok(key) = key {
+                if let Ok(key_str) = String::from_utf8(key.to_vec()) {
+                    result.push(key_str);
+                }
+            }
+        }
+        Ok(result)
+    }
 }
+

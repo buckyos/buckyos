@@ -283,6 +283,8 @@ pub struct DeviceConfig {
     pub did: String,
 
     pub name: String,//host name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
     pub device_type: String,//[ood,node,sensor
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip:Option<IpAddr>,//main_ip
@@ -312,6 +314,7 @@ impl DeviceConfig {
             DeviceConfig {
                 did: did,
                 name: name.to_string(),
+                arch: None,
                 device_type: "node".to_string(),
                 ip: None,
                 net_id: None,
@@ -333,6 +336,7 @@ impl DeviceConfig {
             DeviceConfig {
                 did: name.to_string(),
                 name: name.to_string(),
+                arch: None,
                 device_type: "node".to_string(),
                 ip: None,
                 net_id: None,
@@ -357,6 +361,7 @@ impl DeviceConfig {
         return DeviceConfig {
             did: "did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
             name: "ood1".to_string(),
+            arch: None,
             device_type: "ood".to_string(),
             ip:None,
             net_id:None,

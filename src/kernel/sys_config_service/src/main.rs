@@ -172,6 +172,38 @@ async fn handle_delete(params:Value,session_token:&RPCSessionToken) -> Result<Va
     return Ok(Value::Null);
 }
 
+async fn dump_configs_for_scheduler(_params:Value,session_token:&RPCSessionToken) -> Result<Value> {
+    let appid = session_token.appid.as_deref().unwrap();
+    if appid != "kernel" {
+        return Err(RPCErrors::NoPermission("No permission".to_string()));
+    }
+
+    let store = SYS_STORE.lock().await;
+    let mut config_map = HashMap::new();
+
+    let boot_config = store.list_data("boot/").await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    config_map.extend(boot_config);
+    let devices_config = store.list_data("devices/").await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    config_map.extend(devices_config);
+    let users_config = store.list_data("users/").await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    config_map.extend(users_config);
+    let services_config = store.list_data("services/").await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    config_map.extend(services_config);
+    let system_config = store.list_data("system/").await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    config_map.extend(system_config);
+    let node_config = store.list_data("nodes/").await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    config_map.extend(node_config);
+
+    let config_map = serde_json::to_value(&config_map).unwrap();
+    return Ok(config_map);
+}
+
 async fn process_request(method:String,param:Value,session_token:Option<String>) -> ::kRPC::Result<Value> {
     //check session_token 
     if session_token.is_some() {
@@ -200,6 +232,9 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
             },
             "sys_config_delete" => {
                 return handle_delete(param,&rpc_session_token).await;
+            },
+            "dump_configs_for_scheduler" => {
+                return dump_configs_for_scheduler(param,&rpc_session_token).await;
             },
             // Add more methods here
             _ => Err(RPCErrors::UnknownMethod(String::from(method))),

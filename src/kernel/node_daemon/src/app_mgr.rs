@@ -14,45 +14,12 @@ use crate::run_item::*;
 use buckyos_kit::*;
 use package_lib::*;
 
-#[derive(Serialize, Deserialize)]
-pub struct AppInfo {
-    pub app_id: String,
-    pub app_name: String,
-    pub app_description: String,
-    pub vendor_did: String,
-    pub pkg_id: String,
-    pub username: String,
-    //service name -> full image url
-    pub service_docker_images: HashMap<String, String>,
-    //dfs mount pint
-    pub data_mount_point: String,
-    pub cache_mount_point: String,
-    //local fs mount point
-    pub local_cache_mount_point: String,
+use sys_config::AppServiceConfig;
 
-    pub max_cpu_num: Option<u32>,
-    // 0 - 100
-    pub max_cpu_percent: Option<u32>,
-    // memory quota in bytes
-    pub memory_quota: u64,
-
-    //gateway settings
-    pub host_name: Option<String>,
-    pub port: Option<u16>,     //main port
-    pub org_port: Option<u16>, //original port
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct AppServiceConfig {
-    pub target_state: RunItemTargetState,
-    pub app_id: String,
-    pub username: String,
-    //pub service_image_name : String, // support mutil platform image name (arm/x86...)
-}
 
 pub struct AppRunItem {
     pub app_id: String,
-    pub app_info: AppInfo,
+    pub app_service_config: AppServiceConfig,
     pub app_loader: RwLock<Option<ServicePkg>>,
     device_doc: DeviceConfig,
     device_private_key: EncodingKey,
@@ -61,13 +28,13 @@ pub struct AppRunItem {
 impl AppRunItem {
     pub fn new(
         app_id: &String,
-        app_info: AppInfo,
+        app_service_config: AppServiceConfig,
         device_doc: &DeviceConfig,
         device_private_key: &EncodingKey,
     ) -> Self {
         AppRunItem {
             app_id: app_id.clone(),
-            app_info: app_info,
+            app_service_config: app_service_config,
             app_loader: RwLock::new(None),
             device_doc: device_doc.clone(),
             device_private_key: device_private_key.clone(),
@@ -78,6 +45,7 @@ impl AppRunItem {
 #[async_trait]
 impl RunItemControl for AppRunItem {
     fn get_item_name(&self) -> Result<String> {
+        //appid#userid
         Ok(self.app_id.clone())
     }
 
@@ -96,7 +64,7 @@ impl RunItemControl for AppRunItem {
             let device_session_token = kRPC::RPCSessionToken {
                 token_type: kRPC::RPCSessionTokenType::JWT,
                 nonce: None,
-                userid: Some(self.app_info.username.clone()),
+                userid: Some(self.app_service_config.user_id.clone()),
                 appid: Some(self.app_id.clone()),
                 exp: Some(timestamp + 3600 * 24 * 7),
                 iss: Some(self.device_doc.name.clone()),
@@ -112,13 +80,13 @@ impl RunItemControl for AppRunItem {
                         err.to_string(),
                     );
                 })?;
-            let full_appid = format!("{}#{}", self.app_info.username, self.app_id);
+            let full_appid = format!("{}#{}", self.app_service_config.user_id, self.app_id);
             let env_key = format!("{}.token", full_appid.as_str());
             std::env::set_var(env_key.as_str(), device_session_token_jwt);
-            let app_config_str = serde_json::to_string(&self.app_info).unwrap();
+            let app_config_str = serde_json::to_string(&self.app_service_config).unwrap();
             std::env::set_var(format!("{}.config", full_appid.as_str()), app_config_str);
 
-            let real_param = vec![self.app_id.clone(), self.app_info.username.clone()];
+            let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
             let result = app_loader
                 .as_ref()
                 .unwrap()
@@ -148,7 +116,7 @@ impl RunItemControl for AppRunItem {
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
         let app_loader = self.app_loader.read().await;
         if app_loader.is_some() {
-            let real_param = vec![self.app_id.clone(), self.app_info.username.clone()];
+            let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
             let result = app_loader
                 .as_ref()
                 .unwrap()
@@ -177,7 +145,7 @@ impl RunItemControl for AppRunItem {
 
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
         let mut need_load_pkg = false;
-        let real_param = vec![self.app_id.clone(), self.app_info.username.clone()];
+        let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
         {
             let app_loader = self.app_loader.read().await;
             if app_loader.is_none() {

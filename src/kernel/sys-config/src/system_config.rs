@@ -10,7 +10,6 @@ use thiserror::Error;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
-
 #[derive(Error, Debug)]
 pub enum SystemConfigError {
     #[error("Failed due to reason: {0}")]
@@ -102,9 +101,51 @@ impl SystemConfigClient {
         Ok(0)
     }
 
+    pub async fn delete(&self,key:&str) -> Result<u64> {
+        let client = self.get_krpc_client().await;
+        if client.is_err() {
+            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
+        }
+        let client = client.unwrap();
+        let result = client.call("sys_config_delete", json!({"key": key}))
+            .await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+        Ok(0)
+    }
+
     pub async fn list(&self,key:&str) -> Result<Vec<String>> {
         unimplemented!()
     }
+
+    pub async fn dump_configs_for_scheduler(&self) -> Result<Value> {
+        let client = self.get_krpc_client().await;
+        if client.is_err() {
+            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
+        }
+        let client = client.unwrap();
+        let result = client.call("dump_configs_for_scheduler", json!({}))
+            .await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+        Ok(result)
+    }
+
+    //helper funciton
+    pub async fn install_app(&self,app_config:&Value) -> Result<u64> {
+        //1. create users/{user_id}/apps/{appid}/config
+        //2. update rbac
+        //3. update gateway shortcuts
+        //4. if this is a web-client-app, set services/gateway/base_config
+
+        unimplemented!();
+    }
+
+    pub async fn remove_app(&self,appid:&str) -> Result<u64> {
+        unimplemented!();
+    }
     
+
+    pub async fn disable_app(&self,appid:&str) -> Result<u64> {
+        unimplemented!();
+    }
     
 }

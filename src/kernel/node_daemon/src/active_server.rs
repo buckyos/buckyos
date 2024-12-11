@@ -79,6 +79,7 @@ impl ActiveServer {
         let device_config:DeviceConfig = DeviceConfig {
             did: device_did.clone(),
             name: "ood1".to_string(),
+            arch: None,
             device_type: "ood".to_string(),
             auth_key: device_public_jwk,
             iss: user_name.to_string(),

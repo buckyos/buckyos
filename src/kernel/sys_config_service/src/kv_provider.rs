@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use thiserror::Error;
 
@@ -21,4 +23,6 @@ pub trait KVStoreProvider: Send + Sync {
     async fn set(&self, key: String, value: String) -> Result<()>;
     async fn create(&self,key:&str,value:&str) -> Result<()>;
     async fn delete(&self,key:&str) -> Result<()>;
+    async fn list_data(&self,key_perfix:&str) -> Result<HashMap<String,String>>;
+    async fn list_keys(&self,key_perfix:&str) -> Result<Vec<String>>;
 }

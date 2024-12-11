@@ -2,8 +2,11 @@
 #![allow(unused)]
 mod system_config;
 mod sn_client;
+mod app_list;
+
 pub use system_config::*;
 pub use sn_client::*;
+pub use app_list::*;
 
 use std::sync::{Arc, Mutex};
 use lazy_static::lazy_static;

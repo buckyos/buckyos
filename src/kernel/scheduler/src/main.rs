@@ -1,14 +1,17 @@
+mod app;
+
 use std::collections::HashMap;
 use std::process::exit;
 use log::*;
 use serde_json::json;
+use serde_json::Value;
 //use upon::Engine;
 
 use name_lib::*;
 use name_client::*;
 use buckyos_kit::*;
 use sys_config::SystemConfigClient;
-
+use app::*;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -180,6 +183,51 @@ async fn do_boot_scheduler() -> Result<()> {
     return Ok(());
 }
 
+
+
+async fn do_one_ood_schedule(input_config: &HashMap<String, String>) -> Result<HashMap<String, JsonValueAction>> {
+    let mut result_config: HashMap<String, JsonValueAction> = HashMap::new();
+    return Ok(result_config);
+    let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
+    for (key, value) in input_config.iter() {
+        if key.starts_with("devices/") && key.ends_with("/info") {
+            let device_name = key.split('/').nth(1).unwrap();
+            let device_info:DeviceInfo = serde_json::from_str(value)
+                .map_err(|e| {
+                    error!("serde_json::from_str failed: {:?}", e);
+                    e
+                })?;
+            device_list.insert(device_name.to_string(), device_info);
+        }
+    }
+
+    
+    // Process user app configurations
+    for (key, value) in input_config.iter() {
+        if key.starts_with("users/") && key.ends_with("/config") {
+            let parts: Vec<&str> = key.split('/').collect();
+            if parts.len() >= 4 && parts[2] == "apps" {
+                let user_name = parts[1];
+                let app_id = parts[3];
+                
+                // Install app for user
+                let app_config = deploy_app_service(user_name, app_id,&device_list, &input_config).await;
+                if app_config.is_err() {
+                    error!("do_one_ood_schedule Failed to install app {} for user {}: {:?}", app_id, user_name, app_config.err().unwrap());
+                    return Err("do_one_ood_schedule Failed to install app".into());
+                }
+                let app_config:HashMap<String, JsonValueAction> = app_config.unwrap();
+                //TODO 修改
+                result_config.extend(app_config);
+            }
+        }
+    }
+
+    //结合系统的快捷方式配置,设置nodes/gateway 配置
+
+    Ok(result_config)
+}
+
 async fn schedule_loop() -> Result<()> {
     let mut loop_step = 0;
     let is_running = true;
@@ -188,10 +236,55 @@ async fn schedule_loop() -> Result<()> {
         if !is_running {
             break;
         }
-        
+        tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
         loop_step += 1;
         info!("schedule loop step:{}.", loop_step);
-        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN"); 
+        if rpc_session_token_str.is_err() {
+            return Err("SCHEDULER_SESSION_TOKEN is not set".into());
+        }
+    
+        let rpc_session_token = rpc_session_token_str.unwrap();
+        let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
+        let input_config = system_config_client.dump_configs_for_scheduler().await;
+        if input_config.is_err() {
+            error!("dump_configs_for_scheduler failed: {:?}", input_config.err().unwrap());
+            continue;
+        }
+        let input_config = input_config.unwrap();
+        //cover value to hashmap
+        let input_config = serde_json::from_value(input_config);
+        if input_config.is_err() {
+            error!("serde_json::from_value failed: {:?}", input_config.err().unwrap());
+            continue;
+        }
+        let input_config = input_config.unwrap();
+        let schedule_result = do_one_ood_schedule(&input_config).await;
+        if schedule_result.is_err() {
+            error!("do_one_ood_schedule failed: {:?}", schedule_result.err().unwrap());
+            continue;
+        }
+        let schedule_result = schedule_result.unwrap();
+
+        //write to system_config
+        for (path,value) in schedule_result.iter() {
+            match value {
+                JsonValueAction::Update(value) => {
+                    system_config_client.set(path,value).await?;
+                }
+                JsonValueAction::Set(value) => {
+                    let old_value = input_config.get(path).unwrap();
+                    let mut old_value:Value = serde_json::from_str(old_value).unwrap();
+                    for (sub_path,sub_value) in value.iter() {
+                        set_json_by_path(&mut old_value,sub_path,Some(sub_value));
+                    }
+                    system_config_client.set(path,old_value.to_string().as_str()).await?;
+                }
+                JsonValueAction::Remove => {
+                    system_config_client.delete(path).await?;
+                }
+            }
+        }
     }
     Ok(())
 

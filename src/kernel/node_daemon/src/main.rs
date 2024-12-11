@@ -326,6 +326,11 @@ async fn node_main(node_host_name: &str,
     sys_config_client: &SystemConfigClient,
     device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
 
+    //get node_gateway_config
+
+
+    let target_state = RunItemTargetState::from_str("running").unwrap();
+
     let node_config= get_node_config(node_host_name, sys_config_client).await
         .map_err(|err| {
             error!("load node config failed! {}", err);
@@ -369,16 +374,15 @@ async fn node_main(node_host_name: &str,
     let app_stream = stream::iter(node_config.apps);
     app_stream.for_each_concurrent(1, |(app_id_with_name, app_cfg)| async move {
         
-        let app_info = load_app_info(app_cfg.app_id.as_str(),app_cfg.username.as_str(),sys_config_client).await;
-        if app_info.is_err() {
-            error!("load {} info failed! ,app not install?", app_cfg.app_id);
-            return;
-        }
-        let app_info = app_info.unwrap();
-        let app_run_item = AppRunItem::new(&app_cfg.app_id,app_info,
+        //let app_info = load_app_info(app_cfg.app_id.as_str(),app_cfg.username.as_str(),sys_config_client).await;
+        //if app_info.is_err() {
+        //    error!("load {} info failed! ,app not install?", app_cfg.app_id);
+        //    return;
+        //}
+        //let app_info = app_info.unwrap();
+        let app_run_item = AppRunItem::new(&app_cfg.app_id,app_cfg.clone(),
             device_doc,device_private_key);
-        
-        let target_state = app_cfg.target_state.clone();
+        let target_state = RunItemTargetState::from_str(&app_cfg.target_state).unwrap();
         let _ = control_run_item_to_target_state(&app_run_item, target_state, device_private_key)
             .await
             .map_err(|_err| {
