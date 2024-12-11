@@ -26,6 +26,10 @@ pub enum RepoError {
     VersionNotFoundError(String),
     #[error("Version Error: {0}")]
     VersionError(String),
+    #[error("Not ready: {0}")]
+    NotReadyError(String),
+    #[error("Status Error: {0}")]
+    StatusError(String),
     #[error("Update error: {0}")]
     UpdateError(String),
     #[error("Verify error: {0}")]

@@ -7,24 +7,29 @@ use crate::verifier::*;
 use async_recursion::async_recursion;
 use buckyos_kit::get_buckyos_service_data_dir;
 use kv::source;
-use log::warn;
 use log::*;
 use ndn_lib::ChunkId;
 use package_lib::PackageId;
-use rusqlite::{params, Connection};
 use serde::ser;
 use sqlx::{Executor, Pool, Sqlite, SqlitePool};
 use std::collections::HashMap;
 use std::fmt::format;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use tokio::task;
+use std::sync::{Arc, Mutex};
+use tokio::{sync::RwLock, task};
+
+#[derive(PartialEq, Debug, Clone, Copy)]
+enum RepoStatus {
+    Idle,
+    UpdatingIndex,
+    Installing(u32), // 表示正在进行的安装计数
+}
 
 #[derive(Debug, Clone)]
 pub struct SourceManager {
-    pub source_list: Arc<RwLock<Vec<SourceNode>>>,
-    pub pool: SqlitePool,
+    source_list: Arc<RwLock<Vec<SourceNode>>>,
+    pool: SqlitePool,
+    status_flag: Arc<Mutex<RepoStatus>>,
 }
 
 impl SourceManager {
@@ -65,6 +70,7 @@ impl SourceManager {
         Ok(Self {
             source_list: Arc::new(RwLock::new(Vec::new())),
             pool,
+            status_flag: Arc::new(Mutex::new(RepoStatus::Idle)),
         })
     }
 
@@ -138,7 +144,7 @@ impl SourceManager {
         unimplemented!("get_remote_source_meta")
     }
 
-    async fn build_source_list(&self, update: bool) -> RepoResult<()> {
+    async fn build_source_list(&self, update: bool, task_id: &str) -> RepoResult<()> {
         let mut need_update_config_list = Vec::new();
         let source_db_dir = get_buckyos_service_data_dir(SERVICE_NAME).join(INDEX_DIR_NAME);
         let source_config_list = self.load_source_config_list().await?;
@@ -162,6 +168,11 @@ impl SourceManager {
             }
             //通过url请求最新的source_meta
             if update || source_config.chunk_id.is_empty() || source_config.sign.is_empty() {
+                REPO_TASK_MANAGER.set_task_status(
+                    task_id,
+                    TaskStatus::Running,
+                    &format!("[{}]Updating source meta info", source_config.name),
+                )?;
                 let source_meta = Self::get_remote_source_meta(&source_config.url).await?;
                 if source_meta.chunk_id != source_config.chunk_id {
                     source_config.chunk_id = source_meta.chunk_id;
@@ -177,6 +188,11 @@ impl SourceManager {
                 new_source_list.push(source_node);
                 continue;
             } else {
+                REPO_TASK_MANAGER.set_task_status(
+                    task_id,
+                    TaskStatus::Running,
+                    &format!("[{}]Downloading source index", source_config.name),
+                )?;
                 Self::make_sure_source_file_exists(
                     &source_config.url,
                     &source_config.author,
@@ -201,6 +217,8 @@ impl SourceManager {
             *source_list = new_source_list;
             //TODO:删除旧的db文件
         }
+
+        // self.is_index_updating.store(false, Ordering::Release);
 
         Ok(())
     }
@@ -273,17 +291,153 @@ impl SourceManager {
         Ok(())
     }
 
+    fn try_enter_install_status(&self) -> RepoResult<()> {
+        let mut status_flag = self.status_flag.lock().unwrap();
+        match *status_flag {
+            RepoStatus::Idle => {
+                *status_flag = RepoStatus::Installing(1);
+                info!("change repo status from idle to installing");
+                Ok(())
+            }
+            RepoStatus::UpdatingIndex => {
+                info!("repo status is updating index, can not enter installing status");
+                Err(RepoError::StatusError(
+                    "Updating index, please try later".to_string(),
+                ))
+            }
+            RepoStatus::Installing(v) => {
+                *status_flag = RepoStatus::Installing(v + 1);
+                info!(
+                    "repo status is installing, increase installing count to {}",
+                    v + 1
+                );
+                Ok(())
+            }
+        }
+    }
+
+    fn leave_install_status(&self) {
+        let mut status_flag = self.status_flag.lock().unwrap();
+        match *status_flag {
+            RepoStatus::Installing(v) => {
+                if v == 1 {
+                    *status_flag = RepoStatus::Idle;
+                    info!("change repo status from installing to idle");
+                } else {
+                    *status_flag = RepoStatus::Installing(v - 1);
+                    info!(
+                        "repo status is installing, decrease installing count to {}",
+                        v - 1
+                    );
+                }
+            }
+            _ => {
+                error!(
+                    "status_flag is not installing, current status: {:?}",
+                    *status_flag
+                );
+            }
+        }
+    }
+
+    fn try_enter_index_update_status(&self) -> RepoResult<()> {
+        let mut status_flag = self.status_flag.lock().unwrap();
+        if *status_flag != RepoStatus::Idle {
+            return Err(RepoError::StatusError(format!(
+                "Status is {:?}, can not update index",
+                *status_flag
+            )));
+        }
+        *status_flag = RepoStatus::UpdatingIndex;
+        info!("change repo status from idle to updating index");
+        Ok(())
+    }
+
+    fn leave_index_update_status(&self) {
+        let mut status_flag = self.status_flag.lock().unwrap();
+        match *status_flag {
+            RepoStatus::UpdatingIndex => {
+                *status_flag = RepoStatus::Idle;
+                info!("change repo status from updating index to idle");
+            }
+            _ => {
+                error!(
+                    "status_flag is not updating index, current status: {:?}",
+                    *status_flag
+                );
+            }
+        }
+    }
+
     pub async fn install_pkg(&self, package_id: PackageId) -> RepoResult<String> {
+        //如果source_list为空，说明还没有初始化成功，不作多余动作，直接返回错误
+        if self.source_list.read().await.is_empty() {
+            return Err(RepoError::NotReadyError(
+                "index list is not ready".to_string(),
+            ));
+        }
+
+        self.try_enter_install_status()?;
+
         let task_id = REPO_TASK_MANAGER.start_install_task(package_id.clone())?;
         let task_id_tmp = task_id.clone();
         let self_clone = self.clone();
         task::spawn(async move {
-            if let Err(e) = self_clone.do_install(package_id, &task_id_tmp).await {
-                error!("do_install failed: {:?}", e);
-                REPO_TASK_MANAGER
-                    .set_task_status(&task_id_tmp, TaskStatus::Error, &e.to_string())
-                    .unwrap();
+            match self_clone.do_install(package_id, &task_id_tmp).await {
+                Ok(_) => {
+                    if let Err(e) = REPO_TASK_MANAGER.set_task_status(
+                        &task_id_tmp,
+                        TaskStatus::Finished,
+                        "Finished",
+                    ) {
+                        error!("set_task_status failed. id: {}, err: {:?}", task_id_tmp, e);
+                    }
+                }
+                Err(e) => {
+                    error!("do_install failed: {:?}", e);
+                    if let Err(e) = REPO_TASK_MANAGER.set_task_status(
+                        &task_id_tmp,
+                        TaskStatus::Error,
+                        &e.to_string(),
+                    ) {
+                        error!("set_task_status failed. id: {}, err: {:?}", task_id_tmp, e);
+                    };
+                }
             }
+            self_clone.leave_install_status();
+        });
+        Ok(task_id)
+    }
+
+    pub async fn update_index(&self, update: bool) -> RepoResult<String> {
+        self.try_enter_index_update_status()?;
+
+        let task_id = REPO_TASK_MANAGER.start_index_update_task()?;
+        let task_id_tmp = task_id.clone();
+        let self_clone = self.clone();
+        task::spawn(async move {
+            match self_clone.build_source_list(update, &task_id_tmp).await {
+                Ok(_) => {
+                    if let Err(e) = REPO_TASK_MANAGER.set_task_status(
+                        &task_id_tmp,
+                        TaskStatus::Finished,
+                        "Finished",
+                    ) {
+                        error!("set_task_status failed. id: {}, err: {:?}", task_id_tmp, e);
+                    }
+                }
+                Err(e) => {
+                    error!("update_index failed: {:?}", e);
+                    if let Err(e) = REPO_TASK_MANAGER.set_task_status(
+                        &task_id_tmp,
+                        TaskStatus::Error,
+                        &e.to_string(),
+                    ) {
+                        error!("set_task_status failed. id: {}, err: {:?}", task_id_tmp, e);
+                    }
+                }
+            }
+            self_clone.leave_index_update_status();
         });
         Ok(task_id)
     }
@@ -316,7 +470,6 @@ impl SourceManager {
             )?;
             self.pull_pkg(&dep).await?;
         }
-        REPO_TASK_MANAGER.set_task_status(task_id, TaskStatus::Finished, "Finished")?;
         Ok(())
     }
 
