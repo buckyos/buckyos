@@ -3,7 +3,7 @@
 #include <shellapi.h>
 
 #include "TrayMenu.h"
-#include "SystemState.h"
+#include "ffi_extern.h"
 
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_APP_ICON 1001
@@ -17,9 +17,10 @@ HINSTANCE hInst;
 NOTIFYICONDATA g_tray_icon_nid;
 
 TrayMenu* g_menu;
-SystemState* g_system_state;
+BuckyStatusScaner g_system_state;
+BuckyStatus g_bucky_status = BuckyStatus::Stopped;
 
-void on_status_changed_callback(SystemState::Status new_status, SystemState::Status old_status, void* userdata);
+void on_status_changed_callback(BuckyStatus new_status, BuckyStatus old_status, void* userdata);
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -38,7 +39,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         if (lParam == WM_RBUTTONUP) {
             POINT pt;
             GetCursorPos(&pt);
-            g_menu->popup(pt, g_system_state->status() == SystemState::Status::Running);
+            g_menu->popup(pt, g_bucky_status == BuckyStatus::Running);
         }
         break;
 
@@ -49,7 +50,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     case WM_DESTROY:
         Shell_NotifyIcon(NIM_DELETE, &g_tray_icon_nid);
         delete g_menu;
-        delete g_system_state;
+        bucky_status_scaner_stop(g_system_state);
         break;
 
     default:
@@ -74,8 +75,7 @@ extern "C" void entry() {
     );
 
     g_menu = new TrayMenu(hwnd, ID_TRAY_HOMEPAGE, ID_TRAY_START, ID_TRAY_ABOUT, ID_TRAY_EXIT, ID_TRAY_APP_SUBMENU_BEGIN);
-    g_system_state = new SystemState(hwnd);
-    g_system_state->scan(on_status_changed_callback, NULL);
+    g_system_state = bucky_status_scaner_scan(on_status_changed_callback, NULL, hwnd);
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
@@ -84,19 +84,19 @@ extern "C" void entry() {
     }
 }
 
-void on_status_changed_callback(SystemState::Status new_status, SystemState::Status old_status, void* userdata) {
+void on_status_changed_callback(BuckyStatus new_status, BuckyStatus old_status, void* userdata) {
     LPWSTR strIconId = IDI_APPLICATION;
     switch (new_status) {
-    case SystemState::Status::Running:
+    case BuckyStatus::Running:
         strIconId = IDI_APPLICATION;
         break;
-    case SystemState::Status::Stopped:
+    case BuckyStatus::Stopped:
         strIconId = IDI_HAND;
         break;
-    case SystemState::Status::NotInstall:
+    case BuckyStatus::NotInstall:
         strIconId = IDI_QUESTION;
         break;
-    case SystemState::Status::Failed:
+    case BuckyStatus::Failed:
         strIconId = IDI_ASTERISK;
         break;
     }

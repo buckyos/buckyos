@@ -131,6 +131,7 @@
   <ItemGroup>
     <ClCompile Include="entry.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="process_kits.cpp" />
     <ClCompile Include="SystemState.cpp" />
     <ClCompile Include="TrayMenu.cpp" />
   </ItemGroup>

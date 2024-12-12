@@ -5,18 +5,20 @@
 #include <string>
 #include <vector>
 #include <map>
-
-struct ApplicationInfo {
-	std::wstring name;
-	std::wstring icon_path;
-	std::wstring home_page_url;
-	std::wstring start_cmd;
-	std::wstring stop_cmd;
-	bool is_running;
-};
+#include "ffi_extern.h"
 
 class TrayMenu
 {
+public:
+	struct ApplicationInfo {
+		std::wstring name;
+		std::wstring icon_path;
+		std::wstring home_page_url;
+		std::wstring start_cmd;
+		std::wstring stop_cmd;
+		bool is_running;
+	};
+
 public:
 	TrayMenu(HWND hwnd, UINT_PTR menu_id_homepage, UINT_PTR menu_id_start, UINT_PTR menu_id_about, UINT_PTR menu_id_exit, UINT_PTR app_menu_id_begin);
 	~TrayMenu();
@@ -27,9 +29,7 @@ public:
 
 private:
 
-	void list_application(int seq, void (*callback)(bool is_success, std::vector<ApplicationInfo> &apps, int seq, void* user_data), void* userdata);
-	static void list_application_callback(bool is_success, std::vector<ApplicationInfo>& apps, int seq, void* user_data);
-	static void CALLBACK timer_proc(HWND, UINT, UINT_PTR idEvent, DWORD);
+	static void list_application_callback(bool is_success, ::ApplicationInfo* apps, int32_t app_count, int seq, void* user_data);
 	void do_popup_menu();
 
 	static void proc_open_homepage(TrayMenu* self);
@@ -43,7 +43,6 @@ private:
 	POINT m_display_pos;
 	bool m_is_buckyos_running;
 	std::vector<ApplicationInfo> m_apps;
-	UINT_PTR m_timerId;
 
 	int m_app_list_seq;
 	std::vector<ApplicationInfo> m_menu_apps;
