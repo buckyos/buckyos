@@ -22,6 +22,8 @@ ndn-lib = { path = "../../components/ndn-lib" }
 package-lib = { path = "../../components/package-lib" }
 name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
+cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
+cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
 ed25519-dalek = { version = "*", features = ["rand_core"] } 
 base64 = "*"
 rusqlite =  { version = "*", features = ["bundled"] }
@@ -31,4 +33,3 @@ async-recursion = "*"
 jsonwebtoken = "*" 
 kRPC ={ path = "../../kernel/kRPC" }
 rbac = { path = "../../kernel/rbac" }
-warp = "*"
