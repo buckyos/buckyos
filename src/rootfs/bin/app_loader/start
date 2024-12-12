@@ -73,6 +73,11 @@ if local_cache_mount_point:
     os.makedirs(f"/opt/buckyos/cache/{username}/{appid}", exist_ok=True)
     volume_mapping += f"-v /opt/buckyos/cache/{username}/{appid}/:{local_cache_mount_point} "
 
+extra_mounts = config.get("extra_mounts", "")
+if extra_mounts:
+    for (k ,v) in extra_mounts.items():
+        docker_command += f"-v {k}:{v} "
+
 #network_settings = config.get("network_settings", "")
 cpu_quota = config.get("cpu_quota", "")
 memory_quota = config.get("memory_quota", "")
@@ -96,8 +101,9 @@ if volume_mapping:
 #if cpu_quota:
 #    docker_command += f"--cpu-quota={cpu_quota} "
 
-#if memory_quota:
-#    docker_command += f"--memory={memory_quota} "
+if memory_quota:
+    docker_command += f"--memory={memory_quota} "
+
 docker_command += f" {image_name}"
 
 

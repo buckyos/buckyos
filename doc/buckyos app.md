@@ -29,6 +29,7 @@
   "app_info" : "jwt",
   "source" : "http://xxx.com/index.db",//是从哪个源得到的app_info
   "enable" : "true", //是否启用
+  "single_instance" : true,
  //安装配置,注意与app自己的setting区分,app没有权限修改本配置
   "data_mount_point" : "/opt/data", //$data_dir是系统基于appid和userid构造的,位于DFS上的目录.系统会自动备份该目录. 有状态应用需要将该目录与docker内部的一个目录关联
   "cache_mount_point" : "/opt/cache",//$data_dir是系统基于appid和userid构造的,位于DFS上的缓存目录.系统会尽量保留该目录以帮助应用提升性能.该配置可为空
@@ -46,7 +47,7 @@
   
 
   "permisons" : { //权限配置,这里的配置与app_info里的取交集
-    "extra_dirs" : { //可以额外挂一组目录给app,由于这些目录的权限超过了docker的默认隔离范围,因此需要用户明确的授权才能给用户.
+    "extra_mount" : { //可以额外挂一组目录给app,由于这些目录的权限超过了docker的默认隔离范围,因此需要用户明确的授权才能给用户.
       "dir_1" : "docker inner path",
     },
     "permison_2" : "value_2",
@@ -87,6 +88,7 @@ node-daemon所在node不支持docker,则会根据权限配置判断是否可以�
   比如appidA 配置了系统快捷方式 "photo".那么就可以通过https://photo.$zoneid/访问app
   如果appidB 配置了用户快捷方式 "video",那么就可以通过 https://video.$uername.$zoneid/访问app
 
+- HTTPS的限制: 因为https一般只能配置 *.$zoneid 的证书,因此实际上不适用系统快捷方式,
 
 ### 在App之间共享状态
 

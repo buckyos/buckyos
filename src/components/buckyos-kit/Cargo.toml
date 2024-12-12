@@ -9,6 +9,7 @@ authors = ["BuckyOS DAO","@waterflier"]
 [dependencies]
 thiserror = "*"
 sysinfo = "*"
+serde = "*"
 serde_json = "*"
 time = { version = "^0.3", features = ["formatting"] }
 tokio = { version = "*", features = ["full"] }

@@ -1,5 +1,5 @@
-# users
-"users/{{user_name}}/info" = '{"type":"admin","password":"{{admin_password_hash}}"}'
+# users : users/{{user_id}}/info , user_id is never changed, user_name can changed. User root cann't be deleted and always exists
+"users/root/info" = '{"type":"root","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 
 # devices,set & update by register_device_doc@node_daemon
 #"devices/ood1/doc" = "ood1_doc"
@@ -44,52 +44,121 @@
     "shortcuts": {
         "www": {
             "type":"app",
-            "owner":"{{user_name}}",
+            "user_id":"root",
             "app_id":"home-station"
         },
         "sys": {
             "type":"app",
-            "owner":"{{user_name}}",
+            "user_id":"root",
             "app_id":"control-panel"
         },
         "test":{
             "type":"app",
-            "owner":"{{user_name}}",
+            "user_id":"root",
             "app_id":"sys-test"
         }
     }
 }
 """
+
+"services/gateway/base_config" = """
+{
+    "device_key_path":"{{BUCKYOS_ROOT}}/etc/node_private_key.pem",
+    "servers":{
+        "main_http_server":{
+            "type":"cyfs-warp",
+            "bind":"0.0.0.0",
+            "http_port":80,
+            "tls_port":443,
+            "hosts": {
+                "*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/kapi/verify_hub":{
+                            "upstream":"http://127.0.0.1:3300"
+                        }
+                    }
+                },
+                "sys.*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{{BUCKYOS_ROOT}}/bin/control_panel"
+                        },
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/kapi/verify_hub":{
+                            "upstream":"http://127.0.0.1:3300"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "dispatcher" : {
+        "tcp://0.0.0.0:80":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://0.0.0.0:443":{
+            "type":"server",
+            "id":"main_http_server"
+        }
+    }
+}
+"""
+
 # install apps
-"users/{{user_name}}/apps/home-station/config" = """
+"users/root/apps/home-station/config" = """
 {
     "app_id":"home-station",
-    "username" : "{{user_name}}",
-    "app_name" : "Home Station",
-    "app_description" : "Home Station",
-    "vendor_did" : "did:bns:buckyos",
-    "pkg_id" : "home-station",
-    "service_docker_images" : {
-        "x86_server" : "filebrowser/filebrowser:s6",
-        "arm64_server" : "filebrowser/filebrowser:s6"
+    "app_info" : {
+        "name" : "Home Station",
+        "description" : "Home Station",
+        "vendor_did" : "did:bns:buckyos",
+        "pkg_id" : "home-station", 
+        "pkg_list" : {
+            "amd64_docker_image" : {
+                "pkg_id":"home-station-x86-img",
+                "docker_image_name":"filebrowser/filebrowser:s6"
+            },
+            "aarch64_docker_image" : {
+                "pkg_id":"home-station-arm64-img",
+                "docker_image_name":"filebrowser/filebrowser:s6"
+            },
+            "web_pages" :{
+                "pkg_id" : "home-station-web-page"
+            }
+        }
     },
+    "app_index" : 0,
+    "enable" : true,
+    "instance" : 1,
+    "deployed" : false,
+
     "data_mount_point" : "/srv",
     "cache_mount_point" : "/database/",
     "local_cache_mount_point" : "/config/",
     "max_cpu_num" : 4,
     "max_cpu_percent" : 80, 
     "memory_quota" : 1073741824, 
-    "host_name" : "www",
-    "port" : 20080,
-    "org_port" : 80
+    "tcp_ports" : {
+        "www":80
+    }
 }
 """
-# nocde config
+# node config
 "nodes/ood1/config" = """
 {
     "is_running":true,
     "revision" : 0,
-    "kernel" : {
+    "gateway" : {
+    },
+    "kernel":{
         "verify_hub" : {
             "target_state":"Running",
             "pkg_id":"verify_hub",
@@ -128,16 +197,85 @@
         }
     },
     "services":{
+
     },
     "apps":{
-        "app":{
+        "0":{
             "target_state":"Running",
             "app_id":"home-station",
-            "username":"{{user_name}}"
+            "username":"root"
+            "service_docker_images" : "filebrowser/filebrowser:s6",
+            "data_mount_point" : "/srv",
+            "cache_mount_point" : "/database/",
+            "local_cache_mount_point" : "/config/",
+            "extra_mounts" : {
+                "/opt/buckyos/data/root/home-station/:/srv",
+            },
+            "max_cpu_num" : 4,
+            "max_cpu_percent" : 80, 
+            "memory_quota" : 1073741824, 
+            "tcp_ports" : {
+                "20000":80
+            }
+        }    
+    }
+}
+"""
+
+"nodes/ood1/gateway" = """
+{
+    "device_key_path":"{{BUCKYOS_ROOT}}/etc/node_private_key.pem",
+    "servers":{
+        "main_http_server":{
+            "type":"cyfs-warp",
+            "bind":"0.0.0.0",
+            "http_port":80,
+            "tls_port":443,
+            "hosts": {
+                "*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/kapi/verify_hub":{
+                            "upstream":"http://127.0.0.1:3300"
+                        },
+                        "/":{
+                            "upstream":"http://127.0.0.1:20000"
+                        }
+                    }
+                },
+                "sys.*":{
+                    "routes":{
+                        "/":{
+                            "local_dir":"{{BUCKYOS_ROOT}}/bin/control_panel"
+                        }
+                    }
+                },
+                "test.*":{
+                    "routes":{
+                        "/":{
+                            "local_dir":"{{BUCKYOS_ROOT}}/bin/sys_test"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "dispatcher" : {
+        "tcp://0.0.0.0:80":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://0.0.0.0:443":{
+            "type":"server",
+            "id":"main_http_server"
         }
     }
 }
 """
+
 "system/rbac/model" = """
 [request_definition]
 r = sub,obj,act
