@@ -1,5 +1,5 @@
 {
-    "device_key_path":"{BUCKYOS_ROOT}/etc/node_private_key.pem",
+    "device_key_path":"/opt/buckyos/etc/node_private_key.pem",
     "servers":{
         "main_http_server":{
             "type":"cyfs-warp",
@@ -24,14 +24,14 @@
                 "sys.*":{
                     "routes":{
                         "/":{
-                            "local_dir":"{BUCKYOS_BIN}/control_panel"
+                            "local_dir":"/opt/buckyos/bin/control_panel"
                         }
                     }
                 },
                 "test.*":{
                     "routes":{
                         "/":{
-                            "local_dir":"{BUCKYOS_BIN}/sys_test"
+                            "local_dir":"/opt/buckyos/bin/sys_test"
                         }
                     }
                 }

@@ -24,7 +24,7 @@ fn build_app_service_config(user_id:&str,app_config:&AppConfigNode,node_info:&De
         return Err(format!("app_index: {} is too large",app_config.app_index).into());
     }
 
-    let mut real_port:u16 = 20000 + app_config.app_index * 100;
+    let mut real_port:u16 = 20080 + app_config.app_index * 100;
     for (port_desc,inner_port) in app_config.tcp_ports.iter() {
         result_config.tcp_ports.insert(real_port, inner_port.clone());
         real_port += 1;

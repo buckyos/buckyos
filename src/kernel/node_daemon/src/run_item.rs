@@ -30,8 +30,8 @@ pub enum RunItemTargetState {
 impl RunItemTargetState {
     pub fn from_str(state: &str) -> Result<Self> {
         match state {
-            "running" => Ok(RunItemTargetState::Running),
-            "stopped" => Ok(RunItemTargetState::Stopped),
+            "Running" => Ok(RunItemTargetState::Running),
+            "Stopped" => Ok(RunItemTargetState::Stopped),
             _ => Err(ControlRuntItemErrors::ParserConfigError(format!("invalid target state: {}", state))),
         }
     }

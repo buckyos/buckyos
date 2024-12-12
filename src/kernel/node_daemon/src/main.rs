@@ -316,7 +316,6 @@ async fn load_node_gateway_config(node_host_name: &str,sys_config_client: &Syste
         return NodeDaemonErrors::SystemConfigError("parse gateway_config failed!".to_string());
     })?;
 
-    info!("load node gateway_config from system_config success!");
     Ok(gateway_config)
 }
 
@@ -346,8 +345,6 @@ async fn load_node_config(node_host_name: &str,sys_config_client: &SystemConfigC
         return NodeDaemonErrors::SystemConfigError("parse node config failed!".to_string());
     })?;
 
-    info!("load node config from system_config success!");
-
     Ok(node_config)
 }
 
@@ -358,7 +355,7 @@ async fn node_main(node_host_name: &str,
     //get node_gateway_config
 
 
-    let target_state = RunItemTargetState::from_str("running").unwrap();
+    let target_state = RunItemTargetState::from_str("Running").unwrap();
 
     let node_config= load_node_config(node_host_name, sys_config_client).await
         .map_err(|err| {
@@ -420,9 +417,6 @@ async fn node_main(node_host_name: &str,
             });
     }).await;
     
-
-
-    info!("node daemon main success end.");
     Ok(true)
 }
 
@@ -457,6 +451,7 @@ async fn register_device_doc(device_doc:&DeviceConfig,sys_config_client: &System
 }
 
 async fn node_daemon_main_loop(
+    node_id:&str,
     node_host_name:&str,
     sys_config_client: &SystemConfigClient,
     device_doc:&DeviceConfig,
@@ -492,20 +487,30 @@ async fn node_daemon_main_loop(
             is_running = main_result.unwrap();
             let new_node_gateway_config = load_node_gateway_config(node_host_name, sys_config_client).await;
             if new_node_gateway_config.is_ok() {
+                let mut need_restart = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
-                if node_gateway_config.is_some() {
-                    if let Some(old_config) = &mut node_gateway_config {
-                        if *old_config != new_node_gateway_config {
-                            info!("node gateway_config changed, update node_gateway_config!");
-                            let gateway_config_path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
-                            std::fs::write(gateway_config_path, serde_json::to_string(&new_node_gateway_config).unwrap()).unwrap();
-                            node_gateway_config = Some(new_node_gateway_config);
-                            start_cyfs_gateway_service(node_host_name,&device_doc, &device_private_key,&zone_config,true).await.map_err(|err| {
-                                error!("start cyfs_gateway service failed! {}", err);
-                            });
-                        }
+                if node_gateway_config.is_none() {
+                    node_gateway_config = Some(new_node_gateway_config);
+                    need_restart = true;
+                } else {
+                    if new_node_gateway_config == node_gateway_config.unwrap() {
+                        need_restart = false;
+                    } else {
+                        need_restart = true;
                     }
+                    node_gateway_config = Some(new_node_gateway_config);
                 }
+                
+                if need_restart {
+                    info!("node gateway_config changed, update node_gateway_config!");
+                    let gateway_config_path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
+                    std::fs::write(gateway_config_path, serde_json::to_string(&node_gateway_config).unwrap()).unwrap();
+                    start_cyfs_gateway_service(node_id,&device_doc, &device_private_key,&zone_config,true).await.map_err(|err| {
+                        error!("start cyfs_gateway service failed! {}", err);
+                    }); 
+                }
+            } else {
+                error!("load node gateway_config failed!");
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
@@ -857,7 +862,7 @@ async fn async_main() -> std::result::Result<(), String> {
     info!("gateway ip: {:?}", gateway_ip);
 
     info!("{}@{} boot OK, enter node daemon main loop!", device_doc.name, node_identity.zone_name);
-    node_daemon_main_loop(&device_doc.name.as_str(), &syc_cfg_client, &device_doc, &device_private_key, &zone_config)
+    node_daemon_main_loop(node_id,&device_doc.name.as_str(), &syc_cfg_client, &device_doc, &device_private_key, &zone_config)
         .await
         .map_err(|err| {
             error!("node daemon main loop failed! {}", err);

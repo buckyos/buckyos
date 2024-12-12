@@ -33,12 +33,17 @@ pub struct AppConfigNode {
     pub deployed: bool,
     //mount pint
     pub data_mount_point: String,
-    pub cache_mount_point: String,
-    pub local_cache_mount_point: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_mount_point: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_cache_mount_point: Option<String>,
     //extra mount pint, real_path:docker_inner_path
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_mounts: Option<HashMap<String,String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cpu_num: Option<u32>,
     // 0 - 100
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cpu_percent: Option<u32>,
     
     // memory quota in bytes
@@ -58,12 +63,17 @@ pub struct AppServiceConfig {
 
     pub docker_image_name : Option<String>,
     pub data_mount_point: String,
-    pub cache_mount_point: String,
-    pub local_cache_mount_point: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_mount_point: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_cache_mount_point: Option<String>,
     //extra mount pint, real_path:docker_inner_path
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_mounts: Option<HashMap<String,String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cpu_num: Option<u32>,
     // 0 - 100
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cpu_percent: Option<u32>,
     
     // memory quota in bytes
@@ -80,7 +90,7 @@ pub struct AppServiceConfig {
 impl AppServiceConfig {
     pub fn new(owner_user_id:&str,app_config:&AppConfigNode) -> AppServiceConfig {
         AppServiceConfig {
-            target_state: "running".to_string(),
+            target_state: "Running".to_string(),
             app_id: app_config.app_id.clone(),
             user_id:owner_user_id.to_string(),
             docker_image_name: None,//TODO

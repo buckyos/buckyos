@@ -21,7 +21,7 @@ lazy_static!{
 }
 
 pub fn sys_config_get_device_path(device_id: &str) -> String {
-    format!("/devices/{}", device_id)
+    format!("devices/{}", device_id)
 }
 
 

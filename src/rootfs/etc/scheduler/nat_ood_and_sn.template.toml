@@ -1,8 +1,8 @@
-# users : users/{{user_id}}/info , user_id is never changed, user_name can changed. User root cann't be deleted and always exists
+# users : users/$user_id/info , user_id is never changed, user_name can changed. User root cann't be deleted and always exists
 "users/root/info" = '{"type":"root","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 
 # devices,set & update by register_device_doc@node_daemon
-#"devices/ood1/doc" = "ood1_doc"
+"devices/ood1/doc" = "ood1_doc"
 # devices,set & update by update_device_info@node_daemon
 #"devices/ood1/info" = "ood1_info"
 
@@ -203,19 +203,18 @@
         "0":{
             "target_state":"Running",
             "app_id":"home-station",
-            "username":"root"
-            "service_docker_images" : "filebrowser/filebrowser:s6",
+            "user_id":"root",
+            "docker_image_name" : "filebrowser/filebrowser:s6",
             "data_mount_point" : "/srv",
             "cache_mount_point" : "/database/",
-            "local_cache_mount_point" : "/config/",
             "extra_mounts" : {
-                "/opt/buckyos/data/root/home-station/:/srv",
+                "/opt/buckyos/data/root/home-station/config":"/config"
             },
             "max_cpu_num" : 4,
             "max_cpu_percent" : 80, 
             "memory_quota" : 1073741824, 
             "tcp_ports" : {
-                "20000":80
+                "20080":80
             }
         }    
     }
@@ -242,7 +241,7 @@
                             "upstream":"http://127.0.0.1:3300"
                         },
                         "/":{
-                            "upstream":"http://127.0.0.1:20000"
+                            "upstream":"http://127.0.0.1:20080"
                         }
                     }
                 },
