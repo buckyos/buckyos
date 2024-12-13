@@ -7,8 +7,8 @@ fn main() {
         .define("UNICODE", None)
         .flag_if_supported("-std=c11")
         .file("src/entry.cpp")
-        .file("src/SystemState.cpp")
         .file("src/TrayMenu.cpp")
+        .file("src/process_kits.cpp")
         .compile("tray-controller");
 
     println!("cargo:rustc-link-lib=user32");

@@ -1,5 +1,7 @@
 #![windows_subsystem = "windows"]
 
+mod ffi_extern;
+
 extern "C" {
     fn entry();
 }

@@ -94,7 +94,7 @@ void query_buckyos_status(void (*callback)(bool is_success, BuckyStatus status, 
         return;
     }
 
-    if (exist_process_map.size() > 0) {
+    if (not_exist_process_set.size() > 0) {
         if (exist_process_map.size() > 0) {
             callback(true, BuckyStatus::Failed, userdata);
         }

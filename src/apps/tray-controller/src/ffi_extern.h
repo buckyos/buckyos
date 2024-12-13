@@ -22,7 +22,8 @@ extern "C" {
         const char* home_page_url;
         const char* start_cmd;
         const char* stop_cmd;
-        bool is_running;
+        char is_running;
     } ApplicationInfo;
-    void list_application(int32_t seq, void (*callback)(bool is_success, ApplicationInfo* apps, int32_t app_count,  int32_t seq, void* user_data), void* userdata);
+    
+    void list_application(int32_t seq, void (*callback)(char is_success, ApplicationInfo* apps, int32_t app_count,  int32_t seq, void* user_data), void* userdata);
 }
