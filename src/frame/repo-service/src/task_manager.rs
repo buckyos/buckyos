@@ -28,8 +28,6 @@ impl TaskManager {
             id: task_id.clone(),
             package_id,
             status: TaskStatus::Pending,
-            status_msg: None,
-            error: None,
             deps: vec![],
             start_time: now_time,
             finish_time: 0,
@@ -44,8 +42,6 @@ impl TaskManager {
         let task = Task::IndexUpdateTask {
             id: task_id.clone(),
             status: TaskStatus::Pending,
-            status_msg: None,
-            error: None,
             start_time: now_time,
             finish_time: 0,
         };
@@ -53,32 +49,25 @@ impl TaskManager {
         Ok(task_id)
     }
 
-    pub fn set_task_status(
-        &self,
-        task_id: &str,
-        status: TaskStatus,
-        status_msg: &str,
-    ) -> RepoResult<()> {
+    pub fn set_task_status(&self, task_id: &str, status: TaskStatus) -> RepoResult<()> {
         let mut tasks = self.tasks.lock().unwrap();
         if let Some(task) = tasks.get_mut(task_id) {
             match task {
                 Task::InstallTask {
                     finish_time,
                     status: task_status,
-                    status_msg: task_status_msg,
                     ..
                 }
                 | Task::IndexUpdateTask {
                     finish_time,
                     status: task_status,
-                    status_msg: task_status_msg,
                     ..
                 } => {
-                    if status == TaskStatus::Finished || status == TaskStatus::Error {
+                    //如果status是Finished或者Error，设置finish_time
+                    if let TaskStatus::Finished | TaskStatus::Error(_) = status {
                         *finish_time = buckyos_get_unix_timestamp();
                     }
                     *task_status = status;
-                    *task_status_msg = Some(status_msg.to_string());
                 }
             }
             Ok(())

@@ -170,8 +170,10 @@ impl SourceManager {
             if update || source_config.chunk_id.is_empty() || source_config.sign.is_empty() {
                 REPO_TASK_MANAGER.set_task_status(
                     task_id,
-                    TaskStatus::Running,
-                    &format!("[{}]Updating source meta info", source_config.name),
+                    TaskStatus::Running(format!(
+                        "[{}]Updating source meta info",
+                        source_config.name
+                    )),
                 )?;
                 let source_meta = Self::get_remote_source_meta(&source_config.url).await?;
                 if source_meta.chunk_id != source_config.chunk_id {
@@ -190,8 +192,10 @@ impl SourceManager {
             } else {
                 REPO_TASK_MANAGER.set_task_status(
                     task_id,
-                    TaskStatus::Running,
-                    &format!("[{}]Downloading source index", source_config.name),
+                    TaskStatus::Running(format!(
+                        "[{}]Downloading source index",
+                        source_config.name
+                    )),
                 )?;
                 Self::make_sure_source_file_exists(
                     &source_config.url,
@@ -385,21 +389,17 @@ impl SourceManager {
         task::spawn(async move {
             match self_clone.do_install(package_id, &task_id_tmp).await {
                 Ok(_) => {
-                    if let Err(e) = REPO_TASK_MANAGER.set_task_status(
-                        &task_id_tmp,
-                        TaskStatus::Finished,
-                        "Finished",
-                    ) {
+                    if let Err(e) =
+                        REPO_TASK_MANAGER.set_task_status(&task_id_tmp, TaskStatus::Finished)
+                    {
                         error!("set_task_status failed. id: {}, err: {:?}", task_id_tmp, e);
                     }
                 }
                 Err(e) => {
                     error!("do_install failed: {:?}", e);
-                    if let Err(e) = REPO_TASK_MANAGER.set_task_status(
-                        &task_id_tmp,
-                        TaskStatus::Error,
-                        &e.to_string(),
-                    ) {
+                    if let Err(e) = REPO_TASK_MANAGER
+                        .set_task_status(&task_id_tmp, TaskStatus::Error(e.to_string()))
+                    {
                         error!("set_task_status failed. id: {}, err: {:?}", task_id_tmp, e);
                     };
                 }
@@ -418,21 +418,17 @@ impl SourceManager {
         task::spawn(async move {
             match self_clone.build_source_list(update, &task_id_tmp).await {
                 Ok(_) => {
-                    if let Err(e) = REPO_TASK_MANAGER.set_task_status(
-                        &task_id_tmp,
-                        TaskStatus::Finished,
-                        "Finished",
-                    ) {
+                    if let Err(e) =
+                        REPO_TASK_MANAGER.set_task_status(&task_id_tmp, TaskStatus::Finished)
+                    {
                         error!("set_task_status failed. id: {}, err: {:?}", task_id_tmp, e);
                     }
                 }
                 Err(e) => {
                     error!("update_index failed: {:?}", e);
-                    if let Err(e) = REPO_TASK_MANAGER.set_task_status(
-                        &task_id_tmp,
-                        TaskStatus::Error,
-                        &e.to_string(),
-                    ) {
+                    if let Err(e) = REPO_TASK_MANAGER
+                        .set_task_status(&task_id_tmp, TaskStatus::Error(e.to_string()))
+                    {
                         error!("set_task_status failed. id: {}, err: {:?}", task_id_tmp, e);
                     }
                 }
@@ -445,8 +441,7 @@ impl SourceManager {
     pub async fn do_install(&self, package_id: PackageId, task_id: &str) -> RepoResult<()> {
         REPO_TASK_MANAGER.set_task_status(
             task_id,
-            TaskStatus::Running,
-            "Resolving dependencies",
+            TaskStatus::Running("Resolving dependencies".to_string()),
         )?;
         let version_desc = if let Some(version) = &package_id.version {
             version.clone()
@@ -465,8 +460,7 @@ impl SourceManager {
             let dep_id = format!("{}#{}", dep.name, dep.version);
             REPO_TASK_MANAGER.set_task_status(
                 task_id,
-                TaskStatus::Running,
-                &format!("Downloading {}", dep_id),
+                TaskStatus::Running(format!("Downloading {}", dep_id)),
             )?;
             self.pull_pkg(&dep).await?;
         }
