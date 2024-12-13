@@ -41,7 +41,7 @@ void TrayMenu::popup(POINT& display_pos, bool is_buckyos_running) {
 	list_application(this->m_seq, list_application_callback, (void*)this);
 }
 
-void TrayMenu::list_application_callback(bool is_success, ::ApplicationInfo* apps, int32_t app_count, int seq, void* user_data) {
+void TrayMenu::list_application_callback(char is_success, ::ApplicationInfo* apps, int32_t app_count, int seq, void* user_data) {
 	TrayMenu* self = (TrayMenu*)user_data;
 	std::set<TrayMenu*>::const_iterator it = s_objs.find(self);
 	if (it == s_objs.end()) {
@@ -122,7 +122,7 @@ void TrayMenu::list_application_callback(bool is_success, ::ApplicationInfo* app
 				home_page_url,
 				start_cmd,
 				stop_cmd,
-				app->is_running,
+				app->is_running == 1,
 			});
 
 			free(name);
@@ -176,16 +176,22 @@ void TrayMenu::do_popup_menu() {
 }
 
 void TrayMenu::proc_open_homepage(TrayMenu* self) {
-	HINSTANCE handle = ShellExecute(
-			NULL,
-			L"open",
-			L"https://www.baidu.com",
-			NULL,
-			NULL,
-			SW_SHOWNORMAL // 窗口显示状态
-		);
+    NodeInfomation* node_info = get_node_info();
+	
+	if (node_info->home_page_url) {
+		HINSTANCE handle = ShellExecuteA(
+				NULL,
+				"open",
+				node_info->home_page_url,
+				NULL,
+				NULL,
+				SW_SHOWNORMAL
+			);
+		CloseHandle(handle);
+		
+	}
 
-	CloseHandle(handle);
+    free_node_info(node_info);
 }
 
 void TrayMenu::proc_start(TrayMenu* self) {

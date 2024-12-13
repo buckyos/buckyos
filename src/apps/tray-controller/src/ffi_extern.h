@@ -7,8 +7,9 @@ extern "C" {
     typedef enum {
         Running = 0,
         Stopped = 1,
-        NotInstall = 2,
-        Failed = 3,
+        NotActive = 2,
+        NotInstall = 3,
+        Failed = 4,
     } BuckyStatus;
 
     typedef void * BuckyStatusScaner;
@@ -26,4 +27,12 @@ extern "C" {
     } ApplicationInfo;
     
     void list_application(int32_t seq, void (*callback)(char is_success, ApplicationInfo* apps, int32_t app_count,  int32_t seq, void* user_data), void* userdata);
+
+    typedef struct NodeInfomation {
+        const char* node_id;
+        const char* home_page_url;
+    };
+
+    NodeInfomation* get_node_info();
+    void free_node_info(NodeInfomation* info);
 }

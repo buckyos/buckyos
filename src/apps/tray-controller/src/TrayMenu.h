@@ -29,7 +29,7 @@ public:
 
 private:
 
-	static void list_application_callback(bool is_success, ::ApplicationInfo* apps, int32_t app_count, int seq, void* user_data);
+	static void list_application_callback(char is_success, ::ApplicationInfo* apps, int32_t app_count, int seq, void* user_data);
 	void do_popup_menu();
 
 	static void proc_open_homepage(TrayMenu* self);

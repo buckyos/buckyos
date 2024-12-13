@@ -21,7 +21,7 @@ void bucky_status_scaner_stop(BuckyStatusScaner scaner) {
 	delete ptr;
 }
 
-void list_application(int32_t seq, void (*callback)(bool is_success, ApplicationInfo* apps, int32_t app_count,  int32_t seq, void* user_data), void* userdata) {
+void list_application(int32_t seq, void (*callback)(char is_success, ApplicationInfo* apps, int32_t app_count,  int32_t seq, void* user_data), void* userdata) {
 	std::vector<ApplicationInfo> apps;
 	{
 		ApplicationInfo app;
@@ -45,4 +45,17 @@ void list_application(int32_t seq, void (*callback)(bool is_success, Application
 	}
 
 	callback(true, apps.data(), apps.size(), seq, userdata);
+}
+
+NodeInfomation info = NodeInfomation {
+	NULL,
+	"http://www.baidu.com"
+};
+
+NodeInfomation* get_node_info() {
+	return &info;
+}
+
+void free_node_info(NodeInfomation* info) {
+	
 }
