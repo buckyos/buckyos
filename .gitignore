@@ -8,6 +8,7 @@ package-lock.json
 src/kernel/node_active/dist/
 src/kernel/buckyos_sdk/dist/
 src/kernel/buckyos_sdk/node_modules/
+src/kernel/task_manager/tasks.db
 src/rootfs/bin/active/index.d.ts
 src/rootfs/bin/active/
 src/rootfs/bin/cyfs_gateway/cyfs_gateway

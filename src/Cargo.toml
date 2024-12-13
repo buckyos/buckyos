@@ -26,6 +26,7 @@ members = [
     "./kernel/verify_hub",   
     "./kernel/node_daemon",
     "./kernel/scheduler", 
+    "./kernel/task_manager", 
     "./frame/repo-service", 
 
     #"./apps/tray-controller"

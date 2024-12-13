@@ -1,0 +1,14 @@
+[package]
+name = "task-manager"
+version = "0.1.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@alexsun"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+warp = "*"
+chrono = { version = "*", features = ["serde"] }
+rusqlite =  { version = "*", features = ["bundled"] }
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+
