@@ -101,5 +101,26 @@ impl KVStoreProvider for SledStore {
         }
         Ok(result)
     }
+
+    async fn list_direct_children(&self, prefix: String) -> Result<Vec<String>> {
+        let mut result = Vec::new();
+        let prefix = prefix.trim_end_matches('/').to_string();
+        
+        // 计算范围的起始和结束
+        let start = format!("{}/", prefix);
+        let end = format!("{}/\u{FFFF}", prefix); // \u{FFFF} 是一个很大的 Unicode 字符
+        
+        for item in self.db.range(start.as_bytes()..end.as_bytes()) {
+            let (key, _) = item.map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
+            let key_str = String::from_utf8_lossy(&key).to_string();
+            
+
+            if !key_str[prefix.len()+1..].contains('/') {
+                result.push(key_str);
+            }
+        }
+
+        Ok(result)
+    }
 }
 

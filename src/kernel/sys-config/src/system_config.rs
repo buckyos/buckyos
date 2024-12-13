@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use std::sync::Arc;
 use tokio::sync::OnceCell;
+use crate::app_list::AppConfigNode;
 
 #[derive(Error, Debug)]
 pub enum SystemConfigError {
@@ -87,6 +88,17 @@ impl SystemConfigClient {
         Ok(0)
     }
 
+    pub async fn set_by_json_path(&self,key:&str,json_path:&str,value:&str) -> Result<u64> {
+        let client = self.get_krpc_client().await;
+        if client.is_err() {
+            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
+        }
+        let client = client.unwrap();
+        client.call("sys_config_set_by_json_path", json!({"key": key, "json_path": json_path, "value": value})).await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+        Ok(0)
+    }
+
     pub async fn create(&self,key:&str,value:&str) -> Result<u64> {
         let client = self.get_krpc_client().await;
         if client.is_err() {
@@ -113,6 +125,18 @@ impl SystemConfigClient {
         Ok(0)
     }
 
+    pub async fn append(&self,key:&str,value:&str) -> Result<u64> {
+        let client = self.get_krpc_client().await;
+        if client.is_err() {
+            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
+        }
+        let client = client.unwrap();
+        client.call("sys_config_append", json!({"key": key, "append_value": value})).await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+        Ok(0)
+    }
+
+    //list direct children
     pub async fn list(&self,key:&str) -> Result<Vec<String>> {
         unimplemented!()
     }
@@ -129,13 +153,48 @@ impl SystemConfigClient {
         Ok(result)
     }
 
-    //helper funciton
-    pub async fn install_app(&self,app_config:&Value) -> Result<u64> {
+    //TODO: help app installer dev easy to generate right app-index
+    pub async fn install_app_service(&self,user_id:&str,app_config:&AppConfigNode,shortcut:Option<String>) -> Result<u64> {
+        // TODO: if you want install a web-client-app, use another function
         //1. create users/{user_id}/apps/{appid}/config
-        //2. update rbac
-        //3. update gateway shortcuts
-        //4. if this is a web-client-app, set services/gateway/base_config
+        let app_id = app_config.app_id.as_str();
+        let config_string = serde_json::to_string(app_config).map_err(|error| {
+            let error_string = error.to_string();
+            error!("convert app_config to string failed! {}",error_string.as_str());
+            SystemConfigError::ReasonError(error_string)
+        })?;
 
+        let client = self.get_krpc_client().await;
+        if client.is_err() {
+            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
+        }
+        let client = client.unwrap();   
+        client.call("sys_config_create",json!({"key":format!("users/{}/apps/{}/config",user_id,app_id),"value":config_string})).await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+        //2. update rbac
+        client.call("sys_config_append",json!({"key":"system/rbac/policy","append_value":format!("\ng, {}, app",app_id)})).await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+
+        //3. update gateway shortcuts
+        if shortcut.is_some() {
+            let short_name = shortcut.unwrap();
+            let short_json_path = format!("/shortcuts/{}",short_name.as_str());
+            let short_json_value = json!({
+                "type":"app",
+                "user_id":user_id,
+                "app_id":app_id
+            });
+            client.call("sys_config_set_by_json_path",json!({"key":"services/gateway/setting","json_path":short_json_path,"value":short_json_value})).await
+                .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+
+            info!("set shortcut {} for user {}'s app {} success!",short_name,user_id,app_id);
+        }
+
+        info!("install app service {} for user {} success!",app_id,user_id);
+        Ok(0)
+    }
+
+    pub async fn get_valid_app_index(&self,user_id:&str) -> Result<u64> {
         unimplemented!();
     }
 

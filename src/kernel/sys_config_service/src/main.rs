@@ -172,6 +172,118 @@ async fn handle_delete(params:Value,session_token:&RPCSessionToken) -> Result<Va
     return Ok(Value::Null);
 }
 
+async fn handle_append(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
+    let key = params.get("key");
+    if key.is_none() {
+        return Err(RPCErrors::ReasonError("Missing key".to_string()));
+    }
+    let key = key.unwrap();
+    let key = key.as_str().unwrap();
+
+    let append_value = params.get("append_value");
+    if append_value.is_none() {
+        return Err(RPCErrors::ReasonError("Missing append_value".to_string()));
+    }
+    let append_value = append_value.unwrap();
+    let append_value = append_value.as_str().unwrap();
+
+    //check access control
+    if session_token.userid.is_none() {
+        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    }
+    let userid = session_token.userid.as_ref().unwrap();
+    let full_res_path = format!("kv://{}",key);
+    if !enforce(userid, session_token.appid.as_deref(), full_res_path.as_str(), "write").await {
+        return Err(RPCErrors::NoPermission("No read permission".to_string()));
+    }
+
+    //read and append
+    let store = SYS_STORE.lock().await;
+    let result = store.get(String::from(key)).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    if result.is_none() {
+        warn!("key:[{}] not exist,cann't append",key);
+        return Err(RPCErrors::KeyNotExist);
+    } else {
+        let old_value = result.unwrap();
+        let new_value = format!("{}{}",old_value,append_value);
+        store.set(String::from(key),new_value).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        return Ok(Value::Null);
+    }
+}
+
+async fn handle_set_by_json_path(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
+    //check params
+    let key = params.get("key");
+    if key.is_none() {
+        return Err(RPCErrors::ReasonError("Missing key".to_string()));
+    }
+    let key = key.unwrap();
+    let key = key.as_str().unwrap();
+
+    let new_value = params.get("value");
+    if new_value.is_none() {
+        return Err(RPCErrors::ReasonError("Missing value".to_string()));
+    }
+    let new_value = new_value.unwrap();
+    let new_value = new_value.as_str().unwrap();
+    let new_value:Value = serde_json::from_str(new_value).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+
+    let json_path = params.get("json_path");
+    if json_path.is_none() {
+        return Err(RPCErrors::ReasonError("Missing json_path".to_string()));
+    }
+    let json_path = json_path.unwrap();
+    let json_path = json_path.as_str().unwrap();
+
+    //check access control
+    if session_token.userid.is_none() {
+        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    }
+    let userid = session_token.userid.as_ref().unwrap();
+    let full_res_path = format!("kv://{}",key);
+    if !enforce(userid, session_token.appid.as_deref(), full_res_path.as_str(), "write").await {
+        return Err(RPCErrors::NoPermission("No read permission".to_string()));
+    }
+
+    //do business logic
+    let store = SYS_STORE.lock().await;
+    let result = store.get(String::from(key)).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    if result.is_none() {
+        warn!("key:[{}] not exist,cann't append",key);
+        return Err(RPCErrors::KeyNotExist);
+    } else {
+        let old_value = result.unwrap();
+        let mut old_value:Value = serde_json::from_str(&old_value).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        set_json_by_path(&mut old_value,json_path,Some(&new_value));
+        store.set(String::from(key),serde_json::to_string(&old_value).unwrap()).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        return Ok(Value::Null);
+    }
+}
+
+async fn handle_list(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
+    //check params
+    let key = params.get("key");
+    if key.is_none() {
+        return Err(RPCErrors::ReasonError("Missing key".to_string()));
+    }
+    let key = key.unwrap();
+    let key = key.as_str().unwrap();
+
+    //check access control
+    if session_token.userid.is_none() {
+        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    }
+    let userid = session_token.userid.as_ref().unwrap();
+    let full_res_path = format!("kv://{}", key);
+    if !enforce(userid, session_token.appid.as_deref(), full_res_path.as_str(), "read").await {
+        return Err(RPCErrors::NoPermission("No read permission".to_string()));
+    }
+
+    //do business logic
+    let store = SYS_STORE.lock().await;
+    unimplemented!();
+}
+
 async fn dump_configs_for_scheduler(_params:Value,session_token:&RPCSessionToken) -> Result<Value> {
     let appid = session_token.appid.as_deref().unwrap();
     if appid != "kernel" {
@@ -230,8 +342,17 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
             "sys_config_set" => {
                 return handle_set(param,&rpc_session_token).await;
             },
+            "sys_config_set_by_json_path" => {
+                return handle_set_by_json_path(param,&rpc_session_token).await;
+            },
             "sys_config_delete" => {
                 return handle_delete(param,&rpc_session_token).await;
+            },
+            "sys_config_append" => {
+                return handle_append(param,&rpc_session_token).await;
+            },
+            "sys_config_list" => {
+                return handle_list(param,&rpc_session_token).await;
             },
             "dump_configs_for_scheduler" => {
                 return dump_configs_for_scheduler(param,&rpc_session_token).await;

@@ -32,6 +32,8 @@ pub enum RPCErrors {
     InvalidPassword,
     #[error("User Not Found:{0}")]
     UserNotFound(String),
+    #[error("Key not exist")]
+    KeyNotExist,
 }
 pub type Result<T> = std::result::Result<T, RPCErrors>;
 pub struct kRPC {
