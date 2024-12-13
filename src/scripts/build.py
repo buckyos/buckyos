@@ -23,15 +23,17 @@ def build(skip_web_app, skip_install, target):
 if __name__ == "__main__":
     skip_web_app = False
     skip_install = False
-    system = platform.system()
-    arch = platform.machine()
+    system = platform.system() # Linux / Windows / Darwin
+    arch = platform.machine() # x86_64 / AMD64 / arm64 / arm
+    print(f"DEBUG: system:{system},arch:{arch}")
     target = ""
-    if system == "Linux" and arch == "AMD64":
+    if system == "Linux" and (arch == "x86_64" or arch == "AMD64"):
         target = "x86_64-unknown-linux-musl"
-    elif system == "Windows" and arch == "AMD64":
+    elif system == "Windows" and (arch == "x86_64" or arch == "AMD64"):
         target = "x86_64-pc-windows-msvc"
-    elif system == "Linux" and arch == "aarch64":
+    elif system == "Linux" and (arch == "x86_64" or arch == "AMD64"):
         target = "aarch64-unknown-linux-gnu"
+    print(f"DEBUG: target is : {target}")
 
     for arg in sys.argv:
         if arg == "--no-build-web-apps":
