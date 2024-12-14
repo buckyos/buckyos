@@ -1,16 +1,16 @@
 #![allow(unused, dead_code)]
 
 mod chunk;
-mod object;
-mod local_store;
 mod chunk_mgr;
+mod local_store;
 mod ndn_client;
+mod object;
 
 pub use chunk::*;
-pub use local_store::*;
 pub use chunk_mgr::*;
+pub use local_store::*;
+pub use ndn_client::*;
 pub use object::*;
-
 
 use thiserror::Error;
 
@@ -40,9 +40,7 @@ pub enum NdnError {
     DecodeError(String),
 }
 
-
 pub type NdnResult<T> = std::result::Result<T, NdnError>;
 
 // mod http;
 // pub use http::*;
-

@@ -35,6 +35,7 @@ pub struct SourceNodeConfig {
     pub author: String,
     pub chunk_id: String,
     pub sign: String,
+    pub priority: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

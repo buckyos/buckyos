@@ -44,6 +44,7 @@ impl SourceManager {
             REPO_SOURCE_CONFIG_DB
         );
         let pool = SqlitePool::connect(&db_url).await?;
+        // priority表示优先级，越低优先级越高
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS source_node (
                 id INTEGER PRIMARY KEY,
@@ -52,6 +53,7 @@ impl SourceManager {
                 author TEXT NOT NULL,
                 chunk_id TEXT NOT NULL DEFAULT '',
                 sign TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 0,
             )",
         )
         .execute(&pool)
@@ -76,7 +78,7 @@ impl SourceManager {
 
     async fn load_source_config_list(&self) -> RepoResult<Vec<SourceNodeConfig>> {
         let source_configs = sqlx::query_as::<_, SourceNodeConfig>(
-            "SELECT id, name, url, author, chunk_id, sign FROM source_node",
+            "SELECT id, name, url, author, chunk_id, sign, priority FROM source_node",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -91,7 +93,7 @@ impl SourceManager {
         let mut tx = self.pool.begin().await?;
         for source_config in source_config_list {
             sqlx::query(
-                "INSERT OR REPLACE INTO source_node (id, name, url, author, chunk_id, sign) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT OR REPLACE INTO source_node (id, name, url, author, chunk_id, sign, priority) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )
             .bind(source_config.id)
             .bind(&source_config.name)
@@ -99,6 +101,7 @@ impl SourceManager {
             .bind(&source_config.author)
             .bind(&source_config.chunk_id)
             .bind(&source_config.sign)
+            .bind(source_config.priority)
             .execute(&mut *tx)
             .await?;
         }
@@ -116,7 +119,7 @@ impl SourceManager {
     ) -> RepoResult<()> {
         if !local_file.exists() {
             //从source.url请求对应的chunk_id
-            pull_remote_chunk(url, author, sign, chunk_id, REPO_CHUNK_MGR_ID).await?;
+            Downloader::pull_remote_chunk(url, author, sign, chunk_id).await?;
             chunk_to_local_file(&chunk_id, REPO_CHUNK_MGR_ID, &local_file).await?;
         }
         Ok(())
@@ -130,6 +133,7 @@ impl SourceManager {
             author: "".to_string(),
             chunk_id: "".to_string(),
             sign: "".to_string(),
+            priority: 0,
         }
     }
 
