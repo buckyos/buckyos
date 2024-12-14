@@ -128,40 +128,53 @@ extern "C" fn bucky_status_scaner_scan(
                 _ = tokio::time::sleep(interval).fuse() => {
                     let old_status = status;
 
-                    unsafe {
-                        let info = get_node_info();
-                        if info.is_null() || (*info).node_id.is_null() {
-                            status = BuckyStatus::NotActive;
-                            interval = std::time::Duration::from_millis(5000);
-                        }
-                        free_node_info(info);
+                    let bin_dir = get_buckyos_system_bin_dir();
+
+                    let is_dir = match fs::metadata(bin_dir) {
+                        Ok(meta) if meta.is_dir() => true,
+                        _ => false
+                    };
+                    if !is_dir {
+                        status = BuckyStatus::NotInstall;
+                        interval = std::time::Duration::from_millis(5000);
                     }
 
-                    if status != BuckyStatus::NotActive {
-
-                        system.refresh_all();
-                        let mut exist_process = HashSet::new();
-                        let mut not_exist_process = buckyos_process.clone();
-
-                        for process in system.processes().values() {
-                            let name = process.name().to_string_lossy().to_ascii_lowercase();
-                            if buckyos_process.contains(name.as_str()) {
-                                not_exist_process.remove(name.as_str());
-                                exist_process.insert(name);
-                            }
-                        }
-
-                        if !not_exist_process.is_empty() {
-                            if !exist_process.is_empty() {
-                                status = BuckyStatus::Failed;
-                                interval = std::time::Duration::from_millis(500);
-                            } else {
-                                status = BuckyStatus::Stopped;
+                    if status != BuckyStatus::NotInstall {
+                        unsafe {
+                            let info = get_node_info();
+                            if info.is_null() || (*info).node_id.is_null() {
+                                status = BuckyStatus::NotActive;
                                 interval = std::time::Duration::from_millis(5000);
                             }
-                        } else {
-                            status = BuckyStatus::Running;
-                            interval = std::time::Duration::from_millis(5000);
+                            free_node_info(info);
+                        }
+    
+                        if status != BuckyStatus::NotActive {
+    
+                            system.refresh_all();
+                            let mut exist_process = HashSet::new();
+                            let mut not_exist_process = buckyos_process.clone();
+    
+                            for process in system.processes().values() {
+                                let name = process.name().to_string_lossy().to_ascii_lowercase();
+                                if buckyos_process.contains(name.as_str()) {
+                                    not_exist_process.remove(name.as_str());
+                                    exist_process.insert(name);
+                                }
+                            }
+    
+                            if !not_exist_process.is_empty() {
+                                if !exist_process.is_empty() {
+                                    status = BuckyStatus::Failed;
+                                    interval = std::time::Duration::from_millis(500);
+                                } else {
+                                    status = BuckyStatus::Stopped;
+                                    interval = std::time::Duration::from_millis(5000);
+                                }
+                            } else {
+                                status = BuckyStatus::Running;
+                                interval = std::time::Duration::from_millis(5000);
+                            }
                         }
                     }
 
