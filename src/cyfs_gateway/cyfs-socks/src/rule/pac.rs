@@ -135,6 +135,7 @@ impl PacScriptExecutor {
             RuleError::InvalidFormat(msg)
         })?;
 
+        info!("RuleSelect result: {:?}", result);
         let actions = RuleAction::from_str_list(&result.to_std_string().unwrap())?;
 
         Ok(RuleOutput { actions })
@@ -258,8 +259,12 @@ impl PacScriptManager {
 #[async_trait::async_trait]
 impl RuleSelector for PacScriptManager {
     async fn select(&self, input: RuleInput) -> RuleResult<RuleOutput> {
+        // info!("Begin select pac rule for: {:?}", input);
+
         let executor = PacScriptExecutor::new()?;
         executor.load(&self.script)?;
+
+        // info!("PAC script loaded");
 
         executor.rule_select(input)
     }
@@ -443,18 +448,11 @@ mod tests {
         buckyos_kit::init_logging("test_pac_script_manager");
 
         let src = r#"
-            function FindProxyForURL(url, host) {
-                if (isPlainHostName(host)) {
-                    return "DIRECT";
-                }
-                return "PROXY"
-            }
-
             Math.abs(-1);
             console.info("PAC script loaded");
 
-            function RuleSelect(url, source) {
-                console.info(`RuleSelect called: ${url}, ${source.ip}, ${JSON.stringify(source)}`);
+            function RuleSelect(dest, source) {
+                console.info(`RuleSelect called: ${dest.url}, ${source.ip}, ${JSON.stringify(source)}`);
                 console.info("RuleSelect called");
                 return "PROXY 127.0.0.1:8080; DIRECT";
             }
@@ -475,7 +473,11 @@ mod tests {
                 http_headers: vec![("User-Agent".to_string(), "Mozilla".to_string())],
                 protocol: "http".to_string(),
             },
-            dest: "http://example.com".parse().unwrap(),
+            dest: RequestDestInfo {
+                url: url::Url::parse("http://www.google.com").unwrap(),
+                host: "www.google.com".to_string(),
+                port: 80,
+            },
         };
 
         let ret = manager.rule_select(input).unwrap();

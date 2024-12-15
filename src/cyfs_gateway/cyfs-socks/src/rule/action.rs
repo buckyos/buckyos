@@ -71,6 +71,10 @@ impl RuleAction {
 
         let mut actions = Vec::new();
         for item in items {
+            if item.is_empty() {
+                continue;
+            }
+            
             let action = RuleAction::from_str(item)?;
             actions.push(action);
         }

@@ -143,9 +143,12 @@ impl Socks5Proxy {
         loop {
             match listener.accept().await {
                 Ok((socket, addr)) => {
-                    if let Err(e) = self.on_new_connection(socket, addr).await {
-                        error!("Error processing socks5 connection: {}", e);
-                    }
+                    let this = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = this.on_new_connection(socket, addr).await {
+                            error!("Error processing socks5 connection: {}", e);
+                        }
+                    });
                 }
                 Err(err) => {
                     error!("Error accepting connection: {}", err);
@@ -286,6 +289,9 @@ impl Socks5Proxy {
             }
         };
 
+        // Reply success after connected
+        Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::Succeeded).await?;
+
         let (read, write) = tokio::io::copy_bidirectional(&mut stream, &mut socket)
             .await
             .map_err(|e| {
@@ -320,6 +326,9 @@ impl Socks5Proxy {
                 .await;
             }
         };
+
+        // Reply success after data tunnel connected
+        Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::Succeeded).await?;
 
         let (read, write) = tokio::io::copy_bidirectional(&mut tunnel, &mut socket)
             .await
