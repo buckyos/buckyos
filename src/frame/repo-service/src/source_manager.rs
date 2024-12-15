@@ -8,7 +8,7 @@ use async_recursion::async_recursion;
 use buckyos_kit::get_buckyos_service_data_dir;
 use kv::source;
 use log::*;
-use ndn_lib::ChunkId;
+use ndn_lib::{ChunkId, ChunkMgr};
 use package_lib::PackageId;
 use serde::ser;
 use sqlx::{Executor, Pool, Sqlite, SqlitePool};
@@ -30,6 +30,7 @@ pub struct SourceManager {
     source_list: Arc<RwLock<Vec<SourceNode>>>,
     pool: SqlitePool,
     status_flag: Arc<Mutex<RepoStatus>>,
+    is_index_server: bool, //是否是一个index server，如果是的话，需要接受外部的pub请求
 }
 
 impl SourceManager {
@@ -69,10 +70,25 @@ impl SourceManager {
         .execute(&pool)
         .await?;
 
+        //读取REPO_CONFIG_FILE配置，设置is_index_server的值
+        let config_file = repo_dir.join(REPO_CONFIG_FILE);
+        let is_index_server = if config_file.exists() {
+            let config = std::fs::read_to_string(&config_file)?;
+            let config: serde_json::Value = serde_json::from_str(&config)?;
+            if let Some(is_index_server) = config.get("is_index_server") {
+                is_index_server.as_bool().unwrap_or(false)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         Ok(Self {
             source_list: Arc::new(RwLock::new(Vec::new())),
             pool,
             status_flag: Arc::new(Mutex::new(RepoStatus::Idle)),
+            is_index_server,
         })
     }
 
@@ -225,8 +241,6 @@ impl SourceManager {
             *source_list = new_source_list;
             //TODO:删除旧的db文件
         }
-
-        // self.is_index_updating.store(false, Ordering::Release);
 
         Ok(())
     }
@@ -471,23 +485,55 @@ impl SourceManager {
         Ok(())
     }
 
-    pub async fn pull_pkg(&self, meta_info: &PackageMeta) -> RepoResult<()> {
-        if self.check_exist(meta_info).await? {
+    pub async fn pull_pkg(&self, okg_meta: &PackageMeta) -> RepoResult<()> {
+        if self.check_exist(okg_meta).await? {
             return Ok(());
         }
-        if let Err(e) =
-            Verifier::verify(&meta_info.author, &meta_info.chunk_id, &meta_info.sign).await
+        if let Err(e) = Verifier::verify(&okg_meta.author, &okg_meta.chunk_id, &okg_meta.sign).await
         {
             return Err(RepoError::VerifyError(format!(
                 "verify failed, meta:{:?}, err:{}",
-                meta_info, e
+                okg_meta, e
             )));
         }
-        unimplemented!("pull from other zone")
+        let url = format!("http://web3.buckyos.com/{}", okg_meta.author);
+        Downloader::pull_remote_chunk(&url, &okg_meta.author, &okg_meta.sign, &okg_meta.chunk_id)
+            .await
     }
 
-    pub async fn check_exist(&self, meta_info: &PackageMeta) -> RepoResult<bool> {
-        //TODO: 通过chunk manager查询chunk是否存在
-        unimplemented!("check_exist")
+    pub async fn check_exist(&self, pkg_meta: &PackageMeta) -> RepoResult<bool> {
+        let chunk_id = ChunkId::new(&pkg_meta.chunk_id).map_err(|e| {
+            error!("Parse chunk id failed: {:?}", e);
+            RepoError::ParseError(pkg_meta.chunk_id.clone(), e.to_string())
+        })?;
+        let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(Some(REPO_CHUNK_MGR_ID)).await;
+        if chunk_mgr.is_none() {
+            return Err(RepoError::NdnError("no chunk mgr".to_string()));
+        }
+        let chunk_mgr = chunk_mgr.unwrap();
+        let mut chunk_mgr = chunk_mgr.lock().await;
+        chunk_mgr.is_chunk_exist(&chunk_id).await.map_err(|e| {
+            error!("is_chunk_exist failed: {:?}", e);
+            RepoError::NdnError(format!("is_chunk_exist failed: {:?}", e))
+        })
+    }
+
+    pub async fn pub_pkg(&self, pkg_meta: &PackageMeta, is_from_zone: bool) -> RepoResult<()> {
+        if !is_from_zone && !self.is_index_server {
+            return Err(RepoError::PermissionError(
+                "Not an index server, can not pub package".to_string(),
+            ));
+        }
+        if is_from_zone {
+            //需要确认chunk_id是否已经存在
+            if !self.check_exist(pkg_meta).await? {
+                return Err(RepoError::NotFound(format!(
+                    "Pub pkg chunk {} not exists",
+                    pkg_meta.chunk_id
+                )));
+            }
+        }
+        let local_index_node = self.source_list.read().await[0].clone();
+        local_index_node.insert_pkg_meta(pkg_meta).await
     }
 }

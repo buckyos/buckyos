@@ -44,6 +44,10 @@ pub enum RepoError {
     DbError(#[from] sqlx::Error),
     #[error("Json Error: {0}")]
     JsonError(#[from] serde_json::Error),
+    #[error("Ndn Error: {0}")]
+    NdnError(String),
+    #[error("Permission Error: {0}")]
+    PermissionError(String),
 }
 
 pub type RepoResult<T> = std::result::Result<T, RepoError>;

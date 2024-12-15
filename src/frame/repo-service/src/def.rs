@@ -7,6 +7,7 @@ pub const REPO_CHUNK_MGR_ID: &str = "repo_chunk_mgr";
 pub const INDEX_DIR_NAME: &str = "index";
 pub const LOCAL_INDEX_DB: &str = "local.db";
 pub const REPO_SOURCE_CONFIG_DB: &str = "source_config.db";
+pub const REPO_CONFIG_FILE: &str = "repo_config.json";
 pub const TASK_EXPIRE_TIME: u64 = 30 * 60; //任务超时时间,单位秒
 
 #[derive(Clone, Debug, FromRow)]

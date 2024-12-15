@@ -1,8 +1,10 @@
 use crate::def::*;
 use crate::error::*;
 use crate::verifier::Verifier;
+use core::error;
 use futures_util::StreamExt;
 use hex;
+use log::*;
 use ndn_lib::*;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
@@ -41,10 +43,22 @@ impl Downloader {
             .await
         {
             Ok(_) => Ok(()),
-            Err(e) => Err(RepoError::DownloadError(
-                chunk_id.to_string(),
-                e.to_string(),
-            )),
+            Err(e) => {
+                if let NdnError::AlreadyExists(_) = e {
+                    info!("chunk {} already exists", chunk_id.to_string());
+                    Ok(())
+                } else {
+                    error!(
+                        "pull remote chunk {} failed:{}",
+                        chunk_id.to_string(),
+                        e.to_string()
+                    );
+                    Err(RepoError::DownloadError(
+                        chunk_id.to_string(),
+                        e.to_string(),
+                    ))
+                }
+            }
         }
     }
 
@@ -52,10 +66,12 @@ impl Downloader {
         let client = Client::new();
 
         let response = client.get(url).send().await.map_err(|e| {
+            error!("Failed to send request: {}", e);
             RepoError::DownloadError(url.to_string(), format!("Failed to send request: {}", e))
         })?;
 
         if !response.status().is_success() {
+            error!("HTTP error: {}", response.status());
             return Err(RepoError::DownloadError(
                 url.to_string(),
                 format!("HTTP error: {}", response.status()),
@@ -73,6 +89,7 @@ impl Downloader {
                     hasher.update(&bytes);
                 }
                 Err(e) => {
+                    error!("Stream error: {}", e);
                     return Err(RepoError::DownloadError(
                         url.to_string(),
                         format!("Stream error: {}", e),
@@ -85,13 +102,12 @@ impl Downloader {
         let calculated_sha256 = hex::encode(hash_result);
 
         if calculated_sha256 != sha256 {
-            return Err(RepoError::DownloadError(
-                url.to_string(),
-                format!(
-                    "Sha256 mismatch: expected {}, got {}",
-                    sha256, calculated_sha256
-                ),
-            ));
+            let err_msg = format!(
+                "Sha256 mismatch: expected {}, got {}",
+                sha256, calculated_sha256
+            );
+            error!("{}", err_msg);
+            return Err(RepoError::DownloadError(url.to_string(), err_msg));
         }
 
         Ok(())
