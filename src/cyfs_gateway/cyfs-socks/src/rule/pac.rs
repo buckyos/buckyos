@@ -79,6 +79,14 @@ impl PacScriptExecutor {
             return Err(RuleError::InvalidScript(msg));
         }
 
+        // Prepare the dest info object
+        let mut dest_builder = ObjectInitializer::new(&mut context);
+        dest_builder.property(js_str!("url"), js_string!(input.dest.url.to_string()), Attribute::all());
+        dest_builder.property(js_str!("host"), js_string!(input.dest.host), Attribute::all());
+        dest_builder.property(js_str!("port"), JsValue::from(input.dest.port), Attribute::all());
+        let dest_map = dest_builder.build();
+
+        // Prepare the source info object
         let mut headers_builder = ObjectInitializer::new(&mut context);
         for (k, v) in input.source.http_headers.iter() {
             headers_builder.property(
@@ -109,13 +117,13 @@ impl PacScriptExecutor {
             .call(
                 &JsValue::undefined(),
                 &[
-                    JsValue::from(js_string!(input.dest.to_string())),
+                    JsValue::from(dest_map),
                     JsValue::from(source_map),
                 ],
                 &mut context,
             )
             .map_err(|e| {
-                let msg = format!("failed to call FindProxyForURL: {:?}", e);
+                let msg = format!("failed to call RuleSelect: {:?}", e);
                 error!("{}", msg);
                 RuleError::InvalidFormat(msg)
             })?;

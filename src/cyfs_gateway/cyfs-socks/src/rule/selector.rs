@@ -13,9 +13,16 @@ pub struct RequestSourceInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct RequestDestInfo {
+    pub url: Url,
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone)]
 pub struct RuleInput {
     pub source: RequestSourceInfo,
-    pub dest: Url,
+    pub dest: RequestDestInfo,
 }
 
 impl RuleInput {
@@ -30,7 +37,11 @@ impl RuleInput {
                         http_headers: vec![],
                         protocol: "http".to_string(),
                     },
-                    dest: url,
+                    dest: RequestDestInfo {
+                        url,
+                        host: domain.to_string(),
+                        port: *port,
+                    },
                 }
             }
             TargetAddr::Ip(addr) => {
@@ -41,7 +52,11 @@ impl RuleInput {
                         http_headers: vec![],
                         protocol: "tcp".to_string(),
                     },
-                    dest: url,
+                    dest: RequestDestInfo {
+                        url,
+                        host: addr.ip().to_string(),
+                        port: addr.port(),
+                    },
                 }
             }
         }
