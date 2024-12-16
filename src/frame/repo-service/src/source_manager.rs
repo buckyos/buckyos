@@ -8,7 +8,7 @@ use async_recursion::async_recursion;
 use buckyos_kit::get_buckyos_service_data_dir;
 use kv::source;
 use log::*;
-use ndn_lib::{ChunkId, ChunkMgr};
+use ndn_lib::{ChunkId, NamedDataMgr};
 use package_lib::PackageId;
 use serde::ser;
 use sqlx::{Executor, Pool, Sqlite, SqlitePool};
@@ -506,13 +506,13 @@ impl SourceManager {
             error!("Parse chunk id failed: {:?}", e);
             RepoError::ParseError(pkg_meta.chunk_id.clone(), e.to_string())
         })?;
-        let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(Some(REPO_CHUNK_MGR_ID)).await;
-        if chunk_mgr.is_none() {
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(REPO_CHUNK_MGR_ID)).await;
+        if named_mgr.is_none() {
             return Err(RepoError::NdnError("no chunk mgr".to_string()));
         }
-        let chunk_mgr = chunk_mgr.unwrap();
-        let mut chunk_mgr = chunk_mgr.lock().await;
-        chunk_mgr.is_chunk_exist(&chunk_id).await.map_err(|e| {
+        let named_mgr = named_mgr.unwrap();
+        let mut named_mgr = named_mgr.lock().await;
+        named_mgr.is_chunk_exist(&chunk_id).await.map_err(|e| {
             error!("is_chunk_exist failed: {:?}", e);
             RepoError::NdnError(format!("is_chunk_exist failed: {:?}", e))
         })
