@@ -485,19 +485,12 @@ impl SourceManager {
         Ok(())
     }
 
-    pub async fn pull_pkg(&self, okg_meta: &PackageMeta) -> RepoResult<()> {
-        if self.check_exist(okg_meta).await? {
+    pub async fn pull_pkg(&self, pkg_meta: &PackageMeta) -> RepoResult<()> {
+        if self.check_exist(pkg_meta).await? {
             return Ok(());
         }
-        if let Err(e) = Verifier::verify(&okg_meta.author, &okg_meta.chunk_id, &okg_meta.sign).await
-        {
-            return Err(RepoError::VerifyError(format!(
-                "verify failed, meta:{:?}, err:{}",
-                okg_meta, e
-            )));
-        }
-        let url = format!("http://web3.buckyos.com/{}", okg_meta.author);
-        Downloader::pull_remote_chunk(&url, &okg_meta.author, &okg_meta.sign, &okg_meta.chunk_id)
+        let url = format!("http://web3.buckyos.com/{}", pkg_meta.author);
+        Downloader::pull_remote_chunk(&url, &pkg_meta.author, &pkg_meta.sign, &pkg_meta.chunk_id)
             .await
     }
 
