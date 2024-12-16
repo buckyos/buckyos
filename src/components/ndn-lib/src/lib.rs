@@ -1,16 +1,19 @@
 #![allow(unused, dead_code)]
 
 mod chunk;
-mod chunk_mgr;
-mod local_store;
-mod ndn_client;
 mod object;
+mod local_store;
+mod named_data_mgr;
+mod cyfs_http;
+mod ndn_client;
 
-pub use chunk::*;
-pub use chunk_mgr::*;
-pub use local_store::*;
-pub use ndn_client::*;
 pub use object::*;
+pub use chunk::*;
+pub use local_store::*;
+pub use named_data_mgr::*;
+pub use cyfs_http::*;
+pub use ndn_client::*;
+
 
 use thiserror::Error;
 
@@ -38,9 +41,13 @@ pub enum NdnError {
     GetFromRemoteError(String),
     #[error("decode error: {0}")]
     DecodeError(String),
+    #[error("offset too large: {0}")]
+    OffsetTooLarge(String),
 }
+
 
 pub type NdnResult<T> = std::result::Result<T, NdnError>;
 
 // mod http;
 // pub use http::*;
+

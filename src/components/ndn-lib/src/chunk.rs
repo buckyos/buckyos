@@ -3,7 +3,7 @@ use base58::{ToBase58, FromBase58};
 use sha2::{Sha256, Digest};
 use crypto_common::hazmat::{SerializedState, SerializableState};
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite};
-use std::{io::SeekFrom, ops::Range, pin::Pin};
+use std::{future::Future, io::SeekFrom, ops::Range, pin::Pin};
 use serde_json::{json, Value};
 use hex;
 use log::*;
@@ -14,8 +14,8 @@ pub const QCID_HASH_PIECE_SIZE: u64 = 4096;
 pub const MAX_CHUNK_SIZE: u64 = 1024*1024*1024*4;
 pub const COPY_CHUNK_BUFFER_SIZE: usize = CACL_HASH_PIECE_SIZE as usize;
 
-type ChunkReader = Pin<Box<dyn AsyncRead + Unpin>>;
-type ChunkWriter = Pin<Box<dyn AsyncWrite + Unpin>>;
+pub type ChunkReader = Pin<Box<dyn AsyncRead + Unpin + Send>>;
+pub type ChunkWriter = Pin<Box<dyn AsyncWrite + Unpin>>;
 //We support 3 types of chunktype:qcid, sha256, mix at this time
 //单个
 #[derive(Debug, Clone,Eq, PartialEq)]
@@ -32,6 +32,17 @@ impl ChunkId {
             return Err(NdnError::InvalidId(chunk_id_str.to_string()));
         }
         Ok(Self { hash_hex_string:split[1].to_string(), hash_type:split[0].to_string() })
+    }
+
+    pub fn to_obj_id(&self) -> ObjId {
+        ObjId {
+            obj_type: self.hash_type.clone(),
+            obj_id: self.hash_hex_string.clone(),
+        }
+    }
+
+    pub fn from_obj_id(obj_id: &ObjId) -> Self {
+        Self { hash_hex_string:obj_id.obj_id.clone(), hash_type:obj_id.obj_type.clone() }
     }
 
     pub fn from_sha256_result(hash_result: &[u8]) -> Self {
@@ -80,9 +91,9 @@ impl ChunkId {
 
 
 pub struct ChunkHasher {
-    hash_type:String,
+    pub hash_type:String,
+    pub pos: u64,
     sha_hasher: Option<Sha256>,
-    pos: u64,
     //can extend other hash type in the future
 }
 
@@ -178,6 +189,7 @@ impl ChunkHasher {
     }
 }
 
+//TODO: this function require a seekable reader
 //quick hash is only for qcid
 pub async fn calc_quick_hash<T: AsyncRead + AsyncSeek + Unpin>(reader: &mut T, length: Option<u64>) -> NdnResult<ChunkId> {
     let length = if let Some(length) = length {
@@ -257,6 +269,7 @@ pub enum ObjectState {
 }
 
 
+#[derive(Debug, Clone,Eq, PartialEq)]
 pub enum LinkData {
     SameAs(ObjId),//Same ChunkId
     //ComposedBy(ChunkId,ObjMapId),// Base ChunkId + Diff Action Items
@@ -284,7 +297,7 @@ pub async fn copy_chunk<R, W, F>(
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
-    F: FnMut(&ChunkId, u64, &Option<ChunkHasher>) -> futures::future::BoxFuture<'static, NdnResult<()>>,
+    F: FnMut(&ChunkId, u64, &Option<ChunkHasher>) -> Pin<Box<dyn Future<Output = NdnResult<()>> + Send + 'static>>,
 {
     let mut total_copied: u64 = 0;
     let mut buffer = vec![0u8; COPY_CHUNK_BUFFER_SIZE]; 
@@ -305,7 +318,7 @@ where
         total_copied += n as u64;
 
         if let Some(ref mut progress_callback) = progress_callback {
-            progress_callback(&chunk_id, total_copied, &hasher).await?;
+            progress_callback(&chunk_id, total_copied, &hasher).await;
         }
     }
 
@@ -372,6 +385,7 @@ mod tests {
         };
 
         assert_eq!(hash_result, hash_result_restored);
-       
     }
+
+
 }

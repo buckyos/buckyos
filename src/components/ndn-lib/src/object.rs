@@ -1,7 +1,9 @@
 use std::{collections::{BTreeMap, HashMap}, ops::Range};
 use name_lib::EncodedDocument;
 use sha2::{Sha256, Digest};
+use crate::{NdnResult, NdnError};
 //objid link to a did::EncodedDocument
+#[derive(Debug, Clone,Eq, PartialEq)]
 pub struct ObjId {
     pub obj_type : String,
     pub obj_id : String,
@@ -26,6 +28,14 @@ impl ObjId {
 
     pub fn to_string(&self)->String {
         format!("{}:{}",self.obj_type,self.obj_id)
+    }
+
+    pub fn from_str(obj_id_str:&str)->NdnResult<Self> {
+        let split = obj_id_str.split(":").collect::<Vec<&str>>();
+        if split.len() != 2 {
+            return Err(NdnError::InvalidId(obj_id_str.to_string()));
+        }
+        Ok(Self { obj_type: split[0].to_string(), obj_id: split[1].to_string() })
     }
 
     pub fn get_known_obj_type(&self)->u8 {

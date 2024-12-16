@@ -158,9 +158,9 @@ impl Router {
                 ..
             } => self.handle_upstream_selector(tunnel_selector.as_str(), req, &host,  client_ip).await,
             RouteConfig {
-                chunk_mgr: Some(chunk_mgr),
+                named_mgr: Some(named_mgr),
                 ..
-            } => self.handle_chunk_mgr(chunk_mgr, req, &host,  client_ip).await,
+            } => self.handle_ndn(named_mgr, req, &host,  client_ip,route_path.as_str()).await,
             _ => Err(anyhow::anyhow!("Invalid route configuration")),
         }.map(|mut resp| {
             if host_config.enable_cors {
@@ -173,92 +173,93 @@ impl Router {
         })
     }
 
-    async fn handle_chunk_mgr(&self, chunk_mgr_config: &ChunkMgrRouteConfig, req: Request<Body>, host: &str, client_ip:IpAddr) -> Result<Response<Body>> {
+    async fn handle_ndn(&self, mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
         if req.method() != hyper::Method::GET {
             return Err(anyhow::anyhow!("Invalid method: {}", req.method()));
         }
-        //get chunkid    
+
+        let named_mgr_id = mgr_config.named_data_mgr_id.clone();
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(named_mgr_id.as_str())).await;
+        if named_mgr.is_none() {
+            warn!("Named manager not found: {}", named_mgr_id);
+            return Err(anyhow::anyhow!("Named manager not found: {}", named_mgr_id));
+        }
+        let named_mgr = named_mgr.unwrap();
+        let named_mgr = named_mgr.lock().await;
+                
+        let range_str = req.headers().get(hyper::header::RANGE);
+        let mut start = 0;
+        let mut chunk_size = 0;
+        if range_str.is_some() {
+            let range_str = range_str.unwrap().to_str().unwrap();
+            (start,_) = parse_range(range_str,u64::MAX)
+                .map_err(|e| {
+                    warn!("parse range failed: {}", e);
+                    anyhow::anyhow!("parse range failed: {}", e)
+                })?;
+        }
+
         let chunk_id_result;
+        let chunk_id:ChunkId;
         let path = req.uri().path();
-        if chunk_mgr_config.is_chunk_id_in_path {
+        let user_id = "guest";
+        let app_id = "unknown";
+        let mut chunk_reader;
+    
+        if mgr_config.is_chunk_id_in_path {
             //let sub_path = path.trim_start_matches(path);
             chunk_id_result = ChunkId::from_url_path(path);
         } else {
             //get chunkid by hostname
             chunk_id_result = ChunkId::from_hostname(host);
         }
-        let user_id = "guest";
-        let app_id = "unknown";
-
-        let chunk_mgr_id = chunk_mgr_config.chunk_mgr_id.clone();
-        let chunk_mgr = ChunkMgr::get_chunk_mgr_by_id(Some(chunk_mgr_id.as_str())).await;
-        if chunk_mgr.is_none() {
-            warn!("Chunk manager not found: {}", chunk_mgr_id);
-            return Err(anyhow::anyhow!("Chunk manager not found: {}", chunk_mgr_id));
-        }
-        let chunk_mgr = chunk_mgr.unwrap();
-        let chunk_mgr = chunk_mgr.lock().await;
-   
-        let mut chunk_reader;
-        let chunk_size;
-        let chunk_id;
+        
         if chunk_id_result.is_err() {
-            if chunk_mgr_config.enable_mgr_file_path {
-                (chunk_reader,chunk_size,chunk_id) = chunk_mgr.get_chunk_reader_by_path(path.to_string(),user_id,app_id).await.map_err(|e| {
-                    warn!("Failed to get chunk reader by path: {}", e);
-                    anyhow::anyhow!("Failed to get chunk reader by path: {}", e)
-                })?;
-                info!("get chunk reader by path:{} OK",path);
+            if mgr_config.enable_mgr_file_path {
+                let sub_path = buckyos_kit::get_relative_path(route_path, path);
+                let seek_from = SeekFrom::Start(start);
+                (chunk_reader,chunk_size,chunk_id) = named_mgr.get_chunk_reader_by_path(sub_path, user_id, app_id, seek_from).await
+                    .map_err(|e| {
+                        warn!("get chunk reader by path failed: {}", e);
+                        anyhow::anyhow!("get chunk reader by path failed: {}", e)
+                    })?;
             } else {
                 return Err(anyhow::anyhow!("failed to get chunk id from request!"));
             }
         } else {
             chunk_id = chunk_id_result.unwrap();
-            (chunk_reader,chunk_size) = chunk_mgr.get_chunk_reader(&chunk_id,true).await.map_err(|e| {
-                warn!("Failed to get chunk reader: {}", e);
-                anyhow::anyhow!("Failed to get chunk reader: {}", e)
-            })?;
+            let get_result = named_mgr.get_chunk_reader(&chunk_id, SeekFrom::Start(start), true).await;
+            if get_result.is_err() {
+                warn!("get chunk reader by chunkid:{} failed: {}",chunk_id.to_string(),get_result.err().unwrap());
+                return Err(anyhow::anyhow!("get chunk reader by chunkid:{} failed.",chunk_id.to_string()));
+            }
+            (chunk_reader,chunk_size) = get_result.unwrap();
             info!("get chunk reader by chunkid:{} OK",chunk_id.to_string());
         }
-
-        drop(chunk_mgr);
+        drop(named_mgr);
         //TODO:更合理的得到mime_type
         let mime_type = "application/octet-stream";
-        // 处理Range请求
-        if let Some(range_header) = req.headers().get(hyper::header::RANGE) {
-            if let Ok(range_str) = range_header.to_str() {
-                if let Ok((start, end)) = parse_range(range_str, chunk_size) {
-                    chunk_reader.seek(SeekFrom::Start(start)).await?;
-                    
-                    let content_length = end - start + 1;
-                    let stream = tokio_util::io::ReaderStream::with_capacity(
-                        chunk_reader,
-                        content_length as usize
-                    );
+        let mut result = Response::builder()
+            .header("Content-Type", mime_type)
+            .header("Accept-Ranges", "bytes")
+            .header("Cache-Control", "public,max-age=31536000")
+            .header("cyfs-obj-id", chunk_id.to_string())
+            .header("cyfs-data-size", chunk_size.to_string());
 
-                    return Ok(Response::builder()
-                        .status(StatusCode::PARTIAL_CONTENT)
-                        .header("Content-Type", mime_type)
-                        .header("Content-Length", content_length)
-                        .header("Content-Range", format!("bytes {}-{}/{}", start, end, chunk_size))
-                        .header("Accept-Ranges", "bytes")
-                        .header("Cache-Control", "public,max-age=31536000")
-                        .header("ChunkId", chunk_id.to_string())
-                        .body(Body::wrap_stream(stream))?);
-                }
-            }
-        } 
+        if start > 0 {
+            result = result.header("Content-Range", format!("bytes {}-{}/{}", start, chunk_size - 1, chunk_size))
+            .header("Content-Length", chunk_size - start)
+            .status(StatusCode::PARTIAL_CONTENT);
+        } else {          
+            result = result.header("Content-Length", chunk_size)
+            .status(StatusCode::OK);
+        }
 
-        let stream = tokio_util::io::ReaderStream::with_capacity(chunk_reader, chunk_size as usize);
-        return Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", mime_type)
-                .header("Content-Length", chunk_size)
-                .header("Accept-Ranges", "bytes")
-                .header("Cache-Control", "public,max-age=31536000")
-                .header("ChunkId", chunk_id.to_string())
-                .body(Body::wrap_stream(stream))?);
-
+        //let stream = tokio_util::io::ReaderStream::with_capacity(chunk_reader, chunk_size as usize);
+        let stream = tokio_util::io::ReaderStream::new(chunk_reader);
+        let body_result = result.body(Body::wrap_stream(stream))?;
+        
+        Ok(body_result)
     }
 
     async fn handle_inner_service(&self, inner_service_name: &str, req: Request<Body>, client_ip:IpAddr) -> Result<Response<Body>> {
@@ -358,7 +359,7 @@ impl Router {
 
     async fn handle_local_dir(&self, req: Request<Body>, local_dir: &str, route_path: &str) -> Result<Response<Body>> {
         let path = req.uri().path();
-        let sub_path = path.trim_start_matches(route_path);
+        let sub_path = buckyos_kit::get_relative_path(route_path, path);
         let file_path = format!("{}/{}", local_dir, sub_path);
         info!("handle_local_dir will load file:{}", file_path);
         let path = Path::new(&file_path);
