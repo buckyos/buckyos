@@ -11,11 +11,10 @@ class TrayMenu
 {
 public:
 	struct ApplicationInfo {
+        std::string id;
 		std::wstring name;
 		std::wstring icon_path;
 		std::wstring home_page_url;
-		std::wstring start_cmd;
-		std::wstring stop_cmd;
 		bool is_running;
 	};
 

@@ -53,6 +53,8 @@ void TrayMenu::list_application_callback(char is_success, ::ApplicationInfo* app
 		for (int i = 0; i < app_count; i++) {
 			::ApplicationInfo* app = &apps[i];
 
+
+
 			int name_size = (int)strlen(app->name) * 3;
 			LPWSTR name = (LPWSTR)malloc(name_size);
 			name_size = MultiByteToWideChar(
@@ -92,44 +94,41 @@ void TrayMenu::list_application_callback(char is_success, ::ApplicationInfo* app
 			);
 			home_page_url[home_page_url_size] = L'\0';
 
-			int start_cmd_size = (int)strlen(app->start_cmd) * 3;
-			LPWSTR start_cmd = (LPWSTR)malloc(start_cmd_size);
-			start_cmd_size = MultiByteToWideChar(
-				CP_UTF8,
-				0,
-				app->start_cmd,
-				-1,
-				start_cmd,
-				start_cmd_size
-			);
-			start_cmd[start_cmd_size] = L'\0';
+			// int start_cmd_size = (int)strlen(app->start_cmd) * 3;
+			// LPWSTR start_cmd = (LPWSTR)malloc(start_cmd_size);
+			// start_cmd_size = MultiByteToWideChar(
+			// 	CP_UTF8,
+			// 	0,
+			// 	app->start_cmd,
+			// 	-1,
+			// 	start_cmd,
+			// 	start_cmd_size
+			// );
+			// start_cmd[start_cmd_size] = L'\0';
 
-			int stop_cmd_size = (int)strlen(app->stop_cmd) * 3;
-			LPWSTR stop_cmd = (LPWSTR)malloc(stop_cmd_size);
-			stop_cmd_size = MultiByteToWideChar(
-				CP_UTF8,
-				0,
-				app->stop_cmd,
-				-1,
-				stop_cmd,
-				(int)stop_cmd_size
-			);
-			stop_cmd[stop_cmd_size] = L'\0';
+			// int stop_cmd_size = (int)strlen(app->stop_cmd) * 3;
+			// LPWSTR stop_cmd = (LPWSTR)malloc(stop_cmd_size);
+			// stop_cmd_size = MultiByteToWideChar(
+			// 	CP_UTF8,
+			// 	0,
+			// 	app->stop_cmd,
+			// 	-1,
+			// 	stop_cmd,
+			// 	(int)stop_cmd_size
+			// );
+			// stop_cmd[stop_cmd_size] = L'\0';
 
 			self->m_apps.push_back(ApplicationInfo {
+				app->id,
 				name,
 				icon_path? icon_path : L"",
 				home_page_url,
-				start_cmd,
-				stop_cmd,
 				app->is_running == 1,
 			});
 
 			free(name);
 			if (icon_path) free(icon_path);
 			free(home_page_url);
-			free(start_cmd);
-			free(stop_cmd);
 		}
 	}
 
@@ -196,25 +195,10 @@ void TrayMenu::proc_open_homepage(TrayMenu* self) {
 
 void TrayMenu::proc_start(TrayMenu* self) {
 	if (self->m_is_buckyos_running) {
-		std::set<std::wstring> all_process_set;
-		for (int i = 0; i < sizeof(buckyos_process) / sizeof(buckyos_process[0]); i++) {
-			all_process_set.insert(buckyos_process[i]);
-		}
-
-		std::map<std::wstring, DWORD> exist_process_map;
-		std::set<std::wstring> not_exist_process_set;
-		if (!find_process_by_name(all_process_set, exist_process_map, not_exist_process_set)) {
-			MessageBoxW(self->m_hwnd, L"BuckyOS stop failed", L"BuckyOS", MB_OK);
-			return;
-		}
-
-		for (std::map<std::wstring, DWORD>::const_iterator it = exist_process_map.begin(); it != exist_process_map.end(); it++) {
-			kill_process_by_id(it->second);
-			MessageBoxW(self->m_hwnd, L"BuckyOS stopped", L"BuckyOS", MB_OK);
-		}
+		stop_buckyos();
 	}
 	else {
-		MessageBoxW(self->m_hwnd, L"BuckyOS started", L"BuckyOS", MB_OK);
+		start_buckyos();
 	}
 }
 
@@ -249,10 +233,10 @@ bool TrayMenu::on_command(UINT_PTR menu_id) {
 				CloseHandle(handle);
 			} else if (app_cmd == 1) {
 				if (app.is_running) {
-					execute_cmd_hidden(app.stop_cmd.c_str());
+					stop_app((char*)app.id.data());
 				}
 				else {
-					execute_cmd_hidden(app.start_cmd.c_str());
+					start_app((char*)app.id.data());
 				}
 			}
 			return true;
