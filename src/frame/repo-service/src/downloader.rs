@@ -22,6 +22,21 @@ pub async fn chunk_to_local_file(
 
 const REPO_CHUNK_MGR_ID: &str = "repo_chunk_mgr";
 
+// async fn test_pull_chunk() {
+//     let client = NdnClient::new("test_url".to_string(), None, None);
+//     let chunk_id = ChunkId::new("example_chunk_id").unwrap();
+
+//     info!("1");
+//     let rt = tokio::runtime::Runtime::new().unwrap();
+//     rt.spawn_blocking(move || {
+//         let local_rt = tokio::runtime::Runtime::new().unwrap();
+//         local_rt.block_on(async {
+//             let _ = client.pull_chunk(chunk_id, None).await;
+//         });
+//     });
+//     info!("3");
+// }
+
 #[derive(Debug, Clone)]
 pub struct Downloader {}
 
@@ -43,32 +58,31 @@ impl Downloader {
             )));
         }
 
-        // let ndn_client = NdnClient::new(url.to_string(), None, Some(REPO_CHUNK_MGR_ID.to_string()));
-        // let chunk_id = ChunkId::new(chunk_id)
-        //     .map_err(|e| RepoError::ParseError(chunk_id.to_string(), e.to_string()))?;
-        // match ndn_client
-        //     .pull_chunk(chunk_id.clone(), Some(REPO_CHUNK_MGR_ID))
-        //     .await
-        // {
-        //     Ok(_) => Ok(()),
-        //     Err(e) => {
-        //         if let NdnError::AlreadyExists(_) = e {
-        //             info!("chunk {} already exists", chunk_id.to_string());
-        //             Ok(())
-        //         } else {
-        //             error!(
-        //                 "pull remote chunk {} failed:{}",
-        //                 chunk_id.to_string(),
-        //                 e.to_string()
-        //             );
-        //             Err(RepoError::DownloadError(
-        //                 chunk_id.to_string(),
-        //                 e.to_string(),
-        //             ))
-        //         }
-        //     }
-        // }
-        unimplemented!()
+        let ndn_client = NdnClient::new(url.to_string(), None, Some(REPO_CHUNK_MGR_ID.to_string()));
+        let chunk_id = ChunkId::new(chunk_id)
+            .map_err(|e| RepoError::ParseError(chunk_id.to_string(), e.to_string()))?;
+        match ndn_client
+            .pull_chunk(chunk_id.clone(), Some(REPO_CHUNK_MGR_ID))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let NdnError::AlreadyExists(_) = e {
+                    info!("chunk {} already exists", chunk_id.to_string());
+                    Ok(())
+                } else {
+                    error!(
+                        "pull remote chunk {} failed:{}",
+                        chunk_id.to_string(),
+                        e.to_string()
+                    );
+                    Err(RepoError::DownloadError(
+                        chunk_id.to_string(),
+                        e.to_string(),
+                    ))
+                }
+            }
+        }
     }
 
     pub async fn download_file(url: &str, local_path: &PathBuf, sha256: &str) -> RepoResult<()> {
