@@ -11,7 +11,7 @@ use crate::{object::{ObjId}, NdnError, NdnResult};
 
 pub const CACL_HASH_PIECE_SIZE: u64 = 1024*1024;
 pub const QCID_HASH_PIECE_SIZE: u64 = 4096;
-pub const MAX_CHUNK_SIZE: u64 = 1024*1024*1024*4;
+pub const MAX_CHUNK_SIZE: u64 = 1024*1024*1024*2;
 pub const COPY_CHUNK_BUFFER_SIZE: usize = CACL_HASH_PIECE_SIZE as usize;
 
 pub type ChunkReader = Pin<Box<dyn AsyncRead + Unpin + Send>>;

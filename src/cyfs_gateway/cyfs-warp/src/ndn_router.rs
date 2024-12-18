@@ -16,13 +16,36 @@ use crate::parse_range;
 //4) return : Value | Reader | Text Record
 
 
-enum GetObjResult {
-    Value(Value),
-    Reader(ChunkReader,u64),
-    TextRecord(String),
+enum GetObjResultBody {
+    Value(Value), //value, embeded obj_string
+    Reader(ChunkReader,u64),//reader, chunk_size, embeded obj_string
+    TextRecord(String),//text_record, verify_obj path  
 }
 
-async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset:u64,obj_path:Option<String>)->Result<GetObjResult> {
+struct GetObjResult {
+    pub real_obj_id:ObjId,
+    pub real_body:GetObjResultBody,
+    pub parent_obj_body_str:Option<String>,
+}
+
+impl GetObjResult {
+    pub fn new_chunk_result(real_obj_id:ObjId,real_body:ChunkReader,chunk_size:u64,parent_obj_body_str:Option<String>)->Self {
+        let body = GetObjResultBody::Reader(real_body,chunk_size);
+        Self { real_obj_id, real_body:body, parent_obj_body_str }
+    }
+
+    pub fn new_value_result(real_obj_id:ObjId,real_body:Value,parent_obj_body_str:Option<String>)->Self {
+        let body = GetObjResultBody::Value(real_body);
+        Self { real_obj_id, real_body:body, parent_obj_body_str }
+    }
+
+    pub fn new_text_result(real_obj_id:ObjId,real_body:String,parent_obj_body_str:Option<String>)->Self {
+        let body = GetObjResultBody::TextRecord(real_body);
+        Self { real_obj_id, real_body:body, parent_obj_body_str }
+    }
+}
+
+async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset:u64,obj_path:Option<String>,parent_obj_str:Option<String>)->Result<GetObjResult> {
     let real_mgr = mgr.lock().await;
     if obj_id.is_chunk() {
         let chunk_id = ChunkId::from_obj_id(&obj_id);
@@ -32,21 +55,24 @@ async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,
                 warn!("get chunk reader by objid failed: {}", e);
                 anyhow::anyhow!("get chunk reader by objid failed: {}", e)
             })?;
-        return Ok(GetObjResult::Reader(chunk_reader,chunk_size));
+        info!("ndn route -> chunk: {}, chunk_size: {}, offset: {}", obj_id.to_base32(), chunk_size, offset);
+        return Ok(GetObjResult::new_chunk_result(obj_id.clone(),chunk_reader,chunk_size,parent_obj_str));
     } else {
         let obj_body = real_mgr.get_object(&obj_id,obj_path).await?;
         if obj_body.is_string() {
             let obj_body_str = obj_body.as_str().unwrap();
             let p_obj_id = ObjId::new(&obj_body_str);
             if p_obj_id.is_err() {
-                return Ok(GetObjResult::Value(obj_body));
+                info!("ndn route -> obj.value: {}", obj_id.to_base32());
+                return Ok(GetObjResult::new_value_result(obj_id.clone(),obj_body,parent_obj_str));
             } else {
                 let p_obj_id = p_obj_id.unwrap();
                 drop(real_mgr);
-                return Box::pin(get_obj_result(mgr, &p_obj_id, offset, None)).await;
+                return Box::pin(get_obj_result(mgr, &p_obj_id, offset, None,Some(obj_body_str.to_string()))).await;
             }
         } else {
-            return Ok(GetObjResult::Value(obj_body));
+            info!("ndn route -> obj {}", obj_body.to_string());
+            return Ok(GetObjResult::new_value_result(obj_id.clone(),obj_body,parent_obj_str));
         }
     }
 }
@@ -54,14 +80,19 @@ async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,
 async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,obj_id:ObjId)->Result<Response<Body>> {
     let body_result;
     let mut result = Response::builder()
-                    .header("cyfs-obj-id", obj_id.to_base32());
-    match obj_get_result {
-        GetObjResult::Value(json_value) => {
+                    .header("cyfs-obj-id", obj_get_result.real_obj_id.to_base32());
+    if obj_get_result.parent_obj_body_str.is_some() {
+        result = result.header("cyfs-embeded-obj", obj_get_result.parent_obj_body_str.unwrap());
+    }
+    match obj_get_result.real_body {
+        GetObjResultBody::Value(json_value) => {
+
             result = result.header("Content-Type", "application/json")
             .status(StatusCode::OK);
             body_result = result.body(Body::from(serde_json::to_string(&json_value)?))?;
         }
-        GetObjResult::Reader(chunk_reader,chunk_size) => {
+        GetObjResultBody::Reader(chunk_reader,chunk_size) => {
+
             let stream = tokio_util::io::ReaderStream::new(chunk_reader);
             result = result.header("Accept-Ranges", "bytes")
                 .header("Content-Type", "application/octet-stream")
@@ -77,7 +108,7 @@ async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,
             }
             body_result = result.body(Body::wrap_stream(stream))?;
         }
-        GetObjResult::TextRecord(text_record) => {
+        GetObjResultBody::TextRecord(text_record) => {
             result = result.header("Content-Type", "plain/text")
                 .status(StatusCode::OK);
             body_result = result.body(Body::from(text_record))?;
@@ -153,7 +184,10 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
     let obj_id = obj_id.unwrap();
     drop(named_mgr);
     
-    let get_result = get_obj_result(named_mgr2, &obj_id, start, obj_path).await?;
+    let get_result = get_obj_result(named_mgr2, &obj_id, start, obj_path,None).await?;
     let response = build_response_by_obj_get_result(get_result, start, obj_id).await?;
     Ok(response)
 }
+
+
+//unit test move to ndn-lib.ndn-client

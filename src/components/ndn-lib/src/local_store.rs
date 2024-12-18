@@ -124,8 +124,14 @@ struct NamedDataDb {
 
 impl NamedDataDb {
     fn new(db_path: String) -> NdnResult<Self> {
-        let conn = Connection::open(&db_path).map_err(|e| {
-            warn!("ChunkDb: open db failed! {}", e.to_string());
+        // Add OpenOptions to ensure we have write permissions
+        info!("NamedDataDb: db_path: {}",db_path);
+        let conn = Connection::open_with_flags(&db_path, 
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE 
+            | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+        ).map_err(|e| {
+            warn!("NamedDataDb: open db failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         
@@ -142,7 +148,7 @@ impl NamedDataDb {
             )",
             [],
         ).map_err(|e| {
-            warn!("ChunkDb: create table failed! {}", e.to_string());
+            warn!("NamedDataDb: create table chunk_items failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
@@ -151,24 +157,26 @@ impl NamedDataDb {
                 obj_id TEXT PRIMARY KEY,
                 obj_type TEXT NOT NULL,
                 obj_data TEXT NOT NULL,
-                create_time INTEGER NOT NULL,
+                create_time INTEGER NOT NULL
             )",
             [],
         ).map_err(|e| {
-            warn!("ChunkDb: create object table failed! {}", e.to_string());
+            warn!("NamedDataDb: create objects table failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS object_links (
                 link_obj_id TEXT PRIMARY KEY,
-                obj_link TEXT NOT NULL,
+                obj_link TEXT NOT NULL
             )",
             [],
         ).map_err(|e| {
-            warn!("ChunkDb: create object links table failed! {}", e.to_string());
+            warn!("NamedDataDb: create table object_links failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
+
+        
 
         Ok(Self { 
             db_path,
@@ -182,7 +190,7 @@ impl NamedDataDb {
             "INSERT OR REPLACE INTO chunk_items 
             (chunk_id, chunk_size, chunk_state, progress, 
              description, create_time, update_time)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 chunk_item.chunk_id.to_string(),
                 chunk_item.chunk_size,
@@ -193,7 +201,7 @@ impl NamedDataDb {
                 chunk_item.update_time,
             ],
         ).map_err(|e| {
-            warn!("ChunkDb: insert chunk failed! {}", e.to_string());
+            warn!("NamedDataDb: insert chunk failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         Ok(())
@@ -204,7 +212,7 @@ impl NamedDataDb {
         let mut stmt = conn.prepare(
             "SELECT * FROM chunk_items WHERE chunk_id = ?1"
         ).map_err(|e| {
-            warn!("ChunkDb: query chunk failed! {}", e.to_string());
+            warn!("ChunkDb: get_chunk failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         
@@ -219,7 +227,7 @@ impl NamedDataDb {
                 update_time: row.get(6)?,
             })
         }).map_err(|e| {
-            warn!("ChunkDb: query chunk failed! {}", e.to_string());
+            warn!("ChunkDb: get_chunk failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         
@@ -248,7 +256,7 @@ impl NamedDataDb {
                     chunk.update_time,
                 ],
             ).map_err(|e| {
-                warn!("ChunkDb: insert chunk failed! {}", e.to_string());
+                warn!("NamedDataDb: insert chunk failed! {}", e.to_string());
                 NdnError::DbError(e.to_string())
             })?;
         }
@@ -313,13 +321,12 @@ impl NamedDataDb {
 
         let conn = self.conn.lock().await;
         conn.execute(
-            "INSERT OR REPLACE INTO objects (obj_id, obj_type, obj_data, create_time, update_time)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR REPLACE INTO objects (obj_id, obj_type, obj_data, create_time)
+             VALUES (?1, ?2, ?3, ?4)",
             params![
                 obj_id.to_string(),
                 obj_type,
                 obj_str,
-                now_time,
                 now_time
             ],
         ).map_err(|e| {
@@ -329,7 +336,7 @@ impl NamedDataDb {
         Ok(())
     }
 
-    async fn get_object(&self, obj_id: &ObjId) -> NdnResult<(u8,String)> {
+    async fn get_object(&self, obj_id: &ObjId) -> NdnResult<(String,String)> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT obj_type,obj_data FROM objects WHERE obj_id = ?1"
@@ -341,7 +348,7 @@ impl NamedDataDb {
         let obj_data = stmt.query_row(
             params![obj_id.to_string()],
             |row| {
-                Ok((row.get::<_, u8>(0)?,row.get::<_, String>(1)?))
+                Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?))
             }
         ).map_err(|e| {
             warn!("ChunkDb: query object failed! {}", e.to_string());
@@ -429,13 +436,27 @@ pub trait ChunkReadSeek: AsyncRead + AsyncSeek {}
 impl<T: AsyncRead + AsyncSeek> ChunkReadSeek for T {}
 
 impl NamedDataStore {
-    pub async fn new(base_dir: String)->NdnResult<Self> {
-        let chunk_db_path = format!("{}/objstroe.db",base_dir.clone());
-        let chunk_db = NamedDataDb::new(chunk_db_path)?;
+    pub async fn new(base_dir: String) -> NdnResult<Self> {
+        // Create base directory if it doesn't exist
+        tokio::fs::create_dir_all(&base_dir).await.map_err(|e| {
+            warn!("NamedDataStore: create base dir failed! {}", e.to_string());
+            NdnError::IoError(e.to_string())
+        })?;
+
+        let named_db_path = format!("{}/objstroe.db", base_dir.clone());
+        let named_db = NamedDataDb::new(named_db_path.clone())?;
+        if !std::path::Path::new(&named_db_path).exists() {
+            info!("NamedDataStore: Database file does not exist, creating it");
+            tokio::fs::File::create(&named_db_path).await.map_err(|e| {
+                warn!("NamedDataStore: create db file failed! {}", e.to_string());
+                NdnError::IoError(e.to_string())
+            })?;
+            info!("NamedDataStore: Database file created successfully");
+        }
         Ok(Self {
             store_id: "".to_string(),
             store_desc: "".to_string(),
-            named_db: chunk_db,
+            named_db: named_db,
             base_dir,
             enable_symlink: true,
             auto_add_to_db: true,
@@ -825,19 +846,21 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use buckyos_kit::*;
-    
+    use rand::distributions::{Alphanumeric, DistString};
     // Helper function to create a test ChunkStore
 
     async fn create_test_store() -> NdnResult<NamedDataStore> {
         init_logging("ndn-lib test");
-        let temp_dir = tempdir().unwrap();
-        let result_store = NamedDataStore::new(temp_dir.path().to_str().unwrap().to_string()).await;
+        let random_str = Alphanumeric.sample_string(&mut rand::thread_rng(), 6);
+        let temp_dir = format!("/opt/ndn_test/{}", random_str);
+        let temp_dir = tempdir().unwrap().path().to_str().unwrap().to_string();
+        let result_store = NamedDataStore::new(temp_dir.clone()).await;
         if result_store.is_err() {
             let err = result_store.err().unwrap();
             warn!("create_test_store: create store failed! {:?}",&err);
             return Err(err);
         }
-        info!("create_test_store: store created! {}",temp_dir.path().to_str().unwrap());
+        info!("create_test_store: store created! {}",temp_dir.as_str());
         result_store
     }
 
@@ -850,8 +873,8 @@ mod tests {
         let chunk_id = ChunkId::from_sha256_result(&hash_bytes);
 
         // Test putting chunk
-        store.put_chunk(&chunk_id, &data, true).await?;
-
+        store.put_chunk(&chunk_id, &data, false).await?;
+        info!("put chunk ok! {}",chunk_id.to_string());
         // Verify chunk exists
         let (is_exist,size) = store.is_chunk_exist(&chunk_id, None).await?;
         assert!(is_exist);
@@ -932,6 +955,7 @@ mod tests {
 
         // Test putting object
         store.put_object(&obj_id, &obj_str, false).await?;
+        info!("put object ok! {}",obj_id.to_string());
 
         // Verify object exists
         assert!(store.is_object_exist(&obj_id).await?);

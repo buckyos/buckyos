@@ -380,5 +380,51 @@ impl NdnClient {
 }
 
 
+#[cfg(test)] 
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_pull_chunk() {
+        // Step 1: Initialize a new NamedDataMgr in a temporary directory and create a test object
+        // let temp_dir = tempfile::tempdir().unwrap();
+        // let named_mgr = NamedDataMgr::new(temp_dir.path()).await.unwrap();
+        // let test_obj_id = ObjId::new("test_obj:123456").unwrap();
+        // named_mgr.add_object(&test_obj_id, b"test data").await.unwrap();
+
+        // // Step 2: Start a cyfs-warp server based on the named_mgr and configure the ndn-router
+        // let warp_addr = "127.0.0.1:8080";
+        // let warp_server = cyfs_warp::start_server(named_mgr.clone(), warp_addr).await.unwrap();
+
+        // // Step 3: Configure the ndn-client and set the cyfs-warp address (obj_id in path)
+        // let client = NdnClient::new();
+        // client.set_remote_url(format!("http://{}/{}", warp_addr, test_obj_id.to_base32()));
+
+        // // Step 4.1: Use the ndn-client's pull_chunk interface to retrieve the chunk
+        // let chunk_id = ChunkId::from_obj_id(&test_obj_id);
+        // let pull_result = client.pull_chunk(chunk_id.clone()).await;
+        // assert!(pull_result.is_ok(), "Failed to pull chunk");
+
+        // // Step 4.2: Use the ndn-client's get_obj_by_url interface to get the chunk/object
+        // let obj_result = client.get_obj_by_url(&format!("http://{}/{}", warp_addr, test_obj_id.to_base32())).await;
+        // assert!(obj_result.is_ok(), "Failed to get object by URL");
+
+        // // Step 4.3: Use the ndn-client's get_obj_by_url with a URL containing obj_json_path to get the corresponding value
+        // let json_path = "some_json_path";
+        // let json_result = client.get_obj_by_url(&format!("http://{}/{}/{}", warp_addr, test_obj_id.to_base32(), json_path)).await;
+        // assert!(json_result.is_ok(), "Failed to get JSON value by URL");
+
+        // // Step 4.4: Use the ndn-client's get_obj_by_url to get a typical file_obj.content
+        // let file_content_result = client.get_obj_by_url(&format!("http://{}/file_obj.content", warp_addr)).await;
+        // assert!(file_content_result.is_ok(), "Failed to get file object content");
+
+        // // Clean up
+        // warp_server.stop().await.unwrap();
+        // temp_dir.close().unwrap();
+
+        unimplemented!()
+    }
+}
+
 
 
