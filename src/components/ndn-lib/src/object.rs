@@ -2,16 +2,52 @@ use std::{collections::{BTreeMap, HashMap}, ops::Range};
 use name_lib::EncodedDocument;
 use sha2::{Sha256, Digest};
 use crate::{NdnResult, NdnError};
+use crate::{OBJ_TYPE_FILE,OBJ_TYPE_DIR,OBJ_TYPE_MTREE,OBJ_TYPE_OBJMAPT,OBJ_TYPE_PACK,OBJ_TYPE_LIST};
 //objid link to a did::EncodedDocument
 #[derive(Debug, Clone,Eq, PartialEq)]
 pub struct ObjId {
     pub obj_type : String,
-    pub obj_id_string : String,
+    pub obj_hash : Vec<u8>,//hash result
 }
 
 impl ObjId {
-    pub fn new(obj_type:String,obj_id:String)->Self {
-        Self { obj_type: obj_type, obj_id_string: obj_id }
+    pub fn new(objid_str:&str)->NdnResult<Self> {
+        let split = objid_str.split(":").collect::<Vec<&str>>();
+        let split_len = split.len();
+        match split_len {
+            1 => {
+                //all encode in base32
+                let vec_result = base32::decode(base32::Alphabet::Rfc4648Lower{ padding: false }, split[0]);
+                if vec_result.is_none() {
+                    return Err(NdnError::InvalidId(format!("decode base32 failed:{}",split[0])));
+                }
+                let vec_result = vec_result.unwrap();
+                
+                let pos = vec_result.iter()
+                    .position(|&x| x == b':')
+                    .ok_or_else(|| NdnError::InvalidId("separator ':' not found".to_string()))?;
+
+                let obj_type = String::from_utf8(vec_result[..pos].to_vec())
+                    .map_err(|_| NdnError::InvalidId("invalid utf8 in obj_type".to_string()))?;
+                let obj_hash = vec_result[pos + 1..].to_vec();
+
+                Ok(Self { obj_type, obj_hash })
+            },
+            2 => {
+                let obj_type = split[0].to_string();
+                let obj_hash = hex::decode(split[1])
+                    .map_err(|e|NdnError::InvalidId(format!("decode hex failed:{}",e.to_string())))?;
+                
+                Ok(Self { obj_type: obj_type, obj_hash: obj_hash })       
+            },
+            _ => {
+                return Err(NdnError::InvalidId(objid_str.to_string()));
+            }
+        }
+    }
+
+    pub fn new_by_raw(obj_type:String,hash_value:Vec<u8>)->Self {
+        Self { obj_type: obj_type, obj_hash: hash_value }
     }
 
     pub fn is_chunk(&self)->bool {
@@ -26,28 +62,65 @@ impl ObjId {
         }
     }
 
-    pub fn to_string(&self)->String {
-        format!("{}:{}",self.obj_type,self.obj_id_string)
-    }
-
-    pub fn from_string(obj_id_str:&str)->NdnResult<Self> {
-        let split = obj_id_str.split(":").collect::<Vec<&str>>();
-        if split.len() != 2 {
-            return Err(NdnError::InvalidId(obj_id_str.to_string()));
+    pub fn is_json(&self)->bool {
+        if self.is_chunk() {
+            return false;
         }
-        Ok(Self { obj_type: split[0].to_string(), obj_id_string: split[1].to_string() })
+
+        match self.obj_type.as_str() {
+            OBJ_TYPE_MTREE => false,
+            OBJ_TYPE_OBJMAPT => false,
+            OBJ_TYPE_PACK => false,
+            OBJ_TYPE_LIST => false,
+            _ => true,
+        }
     }
 
-    pub fn get_known_obj_type(&self)->u8 {
-        0
+    pub fn to_string(&self)->String {
+        let hex_str = hex::encode(self.obj_hash.clone());
+        format!("{}:{}",self.obj_type,hex_str)
+    }
+
+    pub fn to_base32(&self)->String {
+        let mut vec_result:Vec<u8> = Vec::new();
+        vec_result.extend_from_slice(self.obj_type.as_bytes());
+        vec_result.push(b':');
+        vec_result.extend_from_slice(&self.obj_hash);
+        
+        base32::encode(base32::Alphabet::Rfc4648Lower{ padding: false }, &vec_result)
+    }
+
+    pub fn from_hostname(hostname: &str) -> NdnResult<Self> {
+        let sub_host = hostname.split(".").collect::<Vec<&str>>();
+        let first_part = sub_host[0];
+        return Self::new(first_part);
+    }
+
+    pub fn from_path(path:&str) -> NdnResult<(Self,Option<String>)> {
+        let path_parts = path.split("/").collect::<Vec<&str>>();
+        let path_parts2 = path_parts.clone();
+        let mut part_index = 0;
+        let part_len = path_parts.len();
+        for part in path_parts {
+            let obj_id = Self::new(part);
+            if obj_id.is_ok() {
+                if part_index < part_len - 1 {
+                    return Ok((obj_id.unwrap(), Some(format!("/{}", path_parts2[part_index + 1..].join("/")))));
+                } else {
+                    return Ok((obj_id.unwrap(), None));
+                }
+            }
+            part_index += 1;
+        }
+        return Err(NdnError::InvalidId(format!("no objid found in path:{}",path)));
     }
 }
 
+
 pub fn build_obj_id(obj_type:&str,obj_json_str:&str)->ObjId {
     let vec_u8 = obj_json_str.as_bytes().to_vec();
-    let hash_value = Sha256::digest(&vec_u8);
-    let obj_id = base32::encode(base32::Alphabet::Crockford, &hash_value);
-    ObjId::new(obj_type.to_string(),obj_id)
+    let hash_value:Vec<u8> = Sha256::digest(&vec_u8).to_vec();
+    ObjId::new_by_raw(obj_type.to_string(),hash_value)
 }
 
 pub fn build_named_object_by_json(obj_type:&str,json_value:&serde_json::Value)->(ObjId,String) {
@@ -107,12 +180,34 @@ pub fn verify_named_object_from_jwt(obj_id:&ObjId,jwt_str:&str)->NdnResult<bool>
 mod tests {
     use super::*;
     use serde_json::json;
+    use crate::cyfs_http::cyfs_get_obj_id_from_url;
     #[test]
     fn test_obj_id() {
-        let obj_id = ObjId::new("sha256".to_string(),"1234567890".to_string());
-        assert_eq!(obj_id.obj_type,"sha256");
-        assert_eq!(obj_id.obj_id_string,"1234567890");
-        assert_eq!(obj_id.is_chunk(),true);
+        let obj_id = ObjId::new("sha256:0203040506").unwrap();
+        //println!("obj_id : {:?}",obj_id);
+        assert_eq!(obj_id.to_string(),"sha256:0203040506");
+        //println!("obj_id to base32 : {}",obj_id.to_base32());
+        assert_eq!(obj_id.to_base32(),"onugcmrvgy5aeayeauda");
+
+        let obj_id2 = ObjId::new("onugcmrvgy5aeayeauda").unwrap();
+        assert_eq!(obj_id2.to_string(),"sha256:0203040506");
+
+        let obj_host = "onugcmrvgy5aeayeauda.ndn.cyfs.com";
+        let obj_id3 = ObjId::from_hostname(obj_host).unwrap();
+        assert_eq!(obj_id3.to_string(),"sha256:0203040506");
+
+        let obj_path = "/sha256:0203040506/test.txt";
+        let (obj_id4,obj_path2) = ObjId::from_path(obj_path).unwrap();
+        assert_eq!(obj_id4.to_string(),"sha256:0203040506");
+        assert_eq!(obj_path2,Some("/test.txt".to_string()));
+
+        let (obj_id5,obj_path3) = cyfs_get_obj_id_from_url("http://www.cyfs.com/abc/sha256:0203040506/def/test.txt").unwrap();
+        assert_eq!(obj_id5.to_string(),"sha256:0203040506");
+        assert_eq!(obj_path3,Some("/def/test.txt".to_string()));
+
+        let (obj_id6,obj_path4) = cyfs_get_obj_id_from_url("http://onugcmrvgy5aeayeauda.ndn.cyfs.com/abc/sha256:0203040506/def/test.txt").unwrap();
+        assert_eq!(obj_id6.to_string(),"sha256:0203040506");
+        assert_eq!(obj_path4,Some("/abc/sha256:0203040506/def/test.txt".to_string()));
     }
     #[test]
     fn test_build_obj_id() {
@@ -124,7 +219,8 @@ mod tests {
         let json_value2 = json!({"name":"test","age":18});
         let (obj_id2,json_str2) = build_named_object_by_json("jobj",&json_value2);
         assert_eq!(obj_id,obj_id2);
-        println!("obj_id2 : {}",obj_id2.to_string());
+        println!("obj_id2#base32 : {}",obj_id2.to_base32());
+        println!("obj_id2#string : {}",obj_id2.to_string());
 
         assert_eq!(verify_named_object(&obj_id,&json_value2),true);
 

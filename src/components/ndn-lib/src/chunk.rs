@@ -21,62 +21,42 @@ pub type ChunkWriter = Pin<Box<dyn AsyncWrite + Unpin + Send>>;
 #[derive(Debug, Clone,Eq, PartialEq)]
 pub struct ChunkId {
     pub hash_type:String,
-    pub hash_hex_string: String,
+    pub hash_result: Vec<u8>,
 }
 
 //TODO: add mix hash support
 impl ChunkId {
     pub fn new(chunk_id_str:&str) -> NdnResult<Self> {
-        let split = chunk_id_str.split(":").collect::<Vec<&str>>();
-        if split.len() != 2 {
-            return Err(NdnError::InvalidId(chunk_id_str.to_string()));
+        let obj_id = ObjId::new(chunk_id_str)?;
+        if !obj_id.is_chunk() {
+            return Err(NdnError::InvalidId(format!("invalid chunk id:{}",chunk_id_str)));
         }
-        Ok(Self { hash_hex_string:split[1].to_string(), hash_type:split[0].to_string() })
+        Ok(Self { hash_type:obj_id.obj_type, hash_result:obj_id.obj_hash })
     }
 
     pub fn to_obj_id(&self) -> ObjId {
         ObjId {
             obj_type: self.hash_type.clone(),
-            obj_id_string: self.hash_hex_string.clone(),
+            obj_hash: self.hash_result.clone(),
         }
     }
 
     pub fn from_obj_id(obj_id: &ObjId) -> Self {
-        Self { hash_hex_string:obj_id.obj_id_string.clone(), hash_type:obj_id.obj_type.clone() }
+        Self { hash_type:obj_id.obj_type.clone(), hash_result:obj_id.obj_hash.clone() }
     }
 
     pub fn from_sha256_result(hash_result: &[u8]) -> Self {
-        let hex_string = hex::encode(hash_result);
-        Self { hash_hex_string:hex_string, hash_type:"sha256".to_string() }
+        Self { hash_type:"sha256".to_string(), hash_result:hash_result.to_vec() }
     }
 
     pub fn to_string(&self) -> String {
-        format!("{}:{}", self.hash_type, self.hash_hex_string)
+        let hex_str = hex::encode(self.hash_result.clone());
+        format!("{}:{}", self.hash_type, hex_str)
     }
 
     pub fn to_did_string(&self) -> String {
-        format!("did:{}:{}", self.hash_type, self.hash_hex_string)
-    }
-    
-
-    pub fn to_hostname(&self) -> String {
-        format!("{}-{}", self.hash_hex_string, self.hash_type)
-    }
-
-    pub fn from_hostname(hostname: &str) -> NdnResult<Self> {
-        let sub_host = hostname.split(".").collect::<Vec<&str>>();
-        let first_part = sub_host[0];
-
-        let pos = first_part.rfind("-").unwrap();
-        let hash_hex_string = &first_part[..pos];
-        let hash_type = &first_part[pos+1..];
-        Ok(Self { hash_hex_string:hash_hex_string.to_string(), hash_type:hash_type.to_string() })   
-    }
-
-    pub fn from_url_path(path:&str) -> NdnResult<Self> {
-        let path_parts = path.split("/").collect::<Vec<&str>>();
-        let first_part = path_parts[0];
-        return Self::new(first_part);
+        let hex_str = hex::encode(self.hash_result.clone());
+        format!("did:{}:{}", self.hash_type, hex_str)
     }
 
     pub fn get_length(&self) -> Option<u64> {
@@ -84,8 +64,8 @@ impl ChunkId {
         None
     }    
 
-    pub fn is_equal(&self, hash_bytes: &[u8])->bool {
-        self.hash_hex_string == hex::encode(hash_bytes)
+    pub fn verify_chunk(&self, hash_bytes: &[u8])->bool {
+        self.hash_result == hash_bytes
     }
 }
 
@@ -236,8 +216,8 @@ pub async fn calc_quick_hash<T: AsyncRead + AsyncSeek + Unpin>(reader: &mut T, l
     let hash_result = hasher.finalize();
 
     Ok( ChunkId{
-        hash_hex_string:hex::encode(hash_result),
         hash_type:"qcid".to_string(),
+        hash_result:hash_result.to_vec(),
     })
 }
 
@@ -253,8 +233,8 @@ pub async fn calc_quick_hash_by_buffer(buffer_begin: &[u8],buffer_mid: &[u8],buf
     hasher.update(buffer_end);
     let hash_result = hasher.finalize();
     Ok( ChunkId{
-        hash_hex_string:hex::encode(hash_result),
         hash_type:"qcid".to_string(),
+        hash_result:hash_result.to_vec(),
     })
 }
 
@@ -311,14 +291,6 @@ mod tests {
     use super::*;
     use rand::Rng;
 
-    #[test]
-    fn test_chunk_id_from_hostname() {
-        let chunk_id = ChunkId::from_hostname("1234567890abcdef-sha256.ndn.buckyos.org").unwrap();
-        assert_eq!(chunk_id.to_string(), "sha256:1234567890abcdef");
-
-        let chunk_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
-        assert_eq!(chunk_id.to_hostname(), "1234567890abcdef-sha256");
-    }
 
     #[test]
     fn test_chunk_hasher_save_state() {

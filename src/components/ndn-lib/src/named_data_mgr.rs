@@ -1,4 +1,4 @@
-use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
+use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_by_json_path};
 use serde::{Serialize,Deserialize};
 //chunk_mgr默认是机器级别的，即多个进程可以共享同一个chunk_mgr
 //chunk_mgr使用共享内存/filemap等技术来实现跨进程的读数据共享，比使用127.0.0.1的http协议更高效
@@ -20,7 +20,7 @@ use lazy_static::lazy_static;
 
 use buckyos_kit::get_buckyos_chunk_data_dir;
 
-use crate::{ChunkReader,ChunkWriter};
+use crate::{ChunkReader,ChunkWriter,ObjId};
 
 pub struct NamedDataMgrDB {
     db_path: String,
@@ -30,35 +30,35 @@ pub struct NamedDataMgrDB {
 impl NamedDataMgrDB {
     pub fn new(db_path: String) -> NdnResult<Self> {
         let conn = Connection::open(&db_path).map_err(|e| {
-            warn!("ChunkMgrDB: open db failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: open db failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         
         // Create tables if they don't exist
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS chunks (
-                chunk_id TEXT PRIMARY KEY,
+            "CREATE TABLE IF NOT EXISTS objs (
+                obj_id TEXT PRIMARY KEY,
                 ref_count INTEGER NOT NULL DEFAULT 0,
                 access_time INTEGER NOT NULL,
                 size INTEGER NOT NULL DEFAULT 0
             )",
             [],
         ).map_err(|e| {
-            warn!("ChunkMgrDB: create chunks table failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: create objs table failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS paths (
                 path TEXT PRIMARY KEY,
-                chunk_id TEXT NOT NULL,
+                obj_id TEXT NOT NULL,
                 app_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
-                FOREIGN KEY(chunk_id) REFERENCES chunks(chunk_id)
+                FOREIGN KEY(obj_id) 
             )",
             [],
         ).map_err(|e| {
-            warn!("ChunkMgrDB: create paths table failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: create paths table failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
@@ -68,128 +68,130 @@ impl NamedDataMgrDB {
         })
     }
 
-    pub fn get_path_target_chunk(&self, path: &str)->NdnResult<ChunkId> {
+    pub fn get_path_target_objid(&self, path: &str)->NdnResult<ObjId> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT chunk_id FROM paths WHERE path = ?1").map_err(|e| {
-            warn!("ChunkMgrDB: prepare statement failed! {}", e.to_string());
+        let mut stmt = conn.prepare("SELECT obj_id FROM paths WHERE path = ?1").map_err(|e| {
+            warn!("NamedDataMgrDB: prepare statement failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
-        let chunk_id: String = stmt.query_row([path], |row| row.get(0)).map_err(|e| {
-            warn!("ChunkMgrDB: query path target chunk failed! {}", e.to_string());
+        let obj_id: String = stmt.query_row([path], |row| row.get(0)).map_err(|e| {
+            warn!("NamedDataMgrDB: query path target obj failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
-        ChunkId::new(&chunk_id).map_err(|e| {
-            warn!("ChunkMgrDB: invalid chunk_id format! {}", e.to_string());
+        ObjId::new(&obj_id).map_err(|e| {
+            warn!("NamedDataMgrDB: invalid obj_id format! {}", e.to_string());
             NdnError::Internal(e.to_string())
         })
     }
 
-    pub fn update_chunk_access_time(&self, chunk_id: &ChunkId, access_time: u64) -> NdnResult<()> {
+    pub fn update_obj_access_time(&self, obj_id: &ObjId, access_time: u64) -> NdnResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE chunks SET access_time = ?1 WHERE chunk_id = ?2",
-            [&access_time.to_string(), &chunk_id.to_string()],
+            "UPDATE objs SET access_time = ?1 WHERE obj_id = ?2",
+            [&access_time.to_string(), &obj_id.to_string()],
         ).map_err(|e| {
-            warn!("ChunkMgrDB: update chunk access time failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: update obj access time failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    pub fn create_path(&self, chunk_id: &ChunkId, path: String,app_id:&str,user_id:&str) -> NdnResult<()> {
+    pub fn create_path(&self, obj_id: &ObjId, path: String,app_id:&str,user_id:&str) -> NdnResult<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| {
-            warn!("ChunkMgrDB: create path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         
         // Insert or update the chunk entry
         tx.execute(
-            "INSERT OR IGNORE INTO chunks (chunk_id, ref_count, access_time) 
+            "INSERT OR IGNORE INTO objs (obj_id, ref_count, access_time) 
              VALUES (?1, 0, strftime('%s','now'))",
-            [&chunk_id.to_string()],
+            [&obj_id.to_string()],
         ).map_err(|e| {
-            warn!("ChunkMgrDB: create path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         // Insert the path and increment ref_count
         tx.execute(
-            "INSERT INTO paths (path, chunk_id, app_id, user_id) VALUES (?1, ?2, ?3, ?4)",
-            [&path, &chunk_id.to_string(), app_id, user_id],
+            "INSERT INTO paths (path, obj_id, app_id, user_id) VALUES (?1, ?2, ?3, ?4)",
+            [&path, &obj_id.to_string(), app_id, user_id],
         ).map_err(|e| {
-            warn!("ChunkMgrDB: create path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         tx.execute(
-            "UPDATE chunks SET ref_count = ref_count + 1 WHERE chunk_id = ?1",
-            [&chunk_id.to_string()],
+            "UPDATE objs SET ref_count = ref_count + 1 WHERE obj_id = ?1",
+            [&obj_id.to_string()],
         ).map_err(|e| {
-            warn!("ChunkMgrDB: create path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         tx.commit().map_err(|e| {
-            warn!("ChunkMgrDB: create path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    pub fn set_path(&self, path: String,new_chunk_id:&ChunkId,app_id:&str,user_id:&str) -> NdnResult<()> {
+    pub fn set_path(&self, path: &str,new_obj_id:&ObjId,app_id:&str,user_id:&str) -> NdnResult<()> {
         //如果不存在路径则创建，否则更新已经存在的路径指向的chunk
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| {
-            warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         // Check if the path exists
-        let existing_chunk_id: Result<String, _> = tx.query_row(
-            "SELECT chunk_id FROM paths WHERE path = ?1",
+        let existing_obj_id: Result<String, _> = tx.query_row(
+            "SELECT obj_id FROM paths WHERE path = ?1",
             [&path],
             |row| row.get(0),
         );
 
-        match existing_chunk_id {
-            Ok(chunk_id) => {
-                // Path exists, update the chunk_id
+        let obj_id_str = new_obj_id.to_string();
+
+        match existing_obj_id {
+            Ok(obj_id) => {
+                // Path exists, update the obj_id
                 tx.execute(
-                    "UPDATE paths SET chunk_id = ?1, app_id = ?2, user_id = ?3 WHERE path = ?4",
-                    [&new_chunk_id.to_string(), app_id, user_id, &path],
+                    "UPDATE paths SET obj_id = ?1, app_id = ?2, user_id = ?3 WHERE path = ?4",
+                    [obj_id_str.as_str(), app_id, user_id, &path],
                 ).map_err(|e| {
-                    warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+                    warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
                     NdnError::DbError(e.to_string())
                 })?;
 
                 // Decrease ref_count of the old chunk
                 tx.execute(
-                    "UPDATE chunks SET ref_count = ref_count - 1 WHERE chunk_id = ?1",
-                    [&chunk_id],
+                    "UPDATE objs SET ref_count = ref_count - 1 WHERE obj_id = ?1",
+                    [obj_id_str.as_str()],
                 ).map_err(|e| {
-                    warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+                    warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
                     NdnError::DbError(e.to_string())
                 })?;
 
                 // Remove the old chunk if ref_count becomes 0
                 tx.execute(
-                    "DELETE FROM chunks WHERE chunk_id = ?1 AND ref_count <= 0",
-                    [&chunk_id],
+                    "DELETE FROM objs WHERE obj_id = ?1 AND ref_count <= 0",
+                    [obj_id_str.as_str()],
                 ).map_err(|e| {
-                    warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+                    warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
                     NdnError::DbError(e.to_string())
                 })?;
             },
             Err(_) => {
                 // Path does not exist, create a new path
                 tx.execute(
-                    "INSERT INTO paths (path, chunk_id, app_id, user_id) VALUES (?1, ?2, ?3, ?4)",
-                    [&path, &new_chunk_id.to_string(), app_id, user_id],
+                    "INSERT INTO paths (path, obj_id, app_id, user_id) VALUES (?1, ?2, ?3, ?4)",
+                    [&path, obj_id_str.as_str(), app_id, user_id],
                 ).map_err(|e| {
-                    warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+                    warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
                     NdnError::DbError(e.to_string())
                 })?;
             }
@@ -197,89 +199,89 @@ impl NamedDataMgrDB {
 
         // Increase ref_count of the new chunk
         tx.execute(
-            "INSERT OR IGNORE INTO chunks (chunk_id, ref_count, access_time) 
+            "INSERT OR IGNORE INTO objs (obj_id, ref_count, access_time) 
              VALUES (?1, 0, strftime('%s','now'))",
-            [&new_chunk_id.to_string()],
+            [&new_obj_id.to_string()],
         ).map_err(|e| {
-            warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         tx.execute(
-            "UPDATE chunks SET ref_count = ref_count + 1 WHERE chunk_id = ?1",
-            [&new_chunk_id.to_string()],
+            "UPDATE objs SET ref_count = ref_count + 1 WHERE obj_id = ?1",
+            [&new_obj_id.to_string()],
         ).map_err(|e| {
-            warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         tx.commit().map_err(|e| {
-            warn!("ChunkMgrDB: set path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    pub fn remove_path(&self, path: String) -> NdnResult<()> {
+    pub fn remove_path(&self, path: &str) -> NdnResult<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| {
-            warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: remove path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         // Get the chunk_id for this path
-        let chunk_id: String = tx.query_row(
-            "SELECT chunk_id FROM paths WHERE path = ?1",
+        let obj_id: String = tx.query_row(
+            "SELECT obj_id FROM paths WHERE path = ?1",
             [&path],
             |row| row.get(0),
         ).map_err(|e| {
-            warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: remove path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         // Remove the path
         tx.execute("DELETE FROM paths WHERE path = ?1", [&path])
         .map_err(|e| {
-            warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: remove path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         // Decrease ref_count and remove chunk if ref_count becomes 0
         tx.execute(
-            "UPDATE chunks SET ref_count = ref_count - 1 WHERE chunk_id = ?1",
-            [&chunk_id],
+            "UPDATE objs SET ref_count = ref_count - 1 WHERE obj_id = ?1",
+            [&obj_id],
         ).map_err(|e| {
-            warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: remove path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         tx.execute(
-            "DELETE FROM chunks WHERE chunk_id = ?1 AND ref_count <= 0",
-            [&chunk_id],
+            "DELETE FROM objs WHERE obj_id = ?1 AND ref_count <= 0",
+            [&obj_id],
         ).map_err(|e| {
-            warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: remove path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         tx.commit().map_err(|e| {
-            warn!("ChunkMgrDB: remove path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: remove path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         Ok(())
     }
 
-    pub fn remove_dir_path(&self, path: String) -> NdnResult<()> {
+    pub fn remove_dir_path(&self, path: &str) -> NdnResult<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| {
-            warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: remove dir path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         // Get all paths and their chunk_ids that start with the given directory path
         let mut stmt = tx.prepare(
-            "SELECT path, chunk_id FROM paths WHERE path LIKE ?1"
+            "SELECT path, obj_id FROM paths WHERE path LIKE ?1"
         ).map_err(|e| {
-            warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: remove dir path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         
@@ -287,35 +289,35 @@ impl NamedDataMgrDB {
             [format!("{}%", path)],
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).map_err(|e| {
-            warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: remove dir path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
-        let path_chunks: Vec<(String, String)> = rows.filter_map(Result::ok).collect();
+        let path_objs: Vec<(String, String)> = rows.filter_map(Result::ok).collect();
 
         // Remove paths and update chunk ref counts within the transaction
-        for (path, chunk_id) in path_chunks {
+        for (path, obj_id) in path_objs {
             // Remove the path
             tx.execute("DELETE FROM paths WHERE path = ?1", [&path])
             .map_err(|e| {
-                warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
+                warn!("NamedDataMgrDB: remove dir path failed! {}", e.to_string());
                 NdnError::DbError(e.to_string())
             })?;
 
             // Decrease ref_count and remove chunk if ref_count becomes 0
             tx.execute(
-                "UPDATE chunks SET ref_count = ref_count - 1 WHERE chunk_id = ?1",
-                [&chunk_id],
+                "UPDATE objs SET ref_count = ref_count - 1 WHERE obj_id = ?1",
+                [&obj_id],
             ).map_err(|e| {
-                warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
+                warn!("NamedDataMgrDB: remove dir path failed! {}", e.to_string());
                 NdnError::DbError(e.to_string())
             })?;
 
             tx.execute(
-                "DELETE FROM chunks WHERE chunk_id = ?1 AND ref_count <= 0",
-                [&chunk_id],
+                "DELETE FROM objs WHERE obj_id = ?1 AND ref_count <= 0",
+                [&obj_id],
             ).map_err(|e| {
-                warn!("ChunkMgrDB: remove dir path failed! {}", e.to_string());
+                warn!("NamedDataMgrDB: remove dir path failed! {}", e.to_string());
                 NdnError::DbError(e.to_string())
             })?;
         }
@@ -439,39 +441,91 @@ impl NamedDataMgr {
         None
     }
 
+    pub async fn get_obj_id_by_path(&self, path:String)->NdnResult<ObjId> {
+        unimplemented!()
+    }
+
+    pub async fn get_object(&self, obj_id:&ObjId,obj_path:Option<String>)->NdnResult<serde_json::Value> {
+        if obj_id.is_chunk() {
+            return Err(NdnError::InvalidObjType(obj_id.to_string()));
+        }
+
+        let mut obj_body = None;
+        if self.local_cache.is_some() {
+            let local_cache = self.local_cache.as_ref().unwrap();
+            let obj_result = local_cache.get_object(&obj_id).await;
+            if obj_result.is_ok() {
+                obj_body = Some(obj_result.unwrap());
+            }
+        }
+
+        for local_store in self.local_store_list.iter() {
+            let obj_result = local_store.get_object(&obj_id).await;
+            if obj_result.is_ok() {
+                obj_body = Some(obj_result.unwrap());
+                break;
+            }
+        }        
+
+        if obj_body.is_some() {
+            let obj_body = obj_body.unwrap();
+            let obj_body = obj_body.to_json_value()
+                .map_err(|e| {
+                    warn!("get_object: decode obj body failed! {}", e.to_string());
+                    NdnError::DecodeError(e.to_string())
+                })?;
+
+            if obj_path.is_some() {
+                let obj_path = obj_path.unwrap();
+                let obj_filed = get_by_json_path(&obj_body, &obj_path);
+                if obj_filed.is_some() {
+                    return Ok(obj_filed.unwrap());
+                }
+            }
+            return Ok(obj_body);
+        }
+        
+        Err(NdnError::NotFound(obj_id.to_string()))
+    }
+
     pub async fn get_chunk_reader_by_path(&self, path:String,user_id:&str,app_id:&str,seek_from:SeekFrom)->NdnResult<(ChunkReader,u64,ChunkId)> {
-        let chunk_id = self.db.get_path_target_chunk(&path);
-        if chunk_id.is_err() {
+        let obj_id = self.db.get_path_target_objid(&path);
+        if obj_id.is_err() {
             warn!("get_chunk_reader_by_path: no chunk_id for path:{}", path);
             return Err(NdnError::NotFound(path));
         }
-        let chunk_id = chunk_id.unwrap();
-        let (chunk_reader,chunk_size) = self.get_chunk_reader(&chunk_id, seek_from, true).await?;
+        let obj_id = obj_id.unwrap();
+        if !obj_id.is_chunk() {
+            warn!("get_chunk_reader_by_path: path:{} , obj type is not chunk:{}", path, obj_id.to_string());
+            return Err(NdnError::InvalidObjType(obj_id.to_string()));
+        }
+        let chunk_id = ChunkId::from_obj_id(&obj_id);
+        let (chunk_reader,chunk_size) = self.open_chunk_reader(&chunk_id, seek_from, true).await?;
         let access_time = buckyos_get_unix_timestamp();
-        self.db.update_chunk_access_time(&chunk_id, access_time)?;
+        self.db.update_obj_access_time(&obj_id, access_time)?;
         Ok((chunk_reader,chunk_size,chunk_id))
     }
 
-    pub async fn create_file(&self, path:String,chunk_id:&ChunkId,app_id:&str,user_id:&str)->NdnResult<()> {
-        self.db.create_path(chunk_id, path.clone(), app_id, user_id).map_err(|e| {
+    pub async fn create_file(&self, path:String,obj_id:&ObjId,app_id:&str,user_id:&str)->NdnResult<()> {
+        self.db.create_path(obj_id, path.clone(), app_id, user_id).map_err(|e| {
             warn!("create_file: create path failed! {}", e.to_string());
             e
         })?;
-        info!("create path:{} ==> {}", path, chunk_id.to_string());
+        info!("create path:{} ==> {}", path, obj_id.to_string());
         Ok(())
     }
 
-    pub async fn set_file(&self, path:String,new_chunk_id:&ChunkId,app_id:&str,user_id:&str)->NdnResult<()> {
-        self.db.set_path(path.clone(), new_chunk_id, app_id, user_id).map_err(|e| {
+    pub async fn set_file(&self, path:String,new_obj_id:&ObjId,app_id:&str,user_id:&str)->NdnResult<()> {
+        self.db.set_path(&path, &new_obj_id, app_id, user_id).map_err(|e| {
             warn!("update_file: update path failed! {}", e.to_string());
             e
         })?;
-        info!("update path:{} ==> {}", path, new_chunk_id.to_string());
+        info!("update path:{} ==> {}", path, new_obj_id.to_string());
         Ok(())
     }
 
-    pub async fn remove_file(&self, path:String)->NdnResult<()> {
-        self.db.remove_path(path.clone()).map_err(|e| {
+    pub async fn remove_file(&self, path:&str)->NdnResult<()> {
+        self.db.remove_path(path).map_err(|e| {
             warn!("remove_file: remove path failed! {}", e.to_string());
             e
         })?;
@@ -481,8 +535,8 @@ impl NamedDataMgr {
         //TODO: 这里不立刻删除chunk,而是等统一的GC来删除
     }
 
-    pub async fn remove_dir(&self, path:String)->NdnResult<()> {
-        self.db.remove_dir_path(path.clone()).map_err(|e| {
+    pub async fn remove_dir(&self, path:&str)->NdnResult<()> {
+        self.db.remove_dir_path(path).map_err(|e| {
             warn!("remove_dir: remove dir path failed! {}", e.to_string());
             e
         })?;
@@ -511,7 +565,7 @@ impl NamedDataMgr {
     }
 
   
-    pub async fn get_chunk_reader(&self, chunk_id:&ChunkId,seek_from:SeekFrom,auto_cache:bool)->NdnResult<(ChunkReader,u64)> {
+    pub async fn open_chunk_reader(&self, chunk_id:&ChunkId,seek_from:SeekFrom,auto_cache:bool)->NdnResult<(ChunkReader,u64)> {
         // memroy cache ==> local disk cache ==> local store
         //at first ,do access control
         let mcache_file_path = self.get_cache_mmap_path(chunk_id);
@@ -615,7 +669,7 @@ mod tests {
         chunk_mgr.complete_chunk_writer(&chunk_id).await.unwrap();
 
         // Read and verify chunk
-        let (mut reader, size) = chunk_mgr.get_chunk_reader(&chunk_id, SeekFrom::Start(0), true).await.unwrap();
+        let (mut reader, size) = chunk_mgr.open_chunk_reader(&chunk_id, SeekFrom::Start(0), true).await.unwrap();
         assert_eq!(size, test_data.len() as u64);
 
         let mut buffer = Vec::new();
@@ -654,7 +708,7 @@ mod tests {
         // Bind chunk to path
         chunk_mgr.create_file(
             test_path.clone(),
-            &chunk_id,
+            &chunk_id.to_obj_id(),
             "test_app",
             "test_user"
         ).await?;
@@ -675,7 +729,7 @@ mod tests {
         assert_eq!(&buffer, test_data);
 
         // Test remove file
-        chunk_mgr.remove_file(test_path.clone()).await.unwrap();
+        chunk_mgr.remove_file(&test_path).await.unwrap();
 
         // Verify path is removed
         let result = chunk_mgr.get_chunk_reader_by_path(
@@ -714,7 +768,7 @@ mod tests {
         // Read chunk and verify
         {
             let chunk_mgr = chunk_mgr.lock().await;
-            let (mut reader, size) = chunk_mgr.get_chunk_reader(&chunk_id, SeekFrom::Start(0), true).await?;
+            let (mut reader, size) = chunk_mgr.open_chunk_reader(&chunk_id, SeekFrom::Start(0), true).await?;
             assert_eq!(size, test_data.len() as u64);
 
             let mut buffer = Vec::new();

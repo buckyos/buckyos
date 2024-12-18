@@ -49,6 +49,21 @@ pub fn set_json_by_path(data: &mut Value, path: &str, value: Option<&Value>) {
     }
 }
 
+pub fn get_by_json_path(data: &Value, path: &str) -> Option<Value> {
+    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    let mut current = data;
+    for part in parts {
+        current = if let Ok(index) = part.parse::<usize>() {
+            // 如果 part 可以解析为数字，则作为数组索引处理
+            current.get(index).unwrap_or(&json!(null))
+        } else {
+            // 否则作为对象键处理
+            current.get(part).unwrap_or(&json!(null))
+        };
+    }
+    Some(current.clone())
+}
+
 pub fn extend_json_action_map(dest_map: &mut HashMap<String, JsonValueAction>, from_map: &HashMap<String, JsonValueAction>) {
     for (key, value) in from_map.iter() {
         let old_value = dest_map.get_mut(key);
@@ -122,5 +137,33 @@ mod tests {
         // 完全删除 address 对象
         set_json_by_path(&mut data, "/user/address", None);
         println!("{}", data);
+    }
+
+
+    #[test]
+    fn test_get_by_json_path() {
+        let data = json!({
+            "user": {
+                "name": "Alice",
+                "age": 30,
+                "address": {
+                    "city": "New York"
+                },
+                "friends": [
+                    {
+                        "name": "Bob",
+                        "age": 25
+                    },
+                    {
+                        "name": "Charlie",
+                        "age": 28
+                    }
+                ]
+            }
+        });
+
+        let name = get_by_json_path(&data, "/user/friends/0/name").unwrap();
+        assert_eq!(name.as_str().unwrap(),"Bob");
+
     }
 }

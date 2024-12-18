@@ -46,13 +46,21 @@ pub enum NdnError {
     DecodeError(String),
     #[error("offset too large: {0}")]
     OffsetTooLarge(String),
+    #[error("invalid obj type: {0}")]
+    InvalidObjType(String),
 }
 
 
 pub type NdnResult<T> = std::result::Result<T, NdnError>;
 
 
-const OBJ_TYPE_FILE: &str = "cyfile";
+pub const OBJ_TYPE_FILE: &str = "cyfile";
+pub const OBJ_TYPE_DIR: &str = "cydir";
+
+pub const OBJ_TYPE_MTREE: &str = "cytree";
+pub const OBJ_TYPE_OBJMAPT: &str = "cymap"; // object map
+pub const OBJ_TYPE_PACK: &str = "cypack"; // object set
+pub const OBJ_TYPE_LIST: &str = "cylist"; // object list
 // mod http;
 // pub use http::*;
 

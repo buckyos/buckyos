@@ -51,7 +51,7 @@ impl LinkData {
         let link_data = parts[1];
 
         match link_type {
-            "same" => Ok(LinkData::SameAs(ObjId::from_string(link_data)?)),
+            "same" => Ok(LinkData::SameAs(ObjId::new(link_data)?)),
             "part_of" => {
                 let parts = link_data.split("@").collect::<Vec<&str>>();
                 if parts.len() != 2 {
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_link_data() {
-        let link_data = LinkData::SameAs(ObjId::new("test".to_string(),"123".to_string()));
+        let link_data = LinkData::SameAs(ObjId::new("test:123").unwrap());
         let link_str = link_data.to_string();
         println!("link_str {}",link_str);
         let link_data2 = LinkData::from_string(&link_str).unwrap();

@@ -305,7 +305,7 @@ impl NamedDataDb {
         Ok(())
     }
 
-    async fn set_object(&self, obj_id: &ObjId, obj_type:u8,obj_str: &str) -> NdnResult<()> {
+    async fn set_object(&self, obj_id: &ObjId, obj_type: &str,obj_str: &str) -> NdnResult<()> {
         let now_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -445,9 +445,10 @@ impl NamedDataStore {
 
     fn get_chunk_path(&self, chunk_id: &ChunkId)->String {
         //根据ChunkId的HashResult,产生一个三层的目录结构
-        let dir1 = &chunk_id.hash_hex_string[0..2];
-        let dir2 = &chunk_id.hash_hex_string[2..4];
-        let file_name = &chunk_id.hash_hex_string[4..];
+        let hex_str = hex::encode(chunk_id.hash_result.clone());
+        let dir1 = &hex_str[0..2];
+        let dir2 = &hex_str[2..4];
+        let file_name = &hex_str[4..];
         
         format!("{}/{}/{}/{}.{}",
             self.base_dir,
@@ -510,11 +511,11 @@ impl NamedDataStore {
         if need_verify {
             // Add verification logic here if needed
             let build_obj_id = crate::build_obj_id("sha256",obj_str);
-            if obj_id.obj_id_string != build_obj_id.obj_id_string {
+            if obj_id.obj_hash != build_obj_id.obj_hash  {
                 return Err(NdnError::InvalidId(format!("object id not match! {}",obj_id.to_string())));
             }
         }
-        self.named_db.set_object(obj_id,obj_id.get_known_obj_type(),obj_str).await
+        self.named_db.set_object(obj_id,obj_id.obj_type.as_str(),obj_str).await
     }
 
     pub async fn link_object(&self, obj_id: &ObjId, link: LinkData) -> NdnResult<()> {
@@ -799,7 +800,7 @@ impl NamedDataStore {
         if need_verify {
             let mut chunk_hasher = ChunkHasher::new(Some(chunk_id.hash_type.as_str()))?;
             let hash_bytes = chunk_hasher.calc_from_bytes(&chunk_data);
-            if !chunk_id.is_equal(&hash_bytes) {
+            if !chunk_id.verify_chunk(&hash_bytes) {
                 warn!("put_chunk: chunk_id not equal hash_bytes! {}",chunk_id.to_string());
                 return Err(NdnError::InvalidId(format!("chunk_id not equal hash_bytes! {}",chunk_id.to_string())));
             }
@@ -819,6 +820,8 @@ impl NamedDataStore {
 
 #[cfg(test)]
 mod tests {
+    use crate::build_named_object_by_json;
+
     use super::*;
     use tempfile::tempdir;
     use buckyos_kit::*;
@@ -922,11 +925,13 @@ mod tests {
     #[tokio::test]
     async fn test_object_operations() -> NdnResult<()> {
         let store = create_test_store().await?;
-        let obj_id = ObjId::new("test".to_string(),"object1".to_string());
-        let obj_str = r#"{"name": "test object", "data": "test data"}"#;
+        let obj_json = serde_json::json!({"name": "test object", "data": "test data"});
+        let (obj_id,obj_str) = build_named_object_by_json("myobj", &obj_json);
+        //let obj_id = ObjId::new("object1".to_string());
+ 
 
         // Test putting object
-        store.put_object(&obj_id, obj_str, false).await?;
+        store.put_object(&obj_id, &obj_str, false).await?;
 
         // Verify object exists
         assert!(store.is_object_exist(&obj_id).await?);

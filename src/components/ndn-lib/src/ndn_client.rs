@@ -109,9 +109,9 @@ impl NdnClient {
                     obj_id.to_string())));
             }
         } else {
-            let obj_id = cyfs_get_obj_id_from_url(chunk_url.as_str());
-            if obj_id.is_ok() {
-                let obj_id = obj_id.unwrap();
+            let get_obj_result = cyfs_get_obj_id_from_url(chunk_url.as_str());
+            if get_obj_result.is_ok() {
+                let (obj_id,obj_inner_path) = get_obj_result.unwrap();
                 if obj_id.is_chunk() {
                     chunk_id = ChunkId::from_obj_id(&obj_id);
                 } else {
