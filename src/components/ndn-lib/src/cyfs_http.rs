@@ -34,7 +34,7 @@ pub fn get_cyfs_resp_headers(headers:&HeaderMap)->NdnResult<CYFSHttpRespHeaders>
     let obj_id = headers.get("cyfs-obj-id");
     if obj_id.is_some() {
         let obj_id = obj_id.unwrap().to_str().unwrap();
-        real_obj_id = Some(ObjId::from_str(obj_id)?);
+        real_obj_id = Some(ObjId::from_string(obj_id)?);
     }
 
     let mut real_chunk_size = None;

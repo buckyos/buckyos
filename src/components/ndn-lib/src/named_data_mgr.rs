@@ -560,6 +560,7 @@ impl NamedDataMgr {
         Err(NdnError::NotFound(chunk_id.to_string()))
     }
 
+    //return chunk_id,progress_info 
     pub async fn open_chunk_writer(&self, chunk_id: &ChunkId,chunk_size:u64,offset:u64)
         ->NdnResult<(ChunkWriter,String)> 
     {
@@ -609,12 +610,12 @@ mod tests {
         let chunk_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
         
         // Write chunk
-        let mut writer = chunk_mgr.open_chunk_writer(&chunk_id, test_data.len() as u64, false).await.unwrap();
+        let (mut writer, _) = chunk_mgr.open_chunk_writer(&chunk_id, test_data.len() as u64, 0).await.unwrap();
         writer.write_all(test_data).await.unwrap();
-        chunk_mgr.close_chunk_writer(&chunk_id).await.unwrap();
+        chunk_mgr.complete_chunk_writer(&chunk_id).await.unwrap();
 
         // Read and verify chunk
-        let (mut reader, size) = chunk_mgr.get_chunk_reader(&chunk_id, false).await.unwrap();
+        let (mut reader, size) = chunk_mgr.get_chunk_reader(&chunk_id, SeekFrom::Start(0), true).await.unwrap();
         assert_eq!(size, test_data.len() as u64);
 
         let mut buffer = Vec::new();
@@ -646,9 +647,9 @@ mod tests {
         let test_path = "/test/file.txt".to_string();
         
         // Write chunk
-        let mut writer = chunk_mgr.open_chunk_writer(&chunk_id, test_data.len() as u64, false).await?;
+        let (mut writer, _) = chunk_mgr.open_chunk_writer(&chunk_id, test_data.len() as u64, 0).await?;
         writer.write_all(test_data).await.unwrap();
-        chunk_mgr.close_chunk_writer(&chunk_id).await.unwrap();
+        chunk_mgr.complete_chunk_writer(&chunk_id).await.unwrap();
 
         // Bind chunk to path
         chunk_mgr.create_file(
@@ -662,7 +663,8 @@ mod tests {
         let (mut reader, size, retrieved_chunk_id) = chunk_mgr.get_chunk_reader_by_path(
             test_path.clone(),
             "test_user",
-            "test_app"
+            "test_app",
+            SeekFrom::Start(0)
         ).await?;
 
         assert_eq!(size, test_data.len() as u64);
@@ -679,7 +681,8 @@ mod tests {
         let result = chunk_mgr.get_chunk_reader_by_path(
             test_path.clone(),
             "test_user",
-            "test_app"
+            "test_app",
+            SeekFrom::Start(0)
         ).await;
         assert!(result.is_err());
 
@@ -703,15 +706,15 @@ mod tests {
         // Write chunk
         {
             let mut chunk_mgr = chunk_mgr.lock().await;
-            let mut writer = chunk_mgr.open_chunk_writer(&chunk_id, test_data.len() as u64, false).await.unwrap();
+            let (mut writer, _) = chunk_mgr.open_chunk_writer(&chunk_id, test_data.len() as u64, 0).await.unwrap();
             writer.write_all(test_data).await.unwrap();
-            chunk_mgr.close_chunk_writer(&chunk_id).await.unwrap();
+            chunk_mgr.complete_chunk_writer(&chunk_id).await.unwrap();
         }
 
         // Read chunk and verify
         {
             let chunk_mgr = chunk_mgr.lock().await;
-            let (mut reader, size) = chunk_mgr.get_chunk_reader(&chunk_id, true).await?;
+            let (mut reader, size) = chunk_mgr.get_chunk_reader(&chunk_id, SeekFrom::Start(0), true).await?;
             assert_eq!(size, test_data.len() as u64);
 
             let mut buffer = Vec::new();

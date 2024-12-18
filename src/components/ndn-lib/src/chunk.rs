@@ -15,7 +15,7 @@ pub const MAX_CHUNK_SIZE: u64 = 1024*1024*1024*4;
 pub const COPY_CHUNK_BUFFER_SIZE: usize = CACL_HASH_PIECE_SIZE as usize;
 
 pub type ChunkReader = Pin<Box<dyn AsyncRead + Unpin + Send>>;
-pub type ChunkWriter = Pin<Box<dyn AsyncWrite + Unpin>>;
+pub type ChunkWriter = Pin<Box<dyn AsyncWrite + Unpin + Send>>;
 //We support 3 types of chunktype:qcid, sha256, mix at this time
 //单个
 #[derive(Debug, Clone,Eq, PartialEq)]
@@ -37,12 +37,12 @@ impl ChunkId {
     pub fn to_obj_id(&self) -> ObjId {
         ObjId {
             obj_type: self.hash_type.clone(),
-            obj_id: self.hash_hex_string.clone(),
+            obj_id_string: self.hash_hex_string.clone(),
         }
     }
 
     pub fn from_obj_id(obj_id: &ObjId) -> Self {
-        Self { hash_hex_string:obj_id.obj_id.clone(), hash_type:obj_id.obj_type.clone() }
+        Self { hash_hex_string:obj_id.obj_id_string.clone(), hash_type:obj_id.obj_type.clone() }
     }
 
     pub fn from_sha256_result(hash_result: &[u8]) -> Self {
@@ -259,34 +259,6 @@ pub async fn calc_quick_hash_by_buffer(buffer_begin: &[u8],buffer_mid: &[u8],buf
 }
 
 
-pub enum ObjectState {
-    Exist,
-    NotCompleted,
-    NotExist,
-    Object(String),//json_str
-    Reader(ChunkReader,u64),//u64 is the chunk size
-    Link(LinkData),
-}
-
-
-#[derive(Debug, Clone,Eq, PartialEq)]
-pub enum LinkData {
-    SameAs(ObjId),//Same ChunkId
-    //ComposedBy(ChunkId,ObjMapId),// Base ChunkId + Diff Action Items
-    PartOf(ChunkId,Range<u64>), //Object Id + Range
-    //IndexOf(ObjId,u64),//Object Id + Index
-}
-
-impl LinkData {
-    pub fn to_string(&self)->String {
-        unimplemented!()
-    }
-
-    pub fn from_string(link_str:&str)->NdnResult<Self> {
-        unimplemented!()
-    }
-}
-
 pub async fn copy_chunk<R, W, F>(
     chunk_id: ChunkId,
     mut chunk_reader: R,
@@ -333,21 +305,6 @@ where
 }
 
 
-
-pub struct ObjectLink {
-    pub obj_id:Option<ObjId>,
-    pub link_data:LinkData,
-}
-
-impl ObjectLink {
-    pub fn to_string(&self)->String {
-        unimplemented!()
-    }
-
-    pub fn from_string(link_str:&str)->NdnResult<Self> {
-        unimplemented!()
-    }
-}
 
 #[cfg(test)]
 mod tests {

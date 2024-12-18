@@ -6,12 +6,12 @@ use crate::{NdnResult, NdnError};
 #[derive(Debug, Clone,Eq, PartialEq)]
 pub struct ObjId {
     pub obj_type : String,
-    pub obj_id : String,
+    pub obj_id_string : String,
 }
 
 impl ObjId {
     pub fn new(obj_type:String,obj_id:String)->Self {
-        Self { obj_type: obj_type, obj_id: obj_id }
+        Self { obj_type: obj_type, obj_id_string: obj_id }
     }
 
     pub fn is_chunk(&self)->bool {
@@ -27,15 +27,15 @@ impl ObjId {
     }
 
     pub fn to_string(&self)->String {
-        format!("{}:{}",self.obj_type,self.obj_id)
+        format!("{}:{}",self.obj_type,self.obj_id_string)
     }
 
-    pub fn from_str(obj_id_str:&str)->NdnResult<Self> {
+    pub fn from_string(obj_id_str:&str)->NdnResult<Self> {
         let split = obj_id_str.split(":").collect::<Vec<&str>>();
         if split.len() != 2 {
             return Err(NdnError::InvalidId(obj_id_str.to_string()));
         }
-        Ok(Self { obj_type: split[0].to_string(), obj_id: split[1].to_string() })
+        Ok(Self { obj_type: split[0].to_string(), obj_id_string: split[1].to_string() })
     }
 
     pub fn get_known_obj_type(&self)->u8 {
@@ -80,11 +80,56 @@ pub fn build_named_object_by_json(obj_type:&str,json_value:&serde_json::Value)->
         (obj_id,json_str)
 }
 
-
-pub struct ObjectMap {
-    pub obj_map:HashMap<String,ObjId>,
+pub fn verify_named_object(obj_id:&ObjId,json_value:&serde_json::Value)->bool {
+    let (obj_id2,json_str) = build_named_object_by_json(obj_id.obj_type.as_str(),json_value);
+    if obj_id2 != *obj_id {
+        return false;
+    }
+   return true;
 }
 
+pub fn verify_named_object_from_jwt(obj_id:&ObjId,jwt_str:&str)->NdnResult<bool> {
+    let claims = name_lib::decode_jwt_claim_without_verify(jwt_str)
+        .map_err(|e|NdnError::DecodeError(format!("decode jwt failed:{}",e.to_string())))?;
+
+    let (obj_id2,json_str) = build_named_object_by_json(obj_id.obj_type.as_str(),&claims);
+    if obj_id2 != *obj_id {
+        return Ok(false);
+    }
+   return Ok(true);
+}
+
+
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn test_obj_id() {
+        let obj_id = ObjId::new("sha256".to_string(),"1234567890".to_string());
+        assert_eq!(obj_id.obj_type,"sha256");
+        assert_eq!(obj_id.obj_id_string,"1234567890");
+        assert_eq!(obj_id.is_chunk(),true);
+    }
+    #[test]
+    fn test_build_obj_id() {
+        let json_value = json!({"age":18,"name":"test"});
+        let (obj_id,json_str) = build_named_object_by_json("jobj",&json_value);
+        assert_eq!(obj_id.obj_type,"jobj");
+        //assert_eq!(obj_id.obj_id_string,"02KQC625Y4B1QGSCNPKSK0G0M2E204YBSYF77SYG0QJKEFEXAPBG");
+        //assert_eq!(obj_id.to_string(),"jobj:02KQC625Y4B1QGSCNPKSK0G0M2E204YBSYF77SYG0QJKEFEXAPBG");
+        let json_value2 = json!({"name":"test","age":18});
+        let (obj_id2,json_str2) = build_named_object_by_json("jobj",&json_value2);
+        assert_eq!(obj_id,obj_id2);
+        println!("obj_id2 : {}",obj_id2.to_string());
+
+        assert_eq!(verify_named_object(&obj_id,&json_value2),true);
+
+    }
+}
 
 
 

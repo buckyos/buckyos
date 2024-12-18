@@ -2,18 +2,21 @@
 
 mod chunk;
 mod object;
+mod link_obj;
 mod local_store;
 mod named_data_mgr;
 mod cyfs_http;
 mod ndn_client;
+mod fileobj;
 
 pub use object::*;
 pub use chunk::*;
 pub use local_store::*;
+pub use link_obj::*;
 pub use named_data_mgr::*;
 pub use cyfs_http::*;
 pub use ndn_client::*;
-
+pub use fileobj::*;
 
 use thiserror::Error;
 
@@ -48,6 +51,8 @@ pub enum NdnError {
 
 pub type NdnResult<T> = std::result::Result<T, NdnError>;
 
+
+const OBJ_TYPE_FILE: &str = "cyfile";
 // mod http;
 // pub use http::*;
 
