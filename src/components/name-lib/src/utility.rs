@@ -191,7 +191,7 @@ pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
 
     let public_key_jwk = encode_ed25519_sk_to_pk_jwt(&signing_key);
 
-    (private_key_pem, public_key_jwk)   
+    (private_key_pem, public_key_jwk)
 }
 
 
@@ -275,6 +275,25 @@ mod test {
         println!("private_key: {}",private_key);
         println!("public_key: {}",serde_json::to_string(&public_key).unwrap());
 
+    }
+
+    #[test]
+    fn generate_ed25519_key_pair_to_local() {
+        // Get temp path
+        let temp_dir = std::env::temp_dir();
+        let key_dir = temp_dir.join("buckyos").join("keys");
+        if !key_dir.is_dir() {
+            std::fs::create_dir_all(&key_dir).unwrap();
+        }
+        println!("key_dir: {:?}",key_dir);
+
+        let (private_key, public_key) = generate_ed25519_key_pair();
+
+        let sk_file = key_dir.join("private_key.pem");
+        std::fs::write(&sk_file, private_key).unwrap();
+
+        let pk_file = key_dir.join("public_key.json");
+        std::fs::write(&pk_file, serde_json::to_string(&public_key).unwrap()).unwrap();
     }
 
     #[test]

@@ -607,6 +607,8 @@ mod tests {
             iss: "lzc".to_string(),
             ip:None,
             net_id:None,
+            arch: None,
+            ddns_sn_url: None,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };
@@ -652,6 +654,8 @@ mod tests {
             iss: "waterfllier".to_string(),
             ip:Some("23.239.23.54".parse().unwrap()),
             net_id:Some("wan".to_string()),
+            arch: None,
+            ddns_sn_url: None,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };
@@ -690,6 +694,8 @@ mod tests {
             iss: "waterfllier".to_string(),
             ip:None,
             net_id:None,
+            arch: None,
+            ddns_sn_url: None,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };
