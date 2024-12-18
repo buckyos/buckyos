@@ -8,7 +8,7 @@ install_root_dir = ""
 
 if platform.system() == "Windows":
     install_root_dir = os.path.join(os.path.expandvars("%AppData%"), "buckyos")
-elif platform.system() == "Linux":
+else:
     install_root_dir = "/opt/buckyos"
 
 def install():
