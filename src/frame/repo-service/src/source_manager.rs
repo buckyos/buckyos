@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::fmt::format;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tokio::{runtime::Runtime, sync::RwLock, task};
+use tokio::{sync::RwLock, task};
 
 #[derive(PartialEq, Debug, Clone, Copy)]
 enum RepoStatus {
@@ -391,10 +391,12 @@ impl SourceManager {
         }
     }
 
-    pub fn set_task_status(task_id: &str, status: TaskStatus) {
-        if let Err(e) = REPO_TASK_MANAGER.set_task_status(task_id, status) {
-            error!("set_task_status failed. id: {}, err: {:?}", task_id, e);
+    fn set_task_status(task_id: &str, status: TaskStatus) -> RepoResult<()> {
+        let ret = REPO_TASK_MANAGER.set_task_status(task_id, status);
+        if let Err(ref e) = ret {
+            error!("set_task_status failed: {:?}", e);
         }
+        ret
     }
 
     pub async fn install_pkg(&self, package_id: PackageId) -> RepoResult<String> {
@@ -410,35 +412,18 @@ impl SourceManager {
         let task_id = REPO_TASK_MANAGER.start_install_task(package_id.clone())?;
         let task_id_tmp = task_id.clone();
         let self_clone = self.clone();
-
-        let rt = Runtime::new().map_err(|e| {
-            error!("create runtime failed: {:?}", e);
-            RepoError::UnknownError(format!("create runtime failed: {:?}", e))
-        })?;
-        rt.spawn_blocking(move || {
-            let local_rt = match Runtime::new() {
-                Ok(rt) => rt,
+        task::spawn(async move {
+            match self_clone.do_install(package_id, &task_id_tmp).await {
+                Ok(_) => {
+                    let _ = Self::set_task_status(&task_id_tmp, TaskStatus::Finished);
+                }
                 Err(e) => {
-                    let err_msg = format!("create runtime failed: {:?}", e);
-                    error!("{}", err_msg);
-                    Self::set_task_status(&task_id_tmp, TaskStatus::Error(err_msg));
-                    return;
+                    error!("do_install failed: {:?}", e);
+                    let _ = Self::set_task_status(&task_id_tmp, TaskStatus::Error(e.to_string()));
                 }
-            };
-            local_rt.block_on(async {
-                match self_clone.do_install(package_id, &task_id_tmp).await {
-                    Ok(_) => {
-                        Self::set_task_status(&task_id_tmp, TaskStatus::Finished);
-                    }
-                    Err(e) => {
-                        error!("do_install failed: {:?}", e);
-                        Self::set_task_status(&task_id_tmp, TaskStatus::Error(e.to_string()));
-                    }
-                }
-                self_clone.leave_install_status();
-            });
+            }
+            self_clone.leave_install_status();
         });
-
         Ok(task_id)
     }
 
@@ -448,38 +433,23 @@ impl SourceManager {
         let task_id = REPO_TASK_MANAGER.start_index_update_task()?;
         let task_id_tmp = task_id.clone();
         let self_clone = self.clone();
-        let rt = Runtime::new().map_err(|e| {
-            error!("create runtime failed: {:?}", e);
-            RepoError::UnknownError(format!("create runtime failed: {:?}", e))
-        })?;
-        rt.spawn_blocking(move || {
-            let local_rt = match Runtime::new() {
-                Ok(rt) => rt,
+        task::spawn(async move {
+            match self_clone.build_source_list(update, &task_id_tmp).await {
+                Ok(_) => {
+                    let _ = Self::set_task_status(&task_id_tmp, TaskStatus::Finished);
+                }
                 Err(e) => {
-                    let err_msg = format!("create runtime failed: {:?}", e);
-                    error!("{}", err_msg);
-                    Self::set_task_status(&task_id_tmp, TaskStatus::Error(err_msg));
-                    return;
+                    error!("update_index failed: {:?}", e);
+                    let _ = Self::set_task_status(&task_id_tmp, TaskStatus::Error(e.to_string()));
                 }
-            };
-            local_rt.block_on(async {
-                match self_clone.build_source_list(update, &task_id_tmp).await {
-                    Ok(_) => {
-                        Self::set_task_status(&task_id_tmp, TaskStatus::Finished);
-                    }
-                    Err(e) => {
-                        error!("update_index failed: {:?}", e);
-                        Self::set_task_status(&task_id_tmp, TaskStatus::Error(e.to_string()));
-                    }
-                }
-                self_clone.leave_index_update_status();
-            });
+            }
+            self_clone.leave_index_update_status();
         });
         Ok(task_id)
     }
 
     pub async fn do_install(&self, package_id: PackageId, task_id: &str) -> RepoResult<()> {
-        REPO_TASK_MANAGER.set_task_status(
+        Self::set_task_status(
             task_id,
             TaskStatus::Running("Resolving dependencies".to_string()),
         )?;
@@ -498,7 +468,7 @@ impl SourceManager {
         REPO_TASK_MANAGER.set_task_deps(task_id, dependencies.clone())?;
         for dep in dependencies {
             let dep_id = format!("{}#{}", dep.name, dep.version);
-            REPO_TASK_MANAGER.set_task_status(
+            Self::set_task_status(
                 task_id,
                 TaskStatus::Running(format!("Downloading {}", dep_id)),
             )?;
