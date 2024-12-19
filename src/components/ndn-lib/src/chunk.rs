@@ -54,6 +54,15 @@ impl ChunkId {
         format!("{}:{}", self.hash_type, hex_str)
     }
 
+    pub fn to_base32(&self)->String {
+        let mut vec_result:Vec<u8> = Vec::new();
+        vec_result.extend_from_slice(self.hash_type.as_bytes());
+        vec_result.push(b':');
+        vec_result.extend_from_slice(&self.hash_result);
+        
+        base32::encode(base32::Alphabet::Rfc4648Lower{ padding: false }, &vec_result)
+    }
+
     pub fn to_did_string(&self) -> String {
         let hex_str = hex::encode(self.hash_result.clone());
         format!("did:{}:{}", self.hash_type, hex_str)

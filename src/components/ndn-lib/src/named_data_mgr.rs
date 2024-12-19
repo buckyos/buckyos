@@ -335,7 +335,8 @@ impl NamedDataMgrDB {
 
 
 lazy_static! {
-    static ref CHUNK_MGR_MAP:Arc<tokio::sync::Mutex<HashMap<String,Arc<tokio::sync::Mutex<NamedDataMgr>>>>> = {
+    pub static ref NAMED_DATA_MGR_MAP:Arc<tokio::sync::Mutex<HashMap<String,Arc<tokio::sync::Mutex<NamedDataMgr>>>>> = {
+        info!("NamedDataMgr: init mgr map");
         Arc::new(tokio::sync::Mutex::new(HashMap::new()))
     };
 }
@@ -343,9 +344,9 @@ lazy_static! {
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
 pub struct NamedDataMgrConfig {
-    local_stores:Vec<String>,
-    local_cache:Option<String>,
-    mmap_cache_dir:Option<String>,
+    pub local_stores:Vec<String>,
+    pub local_cache:Option<String>,
+    pub mmap_cache_dir:Option<String>,
 }
 
 pub struct NamedDataMgr {
@@ -357,14 +358,30 @@ pub struct NamedDataMgr {
 }
 
 impl NamedDataMgr {
+    pub async fn set_mgr_by_id(named_data_mgr_id:Option<&str>,mgr:NamedDataMgr) -> NdnResult<()> {
+        let named_data_mgr_key = named_data_mgr_id.unwrap_or("default").to_string();
+        let mut named_data_mgr_map = NAMED_DATA_MGR_MAP.lock().await;
+        info!("NamedDataMgr: set mgr for mgr_id:{}", named_data_mgr_key);
+        named_data_mgr_map.insert(named_data_mgr_key,Arc::new(tokio::sync::Mutex::new(mgr)));
+        for (key,mgr) in named_data_mgr_map.iter() {
+            info!("NamedDataMgr: mgr_id:{}", key);
+        }
+        Ok(())
+    }
+
     pub async fn get_named_data_mgr_by_id(named_data_mgr_id:Option<&str>)->Option<Arc<tokio::sync::Mutex<Self>>> {
-        let chunk_mgr_key = named_data_mgr_id.unwrap_or("default").to_string();
-        let mut chunk_mgr_map = CHUNK_MGR_MAP.lock().await;
-        let chunk_mgr = chunk_mgr_map.get(&chunk_mgr_key);
-        if chunk_mgr.is_some() {
-            return Some(chunk_mgr.unwrap().clone());
+        let named_mgr_key = named_data_mgr_id.unwrap_or("default").to_string();
+        let mut named_data_mgr_map = NAMED_DATA_MGR_MAP.lock().await;
+        for (key,mgr) in named_data_mgr_map.iter() {
+            info!("NamedDataMgr: mgr_id:{}", key);
         }
 
+        let named_data_mgr = named_data_mgr_map.get(&named_mgr_key);
+        if named_data_mgr.is_some() {
+            return Some(named_data_mgr.unwrap().clone());
+        }
+
+        info!("NamedDataMgr: auto create new named data mgr for mgr_id:{}", named_mgr_key);
         let root_path = get_buckyos_chunk_data_dir(named_data_mgr_id);
         //make sure the root path dir exists
         if !root_path.exists() {
@@ -404,7 +421,7 @@ impl NamedDataMgr {
             return None;
         }
         let result_mgr = Arc::new(tokio::sync::Mutex::new(result_mgr.unwrap()));
-        chunk_mgr_map.insert(chunk_mgr_key,result_mgr.clone());
+        named_data_mgr_map.insert(named_mgr_key,result_mgr.clone());
         return Some(result_mgr);
     }
 
@@ -442,7 +459,8 @@ impl NamedDataMgr {
     }
 
     pub async fn get_obj_id_by_path(&self, path:String)->NdnResult<ObjId> {
-        unimplemented!()
+        let obj_id = self.db.get_path_target_objid(&path)?;
+        Ok(obj_id)
     }
 
     pub async fn get_object(&self, obj_id:&ObjId,obj_path:Option<String>)->NdnResult<serde_json::Value> {
