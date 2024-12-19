@@ -54,7 +54,7 @@ impl NamedDataMgrDB {
                 obj_id TEXT NOT NULL,
                 app_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
-                FOREIGN KEY(obj_id) 
+                FOREIGN KEY(obj_id) REFERENCES objs(obj_id)
             )",
             [],
         ).map_err(|e| {
@@ -484,8 +484,17 @@ impl NamedDataMgr {
             }
             return Ok(obj_body);
         }
-        
+
         Err(NdnError::NotFound(obj_id.to_string()))
+    }
+
+    pub async fn put_object(&self, obj_id:&ObjId,obj_data:&str)->NdnResult<()> {
+        for local_store in self.local_store_list.iter() {
+            //TODO: select best local store to write?
+            local_store.put_object(obj_id, obj_data, false).await?;
+            break;
+        }
+        Ok(())
     }
 
     pub async fn get_chunk_reader_by_path(&self, path:String,user_id:&str,app_id:&str,seek_from:SeekFrom)->NdnResult<(ChunkReader,u64,ChunkId)> {
@@ -639,10 +648,12 @@ impl NamedDataMgr {
 
 #[cfg(test)]
 mod tests {
+    use crate::FileObject;
+
     use super::*;
     use tempfile::tempdir;
     use std::io::SeekFrom;
-
+    use buckyos_kit::*;
     #[tokio::test]
     async fn test_basic_chunk_operations() -> NdnResult<()> {
         // Create a temporary directory for testing
@@ -680,8 +691,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_chunk_with_path_operations() -> NdnResult<()> {
+    async fn test_base_operations() -> NdnResult<()> {
         // Create a temporary directory for testing
+        init_logging("ndn-lib test");
         let test_dir = tempdir().unwrap();
         let config = NamedDataMgrConfig {
             local_stores: vec![test_dir.path().to_str().unwrap().to_string()],
@@ -713,6 +725,7 @@ mod tests {
             "test_user"
         ).await?;
 
+
         // Read through path and verify
         let (mut reader, size, retrieved_chunk_id) = chunk_mgr.get_chunk_reader_by_path(
             test_path.clone(),
@@ -720,7 +733,7 @@ mod tests {
             "test_app",
             SeekFrom::Start(0)
         ).await?;
-
+        
         assert_eq!(size, test_data.len() as u64);
         assert_eq!(retrieved_chunk_id, chunk_id);
 
@@ -728,6 +741,17 @@ mod tests {
         reader.read_to_end(&mut buffer).await.unwrap();
         assert_eq!(&buffer, test_data);
 
+        //test fileobj
+        let path2 = "/test/file2.txt".to_string();
+        let file_obj = FileObject::new(path2.clone(),test_data.len() as u64,chunk_id.to_string());
+        let (file_obj_id,file_obj_str) = file_obj.gen_obj_id();
+        info!("file_obj_id:{}",file_obj_id.to_string());
+        //file-obj is soft linke to chunk-obj
+        chunk_mgr.put_object(&file_obj_id, &file_obj_str).await?;
+
+        let obj_content = chunk_mgr.get_object(&file_obj_id,Some("/content".to_string())).await?;
+        info!("obj_content:{}",obj_content);
+        assert_eq!(obj_content.as_str().unwrap(),chunk_id.to_string().as_str());
         // Test remove file
         chunk_mgr.remove_file(&test_path).await.unwrap();
 

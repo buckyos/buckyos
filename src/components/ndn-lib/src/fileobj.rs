@@ -25,10 +25,9 @@ impl FileObject {
         Self {name,size,content,mime:None,owner:None,create_time:None,chunk_list:None,links:None}
     }
 
-    pub fn gen_obj_id(&self)->ObjId {
+    pub fn gen_obj_id(&self)->(ObjId, String) {
         let json_value = serde_json::to_value(self).unwrap();
-        let (obj_id,_) = build_named_object_by_json(OBJ_TYPE_FILE, &json_value);
-        obj_id
+        build_named_object_by_json(OBJ_TYPE_FILE, &json_value)
     }
 }
 
@@ -44,7 +43,8 @@ mod tests {
         let file_object_str = serde_json::to_string(&file_object).unwrap();
         println!("file_object_str {}",file_object_str);
 
-        let objid = file_object.gen_obj_id();
-        println!("objid {}",objid.to_string());
+        let (objid,obj_str) = file_object.gen_obj_id();
+        println!("fileobj id {}",objid.to_string());
+        println!("fileobj str {}",obj_str);
     }
 }

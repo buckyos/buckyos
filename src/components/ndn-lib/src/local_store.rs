@@ -212,7 +212,7 @@ impl NamedDataDb {
         let mut stmt = conn.prepare(
             "SELECT * FROM chunk_items WHERE chunk_id = ?1"
         ).map_err(|e| {
-            warn!("ChunkDb: get_chunk failed! {}", e.to_string());
+            //warn!("NamedDataDb: get_chunk failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         
@@ -390,9 +390,9 @@ impl NamedDataDb {
     async fn get_object_link(&self, obj_id: &ObjId) -> NdnResult<String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
-            "SELECT obj_link FROM objects WHERE obj_id = ?1"
+            "SELECT obj_link FROM object_links WHERE link_obj_id = ?1"
         ).map_err(|e| {
-            warn!("ChunkDb: query object link failed! {}", e.to_string());
+            warn!("NamedDataDb: query object link failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
@@ -400,7 +400,7 @@ impl NamedDataDb {
             params![obj_id.to_string()],
             |row| row.get::<_, String>(0)
         ).map_err(|e| {
-            warn!("ChunkDb: query object link failed! {}", e.to_string());
+            warn!("NamedDataDb: query object link failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         Ok(obj_link)
@@ -539,7 +539,8 @@ impl NamedDataStore {
         self.named_db.set_object(obj_id,obj_id.obj_type.as_str(),obj_str).await
     }
 
-    pub async fn link_object(&self, obj_id: &ObjId, link: LinkData) -> NdnResult<()> {
+    pub async fn link_object(&self, obj_id: &ObjId, target_obj: &ObjId) -> NdnResult<()> {
+        let link = LinkData::SameAs(target_obj.clone());
         self.named_db.set_object_link(obj_id, &link).await
     }
 
@@ -898,8 +899,10 @@ mod tests {
         store.put_chunk(&original_id, &data, false).await?;
 
         // Create link
-        //store.link_object(&obj_id, &linked_id).await?;    
-
+        let src_id = linked_id.to_obj_id();
+        let target_id = original_id.to_obj_id();
+        store.link_object(&src_id, &target_id).await?;    
+        info!("link object ok! {}",src_id.to_string());
         // Verify both chunks exist
         let (is_exist,size) = store.is_chunk_exist(&original_id, None).await?;
         assert!(is_exist);
@@ -965,12 +968,12 @@ mod tests {
         assert_eq!(retrieved_obj.to_string(), obj_str);
 
         // Test object linking
-        //let linked_id = ObjId::new("test:linked_object").unwrap();
+        let linked_id = ObjId::new("test:2222222222222222").unwrap();
         //let link = ObjectLink { link_obj_id: linked_id.clone() };
-        //store.link_object(&obj_id, link).await?;
-
+        store.link_object(&linked_id, &obj_id).await?;
+        info!("link object ok! {}->{}",linked_id.to_string(),obj_id.to_string());
         // Verify linked object exists
-        //assert!(store.is_object_exist(&linked_id).await?);
+        assert!(store.is_object_exist(&linked_id).await?);
 
         Ok(())
     }
