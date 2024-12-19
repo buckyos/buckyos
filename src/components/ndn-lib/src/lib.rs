@@ -8,6 +8,7 @@ mod named_data_mgr;
 mod cyfs_http;
 mod ndn_client;
 mod fileobj;
+mod mtree;
 
 pub use object::*;
 pub use chunk::*;
@@ -17,6 +18,7 @@ pub use named_data_mgr::*;
 pub use cyfs_http::*;
 pub use ndn_client::*;
 pub use fileobj::*;
+pub use mtree::*;
 
 use thiserror::Error;
 
