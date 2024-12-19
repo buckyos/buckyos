@@ -25,9 +25,14 @@ url = "*"
 futures = "*"
 mime_guess = "*"
 async-stream = "*"
+rand = "*"
 tokio-stream = { version = "*", features = ["full"] }
 ndn-lib = { path = "../../components/ndn-lib" }
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 cyfs-sn = { path = "../cyfs-sn" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
 kRPC = { path = "../../kernel/kRPC" }
+
+[dev-dependencies]
+tempfile = "*"
+rand = "*"

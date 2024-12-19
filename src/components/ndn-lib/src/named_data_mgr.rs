@@ -336,7 +336,6 @@ impl NamedDataMgrDB {
 
 lazy_static! {
     pub static ref NAMED_DATA_MGR_MAP:Arc<tokio::sync::Mutex<HashMap<String,Arc<tokio::sync::Mutex<NamedDataMgr>>>>> = {
-        info!("NamedDataMgr: init mgr map");
         Arc::new(tokio::sync::Mutex::new(HashMap::new()))
     };
 }
@@ -361,20 +360,13 @@ impl NamedDataMgr {
     pub async fn set_mgr_by_id(named_data_mgr_id:Option<&str>,mgr:NamedDataMgr) -> NdnResult<()> {
         let named_data_mgr_key = named_data_mgr_id.unwrap_or("default").to_string();
         let mut named_data_mgr_map = NAMED_DATA_MGR_MAP.lock().await;
-        info!("NamedDataMgr: set mgr for mgr_id:{}", named_data_mgr_key);
         named_data_mgr_map.insert(named_data_mgr_key,Arc::new(tokio::sync::Mutex::new(mgr)));
-        for (key,mgr) in named_data_mgr_map.iter() {
-            info!("NamedDataMgr: mgr_id:{}", key);
-        }
         Ok(())
     }
 
     pub async fn get_named_data_mgr_by_id(named_data_mgr_id:Option<&str>)->Option<Arc<tokio::sync::Mutex<Self>>> {
         let named_mgr_key = named_data_mgr_id.unwrap_or("default").to_string();
         let mut named_data_mgr_map = NAMED_DATA_MGR_MAP.lock().await;
-        for (key,mgr) in named_data_mgr_map.iter() {
-            info!("NamedDataMgr: mgr_id:{}", key);
-        }
 
         let named_data_mgr = named_data_mgr_map.get(&named_mgr_key);
         if named_data_mgr.is_some() {

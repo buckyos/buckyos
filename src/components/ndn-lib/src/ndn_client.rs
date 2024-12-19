@@ -540,8 +540,6 @@ mod tests {
         // // Clean up
         // warp_server.stop().await.unwrap();
         // temp_dir.close().unwrap();
-
-        unimplemented!()
     }
 }
 
