@@ -10,7 +10,7 @@
       height: auto;
       min-height: 800px;
       padding: 24px;
-      margin-top: 20px; /* 离顶部的距离 */
+      margin-top: 20px; 
       box-sizing: border-box;
     }
 

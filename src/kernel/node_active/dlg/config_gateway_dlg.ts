@@ -4,6 +4,17 @@ import {BuckyWizzardDlg} from '../components/wizzard-dlg';
 import { GatewayType,ActiveWizzardData,check_sn_active_code } from '../active_lib';
 import {MdOutlinedTextField} from '@material/web/textfield/outlined-text-field.js';
 import {MdFilledButton} from '@material/web/button/filled-button.js';
+import Handlebars from 'handlebars';
+import i18next from '../i18n';
+
+
+Handlebars.registerHelper('t', function(key, options) {
+    const params = options && options.hash || {};
+
+    let result = i18next.t(key, params);
+    console.log(key,result);
+    return result;
+});
 
 class ConfigGatewayDlg extends HTMLElement {
     constructor() {
@@ -49,7 +60,9 @@ class ConfigGatewayDlg extends HTMLElement {
 
     connectedCallback() {
         const template = document.createElement('template');
-        template.innerHTML = templateContent;
+        const template_compiled = Handlebars.compile(templateContent);
+        const params = {}
+        template.innerHTML = template_compiled(params);
         const shadow = this.attachShadow({ mode: 'open' });
         shadow.appendChild(template.content.cloneNode(true));
 

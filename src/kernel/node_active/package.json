@@ -27,6 +27,8 @@
     "bcryptjs": "^2.4.3",
     "buckyos": "file:../buckyos_sdk/",
     "handlebars": "^4.7.8",
+    "i18next": "^24.1.2",
+    "i18next-http-backend": "^3.0.1",
     "lit-element": "^4.1.0",
     "path": "^0.12.7",
     "terser": "^5.34.1",
