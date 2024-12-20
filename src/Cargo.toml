@@ -11,7 +11,7 @@ members = [
     "./components/buckyos-kit",
     "./components/ndn-lib",
     "./components/index-lib",
-    
+
     "./cyfs_gateway/cyfs-gateway-lib",
     "./cyfs_gateway/cyfs_gateway",
     "./cyfs_gateway/cyfs-dns",
@@ -22,12 +22,13 @@ members = [
     "./kernel/kRPC",
     "./kernel/rbac",
     "./kernel/sys-config",
-    "./kernel/sys_config_service", 
-    "./kernel/verify_hub",   
+    "./kernel/sys_config_service",
+    "./kernel/verify_hub",
     "./kernel/node_daemon",
-    "./kernel/scheduler", 
-    "./kernel/task_manager", 
-    "./frame/repo-service", 
+    "./kernel/scheduler",
+    "./kernel/task_manager",
+    "./frame/repo-service",
 
+    "./tools/buckycli",
     #"./apps/tray-controller"
 ]
