@@ -28,6 +28,7 @@ members = [
     "./kernel/scheduler",
     "./kernel/task_manager",
     "./frame/repo-service",
+    "./frame/smb_service",
 
     "./tools/buckycli",
     #"./apps/tray-controller"
