@@ -29,6 +29,7 @@ sha2 = { version = ">=0.11.0-pre.4" }
 crypto-common = { version = ">=0.2.0-rc.1" }
 buckyos-kit = { path = "../buckyos-kit" }
 name-lib = { path = "../name-lib" }
+bincode = "*"
 
 [dev-dependencies]
 tempfile = "*"
