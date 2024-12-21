@@ -9,6 +9,7 @@ mod cyfs_http;
 mod ndn_client;
 mod fileobj;
 mod mtree;
+mod hash;
 
 pub use object::*;
 pub use chunk::*;
@@ -21,6 +22,9 @@ pub use fileobj::*;
 pub use mtree::*;
 
 use thiserror::Error;
+
+#[macro_use]
+extern crate log;
 
 #[derive(Error, Debug)]
 pub enum NdnError {
@@ -50,6 +54,12 @@ pub enum NdnError {
     OffsetTooLarge(String),
     #[error("invalid obj type: {0}")]
     InvalidObjType(String),
+
+    #[error("invalid data: {0}")]
+    InvalidData(String),
+
+    #[error("invalid param: {0}")]
+    InvalidParam(String),
 }
 
 
