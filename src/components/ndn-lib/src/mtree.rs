@@ -480,7 +480,18 @@ impl SerializeHashCalculator {
     }
 
     pub async fn append_leaf_hashes(&mut self, leaf_hashes: &Vec<Vec<u8>>) -> NdnResult<()> {
+        if leaf_hashes.len() + self.append_count > self.leaf_count {
+            let msg = format!(
+                "Leaf count out of range: {} + {} > {}",
+                leaf_hashes.len(), self.append_count as u64,
+                self.leaf_count
+            );
+            error!("{}", msg);
+            return Err(NdnError::InvalidParam(msg));
+        }
+
         for hash in leaf_hashes {
+            println!("Append leaf hash: {:?}", hash);
             let node = HashNode {
                 hash: hash.clone(),
                 depth: 0,
@@ -525,23 +536,25 @@ impl SerializeHashCalculator {
 
     // Should be called after all leaf nodes are appended
     pub async fn finalize(&mut self) -> NdnResult<Vec<u8>> {
-        // If the last node is leaf and without any match, so we has odd number of leaf nodes, we should copy the last leaf node
-        if self.stack.len() > 1 && self.stack.back().unwrap().depth == 0 {
-            // There must only one leaf node left on the stack!
-            assert!(self.stack.get(self.stack.len() - 2).unwrap().depth > 0);
-
-            let node = self.stack.back().unwrap();
-            self.stack.push_back(node.clone());
+        if self.stack.len() == 0 {
+            let msg = "No leaf node appended".to_string();
+            error!("{}", msg);
+            return Err(NdnError::InvalidState(msg));
         }
 
         // Merge the node in same depth, if there is only one node left in the same depth, we should copy it once more then merge with itself
-        while self.stack.len() > 1 {
+        loop {
+            if self.stack.len() == 1 {
+                break;
+            }
+
             let node1 = self.stack.pop_back().unwrap();
 
             // Check if the last node is same depth with node1
             let node2 = if self.stack.back().unwrap().depth == node1.depth {
                 self.stack.pop_back().unwrap()
             } else {
+                // Clone the node1 and set the index to the next on the right
                 let mut node2 = node1.clone();
                 node2.index = node1.index + 1;
 
@@ -560,7 +573,7 @@ impl SerializeHashCalculator {
             self.write_node(&node2).await?;
         }
 
-        assert!(self.stack.len() == 1);
+        assert_eq!(self.stack.len(), 1);
         let root = self.stack.pop_back().unwrap();
         assert!(root.depth == self.locator.total_depth());
         assert!(root.index == 0);
@@ -593,6 +606,7 @@ impl SerializeHashCalculator {
 mod tests {
     use super::*;
     use tokio::test;
+    use tokio::fs::File;
 
     #[test]
     async fn test_generator() {
@@ -635,61 +649,103 @@ mod tests {
         println!("Indexes: {:?}", indexes);
     }
 
+     // Get file size and then calc leaf count of the file
+    async fn get_leaf_count_of_file(file: &File, chunk_size: usize) -> u64 {
+
+        // Get file size and then calc leaf count of the file
+        let file_size = file.metadata().await.unwrap().len();
+        assert!(file_size > 0);
+
+        let mut leaf_count = file_size / chunk_size as u64;
+        if file_size % chunk_size as u64 != 0 {
+            leaf_count += 1;
+        }
+
+        println!("File size: {}, Leaf count: {}", file_size, leaf_count);
+        leaf_count
+    }
+
+    async fn read_chunk(file: &mut File, chunk_size: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; chunk_size];
+
+        let mut total_read = 0;
+        while total_read < chunk_size {
+            match file.read(&mut buf[total_read..]).await.unwrap() {
+                0 => {
+                    // EOF
+                    break;
+                }
+                n => {
+                    total_read += n;
+                }
+            }
+        }
+
+        println!("Read {} bytes", total_read);
+        // Truncate the buffer to the actual read size
+        if total_read < chunk_size {
+            buf.truncate(total_read);
+        }
+
+        buf
+    }
+
     #[test]
     async fn test_serialize_hash_calculator() {
         let test_file: &str = "D:\\test";
 
-        /*
+        
         let chunk_size = 1024 * 1024 * 4;
 
         let mut root_hash1;
         let mut root_hash2;
         {
             let mut file = tokio::fs::File::open(test_file).await.unwrap();
+            let leaf_count = get_leaf_count_of_file(&file, chunk_size).await;
 
             // Read the file by chunk and calculate the leaf node hashes
-            let mut calculator = SerializeHashCalculator::new(HashMethod::Sha256);
+            let mut calculator = SerializeHashCalculator::new(leaf_count, HashMethod::Sha256, None);
             let mut buf = vec![0u8; chunk_size];
             let mut hash_list = Vec::new();
             loop {
-                let len = file.read(&mut buf).await.unwrap();
-                if len == 0 {
+                let buf = read_chunk(&mut file, chunk_size).await;
+                if buf.len() == 0 {
                     break;
                 }
 
-                let hash = sha2::Sha256::digest(&buf[..len]);
+                let hash = sha2::Sha256::digest(&buf);
                 hash_list.push(hash.to_vec());
-
             }
 
-            calculator.append_leaf_hashs(&hash_list);
-            root_hash1 = calculator.finalize();
+            assert!(hash_list.len() == leaf_count as usize);
+            calculator.append_leaf_hashes(&hash_list).await.unwrap();
+            root_hash1 = calculator.finalize().await.unwrap();
             println!("Root hash: {:?}", root_hash1);
         }
 
         {
             let mut file = tokio::fs::File::open(test_file).await.unwrap();
+            let leaf_count = get_leaf_count_of_file(&file, chunk_size).await;
 
             // Read the file by chunk and calculate the leaf node hashes
-            let mut calculator = SerializeHashCalculator::new(HashMethod::Sha256);
+            let mut calculator = SerializeHashCalculator::new(leaf_count,HashMethod::Sha256, None);
             let mut buf = vec![0u8; chunk_size];
 
             loop {
-                let len = file.read(&mut buf).await.unwrap();
-                if len == 0 {
+                let buf = read_chunk(&mut file, chunk_size).await;
+                if buf.len() == 0 {
                     break;
                 }
 
-                let hash = sha2::Sha256::digest(&buf[..len]);
-                calculator.append_leaf_hashs(&vec![hash.to_vec()]);
+                let hash = sha2::Sha256::digest(&buf);
+                calculator.append_leaf_hashes(&vec![hash.to_vec()]).await.unwrap();
             }
 
-            root_hash2 = calculator.finalize();
+            root_hash2 = calculator.finalize().await.unwrap();
             println!("Root hash: {:?}", root_hash2);
         }
 
         assert_eq!(root_hash1, root_hash2);
 
-        */
     }
 }

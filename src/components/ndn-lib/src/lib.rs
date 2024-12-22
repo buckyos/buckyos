@@ -10,6 +10,7 @@ mod ndn_client;
 mod fileobj;
 mod mtree;
 mod hash;
+mod object_map;
 
 pub use object::*;
 pub use chunk::*;
@@ -60,6 +61,9 @@ pub enum NdnError {
 
     #[error("invalid param: {0}")]
     InvalidParam(String),
+
+    #[error("invalid state: {0}")]
+    InvalidState(String),
 }
 
 
