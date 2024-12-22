@@ -1,13 +1,15 @@
 //对mix-hash提供原生支持
 use super::hash::HashMethod;
+use super::mtree_stream::*;
 use crate::NdnError;
 use crate::{NdnResult, ObjId, OBJ_TYPE_MTREE};
 use core::{error, hash};
+use std::hash::Hash;
 use futures::stream;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::fmt::format;
 use std::io::{Read, Seek, SeekFrom};
 use std::pin::Pin;
@@ -18,21 +20,12 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 // mtree object version, begin at 0
 pub const OBJ_MTREE_VERSION: u8 = 0;
 
-pub trait MtreeReadSeek: AsyncRead + AsyncSeek + Unpin {}
-
-// Blanket implementation for any type that implements both traits
-impl<T: AsyncRead + AsyncSeek + Unpin> MtreeReadSeek for T {}
-
-pub trait MtreeWriteSeek: AsyncWrite + AsyncSeek + Unpin {}
-// Blanket implementation for any type that implements both traits
-impl<T: AsyncWrite + AsyncSeek + Unpin> MtreeWriteSeek for T {}
-
 //meta data of the mtree object
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerkleTreeMetaData {
     data_size: u64,
     leaf_size: u64,
-    hash_type: Option<String>, // none means sha256
+    hash_method: HashMethod, // Default is HashMethod::default()
 }
 
 impl MerkleTreeMetaData {
@@ -128,14 +121,9 @@ impl MerkleTreeObject {
         assert!(meta.leaf_size > 0);
 
         let mut leaf_count = meta.leaf_count();
+        let hash_bytes = meta.hash_method.hash_bytes();
 
-        let hash_method = match meta.hash_type.as_ref() {
-            Some(hash_type) => HashMethod::from_str(hash_type)?,
-            None => HashMethod::default(),
-        };
-        let hash_bytes = hash_method.hash_bytes();
-
-        let mut calc = SerializeHashCalculator::new(leaf_count, hash_method, None);
+        let mut calc = SerializeHashCalculator::new(leaf_count, meta.hash_method, None);
 
         for _ in 0..leaf_count {
             let mut hash = vec![0u8; hash_bytes];
@@ -162,11 +150,7 @@ impl MerkleTreeObject {
     ) -> NdnResult<Vec<(u64, Vec<u8>)>> {
         let indexes = self.locator.get_verify_path_by_leaf_index(leaf_index)?;
 
-        let hash_method = match self.meta.hash_type.as_ref() {
-            Some(hash_type) => HashMethod::from_str(hash_type)?,
-            None => HashMethod::default(),
-        };
-        let hash_bytes = hash_method.hash_bytes();
+        let hash_bytes = self.meta.hash_method.hash_bytes();
 
         let mut ret = Vec::with_capacity(indexes.len());
         for (_depth, index) in indexes {
@@ -224,24 +208,42 @@ impl MerkleTreeObjectGenerator {
     pub async fn new(
         data_size: u64,
         leaf_size: u64,
+        hash_method: Option<HashMethod>,
         mut body_writer: Box<dyn MtreeWriteSeek>,
-        hash_type: Option<String>,
     ) -> NdnResult<Self> {
         assert!(leaf_size > 0);
 
-        let hash_method = match hash_type.as_ref() {
-            Some(hash_type) => HashMethod::from_str(hash_type)?,
-            None => HashMethod::default(),
-        };
+        let hash_method = hash_method.unwrap_or_default();
 
         let meta = MerkleTreeMetaData {
             data_size,
             leaf_size,
-            hash_type,
+            hash_method,
         };
 
+        // Record the stream position of the meta data
+        let meta_pos = body_writer.seek(SeekFrom::Current(0)).await.map_err(|e| {
+            let msg = format!("Error getting current position: {}", e);
+            error!("{}", msg);
+            NdnError::IoError(msg)
+        })?;
+
         // First write the meta data to the writer
-        Self::write_meta_data(&mut body_writer, &meta).await?;
+        let write_bytes = Self::write_meta_data(&mut body_writer, &meta).await?;
+
+        // Reseek to the start before the meta data
+        body_writer
+            .seek(SeekFrom::Start(meta_pos))
+            .await
+            .map_err(|e| {
+                let msg = format!("Error seeking to position {}: {}", meta_pos, e);
+                error!("{}", msg);
+                NdnError::IoError(msg)
+            })?;
+
+        // Make new stream for the body writer
+        let writer = MtreeWriteSeekWithOffset::new(body_writer, meta_pos + write_bytes as u64);
+        let body_writer = Box::new(writer) as Box<dyn MtreeWriteSeek>;
 
         let calc = SerializeHashCalculator::new(meta.leaf_count(), hash_method, Some(body_writer));
 
@@ -250,10 +252,31 @@ impl MerkleTreeObjectGenerator {
         Ok(ret)
     }
 
+    pub fn estimate_output_bytes(
+        data_size: u64,
+        leaf_size: u64,
+        hash_method: Option<HashMethod>,
+    ) -> u64 {
+        let hash_method = hash_method.unwrap_or_default();
+        let meta = MerkleTreeMetaData {
+            data_size,
+            leaf_size,
+            hash_method,
+        };
+
+        let meta_data = bincode::serialize(&meta).unwrap();
+        let meta_bytes = meta_data.len() + 4;
+
+        let body_bytes =
+            SerializeHashCalculator::estimate_output_bytes(meta.leaf_count(), hash_method);
+
+        meta_bytes as u64 + body_bytes
+    }
+
     async fn write_meta_data(
         body_writer: &mut Box<dyn MtreeWriteSeek>,
         meta: &MerkleTreeMetaData,
-    ) -> NdnResult<()> {
+    ) -> NdnResult<usize> {
         let meta_data = bincode::serialize(&meta).map_err(|e| {
             let msg = format!("Error serializing meta data: {}", e);
             error!("{}", msg);
@@ -273,30 +296,14 @@ impl MerkleTreeObjectGenerator {
             NdnError::IoError(msg)
         })?;
 
-        Ok(())
+        Ok(meta_data.len() + 4)
     }
 
     pub async fn append_leaf_hashes(&mut self, leaf_hashes: &Vec<Vec<u8>>) -> NdnResult<()> {
-        self.calc.append_leaf_hashes(&leaf_hashes);
-
-        Ok(())
+        self.calc.append_leaf_hashes(&leaf_hashes).await
     }
 
     pub async fn finalize(&mut self) -> NdnResult<Vec<u8>> {
-        let leaf_count = self.calc.get_leaf_count() as u64;
-
-        // First check if leaf count is the same as expected
-        if leaf_count != self.meta.data_size / self.meta.leaf_size {
-            let msg = format!(
-                "Leaf count is not the same as expected: {} vs {}",
-                leaf_count,
-                self.meta.data_size / self.meta.leaf_size
-            );
-            error!("{}", msg);
-            return Err(NdnError::InvalidData(msg));
-        }
-
-        // Then calculate the root hash
         let root_hash = self.calc.finalize().await?;
 
         Ok(root_hash)
@@ -337,6 +344,11 @@ impl HashNodeLocator {
     // Start at zero, and from top to bottom
     pub fn calc_depth(leaf_count: u64) -> u32 {
         (leaf_count as f64).log2().ceil() as u32
+    }
+
+    pub fn calc_total_count(leaf_count: u64) -> u64 {
+        let counts = Self::calc_count_per_depth(leaf_count);
+        counts.iter().sum()
     }
 
     pub fn calc_count_per_depth(leaf_count: u64) -> Vec<u64> {
@@ -424,7 +436,11 @@ pub struct SerializeHashCalculator {
     locator: HashNodeLocator,
 
     stack: VecDeque<HashNode>,
+
     writer: Option<Box<dyn MtreeWriteSeek>>,
+
+    #[cfg_attr(debug_assertions, allow(dead_code))]
+    writer_tracker: HashSet<u64>,
 }
 
 impl SerializeHashCalculator {
@@ -441,11 +457,22 @@ impl SerializeHashCalculator {
             locator: HashNodeLocator::new(leaf_count),
             stack: VecDeque::new(),
             writer,
+
+            #[cfg_attr(debug_assertions, allow(dead_code))]
+            writer_tracker: HashSet::new(),
         }
+    }
+
+    pub fn estimate_output_bytes(leaf_count: u64, hash_method: HashMethod) -> u64 {
+        HashNodeLocator::calc_total_count(leaf_count) * HashMethod::Sha256.hash_bytes() as u64
     }
 
     pub fn get_leaf_count(&self) -> u64 {
         self.leaf_count
+    }
+
+    pub fn get_append_count(&self) -> u64 {
+        self.append_count
     }
 
     pub fn into_locator(self) -> HashNodeLocator {
@@ -457,6 +484,13 @@ impl SerializeHashCalculator {
             return Ok(());
         }
 
+        #[cfg(debug_assertions)]
+        {
+            assert!(!self.writer_tracker.contains(&(index as u64)));
+            self.writer_tracker.insert(index as u64);
+        }
+
+        // println!("Write hash to index: {}, {:?}", index, hash);
         let writer = self.writer.as_mut().unwrap();
         let pos = (index * self.hash_method.hash_bytes()) as u64;
         writer.seek(SeekFrom::Start(pos)).await.map_err(|e| {
@@ -480,10 +514,11 @@ impl SerializeHashCalculator {
     }
 
     pub async fn append_leaf_hashes(&mut self, leaf_hashes: &Vec<Vec<u8>>) -> NdnResult<()> {
-        if leaf_hashes.len() + self.append_count > self.leaf_count {
+        if leaf_hashes.len() as u64 + self.append_count > self.leaf_count {
             let msg = format!(
                 "Leaf count out of range: {} + {} > {}",
-                leaf_hashes.len(), self.append_count as u64,
+                leaf_hashes.len(),
+                self.append_count,
                 self.leaf_count
             );
             error!("{}", msg);
@@ -491,7 +526,6 @@ impl SerializeHashCalculator {
         }
 
         for hash in leaf_hashes {
-            println!("Append leaf hash: {:?}", hash);
             let node = HashNode {
                 hash: hash.clone(),
                 depth: 0,
@@ -542,6 +576,16 @@ impl SerializeHashCalculator {
             return Err(NdnError::InvalidState(msg));
         }
 
+        // We should have exactly leaf_count leaf nodes appended
+        if self.leaf_count != self.append_count {
+            let msg = format!(
+                "Leaf count not match: {} vs {}",
+                self.leaf_count, self.append_count
+            );
+            error!("{}", msg);
+            return Err(NdnError::InvalidState(msg));
+        }
+
         // Merge the node in same depth, if there is only one node left in the same depth, we should copy it once more then merge with itself
         loop {
             if self.stack.len() == 1 {
@@ -581,6 +625,16 @@ impl SerializeHashCalculator {
         // Save the root hash to the writer
         self.write_node(&root).await?;
 
+        // At last, we should have check if all nodes in the writer
+        #[cfg(debug_assertions)]
+        {
+            let total = HashNodeLocator::calc_total_count(self.leaf_count);
+            assert_eq!(self.writer_tracker.len(), total as usize);
+            for i in 0..total {
+                assert!(self.writer_tracker.contains(&(i as u64)));
+            }
+        }
+
         Ok(root.hash)
     }
 
@@ -605,11 +659,11 @@ impl SerializeHashCalculator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::test;
     use tokio::fs::File;
+    use tokio::test;
 
     #[test]
-    async fn test_generator() {
+    async fn test_locator() {
         let total_depth = HashNodeLocator::calc_depth(6);
         println!("Total depth: {}", total_depth);
         assert!(total_depth == 3);
@@ -647,11 +701,19 @@ mod tests {
 
         let indexes = locator.get_verify_path_by_leaf_index(5).unwrap();
         println!("Indexes: {:?}", indexes);
+
+        assert_eq!(HashNodeLocator::calc_total_count(2), 3);
+        assert_eq!(HashNodeLocator::calc_total_count(3), 7);
+        assert_eq!(HashNodeLocator::calc_total_count(4), 7);
+        assert_eq!(HashNodeLocator::calc_total_count(5), 13);
+        assert_eq!(HashNodeLocator::calc_total_count(6), 13);
+        
+        assert_eq!(HashNodeLocator::calc_total_count(10), 23);
+
     }
 
-     // Get file size and then calc leaf count of the file
+    // Get file size and then calc leaf count of the file
     async fn get_leaf_count_of_file(file: &File, chunk_size: usize) -> u64 {
-
         // Get file size and then calc leaf count of the file
         let file_size = file.metadata().await.unwrap().len();
         assert!(file_size > 0);
@@ -681,7 +743,7 @@ mod tests {
             }
         }
 
-        println!("Read {} bytes", total_read);
+        // println!("Read {} bytes", total_read);
         // Truncate the buffer to the actual read size
         if total_read < chunk_size {
             buf.truncate(total_read);
@@ -691,10 +753,61 @@ mod tests {
     }
 
     #[test]
+    async fn test_generator() {
+        let test_file: &str = "D:\\test";
+
+        let chunk_size = 1024 * 4;
+
+        {
+            let mut file = tokio::fs::File::open(test_file).await.unwrap();
+
+            let data_size = file.metadata().await.unwrap().len();
+
+            let total = MerkleTreeObjectGenerator::estimate_output_bytes(
+                data_size,
+                chunk_size,
+                Some(HashMethod::Sha256),
+            );
+            println!("Estimated output bytes: {}", total);
+
+            let mut buf = vec![0u8; total as usize];
+            let mut writer = std::io::Cursor::new(buf);
+            let mut writer = Box::new(writer) as Box<dyn MtreeWriteSeek>;
+
+            let mut gen = MerkleTreeObjectGenerator::new(
+                data_size,
+                chunk_size as u64,
+                Some(HashMethod::Sha256),
+                writer,
+            )
+            .await
+            .unwrap();
+
+            let leaf_count = get_leaf_count_of_file(&file, chunk_size as usize).await;
+            let mut hash_list = Vec::new();
+            loop {
+                let buf = read_chunk(&mut file, chunk_size as usize).await;
+                if buf.len() == 0 {
+                    break;
+                }
+
+                let hash = sha2::Sha256::digest(&buf);
+                hash_list.push(hash.to_vec());
+            }
+
+            assert!(hash_list.len() == leaf_count as usize);
+            gen.append_leaf_hashes(&hash_list).await.unwrap();
+            let root_hash1 = gen.finalize().await.unwrap();
+            println!("Root hash: {:?}", root_hash1);
+        }
+
+        {}
+    }
+
+    #[test]
     async fn test_serialize_hash_calculator() {
         let test_file: &str = "D:\\test";
 
-        
         let chunk_size = 1024 * 1024 * 4;
 
         let mut root_hash1;
@@ -727,8 +840,16 @@ mod tests {
             let mut file = tokio::fs::File::open(test_file).await.unwrap();
             let leaf_count = get_leaf_count_of_file(&file, chunk_size).await;
 
+            let size =
+                SerializeHashCalculator::estimate_output_bytes(leaf_count, HashMethod::Sha256)
+                    as usize;
+            let mut buf = vec![0u8; size];
+            let mut writer = std::io::Cursor::new(buf);
+            let mut writer = Box::new(writer) as Box<dyn MtreeWriteSeek>;
+
             // Read the file by chunk and calculate the leaf node hashes
-            let mut calculator = SerializeHashCalculator::new(leaf_count,HashMethod::Sha256, None);
+            let mut calculator =
+                SerializeHashCalculator::new(leaf_count, HashMethod::Sha256, Some(writer));
             let mut buf = vec![0u8; chunk_size];
 
             loop {
@@ -738,7 +859,10 @@ mod tests {
                 }
 
                 let hash = sha2::Sha256::digest(&buf);
-                calculator.append_leaf_hashes(&vec![hash.to_vec()]).await.unwrap();
+                calculator
+                    .append_leaf_hashes(&vec![hash.to_vec()])
+                    .await
+                    .unwrap();
             }
 
             root_hash2 = calculator.finalize().await.unwrap();
@@ -746,6 +870,5 @@ mod tests {
         }
 
         assert_eq!(root_hash1, root_hash2);
-
     }
 }

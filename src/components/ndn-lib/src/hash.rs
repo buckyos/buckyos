@@ -1,5 +1,6 @@
 use crate::NdnError;
 use std::str::FromStr;
+use serde::{Serialize, Deserialize, Serializer, Deserializer};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum HashMethod {
@@ -42,5 +43,24 @@ impl FromStr for HashMethod {
                 Err(NdnError::InvalidData(msg))
             }
         }
+    }
+}
+
+impl Serialize for HashMethod {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for HashMethod {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        HashMethod::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
