@@ -4,13 +4,13 @@ use super::mtree_stream::*;
 use crate::NdnError;
 use crate::{NdnResult, ObjId, OBJ_TYPE_MTREE};
 use core::{error, hash};
-use std::hash::Hash;
 use futures::stream;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::fmt::format;
+use std::hash::Hash;
 use std::io::{Read, Seek, SeekFrom};
 use std::pin::Pin;
 use std::str::FromStr;
@@ -123,7 +123,7 @@ impl MerkleTreeObject {
         let mut leaf_count = meta.leaf_count();
         let hash_bytes = meta.hash_method.hash_bytes();
 
-        let mut calc = SerializeHashCalculator::new(leaf_count, meta.hash_method, None);
+        let mut calc = SerializeHashCalculator::new(leaf_count, meta.hash_method, None, None);
 
         for _ in 0..leaf_count {
             let mut hash = vec![0u8; hash_bytes];
@@ -245,7 +245,8 @@ impl MerkleTreeObjectGenerator {
         let writer = MtreeWriteSeekWithOffset::new(body_writer, meta_pos + write_bytes as u64);
         let body_writer = Box::new(writer) as Box<dyn MtreeWriteSeek>;
 
-        let calc = SerializeHashCalculator::new(meta.leaf_count(), hash_method, Some(body_writer));
+        let calc =
+            SerializeHashCalculator::new(meta.leaf_count(), hash_method, Some(body_writer), None);
 
         let mut ret = Self { meta, calc };
 
@@ -438,6 +439,7 @@ pub struct SerializeHashCalculator {
     stack: VecDeque<HashNode>,
 
     writer: Option<Box<dyn MtreeWriteSeek>>,
+    reader: Option<Box<dyn MtreeReadSeek>>,
 
     #[cfg_attr(debug_assertions, allow(dead_code))]
     writer_tracker: HashSet<u64>,
@@ -447,7 +449,8 @@ impl SerializeHashCalculator {
     pub fn new(
         leaf_count: u64,
         hash_method: HashMethod,
-        writer: Option<Box<dyn MtreeWriteSeek>>,
+        writer: Option<Box<dyn MtreeWriteSeek>>, // Used to save the hash
+        reader: Option<Box<dyn MtreeReadSeek>>,  // Used to verify the hash
     ) -> Self {
         let total_depth = (leaf_count as f64).log2().ceil() as u32;
         Self {
@@ -457,6 +460,7 @@ impl SerializeHashCalculator {
             locator: HashNodeLocator::new(leaf_count),
             stack: VecDeque::new(),
             writer,
+            reader,
 
             #[cfg_attr(debug_assertions, allow(dead_code))]
             writer_tracker: HashSet::new(),
@@ -479,11 +483,46 @@ impl SerializeHashCalculator {
         self.locator
     }
 
-    async fn write_hash(&mut self, index: usize, hash: &Vec<u8>) -> NdnResult<()> {
-        if self.writer.is_none() {
-            return Ok(());
+    pub fn detach_writer(&mut self) -> Option<Box<dyn MtreeWriteSeek>> {
+        self.writer.take()
+    }
+
+    pub fn detach_reader(&mut self) -> Option<Box<dyn MtreeReadSeek>> {
+        self.reader.take()
+    }
+
+    async fn verify_hash(&mut self, index: usize, hash: &Vec<u8>) -> NdnResult<()> {
+        assert!(self.reader.is_some());
+
+        // println!("Write hash to index: {}, {:?}", index, hash);
+        let reader = self.reader.as_mut().unwrap();
+        let pos = (index * self.hash_method.hash_bytes()) as u64;
+        reader.seek(SeekFrom::Start(pos)).await.map_err(|e| {
+            let msg = format!("Error seeking to position {}: {}", pos, e);
+            error!("{}", msg);
+            NdnError::IoError(msg)
+        })?;
+
+        let mut read_hash = vec![0u8; self.hash_method.hash_bytes()];
+        reader.read_exact(&mut read_hash).await.map_err(|e| {
+            let msg = format!("Error reading hash: {}", e);
+            error!("{}", msg);
+            NdnError::IoError(msg)
+        })?;
+
+        if read_hash != *hash {
+            let msg = format!("Hash not match: {} {:?} vs {:?}", index, read_hash, hash);
+            error!("{}", msg);
+            return Err(NdnError::InvalidData(msg));
         }
 
+        Ok(())
+    }
+
+    async fn write_hash(&mut self, index: usize, hash: &Vec<u8>) -> NdnResult<()> {
+        assert!(self.writer.is_some());
+
+        println!("Write hash to index: {}, {:?}", index, hash);
         #[cfg(debug_assertions)]
         {
             assert!(!self.writer_tracker.contains(&(index as u64)));
@@ -510,7 +549,16 @@ impl SerializeHashCalculator {
 
     async fn write_node(&mut self, node: &HashNode) -> NdnResult<()> {
         let index = self.locator.calc_index_in_stream(node.depth, node.index);
-        self.write_hash(index as usize, &node.hash).await
+
+        if self.writer.is_some() {
+            self.write_hash(index as usize, &node.hash).await?;
+        }
+
+        if self.reader.is_some() {
+            self.verify_hash(index as usize, &node.hash).await?;
+        }
+
+        Ok(())
     }
 
     pub async fn append_leaf_hashes(&mut self, leaf_hashes: &Vec<Vec<u8>>) -> NdnResult<()> {
@@ -627,7 +675,7 @@ impl SerializeHashCalculator {
 
         // At last, we should have check if all nodes in the writer
         #[cfg(debug_assertions)]
-        {
+        if self.writer.is_some() {
             let total = HashNodeLocator::calc_total_count(self.leaf_count);
             assert_eq!(self.writer_tracker.len(), total as usize);
             for i in 0..total {
@@ -659,7 +707,9 @@ impl SerializeHashCalculator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http_types::cache;
     use tokio::fs::File;
+    use tokio::io::AsyncReadExt;
     use tokio::test;
 
     #[test]
@@ -707,9 +757,8 @@ mod tests {
         assert_eq!(HashNodeLocator::calc_total_count(4), 7);
         assert_eq!(HashNodeLocator::calc_total_count(5), 13);
         assert_eq!(HashNodeLocator::calc_total_count(6), 13);
-        
-        assert_eq!(HashNodeLocator::calc_total_count(10), 23);
 
+        assert_eq!(HashNodeLocator::calc_total_count(10), 23);
     }
 
     // Get file size and then calc leaf count of the file
@@ -817,7 +866,8 @@ mod tests {
             let leaf_count = get_leaf_count_of_file(&file, chunk_size).await;
 
             // Read the file by chunk and calculate the leaf node hashes
-            let mut calculator = SerializeHashCalculator::new(leaf_count, HashMethod::Sha256, None);
+            let mut calculator =
+                SerializeHashCalculator::new(leaf_count, HashMethod::Sha256, None, None);
             let mut buf = vec![0u8; chunk_size];
             let mut hash_list = Vec::new();
             loop {
@@ -843,13 +893,15 @@ mod tests {
             let size =
                 SerializeHashCalculator::estimate_output_bytes(leaf_count, HashMethod::Sha256)
                     as usize;
-            let mut buf = vec![0u8; size];
-            let mut writer = std::io::Cursor::new(buf);
-            let mut writer = Box::new(writer) as Box<dyn MtreeWriteSeek>;
+
+            let data = SharedBuffer::with_size(size);
+            let buffer = MtreeReadWriteSeekWithSharedBuffer::new(data);
+
+            let mut writer = Box::new(buffer.clone()) as Box<dyn MtreeWriteSeek>;
 
             // Read the file by chunk and calculate the leaf node hashes
             let mut calculator =
-                SerializeHashCalculator::new(leaf_count, HashMethod::Sha256, Some(writer));
+                SerializeHashCalculator::new(leaf_count, HashMethod::Sha256, Some(writer), None);
             let mut buf = vec![0u8; chunk_size];
 
             loop {
@@ -867,6 +919,37 @@ mod tests {
 
             root_hash2 = calculator.finalize().await.unwrap();
             println!("Root hash: {:?}", root_hash2);
+
+            // print the whole buffer
+            // println!("Buffer: {:?}", buffer.buffer().lock().unwrap());
+
+            // Clone the buf from writer and then create a reader from it
+            let mut reader = Box::new(buffer) as Box<dyn MtreeReadSeek>;
+            reader.seek(SeekFrom::Start(0)).await.unwrap();
+
+            // Calc with reader verify
+            let mut calculator =
+                SerializeHashCalculator::new(leaf_count, HashMethod::Sha256, None, Some(reader));
+            let mut buf = vec![0u8; chunk_size];
+
+            // Read the file at beginning
+            file.seek(SeekFrom::Start(0)).await.unwrap();
+            loop {
+                let buf = read_chunk(&mut file, chunk_size).await;
+                if buf.len() == 0 {
+                    break;
+                }
+
+                let hash = sha2::Sha256::digest(&buf);
+                calculator
+                    .append_leaf_hashes(&vec![hash.to_vec()])
+                    .await
+                    .unwrap();
+            }
+
+            let root_hash3 = calculator.finalize().await.unwrap();
+            assert_eq!(root_hash2, root_hash3);
+            // println!("Root hash: {:?}", root_hash3);
         }
 
         assert_eq!(root_hash1, root_hash2);
