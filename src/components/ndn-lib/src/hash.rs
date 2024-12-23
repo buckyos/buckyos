@@ -1,6 +1,7 @@
 use crate::NdnError;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 use std::str::FromStr;
-use serde::{Serialize, Deserialize, Serializer, Deserializer};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum HashMethod {
@@ -62,5 +63,26 @@ impl<'de> Deserialize<'de> for HashMethod {
     {
         let s = String::deserialize(deserializer)?;
         HashMethod::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+pub struct HashHelper {}
+
+impl HashHelper {
+    pub fn calc_parent_hash(hash_method: HashMethod, left: &[u8], right: &[u8]) -> Vec<u8> {
+        match hash_method {
+            HashMethod::Sha256 => {
+                let mut hasher = sha2::Sha256::new();
+                hasher.update(left);
+                hasher.update(right);
+                hasher.finalize().to_vec()
+            }
+            HashMethod::Sha512 => {
+                let mut hasher = sha2::Sha512::new();
+                hasher.update(left);
+                hasher.update(right);
+                hasher.finalize().to_vec()
+            }
+        }
     }
 }

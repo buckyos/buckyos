@@ -1,5 +1,5 @@
 //对mix-hash提供原生支持
-use super::hash::HashMethod;
+use super::hash::{HashMethod, HashHelper};
 use super::mtree_stream::*;
 use crate::NdnError;
 use crate::{NdnResult, ObjId, OBJ_TYPE_MTREE};
@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
+use std::env::current_exe;
+use std::f64::consts::E;
 use std::fmt::format;
 use std::hash::Hash;
 use std::io::{Read, Seek, SeekFrom};
@@ -16,6 +18,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 use tokio::io::{AsyncRead, AsyncSeek, AsyncWrite};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use url::Position;
 
 // mtree object version, begin at 0
 pub const OBJ_MTREE_VERSION: u8 = 0;
@@ -39,13 +42,69 @@ impl MerkleTreeMetaData {
 
         leaf_count
     }
+
+    pub fn estimate_output_bytes(&self) -> u64 {
+        let meta_data = bincode::serialize(&self).unwrap();
+        let meta_bytes = meta_data.len() + 4;
+
+        meta_bytes as u64
+    }
+
+    async fn write(&self, body_writer: &mut Box<dyn MtreeWriteSeek>) -> NdnResult<usize> {
+        let meta_data = bincode::serialize(&self).map_err(|e| {
+            let msg = format!("Error serializing meta data: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        body_writer
+            .write_all(&(meta_data.len() as u32).to_le_bytes())
+            .await
+            .map_err(|e| {
+                let msg = format!("Error writing meta data length: {}", e);
+                error!("{}", msg);
+                NdnError::IoError(msg)
+            })?;
+        body_writer.write_all(&meta_data).await.map_err(|e| {
+            let msg = format!("Error writing meta data: {}", e);
+            error!("{}", msg);
+            NdnError::IoError(msg)
+        })?;
+
+        Ok(meta_data.len() + 4)
+    }
+
+    async fn read(body_reader: &mut Box<dyn MtreeReadSeek>) -> NdnResult<(Self, usize)> {
+        // Read the meta data from the reader, u32 length + data
+        let mut meta_data = [0u8; 4];
+        body_reader.read_exact(&mut meta_data).await.map_err(|e| {
+            let msg = format!("Error reading meta data length: {}", e);
+            error!("{}", msg);
+            NdnError::IoError(msg)
+        })?;
+
+        let meta_len = u32::from_le_bytes(meta_data) as usize;
+        let mut meta_data = vec![0u8; meta_len];
+        body_reader.read_exact(&mut meta_data).await.map_err(|e| {
+            let msg = format!("Error reading meta data: {}", e);
+            error!("{}", msg);
+            NdnError::IoError(msg)
+        })?;
+
+        let meta: MerkleTreeMetaData = bincode::deserialize(&meta_data).map_err(|e| {
+            let msg = format!("Error deserializing meta data: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        Ok((meta, meta_len + 4)) // 4 is the length of the meta data length
+    }
 }
 
 pub struct MerkleTreeObject {
     meta: MerkleTreeMetaData,
     root_hash: Vec<u8>,
-    body_reader: Box<dyn MtreeReadSeek>,
-    locator: HashNodeLocator,
+    calculator: SerializeHashCalculator,
 }
 
 impl MerkleTreeObject {
@@ -70,111 +129,50 @@ impl MerkleTreeObject {
     */
 
     // Init from reader, reader is a reader of the body of the mtree
-    pub async fn load_from_reader(mut body_reader: Box<dyn MtreeReadSeek>) -> NdnResult<Self> {
+    pub async fn load_from_reader(
+        mut body_reader: Box<dyn MtreeReadSeek>,
+        verify: bool,
+    ) -> NdnResult<Self> {
         // Read the meta data from the reader
-        let mut meta = Self::load_meta_from_reader(&mut body_reader).await?;
+        let (mut meta, len) = MerkleTreeMetaData::read(&mut body_reader).await?;
 
-        // Load leaf hash lsit and calc the root hash from the reader
-        let (root_hash, locator) =
-            Self::load_leaf_hash_list_from_reader(&mut body_reader, &meta).await?;
+        // Create nodes reader with offset = len
+        let nodes_reader = Box::new(MtreeReadSeekWithOffset::new(body_reader, len as u64))
+            as Box<dyn MtreeReadSeek>;
+
+        let mut calculator = SerializeHashCalculator::new(
+            meta.leaf_count(),
+            meta.hash_method,
+            None,
+            Some(nodes_reader),
+        );
+
+        let root_hash = if verify {
+            // Load leaf hash list and calc the root hash from the reader
+            calculator.load_leaf_hashes_from_reader().await?
+        } else {
+            calculator.get_root_hash().await?
+        };
 
         Ok(Self {
             meta,
             root_hash,
-            body_reader: body_reader,
-            locator: locator,
+            calculator,
         })
     }
 
-    async fn load_meta_from_reader(
-        body_reader: &mut Box<dyn MtreeReadSeek>,
-    ) -> NdnResult<MerkleTreeMetaData> {
-        // Read the meta data from the reader, u32 length + data
-        let mut meta_data = [0u8; 4];
-        body_reader.read_exact(&mut meta_data).await.map_err(|e| {
-            let msg = format!("Error reading meta data length: {}", e);
-            error!("{}", msg);
-            NdnError::IoError(msg)
-        })?;
-
-        let meta_len = u32::from_le_bytes(meta_data) as usize;
-        let mut meta_data = vec![0u8; meta_len];
-        body_reader.read_exact(&mut meta_data).await.map_err(|e| {
-            let msg = format!("Error reading meta data: {}", e);
-            error!("{}", msg);
-            NdnError::IoError(msg)
-        })?;
-
-        let meta: MerkleTreeMetaData = bincode::deserialize(&meta_data).map_err(|e| {
-            let msg = format!("Error deserializing meta data: {}", e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-
-        Ok(meta)
-    }
-
-    async fn load_leaf_hash_list_from_reader(
-        body_reader: &mut Box<dyn MtreeReadSeek>,
-        meta: &MerkleTreeMetaData,
-    ) -> NdnResult<(Vec<u8>, HashNodeLocator)> {
-        assert!(meta.leaf_size > 0);
-
-        let mut leaf_count = meta.leaf_count();
-        let hash_bytes = meta.hash_method.hash_bytes();
-
-        let mut calc = SerializeHashCalculator::new(leaf_count, meta.hash_method, None, None);
-
-        for _ in 0..leaf_count {
-            let mut hash = vec![0u8; hash_bytes];
-            let len = body_reader.read_exact(&mut hash).await.map_err(|e| {
-                let msg = format!("Error reading leaf hash: {}", e);
-                error!("{}", msg);
-                NdnError::IoError(msg)
-            })?;
-
-            assert!(len == hash_bytes);
-
-            calc.append_leaf_hashes(&vec![hash]).await?;
-        }
-
-        let root_hash = calc.finalize().await?;
-
-        Ok((root_hash, calc.into_locator()))
-    }
-
     //result is a map, key is the index of the leaf, value is the hash of the leaf
-    pub async fn get_verify_path_by_leaf_index(
+    pub async fn get_proof_path_by_leaf_index(
         &mut self,
         leaf_index: u64,
     ) -> NdnResult<Vec<(u64, Vec<u8>)>> {
-        let indexes = self.locator.get_verify_path_by_leaf_index(leaf_index)?;
+        self.calculator
+            .get_proof_path_by_leaf_index(leaf_index)
+            .await
+    }
 
-        let hash_bytes = self.meta.hash_method.hash_bytes();
-
-        let mut ret = Vec::with_capacity(indexes.len());
-        for (_depth, index) in indexes {
-            let pos = hash_bytes as u64 * index;
-            self.body_reader
-                .seek(SeekFrom::Start(pos))
-                .await
-                .map_err(|e| {
-                    let msg = format!("Error seeking to position {}: {}", index, e);
-                    error!("{}", msg);
-                    NdnError::IoError(msg)
-                })?;
-
-            let mut hash = vec![0u8; hash_bytes];
-            self.body_reader.read_exact(&mut hash).await.map_err(|e| {
-                let msg = format!("Error reading hash: {}", e);
-                error!("{}", msg);
-                NdnError::IoError(msg)
-            })?;
-
-            ret.push((index, hash));
-        }
-
-        Ok(ret)
+    pub fn get_hash_method(&self) -> HashMethod {
+        self.meta.hash_method
     }
 
     pub fn get_leaf_count(&self) -> u64 {
@@ -198,6 +196,61 @@ impl MerkleTreeObject {
     }
 }
 
+pub struct MerkleTreeProofPathVerifier {
+    hash_method: HashMethod,
+}
+
+impl MerkleTreeProofPathVerifier {
+    pub fn new(hash_method: HashMethod) -> Self {
+        Self { hash_method }
+    }
+
+    pub fn verify(&self, proof_path: &Vec<(u64, Vec<u8>)>) -> NdnResult<bool> {
+        // println!("verify proof path: {:?}", proof_path);
+
+        // The first one is the leaf node hash, and the last one is the root node hash
+        if proof_path.len() < 2 {
+            let msg = format!("Invalid proof path length: {}", proof_path.len());
+            error!("{}", msg);
+            return Err(NdnError::InvalidParam(msg));
+        }
+
+        let mut current = None;
+        for (i, item)  in proof_path.iter().enumerate() {
+            if i == proof_path.len() - 1 {
+                // We reach the root node hash, so check if it is the same as the calculated root hash
+                return Ok(current.as_ref() == Some(&item.1));
+            }
+
+            let (index, sibling_hash) = item;
+            match current {
+                Some(hash) => {
+                    // println!("calc parent hash: {:?} {:?}", hash, sibling_hash);
+                    let ret = if index % 2 == 0 {
+                        self.calc_parent_hash(sibling_hash, &hash)
+                    } else {
+                        self.calc_parent_hash(&hash, sibling_hash)
+                    };
+
+                    current = Some(ret);
+                }
+                None => {
+                    // The first one is the leaf node hash
+                    current = Some(sibling_hash.clone());
+                }
+            }
+        }
+
+        unreachable!();
+    }
+
+    fn calc_parent_hash(&self, left: &Vec<u8>, right: &Vec<u8>) -> Vec<u8> {
+        let hash = HashHelper::calc_parent_hash(self.hash_method, left, right);
+        // println!("calc parent hash: {:?} {:?} -> {:?}", left, right, hash);
+        hash
+    }
+}
+
 pub struct MerkleTreeObjectGenerator {
     meta: MerkleTreeMetaData,
 
@@ -205,6 +258,10 @@ pub struct MerkleTreeObjectGenerator {
 }
 
 impl MerkleTreeObjectGenerator {
+    pub fn into_writer(mut self) -> Box<dyn MtreeWriteSeek> {
+        self.calc.detach_writer().unwrap()
+    }
+
     pub async fn new(
         data_size: u64,
         leaf_size: u64,
@@ -229,7 +286,7 @@ impl MerkleTreeObjectGenerator {
         })?;
 
         // First write the meta data to the writer
-        let write_bytes = Self::write_meta_data(&mut body_writer, &meta).await?;
+        let write_bytes = meta.write(&mut body_writer).await?;
 
         // Reseek to the start before the meta data
         body_writer
@@ -272,32 +329,6 @@ impl MerkleTreeObjectGenerator {
             SerializeHashCalculator::estimate_output_bytes(meta.leaf_count(), hash_method);
 
         meta_bytes as u64 + body_bytes
-    }
-
-    async fn write_meta_data(
-        body_writer: &mut Box<dyn MtreeWriteSeek>,
-        meta: &MerkleTreeMetaData,
-    ) -> NdnResult<usize> {
-        let meta_data = bincode::serialize(&meta).map_err(|e| {
-            let msg = format!("Error serializing meta data: {}", e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-        body_writer
-            .write_all(&(meta_data.len() as u32).to_le_bytes())
-            .await
-            .map_err(|e| {
-                let msg = format!("Error writing meta data length: {}", e);
-                error!("{}", msg);
-                NdnError::IoError(msg)
-            })?;
-        body_writer.write_all(&meta_data).await.map_err(|e| {
-            let msg = format!("Error writing meta data: {}", e);
-            error!("{}", msg);
-            NdnError::IoError(msg)
-        })?;
-
-        Ok(meta_data.len() + 4)
     }
 
     pub async fn append_leaf_hashes(&mut self, leaf_hashes: &Vec<Vec<u8>>) -> NdnResult<()> {
@@ -397,7 +428,7 @@ impl HashNodeLocator {
     // Get the verify path of the leaf node by the leaf index
     // The result is a vector of (depth, index) tuple, depth start 0, and from bottom to top
     // Index is the index of the node node in the stream, start from 0, and from left to right
-    pub fn get_verify_path_by_leaf_index(&self, leaf_index: u64) -> NdnResult<Vec<(u32, u64)>> {
+    pub fn get_proof_path_by_leaf_index(&self, leaf_index: u64) -> NdnResult<Vec<(u32, u64)>> {
         if leaf_index >= self.leaf_count {
             let msg = format!(
                 "Leaf index out of range: {} vs {}",
@@ -408,6 +439,10 @@ impl HashNodeLocator {
         }
 
         let mut ret = Vec::new();
+
+        // First push the leaf node
+        ret.push((0, leaf_index));
+
         let mut index = leaf_index;
         for depth in 0..self.total_depth {
             // Get sibling index of the node in the current depth
@@ -436,9 +471,13 @@ pub struct SerializeHashCalculator {
     // Used to locate the node in the stream, from bottom to top, from left to right
     locator: HashNodeLocator,
 
+    // Used to calculate the hash of all the nodes
     stack: VecDeque<HashNode>,
 
+    // If set, used to save the hash when append leaf nodes or load leaf nodes from reader
     writer: Option<Box<dyn MtreeWriteSeek>>,
+
+    // If set, used to verify the hash when append leaf nodes or load leaf nodes from reader
     reader: Option<Box<dyn MtreeReadSeek>>,
 
     #[cfg_attr(debug_assertions, allow(dead_code))]
@@ -491,6 +530,107 @@ impl SerializeHashCalculator {
         self.reader.take()
     }
 
+    // Get root hash from reader, the reader must be set
+    pub async fn get_root_hash(&mut self) -> NdnResult<Vec<u8>> {
+        assert!(self.reader.is_some());
+
+        // The root hash is the last hash in the reader
+        let reader = self.reader.as_mut().unwrap();
+        let hash_bytes = self.hash_method.hash_bytes();
+        let pos = (self.leaf_count - 1) * hash_bytes as u64;
+        reader.seek(SeekFrom::Start(pos)).await.map_err(|e| {
+            let msg = format!("Error seeking to position {}: {}", pos, e);
+            error!("{}", msg);
+            NdnError::IoError(msg)
+        })?;
+
+        let mut hash = vec![0u8; hash_bytes];
+        reader.read_exact(&mut hash).await.map_err(|e| {
+            let msg = format!("Error reading hash: {}", e);
+            error!("{}", msg);
+            NdnError::IoError(msg)
+        })?;
+
+        Ok(hash)
+    }
+
+    // Get proof path of the leaf node by the leaf index, the reader must be set
+    pub async fn get_proof_path_by_leaf_index(
+        &mut self,
+        leaf_index: u64,
+    ) -> NdnResult<Vec<(u64, Vec<u8>)>> {
+        assert!(self.reader.is_some());
+
+        let indexes = self.locator.get_proof_path_by_leaf_index(leaf_index)?;
+
+        let reader = self.reader.as_mut().unwrap();
+        let hash_bytes = self.hash_method.hash_bytes();
+
+        let mut ret = Vec::with_capacity(indexes.len());
+        for (_depth, index) in indexes {
+            let pos = hash_bytes as u64 * index;
+            reader.seek(SeekFrom::Start(pos)).await.map_err(|e| {
+                let msg = format!("Error seeking to position {}: {}", index, e);
+                error!("{}", msg);
+                NdnError::IoError(msg)
+            })?;
+
+            let mut hash = vec![0u8; hash_bytes];
+            reader.read_exact(&mut hash).await.map_err(|e| {
+                let msg = format!("Error reading hash: {}", e);
+                error!("{}", msg);
+                NdnError::IoError(msg)
+            })?;
+
+            ret.push((index, hash));
+        }
+
+        Ok(ret)
+    }
+
+    // Load all leaf hashed from reader, then append the leaf hashes to the writer or verifier
+    pub async fn load_leaf_hashes_from_reader(&mut self) -> NdnResult<Vec<u8>> {
+        assert!(self.reader.is_some());
+
+        // Load leaf node hash from the reader, start from index 0
+        let hash_bytes = self.hash_method.hash_bytes();
+        for i in 0..self.leaf_count {
+            // Must seek to the right position before read, because the reader may be used for verify on append leaf nodes!
+            let pos = hash_bytes as u64 * i;
+            self.reader
+                .as_mut()
+                .unwrap()
+                .seek(SeekFrom::Start(pos))
+                .await
+                .map_err(|e| {
+                    let msg = format!("Error seeking to position {}: {}", pos, e);
+                    error!("{}", msg);
+                    NdnError::IoError(msg)
+                })?;
+
+            let mut hash = vec![0u8; hash_bytes];
+            let len = self
+                .reader
+                .as_mut()
+                .unwrap()
+                .read_exact(&mut hash)
+                .await
+                .map_err(|e| {
+                    let msg = format!("Error reading leaf hash: {}", e);
+                    error!("{}", msg);
+                    NdnError::IoError(msg)
+                })?;
+
+            assert!(len == hash_bytes);
+
+            self.append_leaf_hashes(&vec![hash]).await?;
+        }
+
+        let root_hash = self.finalize().await?;
+
+        Ok(root_hash)
+    }
+
     async fn verify_hash(&mut self, index: usize, hash: &Vec<u8>) -> NdnResult<()> {
         assert!(self.reader.is_some());
 
@@ -522,7 +662,7 @@ impl SerializeHashCalculator {
     async fn write_hash(&mut self, index: usize, hash: &Vec<u8>) -> NdnResult<()> {
         assert!(self.writer.is_some());
 
-        println!("Write hash to index: {}, {:?}", index, hash);
+        // println!("Write hash to index: {}, {:?}", index, hash);
         #[cfg(debug_assertions)]
         {
             assert!(!self.writer_tracker.contains(&(index as u64)));
@@ -593,11 +733,11 @@ impl SerializeHashCalculator {
 
     async fn check_and_merge(&mut self) -> NdnResult<()> {
         while self.stack.len() > 1 {
-            let node1 = self.stack.get(self.stack.len() - 1).unwrap();
-            let node2 = self.stack.get(self.stack.len() - 2).unwrap();
+            let node2 = self.stack.get(self.stack.len() - 1).unwrap();
+            let node1 = self.stack.get(self.stack.len() - 2).unwrap();
             if node1.depth == node2.depth {
-                let node1 = self.stack.pop_back().unwrap();
                 let node2 = self.stack.pop_back().unwrap();
+                let node1 = self.stack.pop_back().unwrap();
                 let parent_hash = self.calc_parent_hash(&node1.hash, &node2.hash);
                 self.stack.push_back(HashNode {
                     hash: parent_hash.clone(),
@@ -641,19 +781,20 @@ impl SerializeHashCalculator {
             }
 
             let node1 = self.stack.pop_back().unwrap();
+            let mut node2;
 
             // Check if the last node is same depth with node1
-            let node2 = if self.stack.back().unwrap().depth == node1.depth {
-                self.stack.pop_back().unwrap()
+            let parent_hash = if self.stack.back().unwrap().depth == node1.depth {
+                node2 = self.stack.pop_back().unwrap();
+                self.calc_parent_hash(&node2.hash, &node1.hash)
             } else {
                 // Clone the node1 and set the index to the next on the right
-                let mut node2 = node1.clone();
+                node2 = node1.clone();
                 node2.index = node1.index + 1;
 
-                node2
+                self.calc_parent_hash(&node1.hash, &node2.hash)
             };
 
-            let parent_hash = self.calc_parent_hash(&node1.hash, &node2.hash);
             self.stack.push_back(HashNode {
                 hash: parent_hash.clone(),
                 depth: node1.depth + 1,
@@ -687,27 +828,14 @@ impl SerializeHashCalculator {
     }
 
     fn calc_parent_hash(&self, left: &[u8], right: &[u8]) -> Vec<u8> {
-        match self.hash_method {
-            HashMethod::Sha256 => {
-                let mut hasher = sha2::Sha256::new();
-                hasher.update(left);
-                hasher.update(right);
-                hasher.finalize().to_vec()
-            }
-            HashMethod::Sha512 => {
-                let mut hasher = sha2::Sha512::new();
-                hasher.update(left);
-                hasher.update(right);
-                hasher.finalize().to_vec()
-            }
-        }
+        HashHelper::calc_parent_hash(self.hash_method, left, right)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http_types::cache;
+    use http_types::{cache, proxies};
     use tokio::fs::File;
     use tokio::io::AsyncReadExt;
     use tokio::test;
@@ -746,10 +874,10 @@ mod tests {
         println!("Prev counts: {:?}", counts);
 
         let locator = HashNodeLocator::new(6);
-        let indexes = locator.get_verify_path_by_leaf_index(0).unwrap();
+        let indexes = locator.get_proof_path_by_leaf_index(0).unwrap();
         println!("Indexes: {:?}", indexes);
 
-        let indexes = locator.get_verify_path_by_leaf_index(5).unwrap();
+        let indexes = locator.get_proof_path_by_leaf_index(5).unwrap();
         println!("Indexes: {:?}", indexes);
 
         assert_eq!(HashNodeLocator::calc_total_count(2), 3);
@@ -805,8 +933,10 @@ mod tests {
     async fn test_generator() {
         let test_file: &str = "D:\\test";
 
-        let chunk_size = 1024 * 4;
+        let chunk_size = 1024 * 1024 * 4;
 
+        let stream;
+        let root_hash;
         {
             let mut file = tokio::fs::File::open(test_file).await.unwrap();
 
@@ -819,9 +949,9 @@ mod tests {
             );
             println!("Estimated output bytes: {}", total);
 
-            let mut buf = vec![0u8; total as usize];
-            let mut writer = std::io::Cursor::new(buf);
-            let mut writer = Box::new(writer) as Box<dyn MtreeWriteSeek>;
+            let buf = SharedBuffer::with_size(total as usize);
+            stream = MtreeReadWriteSeekWithSharedBuffer::new(buf);
+            let writer = Box::new(stream.clone()) as Box<dyn MtreeWriteSeek>;
 
             let mut gen = MerkleTreeObjectGenerator::new(
                 data_size,
@@ -846,11 +976,41 @@ mod tests {
 
             assert!(hash_list.len() == leaf_count as usize);
             gen.append_leaf_hashes(&hash_list).await.unwrap();
-            let root_hash1 = gen.finalize().await.unwrap();
-            println!("Root hash: {:?}", root_hash1);
+
+            root_hash = gen.finalize().await.unwrap();
+            println!("Root hash: {:?}", root_hash);
         }
 
-        {}
+        {
+            // Create mtree object and load from buf previously
+            let mut stream = stream.clone();
+            stream.seek(SeekFrom::Start(0)).await.unwrap();
+            let reader = Box::new(stream.clone()) as Box<dyn MtreeReadSeek>;
+            let mut obj = MerkleTreeObject::load_from_reader(reader, true)
+                .await
+                .unwrap();
+
+            let root_hash1 = obj.get_root_hash();
+            println!("Root hash: {:?}", root_hash1);
+            assert_eq!(root_hash, root_hash1);
+
+
+            // Verify the proof path for the leaf node
+            let proof_verify = MerkleTreeProofPathVerifier::new(HashMethod::Sha256);
+            let mut proof = obj.get_proof_path_by_leaf_index(0).await.unwrap();
+
+            // Proof last node must be the root node hash
+            assert_eq!(proof[proof.len() - 1].1, root_hash);
+            
+            assert_eq!(proof_verify.verify(&proof).unwrap(), true);
+
+            // Replace leaf node hash with error hash, then verify will failed!
+            println!("Proof leaf node: {:?}", proof[0]);
+            proof[0].1[0] = !proof[0].1[0];
+            println!("Error proof leaf node: {:?}", proof[0]);
+            assert_eq!(proof_verify.verify(&proof).unwrap(), false);
+
+        }
     }
 
     #[test]
