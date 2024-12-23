@@ -11,7 +11,6 @@ mod fileobj;
 mod mtree;
 mod hash;
 mod object_map;
-mod mtree_stream;
 
 pub use object::*;
 pub use chunk::*;
@@ -23,7 +22,6 @@ pub use ndn_client::*;
 pub use fileobj::*;
 pub use hash::*;
 pub use mtree::*;
-pub use mtree_stream::*;
 pub use object_map::*;
 
 use thiserror::Error;
