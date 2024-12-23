@@ -69,6 +69,21 @@ impl<'de> Deserialize<'de> for HashMethod {
 pub struct HashHelper {}
 
 impl HashHelper {
+    pub fn calc_hash(hash_method: HashMethod, data: &[u8]) -> Vec<u8> {
+        match hash_method {
+            HashMethod::Sha256 => {
+                let mut hasher = Sha256::new();
+                hasher.update(data);
+                hasher.finalize().to_vec()
+            }
+            HashMethod::Sha512 => {
+                let mut hasher = sha2::Sha512::new();
+                hasher.update(data);
+                hasher.finalize().to_vec()
+            }
+        }
+    }
+    
     pub fn calc_parent_hash(hash_method: HashMethod, left: &[u8], right: &[u8]) -> Vec<u8> {
         match hash_method {
             HashMethod::Sha256 => {

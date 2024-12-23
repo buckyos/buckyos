@@ -207,6 +207,7 @@ impl SerializeHashCalculator {
 
     async fn write_hash(&mut self, index: usize, hash: &Vec<u8>) -> NdnResult<()> {
         assert!(self.writer.is_some());
+        assert!(hash.len() == self.hash_method.hash_bytes());
 
         // println!("Write hash to index: {}, {:?}", index, hash);
         #[cfg(debug_assertions)]
@@ -247,6 +248,7 @@ impl SerializeHashCalculator {
         Ok(())
     }
 
+    // Append leaf hashes to the writer or verifier, the hash length must match the hash method!
     pub async fn append_leaf_hashes(&mut self, leaf_hashes: &Vec<Vec<u8>>) -> NdnResult<()> {
         if leaf_hashes.len() as u64 + self.append_count > self.leaf_count {
             let msg = format!(
@@ -260,6 +262,8 @@ impl SerializeHashCalculator {
         }
 
         for hash in leaf_hashes {
+            assert!(hash.len() == self.hash_method.hash_bytes());
+
             let node = HashNode {
                 hash: hash.clone(),
                 depth: 0,

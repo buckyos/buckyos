@@ -3,8 +3,10 @@ use name_lib::EncodedDocument;
 use sha2::{Sha256, Digest};
 use crate::{NdnResult, NdnError};
 use crate::{OBJ_TYPE_FILE,OBJ_TYPE_DIR,OBJ_TYPE_MTREE,OBJ_TYPE_OBJMAPT,OBJ_TYPE_PACK,OBJ_TYPE_LIST};
+use serde::{Deserialize, Serialize};
+
 //objid link to a did::EncodedDocument
-#[derive(Debug, Clone,Eq, PartialEq)]
+#[derive(Debug, Clone,Eq, PartialEq, Serialize, Deserialize)]
 pub struct ObjId {
     pub obj_type : String,
     pub obj_hash : Vec<u8>,//hash result
