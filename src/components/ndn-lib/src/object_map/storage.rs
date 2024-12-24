@@ -1,41 +1,32 @@
+use serde::{Serialize, Deserialize};
 use crate::NdnResult;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InnerStorageStat {
+    pub total_count: u64,
+}
 
 #[async_trait::async_trait]
 pub trait InnerStorage: Send + Sync {
-    async fn put(&mut self, path: &str, value: &[u8]) -> NdnResult<()>;
-    async fn get(&self, path: &str) -> NdnResult<Option<Vec<u8>>>;
-    async fn remove(&mut self, path: &str) -> NdnResult<Vec<u8>>;
-    async fn is_exist(&self, path: &str) -> NdnResult<bool>;
+    // Use to store object data
+    async fn put(&mut self, key: &str, value: &[u8]) -> NdnResult<()>;
+    async fn get(&self, key: &str) -> NdnResult<Option<(Vec<u8>, Option<u64>)>>;
+    async fn remove(&mut self, key: &str) -> NdnResult<Option<Vec<u8>>>;
+    async fn is_exist(&self, key: &str) -> NdnResult<bool>;
 
-    async fn list(&self, path: &str) -> NdnResult<Vec<String>>;
+    async fn list(&self, page_index: usize, page_size: usize) -> NdnResult<Vec<String>>;
+    async fn stat(&self) -> NdnResult<InnerStorageStat>;
+
+    // Use to store meta data
+    async fn put_meta(&mut self,value: &[u8]) -> NdnResult<()>;
+    async fn get_meta(&self) -> NdnResult<Option<Vec<u8>>>;
+
+    // Use to store the index of the mtree node
+    async fn update_mtree_index(&mut self, key: &str, index: u64) -> NdnResult<()>;
+    async fn get_mtree_index(&self, key: &str) -> NdnResult<Option<u64>>;
+    async fn put_mtree_data(&mut self, value: &[u8]) -> NdnResult<()>;
+    async fn load_mtree_data(&self) -> NdnResult<Option<Vec<u8>>>;
 }
 
 
 // Use to map key to path, first hash(key) -> base32 ->
-pub struct StoragePathGenerator {
-}
-
-impl StoragePathGenerator {
-    pub fn gen_path(key: &str, name_len: usize, level: usize) -> String {
-        assert!(name_len > 0);
-        assert!(level > 0);
-
-        let hash_str = base32::encode(
-            base32::Alphabet::Rfc4648Lower { padding: false },
-            &key.as_bytes(),
-        );
-
-        let mut path = String::new();
-        let mut start = 0;
-        for _ in 0..level {
-            if start + name_len > hash_str.len() {
-                break;
-            }
-            path.push_str(&hash_str[start..start + name_len]);
-            path.push('/');
-            start += name_len;
-        }
-        path.push_str(&key[start..]);
-        path
-    }
-}
