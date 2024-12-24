@@ -6,6 +6,8 @@ pub enum SmbErrorCode {
     Failed,
     CmdReturnFailed,
     LoadSmbConfFailed,
+    ListUserFailed,
+    SessionTokenNotFound,
 }
 
 pub type SmbResult<T> = sfo_result::Result<T, SmbErrorCode>;

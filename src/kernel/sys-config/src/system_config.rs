@@ -61,7 +61,7 @@ impl SystemConfigClient {
             return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
         }
         let client = client.unwrap();
-       
+
         let result = client.call("sys_config_get", json!({"key": key}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
@@ -138,7 +138,20 @@ impl SystemConfigClient {
 
     //list direct children
     pub async fn list(&self,key:&str) -> Result<Vec<String>> {
-        unimplemented!()
+        let client = self.get_krpc_client().await;
+        if client.is_err() {
+            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
+        }
+        let client = client.unwrap();
+        client.call("sys_config_list", json!({"key": key})).await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))
+            .map(|result| {
+                let mut list = Vec::new();
+                for item in result.as_array().unwrap() {
+                    list.push(item.as_str().unwrap().to_string());
+                }
+                list
+            })
     }
 
     pub async fn dump_configs_for_scheduler(&self) -> Result<Value> {
@@ -168,7 +181,7 @@ impl SystemConfigClient {
         if client.is_err() {
             return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
         }
-        let client = client.unwrap();   
+        let client = client.unwrap();
         client.call("sys_config_create",json!({"key":format!("users/{}/apps/{}/config",user_id,app_id),"value":config_string})).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
         //2. update rbac
@@ -201,10 +214,10 @@ impl SystemConfigClient {
     pub async fn remove_app(&self,appid:&str) -> Result<u64> {
         unimplemented!();
     }
-    
+
 
     pub async fn disable_app(&self,appid:&str) -> Result<u64> {
         unimplemented!();
     }
-    
+
 }

@@ -25,11 +25,11 @@ use name_lib::*;
 use buckyos_kit::*;
 
 use kv_provider::KVStoreProvider;
-use sled_provider::SledStore; 
+use sled_provider::SledStore;
 
 lazy_static!{
     static ref TRUST_KEYS: Arc<Mutex<HashMap<String,DecodingKey> > > = {
-        let hashmap : HashMap<String,DecodingKey> = HashMap::new();  
+        let hashmap : HashMap<String,DecodingKey> = HashMap::new();
         Arc::new(Mutex::new(hashmap))
     };
 }
@@ -45,7 +45,7 @@ async fn handle_get(params:Value,session_token:&RPCSessionToken) -> Result<Value
     if key.is_none() {
         return Err(RPCErrors::ReasonError("Missing key".to_string()));
     }
-    
+
     let key = key.unwrap();
     let key = key.as_str();
     if key.is_none() {
@@ -57,7 +57,7 @@ async fn handle_get(params:Value,session_token:&RPCSessionToken) -> Result<Value
         return Err(RPCErrors::NoPermission("No userid".to_string()));
     }
     let userid = session_token.userid.as_ref().unwrap();
-    
+
 
     let full_res_path = format!("kv://{}",key);
     let is_allowed = enforce(userid, None, full_res_path.as_str(), "read").await;
@@ -106,7 +106,7 @@ async fn handle_set(params:Value,session_token:&RPCSessionToken) -> Result<Value
     let store = SYS_STORE.lock().await;
     info!("Set key:[{}] to value:[{}]",key,new_value);
     store.set(String::from(key),String::from(new_value)).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-    
+
     return Ok(Value::Null);
 }
 
@@ -141,7 +141,7 @@ async fn handle_create(params:Value,session_token:&RPCSessionToken) -> Result<Va
     let store = SYS_STORE.lock().await;
     info!("Create key:[{}] to value:[{}]",key,new_value);
     store.create(key,new_value).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-    
+
     return Ok(Value::Null);
 }
 
@@ -168,7 +168,7 @@ async fn handle_delete(params:Value,session_token:&RPCSessionToken) -> Result<Va
     let store = SYS_STORE.lock().await;
     info!("Delete key:[{}]",key);
     store.delete(key).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-    
+
     return Ok(Value::Null);
 }
 
@@ -281,7 +281,8 @@ async fn handle_list(params:Value,session_token:&RPCSessionToken) -> Result<Valu
 
     //do business logic
     let store = SYS_STORE.lock().await;
-    unimplemented!();
+    let result = store.list_direct_children(key.to_string()).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    Ok(Value::Array(result.iter().map(|v| Value::String(v.clone())).collect()))
 }
 
 async fn dump_configs_for_scheduler(_params:Value,session_token:&RPCSessionToken) -> Result<Value> {
@@ -317,7 +318,7 @@ async fn dump_configs_for_scheduler(_params:Value,session_token:&RPCSessionToken
 }
 
 async fn process_request(method:String,param:Value,session_token:Option<String>) -> ::kRPC::Result<Value> {
-    //check session_token 
+    //check session_token
     if session_token.is_some() {
         let session_token = session_token.unwrap();
         let mut rpc_session_token = RPCSessionToken::from_string(session_token.as_str())?;
@@ -360,7 +361,7 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
             // Add more methods here
             _ => Err(RPCErrors::UnknownMethod(String::from(method))),
         }
-        
+
     } else {
         return Err(RPCErrors::NoPermission("No session token".to_string()));
     }
@@ -374,7 +375,7 @@ fn init_log_config() {
     let config = ConfigBuilder::new()
         .set_time_format_custom(format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"))
         .build();
-       
+
     let log_path = get_buckyos_root_dir().join("logs").join("sys_config_service.log");
     // 初始化日志器
     CombinedLogger::init(vec![
@@ -421,7 +422,7 @@ async fn init_by_boot_config()->Result<()> {
             set_rbac = true;
             info!("load rbac model and policy from kv store successfully!");
         }
-    } 
+    }
 
     if !set_rbac {
         rbac::create_enforcer(None,None).await.unwrap();
@@ -487,9 +488,9 @@ async fn service_main() {
     .and(warp::body::json())
     .and_then(|req: RPCRequest| async {
         info!("|==>Received request: {}", serde_json::to_string(&req).unwrap());
-    
+
         let process_result =  process_request(req.method,req.params,req.token).await;
-        
+
         let rpc_response : RPCResponse;
         match process_result {
             Ok(result) => {
@@ -511,7 +512,7 @@ async fn service_main() {
                 info!("<==|Response: {}", serde_json::to_string(&rpc_response).unwrap());
             }
         }
-    
+
         Ok::<_, warp::Rejection>(warp::reply::json(&rpc_response))
     });
 
@@ -560,7 +561,7 @@ mod test {
         MC4CAQAwBQYDK2VwBCIEIK45kLWIAx3CHmbEmyCST4YB3InSCA4XAV6udqHtRV5P
         -----END PRIVATE KEY-----
         "#;
-                
+
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
         let token = RPCSessionToken{
             userid: Some("alice".to_string()),
@@ -572,7 +573,7 @@ mod test {
             nonce:None,
         };
         let jwt = token.generate_jwt(Some("{owner}".to_string()),&private_key).unwrap();
-    
+
         sleep(Duration::from_millis(1000)).await;
 
         let client = kRPC::new("http://127.0.0.1:3200/kapi/system_config",Some(jwt));
@@ -590,7 +591,7 @@ mod test {
         println!("test no permission set");
         let result = client.call("sys_config_set", json!( {"key":"users/bob/test_key","value":"test_value"})).await;
         assert!(result.is_err());
-        //test already exist create 
+        //test already exist create
         println!("test already exist create");
         let result = client.call("sys_config_create", json!( {"key":"users/alice/test_key","value":"test_value_create"})).await;
         assert!(result.is_err());
@@ -601,13 +602,13 @@ mod test {
         println!("test delete not exist");
         let result = client.call("sys_config_delete", json!( {"key":"users/alice/test_key"})).await;
         assert!(result.is_err());
-        
+
         //test token expired
         sleep(Duration::from_millis(8000)).await;
         println!("test token expired");
         let result = client.call("sys_config_set", json!( {"key":"users/alice/test_key","value":"test_value"})).await;
         assert!(result.is_err());
- 
+
         drop(server);
     }
 }

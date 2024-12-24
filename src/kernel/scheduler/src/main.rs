@@ -96,7 +96,7 @@ async fn generate_ood_config(ood_name:&str,owner_name:&str) -> Result<HashMap<St
     })).unwrap();
     //init ood config
     init_list.insert(format!("nodes/{}/config",ood_name),config_str);
-    
+
     Ok(init_list)
 }
 
@@ -118,10 +118,11 @@ async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
     let template_file_path = get_buckyos_system_etc_dir().join("scheduler").join(format!("{}.template.toml",template_type_str));
     let template_str = tokio::fs::read_to_string(template_file_path).await?;
 
-    //generate dynamic params 
+    //generate dynamic params
     let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
     start_params["verify_hub_key"] = json!(private_key_pem);
     start_params["verify_hub_public_key"] = json!(public_key_jwk.to_string());
+    start_params["BUCKYOS_ROOT"] = json!(get_buckyos_root_dir().to_string_lossy().to_string());
 
     let mut engine = upon::Engine::new();
     engine.add_template("config", &template_str)?;
@@ -139,7 +140,7 @@ async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
     //tokio::fs::write(result_file_path, result.clone()).await?;
 
     let config: HashMap<String, String> = toml::from_str(&result)?;
-    
+
     Ok(config)
 }
 
@@ -151,11 +152,11 @@ async fn do_boot_scheduler() -> Result<()> {
     if zone_config_str.is_err() {
         warn!("BUCKY_ZONE_CONFIG is not set, use default zone config");
         return Err("BUCKY_ZONE_CONFIG is not set".into());
-    }    
+    }
 
     info!("zone_config_str:{}",zone_config_str.as_ref().unwrap());
     let mut zone_config:ZoneConfig = serde_json::from_str(&zone_config_str.unwrap()).unwrap();
-    let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN"); 
+    let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
 
     if rpc_session_token_str.is_err() {
         return Err("SCHEDULER_SESSION_TOKEN is not set".into());
@@ -173,7 +174,7 @@ async fn do_boot_scheduler() -> Result<()> {
             error!("create_init_list_by_template failed: {:?}", e);
             e
         })?;
-    
+
     info!("use init list from template to do boot scheduler");
     //write to system_config
     for (key,value) in init_list.iter() {
@@ -200,7 +201,7 @@ async fn do_one_ood_schedule(input_config: &HashMap<String, String>) -> Result<(
         }
     }
     let mut all_app_http_port:HashMap<String,u16> = HashMap::new();
-    
+
     // deploy all app configurations
     for (key, value) in input_config.iter() {
         if key.starts_with("users/") && key.ends_with("/config") {
@@ -208,7 +209,7 @@ async fn do_one_ood_schedule(input_config: &HashMap<String, String>) -> Result<(
             if parts.len() >= 4 && parts[2] == "apps" {
                 let user_name = parts[1];
                 let app_id = parts[3];
-                
+
                 // Install app for user
                 let app_config = deploy_app_service(user_name, app_id,&device_list, &input_config).await;
                 if app_config.is_err() {
@@ -266,17 +267,17 @@ async fn do_one_ood_schedule(input_config: &HashMap<String, String>) -> Result<(
                                     "/":{
                                         "upstream":format!("http://127.0.0.1:{}",http_port)
                                     }
-                                }  
-                            });  
+                                }
+                            });
                             if short_name == "www" {
                                 let default_upstream = json!({
                                     "/":{
                                         "upstream":format!("http://127.0.0.1:{}",http_port)
                                     }
                                 });
-    
+
                                 set_json_by_path(&mut real_base_gateway_config,"/servers/main_http_server/hosts/*/routes",Some(&default_upstream));
-               
+
                             }
                             set_json_by_path(&mut real_base_gateway_config,format!("/servers/main_http_server/hosts/{}.*",short_name).as_str(),Some(&app_gateway_config));
                         } else {
@@ -310,11 +311,11 @@ async fn schedule_loop() -> Result<()> {
         tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
         loop_step += 1;
         info!("schedule loop step:{}.", loop_step);
-        let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN"); 
+        let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
         if rpc_session_token_str.is_err() {
             return Err("SCHEDULER_SESSION_TOKEN is not set".into());
         }
-    
+
         let rpc_session_token = rpc_session_token_str.unwrap();
         let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
         let input_config = system_config_client.dump_configs_for_scheduler().await;
@@ -397,7 +398,7 @@ async fn main() {
         if args[1] == "--boot" {
             is_boot = true;
         }
-    }  
+    }
 
     let ret = service_main(is_boot).await;
     if ret.is_err() {
@@ -562,7 +563,7 @@ mod test {
         "name" : "Home Station",
         "description" : "Home Station",
         "vendor_did" : "did:bns:buckyos",
-        "pkg_id" : "home-station", 
+        "pkg_id" : "home-station",
         "pkg_list" : {
             "amd64_docker_image" : {
                 "pkg_id":"home-station-x86-img",
@@ -586,8 +587,8 @@ mod test {
     "cache_mount_point" : "/database/",
     "local_cache_mount_point" : "/config/",
     "max_cpu_num" : 4,
-    "max_cpu_percent" : 80, 
-    "memory_quota" : 1073741824, 
+    "max_cpu_percent" : 80,
+    "memory_quota" : 1073741824,
     "tcp_ports" : {
         "www":80
     }
@@ -654,12 +655,12 @@ mod test {
                 "/opt/buckyos/data/root/home-station/:/srv",
             },
             "max_cpu_num" : 4,
-            "max_cpu_percent" : 80, 
-            "memory_quota" : 1073741824, 
+            "max_cpu_percent" : 80,
+            "memory_quota" : 1073741824,
             "tcp_ports" : {
                 "20000":80
             }
-        }    
+        }
     }
 }
 """"
@@ -767,7 +768,7 @@ g, app2, app
         "public_key":{{verify_hub_public_key}}
     }
 }
-"""        
+"""
         "#;
         buckyos_kit::init_logging("scheduler");
         let input_config: HashMap<String, String> = toml::from_str(input_config_str).unwrap();

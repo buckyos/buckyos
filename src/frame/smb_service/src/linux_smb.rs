@@ -4,6 +4,7 @@ use shlex::Shlex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
+use crate::samba::{SmbItem, SmbUserItem};
 
 pub struct QAProcess {
     stdin: Option<ChildStdin>,
@@ -24,7 +25,7 @@ impl QAProcess {
 
     pub async fn answer(&mut self, question: &str, answer: &str) -> SmbResult<()> {
         // self.stdin.as_mut().unwrap().write_all(answer.as_bytes()).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
-        log::info!("{} -> {} start", question, answer);
+        log::info!("{} start", question);
         let mut offset = 0;
         let mut buf = [0u8; 4096];
         let mut error_buf = [0u8; 4096];
@@ -86,7 +87,7 @@ impl QAProcess {
                 }
             }
         }
-        log::info!("{} -> {} complete", question, answer);
+        log::info!("{} complete", question);
         Ok(())
     }
 
@@ -180,6 +181,16 @@ pub async fn exist_smb_user(user_name: &str) -> SmbResult<bool> {
     Ok(true)
 }
 
+pub async fn restart_smb_service() -> SmbResult<()> {
+    execute("systemctl restart smbd").await?;
+    Ok(())
+}
+
+pub async fn stop_smb_service() -> SmbResult<()> {
+    execute("systemctl stop smbd").await?;
+    Ok(())
+}
+
 pub async fn load_sub_smb_conf() -> SmbResult<Vec<Ini>> {
     let config_path = Path::new("/etc/samba/smb.conf.d");
     if !config_path.exists() || !config_path.is_dir() {
@@ -203,13 +214,7 @@ pub async fn load_sub_smb_conf() -> SmbResult<Vec<Ini>> {
     Ok(list)
 }
 
-pub struct SmbItem {
-    smb_name: String,
-    path: String,
-    allow_users: Vec<String>,
-}
-
-pub async fn generate_smb_conf(smb_list: &Vec<SmbItem>) -> SmbResult<()> {
+async fn generate_smb_conf(smb_list: &Vec<SmbItem>) -> SmbResult<()> {
     let mut conf = Ini::new();
     conf.with_section(Some("global"))
         .set("workgroup", "WORKGROUP")
@@ -244,5 +249,19 @@ pub async fn generate_smb_conf(smb_list: &Vec<SmbItem>) -> SmbResult<()> {
     }
 
     conf.write_to_file("/etc/samba/smb.conf").map_err(into_smb_err!(SmbErrorCode::LoadSmbConfFailed, "{}", "/etc/samba/smb.conf"))?;
+    Ok(())
+}
+
+pub async fn update_samba_conf(_remove_users: Vec<SmbUserItem>, new_all_users: Vec<SmbUserItem>, _remove_list: Vec<SmbItem>, new_samba_list: Vec<SmbItem>) -> SmbResult<()> {
+    for item in new_all_users.iter() {
+        let _ = delete_smb_user(item.user.as_str()).await;
+        if !exist_system_user(item.user.as_str()).await? {
+            add_system_user(item.user.as_str()).await?;
+        }
+        add_smb_user(item.user.as_str(), item.password.as_str()).await?;
+    }
+
+    generate_smb_conf(&new_samba_list).await?;
+    restart_smb_service().await?;
     Ok(())
 }

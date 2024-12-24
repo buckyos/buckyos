@@ -1,6 +1,14 @@
+use std::time::Duration;
+use clap::Command;
 use sfo_log::Logger;
-use buckyos_kit::get_buckyos_root_dir;
-use sys_config::SystemConfigClient;
+use buckyos_kit::{get_buckyos_root_dir, get_buckyos_service_data_dir};
+use sys_config::{SystemConfigClient, SystemConfigError};
+use crate::error::{into_smb_err, smb_err, SmbError, SmbErrorCode, SmbResult};
+#[cfg(target_os = "linux")]
+use crate::linux_smb::update_samba_conf;
+#[cfg(target_os = "windows")]
+use crate::windows_smb::update_samba_conf;
+use crate::samba::{SmbItem, SmbUserItem};
 
 #[cfg(target_os = "linux")]
 mod linux_smb;
@@ -8,25 +16,147 @@ mod error;
 
 #[cfg(target_os = "windows")]
 mod windows_smb;
+mod samba;
 
-#[tokio::main]
-async fn main() {
+async fn async_main() {
     Logger::new("smb-service")
-        .set_log_path(get_buckyos_root_dir().join("logs").to_string_lossy().to_string().as_str())
+        .set_log_path(get_buckyos_root_dir().join("logs").join("smb").to_string_lossy().to_string().as_str())
         .set_log_to_file(true)
+        .set_log_file_count(5)
         .set_log_level("info")
         .start().unwrap();
 
-    let rpc_session_token_str = std::env::var("SMB_SESSION_TOKEN");
-    if rpc_session_token_str.is_err() {
-        log::error!("SMB_SESSION_TOKEN is not set");
-        return;
-    }
+    let matches = Command::new("smb-service")
+        .subcommand(Command::new("start"))
+        .subcommand(Command::new("stop")).get_matches();
 
-    let rpc_session_token = rpc_session_token_str.unwrap();
+    match matches.subcommand() {
+        Some(("start", _)) => {
+            enter_update_smb_loop().await;
+        },
+        Some(("stop", _)) => {
+            log::info!("smb-service stopped");
+        },
+        _ => unreachable!(),
+    }
+}
+
+async fn enter_update_smb_loop() {
+    loop {
+        if let Err(e) = check_and_update_smb_service().await {
+            log::error!("check_and_update_smb_service failed: {}", e);
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+async fn check_and_update_smb_service() -> SmbResult<()> {
+    let rpc_session_token = std::env::var("SMB_SESSION_TOKEN")
+        .map_err(into_smb_err!(SmbErrorCode::SessionTokenNotFound, "SMB_SESSION_TOKEN is not set"))?;
+
     let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
 
-    #[cfg(target_os = "linux")]
-    {
+    let mut latest_smb_items = match system_config_client.get("services/smb/latest_smb_items").await {
+        Ok((latest_smb_items_str, _)) => {
+            serde_json::from_str(latest_smb_items_str.as_str())
+                .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_smb_items failed"))?
+        },
+        Err(e) => {
+            if let SystemConfigError::KeyNotFound(path) = e {
+                Vec::new()
+            } else {
+                return Err(smb_err!(SmbErrorCode::Failed, "get latest_smb_items failed: {}", e));
+            }
+        }
+    };
+    let mut latest_users = match system_config_client.get("services/smb/latest_users").await {
+        Ok((latest_users_str, _)) => {
+            serde_json::from_str(latest_users_str.as_str())
+                .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_users failed"))?
+        },
+        Err(e) => {
+            if let SystemConfigError::KeyNotFound(path) = e {
+                Vec::new()
+            } else {
+                return Err(smb_err!(SmbErrorCode::Failed, "get latest_smb_items failed: {}", e));
+            }
+        }
+    };
+
+    let list = system_config_client.list("users").await
+        .map_err(into_smb_err!(SmbErrorCode::ListUserFailed, "get user list failed"))?;
+    let mut smb_items = Vec::new();
+    let mut smb_users = Vec::new();
+    for user in list {
+        let user_home = get_buckyos_root_dir().join("data").join(user.clone()).join("home");
+        // 转换成绝对路径
+        let user_home = std::fs::canonicalize(user_home)
+            .map_err(into_smb_err!(SmbErrorCode::Failed, "canonicalize user home failed"))?;
+        if !user_home.exists() {
+            //create user home
+            std::fs::create_dir_all(user_home.clone())
+                .map_err(into_smb_err!(SmbErrorCode::Failed, "create user home failed"))?;
+        }
+
+        let smb_item = SmbItem {
+            smb_name: format!("{} Home", user),
+            allow_users: vec![user.clone()],
+            path: user_home.to_string_lossy().to_string(),
+        };
+        smb_items.push(smb_item);
+        smb_users.push(SmbUserItem {
+            user,
+            password: "123456".to_string(),
+        });
+    }
+
+    let mut delete_users = Vec::new();
+    for user in latest_users.iter() {
+        if !smb_users.contains(user) {
+            delete_users.push(user.clone());
+        }
+    }
+
+    let mut delete_smb_items = Vec::new();
+    for smb_item in latest_smb_items.iter() {
+        if !smb_items.contains(smb_item) {
+            delete_smb_items.push(smb_item.clone());
+        }
+    }
+
+    let new_users = smb_users.iter().filter(|user| !latest_users.contains(user)).collect::<Vec<_>>();
+    let new_smb_items = smb_items.iter().filter(|smb_item| !latest_smb_items.contains(smb_item)).collect::<Vec<_>>();
+    if new_users.is_empty() && new_smb_items.is_empty() && delete_users.is_empty() && delete_smb_items.is_empty() {
+        log::info!("samba config no change");
+        return Ok(());
+    }
+
+    update_samba_conf(delete_users, smb_users.clone(), delete_smb_items, smb_items.clone()).await
+        .map_err(into_smb_err!(SmbErrorCode::Failed, "update_samba_conf failed"))?;
+
+    latest_smb_items = smb_items;
+    latest_users = smb_users;
+    system_config_client.set("services/smb/latest_users", serde_json::to_string(&latest_users).unwrap().as_str()).await
+        .map_err(into_smb_err!(SmbErrorCode::Failed, "set latest_users failed"))?;
+    system_config_client.set("services/smb/latest_smb_items", serde_json::to_string(&latest_smb_items).unwrap().as_str()).await
+        .map_err(into_smb_err!(SmbErrorCode::Failed, "set latest_smb_items failed"))?;
+
+    Ok(())
+}
+
+fn main() {
+    if num_cpus::get() < 2 {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async_main());
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async_main());
     }
 }

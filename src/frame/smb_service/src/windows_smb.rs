@@ -9,6 +9,7 @@ use windows::Win32::Security::Authorization::{GetNamedSecurityInfoW, SetEntriesI
 use windows::Win32::Storage::FileSystem::{NetShareAdd, NetShareDel, NetShareEnum, NetShareGetInfo, NetShareSetInfo, ACCESS_READ, SHARE_INFO_2, SHARE_INFO_502, SHARE_INFO_PERMISSIONS, SHARE_NETNAME_PARMNUM, SHARE_TYPE, SHARE_TYPE_PARMNUM, STYPE_DEVICE, STYPE_DISKTREE, STYPE_IPC};
 use windows::Win32::System::SystemServices::SECURITY_DESCRIPTOR_REVISION;
 use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
+use crate::samba::{SmbItem, SmbUserItem};
 
 fn add_user(user_name: &str, passwd: &str) -> SmbResult<()> {
     let mut name = OsString::from(format!("{}\0", user_name)).encode_wide().collect::<Vec<_>>();
@@ -34,7 +35,7 @@ fn add_user(user_name: &str, passwd: &str) -> SmbResult<()> {
     }
 }
 
-fn check_user_exists(user_name: &str) -> bool {
+pub fn exist_system_user(user_name: &str) -> bool {
     let mut name = OsString::from(format!("{}\0", user_name)).encode_wide().collect::<Vec<_>>();
     let mut buf: *mut u8 = std::ptr::null_mut();
     unsafe {
@@ -233,4 +234,8 @@ fn delete_share(share_name: &str) -> SmbResult<()> {
             Ok(())
         }
     }
+}
+
+pub async fn update_samba_conf(_remove_users: Vec<SmbUserItem>, new_all_users: Vec<SmbUserItem>, _remove_list: Vec<SmbItem>, new_samba_list: Vec<SmbItem>) -> SmbResult<()> {
+    Ok(())
 }

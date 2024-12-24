@@ -13,7 +13,7 @@ impl SledStore {
     pub fn new() -> std::result::Result<Self, Box<dyn std::error::Error>> {
         let root_path  = get_buckyos_root_dir();
         let path = root_path.join("data").join("sys_config");
-        
+
         let db = sled::open(path)?;
         Ok(SledStore { db: Arc::new(db) })
     }
@@ -42,7 +42,7 @@ impl KVStoreProvider for SledStore {
     }
 
     async fn create(&self, key: &str, value: &str) -> Result<()> {
-        let create_result =  self.db.compare_and_swap(key.to_string(), 
+        let create_result =  self.db.compare_and_swap(key.to_string(),
             None as Option<IVec>,Some(value.to_string().into_bytes()))
             .map_err(|err| KVStoreErrors::InternalError(err.to_string()));
 
@@ -59,7 +59,7 @@ impl KVStoreProvider for SledStore {
             Err(err) => {
                 return Err(KVStoreErrors::InternalError(err.to_string()));
             }
-        } 
+        }
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
@@ -104,22 +104,28 @@ impl KVStoreProvider for SledStore {
 
     async fn list_direct_children(&self, prefix: String) -> Result<Vec<String>> {
         let mut result = Vec::new();
-        let prefix = prefix.trim_end_matches('/').to_string();
-        
-        // 计算范围的起始和结束
-        let start = format!("{}/", prefix);
-        let end = format!("{}/\u{FFFF}", prefix); // \u{FFFF} 是一个很大的 Unicode 字符
-        
-        for item in self.db.range(start.as_bytes()..end.as_bytes()) {
-            let (key, _) = item.map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
-            let key_str = String::from_utf8_lossy(&key).to_string();
-            
-
-            if !key_str[prefix.len()+1..].contains('/') {
-                result.push(key_str);
+        let prefix = if prefix.ends_with("/") {
+            prefix
+        } else {
+            format!("{}/", prefix)
+        };
+        let iter = self.db.scan_prefix(prefix.clone()).keys();
+        for key in iter {
+            if let Ok(key) = key {
+                if let Ok(key_str) = String::from_utf8(key.to_vec()) {
+                    let suffix = key_str.trim_start_matches(prefix.as_str());
+                    let splite_result: Vec<_> = if suffix.ends_with("/") {
+                        suffix[1..].split("/").collect()
+                    } else {
+                        suffix.split("/").collect()
+                    };
+                    let child = splite_result[0];
+                    if !result.contains(&child.to_string()) {
+                        result.push(child.to_string());
+                    }
+                }
             }
         }
-
         Ok(result)
     }
 }
