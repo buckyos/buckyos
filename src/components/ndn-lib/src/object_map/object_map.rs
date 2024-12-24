@@ -8,6 +8,7 @@ use crate::{
     hash::{HashHelper, HashMethod},
     NdnError, NdnResult,
 };
+use crate::{MerkleTreeProofPathVerifier, OBJ_TYPE_OBJMAPT};
 use core::hash;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -50,19 +51,6 @@ impl ObjectMapItem {
         })?;
 
         Ok(ret)
-    }
-
-    pub fn calc_hash(&self, hash: &Option<Vec<u8>>) -> Vec<u8> {
-        let mut hasher = sha2::Sha256::new();
-        match hash {
-            Some(h) => {
-                hasher.update(h);
-            }
-            None => {
-                hasher.update(self.encode().unwrap());
-            }
-        }
-        hasher.finalize().to_vec()
     }
 }
 
@@ -167,6 +155,24 @@ impl ObjectMap {
         }
 
         Ok(map)
+    }
+
+    // If mtree exists, return the current objid, otherwise return None
+    // If mtree is dirty, then should call flush to regenerate the mtree first
+    pub fn gen_obj_id(&self) -> Option<ObjId> {
+        let root_hash = self.get_root_hash();
+        if root_hash.is_none() {
+            None
+        } else {
+            Some(ObjId::new_by_raw(
+                OBJ_TYPE_OBJMAPT.to_owned(),
+                root_hash.unwrap(),
+            ))
+        }
+    }
+
+    pub fn hash_method(&self) -> HashMethod {
+        self.meta.hash_method
     }
 
     pub async fn put_object(
@@ -303,6 +309,10 @@ impl ObjectMap {
         Ok(ret)
     }
 
+    pub fn is_dirty(&self) -> bool {
+        self.is_dirty
+    }
+
     // Regenerate the merkle tree without checking the dirty flag
     pub async fn regenerate_merkle_tree(&mut self) -> NdnResult<()> {
         let count = self.storage.stat().await?.total_count;
@@ -329,11 +339,13 @@ impl ObjectMap {
 
         let mut page_index = 0;
         let page_size = 128;
+        let mut leaf_index = 0;
         loop {
             let list = self.storage.list(page_index, page_size).await?;
             if list.is_empty() {
                 break;
             }
+            page_index += 1;
 
             for key in list {
                 let item = self.get_object(&key).await?;
@@ -353,10 +365,23 @@ impl ObjectMap {
                         error!("{}", msg);
                         e
                     })?;
+                
+                // Update the mtree index in storage
+                self.storage
+                    .update_mtree_index(&key, leaf_index)
+                    .await
+                    .map_err(|e| {
+                        let msg = format!("Error updating mtree index: {}, {}, {}", key, leaf_index, e);
+                        error!("{}", msg);
+                        e
+                    })?;
+
+                leaf_index += 1;
             }
         }
 
         let root_hash = mtree_generator.finalize().await?;
+        info!("Regenerated merkle tree root hash: {:?}", root_hash);
 
         // Create the merkle tree object from the stream
         let mut stream = stream.clone();
@@ -367,18 +392,24 @@ impl ObjectMap {
         })?;
 
         let reader = Box::new(stream) as Box<dyn MtreeReadSeek>;
-        let object = MerkleTreeObject::load_from_reader(reader, false).await?;
+        let object = MerkleTreeObject::load_from_reader(reader, true).await?;
+        let root_hash1 = object.get_root_hash();
+        assert_eq!(root_hash, root_hash1);
+
+        // Save the mtree data to object for further usage
         self.mtree = Some(object);
 
         Ok(())
     }
 
-    pub async fn flush(&mut self, path: &str, depth: usize) -> NdnResult<()> {
+    pub async fn flush(&mut self) -> NdnResult<()> {
         if !self.is_dirty && self.mtree.is_some() {
             return Ok(());
         }
 
         self.regenerate_merkle_tree().await?;
+
+        self.is_dirty = false;
 
         Ok(())
     }
@@ -391,5 +422,51 @@ impl ObjectMap {
         let mtree = self.mtree.as_ref().unwrap();
         let root_hash = mtree.get_root_hash();
         Some(root_hash)
+    }
+}
+
+pub struct ObjectMapProofVerifier {
+    hash_method: HashMethod,
+}
+
+impl ObjectMapProofVerifier {
+    pub fn new(hash_method: HashMethod) -> Self {
+        Self { hash_method }
+    }
+
+    pub fn verify(&self, object_map: &ObjId, proof: &ObjectMapItemProof) -> NdnResult<bool> {
+        if proof.proof.len() < 2 {
+            let msg = format!("Invalid proof path length: {}", proof.proof.len());
+            error!("{}", msg);
+            return Err(NdnError::InvalidParam(msg));
+        }
+
+        // First calculate the hash of the item
+        let item_data = proof.item.encode().unwrap();
+        let item_hash = HashHelper::calc_hash(self.hash_method, &item_data);
+
+        // The first item is the leaf node, which is the item itself
+        if proof.proof[0].1 != item_hash {
+            let msg = format!(
+                "Unmatched objectmap leaf hash: expected {:?}, got {:?}",
+                item_hash, proof.proof[0].1
+            );
+            error!("{}", msg);
+            return Err(NdnError::InvalidData(msg));
+        }
+
+        // The last item is the root node, which is objid.hash field
+        if proof.proof[proof.proof.len() - 1].1 != object_map.obj_hash {
+            let msg = format!(
+                "Unmatched objectmap root hash: expected {:?}, got {:?}",
+                object_map.obj_hash,
+                proof.proof[proof.proof.len() - 1].1
+            );
+            error!("{}", msg);
+            return Err(NdnError::InvalidData(msg));
+        }
+
+        let mtree_verifier = MerkleTreeProofPathVerifier::new(self.hash_method);
+        mtree_verifier.verify(&proof.proof)
     }
 }

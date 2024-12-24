@@ -89,6 +89,7 @@ impl InnerStorage for MemoryStorage {
     async fn update_mtree_index(&mut self, key: &str, index: u64) -> NdnResult<()> {
         if let Some(item) = self.storage.get_mut(key) {
             item.mtree_index = Some(index);
+            return Ok(());
         }
 
         let msg = format!("No such key: {}", key);

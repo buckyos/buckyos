@@ -37,9 +37,17 @@ impl HashNodeLocator {
         (leaf_count as f64).log2().ceil() as u32
     }
 
+    pub fn depth(&self) -> u32 {
+        self.total_depth
+    }
+
     pub fn calc_total_count(leaf_count: u64) -> u64 {
         let counts = Self::calc_count_per_depth(leaf_count);
         counts.iter().sum()
+    }
+
+    pub fn total_count(&self) -> u64 {
+        Self::calc_total_count(self.leaf_count)
     }
 
     pub fn calc_count_per_depth(leaf_count: u64) -> Vec<u64> {

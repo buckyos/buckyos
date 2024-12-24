@@ -83,7 +83,7 @@ impl SerializeHashCalculator {
         // The root hash is the last hash in the reader
         let reader = self.reader.as_mut().unwrap();
         let hash_bytes = self.hash_method.hash_bytes();
-        let pos = (self.leaf_count - 1) * hash_bytes as u64;
+        let pos = (self.locator.total_count() - 1) * hash_bytes as u64;
         reader.seek(SeekFrom::Start(pos)).await.map_err(|e| {
             let msg = format!("Error seeking to position {}: {}", pos, e);
             error!("{}", msg);
