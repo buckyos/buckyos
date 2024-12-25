@@ -258,7 +258,7 @@ pub async fn copy_chunk<R, W, F>(
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
-    F: FnMut(&ChunkId, u64, &Option<ChunkHasher>) -> Pin<Box<dyn Future<Output = NdnResult<()>> + Send + 'static>>,
+    F: FnMut(ChunkId, u64, &Option<ChunkHasher>) -> Pin<Box<dyn Future<Output = NdnResult<()>> + Send + 'static>>,
 {
     let mut total_copied: u64 = 0;
     let mut buffer = vec![0u8; COPY_CHUNK_BUFFER_SIZE]; 
@@ -279,7 +279,7 @@ where
         total_copied += n as u64;
 
         if let Some(ref mut progress_callback) = progress_callback {
-            progress_callback(&chunk_id, total_copied, &hasher).await;
+            progress_callback(chunk_id.clone(), total_copied, &hasher).await;
         }
     }
 

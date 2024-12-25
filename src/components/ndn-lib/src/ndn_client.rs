@@ -357,7 +357,7 @@ impl NdnClient {
         let named_mgr2 = named_mgr.clone();
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
         let progress_callback = {
-            Some(move |chunk_id: &ChunkId, pos: u64, hasher: &Option<ChunkHasher>| {
+            Some(move |chunk_id: ChunkId, pos: u64, hasher: &Option<ChunkHasher>| {
                 let this_chunk_id = chunk_id.clone();
                 let mut json_progress_str = String::new();
                 if let Some(hasher) = hasher {
