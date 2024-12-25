@@ -3,6 +3,7 @@ use std::pin::Pin;
 // Chunk Manage由多个Local Chunk Store组成(目前版本先搞定单OOD)
 use std::{collections::HashMap, io::SeekFrom};
 use std::time::{SystemTime, UNIX_EPOCH};
+use serde_json::json;
 use tokio::{
     fs::{self, File,OpenOptions}, 
     io::{self, AsyncRead,AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeek, AsyncSeekExt}, 
@@ -696,7 +697,8 @@ impl NamedDataStore {
             })?;
             
             if offset <= file_meta.len() {
-                let file = OpenOptions::new()
+                
+                let mut file = OpenOptions::new()
                     .write(true)
                     .open(&chunk_path)
                     .await
@@ -704,12 +706,35 @@ impl NamedDataStore {
                         warn!("open_chunk_writer: open file failed! {}", e.to_string());
                         NdnError::IoError(e.to_string())
                     })?;
+
+                if offset != 0 {
+                    file.seek(SeekFrom::Start(offset)).await.map_err(|e| {
+                        warn!("open_chunk_writer: seek file failed! {}", e.to_string());
+                        NdnError::IoError(e.to_string())
+                    })?;
+                } else {
+                    file.seek(SeekFrom::End(0)).await.map_err(|e| {
+                        warn!("open_chunk_writer: seek file failed! {}", e.to_string());
+                        NdnError::IoError(e.to_string())
+                    })?;
+                }
+
+                if chunk_item.progress.len() < 2{
+                    let progress = json!({
+                        "pos":file_meta.len(),
+                    }).to_string();
+                    return Ok((Box::pin(file),progress));
+                }
                 return Ok((Box::pin(file),chunk_item.progress));
             } else {
                 warn!("open_chunk_writer: offset too large! {}",chunk_id.to_string());
                 return Err(NdnError::OffsetTooLarge(chunk_id.to_string()));
             }
         } else {
+            if offset != 0 {
+                warn!("open_chunk_writer: offset not 0! {}",chunk_id.to_string());
+                return Err(NdnError::Internal("offset not 0".to_string()));
+            }
             // Create parent directories if they don't exist
             if let Some(parent) = std::path::Path::new(&chunk_path).parent() {
                 fs::create_dir_all(parent).await
