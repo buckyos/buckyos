@@ -239,3 +239,15 @@ fn delete_share(share_name: &str) -> SmbResult<()> {
 pub async fn update_samba_conf(_remove_users: Vec<SmbUserItem>, new_all_users: Vec<SmbUserItem>, _remove_list: Vec<SmbItem>, new_samba_list: Vec<SmbItem>) -> SmbResult<()> {
     Ok(())
 }
+
+pub async fn restart_smb_service() -> SmbResult<()> {
+    Ok(())
+}
+
+pub async fn stop_smb_service() -> SmbResult<()> {
+    Ok(())
+}
+
+pub async fn check_samba_status() -> i32 {
+    return 0;
+}

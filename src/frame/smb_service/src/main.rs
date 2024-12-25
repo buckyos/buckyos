@@ -1,13 +1,17 @@
 use std::time::Duration;
 use clap::Command;
 use sfo_log::Logger;
+use sysinfo::{ProcessesToUpdate, System};
+use std::fs::File;
+use std::sync::OnceLock;
+use fs2::FileExt;
 use buckyos_kit::{get_buckyos_root_dir, get_buckyos_service_data_dir};
 use sys_config::{SystemConfigClient, SystemConfigError};
 use crate::error::{into_smb_err, smb_err, SmbError, SmbErrorCode, SmbResult};
 #[cfg(target_os = "linux")]
-use crate::linux_smb::update_samba_conf;
+use crate::linux_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 #[cfg(target_os = "windows")]
-use crate::windows_smb::update_samba_conf;
+use crate::windows_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 use crate::samba::{SmbItem, SmbUserItem};
 
 #[cfg(target_os = "linux")]
@@ -17,6 +21,27 @@ mod error;
 #[cfg(target_os = "windows")]
 mod windows_smb;
 mod samba;
+
+static proc_lock: OnceLock<File> = OnceLock::new();
+fn check_process_exist(name: &str) -> bool {
+    let lock_file = std::env::temp_dir().join(format!("{}.lock", name));
+    let lock_file = match File::create(lock_file) {
+        Ok(file) => file,
+        Err(e) => {
+            log::error!("create lock file failed: {}", e);
+            return false;
+        }
+    };
+
+    if lock_file.try_lock_exclusive().is_err() {
+        true
+    } else {
+        proc_lock.get_or_init(|| {
+           lock_file
+        });
+        false
+    }
+}
 
 async fn async_main() {
     Logger::new("smb-service")
@@ -28,15 +53,34 @@ async fn async_main() {
 
     let matches = Command::new("smb-service")
         .subcommand(Command::new("start"))
-        .subcommand(Command::new("stop")).get_matches();
+        .subcommand(Command::new("stop"))
+        .subcommand(Command::new("status")).get_matches();
 
     match matches.subcommand() {
         Some(("start", _)) => {
+            if check_process_exist("smb_service") {
+                log::error!("smb_service is already running");
+                return;
+            }
             enter_update_smb_loop().await;
         },
         Some(("stop", _)) => {
-            log::info!("smb-service stopped");
+            if let Err(e) = stop_service().await {
+                log::error!("stop service failed {}", e);
+            }
         },
+        Some(("status", _)) => {
+            match check_status().await {
+                Ok(ret) => {
+                    log::info!("status {}", ret);
+                    std::process::exit(ret);
+                }
+                Err(e) => {
+                    log::error!("check status failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => unreachable!(),
     }
 }
@@ -142,6 +186,48 @@ async fn check_and_update_smb_service() -> SmbResult<()> {
         .map_err(into_smb_err!(SmbErrorCode::Failed, "set latest_smb_items failed"))?;
 
     Ok(())
+}
+
+async fn stop_service() -> SmbResult<()> {
+    stop_smb_service().await?;
+
+    let mut system = System::new_all();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+
+    for process in system.processes_by_name("smb_service".as_ref()) {
+        for param in process.cmd().iter() {
+            if param == "start" {
+                process.kill();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn check_status() -> SmbResult<i32> {
+    let ret = check_samba_status().await;
+    if ret != 0 {
+        return Ok(ret);
+    }
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    let mut is_smb_service_running = false;
+    for process in system.processes_by_name("smb_service".as_ref()) {
+        for param in process.cmd().iter() {
+            if param == "start" {
+                is_smb_service_running = true;
+                break;
+            }
+        }
+    }
+
+    if is_smb_service_running {
+        Ok(0)
+    } else {
+        Ok(1)
+    }
 }
 
 fn main() {

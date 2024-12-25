@@ -1,6 +1,7 @@
 use std::path::Path;
 use ini::Ini;
 use shlex::Shlex;
+use sysinfo::System;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
@@ -264,4 +265,23 @@ pub async fn update_samba_conf(_remove_users: Vec<SmbUserItem>, new_all_users: V
     generate_smb_conf(&new_samba_list).await?;
     restart_smb_service().await?;
     Ok(())
+}
+
+pub async fn check_samba_status() -> i32 {
+    if !Path::new("/usr/sbin/smbd").exists() {
+        return 255;
+    }
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    let mut is_smbd_running = false;
+    for _ in system.processes_by_name("smbd".as_ref()) {
+        is_smbd_running = true;
+    }
+
+    if is_smbd_running {
+        0
+    } else {
+        1
+    }
 }
