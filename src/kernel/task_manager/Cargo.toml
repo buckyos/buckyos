@@ -5,10 +5,17 @@ edition = "2021"
 authors = ["BuckyOS DAO","@alexsun"]
 
 [dependencies]
+async-trait = "*"
 tokio = { version = "1", features = ["full"] }
 warp = "*"
 chrono = { version = "*", features = ["serde"] }
 rusqlite =  { version = "*", features = ["bundled"] }
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
+log = "*"
 
+
+cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
+kRPC = { path = "../../kernel/kRPC" }
+buckyos-kit = { path = "../../components/buckyos-kit" }
+cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }

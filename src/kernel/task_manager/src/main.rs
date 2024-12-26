@@ -1,3 +1,4 @@
+mod server;
 mod task;
 
 use rusqlite::{params, Connection, Result};
