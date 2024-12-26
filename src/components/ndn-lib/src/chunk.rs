@@ -279,7 +279,10 @@ where
         total_copied += n as u64;
 
         if let Some(ref mut progress_callback) = progress_callback {
-            progress_callback(chunk_id.clone(), total_copied, &hasher).await;
+            let call_back_result = progress_callback(chunk_id.clone(), total_copied, &hasher).await;
+            if let Err(e) = call_back_result {
+                return Err(e);
+            }
         }
     }
 
