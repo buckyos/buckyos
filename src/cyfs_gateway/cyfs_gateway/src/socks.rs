@@ -19,27 +19,27 @@ impl SocksDataTunnelProvider for SocksTunnelBuilder {
     async fn build(
         &self,
         target: &TargetAddr,
-        proxy_target: &Url,
+        request_target: &Url,
         enable_tunnel: &Option<Vec<String>>,
     ) -> SocksResult<Box<dyn AsyncStream>> {
         info!(
-            "Will build tunnel for proxy: {:?}, {:?}",
-            target, proxy_target
+            "Will build tunnel for request: {:?}, {:?}",
+            target, request_target
         );
-        let target_tunnel = get_tunnel(proxy_target, enable_tunnel.clone())
+        let target_tunnel = get_tunnel(request_target, enable_tunnel.clone())
             .await
             .map_err(|e| {
                 let msg = format!(
                     "Get tunnel to proxy target failed: {}, {:?}",
-                    proxy_target, e
+                    request_target, e
                 );
                 error!("{}", msg);
                 SocksError::IoError(msg)
             })?;
 
-        let target_port = proxy_target.port().unwrap_or(0);
+        let target_port = request_target.port().unwrap_or(0);
         if target_port == 0 {
-            let msg = format!("Invalid target port: {:?}", proxy_target);
+            let msg = format!("Invalid target port: {:?}", request_target);
             error!("{}", msg);
             return Err(SocksError::InvalidConfig(msg));
         }

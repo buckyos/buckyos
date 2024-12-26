@@ -4,6 +4,7 @@
 use crate::{DatagramServer, DatagramServerBox, RTcpStack, StreamListener, Tunnel, TunnelBox, TunnelBuilder, TunnelError, TunnelResult};
 use serde_json::Value;
 use url::Url;
+use core::error;
 use std::collections::HashMap;
 use std::sync::{Arc};
 use tokio::sync::Mutex;
@@ -71,6 +72,7 @@ pub async fn get_tunnel_builder_by_protocol(protocol:&str) -> TunnelResult<Box<d
             info!("create rtcp stack for {}",this_device_hostname.as_str());
             let this_device_private_key = CURRENT_DEVICE_RRIVATE_KEY.get();
             if this_device_private_key.is_none() {
+                error!("CURRENT_DEVICE_PRIVATE_KEY not set!");
                 return Err(TunnelError::BindError("CURRENT_DEVICE_PRIVATE_KEY not set".to_string()));
             }
 

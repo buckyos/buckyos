@@ -38,6 +38,9 @@ pub enum NSError {
     DecodeJWTError(String),
     #[error("Final Error: {0}")]
     FinalError(String),
+
+    #[error("Invalid state: {0}")]
+    InvalidState(String),
 }
 
 pub type NSResult<T> = Result<T, NSError>;

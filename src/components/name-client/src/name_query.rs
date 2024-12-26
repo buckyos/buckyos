@@ -19,7 +19,9 @@ impl NameQuery {
 
     pub async fn query(&self, name: &str,record_type:Option<&str>) -> NSResult<NameInfo> {
         if self.providers.len() == 0 {
-            return Err(NSError::Failed(format!("no provider for {}", name)));
+            let msg = format!("No provider found for {}", name);
+            error!("{}", msg);
+            return Err(NSError::Failed(msg));
         }
 
         let record_type = record_type.unwrap_or("A");
@@ -27,6 +29,7 @@ impl NameQuery {
         for provider in self.providers.iter().rev() {
             match provider.query(name,Some(record_type),None).await {
                 Ok(info) => {
+                    info!("Resolved {} to {:?}", name, info);
                     return Ok(info);
                 },
                 Err(_e) => {

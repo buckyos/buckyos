@@ -1063,11 +1063,13 @@ impl RTcpStack {
         let (auth_key, remote_did_id) = resolve_ed25519_auth_key(target_hostname.as_str())
             .await
             .map_err(|op| {
-                TunnelError::DocumentError(format!(
-                    "cann't resolve target device {} auth key:{}",
+                let msg = format!(
+                    "cann't resolve target device {} auth key: {}",
                     target_hostname.as_str(),
                     op
-                ))
+                );
+                error!("{}", msg);
+                TunnelError::DocumentError(msg)
             })?;
 
         //info!("remote ed25519 auth_key: {:?}",auth_key);
@@ -1351,9 +1353,10 @@ impl TunnelBuilder for RTcpStack {
         let device_ip = device_ip.unwrap();
         let port = target.stack_port;
         let remote_addr = format!("{}:{}", device_ip, port);
-        //info!("create tunnel to {} ,target addr is {}",target_id_str.as_str(),remote_addr.as_str());
+        
+        info!("Will create tunnel to {}, target addr is {}",target_id_str.as_str(),remote_addr.as_str());
 
-        //connect to target
+        // connect to target
         let tunnel_stream = tokio::net::TcpStream::connect(remote_addr.clone()).await;
         if tunnel_stream.is_err() {
             warn!(
@@ -1368,7 +1371,11 @@ impl TunnelBuilder for RTcpStack {
         }
         //create tunnel token
         let (tunnel_token, aes_key, random_pk) =
-            self.generate_tunnel_token(target_id_str.clone()).await?;
+            self.generate_tunnel_token(target_id_str.clone()).await.map_err(|e| {
+                let msg = format!("generate tunnel token error: {}, {}", target_id_str, e);
+                error!("{}", msg);
+                e
+            })?;
 
         //send hello to target
         let mut tunnel_stream = tunnel_stream.unwrap();
