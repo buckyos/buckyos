@@ -13,7 +13,6 @@ use crate::linux_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 #[cfg(target_os = "windows")]
 use crate::windows_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 use crate::samba::{SmbItem, SmbUserItem};
-use crate::windows_smb::restart_smb_service;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct UserSambaInfo {
