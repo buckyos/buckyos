@@ -13,6 +13,7 @@ use crate::linux_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 #[cfg(target_os = "windows")]
 use crate::windows_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 use crate::samba::{SmbItem, SmbUserItem};
+use crate::windows_smb::restart_smb_service;
 
 #[cfg(target_os = "linux")]
 mod linux_smb;
@@ -86,15 +87,18 @@ async fn async_main() {
 }
 
 async fn enter_update_smb_loop() {
+    let mut is_first = true;
     loop {
-        if let Err(e) = check_and_update_smb_service().await {
+        if let Err(e) = check_and_update_smb_service(is_first).await {
             log::error!("check_and_update_smb_service failed: {}", e);
+        } else {
+            is_first = false;
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 
-async fn check_and_update_smb_service() -> SmbResult<()> {
+async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
     let rpc_session_token = std::env::var("SMB_SESSION_TOKEN")
         .map_err(into_smb_err!(SmbErrorCode::SessionTokenNotFound, "SMB_SESSION_TOKEN is not set"))?;
 
@@ -133,15 +137,14 @@ async fn check_and_update_smb_service() -> SmbResult<()> {
     let mut smb_users = Vec::new();
     for user in list {
         let user_home = get_buckyos_root_dir().join("data").join(user.clone()).join("home");
-        // 转换成绝对路径
-        let user_home = std::fs::canonicalize(user_home)
-            .map_err(into_smb_err!(SmbErrorCode::Failed, "canonicalize user home failed"))?;
         if !user_home.exists() {
             //create user home
             std::fs::create_dir_all(user_home.clone())
                 .map_err(into_smb_err!(SmbErrorCode::Failed, "create user home failed"))?;
         }
-
+        // 转换成绝对路径
+        let user_home = std::fs::canonicalize(user_home)
+            .map_err(into_smb_err!(SmbErrorCode::Failed, "canonicalize user home failed"))?;
         let smb_item = SmbItem {
             smb_name: format!("{} Home", user),
             allow_users: vec![user.clone()],
@@ -170,9 +173,11 @@ async fn check_and_update_smb_service() -> SmbResult<()> {
 
     let new_users = smb_users.iter().filter(|user| !latest_users.contains(user)).collect::<Vec<_>>();
     let new_smb_items = smb_items.iter().filter(|smb_item| !latest_smb_items.contains(smb_item)).collect::<Vec<_>>();
-    if new_users.is_empty() && new_smb_items.is_empty() && delete_users.is_empty() && delete_smb_items.is_empty() {
-        log::info!("samba config no change");
-        return Ok(());
+    if !is_first {
+        if new_users.is_empty() && new_smb_items.is_empty() && delete_users.is_empty() && delete_smb_items.is_empty() {
+            log::info!("samba config no change");
+            return Ok(());
+        }
     }
 
     update_samba_conf(delete_users, smb_users.clone(), delete_smb_items, smb_items.clone()).await

@@ -1,12 +1,12 @@
 
-use std::ffi::{c_void, CString, OsString};
+use std::ffi::{c_void, OsString};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use windows::core::{PCWSTR, PWSTR};
-use windows::Win32::Foundation::{GetLastError, LocalFree, ERROR_INVALID_LEVEL, ERROR_MORE_DATA, ERROR_SUCCESS, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, HLOCAL};
-use windows::Win32::NetworkManagement::NetManagement::{NERR_Success, NetApiBufferFree, NetUserAdd, NetUserChangePassword, NetUserGetInfo, ERRLOG2_BASE, MAX_PREFERRED_LENGTH, UF_SCRIPT, USER_INFO_1, USER_PRIV_USER};
-use windows::Win32::Security::{InitializeSecurityDescriptor, IsValidSecurityDescriptor, LookupAccountNameW, SetSecurityDescriptorDacl, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PSECURITY_DESCRIPTOR, PSID, SECURITY_DESCRIPTOR_RELATIVE, SID, SID_NAME_USE, SUB_CONTAINERS_AND_OBJECTS_INHERIT};
-use windows::Win32::Security::Authorization::{GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, MULTIPLE_TRUSTEE_OPERATION, NO_MULTIPLE_TRUSTEE, SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_NAME, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W};
-use windows::Win32::Storage::FileSystem::{NetShareAdd, NetShareDel, NetShareEnum, NetShareGetInfo, NetShareSetInfo, ACCESS_READ, SHARE_INFO_2, SHARE_INFO_502, SHARE_INFO_PERMISSIONS, SHARE_NETNAME_PARMNUM, SHARE_TYPE, SHARE_TYPE_PARMNUM, STYPE_DEVICE, STYPE_DISKTREE, STYPE_IPC};
+use windows::core::{PWSTR};
+use windows::Win32::Foundation::{LocalFree, ERROR_MORE_DATA, ERROR_SUCCESS, GENERIC_ALL, HLOCAL};
+use windows::Win32::NetworkManagement::NetManagement::{NERR_Success, NetApiBufferFree, NetUserAdd, NetUserChangePassword, NetUserDel, NetUserEnum, NetUserGetInfo, FILTER_NORMAL_ACCOUNT, MAX_PREFERRED_LENGTH, UF_SCRIPT, USER_INFO_1, USER_PRIV_USER};
+use windows::Win32::Security::{InitializeSecurityDescriptor, IsValidSecurityDescriptor, LookupAccountNameW, SetSecurityDescriptorDacl, ACL, NO_INHERITANCE, PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE};
+use windows::Win32::Security::Authorization::{SetEntriesInAclW, EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SET_ACCESS, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W};
+use windows::Win32::Storage::FileSystem::{NetShareAdd, NetShareDel, NetShareEnum, NetShareGetInfo, NetShareSetInfo, ACCESS_READ, SHARE_INFO_502, STYPE_DISKTREE};
 use windows::Win32::System::SystemServices::SECURITY_DESCRIPTOR_REVISION;
 use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
 use crate::samba::{SmbItem, SmbUserItem};
@@ -14,13 +14,14 @@ use crate::samba::{SmbItem, SmbUserItem};
 fn add_user(user_name: &str, passwd: &str) -> SmbResult<()> {
     let mut name = OsString::from(format!("{}\0", user_name)).encode_wide().collect::<Vec<_>>();
     let mut passwd = OsString::from(format!("{}\0", passwd)).encode_wide().collect::<Vec<_>>();
+    let mut comment = OsString::from("buckyos user\0").encode_wide().collect::<Vec<_>>();
     let ui = USER_INFO_1 {
         usri1_name: PWSTR::from_raw(name.as_mut_ptr()),
         usri1_password: PWSTR::from_raw(passwd.as_mut_ptr()),
         usri1_password_age: 0,
         usri1_priv: USER_PRIV_USER,
         usri1_home_dir: PWSTR::null(),
-        usri1_comment: PWSTR::null(),
+        usri1_comment: PWSTR::from_raw(comment.as_mut_ptr()),
         usri1_flags: UF_SCRIPT,
         usri1_script_path: PWSTR::null(),
     };
@@ -47,6 +48,76 @@ pub fn exist_system_user(user_name: &str) -> bool {
             false
         } else {
             true
+        }
+    }
+}
+
+fn delete_if_buckyos_user(user_name: &str) -> SmbResult<()> {
+    let mut name = OsString::from(format!("{}\0", user_name)).encode_wide().collect::<Vec<_>>();
+    let mut buf: *mut u8 = std::ptr::null_mut();
+    unsafe {
+        let ret = NetUserGetInfo(PWSTR::null(), PWSTR::from_raw(name.as_mut_ptr()), 1, &mut buf);
+        if ret == NERR_Success {
+            let mut p = buf as *const USER_INFO_1;
+            let user = p.read();
+            let comment = OsString::from_wide(user.usri1_comment.as_wide()).to_string_lossy().to_string();
+            if comment == "buckyos user" {
+                let ret = NetUserDel(PWSTR::null(), PWSTR::from_raw(name.as_mut_ptr()));
+                if ret != 0 {
+                    NetApiBufferFree(Some(buf as *const c_void));
+                    return Err(smb_err!(SmbErrorCode::Failed, "NetUserDel failed: {}", ret));
+                }
+            }
+        }
+        if !buf.is_null() {
+            NetApiBufferFree(Some(buf as *const c_void));
+        }
+
+        Ok(())
+    }
+}
+
+fn delete_all_buckyos_user() -> SmbResult<()> {
+    let mut buf: *mut u8 = std::ptr::null_mut();
+    let mut er: u32 = 0;
+    let mut tr: u32 = 0;
+    let mut resume: u32 = 0;
+    unsafe {
+        loop {
+            let ret = NetUserEnum(PWSTR::null(), 1, FILTER_NORMAL_ACCOUNT, &mut buf, MAX_PREFERRED_LENGTH, &mut er, &mut tr, Some(&mut resume));
+            if ret == ERROR_SUCCESS.0 || ret == ERROR_MORE_DATA.0 {
+                let mut p = buf as *const USER_INFO_1;
+                for _ in 0..tr {
+                    let user = p.read();
+                    let comment = OsString::from_wide(user.usri1_comment.as_wide()).to_string_lossy().to_string();
+                    if comment == "buckyos user" {
+                        let ret = NetUserDel(PWSTR::null(), user.usri1_name);
+                        if ret != 0 {
+                            NetApiBufferFree(Some(buf as *const c_void));
+                            return Err(smb_err!(SmbErrorCode::Failed, "NetUserDel failed: {}", ret));
+                        }
+                    }
+                    p = p.add(1);
+                }
+                NetApiBufferFree(Some(buf as *const c_void));
+                if ret == ERROR_SUCCESS.0 {
+                    return Ok(());
+                }
+            } else {
+                return Err(smb_err!(SmbErrorCode::Failed, "NetUserEnum failed: {}", ret));
+            }
+        }
+    }
+}
+
+pub fn delete_system_user(user_name: &str) -> SmbResult<()> {
+    let mut name = OsString::from(format!("{}\0", user_name)).encode_wide().collect::<Vec<_>>();
+    unsafe {
+        let ret = NetUserDel(PWSTR::null(), PWSTR::from_raw(name.as_mut_ptr()));
+        if ret != 0 {
+            Err(smb_err!(SmbErrorCode::Failed, "NetUserDel failed: {}", ret))
+        } else {
+            Ok(())
         }
     }
 }
@@ -236,7 +307,92 @@ fn delete_share(share_name: &str) -> SmbResult<()> {
     }
 }
 
-pub async fn update_samba_conf(_remove_users: Vec<SmbUserItem>, new_all_users: Vec<SmbUserItem>, _remove_list: Vec<SmbItem>, new_samba_list: Vec<SmbItem>) -> SmbResult<()> {
+fn delete_all_buckyos_share() -> SmbResult<()> {
+    let mut buf: *mut u8 = std::ptr::null_mut();
+    let mut er: u32 = 0;
+    let mut tr: u32 = 0;
+    let mut resume: u32 = 0;
+    unsafe {
+        loop {
+            let ret = NetShareEnum(PWSTR::null(), 502, &mut buf, MAX_PREFERRED_LENGTH, &mut er, &mut tr, Some(&mut resume));
+            if ret == ERROR_SUCCESS.0 || ret == ERROR_MORE_DATA.0 {
+                let mut p = buf as *const SHARE_INFO_502;
+                for _ in 0..tr {
+                    let share = p.read();
+                    let shi502_netname = OsString::from_wide(share.shi502_netname.as_wide()).to_string_lossy().to_string();
+                    let shi502_remark = OsString::from_wide(share.shi502_remark.as_wide()).to_string_lossy().to_string();
+                    if shi502_remark == "buckyos share" {
+                        let ret = NetShareDel(PWSTR::null(), share.shi502_netname, 0);
+                        if ret != 0 {
+                            NetApiBufferFree(Some(buf as *const c_void));
+                            return Err(smb_err!(SmbErrorCode::Failed, "NetShareDel failed: {}", ret));
+                        }
+                    }
+                    p = p.add(1);
+                }
+                NetApiBufferFree(Some(buf as *const c_void));
+                if ret == ERROR_SUCCESS.0 {
+                    return Ok(());
+                }
+            } else {
+                return Err(smb_err!(SmbErrorCode::Failed, "NetShareEnum failed: {}", ret));
+            }
+        }
+    }
+}
+
+fn has_buckyos_share() -> SmbResult<bool> {
+    let mut buf: *mut u8 = std::ptr::null_mut();
+    let mut er: u32 = 0;
+    let mut tr: u32 = 0;
+    let mut resume: u32 = 0;
+    unsafe {
+        loop {
+            let ret = NetShareEnum(PWSTR::null(), 502, &mut buf, MAX_PREFERRED_LENGTH, &mut er, &mut tr, Some(&mut resume));
+            if ret == ERROR_SUCCESS.0 || ret == ERROR_MORE_DATA.0 {
+                let mut p = buf as *const SHARE_INFO_502;
+                for _ in 0..tr {
+                    let share = p.read();
+                    let shi502_remark = OsString::from_wide(share.shi502_remark.as_wide()).to_string_lossy().to_string();
+                    if shi502_remark == "buckyos share" {
+                        NetApiBufferFree(Some(buf as *const c_void));
+                        return Ok(true);
+                    }
+                    p = p.add(1);
+                }
+                NetApiBufferFree(Some(buf as *const c_void));
+                if ret == ERROR_SUCCESS.0 {
+                    return Ok(false);
+                }
+            } else {
+                return Err(smb_err!(SmbErrorCode::Failed, "NetShareEnum failed: {}", ret));
+            }
+        }
+    }
+}
+
+pub async fn update_samba_conf(remove_users: Vec<SmbUserItem>, new_all_users: Vec<SmbUserItem>, remove_list: Vec<SmbItem>, new_samba_list: Vec<SmbItem>) -> SmbResult<()> {
+    for item in remove_users.iter() {
+        delete_if_buckyos_user(item.user.as_str())?
+    }
+
+    for item in new_all_users.iter() {
+        if !exist_system_user(item.user.as_str()) {
+            add_user(item.user.as_str(), item.password.as_str()).map_err(into_smb_err!(SmbErrorCode::Failed, "add_user failed"))?;
+        }
+    }
+
+    for item in remove_list.iter() {
+        if is_share(item.smb_name.as_str(), item.path.as_str())? {
+            delete_share(item.smb_name.as_str())?;
+        }
+    }
+
+    for item in new_samba_list.iter() {
+        if !is_share(item.smb_name.as_str(), item.path.as_str())? {
+            add_share(item.smb_name.as_str(), item.path.as_str(), "buckyos share", item.allow_users.clone())?;
+        }
+    }
     Ok(())
 }
 
@@ -245,9 +401,19 @@ pub async fn restart_smb_service() -> SmbResult<()> {
 }
 
 pub async fn stop_smb_service() -> SmbResult<()> {
+    delete_all_buckyos_user()?;
+    delete_all_buckyos_share()?;
     Ok(())
 }
 
 pub async fn check_samba_status() -> i32 {
-    return 0;
+    if let Ok(has_share) = has_buckyos_share() {
+        if has_share {
+            0
+        } else {
+            1
+        }
+    } else {
+        1
+    }
 }
