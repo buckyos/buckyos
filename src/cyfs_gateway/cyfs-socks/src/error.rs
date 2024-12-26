@@ -2,6 +2,9 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum RuleError {
+    #[error("Invalid config: {0}")]
+    InternalError(String),
+    
     #[error("Invalid format: {0}")]
     InvalidFormat(String),
 

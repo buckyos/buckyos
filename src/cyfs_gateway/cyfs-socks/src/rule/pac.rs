@@ -9,11 +9,10 @@ use boa_engine::{
 use boa_runtime::Console;
 use regex::Regex;
 use std::error::Error;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as AsyncMutex;
 use trust_dns_resolver::config::*;
 use trust_dns_resolver::Resolver;
-
 
 struct PacScriptExecutor {
     context: Arc<Mutex<Context>>,
@@ -50,7 +49,7 @@ impl PacScriptExecutor {
                 println!("Caused by: {:?}", err);
                 source = err.source();
             }
-            
+
             let msg = format!("failed to eval PAC script: {:?}, {:?}", e, e.source());
             error!("{}", msg);
             RuleError::InvalidScript(msg)
@@ -81,9 +80,21 @@ impl PacScriptExecutor {
 
         // Prepare the dest info object
         let mut dest_builder = ObjectInitializer::new(&mut context);
-        dest_builder.property(js_str!("url"), js_string!(input.dest.url.to_string()), Attribute::all());
-        dest_builder.property(js_str!("host"), js_string!(input.dest.host), Attribute::all());
-        dest_builder.property(js_str!("port"), JsValue::from(input.dest.port), Attribute::all());
+        dest_builder.property(
+            js_str!("url"),
+            js_string!(input.dest.url.to_string()),
+            Attribute::all(),
+        );
+        dest_builder.property(
+            js_str!("host"),
+            js_string!(input.dest.host),
+            Attribute::all(),
+        );
+        dest_builder.property(
+            js_str!("port"),
+            JsValue::from(input.dest.port),
+            Attribute::all(),
+        );
         let dest_map = dest_builder.build();
 
         // Prepare the source info object
@@ -116,10 +127,7 @@ impl PacScriptExecutor {
         let result = select_func
             .call(
                 &JsValue::undefined(),
-                &[
-                    JsValue::from(dest_map),
-                    JsValue::from(source_map),
-                ],
+                &[JsValue::from(dest_map), JsValue::from(source_map)],
                 &mut context,
             )
             .map_err(|e| {
@@ -244,13 +252,23 @@ pub struct PacScriptManager {
 }
 
 impl PacScriptManager {
-    pub fn new(script: String) -> Self {
-        Self { script }
+    pub fn new(script: String) -> RuleResult<Self> {
+        // Check if the script is valid at the first
+        Self::check_valid(&script)?;
+
+        let ret = Self { script };
+
+        Ok(ret)
     }
 
-    pub fn check_valid(&self) -> RuleResult<()> {
+    pub fn check_valid(script: &str) -> RuleResult<()> {
         let executor = PacScriptExecutor::new()?;
-        executor.load(&self.script)?;
+
+        let start = chrono::Utc::now();
+        executor.load(script)?;
+        let end = chrono::Utc::now();
+        let duration = end - start;
+        info!("PAC script loaded in {:?} ms", duration.num_milliseconds());
 
         Ok(())
     }
@@ -261,12 +279,102 @@ impl RuleSelector for PacScriptManager {
     async fn select(&self, input: RuleInput) -> RuleResult<RuleOutput> {
         // info!("Begin select pac rule for: {:?}", input);
 
+        let start = chrono::Utc::now();
         let executor = PacScriptExecutor::new()?;
         executor.load(&self.script)?;
 
+        let end = chrono::Utc::now();
+        let duration = end - start;
+        info!("PAC script loaded in {:?} ms", duration.num_milliseconds());
+
         // info!("PAC script loaded");
 
-        executor.rule_select(input)
+        let ret = executor.rule_select(input)?;
+
+        let end = chrono::Utc::now();
+        let duration = end - start;
+        info!("PAC script select in {:?} ms", duration.num_milliseconds());
+
+        Ok(ret)
+    }
+}
+
+use tokio::sync::{mpsc, oneshot};
+
+struct AsyncRuleSelectRequest {
+    input: RuleInput,
+    response_tx: oneshot::Sender<RuleResult<RuleOutput>>,
+}
+
+pub struct AsyncPacScriptManager {
+    tx: AsyncMutex<mpsc::Sender<AsyncRuleSelectRequest>>,
+}
+
+impl AsyncPacScriptManager {
+    pub fn new(script: String) -> RuleResult<Self> {
+        PacScriptManager::check_valid(&script)?;
+
+        let (tx, rx) = mpsc::channel(1024);
+        let ret = Self {
+            tx: AsyncMutex::new(tx),
+        };
+
+        // Start a new thread to run the script
+        let _thread = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    match Self::run(script, rx).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Failed to run PAC script: {:?}", e);
+                        }
+                    }
+                });
+        });
+    
+        Ok(ret)
+    }
+
+    async fn run(
+        script: String,
+        mut rx: mpsc::Receiver<AsyncRuleSelectRequest>,
+    ) -> RuleResult<()> {
+        let executor = PacScriptExecutor::new()?;
+        executor.load(&script)?;
+
+        while let Some(req) = rx.recv().await {
+            let ret = executor.rule_select(req.input);
+            if let Err(e) = req.response_tx.send(ret) {
+                error!("Failed to send rule select result: {:?}", e);
+                break; // stop the loop
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl RuleSelector for AsyncPacScriptManager {
+    async fn select(&self, input: RuleInput) -> RuleResult<RuleOutput> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        let req = AsyncRuleSelectRequest { input, response_tx };
+        let tx = self.tx.lock().await;
+        if let Err(e) = tx.send(req).await {
+            return Err(RuleError::InternalError(format!(
+                "Failed to send rule input: {:?}",
+                e
+            )));
+        }
+
+        let ret = response_rx.await.map_err(|e| {
+            RuleError::InternalError(format!("Failed to receive rule output: {:?}", e))
+        })?;
+        ret
     }
 }
 

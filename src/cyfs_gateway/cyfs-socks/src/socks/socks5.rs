@@ -307,6 +307,7 @@ impl Socks5Proxy {
 
         Ok(())
     }
+    
     async fn process_socket_via_proxy(
         &self,
         mut socket: fast_socks5::server::Socks5Socket<TcpStream, SimpleUserPassword>,

@@ -72,7 +72,7 @@ impl RuleEngine {
     }
 
     pub async fn select(&self, input: RuleInput) -> RuleResult<RuleAction> {
-        let rules = self.rules.lock().await;
+        let rules: tokio::sync::MutexGuard<'_, Vec<RuleItem>> = self.rules.lock().await;
         for rule in rules.iter() {
             match rule.selector.select(input.clone()).await {
                 Ok(output) => {

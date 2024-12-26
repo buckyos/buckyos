@@ -110,7 +110,7 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
     }
 
     //start servers
-    for (server_id,server_config) in config_loader.servers.into_iter() {
+    for (_server_id,server_config) in config_loader.servers.into_iter() {
         match server_config {
             ServerConfig::Warp(warp_config) => {
                 let warp_config = warp_config.clone();

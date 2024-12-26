@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use url::Url;
 
-use super::pac::PacScriptManager;
+use super::pac::AsyncPacScriptManager;
 use super::selector::{RuleSelector, RuleSelectorRef};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +117,8 @@ impl RuleFileTargetLoader {
             return Err(RuleError::NotFound(msg));
         }
 
+        info!("Load local rule file: {:?}", path);
+
         // Load file to string
         let s = tokio::fs::read_to_string(path).await.map_err(|e| {
             let msg = format!("failed to read rule file: {:?}", e);
@@ -135,6 +137,8 @@ impl RuleFileTargetLoader {
             error!("{}", msg);
             RuleError::InvalidFormat(msg)
         })?;
+
+        info!("Load remote rule file: {:?}", url);
 
         // Load the rule file from a remote URL async.
         let s = reqwest::get(url)
@@ -302,8 +306,7 @@ impl RuleFileLoader {
         let loader = RuleFileTargetLoader::new(target);
         let content = loader.load().await?;
 
-        let pac_script = PacScriptManager::new(content);
-        if let Ok(_) = pac_script.check_valid() {
+        if let Ok(pac_script) = AsyncPacScriptManager::new(content) {
             let selector = Arc::new(Box::new(pac_script) as Box<dyn RuleSelector>);
             Ok(selector)
         } else {
