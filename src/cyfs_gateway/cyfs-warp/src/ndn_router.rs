@@ -1,7 +1,6 @@
 use log::*;
 use anyhow::Result;
 use hyper::{Request,Response,Body,StatusCode};
-use tokio::io::{AsyncRead,AsyncWrite,AsyncWriteExt,AsyncReadExt};
 use std::{io::SeekFrom, sync::Arc};
 use std::net::IpAddr;
 use ndn_lib::*;
@@ -77,7 +76,7 @@ async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,
     }
 }
 
-async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,obj_id:ObjId)->Result<Response<Body>> {
+async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,_obj_id:ObjId)->Result<Response<Body>> {
     let body_result;
     let mut result = Response::builder()
                     .header("cyfs-obj-id", obj_get_result.real_obj_id.to_base32());
@@ -117,7 +116,7 @@ async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,
     Ok(body_result)
 }
 
-pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
+pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
     if req.method() != hyper::Method::GET {
         return Err(anyhow::anyhow!("Invalid method: {}", req.method()));
     }
@@ -148,8 +147,8 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
     let mut obj_id:Option<ObjId> = None;
     let mut obj_path:Option<String> = None;
     let path = req.uri().path();
-    let user_id = "guest";
-    let app_id = "unknown";
+    let _user_id = "guest";
+    let _app_id = "unknown";
 
     if mgr_config.is_chunk_id_in_path {
         //let sub_path = path.trim_start_matches(path);

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 
 mod router;
 mod http_server;
