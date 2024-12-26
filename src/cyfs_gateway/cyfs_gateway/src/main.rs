@@ -102,7 +102,19 @@ async fn service_main(config: &str,matches: &clap::ArgMatches) -> Result<()> {
     } else {
         info!("TODO:disable buckyos,set device config for test");
         init_default_name_client().await.unwrap();
-        let this_device_config = DeviceConfig::new("web3.buckyos.io",Some("8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no".to_string()));
+
+        let pk = if let Some(sk)  = CURRENT_DEVICE_RRIVATE_KEY.get() {
+            let pk_value = encode_ed25519_pkcs8_sk_to_pk(sk);
+            info!("Will use device pk: {}",pk_value);
+            pk_value
+        } else {
+            // TODO use default pk or set it to none? 
+            let pk_value = "8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no".to_string();
+            info!("Will use default device pk: {}",pk_value);
+            pk_value
+        };
+
+        let this_device_config = DeviceConfig::new("web3.buckyos.io", Some(pk));
         // load device config from config files
         let set_result = CURRENT_DEVICE_CONFIG.set(this_device_config);
         if set_result.is_err() {

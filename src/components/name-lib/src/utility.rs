@@ -177,10 +177,21 @@ pub fn encode_ed25519_sk_to_pk_jwt(sk: &SigningKey) -> serde_json::Value {
     let public_key_jwk = json!({
         "kty": "OKP",
         "crv": "Ed25519",
-        "x": URL_SAFE_NO_PAD.encode(sk.verifying_key().to_bytes()),
+        "x": encode_ed25519_sk_to_pk(sk),
     });
 
     public_key_jwk
+}
+
+pub fn encode_ed25519_sk_to_pk(sk: &SigningKey) -> String {
+    URL_SAFE_NO_PAD.encode(sk.verifying_key().to_bytes())
+}
+
+pub fn encode_ed25519_pkcs8_sk_to_pk(pkcs8_bytes: &[u8]) -> String {
+    let sk_bytes = from_pkcs8(pkcs8_bytes).unwrap();
+    let sk = SigningKey::from_bytes(&sk_bytes);
+
+    encode_ed25519_sk_to_pk(&sk)
 }
 
 pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
