@@ -15,6 +15,12 @@ use crate::windows_smb::{update_samba_conf, stop_smb_service, check_samba_status
 use crate::samba::{SmbItem, SmbUserItem};
 use crate::windows_smb::restart_smb_service;
 
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct UserSambaInfo {
+    password: String,
+    is_enable: bool,
+}
+
 #[cfg(target_os = "linux")]
 mod linux_smb;
 mod error;
@@ -136,6 +142,26 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
     let mut smb_items = Vec::new();
     let mut smb_users = Vec::new();
     for user in list {
+        let user_info = match system_config_client.get(format!("users/{}/samba_info", user).as_str()).await {
+            Ok((samba_info_str, _)) => {
+                let samba_info: UserSambaInfo = serde_json::from_str(samba_info_str.as_str())
+                    .map_err(into_smb_err!(SmbErrorCode::Failed, "parse samba_info failed"))?;
+                samba_info
+            },
+            Err(e) => {
+                if let SystemConfigError::KeyNotFound(path) = e {
+                    log::debug!("user {} samba_info not found", user);
+                    continue;
+                } else {
+                    return Err(smb_err!(SmbErrorCode::Failed, "get samba_info failed: {}", e));
+                }
+            }
+        };
+        if !user_info.is_enable || user_info.password.is_empty() {
+            log::debug!("user {} samba is not enable or password is empty", user);
+            continue;
+        }
+
         let user_home = get_buckyos_root_dir().join("data").join(user.clone()).join("home");
         if !user_home.exists() {
             //create user home
@@ -153,7 +179,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
         smb_items.push(smb_item);
         smb_users.push(SmbUserItem {
             user,
-            password: "123456".to_string(),
+            password: user_info.password,
         });
     }
 
@@ -175,7 +201,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
     let new_smb_items = smb_items.iter().filter(|smb_item| !latest_smb_items.contains(smb_item)).collect::<Vec<_>>();
     if !is_first {
         if new_users.is_empty() && new_smb_items.is_empty() && delete_users.is_empty() && delete_smb_items.is_empty() {
-            log::info!("samba config no change");
+            log::debug!("samba config no change");
             return Ok(());
         }
     }
