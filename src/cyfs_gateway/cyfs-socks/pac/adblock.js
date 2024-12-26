@@ -1,4 +1,4 @@
-var proxy = "__PROXY__";
+var proxy = "PROXY";
 
 // Use rules by adblock plus, see https://adblockplus.org/filter-cheatsheet
 var rules = [
