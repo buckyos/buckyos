@@ -188,7 +188,16 @@ fn main() {
             .long("debug")
             .help("enable debug mode")
             .action(ArgAction::SetTrue))
+        .arg(Arg::new("buckyos_root")
+            .long("buckyos-root")
+            .help("Change buckyos root dir, same as BUCKYOS_ROOT env var")
+            .required(false))
         .get_matches();
+
+    // set buckyos root dir
+    if let Some(buckyos_root) = matches.get_one::<String>("buckyos_root") {
+        std::env::set_var("BUCKYOS_ROOT", buckyos_root);
+    }
 
     // init log
     init_logging("cyfs_gateway");
