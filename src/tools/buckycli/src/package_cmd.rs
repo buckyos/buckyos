@@ -1,6 +1,9 @@
+use base64::encode;
 use core::hash;
+use ed25519_dalek::{pkcs8::DecodePrivateKey, Signature, Signer, SigningKey};
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use ndn_lib::*;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -11,6 +14,7 @@ use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use tar::Builder;
+use tokio::io::AsyncWriteExt;
 use toml::Value;
 
 #[derive(Serialize, Debug)]
@@ -33,6 +37,16 @@ struct PackResult {
 #[derive(Deserialize)]
 struct ServerError {
     error: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct PackageMeta {
+    pub name: String,
+    pub version: String,
+    pub author: String, //author did
+    pub chunk_id: String,
+    pub dependencies: String,
+    pub sign: String, //sign of the chunk_id
 }
 
 /*
@@ -175,8 +189,13 @@ pub async fn pack(path: &str) -> Result<PackResult, String> {
     Ok(pack_ret)
 }
 
-fn calculate_file_hash(file_path: &str) -> Result<String, String> {
-    let file = File::open(file_path).map_err(|err| {
+struct FileInfo {
+    sha256: Vec<u8>,
+    size: u64,
+}
+
+fn calculate_file_hash(file_path: &str) -> Result<FileInfo, String> {
+    let file: File = File::open(file_path).map_err(|err| {
         format!(
             "Error: Failed to open package file {}: {}",
             file_path,
@@ -186,6 +205,7 @@ fn calculate_file_hash(file_path: &str) -> Result<String, String> {
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 10 * 1024 * 1024]; // 10MB 缓冲区
+    let mut file_size = 0;
 
     loop {
         let bytes_read = reader.read(&mut buffer).map_err(|err| {
@@ -198,15 +218,37 @@ fn calculate_file_hash(file_path: &str) -> Result<String, String> {
         if bytes_read == 0 {
             break;
         }
+        file_size += bytes_read as u64;
         hasher.update(&buffer[..bytes_read]);
     }
 
-    let hash = hasher.finalize();
-    let hash_hex = format!("{:x}", hash);
-    Ok(hash_hex)
+    let hash = hasher.finalize().to_vec();
+
+    Ok(FileInfo {
+        sha256: hash,
+        size: file_size,
+    })
 }
 
-pub async fn publish(path: &str, server: &str) -> Result<(), String> {
+fn sign_data(pem_file: &str, data: &str) -> Result<String, String> {
+    let signing_key = SigningKey::read_pkcs8_pem_file(pem_file).map_err(|e| {
+        format!(
+            "Error: Failed to parse private key from file {}: {}",
+            pem_file,
+            e.to_string()
+        )
+    })?;
+
+    // 对数据进行签名
+    let signature: Signature = signing_key.sign(data.as_bytes());
+
+    // 将签名转换为 base64 编码的字符串
+    let signature_base64 = encode(signature.to_bytes());
+
+    Ok(signature_base64)
+}
+
+pub async fn publish(path: &str, private_key_file: &str) -> Result<(), String> {
     let pack_ret = pack(path).await?;
 
     let pack_file_path = pack_ret.target_file_path.clone();
@@ -219,9 +261,93 @@ pub async fn publish(path: &str, server: &str) -> Result<(), String> {
         ));
     }
 
-    let hash_hex = calculate_file_hash(pack_file_path.to_str().unwrap())?;
+    let file_info = calculate_file_hash(pack_file_path.to_str().unwrap())?;
+    let chunk_id = ChunkId::from_sha256_result(&file_info.sha256);
+
+    let sign: String = sign_data(private_key_file, &chunk_id.to_string())?;
+    println!(
+        "chunk_id: {}, signature_base64: {}:",
+        chunk_id.to_string(),
+        sign
+    );
 
     // 创建元数据
+    let pkg_meta = PackageMeta {
+        name: pack_ret.pkg_id,
+        version: pack_ret.version,
+        author: pack_ret.vendor_did,
+        chunk_id: chunk_id.to_string(),
+        dependencies: "".to_string(),
+        sign,
+    };
+
+    // 上传chunk到repo
+    let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some("repo_chunk_mgr"))
+        .await
+        .ok_or_else(|| "Failed to get repo named data mgr".to_string())?;
+
+    println!("upload chunk_id: {}", chunk_id.to_string());
+
+    let named_mgr = named_mgr.lock().await;
+
+    let (mut chunk_writer, progress_info) = named_mgr
+        .open_chunk_writer(&chunk_id, file_info.size, 0)
+        .await
+        .map_err(|e| {
+            format!(
+                "Failed to open chunk writer for chunk_id: {}, err:{}",
+                chunk_id.to_string(),
+                e.to_string()
+            )
+        })?;
+
+    // 读取文件，按块写入
+    let file = File::open(&pack_file_path).map_err(|e| {
+        format!(
+            "Failed to open package file: {}, err:{}",
+            pack_file_path.display(),
+            e.to_string()
+        )
+    })?;
+    let mut reader = BufReader::new(file);
+    let mut buffer = [0u8; 10 * 1024 * 1024]; // 10MB 缓冲区
+    loop {
+        let bytes_read = reader.read(&mut buffer).map_err(|e| {
+            format!(
+                "Failed to read package file: {}, err:{}",
+                pack_file_path.display(),
+                e.to_string()
+            )
+        })?;
+        if bytes_read == 0 {
+            break;
+        }
+        chunk_writer
+            .write(&buffer[..bytes_read])
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to write chunk data for chunk_id: {}, err:{}",
+                    chunk_id.to_string(),
+                    e.to_string()
+                )
+            })?;
+    }
+    drop(chunk_writer);
+    named_mgr
+        .complete_chunk_writer(&chunk_id)
+        .await
+        .map_err(|e| {
+            format!(
+                "Failed to complete chunk writer for chunk_id: {}, err:{}",
+                chunk_id.to_string(),
+                e.to_string()
+            )
+        })?;
+    drop(named_mgr);
+
+    // 上传元数据到repo
+
     // let metadata = UploadPackageMeta {
     //     name: name.to_string(),
     //     version: version.to_string(),

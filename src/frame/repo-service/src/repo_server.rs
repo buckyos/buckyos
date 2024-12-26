@@ -1,4 +1,5 @@
 use crate::def::*;
+use crate::downloader::Downloader;
 use crate::error::*;
 use crate::source_manager::SourceManager;
 use ::kRPC::*;
@@ -18,6 +19,7 @@ pub struct RepoServer {
 impl RepoServer {
     pub async fn new() -> RepoResult<Self> {
         let source_mgr = SourceManager::new().await?;
+        Downloader::init_repo_chunk_mgr().await?;
         Ok(RepoServer { source_mgr })
     }
 

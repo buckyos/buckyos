@@ -18,7 +18,10 @@ toml = "0.5"
 kRPC = { path = "../../kernel/kRPC"}
 buckyos-kit = { path = "../../components/buckyos-kit"}
 name-lib = { path = "../../components/name-lib"}
+ndn-lib = { path = "../../components/ndn-lib"}
 jsonwebtoken = "9.3.0"
+ed25519-dalek = { version = "*", features = ["pkcs8", "pem"] } 
+base64 = "*"
 
 [build-dependencies]
 vergen = { version = "8.0.0", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }

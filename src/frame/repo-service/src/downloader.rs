@@ -1,6 +1,7 @@
 use crate::def::*;
 use crate::error::*;
 use crate::verifier::Verifier;
+use buckyos_kit::get_buckyos_service_data_dir;
 use core::error;
 use futures_util::StreamExt;
 use hex;
@@ -9,6 +10,7 @@ use ndn_lib::*;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::vec;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
@@ -41,6 +43,39 @@ const REPO_CHUNK_MGR_ID: &str = "repo_chunk_mgr";
 pub struct Downloader {}
 
 impl Downloader {
+    pub async fn init_repo_chunk_mgr() -> RepoResult<()> {
+        let repo_dir = get_buckyos_service_data_dir(SERVICE_NAME);
+        let repo_chunk_dir = repo_dir.join("chunks");
+        if !repo_chunk_dir.exists() {
+            std::fs::create_dir_all(&repo_chunk_dir)?;
+        }
+
+        let repo_chunk_mgr_config = NamedDataMgrConfig {
+            local_stores: vec![repo_chunk_dir.to_string_lossy().to_string()],
+            local_cache: None,
+            mmap_cache_dir: None,
+        };
+
+        let name_mgr = NamedDataMgr::from_config(
+            Some(REPO_CHUNK_MGR_ID.to_string()),
+            repo_chunk_dir,
+            repo_chunk_mgr_config,
+        )
+        .await
+        .map_err(|e| RepoError::NdnError(e.to_string()))?;
+
+        NamedDataMgr::set_mgr_by_id(Some(REPO_CHUNK_MGR_ID), name_mgr)
+            .await
+            .map_err(|e| {
+                RepoError::NdnError(format!(
+                    "Failed to set repo chunk mgr by id, err:{}",
+                    e.to_string()
+                ))
+            })?;
+
+        Ok(())
+    }
+
     pub async fn pull_remote_chunk(
         url: &str,
         author: &str,
