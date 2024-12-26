@@ -11,8 +11,8 @@ use url::Url;
 use std::net::IpAddr;
 use std::io::SeekFrom;
 use tokio::{
-    fs::{self, File,OpenOptions}, 
-    io::{self, AsyncRead,AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeek, AsyncSeekExt}, 
+    fs::{self, File,OpenOptions},
+    io::{self, AsyncRead,AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeek, AsyncSeekExt},
 };
 use std::{net::SocketAddr, sync::Arc};
 use std::path::Path;
@@ -28,13 +28,13 @@ use cyfs_sn::*;
 use ndn_lib::*;
 
 use crate::ndn_router::*;
-use crate::*;   
+use crate::*;
 
 lazy_static!{
     static ref INNER_SERVICES_BUILDERS: Arc<Mutex< HashMap<String, Arc<dyn Fn () -> Box<dyn kRPCHandler + Send + Sync>+ Send + Sync>>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
-pub async fn register_inner_service_builder<F>(inner_service_name: &str, constructor : F) 
+pub async fn register_inner_service_builder<F>(inner_service_name: &str, constructor : F)
     where F: Fn () -> Box<dyn kRPCHandler + Send + Sync> + 'static + Send + Sync,
 {
     let mut inner_service_builder = INNER_SERVICES_BUILDERS.lock().await;
@@ -50,7 +50,7 @@ pub struct Router {
 
 impl Router {
     pub fn new(config: WarpServerConfig) -> Self {
-        Router { 
+        Router {
             config,
             inner_service: OnceCell::new(),
         }
@@ -97,8 +97,8 @@ impl Router {
             let result = host.split_once(':');
             if result.is_some() {
                 host = result.unwrap().0.to_string();
-            } 
-        } 
+            }
+        }
         let req_path = req.uri().path();
         let client_ip = client_ip.ip();
         info!("{}==>warp recv_req: {} {:?}",client_ip.to_string(),req_path,req.headers());
@@ -132,7 +132,7 @@ impl Router {
                 .body(Body::from("Route not found"))?);
         }
 
-        let route_config = route_config.unwrap();   
+        let route_config = route_config.unwrap();
         info!("route_config: {:?}",route_config);
 
         match route_config {
@@ -176,7 +176,7 @@ impl Router {
         })
     }
 
-   
+
 
     async fn handle_inner_service(&self, inner_service_name: &str, req: Request<Body>, client_ip:IpAddr) -> Result<Response<Body>> {
         let inner_service = self.inner_service.get();
@@ -187,11 +187,11 @@ impl Router {
             let inner_service_builder = inner_service_builder.unwrap();
             let inner_service = inner_service_builder();
             let _ =self.inner_service.set(inner_service);
-            true_service = self.inner_service.get().unwrap();   
+            true_service = self.inner_service.get().unwrap();
         } else {
             true_service = inner_service.unwrap();
         }
-        
+
         let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
             anyhow::anyhow!("Failed to read body: {}", e)
         })?;
@@ -248,9 +248,9 @@ impl Router {
                     .method(req.method())
                     .uri(&url)
                     .body(req.into_body())?;
-        
+
                 *upstream_req.headers_mut() = header;
-        
+
                 let resp = client.request(upstream_req).await?;
                 return Ok(resp)
             },
@@ -270,15 +270,19 @@ impl Router {
                 return Ok(resp)
             }
         }
- 
+
     }
 
     async fn handle_local_dir(&self, req: Request<Body>, local_dir: &str, route_path: &str) -> Result<Response<Body>> {
         let path = req.uri().path();
         let sub_path = buckyos_kit::get_relative_path(route_path, path);
-        let file_path = format!("{}/{}", local_dir, sub_path);
-        info!("handle_local_dir will load file:{}", file_path);
-        let path = Path::new(&file_path);
+        let file_path = if sub_path.starts_with("/") {
+            Path::new(local_dir).join(&sub_path[1..])
+        } else {
+            Path::new(local_dir).join(&sub_path)
+        };
+        info!("handle_local_dir will load file:{}", file_path.to_string_lossy().to_string());
+        let path = file_path.as_path();
 
         if path.is_file() {
             let file = match tokio::fs::File::open(&path).await {
@@ -302,7 +306,7 @@ impl Router {
                         let mut file = tokio::io::BufReader::new(file);
                         // 设置读取位置
                         tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(start)).await?;
-                        
+
                         let content_length = end - start + 1;
                         let stream = tokio_util::io::ReaderStream::with_capacity(
                             file.take(content_length),
@@ -322,7 +326,7 @@ impl Router {
 
             // 非Range请求返回完整文件
             let stream = tokio_util::io::ReaderStream::with_capacity(file, file_size as usize);
-            
+
             Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", mime_type.as_ref())
