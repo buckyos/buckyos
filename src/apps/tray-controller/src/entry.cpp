@@ -7,11 +7,6 @@
 
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_APP_ICON 1001
-#define ID_TRAY_EXIT 1002
-#define ID_TRAY_ABOUT 1003
-#define ID_TRAY_HOMEPAGE 1004
-#define ID_TRAY_START 1005
-#define ID_TRAY_APP_SUBMENU_BEGIN 1006
 
 HINSTANCE hInst;
 NOTIFYICONDATA g_tray_icon_nid;
@@ -44,7 +39,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         break;
 
     case WM_COMMAND:
-        g_menu->on_command(LOWORD(wParam));
         break;
 
     case WM_DESTROY:
@@ -74,7 +68,7 @@ extern "C" void entry() {
         NULL, NULL, hInst, NULL
     );
 
-    g_menu = new TrayMenu(hwnd, ID_TRAY_HOMEPAGE, ID_TRAY_START, ID_TRAY_ABOUT, ID_TRAY_EXIT, ID_TRAY_APP_SUBMENU_BEGIN);
+    g_menu = new TrayMenu(hwnd);
     g_system_state = bucky_status_scaner_scan(on_status_changed_callback, NULL, hwnd);
 
     MSG msg;
@@ -93,11 +87,14 @@ void on_status_changed_callback(BuckyStatus new_status, BuckyStatus old_status, 
     case BuckyStatus::Stopped:
         strIconId = IDI_HAND;
         break;
-    case BuckyStatus::NotInstall:
+    case BuckyStatus::NotActive:
         strIconId = IDI_QUESTION;
         break;
+    case BuckyStatus::NotInstall:
+        strIconId = IDI_APPLICATION;
+        break;
     case BuckyStatus::Failed:
-        strIconId = IDI_ASTERISK;
+        strIconId = IDI_ERROR;
         break;
     }
     g_tray_icon_nid.hIcon = LoadIcon(NULL, strIconId);

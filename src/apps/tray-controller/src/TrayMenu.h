@@ -19,7 +19,7 @@ public:
 	};
 
 public:
-	TrayMenu(HWND hwnd, UINT_PTR menu_id_homepage, UINT_PTR menu_id_start, UINT_PTR menu_id_about, UINT_PTR menu_id_exit, UINT_PTR app_menu_id_begin);
+	TrayMenu(HWND hwnd);
 	~TrayMenu();
 
 	void popup(POINT &display_pos, bool is_buckyos_running);
@@ -30,6 +30,8 @@ private:
 
 	static void list_application_callback(char is_success, ::ApplicationInfo* apps, int32_t app_count, int seq, void* user_data);
 	void do_popup_menu();
+
+	static LRESULT CALLBACK TrayMenuWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 	static void proc_open_homepage(TrayMenu* self);
 	static void proc_start(TrayMenu* self);

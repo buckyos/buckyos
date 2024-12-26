@@ -418,55 +418,65 @@ extern "C" fn list_application(seq: c_int, callback: ListAppCallback, userdata: 
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     rt.spawn(async move {
-        let info = node_infomation.lock().await;
-        if let Some(node_info) = info.as_ref() {
-            match list_application_rust(
-                node_info.node_host_name.as_str(),
-                &node_info.sys_cfg_client,
-            )
-            .await
-            {
-                Ok(apps) => {
-                    let apps = apps
-                        .into_iter()
-                        .map(|app| ApplicationInfo {
-                            id: CString::new(app.id)
-                                .expect("no memory for c_app_id")
-                                .into_raw(),
-                            name: CString::new(app.name)
-                                .expect("no memory for c_app_name")
-                                .into_raw(),
-                            icon_path: CString::new(app.icon_path)
-                                .expect("no memory for c_app_name")
-                                .into_raw(),
-                            home_page_url: CString::new(app.home_page_url)
-                                .expect("no memory for c_app_name")
-                                .into_raw(),
-                            is_running: if app.is_running { 1 } else { 0 },
-                        })
-                        .collect::<Vec<_>>();
-                    (callback_wrapper.callback)(
-                        1,
-                        apps.as_ptr(),
-                        apps.len() as i32,
-                        seq,
-                        callback_wrapper.userdata,
-                    );
-                    apps.into_iter().for_each(|app| unsafe {
-                        let _ = CString::from_raw(app.id);
-                        let _ = CString::from_raw(app.name);
-                        let _ = CString::from_raw(app.icon_path);
-                        let _ = CString::from_raw(app.home_page_url);
-                    });
-                }
-                Err(err) => {
-                    log::error!("{}", err);
-                    (callback_wrapper.callback)(1, ptr::null(), 0, seq, callback_wrapper.userdata);
+        let mut apps = vec![];
+        {
+            let info = node_infomation.lock().await;
+            if let Some(node_info) = info.as_ref() {
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    list_application_rust(
+                        node_info.node_host_name.as_str(),
+                        &node_info.sys_cfg_client,
+                    ),
+                )
+                .await
+                {
+                    Ok(result_apps) => match result_apps {
+                        Ok(mut result_apps) => {
+                            std::mem::swap(&mut apps, &mut result_apps);
+                        }
+                        Err(err) => {
+                            log::error!("{}", err);
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("{}", err);
+                    }
                 }
             }
-        } else {
-            (callback_wrapper.callback)(1, ptr::null(), 0, seq, callback_wrapper.userdata);
         }
+
+        let apps = apps
+            .into_iter()
+            .map(|app| ApplicationInfo {
+                id: CString::new(app.id)
+                    .expect("no memory for c_app_id")
+                    .into_raw(),
+                name: CString::new(app.name)
+                    .expect("no memory for c_app_name")
+                    .into_raw(),
+                icon_path: CString::new(app.icon_path)
+                    .expect("no memory for c_app_name")
+                    .into_raw(),
+                home_page_url: CString::new(app.home_page_url)
+                    .expect("no memory for c_app_name")
+                    .into_raw(),
+                is_running: if app.is_running { 1 } else { 0 },
+            })
+            .collect::<Vec<_>>();
+        (callback_wrapper.callback)(
+            1,
+            apps.as_ptr(),
+            apps.len() as i32,
+            seq,
+            callback_wrapper.userdata,
+        );
+        apps.into_iter().for_each(|app| unsafe {
+            let _ = CString::from_raw(app.id);
+            let _ = CString::from_raw(app.name);
+            let _ = CString::from_raw(app.icon_path);
+            let _ = CString::from_raw(app.home_page_url);
+        });
     });
 }
 

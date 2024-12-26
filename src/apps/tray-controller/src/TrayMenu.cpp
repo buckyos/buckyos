@@ -4,30 +4,65 @@
 #include "process_kits.h"
 
 static std::set<TrayMenu*> s_objs;
+static std::map<HWND, TrayMenu*> s_hwnd_objs;
 
-TrayMenu::TrayMenu(HWND hwnd, UINT_PTR menu_id_homepage, UINT_PTR menu_id_start, UINT_PTR menu_id_about, UINT_PTR menu_id_exit, UINT_PTR app_menu_id_begin) {
-	this->m_hwnd = hwnd;
+#define MSG_POPUP_MENU (WM_USER + 1)
+#define ID_TRAY_EXIT (WM_USER + 2)
+#define ID_TRAY_ABOUT (WM_USER + 3)
+#define ID_TRAY_HOMEPAGE (WM_USER + 4)
+#define ID_TRAY_START (WM_USER + 5)
+#define ID_TRAY_APP_SUBMENU_BEGIN (WM_USER + 6)
+
+TrayMenu::TrayMenu(HWND hwnd) {
 	this->m_seq = 0;
 	this->m_app_list_seq = 0;
 	this->m_is_popup = false;
-	this->m_menu_id_homepage = menu_id_homepage;
-	this->m_menu_id_start = menu_id_start;
-	this->m_menu_id_about = menu_id_about;
-	this->m_menu_id_exit = menu_id_exit;
-	this->m_app_menu_id_begin = app_menu_id_begin;
-	this->m_menu_proc_map[menu_id_homepage] = proc_open_homepage;
-	this->m_menu_proc_map[menu_id_start] = proc_start;
-	this->m_menu_proc_map[menu_id_about] = proc_about;
-	this->m_menu_proc_map[menu_id_exit] = proc_exit;
+	this->m_menu_id_homepage = ID_TRAY_HOMEPAGE;
+	this->m_menu_id_start = ID_TRAY_START;
+	this->m_menu_id_about = ID_TRAY_ABOUT;
+	this->m_menu_id_exit = ID_TRAY_EXIT;
+	this->m_app_menu_id_begin = ID_TRAY_APP_SUBMENU_BEGIN;
+	this->m_menu_proc_map[ID_TRAY_HOMEPAGE] = proc_open_homepage;
+	this->m_menu_proc_map[ID_TRAY_START] = proc_start;
+	this->m_menu_proc_map[ID_TRAY_ABOUT] = proc_about;
+	this->m_menu_proc_map[ID_TRAY_EXIT] = proc_exit;
 	this->m_display_pos = POINT{ 0, 0 };
 
 	s_objs.insert(this);
+
+	WNDCLASSEX wc = { 0 };
+	wc.cbSize = sizeof(WNDCLASSEX);
+	wc.lpfnWndProc = TrayMenuWndProc;
+	wc.hInstance = GetModuleHandle(NULL);
+	wc.lpszClassName = L"tray-menu";
+
+	RegisterClassEx(&wc);
+
+	HWND hwndChild = CreateWindowEx(
+		0,
+		wc.lpszClassName,
+		L"",
+		WS_OVERLAPPED,
+		0, 0, 0, 0,
+		hwnd,
+		NULL,
+		GetModuleHandle(NULL),
+		NULL
+	);
+	this->m_hwnd = hwndChild;
+
+	s_hwnd_objs.insert(std::pair<HWND, TrayMenu*>(hwndChild, this));
 }
 
 TrayMenu::~TrayMenu() {
 	std::set<TrayMenu*>::const_iterator it = s_objs.find(this);
 	if (it != s_objs.end()) {
 		s_objs.erase(it);
+	}
+	std::map<HWND, TrayMenu*>::const_iterator hwnd_it = s_hwnd_objs.find(this->m_hwnd);
+	if (hwnd_it != s_hwnd_objs.end()) {
+		s_hwnd_objs.erase(hwnd_it);
+		DestroyWindow(this->m_hwnd);
 	}
 }
 
@@ -52,8 +87,6 @@ void TrayMenu::list_application_callback(char is_success, ::ApplicationInfo* app
 		self->m_apps.clear();
 		for (int i = 0; i < app_count; i++) {
 			::ApplicationInfo* app = &apps[i];
-
-
 
 			int name_size = (int)strlen(app->name) * 3;
 			LPWSTR name = (LPWSTR)malloc(name_size);
@@ -132,7 +165,7 @@ void TrayMenu::list_application_callback(char is_success, ::ApplicationInfo* app
 		}
 	}
 
-	self->do_popup_menu();
+	PostMessageW(self->m_hwnd, MSG_POPUP_MENU, 0, (LPARAM)self);
 }
 
 void TrayMenu::do_popup_menu() {
@@ -167,10 +200,12 @@ void TrayMenu::do_popup_menu() {
 	} else {
 		InsertMenuW(hMenu, -1, MF_BYPOSITION, this->m_menu_id_start, L"Start");
 	}
+
 	InsertMenuW(hMenu, -1, MF_BYPOSITION, this->m_menu_id_about, L"About");
 	InsertMenuW(hMenu, -1, MF_BYPOSITION, this->m_menu_id_exit, L"Exit");
 	SetForegroundWindow(this->m_hwnd);
 	TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, this->m_display_pos.x, this->m_display_pos.y, 0, this->m_hwnd, NULL);
+
 	DestroyMenu(hMenu);
 }
 
@@ -244,4 +279,27 @@ bool TrayMenu::on_command(UINT_PTR menu_id) {
 	}
 
 	return false;
+}
+
+LRESULT CALLBACK TrayMenu::TrayMenuWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+	switch (msg) {
+		case MSG_POPUP_MENU:
+			{
+				TrayMenu* self = (TrayMenu*)lParam;
+				self->do_popup_menu();
+			}
+			break;
+		case WM_COMMAND:
+			{
+				std::map<HWND, TrayMenu*>::const_iterator it = s_hwnd_objs.find(hwnd);
+				if (it != s_hwnd_objs.end()) {
+					TrayMenu* self = it->second;
+					self->on_command(LOWORD(wParam));
+				}
+			}
+			break;
+		default:
+			return DefWindowProc(hwnd, msg, wParam, lParam);
+	}
+	return 0;
 }
