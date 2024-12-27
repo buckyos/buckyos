@@ -52,25 +52,6 @@ use crate::tunnel::{
 use crate::{tunnel, TunnelEndpoint, TunnelError, TunnelResult};
 use buckyos_kit::AsyncStream;
 
-pub struct RTcpStreamListener {
-    bind_addr: Url,
-    listener: Option<tokio::net::TcpListener>,
-}
-
-#[async_trait]
-impl StreamListener for RTcpStreamListener {
-    async fn accept(&self) -> Result<(Box<dyn AsyncStream>, TunnelEndpoint), std::io::Error> {
-        let listener = self.listener.as_ref().unwrap();
-        let (stream, addr) = listener.accept().await?;
-        Ok((
-            Box::new(stream),
-            TunnelEndpoint {
-                device_id: addr.ip().to_string(),
-                port: addr.port(),
-            },
-        ))
-    }
-}
 
 #[derive(Clone)]
 pub struct RTcpStack {
@@ -134,8 +115,8 @@ impl RTcpStack {
         return result;
     }
 
-    //return (tunnel_token,aes_key,my_public_bytes)
-    pub async fn generate_tunnel_token(
+    // return (tunnel_token,aes_key,my_public_bytes)
+    async fn generate_tunnel_token(
         &self,
         target_hostname: String,
     ) -> Result<(String, [u8; 32], [u8; 32]), TunnelError> {
@@ -197,7 +178,7 @@ impl RTcpStack {
         Ok((tunnel_token, aes_key, my_public_bytes))
     }
 
-    pub fn generate_aes256_key(
+    fn generate_aes256_key(
         this_private_key: EphemeralSecret,
         x25519_public_key: [u8; 32],
     ) -> [u8; 32] {
@@ -253,7 +234,7 @@ impl RTcpStack {
         Ok((aes_key, remomte_x25519_pk))
     }
 
-    pub fn get_aes256_key(
+    fn get_aes256_key(
         this_private_key: &StaticSecret,
         remote_x25519_auth_key: [u8; 32],
     ) -> [u8; 32] {

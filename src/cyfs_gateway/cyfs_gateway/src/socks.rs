@@ -42,7 +42,7 @@ impl SocksDataTunnelProvider for SocksTunnelBuilder {
             TargetAddr::Domain(_, port) => *port,
         };
         if target_port == 0 {
-            let msg = format!("Invalid target port: {:?}", proxy_target);
+            let msg = format!("Invalid request target port: {:?}", request_target);
             error!("{}", msg);
             return Err(SocksError::InvalidConfig(msg));
         }

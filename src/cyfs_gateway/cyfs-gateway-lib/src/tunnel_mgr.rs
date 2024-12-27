@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use url::Url;
+use crate::ip::IPTunnelBuilder;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProtocolCategory {
@@ -30,7 +31,11 @@ pub fn get_protocol_category(str_protocol: &str) -> TunnelResult<ProtocolCategor
         "tcp" => Ok(ProtocolCategory::Stream),
         "rtcp" => Ok(ProtocolCategory::Stream),
         "udp" => Ok(ProtocolCategory::Datagram),
-        _ => Err(TunnelError::UnknowProtocol(str_protocol)),
+        _ => {
+            let msg = format!("Unknow protocol: {}", str_protocol);
+            error!("{}", msg);
+            Err(TunnelError::UnknowProtocol(msg))
+        }
     }
 }
 
@@ -38,8 +43,8 @@ pub async fn get_tunnel_builder_by_protocol(
     protocol: &str,
 ) -> TunnelResult<Box<dyn TunnelBuilder>> {
     match protocol {
-        "tcp" => return Ok(Box::new(crate::IPTunnelBuilder::new())),
-        "udp" => return Ok(Box::new(crate::IPTunnelBuilder::new())),
+        "tcp" => return Ok(Box::new(IPTunnelBuilder::new())),
+        "udp" => return Ok(Box::new(IPTunnelBuilder::new())),
         "rtcp" => {
             let stack = RTCP_STACK_MANAGER.get_current_device_stack().await?;
             Ok(Box::new(stack))
@@ -69,7 +74,7 @@ pub async fn get_tunnel(
     return Ok(tunnel);
 }
 
-pub async fn create_listner_by_url(bind_url: &Url) -> TunnelResult<Box<dyn StreamListener>> {
+pub async fn create_listener_by_url(bind_url: &Url) -> TunnelResult<Box<dyn StreamListener>> {
     let builder = get_tunnel_builder_by_protocol(bind_url.scheme()).await?;
     let listener = builder.create_listener(bind_url).await?;
     return Ok(listener);
