@@ -76,6 +76,7 @@ impl RTcpDispatcherManager {
             return Err(TunnelError::AlreadyExists(msg));
         }
 
+        info!("New RTcp dispatcher for url {}", bind_url);
         let dispatcher = RTcpStreamDispatcher::new(bind_url);
         dispatchers.insert(port, dispatcher.clone());
         Ok(dispatcher)

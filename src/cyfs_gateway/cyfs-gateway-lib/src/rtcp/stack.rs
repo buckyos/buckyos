@@ -1,53 +1,29 @@
-#![allow(unused)]
-
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::pin::Pin;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::time::Duration;
-use std::{fmt::Debug, net::IpAddr};
-use aes::cipher::{KeyIvInit, StreamCipher};
-use base64::{
-    engine::general_purpose::STANDARD, engine::general_purpose::URL_SAFE_NO_PAD, Engine as _,
-};
-use buckyos_kit::buckyos_get_unix_timestamp;
-use ctr::Ctr128BE;
-use ed25519_dalek::SigningKey;
-use hex::ToHex;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use sha2::{Digest, Sha256};
-use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
-use name_lib::DID;
-use tokio::io::{ReadHalf, WriteHalf};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::stream;
-use tokio::sync::{Mutex, Notify};
-use tokio::task;
-use tokio::time::timeout;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use super::dispatcher::RTCP_DISPATCHER_MANAGER;
+use super::package::*;
+use super::protocol::*;
+use super::tunnel::RTcpTunnel;
+use crate::tunnel::{DatagramServerBox, StreamListener, TunnelBox, TunnelBuilder};
+use crate::{TunnelError, TunnelResult};
 use anyhow::Result;
 use async_trait::async_trait;
+use buckyos_kit::buckyos_get_unix_timestamp;
+use hex::ToHex;
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use lazy_static::lazy_static;
 use log::*;
 use name_client::*;
 use name_lib::*;
-use rand::Rng;
-use serde::{Deserialize, Serialize};
-use url::form_urlencoded::ByteSerialize;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{Mutex, Notify};
+use tokio::task;
 use url::Url;
-
-use super::package::*;
-use super::protocol::*;
-use super::tunnel::RTcpTunnel;
-use crate::aes_stream::{AesCtr, EncryptedStream};
-use crate::tunnel::{
-    DatagramClientBox, DatagramServerBox, StreamListener, Tunnel, TunnelBox, TunnelBuilder,
-};
-use crate::{tunnel, TunnelEndpoint, TunnelError, TunnelResult};
-use buckyos_kit::AsyncStream;
-use super::dispatcher::RTCP_DISPATCHER_MANAGER;
+use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
 
 #[derive(Clone)]
 pub struct RTcpStack {
@@ -72,11 +48,11 @@ impl WaitStream {
 }
 
 lazy_static! {
-    pub(crate) static ref NOTIFY_ROPEN_STREAM: Arc<Notify> = { Arc::new(Notify::new()) };
+    pub(crate) static ref NOTIFY_ROPEN_STREAM: Arc<Notify> = Arc::new(Notify::new());
     pub(crate) static ref WAIT_ROPEN_STREAM_MAP: Arc<Mutex<HashMap<String, WaitStream>>> =
-        { Arc::new(Mutex::new(HashMap::new())) };
+        Arc::new(Mutex::new(HashMap::new()));
     pub(crate) static ref RTCP_TUNNEL_MAP: Arc<Mutex<HashMap<String, RTcpTunnel>>> =
-        { Arc::new(Mutex::new(HashMap::new())) };
+        Arc::new(Mutex::new(HashMap::new()));
 }
 
 impl RTcpStack {
@@ -194,7 +170,7 @@ impl RTcpStack {
         token: String,
         from_hostname: String,
     ) -> Result<([u8; 32], [u8; 32]), TunnelError> {
-        let (ed25519_pk, from_did) = resolve_ed25519_auth_key(from_hostname.as_str())
+        let (ed25519_pk, _from_did) = resolve_ed25519_auth_key(from_hostname.as_str())
             .await
             .map_err(|op| {
                 TunnelError::DocumentError(format!(
@@ -221,9 +197,12 @@ impl RTcpStack {
         //info!("tunnel_token_payload: {:?}",tunnel_token_payload);
         let remomte_x25519_pk = hex::decode(tunnel_token_payload.xpub).unwrap();
 
-        let remomte_x25519_pk: [u8; 32] = remomte_x25519_pk
-            .try_into()
-            .map_err(|op| TunnelError::ReasonError(format!("decode remote x25519 hex error")))?;
+        let remomte_x25519_pk: [u8; 32] = remomte_x25519_pk.try_into().map_err(|_op| {
+            let msg = format!("decode remote x25519 hex error");
+            error!("{}", msg);
+            TunnelError::ReasonError(msg)
+        })?;
+
         //info!("remomte_x25519_pk: {:?}",remomte_x25519_pk);
         let aes_key = RTcpStack::get_aes256_key(this_private_key, remomte_x25519_pk.clone());
         //info!("aes_key: {:?}",aes_key);
@@ -307,7 +286,7 @@ impl RTcpStack {
             self.this_device_hostname.as_str(),
             session_key.as_str()
         );
-        let mut wait_session = wait_streams.get_mut(real_key.as_str());
+        let wait_session = wait_streams.get_mut(real_key.as_str());
         if wait_session.is_none() {
             error!(
                 "no wait session for {},map is {:?}",
@@ -319,7 +298,7 @@ impl RTcpStack {
         }
 
         // bind stream to session and notify
-        let mut wait_session = wait_session.unwrap();
+        let wait_session = wait_session.unwrap();
         *wait_session = WaitStream::OK(stream);
 
         NOTIFY_ROPEN_STREAM.notify_waiters();
@@ -375,7 +354,7 @@ impl RTcpStack {
             let mut_old_tunnel = all_tunnel.get(tunnel_key.as_str());
             if mut_old_tunnel.is_some() {
                 warn!("tunnel {} already exist", tunnel_key.as_str());
-                mut_old_tunnel.unwrap().close();
+                mut_old_tunnel.unwrap().close().await;
             }
 
             info!("accept tunnel from {}", hello_package.body.from_id.as_str());
@@ -529,7 +508,7 @@ impl TunnelBuilder for RTcpStack {
 
     async fn create_datagram_server(
         &self,
-        bind_url: &Url,
+        _bind_url: &Url,
     ) -> TunnelResult<Box<dyn DatagramServerBox>> {
         unimplemented!("create_datagram_server not implemented")
     }
