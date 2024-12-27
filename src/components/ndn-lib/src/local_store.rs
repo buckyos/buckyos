@@ -388,6 +388,36 @@ impl NamedDataDb {
         Ok(())
     }
 
+    async fn query_object_link_ref(&self, ref_obj_id: &ObjId) -> NdnResult<Vec<String>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT link_obj_id FROM object_links WHERE obj_link LIKE ?1"
+        ).map_err(|e| {
+            warn!("NamedDataDb: query object link failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+
+        let ref_obj_id_str = format!("%{}%", ref_obj_id.to_string());
+        let mut rows = stmt.query(params![ref_obj_id_str]).map_err(|e| {
+            warn!("NamedDataDb: query object link failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+
+        let mut link_obj_ids = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            warn!("NamedDataDb: query object link failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })? {
+            let link_obj_id: String = row.get(0).map_err(|e| {
+                warn!("NamedDataDb: query object link failed! {}", e.to_string());
+                NdnError::DbError(e.to_string())
+            })?;
+            link_obj_ids.push(link_obj_id);
+        }
+
+        Ok(link_obj_ids)
+    }
+
     async fn get_object_link(&self, obj_id: &ObjId) -> NdnResult<String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
@@ -457,7 +487,7 @@ impl NamedDataStore {
         Ok(Self {
             store_id: "".to_string(),
             store_desc: "".to_string(),
-            named_db: named_db,
+            named_db,
             base_dir,
             enable_symlink: true,
             auto_add_to_db: true,
@@ -543,6 +573,16 @@ impl NamedDataStore {
     pub async fn link_object(&self, obj_id: &ObjId, target_obj: &ObjId) -> NdnResult<()> {
         let link = LinkData::SameAs(target_obj.clone());
         self.named_db.set_object_link(obj_id, &link).await
+    }
+
+    pub async fn query_link_refs(&self, ref_obj_id: &ObjId) -> NdnResult<Vec<ObjId>> {
+        let link_obj_ids = self.named_db.query_object_link_ref(ref_obj_id).await?;
+        let mut ref_obj_ids = Vec::new();
+        for link_obj_id in link_obj_ids {
+            let ref_obj_id = ObjId::new(link_obj_id.as_str())?;
+            ref_obj_ids.push(ref_obj_id);
+        }
+        Ok(ref_obj_ids)
     }
 
     async fn get_real_chunk_item(&self,link_data:LinkData)->NdnResult<ChunkItem> {
@@ -999,6 +1039,13 @@ mod tests {
         info!("link object ok! {}->{}",linked_id.to_string(),obj_id.to_string());
         // Verify linked object exists
         assert!(store.is_object_exist(&linked_id).await?);
+
+        let ref_obj_ids = store.query_link_refs(&obj_id).await?;
+        assert_eq!(ref_obj_ids.len(), 1);
+        for ref_obj_id in ref_obj_ids {
+            info!("query_link_refs ok! {}",ref_obj_id.to_string());
+        }
+
 
         Ok(())
     }
