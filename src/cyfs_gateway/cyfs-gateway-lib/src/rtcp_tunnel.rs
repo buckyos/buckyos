@@ -660,6 +660,8 @@ impl RTcpTunnelPackage {
         stream: &mut TcpStream,
         session_key: &str,
     ) -> Result<(), anyhow::Error> {
+
+        // First hello package len is 0
         let total_len = 0;
         let mut write_buf: Vec<u8> = Vec::new();
         let bytes = u16::to_be_bytes(total_len);

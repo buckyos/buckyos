@@ -18,39 +18,42 @@ impl SocksTunnelBuilder {
 impl SocksDataTunnelProvider for SocksTunnelBuilder {
     async fn build(
         &self,
-        target: &TargetAddr,
-        request_target: &Url,
+        request_target: &TargetAddr,
+        proxy_target: &Url,
         enable_tunnel: &Option<Vec<String>>,
     ) -> SocksResult<Box<dyn AsyncStream>> {
         info!(
             "Will build tunnel for request: {:?}, {:?}",
-            target, request_target
+            request_target, proxy_target
         );
-        let target_tunnel = get_tunnel(request_target, enable_tunnel.clone())
+        let target_tunnel = get_tunnel(proxy_target, enable_tunnel.clone())
             .await
             .map_err(|e| {
                 let msg = format!(
                     "Get tunnel to proxy target failed: {}, {:?}",
-                    request_target, e
+                    proxy_target, e
                 );
                 error!("{}", msg);
                 SocksError::IoError(msg)
             })?;
 
-        let target_port = request_target.port().unwrap_or(0);
+        let target_port = match request_target {
+            TargetAddr::Ip(ip) => ip.port(),
+            TargetAddr::Domain(_, port) => *port,
+        };
         if target_port == 0 {
-            let msg = format!("Invalid target port: {:?}", request_target);
+            let msg = format!("Invalid target port: {:?}", proxy_target);
             error!("{}", msg);
             return Err(SocksError::InvalidConfig(msg));
         }
 
-        let target_host = match &target {
+        let target_host = match &request_target {
             TargetAddr::Ip(ip) => ip.ip().to_string(),
             TargetAddr::Domain(domain, _) => domain.clone(),
         };
 
         let target_stream = target_tunnel.open_stream(target_port, Some(target_host)).await.map_err(|e| {
-            let msg = format!("Open target stream failed: {}, {:?}", target, e);
+            let msg = format!("Open target stream failed: {}, {:?}", request_target, e);
             error!("{}", msg);
             SocksError::IoError(msg)
         })?;

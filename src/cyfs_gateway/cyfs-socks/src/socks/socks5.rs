@@ -307,7 +307,7 @@ impl Socks5Proxy {
 
         Ok(())
     }
-    
+
     async fn process_socket_via_proxy(
         &self,
         mut socket: fast_socks5::server::Socks5Socket<TcpStream, SimpleUserPassword>,
@@ -315,6 +315,7 @@ impl Socks5Proxy {
     ) -> SocksResult<()> {
         let mut tunnel = match self.build_data_tunnel(&target).await {
             Ok(tunnel) => {
+                 // Reply success after data tunnel connected
                 Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::Succeeded).await?;
                 tunnel
             }
@@ -328,9 +329,7 @@ impl Socks5Proxy {
             }
         };
 
-        // Reply success after data tunnel connected
-        Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::Succeeded).await?;
-
+       
         let (read, write) = tokio::io::copy_bidirectional(&mut tunnel, &mut socket)
             .await
             .map_err(|e| {
