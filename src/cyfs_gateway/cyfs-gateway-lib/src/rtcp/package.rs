@@ -15,6 +15,8 @@ pub(crate) enum CmdType {
     Pong = 4,
     ROpen = 5,
     ROpenResp = 6,
+    Open = 7,
+    OpenResp = 8,
 }
 
 impl From<u8> for CmdType {
@@ -26,6 +28,8 @@ impl From<u8> for CmdType {
             4 => CmdType::Pong,
             5 => CmdType::ROpen,
             6 => CmdType::ROpenResp,
+            7 => CmdType::Open,
+            8 => CmdType::OpenResp,
             _ => CmdType::UnknowProtocol,
         }
     }
@@ -300,6 +304,92 @@ impl RTcpROpenRespPackage {
     }
 }
 
+// Same as RTcpROpenBody
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub(crate) struct RTcpOpenBody {
+    pub streamid: String,
+
+    pub dest_port: u16,
+    // Dest host in ip or domain format, if none, then use default local ip
+    pub dest_host: Option<String>,
+}
+
+pub(crate) type RTcpOpenPackage = RTcpTunnelPackageImpl<RTcpOpenBody>;
+
+impl RTcpOpenPackage {
+    pub fn new(seq: u32, session_key: String, dest_port: u16, dest_host: Option<String>) -> Self {
+        Self {
+            len: 0,
+            json_pos: 0,
+            cmd: CmdType::Open.into(),
+            seq: seq,
+            body: RTcpOpenBody {
+                streamid: session_key,
+                dest_port,
+                dest_host,
+            },
+        }
+    }
+
+    pub fn from_json(seq: u32, json_value: serde_json::Value) -> Result<Self, std::io::Error> {
+        let body = serde_json::from_value::<RTcpOpenBody>(json_value);
+        if body.is_err() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "parse package error",
+            ));
+        }
+
+        let package = Self {
+            len: 0,
+            json_pos: 0,
+            cmd: CmdType::Open.into(),
+            seq: seq,
+            body: body.unwrap(),
+        };
+        Ok(package)
+    }
+}
+
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub(crate) struct RTcpOpenRespBody {
+    result: u32,
+}
+pub(crate) type RTcpOpenRespPackage = RTcpTunnelPackageImpl<RTcpOpenRespBody>;
+
+impl RTcpOpenRespPackage {
+    pub fn new(seq: u32, result: u32) -> Self {
+        Self {
+            len: 0,
+            json_pos: 0,
+            cmd: CmdType::OpenResp.into(),
+            seq: seq,
+            body: RTcpOpenRespBody { result },
+        }
+    }
+
+    pub fn from_json(seq: u32, json_value: serde_json::Value) -> Result<Self, std::io::Error> {
+        let body = serde_json::from_value::<RTcpOpenRespBody>(json_value);
+        if body.is_err() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "parse package error",
+            ));
+        }
+
+        let package = Self {
+            len: 0,
+            json_pos: 0,
+            cmd: CmdType::OpenResp.into(),
+            seq: seq,
+            body: body.unwrap(),
+        };
+        Ok(package)
+    }
+}
+
+
 #[derive(Clone, Debug)]
 pub(crate) enum RTcpTunnelPackage {
     HelloStream(String),
@@ -309,6 +399,8 @@ pub(crate) enum RTcpTunnelPackage {
     Pong(RTcpPongPackage),
     ROpen(RTcpROpenPackage),
     ROpenResp(RTcpROpenRespPackage),
+    Open(RTcpOpenPackage),
+    OpenResp(RTcpOpenRespPackage),
 }
 
 const TUNNEL_KEY_DEFAULT: [u8; 32] = [6; 32];
@@ -408,6 +500,14 @@ impl RTcpTunnelPackage {
                 CmdType::ROpenResp => {
                     let result_package = RTcpROpenRespPackage::from_json(seq, package_value)?;
                     return Ok(RTcpTunnelPackage::ROpenResp(result_package));
+                }
+                CmdType::Open => {
+                    let result_package = RTcpOpenPackage::from_json(seq, package_value)?;
+                    return Ok(RTcpTunnelPackage::Open(result_package));
+                }
+                CmdType::OpenResp => {
+                    let result_package = RTcpOpenRespPackage::from_json(seq, package_value)?;
+                    return Ok(RTcpTunnelPackage::OpenResp(result_package));
                 }
                 _ => {
                     error!("unsupport package type");
