@@ -3,6 +3,8 @@ mod package;
 mod tunnel;
 mod stack;
 mod manager;
+mod dispatcher;
+
 #[cfg(test)]
 mod tests;
 

@@ -7,7 +7,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt::Debug, net::IpAddr};
-
 use aes::cipher::{KeyIvInit, StreamCipher};
 use base64::{
     engine::general_purpose::STANDARD, engine::general_purpose::URL_SAFE_NO_PAD, Engine as _,
@@ -19,7 +18,6 @@ use hex::ToHex;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
-
 use name_lib::DID;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -28,9 +26,7 @@ use tokio::stream;
 use tokio::sync::{Mutex, Notify};
 use tokio::task;
 use tokio::time::timeout;
-
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
-
 use anyhow::Result;
 use async_trait::async_trait;
 use lazy_static::lazy_static;
@@ -51,7 +47,7 @@ use crate::tunnel::{
 };
 use crate::{tunnel, TunnelEndpoint, TunnelError, TunnelResult};
 use buckyos_kit::AsyncStream;
-
+use super::dispatcher::RTCP_DISPATCHER_MANAGER;
 
 #[derive(Clone)]
 pub struct RTcpStack {
@@ -527,7 +523,8 @@ impl TunnelBuilder for RTcpStack {
     }
 
     async fn create_listener(&self, bind_url: &Url) -> TunnelResult<Box<dyn StreamListener>> {
-        unimplemented!("create_listener not implemented")
+        let dispatcher = RTCP_DISPATCHER_MANAGER.new_dispatcher(bind_url)?;
+        Ok(Box::new(dispatcher) as Box<dyn StreamListener>)
     }
 
     async fn create_datagram_server(

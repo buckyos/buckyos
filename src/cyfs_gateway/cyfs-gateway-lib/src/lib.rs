@@ -37,6 +37,10 @@ pub enum TunnelError {
     ReasonError(String),
     #[error("Invalid State: {0}")]
     InvalidState(String),
+    #[error("Already Exists: {0}")]
+    AlreadyExists(String),
+    #[error("IO Error: {0}")]
+    IoError(String),
 }
 
 pub type TunnelResult<T> = std::result::Result<T, TunnelError>;
