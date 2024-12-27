@@ -15,7 +15,7 @@ import { MdOutlinedButton } from '@material/web/button/outlined-button.js';
 import buckyos from 'buckyos';
 
 
-async function doLogin(username:string, password:string,appId:string,source_url:string) {    
+async function doLogin(username:string, password:string,appId:string,source_url:string) {
     let login_nonce = Date.now();
     let password_hash = await buckyos.AuthClient.hash_password(username,password,login_nonce);
     console.log("password_hash: ", password_hash);
@@ -48,8 +48,8 @@ window.onload = async () => {
     const parsedUrl = new URL(window.location.href);
     var url_appid:string|null = parsedUrl.searchParams.get('client_id');
     console.log("url_appid: ", url_appid);
-    
-        
+
+
     if (url_appid == null) {
        alert("client_id(appid) is null");
        window.close();
@@ -60,7 +60,7 @@ window.onload = async () => {
 
     let login_button = document.getElementById('btn-login') as MdOutlinedButton;
     login_button.onclick = () => {
-        
+
         let username = (document.getElementById('txt-username') as MdOutlinedTextField).value;
         if (username == null || username == "") {
             alert("username is null");
@@ -76,6 +76,8 @@ window.onload = async () => {
         doLogin(username, password, url_appid, source_url).then((token) => {
             console.log("login success,token: ", token);
             alert("login success");
+            localStorage.setItem("token", token);
+            localStorage.setItem("username", username);
             window.opener.postMessage({ token: token }, '*');
             window.close();
         })
