@@ -16,6 +16,7 @@ pub use rtcp::*;
 pub use aes_stream::*;
 
 use thiserror::Error;
+use once_cell::sync::OnceCell;
 
 #[macro_use]
 extern crate log;
@@ -34,6 +35,11 @@ pub enum TunnelError {
     DocumentError(String),
     #[error("Reason Error: {0}")]
     ReasonError(String),
+    #[error("Invalid State: {0}")]
+    InvalidState(String),
 }
 
 pub type TunnelResult<T> = std::result::Result<T, TunnelError>;
+
+// Only used in gateway service now
+pub static CURRENT_DEVICE_RRIVATE_KEY: OnceCell<[u8;48]> = OnceCell::new();

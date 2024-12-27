@@ -42,15 +42,15 @@ use serde::{Deserialize, Serialize};
 use url::form_urlencoded::ByteSerialize;
 use url::Url;
 
+use super::package::*;
+use super::protocol::*;
+use super::tunnel::RTcpTunnel;
 use crate::aes_stream::{AesCtr, EncryptedStream};
 use crate::tunnel::{
     DatagramClientBox, DatagramServerBox, StreamListener, Tunnel, TunnelBox, TunnelBuilder,
 };
 use crate::{tunnel, TunnelEndpoint, TunnelError, TunnelResult};
 use buckyos_kit::AsyncStream;
-use super::tunnel::RTcpTunnel;
-use super::protocol::*;
-use super::package::*;
 
 pub struct RTcpStreamListener {
     bind_addr: Url,
@@ -268,130 +268,151 @@ impl RTcpStack {
         //return shared_secret.as_bytes().clone();
     }
 
-    pub async fn start(&mut self) -> Result<(), std::io::Error> {
-        //create a tcp listener for tunnel
+    pub async fn start(&mut self) -> TunnelResult<()> {
+        // create a tcp listener for tunnel
         let bind_addr = format!("0.0.0.0:{}", self.tunnel_port);
-        let rtcp_listener = TcpListener::bind(bind_addr).await?;
-        let this_device = self.this_device_hostname.clone();
-        //info!("rtcp stack this_device hostname: {}",this_device);
-        let this_device_x25519_sk2 = self.this_device_x25519_sk.clone().unwrap();
+        let rtcp_listener = TcpListener::bind(bind_addr).await.map_err(|e| {
+            let msg = format!("bind rtcp listener error:{}", e);
+            error!("{}", msg);
+            TunnelError::BindError(msg)
+        })?;
+
+        let this = self.clone();
         task::spawn(async move {
             loop {
-                let (mut stream, addr) = rtcp_listener.accept().await.unwrap();
+                let (stream, addr) = rtcp_listener.accept().await.unwrap();
                 info!("rtcp stack accept new tcp stream from {}", addr.clone());
-                let this_device2 = this_device.clone();
-                let notify_clone = NOTIFY_ROPEN_STREAM.clone();
-                let this_device_x25519_sk = this_device_x25519_sk2.clone();
+
+                let this = this.clone();
                 task::spawn(async move {
-                    let source_info = addr.to_string();
-                    let first_package = RTcpTunnelPackage::read_package(
-                        Pin::new(&mut stream),
-                        true,
-                        source_info.as_str(),
-                    )
-                    .await;
-                    if first_package.is_err() {
-                        error!("read first package error:{}", first_package.err().unwrap());
-                        return;
-                    }
-                    info!("rtcp stack {} read first package ok", this_device2.as_str());
-                    let package = first_package.unwrap();
-                    match package {
-                        RTcpTunnelPackage::HelloStream(session_key) => {
-                            //find waiting ropen stream by session_key
-                            let mut wait_streams = WAIT_ROPEN_STREAM_MAP.lock().await;
-                            let clone_map: Vec<String> = wait_streams.keys().cloned().collect();
-                            let real_key =
-                                format!("{}_{}", this_device2.as_str(), session_key.as_str());
-                            let mut wait_session = wait_streams.get_mut(real_key.as_str());
-                            if wait_session.is_none() {
-                                error!(
-                                    "no wait session for {},map is {:?}",
-                                    real_key.as_str(),
-                                    clone_map
-                                );
-                                let _ = stream.shutdown();
-                                return;
-                            }
-                            //bind stream to session
-                            let mut wait_session = wait_session.unwrap();
-                            *wait_session = WaitStream::OK(stream);
-                            notify_clone.notify_waiters();
-                            return;
-                        }
-                        RTcpTunnelPackage::Hello(hello_package) => {
-                            //decode hello.body.tunnel_token
-                            if hello_package.body.tunnel_token.is_none() {
-                                error!("hello.body.tunnel_token is none");
-                                return;
-                            }
-                            let token = hello_package.body.tunnel_token.as_ref().unwrap().clone();
-                            let aes_key = RTcpStack::decode_tunnel_token(
-                                &this_device_x25519_sk,
-                                token,
-                                hello_package.body.from_id.clone(),
-                            )
-                            .await;
-                            if aes_key.is_err() {
-                                error!("decode tunnel token error:{}", aes_key.err().unwrap());
-                                return;
-                            }
-                            let (aes_key, random_pk) = aes_key.unwrap();
-                            let target = RTcpTarget::new(
-                                hello_package.body.from_id.as_str(),
-                                hello_package.body.my_port,
-                                80,
-                            );
-                            if target.is_err() {
-                                error!("parser remote did error:{}", target.err().unwrap());
-                                return;
-                            }
-                            let target = target.unwrap();
-                            let tunnel = RTcpTunnel::new(
-                                this_device2.clone(),
-                                &target,
-                                false,
-                                stream,
-                                aes_key,
-                                random_pk,
-                            );
-
-                            let tunnel_key = format!(
-                                "{}_{}",
-                                this_device2.as_str(),
-                                hello_package.body.from_id.as_str()
-                            );
-                            {
-                                //info!("accept tunnel from {} try get lock",hello_package.body.from_id.as_str());
-                                let mut all_tunnel = RTCP_TUNNEL_MAP.lock().await;
-                                //info!("accept tunnel from {} get lock ok",hello_package.body.from_id.as_str());
-                                let mut_old_tunnel = all_tunnel.get(tunnel_key.as_str());
-                                if mut_old_tunnel.is_some() {
-                                    warn!("tunnel {} already exist", tunnel_key.as_str());
-                                    mut_old_tunnel.unwrap().close();
-                                }
-
-                                info!("accept tunnel from {}", hello_package.body.from_id.as_str());
-                                all_tunnel.insert(tunnel_key.clone(), tunnel.clone());
-                            }
-                            info!("tunnel {} accept OK,start runing", tunnel_key.as_str());
-                            tunnel.run().await;
-
-                            info!("tunnel {} end", tunnel_key.as_str());
-                            {
-                                let mut all_tunnel = RTCP_TUNNEL_MAP.lock().await;
-                                all_tunnel.remove(tunnel_key.as_str());
-                            }
-                        }
-                        _ => {
-                            error!("un support first package type");
-                        }
-                    }
+                    this.process_new_income_stream(stream, addr).await;
                 });
             }
         });
 
         Ok(())
+    }
+
+    async fn process_new_income_stream(&self, mut stream: TcpStream, addr: SocketAddr) {
+        let source_info = addr.to_string();
+        let first_package =
+            RTcpTunnelPackage::read_package(Pin::new(&mut stream), true, source_info.as_str())
+                .await;
+        if first_package.is_err() {
+            error!("read first package error:{}", first_package.err().unwrap());
+            return;
+        }
+
+        info!(
+            "rtcp stack {} read first package ok",
+            self.this_device_hostname.as_str()
+        );
+        let package = first_package.unwrap();
+        match package {
+            RTcpTunnelPackage::HelloStream(session_key) => {
+                self.on_new_stream(stream, session_key).await;
+            }
+            RTcpTunnelPackage::Hello(hello_package) => {
+                self.on_new_tunnel(stream, hello_package).await;
+            }
+            _ => {
+                error!("unsupport first package type for rtcp stack");
+            }
+        }
+    }
+
+    async fn on_new_stream(&self, mut stream: TcpStream, session_key: String) {
+        // find waiting ropen stream by session_key
+        let mut wait_streams = WAIT_ROPEN_STREAM_MAP.lock().await;
+        let clone_map: Vec<String> = wait_streams.keys().cloned().collect();
+        let real_key = format!(
+            "{}_{}",
+            self.this_device_hostname.as_str(),
+            session_key.as_str()
+        );
+        let mut wait_session = wait_streams.get_mut(real_key.as_str());
+        if wait_session.is_none() {
+            error!(
+                "no wait session for {},map is {:?}",
+                real_key.as_str(),
+                clone_map
+            );
+            let _ = stream.shutdown();
+            return;
+        }
+
+        // bind stream to session and notify
+        let mut wait_session = wait_session.unwrap();
+        *wait_session = WaitStream::OK(stream);
+
+        NOTIFY_ROPEN_STREAM.notify_waiters();
+    }
+
+    async fn on_new_tunnel(&self, stream: TcpStream, hello_package: RTcpHelloPackage) {
+        //decode hello.body.tunnel_token
+        if hello_package.body.tunnel_token.is_none() {
+            error!("hello.body.tunnel_token is none");
+            return;
+        }
+        let token = hello_package.body.tunnel_token.as_ref().unwrap().clone();
+        let aes_key = RTcpStack::decode_tunnel_token(
+            &self.this_device_x25519_sk.as_ref().unwrap(),
+            token,
+            hello_package.body.from_id.clone(),
+        )
+        .await;
+        if aes_key.is_err() {
+            error!("decode tunnel token error:{}", aes_key.err().unwrap());
+            return;
+        }
+
+        let (aes_key, random_pk) = aes_key.unwrap();
+        let target = RTcpTarget::new(
+            hello_package.body.from_id.as_str(),
+            hello_package.body.my_port,
+            80,
+        );
+        if target.is_err() {
+            error!("parser remote did error:{}", target.err().unwrap());
+            return;
+        }
+        let target = target.unwrap();
+        let tunnel = RTcpTunnel::new(
+            self.this_device_hostname.clone(),
+            &target,
+            false,
+            stream,
+            aes_key,
+            random_pk,
+        );
+
+        let tunnel_key = format!(
+            "{}_{}",
+            self.this_device_hostname.as_str(),
+            hello_package.body.from_id.as_str()
+        );
+        {
+            //info!("accept tunnel from {} try get lock",hello_package.body.from_id.as_str());
+            let mut all_tunnel = RTCP_TUNNEL_MAP.lock().await;
+            //info!("accept tunnel from {} get lock ok",hello_package.body.from_id.as_str());
+            let mut_old_tunnel = all_tunnel.get(tunnel_key.as_str());
+            if mut_old_tunnel.is_some() {
+                warn!("tunnel {} already exist", tunnel_key.as_str());
+                mut_old_tunnel.unwrap().close();
+            }
+
+            info!("accept tunnel from {}", hello_package.body.from_id.as_str());
+            all_tunnel.insert(tunnel_key.clone(), tunnel.clone());
+        }
+        info!("tunnel {} accept OK,start runing", tunnel_key.as_str());
+        tunnel.run().await;
+
+        info!("tunnel {} end", tunnel_key.as_str());
+
+        {
+            let mut all_tunnel = RTCP_TUNNEL_MAP.lock().await;
+            all_tunnel.remove(tunnel_key.as_str());
+        }
     }
 }
 
