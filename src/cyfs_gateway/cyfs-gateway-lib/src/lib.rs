@@ -1,8 +1,10 @@
+#![allow(dead_code)]
+
 mod config;
 mod tunnel;
 mod tunnel_connector;
 mod tunnel_mgr;
-mod rtcp_tunnel;
+mod rtcp;
 mod aes_stream;
 
 
@@ -10,10 +12,13 @@ pub use config::*;
 pub use tunnel::*;
 pub use tunnel_connector::*;
 pub use tunnel_mgr::*;
-pub use rtcp_tunnel::*;
+pub use rtcp::*;
 pub use aes_stream::*;
 
 use thiserror::Error;
+
+#[macro_use]
+extern crate log;
 
 #[derive(Error, Debug)]
 pub enum TunnelError {
