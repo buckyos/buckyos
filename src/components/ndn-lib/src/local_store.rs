@@ -723,7 +723,7 @@ impl NamedDataStore {
     //打开writer并允许writer已经存在
     pub async fn open_chunk_writer(&self, chunk_id: &ChunkId,chunk_size:u64,offset:u64) -> NdnResult<(ChunkWriter,String)> {
         let chunk_item = self.named_db.get_chunk(chunk_id).await;
-        let chunk_path = self.get_chunk_path(&chunk_id);
+        let chunk_path = self.get_chunk_path(chunk_id);
         if chunk_item.is_ok() {
             let chunk_item = chunk_item.unwrap();
             if chunk_item.chunk_state == ChunkState::Completed {

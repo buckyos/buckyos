@@ -271,7 +271,7 @@ where
         }
 
         if let Some(ref mut hasher) = hasher {
-            hasher.update_from_bytes(&buffer);
+            hasher.update_from_bytes(&buffer[..n]);
         }
 
         tokio::io::AsyncWriteExt::write_all(&mut chunk_writer, &buffer[..n]).await
@@ -279,10 +279,7 @@ where
         total_copied += n as u64;
 
         if let Some(ref mut progress_callback) = progress_callback {
-            let call_back_result = progress_callback(chunk_id.clone(), total_copied, &hasher).await;
-            if let Err(e) = call_back_result {
-                return Err(e);
-            }
+            progress_callback(chunk_id.clone(), total_copied, &hasher).await?;   
         }
     }
 
