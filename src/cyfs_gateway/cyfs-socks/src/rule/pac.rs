@@ -11,6 +11,7 @@ use regex::Regex;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{mpsc, oneshot};
 use trust_dns_resolver::config::*;
 use trust_dns_resolver::Resolver;
 
@@ -143,7 +144,7 @@ impl PacScriptExecutor {
             RuleError::InvalidFormat(msg)
         })?;
 
-        info!("RuleSelect result: {:?}", result);
+        info!("RuleSelect result: {} -> {:?}", input.dest.url, result);
         let actions = RuleAction::from_str_list(&result.to_std_string().unwrap())?;
 
         Ok(RuleOutput { actions })
@@ -247,6 +248,7 @@ impl PacScriptExecutor {
 
 use super::selector::*;
 
+
 pub struct PacScriptManager {
     script: String,
 }
@@ -299,7 +301,6 @@ impl RuleSelector for PacScriptManager {
     }
 }
 
-use tokio::sync::{mpsc, oneshot};
 
 struct AsyncRuleSelectRequest {
     input: RuleInput,
@@ -334,16 +335,16 @@ impl AsyncPacScriptManager {
                     }
                 });
         });
-    
+
         Ok(ret)
     }
 
-    async fn run(
-        script: String,
-        mut rx: mpsc::Receiver<AsyncRuleSelectRequest>,
-    ) -> RuleResult<()> {
+    async fn run(script: String, mut rx: mpsc::Receiver<AsyncRuleSelectRequest>) -> RuleResult<()> {
+        info!("Begin to run PAC script");
         let executor = PacScriptExecutor::new()?;
         executor.load(&script)?;
+
+        info!("PAC script loaded: {}bytes", script.len());
 
         while let Some(req) = rx.recv().await {
             let ret = executor.rule_select(req.input);

@@ -39,6 +39,8 @@ impl RuleEngine {
         let items = loader.load().await?;
 
         *self.rules.lock().await = items;
+        
+        info!("load rules from {:?} success", self.root_dir);
 
         Ok(())
     }
@@ -72,6 +74,24 @@ impl RuleEngine {
     }
 
     pub async fn select(&self, input: RuleInput) -> RuleResult<RuleAction> {
+        let start = chrono::Utc::now();
+        let url = input.dest.url.clone();
+
+        let ret = self.select_inner(input).await;
+
+        let end = chrono::Utc::now();
+        let duration = end - start;
+
+        if ret.is_ok() {
+            info!("rule select for {} -> {:?} in {:?} ms", url, ret, duration.num_milliseconds());
+        } else {
+            error!("rule select failed for {} -> {:?} in {:?} ms", url, ret, duration.num_milliseconds());
+        }
+
+        ret
+    }
+
+    async fn select_inner(&self, input: RuleInput) -> RuleResult<RuleAction> {
         let rules: tokio::sync::MutexGuard<'_, Vec<RuleItem>> = self.rules.lock().await;
         for rule in rules.iter() {
             match rule.selector.select(input.clone()).await {

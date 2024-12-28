@@ -158,7 +158,7 @@ impl Socks5Proxy {
     }
 
     async fn on_new_connection(&self, conn: TcpStream, addr: SocketAddr) -> SocksResult<()> {
-        info!("Socks5 connection from {}", addr);
+        // info!("Socks5 connection from {}", addr);
         let socket = Socks5Socket::new(conn, self.socks5_config.clone());
 
         match socket.upgrade_to_socks5().await {
@@ -201,7 +201,7 @@ impl Socks5Proxy {
     }
 
     async fn build_data_tunnel(&self, target: &TargetAddr) -> SocksResult<Box<dyn AsyncStream>> {
-        info!("Will build tunnel to {}", target);
+        debug!("Will build tunnel for {}", target);
 
         if let Some(builder) = self.data_tunnel_provider.get() {
             builder

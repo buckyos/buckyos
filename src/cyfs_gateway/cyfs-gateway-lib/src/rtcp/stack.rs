@@ -227,11 +227,17 @@ impl RTcpStack {
     pub async fn start(&mut self) -> TunnelResult<()> {
         // create a tcp listener for tunnel
         let bind_addr = format!("0.0.0.0:{}", self.tunnel_port);
-        let rtcp_listener = TcpListener::bind(bind_addr).await.map_err(|e| {
+        let rtcp_listener = TcpListener::bind(&bind_addr).await.map_err(|e| {
             let msg = format!("bind rtcp listener error:{}", e);
             error!("{}", msg);
             TunnelError::BindError(msg)
         })?;
+
+        info!(
+            "rtcp stack {} start ok: {}",
+            self.this_device_hostname.as_str(),
+            bind_addr
+        );
 
         let this = self.clone();
         task::spawn(async move {
@@ -259,16 +265,28 @@ impl RTcpStack {
             return;
         }
 
-        info!(
+        debug!(
             "rtcp stack {} read first package ok",
             self.this_device_hostname.as_str()
         );
         let package = first_package.unwrap();
         match package {
             RTcpTunnelPackage::HelloStream(session_key) => {
+                info!(
+                    "rtcp stack {} accept new stream: {}",
+                    self.this_device_hostname.as_str(),
+                    session_key
+                );
                 self.on_new_stream(stream, session_key).await;
             }
             RTcpTunnelPackage::Hello(hello_package) => {
+                info!(
+                    "rtcp stack {} accept new tunnel: {} -> {}",
+                    self.this_device_hostname.as_str(),
+                    hello_package.body.from_id,
+                    hello_package.body.to_id
+                );
+
                 self.on_new_tunnel(stream, hello_package).await;
             }
             _ => {

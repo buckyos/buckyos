@@ -368,22 +368,26 @@ impl RTcpTunnel {
         }
     }
 
-    async fn post_ropen(&self, dest_port: u16, dest_host: Option<String>, session_key: &str) {
+    async fn post_ropen(&self, dest_port: u16, dest_host: Option<String>, session_key: &str) -> Result<(), std::io::Error> {
         let ropen_package = RTcpROpenPackage::new(self.next_seq(), session_key.to_string(), dest_port, dest_host);
         let mut write_stream = self.write_stream.lock().await;
         let write_stream = Pin::new(&mut *write_stream);
-        if let Err(e) = RTcpTunnelPackage::send_package(write_stream, ropen_package).await {
-            error!("post ropen package error:{}", e);
-        }
+        RTcpTunnelPackage::send_package(write_stream, ropen_package).await.map_err(|e| {
+            let msg = format!("send ropen package error:{}", e);
+            error!("{}", msg);
+            std::io::Error::new(std::io::ErrorKind::Other, msg)
+        })
     }
 
-    async fn post_open(&self, seq: u32, dest_port: u16, dest_host: Option<String>, session_key: &str) {
+    async fn post_open(&self, seq: u32, dest_port: u16, dest_host: Option<String>, session_key: &str) -> Result<(), std::io::Error> {
         let ropen_package = RTcpOpenPackage::new(seq, session_key.to_string(), dest_port, dest_host);
         let mut write_stream = self.write_stream.lock().await;
         let write_stream = Pin::new(&mut *write_stream);
-        if let Err(e) = RTcpTunnelPackage::send_package(write_stream, ropen_package).await {
-            error!("post open package error:{}", e);
-        }
+        RTcpTunnelPackage::send_package(write_stream, ropen_package).await.map_err(|e| {
+            let msg = format!("send open package error:{}", e);
+            error!("{}", msg);
+            std::io::Error::new(std::io::ErrorKind::Other, msg)
+        })
     }
 
     async fn wait_ropen_stream(&self, session_key: &str) -> Result<TcpStream, std::io::Error> {
@@ -406,7 +410,7 @@ impl RTcpTunnel {
                 }
             }
             drop(map);
-            if let Err(_) = timeout(Duration::from_secs(5), wait_nofity.notified()).await {
+            if let Err(_) = timeout(Duration::from_secs(30), wait_nofity.notified()).await {
                 warn!(
                     "Timeout: ropen stream {} was not found within the time limit.",
                     real_key.as_str()
@@ -448,11 +452,12 @@ impl Tunnel for RTcpTunnel {
 
             // Send open to target to build a direct stream
             self.post_open(seq, dest_port, dest_host, session_key.as_str())
-                .await;
+                .await?;
 
             // Must wait openresp package then we can build a direct stream
             let wait_result = timeout(Duration::from_secs(60), notify.notified()).await;
             if wait_result.is_err() {
+                self.open_resp_notify.lock().await.remove(&seq);    // Remove the notify if timeout
                 error!(
                     "Timeout: open stream {} was not found within the time limit.",
                     real_key.as_str()
@@ -504,7 +509,8 @@ impl Tunnel for RTcpTunnel {
                 .insert(real_key.clone(), WaitStream::Waiting);
             //info!("insert session_key {} to wait ropen stream map",real_key.as_str());
             self.post_ropen(dest_port, dest_host, session_key.as_str())
-                .await;
+                .await?;
+
             //wait new stream with session_key fomr target
             let stream = self.wait_ropen_stream(&session_key.as_str()).await?;
             let aes_stream: EncryptedStream<TcpStream> =
