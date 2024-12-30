@@ -21,4 +21,5 @@ def run_command(command):
         return e.stderr, e.returncode
 
 output, return_code = run_command(f"{current_dir}/smb_service status")
+print(f"smb_service status {return_code}")
 exit(return_code)

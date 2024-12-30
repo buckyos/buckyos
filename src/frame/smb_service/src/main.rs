@@ -104,8 +104,8 @@ async fn enter_update_smb_loop() {
 }
 
 async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
-    let rpc_session_token = std::env::var("SMB_SESSION_TOKEN")
-        .map_err(into_smb_err!(SmbErrorCode::SessionTokenNotFound, "SMB_SESSION_TOKEN is not set"))?;
+    let rpc_session_token = std::env::var("SMB_SERVICE_SESSION_TOKEN")
+        .map_err(into_smb_err!(SmbErrorCode::SessionTokenNotFound, "SMB_SERVICE_SESSION_TOKEN is not set"))?;
 
     let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
 

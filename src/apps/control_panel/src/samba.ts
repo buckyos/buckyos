@@ -27,7 +27,7 @@ window.onload = async () => {
     let username = localStorage.getItem("username");
     if (token == undefined || token == "" || username == undefined || username == "") {
         //跳转到登录页
-        window.location.href = "./login.html";
+        window.location.href = "./login.html?client_id=" + url_appid;
     }
 
 

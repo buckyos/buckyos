@@ -15,12 +15,13 @@ export default defineConfig({
       input: {
         login: resolve(__dirname,"login.html"),
         index: resolve(__dirname,"index.html"),
+        samba: resolve(__dirname,"samba.html"),
       }
     }
   },
   resolve: {
     alias: {
-      "@": __dirname  
+      "@": __dirname
     }
   },
   plugins: [dts()]

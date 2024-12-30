@@ -120,7 +120,7 @@
         "name" : "Home Station",
         "description" : "Home Station",
         "vendor_did" : "did:bns:buckyos",
-        "pkg_id" : "home-station", 
+        "pkg_id" : "home-station",
         "pkg_list" : {
             "amd64_docker_image" : {
                 "pkg_id":"home-station-x86-img",
@@ -144,8 +144,8 @@
     "cache_mount_point" : "/database/",
     "local_cache_mount_point" : "/config/",
     "max_cpu_num" : 4,
-    "max_cpu_percent" : 80, 
-    "memory_quota" : 1073741824, 
+    "max_cpu_percent" : 80,
+    "memory_quota" : 1073741824,
     "tcp_ports" : {
         "www":80
     }
@@ -194,10 +194,27 @@
                     "params":[]
                 }
             }
+        },
+        "smb_service" : {
+            "target_state":"Running",
+            "pkg_id":"smb_service",
+            "operations":{
+                "status":{
+                    "command":"status",
+                    "params":[]
+                },
+                "start":{
+                    "command":"start",
+                    "params":[]
+                },
+                "stop":{
+                    "command":"stop",
+                    "params":[]
+                }
+            }
         }
     },
     "services":{
-
     },
     "apps":{
         "0":{
@@ -211,12 +228,12 @@
                 "/opt/buckyos/data/root/home-station/config":"/config"
             },
             "max_cpu_num" : 4,
-            "max_cpu_percent" : 80, 
-            "memory_quota" : 1073741824, 
+            "max_cpu_percent" : 80,
+            "memory_quota" : 1073741824,
             "tcp_ports" : {
                 "20080":80
             }
-        }    
+        }
     }
 }
 """
