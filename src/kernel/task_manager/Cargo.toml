@@ -13,6 +13,8 @@ rusqlite =  { version = "*", features = ["bundled"] }
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 log = "*"
+lazy_static = "*"
+
 
 
 cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
