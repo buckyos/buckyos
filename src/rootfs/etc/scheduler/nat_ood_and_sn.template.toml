@@ -1,6 +1,6 @@
 # users : users/$user_id/info , user_id is never changed, user_name can changed. User root cann't be deleted and always exists
 "users/root/info" = '{"type":"root","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
-
+"users/{{user_name}}/info" = '{"type":"admin","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 # devices,set & update by register_device_doc@node_daemon
 "devices/ood1/doc" = "ood1_doc"
 # devices,set & update by update_device_info@node_daemon
@@ -324,11 +324,9 @@ p, limit, dfs://public/*, read,allow
 p, guest, dfs://public/*, read,allow
 
 g, node_daemon, kernel
-g, ood01,ood
-g, alice, user
-g, bob, user
-g, app1, app
-g, app2, app
+g, ood1,ood
+g, {{user_name}}, user
+
 """
 
 "boot/config" = """

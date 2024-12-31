@@ -5,7 +5,7 @@ use log::*;
 use tokio::sync::{Mutex, RwLock};
 use lazy_static::lazy_static;
 use warp::{Filter};
-use serde_json::{Value};
+use serde_json::{json, Value};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
 use sha2::{Sha256, Digest};
 
@@ -304,6 +304,50 @@ async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<RPCSes
     
 }
 
+async fn handle_query_userid(params:Value) -> Result<Value> {
+    let username = params.get("username")
+        .ok_or(RPCErrors::ReasonError("Missing uername".to_string()))?;
+    let username = username.as_str().ok_or(RPCErrors::ReasonError("Invalid uername".to_string()))?;
+
+    let user_info_path = format!("users/{}/info",username);
+    let token_from_device = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().token_from_device.clone();
+    let system_config_client = SystemConfigClient::new(None,Some(token_from_device.as_str()));
+    let user_info_result = system_config_client.get(user_info_path.as_str()).await;
+    if user_info_result.is_ok() {
+        let (user_info,_version) = user_info_result.unwrap();
+        let user_info:serde_json::Value = serde_json::from_str(&user_info)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let this_username = user_info.get("username");
+        if this_username.is_some() {
+            let this_username = this_username.unwrap().as_str().ok_or(RPCErrors::ReasonError("Invalid username".to_string()))?;
+            if this_username == username {
+                return Ok(json!({
+                    "userid": username
+                }));
+            }
+        }
+    }
+
+    let root_info_path = "users/root/info";
+    let user_info_result = system_config_client.get(root_info_path).await;
+    if user_info_result.is_ok() {
+        let (user_info,_version) = user_info_result.unwrap();
+        let user_info:serde_json::Value = serde_json::from_str(&user_info)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let root_username = user_info.get("username");
+        if root_username.is_some() {
+            let root_username = root_username.unwrap().as_str().ok_or(RPCErrors::ReasonError("Invalid username".to_string()))?;
+            if root_username == username {
+                return Ok(json!({
+                    "userid":"root"
+                }));
+            }
+        }
+    }
+
+    Err(RPCErrors::UserNotFound(username.to_string()))
+}
+
 // async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
 //     let userid = params.get("userid")
 //     .ok_or(RPCErrors::ReasonError("Missing userid".to_string()))?;
@@ -391,6 +435,9 @@ async fn process_request(method:String,param:Value,req_seq:u64) -> ::kRPC::Resul
     match method.as_str() {
         "login" => {
             return handle_login(param,req_seq).await;
+        },
+        "query_userid" => {
+            return handle_query_userid(param).await;
         },
         "verify_token" => {
             return handle_verify_session_token(param).await;
