@@ -24,7 +24,7 @@ name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
 cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
 cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
-ed25519-dalek = { version = "*", features = ["rand_core"] } 
+ed25519-dalek = { version = "*", features = ["pkcs8", "pem"] } 
 base64 = "*"
 rusqlite =  { version = "*", features = ["bundled"] }
 buckyos-kit = { path = "../../components/buckyos-kit" }
@@ -32,6 +32,7 @@ sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-native-tls", "mac
 async-recursion = "*"
 jsonwebtoken = "*" 
 kRPC ={ path = "../../kernel/kRPC" }
+sys-config = { path = "../../kernel/sys-config" }
 sha2 = { version = ">=0.11.0-pre.4" }
 reqwest = { version = "*", features = ["json", "stream"] }
 futures-util = "*"
