@@ -1,4 +1,4 @@
-use base64::encode;
+use base64::{engine::general_purpose, Engine as _};
 use core::hash;
 use ed25519_dalek::{pkcs8::DecodePrivateKey, Signature, Signer, SigningKey};
 use flate2::write::GzEncoder;
@@ -243,7 +243,7 @@ fn sign_data(pem_file: &str, data: &str) -> Result<String, String> {
     let signature: Signature = signing_key.sign(data.as_bytes());
 
     // 将签名转换为 base64 编码的字符串
-    let signature_base64 = encode(signature.to_bytes());
+    let signature_base64 = general_purpose::STANDARD.encode(signature.to_bytes());
 
     Ok(signature_base64)
 }

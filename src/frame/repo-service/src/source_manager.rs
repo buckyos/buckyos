@@ -1,21 +1,26 @@
+use crate::crypto_utils::*;
 use crate::def::*;
 use crate::downloader::*;
-use crate::error::*;
+use crate::index_publisher::*;
 use crate::source_node::*;
 use crate::task_manager::REPO_TASK_MANAGER;
-use crate::verifier::*;
 use async_recursion::async_recursion;
 use buckyos_kit::get_buckyos_service_data_dir;
+use core::hash;
 use kv::source;
 use log::*;
 use ndn_lib::{ChunkId, NamedDataMgr};
 use package_lib::PackageId;
+use reqwest;
 use serde::ser;
+use serde_json::value::Index;
+use sha2::{Digest, Sha256};
 use sqlx::{Executor, Pool, Sqlite, SqlitePool};
 use std::collections::HashMap;
 use std::fmt::format;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use sys_config::{SystemConfigClient, SystemConfigError};
 use tokio::{sync::RwLock, task};
 
 #[derive(PartialEq, Debug, Clone, Copy)]
@@ -28,9 +33,7 @@ enum RepoStatus {
 #[derive(Debug, Clone)]
 pub struct SourceManager {
     source_list: Arc<RwLock<Vec<SourceNode>>>,
-    pool: SqlitePool,
     status_flag: Arc<Mutex<RepoStatus>>,
-    is_index_server: bool, //是否是一个index server，如果是的话，需要接受外部的pub请求
 }
 
 impl SourceManager {
@@ -39,194 +42,186 @@ impl SourceManager {
         if !repo_dir.exists() {
             std::fs::create_dir_all(&repo_dir)?;
         }
-        let db_url = format!(
-            "sqlite://{}/{}",
-            repo_dir.to_str().unwrap(),
-            REPO_SOURCE_CONFIG_DB
-        );
-        let pool = SqlitePool::connect(&db_url).await?;
-        // priority表示优先级，越低优先级越高
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS source_node (
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL DEFAULT '',
-                url TEXT NOT NULL DEFAULT '',
-                author TEXT NOT NULL,
-                chunk_id TEXT NOT NULL DEFAULT '',
-                sign TEXT NOT NULL DEFAULT '',
-                priority INTEGER NOT NULL DEFAULT 0,
-            )",
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_source_node_name ON source_node (name)")
-            .execute(&pool)
-            .await?;
-
-        sqlx::query(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_source_node_chunk_id, ON source_node (chunk_id)",
-        )
-        .execute(&pool)
-        .await?;
-
-        //读取REPO_CONFIG_FILE配置，设置is_index_server的值
-        let config_file = repo_dir.join(REPO_CONFIG_FILE);
-        let is_index_server = if config_file.exists() {
-            let config = std::fs::read_to_string(&config_file)?;
-            let config: serde_json::Value = serde_json::from_str(&config)?;
-            if let Some(is_index_server) = config.get("is_index_server") {
-                is_index_server.as_bool().unwrap_or(false)
-            } else {
-                false
-            }
-        } else {
-            false
-        };
 
         Ok(Self {
             source_list: Arc::new(RwLock::new(Vec::new())),
-            pool,
             status_flag: Arc::new(Mutex::new(RepoStatus::Idle)),
-            is_index_server,
         })
     }
 
-    async fn load_source_config_list(&self) -> RepoResult<Vec<SourceNodeConfig>> {
-        let source_configs = sqlx::query_as::<_, SourceNodeConfig>(
-            "SELECT id, name, url, author, chunk_id, sign, priority FROM source_node",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+    async fn load_index_source_list(&self) -> RepoResult<Vec<SourceNodeConfig>> {
+        let rpc_session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
+            error!("Repo service session token not found! err:{}", e);
+            RepoError::NotReadyError("Repo service session token not found!".to_string())
+        })?;
 
-        Ok(source_configs)
+        let sys_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
+
+        let index_source_config = sys_config_client
+            .get("services/repo/index_source")
+            .await
+            .map_err(|e| {
+                error!("Get index source config failed! err:{}", e);
+                RepoError::NotReadyError("Get index source config failed!".to_string())
+            })?;
+
+        let index_source = index_source_config.0;
+
+        //parse index_source(json) to SourceNodeConfig
+        let source_config_list: Vec<SourceNodeConfig> = serde_json::from_str(&index_source)
+            .map_err(|e| {
+                error!("Parse index source config failed! err:{}", e);
+                RepoError::ParseError(index_source.clone(), e.to_string())
+            })?;
+
+        Ok(source_config_list)
     }
 
     async fn save_source_config_list(
         &self,
         source_config_list: &Vec<SourceNodeConfig>,
     ) -> RepoResult<()> {
-        let mut tx = self.pool.begin().await?;
-        for source_config in source_config_list {
-            sqlx::query(
-                "INSERT OR REPLACE INTO source_node (id, name, url, author, chunk_id, sign, priority) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            )
-            .bind(source_config.id)
-            .bind(&source_config.name)
-            .bind(&source_config.url)
-            .bind(&source_config.author)
-            .bind(&source_config.chunk_id)
-            .bind(&source_config.sign)
-            .bind(source_config.priority)
-            .execute(&mut *tx)
-            .await?;
-        }
-        tx.commit().await?;
+        let source_config_list_str = serde_json::to_string(source_config_list).map_err(|e| {
+            error!("to_string source_config_list failed: {:?}", e);
+            RepoError::ParseError("source_config_list".to_string(), e.to_string())
+        })?;
+
+        let rpc_session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
+            error!("Repo service session token not found! err:{}", e);
+            RepoError::NotReadyError("Repo service session token not found!".to_string())
+        })?;
+
+        let sys_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
+
+        sys_config_client
+            .set("services/repo/index_source", &source_config_list_str)
+            .await
+            .map_err(|e| {
+                error!("Set index source config failed! err:{}", e);
+                RepoError::NotReadyError("Set index source config failed!".to_string())
+            })?;
 
         Ok(())
     }
 
     async fn make_sure_source_file_exists(
-        url: &str,
-        author: &str,
-        chunk_id: &str,
-        sign: &str,
+        source: &SourceNodeConfig,
         local_file: &PathBuf,
     ) -> RepoResult<()> {
         if !local_file.exists() {
-            //从source.url请求对应的chunk_id
-            Downloader::pull_remote_chunk(url, author, sign, chunk_id).await?;
-            chunk_to_local_file(&chunk_id, REPO_CHUNK_MGR_ID, &local_file).await?;
+            if source.did.is_empty() || source.chunk_id.is_empty() {
+                return Err(RepoError::ParamError(format!(
+                    "source_config is invalid: {:?}",
+                    source
+                )));
+            }
+            //TODO 构建chunk的url
+            let url = format!("http://{}/repo/get_index/{}", source.did, source.chunk_id);
+            Downloader::pull_remote_chunk(&url, &source.did, &source.sign, &source.chunk_id)
+                .await?;
+            chunk_to_local_file(&source.chunk_id, REPO_CHUNK_MGR_ID, &local_file).await?;
         }
         Ok(())
     }
 
     fn local_node_config() -> SourceNodeConfig {
+        //TODO fix 从系统配置中获取
+        let self_did = "".to_string();
         SourceNodeConfig {
-            id: 0,
-            name: "local".to_string(),
-            url: "".to_string(),
-            author: "".to_string(),
+            did: self_did,
             chunk_id: "".to_string(),
             sign: "".to_string(),
-            priority: 0,
+            version: "".to_string(),
         }
     }
 
     fn source_db_file(source_config: &SourceNodeConfig, dir: &PathBuf) -> PathBuf {
-        dir.join(format!(
-            "{}_{}.db",
-            source_config.name, source_config.chunk_id
-        ))
+        dir.join(format!("index_{}.db", source_config.chunk_id))
     }
 
-    async fn get_remote_source_meta(url: &str) -> RepoResult<SourceMeta> {
-        unimplemented!("get_remote_source_meta")
+    async fn get_remote_source_meta(source_config: &SourceNodeConfig) -> RepoResult<SourceMeta> {
+        //TODO 拼接meta url
+        let url = format!("http://{}/repo/index_meta", source_config.did);
+        let resp = reqwest::get(&url).await.map_err(|e| {
+            error!("get_remote_source_meta failed: {:?}", e);
+            RepoError::HttpError(format!("get_remote_source_meta failed: {:?}", e))
+        })?;
+        if !resp.status().is_success() {
+            return Err(RepoError::HttpError(format!(
+                "get_remote_source_meta failed, status: {}",
+                resp.status()
+            )));
+        }
+        let source_meta: SourceMeta = resp.json().await.map_err(|e| {
+            error!("get_remote_source_meta failed: {:?}", e);
+            RepoError::HttpError(format!("get_remote_source_meta failed: {:?}", e))
+        })?;
+
+        Ok(source_meta)
     }
 
     async fn build_source_list(&self, update: bool, task_id: &str) -> RepoResult<()> {
         let mut need_update_config_list = Vec::new();
-        let source_db_dir = get_buckyos_service_data_dir(SERVICE_NAME).join(INDEX_DIR_NAME);
-        let source_config_list = self.load_source_config_list().await?;
+        let remote_source_db_dir =
+            get_buckyos_service_data_dir(SERVICE_NAME).join(REMOTE_INDEX_DIR_NAME);
+        let source_config_list = self.load_index_source_list().await?;
+
         let mut new_source_list = Vec::new();
-        //先添加一个本地的source，特殊处理
-        let local_source_config = Self::local_node_config();
-        let local_source_file = source_db_dir.join(LOCAL_INDEX_DB);
-        new_source_list.push(SourceNode::new(local_source_config, local_source_file, true).await?);
+        // record the source file that need to keep, others will be deleted
+        let mut keep_source_file_list = Vec::new();
 
         for mut source_config in source_config_list {
-            if source_config.url.is_empty() || source_config.author.is_empty() {
-                warn!("source_config invalid, {:?}", source_config);
+            if source_config.did.is_empty() {
+                warn!("source_config invalid, did is empty, {:?}", source_config);
                 continue;
             }
-            let source_db_file = Self::source_db_file(&source_config, &source_db_dir);
-            if source_db_file.exists() && !update {
-                let source_node =
-                    SourceNode::new(source_config, source_db_file.clone(), false).await?;
-                new_source_list.push(source_node);
-                continue;
+            if !source_config.chunk_id.is_empty() {
+                let source_db_file = Self::source_db_file(&source_config, &remote_source_db_dir);
+                if source_db_file.exists() && !update {
+                    keep_source_file_list.push(source_db_file.clone());
+                    let source_node =
+                        SourceNode::new(source_config, source_db_file.clone(), false).await?;
+                    new_source_list.push(source_node);
+                    continue;
+                }
             }
             //通过url请求最新的source_meta
             if update || source_config.chunk_id.is_empty() || source_config.sign.is_empty() {
                 REPO_TASK_MANAGER.set_task_status(
                     task_id,
                     TaskStatus::Running(format!(
-                        "[{}]Updating source meta info",
-                        source_config.name
+                        "Updating source meta info from {}",
+                        source_config.did
                     )),
                 )?;
-                let source_meta = Self::get_remote_source_meta(&source_config.url).await?;
+                let source_meta = Self::get_remote_source_meta(&source_config).await?;
                 if source_meta.chunk_id != source_config.chunk_id {
                     source_config.chunk_id = source_meta.chunk_id;
                     source_config.sign = source_meta.sign;
                     need_update_config_list.push(source_config.clone());
                 }
             }
-            let source_db_file = Self::source_db_file(&source_config, &source_db_dir);
+            let source_db_file = Self::source_db_file(&source_config, &remote_source_db_dir);
             if source_db_file.exists() {
                 //也许以前下载过?
                 let source_node =
                     SourceNode::new(source_config, source_db_file.clone(), false).await?;
                 new_source_list.push(source_node);
+                keep_source_file_list.push(source_db_file.clone());
                 continue;
             } else {
                 REPO_TASK_MANAGER.set_task_status(
                     task_id,
                     TaskStatus::Running(format!(
-                        "[{}]Downloading source index",
-                        source_config.name
+                        "Downloading source index from {}",
+                        source_config.did
                     )),
                 )?;
-                Self::make_sure_source_file_exists(
-                    &source_config.url,
-                    &source_config.author,
-                    &source_config.chunk_id,
-                    &source_config.sign,
-                    &source_db_file,
-                )
-                .await?;
-                let source_node = SourceNode::new(source_config, source_db_file, false).await?;
+                Self::make_sure_source_file_exists(&source_config, &source_db_file).await?;
+                let source_node =
+                    SourceNode::new(source_config, source_db_file.clone(), false).await?;
                 new_source_list.push(source_node);
+                keep_source_file_list.push(source_db_file.clone());
             }
         }
 
@@ -239,8 +234,33 @@ impl SourceManager {
         {
             let mut source_list = self.source_list.write().await;
             *source_list = new_source_list;
-            //TODO:删除旧的db文件
         }
+
+        //TODO 删除不需要的source文件
+        // let source_db_files = std::fs::read_dir(&source_db_dir).map_err(|e| {
+        //     error!("read_dir failed: {:?}", e);
+        //     RepoError::IoError(format!("read_dir failed: {:?}", e))
+        // })?;
+        // for entry in source_db_files {
+        //     let entry = entry.map_err(|e| {
+        //         error!("read_dir entry failed: {:?}", e);
+        //         RepoError::IoError(format!("read_dir entry failed: {:?}", e))
+        //     })?;
+        //     let path = entry.path();
+        //     if !path.is_file() || path.file_name().is_none(){
+        //         continue;
+        //     }
+        //     let file_name = path.file_name().unwrap().to_str().unwrap();
+        //     if !file_name.starts_with("index_") || !file_name.ends_with(".db") {
+        //         continue;
+        //     }
+        //     if !keep_source_file_list.contains(&path) {
+        //         std::fs::remove_file(&path).map_err(|e| {
+        //             error!("remove_file failed: {:?}", e);
+        //             RepoError::IoError(format!("remove_file failed: {:?}", e))
+        //         })?;
+        //     }
+        // }
 
         Ok(())
     }
@@ -481,6 +501,7 @@ impl SourceManager {
         if self.check_exist(pkg_meta).await? {
             return Ok(());
         }
+        // TODO: fix this url
         let url = format!("http://web3.buckyos.com/{}", pkg_meta.author);
         Downloader::pull_remote_chunk(&url, &pkg_meta.author, &pkg_meta.sign, &pkg_meta.chunk_id)
             .await
@@ -491,11 +512,9 @@ impl SourceManager {
             error!("Parse chunk id failed: {:?}", e);
             RepoError::ParseError(pkg_meta.chunk_id.clone(), e.to_string())
         })?;
-        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(REPO_CHUNK_MGR_ID)).await;
-        if named_mgr.is_none() {
-            return Err(RepoError::NdnError("no chunk mgr".to_string()));
-        }
-        let named_mgr = named_mgr.unwrap();
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(REPO_CHUNK_MGR_ID))
+            .await
+            .ok_or_else(|| RepoError::NdnError("no chunk mgr".to_string()))?;
         let mut named_mgr = named_mgr.lock().await;
         named_mgr.is_chunk_exist(&chunk_id).await.map_err(|e| {
             error!("is_chunk_exist failed: {:?}", e);
@@ -503,22 +522,34 @@ impl SourceManager {
         })
     }
 
-    pub async fn pub_pkg(&self, pkg_meta: &PackageMeta, is_from_zone: bool) -> RepoResult<()> {
-        if !is_from_zone && !self.is_index_server {
-            return Err(RepoError::PermissionError(
-                "Not an index server, can not pub package".to_string(),
-            ));
+    async fn get_local_index_node(&self) -> RepoResult<SourceNode> {
+        let local_dir = get_buckyos_service_data_dir(SERVICE_NAME).join(LOCAL_INDEX_DATA);
+        //打开local_index.db，如果不存在就创建
+        let local_file = local_dir.join(LOCAL_INDEX_DB);
+        let source_config = Self::local_node_config();
+        SourceNode::new(source_config, local_file, true).await
+    }
+
+    pub async fn pub_pkg(&self, pkg_meta: &PackageMeta) -> RepoResult<()> {
+        //需要确认chunk_id是否已经存在
+        if !self.check_exist(pkg_meta).await? {
+            return Err(RepoError::NotFound(format!(
+                "Pub pkg chunk {} not exists",
+                pkg_meta.chunk_id
+            )));
         }
-        if is_from_zone {
-            //需要确认chunk_id是否已经存在
-            if !self.check_exist(pkg_meta).await? {
-                return Err(RepoError::NotFound(format!(
-                    "Pub pkg chunk {} not exists",
-                    pkg_meta.chunk_id
-                )));
-            }
-        }
-        let local_index_node = self.source_list.read().await[0].clone();
+        let local_index_node = self.get_local_index_node().await.map_err(|e| {
+            error!("get_local_index_node failed: {:?}", e);
+            RepoError::NdnError(format!("get_local_index_node failed: {:?}", e))
+        })?;
         local_index_node.insert_pkg_meta(pkg_meta).await
+    }
+
+    pub async fn pub_index(&self, private_key_file: &PathBuf, version: &str) -> RepoResult<()> {
+        IndexPublisher::pub_index(private_key_file, version).await
+    }
+
+    pub async fn get_latest_index_meta(&self) -> RepoResult<Option<SourceMeta>> {
+        IndexPublisher::get_latest_meta().await
     }
 }

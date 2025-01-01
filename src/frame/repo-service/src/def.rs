@@ -1,12 +1,16 @@
 use package_lib::PackageId;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::FromRow;
+use std::io;
+use thiserror::Error;
 
 pub const SERVICE_NAME: &str = "repo_service";
 pub const REPO_CHUNK_MGR_ID: &str = "repo_chunk_mgr";
-pub const INDEX_DIR_NAME: &str = "index";
-pub const LOCAL_INDEX_DB: &str = "local.db";
-pub const REPO_SOURCE_CONFIG_DB: &str = "source_config.db";
+pub const REMOTE_INDEX_DIR_NAME: &str = "remote_index_source";
+pub const LOCAL_INDEX_DATA: &str = "local_index_data";
+pub const LOCAL_INDEX_DB: &str = "local_index.db";
+pub const LOCAL_INDEX_META_DB: &str = "index_meta.db";
 pub const REPO_CONFIG_FILE: &str = "repo_config.json";
 pub const TASK_EXPIRE_TIME: u64 = 30 * 60; //任务超时时间,单位秒
 
@@ -21,22 +25,21 @@ pub struct PackageMeta {
     pub pub_time: i64,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, FromRow)]
 pub struct SourceMeta {
-    pub version: String,
-    pub author: String,
+    pub did: String,
     pub chunk_id: String,
     pub sign: String,
+    pub version: String,
+    pub pub_time: i64,
 }
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SourceNodeConfig {
-    pub id: i32,
-    pub name: String,
-    pub url: String,
-    pub author: String,
+    pub did: String,
     pub chunk_id: String,
     pub sign: String,
-    pub priority: u32,
+    pub version: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,3 +67,57 @@ pub enum Task {
         finish_time: u64,
     },
 }
+
+#[derive(Error, Debug)]
+pub enum RepoError {
+    #[error("Download {0} error: {1}")]
+    DownloadError(String, String),
+    #[error("Install {0} error: {1}")]
+    InstallError(String, String),
+    #[error("Load {0} error: {1}")]
+    LoadError(String, String),
+    #[error("Not Found: {0}")]
+    NotFound(String),
+    #[error("Parse {0} error: {1}")]
+    ParseError(String, String),
+    #[error("Param error: {0}")]
+    ParamError(String),
+    #[error("Execute cmd {0} error: {1}")]
+    ExecuteError(String, String),
+    #[error("Config parser error: {0}")]
+    ParserConfigError(String),
+    #[error("Network Error: {0}")]
+    NetworkError(String),
+    #[error("Version Not Found: {0}")]
+    VersionNotFoundError(String),
+    #[error("Version Error: {0}")]
+    VersionError(String),
+    #[error("Not ready: {0}")]
+    NotReadyError(String),
+    #[error("Status Error: {0}")]
+    StatusError(String),
+    #[error("Update error: {0}")]
+    UpdateError(String),
+    #[error("Verify error: {0}")]
+    VerifyError(String),
+    #[error("Sign error: {0}")]
+    SignError(String),
+    #[error("File not found: {0}")]
+    FileNotFoundError(String),
+    #[error("Unknown Error: {0}")]
+    UnknownError(String),
+    #[error("IO Error: {0}")]
+    IoError(#[from] io::Error),
+    #[error("DB Error: {0}")]
+    DbError(#[from] sqlx::Error),
+    #[error("Json Error: {0}")]
+    JsonError(#[from] serde_json::Error),
+    #[error("Ndn Error: {0}")]
+    NdnError(String),
+    #[error("Permission Error: {0}")]
+    PermissionError(String),
+    #[error("Http Error: {0}")]
+    HttpError(String),
+}
+
+pub type RepoResult<T> = std::result::Result<T, RepoError>;

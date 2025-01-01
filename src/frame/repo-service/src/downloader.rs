@@ -1,6 +1,5 @@
+use crate::crypto_utils::*;
 use crate::def::*;
-use crate::error::*;
-use crate::verifier::Verifier;
 use buckyos_kit::get_buckyos_service_data_dir;
 use core::error;
 use futures_util::StreamExt;
@@ -21,8 +20,6 @@ pub async fn chunk_to_local_file(
 ) -> RepoResult<()> {
     unimplemented!("chunk_to_local_file")
 }
-
-const REPO_CHUNK_MGR_ID: &str = "repo_chunk_mgr";
 
 // async fn test_pull_chunk() {
 //     let client = NdnClient::new("test_url".to_string(), None, None);
@@ -83,7 +80,7 @@ impl Downloader {
         chunk_id: &str,
     ) -> RepoResult<()> {
         //先验证
-        if let Err(e) = Verifier::verify(author, chunk_id, sign).await {
+        if let Err(e) = verify(author, chunk_id, sign).await {
             return Err(RepoError::VerifyError(format!(
                 "Verify failed, author: {}, chunk_id: {}, sign: {}, err: {}",
                 author,

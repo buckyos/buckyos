@@ -1,5 +1,3 @@
-use crate::error::{RepoError, RepoResult};
-//use crate::index_store::*;
 use crate::def::*;
 use log::*;
 use ndn_lib::ChunkId;

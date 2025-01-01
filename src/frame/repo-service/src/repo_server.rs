@@ -1,6 +1,5 @@
 use crate::def::*;
 use crate::downloader::Downloader;
-use crate::error::*;
 use crate::source_manager::SourceManager;
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -54,11 +53,6 @@ impl RepoServer {
         }
     }
 
-    fn is_request_from_zone(&self) -> bool {
-        // TODO: check if request is from zone
-        true
-    }
-
     async fn handle_pub_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let pkg_name = req.params.get("pkg_name").unwrap().as_str().unwrap();
         let version = req.params.get("version").unwrap().as_str().unwrap();
@@ -67,7 +61,6 @@ impl RepoServer {
         let dependencies = req.params.get("dependencies").unwrap().as_str().unwrap();
         let sign = req.params.get("sign").unwrap().as_str().unwrap();
         let pub_time = buckyos_get_unix_timestamp() as i64;
-        let is_from_zone = self.is_request_from_zone();
         let pkg_meta = PackageMeta {
             name: pkg_name.to_string(),
             version: version.to_string(),
@@ -79,7 +72,7 @@ impl RepoServer {
             sign: sign.to_string(),
             pub_time,
         };
-        match self.source_mgr.pub_pkg(&pkg_meta, is_from_zone).await {
+        match self.source_mgr.pub_pkg(&pkg_meta).await {
             Ok(_) => Ok(RPCResponse::new(RPCResult::Success(Value::Null), req.seq)),
             Err(e) => Err(RPCErrors::ReasonError(e.to_string())),
         }

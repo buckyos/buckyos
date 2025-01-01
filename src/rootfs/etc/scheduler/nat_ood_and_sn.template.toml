@@ -341,3 +341,14 @@ g, {{user_name}}, user
     }
 }
 """
+
+"services/repo/index_source" = """
+[
+    {
+        "did":"did:ens:xxxx",
+        "chunk_id":"",
+        "sign":"",
+        "version":"",
+    }
+]
+"""

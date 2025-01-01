@@ -1,17 +1,19 @@
 #![allow(unused, dead_code)]
 
+mod crypto_utils;
 mod def;
 mod downloader;
-mod error;
+mod index_publisher;
 mod repo_server;
 mod source_manager;
 mod source_node;
 mod task_manager;
-mod verifier;
 use package_lib::PackageId;
 
+use crate::def::*;
 use crate::repo_server::RepoServer;
 use std::fs::File;
+use sys_config::{SystemConfigClient, SystemConfigError};
 
 use log::*;
 use serde_json::{json, Value};
@@ -42,6 +44,27 @@ fn init_log_config() {
         WriteLogger::new(LevelFilter::Info, config, File::create(log_path).unwrap()),
     ])
     .unwrap();
+}
+
+async fn load_repo_config() -> RepoResult<String> {
+    let rpc_session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
+        error!("Repo service session token not found! err:{}", e);
+        RepoError::NotReadyError("Repo service session token not found!".to_string())
+    })?;
+
+    let sys_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
+
+    let index_source_config = sys_config_client
+        .get("services/repo/index_source_config")
+        .await
+        .map_err(|e| {
+            error!("Get index source config failed! err:{}", e);
+            RepoError::NotReadyError("Get index source config failed!".to_string())
+        })?;
+
+    let index_source_config = index_source_config.0;
+
+    Ok(index_source_config)
 }
 
 async fn service_main() {
