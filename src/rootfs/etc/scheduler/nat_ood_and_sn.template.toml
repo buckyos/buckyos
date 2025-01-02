@@ -339,10 +339,12 @@ p, kernel, dfs://*, read|write,allow
 
 p, owner, kv://*, read|write,allow
 p, owner, dfs://*, read|write,allow
+
 p, root, kv://*, read|write,allow
 p, root, dfs://*, read|write,allow
 
 p, user, kv://*, read,allow
+p, app, kv://*, read,allow
 p, user, dfs://public/*,read|write,allow
 p, user, dfs://homes/{user}/*, read|write,allow
 p, app,  dfs://homes/*/apps/{app}/*, read|write,allow
@@ -352,8 +354,10 @@ p, guest, dfs://public/*, read,allow
 
 g, node_daemon, kernel
 g, ood1,ood
+g, test,app
 g, {{user_name}}, user
 g, {{user_name}}, root
+
 """
 
 "boot/config" = """
