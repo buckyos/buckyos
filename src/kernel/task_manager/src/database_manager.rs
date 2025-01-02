@@ -2,6 +2,7 @@ use rusqlite::{params, Connection, Result};
 // use serde::{Deserialize, Serialize};
 use crate::task::{Task, TaskStatus};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use log::*;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -20,8 +21,6 @@ pub struct DatabaseManager {
 
 impl DatabaseManager {
     pub fn new() -> Self {
-        // let conn: Connection = Connection::open(db_path)?;
-        // Ok(
         DatabaseManager { conn: None }
     }
 
@@ -61,15 +60,15 @@ impl DatabaseManager {
     pub async fn list_tasks(&self) -> rusqlite::Result<Vec<Task>> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
-        let mut stmt = conn.prepare("SELECT * FROM tasks")?;
+        let mut stmt = conn.prepare("SELECT * FROM task")?;
         let task_iter = stmt.query_map([], |row| {
+            let format = "%Y-%m-%d %H:%M:%S%.f UTC";
+
             let status: String = row.get(2)?;
             let created_at: String = row.get(3)?;
-            let created_at =
-                NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S").unwrap();
+            let created_at = NaiveDateTime::parse_from_str(&created_at, format).unwrap();
             let updated_at: String = row.get(4)?;
-            let updated_at =
-                NaiveDateTime::parse_from_str(&updated_at, "%Y-%m-%d %H:%M:%S").unwrap();
+            let updated_at = NaiveDateTime::parse_from_str(&updated_at, format).unwrap();
             Ok(Task {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -84,6 +83,15 @@ impl DatabaseManager {
             tasks.push(task?);
         }
         Ok(tasks)
+    }
+}
+
+pub async fn init_db(db_path: &str) {
+    let mut db_manager = DB_MANAGER.lock().await;
+    db_manager.connect(db_path).unwrap();
+    match db_manager.init_db().await {
+        Ok(_) => info!("Database initialized successfully."),
+        Err(e) => info!("Failed to initialize database: {}", e),
     }
 }
 
