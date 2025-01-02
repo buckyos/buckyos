@@ -543,6 +543,26 @@ async fn init_by_boot_config()->Result<()> {
         error!("Missing BUCKY_ZONE_OWNER");
     }
 
+    let boot_info = store.get("boot/config".to_string()).await;
+    if boot_info.is_ok() {
+        let boot_info = boot_info.unwrap();
+        let boot_info_str = boot_info.unwrap();
+    
+        let boot_info:Value = serde_json::from_str(&boot_info_str).unwrap();
+        let verify_hub_info = boot_info.get("verify_hub_info");
+        if verify_hub_info.is_some() {
+            let verify_hub_info = verify_hub_info.unwrap();
+          
+            let verify_hub_public_key = verify_hub_info.get("public_key");
+            if verify_hub_public_key.is_some() {
+                let verify_hub_public_key = verify_hub_public_key.unwrap();
+                let verify_hub_public_key:jsonwebtoken::jwk::Jwk = serde_json::from_value(verify_hub_public_key.clone()).unwrap();
+                let verify_hub_public_key = DecodingKey::from_jwk(&verify_hub_public_key).unwrap();
+                TRUST_KEYS.lock().await.insert("{verify_hub}".to_string(),verify_hub_public_key.clone());
+                info!("Insert verify_hub_public_key to trust keys");
+            }
+        }
+    }
 
     Ok(())
 }

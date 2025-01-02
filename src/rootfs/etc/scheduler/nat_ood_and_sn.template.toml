@@ -51,17 +51,17 @@
     "shortcuts": {
         "www": {
             "type":"app",
-            "user_id":"root",
+            "user_id":"{{user_name}}",
             "app_id":"home-station"
         },
         "sys": {
             "type":"app",
-            "user_id":"root",
+            "user_id":"{{user_name}}",
             "app_id":"control-panel"
         },
         "test":{
             "type":"app",
-            "user_id":"root",
+            "user_id":"{{user_name}}",
             "app_id":"sys-test"
         }
     }
@@ -120,7 +120,7 @@
 """
 
 # install apps
-"users/root/apps/home-station/config" = """
+"users/{{user_name}}/apps/home-station/config" = """
 {
     "app_id":"home-station",
     "app_info" : {
@@ -245,12 +245,12 @@
         "0":{
             "target_state":"Running",
             "app_id":"home-station",
-            "user_id":"root",
+            "user_id":"{{user_name}}",
             "docker_image_name" : "filebrowser/filebrowser:s6",
             "data_mount_point" : "/srv",
             "cache_mount_point" : "/database/",
             "extra_mounts" : {
-                "/opt/buckyos/data/root/home-station/config":"/config"
+                "/opt/buckyos/data/{{user_name}}/home-station/config":"/config"
             },
             "max_cpu_num" : 4,
             "max_cpu_percent" : 80,
