@@ -1,5 +1,5 @@
 [package]
-name = "repo-service"
+name = "repo_service"
 version = "0.1.0"
 edition = "2021"
 authors = ["BuckyOS DAO","@Song"]

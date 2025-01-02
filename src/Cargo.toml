@@ -26,7 +26,7 @@ members = [
     "./kernel/node_daemon",
     "./kernel/scheduler",
     "./kernel/task_manager",
-    "./frame/repo-service",
+    "./frame/repo_service",
     "./frame/smb_service",
 
     "./tools/buckycli",

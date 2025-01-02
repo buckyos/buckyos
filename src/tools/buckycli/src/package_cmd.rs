@@ -1,5 +1,6 @@
+#![allow(dead_code)]
 
-use core::hash;
+use base64::{engine::general_purpose, Engine as _};
 use ed25519_dalek::{pkcs8::DecodePrivateKey, Signature, Signer, SigningKey};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
 use base64::prelude::BASE64_STANDARD_NO_PAD;
