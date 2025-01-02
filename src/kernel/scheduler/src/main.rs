@@ -344,10 +344,14 @@ async fn schedule_loop() -> Result<()> {
         //write to system_config
         for (path,value) in schedule_result.iter() {
             match value {
+                JsonValueAction::Create(value) => {
+                   //TODO:
+                   unimplemented!();
+                }
                 JsonValueAction::Update(value) => {
                     system_config_client.set(path,value).await?;
                 }
-                JsonValueAction::Set(value) => {
+                JsonValueAction::SetByPath(value) => {
                     let mut old_value:Value;
                     if path_is_gateway_config(path) {
                         old_value = base_gateway_config.clone();

@@ -4,6 +4,8 @@ use std::{collections::HashMap, sync::Arc};
 use crate::kv_provider::*;
 use log::*;
 use buckyos_kit::*;
+use sys_config::KVAction;
+use serde_json::Value;
 pub struct SledStore {
     db: Arc<Db>,
 }
@@ -40,6 +42,8 @@ impl KVStoreProvider for SledStore {
         info!("Sled Set key:[{}] to value:[{}]", key, value);
         Ok(())
     }
+
+    
 
     async fn create(&self, key: &str, value: &str) -> Result<()> {
         let create_result =  self.db.compare_and_swap(key.to_string(),
@@ -127,6 +131,72 @@ impl KVStoreProvider for SledStore {
             }
         }
         Ok(result)
+    }
+
+    async fn exec_tx(&self, tx: HashMap<String, KVAction>, main_key: Option<(String, u64)>) -> Result<()> {
+        let tx_result = self.db.transaction(|db| {
+            let mut batch = sled::Batch::default();
+
+            for (key, action) in tx.iter() {
+                match action {
+                    KVAction::Create(value) => {
+                        if db.get(key)?.is_some() {
+                            return Err(sled::transaction::ConflictableTransactionError::Abort(
+                                KVStoreErrors::KeyExist(key.to_string())
+                            ));
+                        }
+                        batch.insert(key.as_bytes(), value.as_bytes());
+                    }
+                    KVAction::Update(value) => {
+                        batch.insert(key.as_bytes(), value.as_bytes());
+                    }
+                    KVAction::SetByJsonPath(value) => {
+                        let existing_value = match db.get(key)? {
+                            Some(val) => val,
+                            None => return Err(sled::transaction::ConflictableTransactionError::Abort(
+                                KVStoreErrors::KeyNotFound(key.to_string())
+                            )),
+                        };
+
+                        let mut existing_value: Value = serde_json::from_slice(&existing_value)
+                            .map_err(|err| sled::transaction::ConflictableTransactionError::Abort(
+                                KVStoreErrors::InternalError(err.to_string())
+                            ))?;
+
+                        for (path, sub_value) in value.iter() {
+                            set_json_by_path(&mut existing_value, path, Some(sub_value));
+                        }
+
+                        let updated_value = serde_json::to_vec(&existing_value)
+                            .map_err(|err| sled::transaction::ConflictableTransactionError::Abort(
+                                KVStoreErrors::InternalError(err.to_string())
+                            ))?;
+
+                        batch.insert(key.as_bytes(), updated_value);
+                    }
+                    KVAction::Remove => {
+                        batch.remove(key.as_bytes());
+                    }
+                }
+            }
+
+            db.apply_batch(&batch)?;
+
+            if let Some((key, revision)) = main_key.as_ref() {
+                let revision_key = format!("{}:revision", key);
+                db.insert(revision_key.as_bytes(), revision.to_string().as_bytes())?;
+            }
+
+            Ok(())
+        });
+
+        match tx_result {
+            Ok(_) => Ok(()),
+            Err(sled::transaction::TransactionError::Abort(err)) => Err(err),
+            Err(sled::transaction::TransactionError::Storage(err)) => {
+                Err(KVStoreErrors::InternalError(err.to_string()))
+            }
+        }
     }
 }
 

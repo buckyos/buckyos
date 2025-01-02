@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use thiserror::Error;
-
+use serde_json::Value;
+use sys_config::KVAction;
 
 #[derive(Error, Debug)]
 pub enum KVStoreErrors {
@@ -21,6 +22,7 @@ pub type Result<T> = std::result::Result<T, KVStoreErrors>;
 pub trait KVStoreProvider: Send + Sync {
     async fn get(&self, key: String) -> Result<Option<String>>;
     async fn set(&self, key: String, value: String) -> Result<()>;
+    async fn exec_tx(&self,tx:HashMap<String,KVAction>,main_key:Option<(String,u64)>) -> Result<()>;
     async fn create(&self,key:&str,value:&str) -> Result<()>;
     async fn delete(&self,key:&str) -> Result<()>;
     async fn list_data(&self,key_perfix:&str) -> Result<HashMap<String,String>>;

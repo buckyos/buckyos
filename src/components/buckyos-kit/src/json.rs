@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use serde::{Serialize,Deserialize};
 #[derive(Debug,Clone,Serialize,Deserialize)]
 pub enum JsonValueAction {
+    Create(String),//创建一个节点并设置值
     Update(String),//完整更新
-    Set(HashMap<String,Value>),//当成json设置其中的一个值,针对一个对象,set可以是一个数组
+    SetByPath(HashMap<String,Value>),//当成json设置其中的一个值,针对一个对象,set可以是一个数组
     Remove,//删除
+    //Create(String),
 }
 
 pub fn set_json_by_path(data: &mut Value, path: &str, value: Option<&Value>) {
@@ -70,16 +72,19 @@ pub fn extend_json_action_map(dest_map: &mut HashMap<String, JsonValueAction>, f
         match old_value {
             Some(old_value) => {
                 match value {
+                    JsonValueAction::Create(new_value) => {
+                        *old_value = JsonValueAction::Create(new_value.clone());
+                    },
                     JsonValueAction::Update(new_value) => {
                         *old_value = JsonValueAction::Update(new_value.clone());
                     },
-                    JsonValueAction::Set(new_value) => {
+                    JsonValueAction::SetByPath(new_value) => {
                         match old_value {
-                            JsonValueAction::Set(old_value) => {
+                            JsonValueAction::SetByPath(old_value) => {
                                 old_value.extend(new_value.clone());
                             }
                             _ => {
-                                *old_value = JsonValueAction::Set(new_value.clone());
+                                *old_value = JsonValueAction::SetByPath(new_value.clone());
                             }
                         }
                     },

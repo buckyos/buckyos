@@ -3,14 +3,15 @@
 use log::*;
 use rand::random;
 use serde::{Serialize,Deserialize};
-use serde_json::{Value, json};
+use serde_json::{Value, json, Map};
 use ::kRPC::kRPC;
 use thiserror::Error;
 
 use std::sync::Arc;
+use std::collections::HashMap;
 use tokio::sync::OnceCell;
 use crate::app_list::AppConfigNode;
-
+use crate::KVAction;
 #[derive(Error, Debug)]
 pub enum SystemConfigError {
     #[error("Failed due to reason: {0}")]
@@ -75,6 +76,14 @@ impl SystemConfigClient {
     }
 
     pub async fn set(&self, key: &str, value: &str) -> Result<u64> {
+        if key.is_empty() || value.is_empty() {
+            return Err(SystemConfigError::ReasonError("key or value is empty".to_string()));
+        }
+        //TODO:define a rule for KEY
+        if key.contains(":") {
+            return Err(SystemConfigError::ReasonError("key can not contain ':'".to_string()));
+        }
+
         let client = self.get_krpc_client().await;
         if client.is_err() {
             return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
@@ -152,6 +161,57 @@ impl SystemConfigClient {
                 }
                 list
             })
+    }
+
+    pub async fn exec_tx(&self, tx_actions: HashMap<String, KVAction>, main_key: Option<(String, u64)>) -> Result<u64> {
+        if tx_actions.is_empty() {
+            return Err(SystemConfigError::ReasonError("tx actions! is empty".to_string()));
+        }
+        let mut tx_json = Map::new();
+
+        for (key, action) in tx_actions.iter() {
+            match action {
+                KVAction::Create(value) => {
+                    tx_json.insert(key.to_string(), json!({
+                        "action": "create",
+                        "value": value
+                    }));
+                }
+                KVAction::Update(value) => {
+                    tx_json.insert(key.to_string(), json!({
+                        "action": "update",
+                        "value": value
+                    }));
+                }
+                KVAction::SetByJsonPath(value) => {
+                    tx_json.insert(key.to_string(), json!({
+                        "action": "set_py_path",
+                        "all_set": value
+                    }));
+                }
+                KVAction::Remove => {
+                    tx_json.insert(key.to_string(), json!({
+                        "action": "remove"
+                    }));
+                }
+            }
+        }
+
+        let mut req_params = Map::new();
+        req_params.insert("actions".to_string(), Value::Object(tx_json));
+
+        if let Some((key, revision)) = main_key {
+            req_params.insert("main_key".to_string(), Value::String(format!("{}:{}",key,revision)));
+        }
+
+        let client = self.get_krpc_client().await;
+        if client.is_err() {
+            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}", client.err().unwrap())));
+        }
+        let client = client.unwrap();
+        client.call("sys_config_exec_tx", Value::Object(req_params)).await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+        Ok(0)
     }
 
     pub async fn dump_configs_for_scheduler(&self) -> Result<Value> {

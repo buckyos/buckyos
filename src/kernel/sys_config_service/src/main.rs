@@ -23,6 +23,7 @@ use ::kRPC::*;
 use rbac::*;
 use name_lib::*;
 use buckyos_kit::*;
+use sys_config::KVAction;
 
 use kv_provider::KVStoreProvider;
 use sled_provider::SledStore;
@@ -260,6 +261,82 @@ async fn handle_set_by_json_path(params:Value,session_token:&RPCSessionToken) ->
     }
 }
 
+async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
+    // Check params
+    let actions = params.get("actions");
+    if actions.is_none() {
+        return Err(RPCErrors::ReasonError("Missing actions".to_string()));
+    }
+    let actions = actions.unwrap();
+    if !actions.is_object() {
+        return Err(RPCErrors::ReasonError("Actions must be an object".to_string()));
+    }
+
+    // Check access control for all keys
+    if session_token.userid.is_none() {
+        return Err(RPCErrors::NoPermission("No userid".to_string()));
+    }
+    let userid = session_token.userid.as_ref().unwrap();
+
+    let mut tx_actions = HashMap::new();
+    
+    // Process each action into KVAction
+    for (key, action) in actions.as_object().unwrap() {
+        let full_res_path = format!("kv://{}", key);
+        if !enforce(userid, session_token.appid.as_deref(), full_res_path.as_str(), "write").await {
+            return Err(RPCErrors::NoPermission(format!("No write permission for key: {}", key)));
+        }
+
+        let action_type = action.get("action")
+            .ok_or(RPCErrors::ReasonError(format!("Missing action type for key: {}", key)))?
+            .as_str()
+            .ok_or(RPCErrors::ReasonError("Action type must be string".to_string()))?;
+
+        let kv_action = match action_type {
+            "create" => {
+                let value = action.get("value")
+                    .ok_or(RPCErrors::ReasonError("Missing value for create".to_string()))?
+                    .as_str()
+                    .ok_or(RPCErrors::ReasonError("Value must be string".to_string()))?;
+                KVAction::Create(value.to_string())
+            },
+            "update" => {
+                let value = action.get("value")
+                    .ok_or(RPCErrors::ReasonError("Missing value for update".to_string()))?
+                    .as_str()
+                    .ok_or(RPCErrors::ReasonError("Value must be string".to_string()))?;
+                KVAction::Update(value.to_string())
+            },
+            "set_by_path" => {
+                let all_set = action.get("all_set")
+                    .ok_or(RPCErrors::ReasonError("Missing all_set for set_by_path".to_string()))?;
+                //all_set is a json map
+                let all_set:HashMap<String,Value> = serde_json::from_value(all_set.clone())
+                    .map_err(|err| RPCErrors::ReasonError(err.to_string()))? ;
+                KVAction::SetByJsonPath(all_set)
+            },
+            "remove" => KVAction::Remove,
+            _ => return Err(RPCErrors::ReasonError(format!("Unknown action type: {}", action_type)))
+        };
+        tx_actions.insert(key.clone(), kv_action);
+    }
+    let mut real_main_key = None;
+    let main_key = params.get("main_key");
+    if main_key.is_some() {
+        let main_key = main_key.unwrap();
+        let main_key = main_key.as_str().unwrap();
+        let main_key = main_key.split(":").collect::<Vec<&str>>();
+        let main_key = (main_key[0].to_string(),main_key[1].parse::<u64>().unwrap());
+        real_main_key = Some(main_key);
+    }
+
+    let store = SYS_STORE.lock().await;
+    store.exec_tx(tx_actions,real_main_key).await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+
+    Ok(Value::Null)
+}
+
 async fn handle_list(params:Value,session_token:&RPCSessionToken) -> Result<Value> {
     //check params
     let key = params.get("key");
@@ -284,6 +361,7 @@ async fn handle_list(params:Value,session_token:&RPCSessionToken) -> Result<Valu
     let result = store.list_direct_children(key.to_string()).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     Ok(Value::Array(result.iter().map(|v| Value::String(v.clone())).collect()))
 }
+
 
 async fn dump_configs_for_scheduler(_params:Value,session_token:&RPCSessionToken) -> Result<Value> {
     let appid = session_token.appid.as_deref().unwrap();
@@ -345,6 +423,9 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
             },
             "sys_config_set_by_json_path" => {
                 return handle_set_by_json_path(param,&rpc_session_token).await;
+            },
+            "sys_config_exec_tx" => {
+                return handle_exec_tx(param,&rpc_session_token).await;
             },
             "sys_config_delete" => {
                 return handle_delete(param,&rpc_session_token).await;
@@ -608,6 +689,105 @@ mod test {
         println!("test token expired");
         let result = client.call("sys_config_set", json!( {"key":"users/alice/test_key","value":"test_value"})).await;
         assert!(result.is_err());
+
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn test_transaction_processing() {
+        // Setup trust keys like in the existing test
+        {
+            let jwk = json!(
+                {
+                    "kty": "OKP",
+                    "crv": "Ed25519",
+                    "x": "vZ2kEJdazmmmmxTYIuVPCt0gGgMOnBP6mMrQmqminB0"
+                }
+            );
+            let result_key : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
+            let mut hashmap = TRUST_KEYS.lock().await;
+            hashmap.insert("{owner}".to_string(), DecodingKey::from_jwk(&result_key).unwrap());
+        }
+
+        let server = task::spawn(async {
+            service_main().await;
+        });
+
+        // Create JWT token for authentication
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let test_owner_private_key_pem = r#"
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEIK45kLWIAx3CHmbEmyCST4YB3InSCA4XAV6udqHtRV5P
+        -----END PRIVATE KEY-----
+        "#;
+
+        let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
+        let token = RPCSessionToken{
+            userid: Some("alice".to_string()),
+            appid: None,
+            exp: Some(now + 30),
+            token_type: RPCSessionTokenType::JWT,
+            token: None,
+            iss: None,
+            nonce: None,
+        };
+        let jwt = token.generate_jwt(Some("{owner}".to_string()), &private_key).unwrap();
+
+        sleep(Duration::from_millis(1000)).await;
+        let client = kRPC::new("http://127.0.0.1:3200/kapi/system_config", Some(jwt));
+
+        // Test transaction with multiple operations
+        println!("Testing transaction processing");
+        let tx_request = json!({
+            "actions": {
+                "users/alice/key1": {
+                    "action": "create",
+                    "value": "value1"
+                },
+                "users/alice/key2": {
+                    "action": "create",
+                    "value": "value2"
+                }
+            }
+        });
+
+        // Execute transaction
+        let result = client.call("sys_config_exec_tx", tx_request).await;
+        assert!(result.is_ok(), "Transaction should succeed");
+
+        // Verify the results
+        let get_key1 = client.call("sys_config_get", json!({"key": "users/alice/key1"})).await;
+        assert_eq!(get_key1.unwrap().as_str().unwrap(), "value1", "Key1 should have correct value");
+
+        let get_key2 = client.call("sys_config_get", json!({"key": "users/alice/key2"})).await;
+        assert_eq!(get_key2.unwrap().as_str().unwrap(), "value2", "Key2 should have correct value");
+
+        // Test transaction rollback
+        println!("Testing transaction rollback");
+        let invalid_tx = json!({
+            "actions": {
+                "users/alice/key3": {
+                    "action": "create",
+                    "value": "value3"
+                },
+                "users/alice/key1": { // This should fail due to permissions
+                    "action": "create",
+                    "value": "value4"
+                }
+            }
+        });
+
+        let result = client.call("sys_config_exec_tx", invalid_tx).await;
+        assert!(result.is_err(), "Transaction should fail due to permissions");
+
+        // Verify that no changes were made
+        let get_key3 = client.call("sys_config_get", json!({"key": "users/alice/key3"})).await;
+        assert!(get_key3.unwrap().is_null(), "Key3 should not exist after failed transaction");
+
+        // Cleanup
+        client.call("sys_config_delete", json!({"key": "users/alice/key1"})).await.unwrap();
+        client.call("sys_config_delete", json!({"key": "users/alice/key2"})).await.unwrap();
+        //client.call("sys_config_delete", json!({"key": "users/alice/json_key"})).await.unwrap();
 
         drop(server);
     }

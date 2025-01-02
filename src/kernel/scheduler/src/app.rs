@@ -74,7 +74,7 @@ pub async fn deploy_app_service(user_id:&str,app_id:&str,device_list:&HashMap<St
     let app_index = app_config.app_index;
     let mut set_action = HashMap::new();
     set_action.insert(format!("/apps/{}",app_index),serde_json::to_value(&app_service_config).unwrap());
-    let app_service_config_set_action = JsonValueAction::Set(set_action);
+    let app_service_config_set_action = JsonValueAction::SetByPath(set_action);
     result_config.insert(format!("nodes/{}/config",node_id),app_service_config_set_action);
 
     //如果是http服务,则需要挂到默认的sub host上
@@ -100,7 +100,7 @@ pub async fn deploy_app_service(user_id:&str,app_id:&str,device_list:&HashMap<St
         );    
         let mut set_action = HashMap::new();
         set_action.insert(gateway_path,app_gateway_config);
-        let node_gateway_set_action = JsonValueAction::Set(set_action);
+        let node_gateway_set_action = JsonValueAction::SetByPath(set_action);
         result_config.insert(format!("nodes/{}/gateway",node_id),node_gateway_set_action);  
         result_port = Some(http_port);
     }
@@ -110,7 +110,7 @@ pub async fn deploy_app_service(user_id:&str,app_id:&str,device_list:&HashMap<St
     //修改deployed为true
     let mut set_action = HashMap::new();
     set_action.insert(format!("/deployed"),Value::Bool(true));
-    let set_deployed_action = JsonValueAction::Set(set_action);
+    let set_deployed_action = JsonValueAction::SetByPath(set_action);
     result_config.insert(format!("users/{}/apps/{}/config",user_id,app_id),set_deployed_action);
     return Ok((result_config,result_port));
 }

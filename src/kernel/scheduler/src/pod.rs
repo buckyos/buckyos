@@ -13,13 +13,36 @@
     删除实例
     重新实例化
     调度器实现重新部署
+
+
+扩容添加Node
+    
+
+维护替换添加Node
+    目的是添加一个新的Node,来替换旧的Node
+    新Node的nodeid与旧的node有一定的近视之处
+
+
+
+删除Node(系统d动态缩容)
+   3节点以下是无法缩容的,是在需要,用备份数据->新建zone->恢复数据的方式实现
+
+
+
 */
 
 use anyhow::Result;
 use std::collections::HashMap;
 
+pub enum PodItemType {
+    Service, //无状态的系统服务
+    App,// 无状态的app服务
+}
+
 pub struct PodItem {
     pub id: String,
+    pub pod_type: PodItemType,
+
     pub required_cpu: f64,
     pub required_memory: f64,
     // 亲和性规则
