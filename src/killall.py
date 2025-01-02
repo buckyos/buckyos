@@ -21,5 +21,5 @@ kill_process("verify_hub")
 kill_process("system_config")
 kill_process("cyfs_gateway")
 kill_process("smb_service")
-
+kill_process("repo_service")
 

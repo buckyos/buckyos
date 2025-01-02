@@ -39,6 +39,13 @@
     "type":"kernel"
 }
 """
+"services/repo_service/info" = """
+{
+    "port":4000,
+    "node_list":["ood1"],
+    "type":"frame"
+}
+"""
 "services/gateway/setting" = """
 {
     "shortcuts": {
@@ -198,6 +205,24 @@
         "smb_service" : {
             "target_state":"Running",
             "pkg_id":"smb_service",
+            "operations":{
+                "status":{
+                    "command":"status",
+                    "params":[]
+                },
+                "start":{
+                    "command":"start",
+                    "params":[]
+                },
+                "stop":{
+                    "command":"stop",
+                    "params":[]
+                }
+            }
+        },
+        "repo_service" : {
+            "target_state":"Running",
+            "pkg_id":"repo_service",
             "operations":{
                 "status":{
                     "command":"status",
