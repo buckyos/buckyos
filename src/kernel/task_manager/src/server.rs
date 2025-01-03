@@ -19,9 +19,42 @@ impl TaskManagerServer {
     }
 
     async fn handle_create_task(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        info!("params : {}", req.params);
+        let params: Value = match req.params {
+            Value::String(s) => serde_json::from_str(&s).map_err(|e| {
+                error!("Failed to parse params: {}", e);
+                RPCErrors::ReasonError(e.to_string())
+            })?,
+            Value::Object(_) => req.params,
+            _ => {
+                error!("Invalid params type");
+                return self.error(req.seq, "Invalid params type".to_string());
+            }
+        };
+
+        let name = match params.get("name") {
+            Some(Value::String(s)) => s,
+            Some(_) => {
+                return self.error(req.seq, "'name' field is not a string".to_string());
+            }
+            None => {
+                return self.error(req.seq, "Missing 'name' field in params".to_string());
+            }
+        };
+        let app_name = match params.get("app_name") {
+            Some(Value::String(s)) => s,
+            Some(_) => {
+                return self.error(req.seq, "'app_name' field is not a string".to_string());
+            }
+            None => {
+                return self.error(req.seq, "Missing 'app_name' field in params".to_string());
+            }
+        };
+
         let task = Task {
-            id: "123".to_string(),
-            name: "task1".to_string(),
+            id: 0,
+            name: name.to_string(),
+            app_name: app_name.to_string(),
             status: TaskStatus::Running,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -30,10 +63,7 @@ impl TaskManagerServer {
         let result = db_manager.create_task(&task).await;
         if let Err(e) = result {
             let error_message = e.to_string();
-            return Ok(RPCResponse::new(
-                RPCResult::Success(json!({"code":"1", "msg": error_message})),
-                req.seq,
-            ));
+            return self.error(req.seq, error_message);
         }
 
         return Ok(RPCResponse::new(RPCResult::Success(json!({})), req.seq));
@@ -44,13 +74,10 @@ impl TaskManagerServer {
         let result = db_manager.list_tasks().await;
         if let Err(e) = result {
             let error_message = e.to_string();
-            return Ok(RPCResponse::new(
-                RPCResult::Success(json!({"code":"1", "msg": error_message})),
-                req.seq,
-            ));
+            return self.error(req.seq, error_message);
         }
         let tasks = result.unwrap();
-        info!("len {}", tasks.len());
+        // info!("len {}", tasks.len());
 
         let result = serde_json::to_string(&tasks).unwrap();
         return Ok(RPCResponse::new(
@@ -59,6 +86,13 @@ impl TaskManagerServer {
                 "data": result,
             })),
             req.seq,
+        ));
+    }
+
+    fn error(&self, seq: u64, error_message: String) -> Result<RPCResponse, RPCErrors> {
+        return Ok(RPCResponse::new(
+            RPCResult::Success(json!({"code":"1", "msg": error_message})),
+            seq,
         ));
     }
 }

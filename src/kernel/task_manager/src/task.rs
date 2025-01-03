@@ -34,8 +34,9 @@ impl FromStr for TaskStatus {
 
 #[derive(Serialize, Deserialize)]
 pub struct Task {
-    pub id: String,
+    pub id: i32,
     pub name: String,
+    pub app_name: String,
     pub status: TaskStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
