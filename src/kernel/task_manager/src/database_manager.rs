@@ -1,19 +1,12 @@
 use rusqlite::{params, Connection, Result};
-// use serde::{Deserialize, Serialize};
 use crate::task::{Task, TaskStatus};
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{NaiveDateTime, TimeZone, Utc};
 use log::*;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use warp::{reply::Json, Filter};
 
-#[derive(Debug)]
-struct CustomReject {
-    message: String,
-}
 
-impl warp::reject::Reject for CustomReject {}
 
 pub struct DatabaseManager {
     conn: Option<Arc<Mutex<Connection>>>,
@@ -96,6 +89,23 @@ impl DatabaseManager {
         }
         Ok(tasks)
     }
+
+    // update task status
+    pub async fn update_task(&self, id: u64, status: String) -> Result<()> {
+        let conn = self.conn.as_ref().unwrap();
+        let conn = conn.lock().await;
+        let updated_at = chrono::Utc::now();
+        conn.execute(
+            "UPDATE task SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![
+                status,
+                updated_at.to_string(),
+                id,
+            ],
+        )?;
+        Ok(())
+    }
+
 }
 
 pub async fn init_db(db_path: &str) {
