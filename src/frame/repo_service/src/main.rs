@@ -75,8 +75,8 @@ async fn service_main() {
 
     let repo_server_dir = get_buckyos_system_bin_dir().join("repo");
     let repo_server_config = json!({
-      "tls_port":3150,
-      "http_port":3190,
+      "tls_port":4010,
+      "http_port":4000,
       "hosts": {
         "*": {
           "enable_cors":true,
