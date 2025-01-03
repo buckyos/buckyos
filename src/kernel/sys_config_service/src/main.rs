@@ -248,17 +248,10 @@ async fn handle_set_by_json_path(params:Value,session_token:&RPCSessionToken) ->
 
     //do business logic
     let store = SYS_STORE.lock().await;
-    let result = store.get(String::from(key)).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-    if result.is_none() {
-        warn!("key:[{}] not exist,cann't append",key);
-        return Err(RPCErrors::KeyNotExist);
-    } else {
-        let old_value = result.unwrap();
-        let mut old_value:Value = serde_json::from_str(&old_value).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-        set_json_by_path(&mut old_value,json_path,Some(&new_value));
-        store.set(String::from(key),serde_json::to_string(&old_value).unwrap()).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-        return Ok(Value::Null);
-    }
+    store.set_by_path(String::from(key),String::from(json_path),&new_value)
+        .await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    //let result = store.get(String::from(key)).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    Ok(Value::Null)
 }
 
 async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
@@ -546,20 +539,22 @@ async fn init_by_boot_config()->Result<()> {
     let boot_info = store.get("boot/config".to_string()).await;
     if boot_info.is_ok() {
         let boot_info = boot_info.unwrap();
-        let boot_info_str = boot_info.unwrap();
-    
-        let boot_info:Value = serde_json::from_str(&boot_info_str).unwrap();
-        let verify_hub_info = boot_info.get("verify_hub_info");
-        if verify_hub_info.is_some() {
-            let verify_hub_info = verify_hub_info.unwrap();
-          
-            let verify_hub_public_key = verify_hub_info.get("public_key");
-            if verify_hub_public_key.is_some() {
-                let verify_hub_public_key = verify_hub_public_key.unwrap();
-                let verify_hub_public_key:jsonwebtoken::jwk::Jwk = serde_json::from_value(verify_hub_public_key.clone()).unwrap();
-                let verify_hub_public_key = DecodingKey::from_jwk(&verify_hub_public_key).unwrap();
-                TRUST_KEYS.lock().await.insert("{verify_hub}".to_string(),verify_hub_public_key.clone());
-                info!("Insert verify_hub_public_key to trust keys");
+        if boot_info.is_some() {
+            let boot_info_str = boot_info.unwrap();
+        
+            let boot_info:Value = serde_json::from_str(&boot_info_str).unwrap();
+            let verify_hub_info = boot_info.get("verify_hub_info");
+            if verify_hub_info.is_some() {
+                let verify_hub_info = verify_hub_info.unwrap();
+            
+                let verify_hub_public_key = verify_hub_info.get("public_key");
+                if verify_hub_public_key.is_some() {
+                    let verify_hub_public_key = verify_hub_public_key.unwrap();
+                    let verify_hub_public_key:jsonwebtoken::jwk::Jwk = serde_json::from_value(verify_hub_public_key.clone()).unwrap();
+                    let verify_hub_public_key = DecodingKey::from_jwk(&verify_hub_public_key).unwrap();
+                    TRUST_KEYS.lock().await.insert("{verify_hub}".to_string(),verify_hub_public_key.clone());
+                    info!("Insert verify_hub_public_key to trust keys");
+                }
             }
         }
     }
@@ -666,7 +661,7 @@ mod test {
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
         let token = RPCSessionToken{
             userid: Some("alice".to_string()),
-            appid: None,
+            appid: Some("test".to_string()),
             exp: Some(now+5),//5 seconds
             token_type: RPCSessionTokenType::JWT,
             token: None,
@@ -684,10 +679,7 @@ mod test {
         //test set
         println!("test set");
         let _ = client.call("sys_config_set", json!( {"key":"users/alice/test_key","value":"test_value"})).await.unwrap();
-        //test get
-        println!("test get");
-        let result = client.call("sys_config_get", json!( {"key":"boot/config"})).await.unwrap();
-        assert_eq!(result.as_str().unwrap(), "test_value");
+      
         //test no permission set
         println!("test no permission set");
         let result = client.call("sys_config_set", json!( {"key":"users/bob/test_key","value":"test_value"})).await;
@@ -704,6 +696,12 @@ mod test {
         let result = client.call("sys_config_delete", json!( {"key":"users/alice/test_key"})).await;
         assert!(result.is_err());
 
+        //test set by json path
+        println!("test set by json path");
+        client.call("sys_config_create", json!( {"key":"users/alice/test_json_key","value":"{\"field\":\"old_value\"}"})).await.unwrap();
+        client.call("sys_config_set_by_json_path", json!( {"key":"users/alice/test_json_key","json_path":"/field","value":"\"new_value\""})).await.unwrap();
+        let result = client.call("sys_config_get", json!( {"key":"users/alice/test_json_key"})).await.unwrap();
+        assert_eq!(result.as_str().unwrap(), "{\"field\":\"new_value\"}");
         //test token expired
         sleep(Duration::from_millis(8000)).await;
         println!("test token expired");

@@ -122,25 +122,25 @@ pub async fn enforce(userid:&str, appid:Option<&str>,res_path:&str,op_name:&str)
     let appid = appid.unwrap_or("kernel");
     let res2 = enforcer.enforce((appid, res_path, op_name));
     if res2.is_err() {
-        error!("enforce error: {}", res2.err().unwrap());
+        warn!("enforce error: {}", res2.err().unwrap());
         return false;
     }
     let res2 = res2.unwrap();
 
-    println!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
-    info!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);    
+    //println!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
+    debug!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);    
     if appid == "kernel" {
         return res2;
     }
 
     let res = enforcer.enforce((userid, res_path, op_name));
     if res.is_err() {
-        error!("enforce error: {}", res.err().unwrap());
+        warn!("enforce error: {}", res.err().unwrap());
         return false;
     }
     let res = res.unwrap();
-    println!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
-    info!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
+    //println!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
+    debug!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
     return res2 && res;
 }
 

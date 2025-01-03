@@ -43,6 +43,48 @@ impl KVStoreProvider for SledStore {
         Ok(())
     }
 
+    async fn set_by_path(&self, key: String, json_path: String, value: &Value) -> Result<()> {
+        let tx_result = self.db.transaction(|db| {
+            // Get the current value
+            let current_value = match db.get(key.as_bytes())? {
+                Some(val) => val,
+                None => return Err(sled::transaction::ConflictableTransactionError::Abort(
+                    KVStoreErrors::KeyNotFound(key.clone())
+                )),
+            };
+
+            // Parse the current value as JSON
+            let mut current_value: Value = serde_json::from_slice(&current_value)
+                .map_err(|err| sled::transaction::ConflictableTransactionError::Abort(
+                    KVStoreErrors::InternalError(err.to_string())
+                ))?;
+
+            // Update the value using json_path
+            set_json_by_path(&mut current_value, &json_path, Some(value));
+
+            // Convert back to bytes
+            let updated_value = serde_json::to_vec(&current_value)
+                .map_err(|err| sled::transaction::ConflictableTransactionError::Abort(
+                    KVStoreErrors::InternalError(err.to_string())
+                ))?;
+
+            // Update in the transaction
+            db.insert(key.as_bytes(), updated_value)?;
+            Ok(())
+        });
+
+        match tx_result {
+            Ok(_) => {
+                self.db.flush().map_err(|err| KVStoreErrors::InternalError(err.to_string()))?;
+                Ok(())
+            },
+            Err(sled::transaction::TransactionError::Abort(err)) => Err(err),
+            Err(sled::transaction::TransactionError::Storage(err)) => {
+                Err(KVStoreErrors::InternalError(err.to_string()))
+            }
+        }
+    }
+
     
 
     async fn create(&self, key: &str, value: &str) -> Result<()> {
