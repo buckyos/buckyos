@@ -773,8 +773,8 @@ for (var i = 0; i < rules.length; i++) {
     defaultMatcher.add(Filter.fromText(rules[i]));
 }
 
-function RuleSelect(src, dest) {
-    if (defaultMatcher.matchesAny(src.url, src.host) instanceof BlockingFilter) {
+function RuleSelect(dest, src) {
+    if (defaultMatcher.matchesAny(dest.url, dest.host) instanceof BlockingFilter) {
         return proxy;
     }
     return direct;
