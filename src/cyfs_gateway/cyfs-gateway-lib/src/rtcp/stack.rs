@@ -431,6 +431,12 @@ impl TunnelBuilder for RTcpStack {
             )));
         }
         let device_ip = device_ip.unwrap();
+        info!(
+            "resolve target device {} ip is {}",
+            target_id_str.as_str(),
+            device_ip
+        );
+        
         let port = target.stack_port;
         let remote_addr = format!("{}:{}", device_ip, port);
 

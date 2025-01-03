@@ -175,6 +175,26 @@ fn load_config_from_args(matches: &clap::ArgMatches) -> Result<String> {
 
 }
 
+fn generate_ed25519_key_pair_to_local() {
+    // Get temp path
+    let temp_dir = std::env::temp_dir();
+    let key_dir = temp_dir.join("buckyos").join("keys");
+    if !key_dir.is_dir() {
+        std::fs::create_dir_all(&key_dir).unwrap();
+    }
+    println!("key_dir: {:?}",key_dir);
+
+    let (private_key, public_key) = generate_ed25519_key_pair();
+
+    let sk_file = key_dir.join("private_key.pem");
+    std::fs::write(&sk_file, private_key).unwrap();
+    println!("Private key saved to: {:?}",sk_file);
+
+    let pk_file = key_dir.join("public_key.json");
+    std::fs::write(&pk_file, serde_json::to_string(&public_key).unwrap()).unwrap();
+    println!("Public key saved to: {:?}",pk_file);
+}
+
 fn main() {
     let matches = Command::new("CYFS Gateway Service")
         .arg(
@@ -205,11 +225,21 @@ fn main() {
             .long("buckyos-root")
             .help("Change buckyos root dir, same as BUCKYOS_ROOT env var")
             .required(false))
+        .arg(Arg::new("new_key_pair")
+            .long("new-key-pair")
+            .help("Generate a new key pair for service")
+            .required(false)
+            .action(ArgAction::SetTrue))
         .get_matches();
 
     // set buckyos root dir
     if let Some(buckyos_root) = matches.get_one::<String>("buckyos_root") {
         std::env::set_var("BUCKYOS_ROOT", buckyos_root);
+    }
+
+    if matches.get_flag("new_key_pair") {
+        generate_ed25519_key_pair_to_local();
+        std::process::exit(0);
     }
 
     // init log
