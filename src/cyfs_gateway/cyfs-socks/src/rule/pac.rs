@@ -7,6 +7,7 @@ use boa_engine::{
     NativeFunction, Source,
 };
 use boa_runtime::Console;
+use once_cell::sync::OnceCell;
 use regex::Regex;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -15,57 +16,14 @@ use tokio::sync::{mpsc, oneshot};
 use trust_dns_resolver::config::*;
 use trust_dns_resolver::Resolver;
 
-struct PacScriptExecutor {
-    context: Arc<Mutex<Context>>,
-}
+struct RuleSelectFuncCaller {}
 
-impl PacScriptExecutor {
-    pub fn new() -> RuleResult<Self> {
-        let mut context = Context::default();
-
-        // Register pac environment functions
-        Self::register_env(&mut context)?;
-
-        // Register console object
-        let console = Console::init(&mut context);
-
-        // Register the console as a global property to the context.
-        context
-            .register_global_property(js_string!(Console::NAME), console, Attribute::all())
-            .expect("the console object shouldn't exist yet");
-
-        let context = Arc::new(Mutex::new(context));
-
-        Ok(Self { context })
-    }
-
-    // Evaluate the PAC script
-    fn load(&self, src: &str) -> RuleResult<()> {
-        let mut context = self.context.lock().unwrap();
-
-        let src = Source::from_bytes(src.as_bytes());
-        context.eval(src).map_err(|e| {
-            let mut source = e.source();
-            while let Some(err) = source {
-                println!("Caused by: {:?}", err);
-                source = err.source();
-            }
-
-            let msg = format!("failed to eval PAC script: {:?}, {:?}", e, e.source());
-            error!("{}", msg);
-            RuleError::InvalidScript(msg)
-        })?;
-
-        Ok(())
-    }
-
-    pub fn rule_select(&self, input: RuleInput) -> RuleResult<RuleOutput> {
-        let mut context = self.context.lock().unwrap();
-
+impl RuleSelectFuncCaller {
+    pub fn call(&self, context: &mut Context, input: RuleInput) -> RuleResult<RuleOutput> {
         // Call the RuleSelect(url, source_info) -> output function in the PAC script
         let func = context
             .global_object()
-            .get(js_string!("RuleSelect"), &mut context)
+            .get(js_string!("RuleSelect"), context)
             .map_err(|e| {
                 let msg = format!("failed to get RuleSelect: {:?}", e);
                 error!("{}", msg);
@@ -80,7 +38,7 @@ impl PacScriptExecutor {
         }
 
         // Prepare the dest info object
-        let mut dest_builder = ObjectInitializer::new(&mut context);
+        let mut dest_builder = ObjectInitializer::new(context);
         dest_builder.property(
             js_str!("url"),
             js_string!(input.dest.url.to_string()),
@@ -99,7 +57,7 @@ impl PacScriptExecutor {
         let dest_map = dest_builder.build();
 
         // Prepare the source info object
-        let mut headers_builder = ObjectInitializer::new(&mut context);
+        let mut headers_builder = ObjectInitializer::new(context);
         for (k, v) in input.source.http_headers.iter() {
             headers_builder.property(
                 js_string!(k.clone()),
@@ -109,7 +67,7 @@ impl PacScriptExecutor {
         }
         let headers_map = headers_builder.build();
 
-        let mut source_builder = ObjectInitializer::new(&mut context);
+        let mut source_builder = ObjectInitializer::new(context);
         source_builder.property(js_str!("ip"), js_string!(input.source.ip), Attribute::all());
         source_builder.property(js_str!("http_headers"), headers_map, Attribute::all());
         source_builder.property(
@@ -129,7 +87,7 @@ impl PacScriptExecutor {
             .call(
                 &JsValue::undefined(),
                 &[JsValue::from(dest_map), JsValue::from(source_map)],
-                &mut context,
+                context,
             )
             .map_err(|e| {
                 let msg = format!("failed to call RuleSelect: {:?}", e);
@@ -138,7 +96,7 @@ impl PacScriptExecutor {
             })?;
 
         // Parse the result
-        let result = result.to_string(&mut context).map_err(|e| {
+        let result = result.to_string(context).map_err(|e| {
             let msg = format!("failed to convert result to string: {:?}", e);
             error!("{}", msg);
             RuleError::InvalidFormat(msg)
@@ -148,6 +106,184 @@ impl PacScriptExecutor {
         let actions = RuleAction::from_str_list(&result.to_std_string().unwrap())?;
 
         Ok(RuleOutput { actions })
+    }
+}
+
+struct PACProxyFuncCaller {}
+
+impl PACProxyFuncCaller {
+    // Use for function FindProxyForURL(url, host) in PAC script
+    pub fn call(&self, context: &mut Context, input: RuleInput) -> RuleResult<RuleOutput> {
+        // Call the RuleSelect(url, source_info) -> output function in the PAC script
+        let func = context
+            .global_object()
+            .get(js_string!("FindProxyForURL"), context)
+            .map_err(|e| {
+                let msg = format!("failed to get FindProxyForURL: {:?}", e);
+                error!("{}", msg);
+                RuleError::InvalidScript(msg)
+            })?;
+
+        // Check if the RuleSelect is a not none and a function
+        if func.is_null_or_undefined() {
+            let msg = format!("FindProxyForURL is not defined yet!");
+            error!("{}", msg);
+            return Err(RuleError::InvalidScript(msg));
+        }
+
+        // Prepare the parameters
+
+        let select_func = func.as_callable().ok_or_else(|| {
+            let msg = format!("FindProxyForURL is not a function");
+            error!("{}", msg);
+            RuleError::InvalidScript(msg)
+        })?;
+
+        let result = select_func
+            .call(
+                &JsValue::undefined(),
+                &[
+                    JsValue::from(js_string!(input.dest.url.as_str())),
+                    JsValue::from(js_string!(input.dest.host)),
+                ],
+                context,
+            )
+            .map_err(|e| {
+                let msg = format!("failed to call FindProxyForURL: {:?}", e);
+                error!("{}", msg);
+                RuleError::InvalidFormat(msg)
+            })?;
+
+        // Parse the result
+        let result = result.to_string(context).map_err(|e| {
+            let msg = format!("failed to convert result to string: {:?}", e);
+            error!("{}", msg);
+            RuleError::InvalidFormat(msg)
+        })?;
+
+        info!("FindProxyForURL result: {} -> {:?}", input.dest.url, result);
+        let actions = RuleAction::from_str_list(&result.to_std_string().unwrap())?;
+
+        Ok(RuleOutput { actions })
+    }
+}
+
+enum FunctionCaller {
+    RuleSelect(RuleSelectFuncCaller),
+    FindProxyForURL(PACProxyFuncCaller),
+}
+
+impl FunctionCaller {
+    pub fn load(context: &mut Context) -> RuleResult<Self> {
+        // Check if the RuleSelect function is defined
+        let rule_select = context
+            .global_object()
+            .get(js_string!("RuleSelect"), context)
+            .map_err(|e| {
+                let msg = format!("failed to get RuleSelect: {:?}", e);
+                error!("{}", msg);
+                RuleError::InvalidScript(msg)
+            })?;
+
+        if rule_select.is_callable() {
+            info!("RuleSelect function is found in the PAC script");
+            return Ok(FunctionCaller::RuleSelect(RuleSelectFuncCaller {}));
+        }
+
+        // Check if the FindProxyForURL function is defined
+        let find_proxy = context
+            .global_object()
+            .get(js_string!("FindProxyForURL"), context)
+            .map_err(|e| {
+                let msg = format!("failed to get FindProxyForURL: {:?}", e);
+                error!("{}", msg);
+                RuleError::InvalidScript(msg)
+            })?;
+
+        if find_proxy.is_callable() {
+            info!("FindProxyForURL function is found in the PAC script");
+            return Ok(FunctionCaller::FindProxyForURL(PACProxyFuncCaller {}));
+        }
+
+        let msg = format!("RuleSelect or FindProxyForURL is not defined yet!");
+        error!("{}", msg);
+        Err(RuleError::InvalidScript(msg))
+    }
+
+    pub fn call(&self, context: &mut Context, input: RuleInput) -> RuleResult<RuleOutput> {
+        match self {
+            FunctionCaller::RuleSelect(caller) => caller.call(context, input),
+            FunctionCaller::FindProxyForURL(caller) => caller.call(context, input),
+        }
+    }
+}
+
+struct PacScriptExecutor {
+    context: Arc<Mutex<Context>>,
+    caller: Arc<OnceCell<FunctionCaller>>,
+}
+
+impl PacScriptExecutor {
+    pub fn new() -> RuleResult<Self> {
+        let mut context = Context::default();
+
+        // Register pac environment functions
+        Self::register_env(&mut context)?;
+
+        // Register console object
+        let console = Console::init(&mut context);
+
+        // Register the console as a global property to the context.
+        context
+            .register_global_property(js_string!(Console::NAME), console, Attribute::all())
+            .expect("the console object shouldn't exist yet");
+
+        let context = Arc::new(Mutex::new(context));
+
+        Ok(Self {
+            context,
+            caller: Arc::new(OnceCell::new()),
+        })
+    }
+
+    // Evaluate the PAC script
+    fn load(&self, src: &str) -> RuleResult<()> {
+        let mut context = self.context.lock().unwrap();
+
+        let src = Source::from_bytes(src.as_bytes());
+        context.eval(src).map_err(|e| {
+            let mut source = e.source();
+            while let Some(err) = source {
+                println!("Caused by: {:?}", err);
+                source = err.source();
+            }
+
+            let msg = format!("failed to eval PAC script: {:?}, {:?}", e, e.source());
+            error!("{}", msg);
+            RuleError::InvalidScript(msg)
+        })?;
+
+        // Load the function caller
+        let caller = FunctionCaller::load(&mut context)?;
+        self.caller.set(caller).map_err(|_| {
+            let msg = format!("failed to set function caller");
+            error!("{}", msg);
+            RuleError::InternalError(msg)
+        })?;
+
+        Ok(())
+    }
+
+    pub fn rule_select(&self, input: RuleInput) -> RuleResult<RuleOutput> {
+        let mut context = self.context.lock().unwrap();
+
+        let caller = self.caller.get().ok_or_else(|| {
+            let msg = format!("function caller is not set yet!");
+            error!("{}", msg);
+            RuleError::InternalError(msg)
+        })?;
+
+        caller.call(&mut context, input)
     }
 
     fn register_env(context: &mut Context) -> RuleResult<()> {
@@ -248,7 +384,6 @@ impl PacScriptExecutor {
 
 use super::selector::*;
 
-
 pub struct PacScriptManager {
     script: String,
 }
@@ -300,7 +435,6 @@ impl RuleSelector for PacScriptManager {
         Ok(ret)
     }
 }
-
 
 struct AsyncRuleSelectRequest {
     input: RuleInput,
