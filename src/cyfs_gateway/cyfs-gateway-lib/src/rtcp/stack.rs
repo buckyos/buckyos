@@ -526,14 +526,15 @@ impl TunnelBuilder for RTcpStack {
     }
 
     async fn create_listener(&self, bind_url: &Url) -> TunnelResult<Box<dyn StreamListener>> {
-        let dispatcher = RTCP_DISPATCHER_MANAGER.new_dispatcher(bind_url)?;
+        let dispatcher = RTCP_DISPATCHER_MANAGER.new_stream_dispatcher(bind_url)?;
         Ok(Box::new(dispatcher) as Box<dyn StreamListener>)
     }
 
     async fn create_datagram_server(
         &self,
-        _bind_url: &Url,
+        bind_url: &Url,
     ) -> TunnelResult<Box<dyn DatagramServerBox>> {
-        unimplemented!("create_datagram_server not implemented")
+        let dispatcher = RTCP_DISPATCHER_MANAGER.new_datagram_dispatcher(bind_url)?;
+        Ok(Box::new(dispatcher) as Box<dyn DatagramServerBox>)
     }
 }

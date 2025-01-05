@@ -7,7 +7,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
-struct AsyncStreamWithDatagram {
+pub struct AsyncStreamWithDatagram {
     stream: Arc<Mutex<Box<dyn AsyncStream>>>,
 }
 
@@ -18,7 +18,7 @@ impl AsyncStreamWithDatagram {
         }
     }
 
-    async fn recv_datagram(&self, buffer: &mut [u8]) -> Result<usize, std::io::Error> {
+    pub async fn recv_datagram(&self, buffer: &mut [u8]) -> Result<usize, std::io::Error> {
         let mut stream = self.stream.lock().await;
 
         // First write the length of the datagram in u32, to the buffer
@@ -54,7 +54,7 @@ impl AsyncStreamWithDatagram {
         Ok(len)
     }
 
-    async fn send_datagram(&self, buffer: &[u8]) -> Result<usize, std::io::Error> {
+    pub async fn send_datagram(&self, buffer: &[u8]) -> Result<usize, std::io::Error> {
         let mut stream = self.stream.lock().await;
 
         // First write the length of the datagram in u32, to the buffer

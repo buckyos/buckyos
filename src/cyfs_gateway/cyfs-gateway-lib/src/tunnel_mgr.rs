@@ -31,6 +31,7 @@ pub fn get_protocol_category(str_protocol: &str) -> TunnelResult<ProtocolCategor
         "tcp" => Ok(ProtocolCategory::Stream),
         "rtcp" => Ok(ProtocolCategory::Stream),
         "udp" => Ok(ProtocolCategory::Datagram),
+        "rudp" => Ok(ProtocolCategory::Datagram),
         _ => {
             let msg = format!("Unknow protocol: {}", str_protocol);
             error!("{}", msg);
@@ -46,6 +47,10 @@ pub async fn get_tunnel_builder_by_protocol(
         "tcp" => return Ok(Box::new(IPTunnelBuilder::new())),
         "udp" => return Ok(Box::new(IPTunnelBuilder::new())),
         "rtcp" => {
+            let stack = RTCP_STACK_MANAGER.get_current_device_stack().await?;
+            Ok(Box::new(stack))
+        },
+        "rudp" => {
             let stack = RTCP_STACK_MANAGER.get_current_device_stack().await?;
             Ok(Box::new(stack))
         },

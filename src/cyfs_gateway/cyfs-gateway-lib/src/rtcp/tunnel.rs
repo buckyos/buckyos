@@ -226,7 +226,7 @@ impl RTcpTunnel {
         );
 
         // 1. First try to find if dispatcher exists for the target port
-        let ret = super::dispatcher::RTCP_DISPATCHER_MANAGER.get_dispatcher(dest_port);
+        let ret = super::dispatcher::RTCP_DISPATCHER_MANAGER.get_stream_dispatcher(dest_port);
         if let Some(dispatcher) = ret {
             let end_point = TunnelEndpoint {
                 device_id: self.target.get_id_str(),
@@ -299,7 +299,16 @@ impl RTcpTunnel {
             request_target_addr
         );
 
-        // 1. TODO First try to find if dispatcher exists for the target port
+        // 1. First try to find if dispatcher exists for the target port
+        let ret = super::dispatcher::RTCP_DISPATCHER_MANAGER.get_datagram_dispatcher(dest_port);
+        if let Some(dispatcher) = ret {
+            let end_point = TunnelEndpoint {
+                device_id: self.target.get_id_str(),
+                port: self.target.target_port,
+            };
+            dispatcher.on_new_stream(stream, end_point).await?;
+            return Ok(());
+        }
 
         // 2. Create local datagram client and forward
         let forwarder = super::datagram::DatagramForwarder::new(
