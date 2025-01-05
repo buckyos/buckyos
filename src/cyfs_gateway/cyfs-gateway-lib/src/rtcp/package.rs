@@ -223,7 +223,7 @@ impl RTcpPongPackage {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct RTcpROpenBody {
-    pub streamid: String,
+    pub stream_id: String,
 
     pub dest_port: u16,
     // Dest host in ip or domain format, if none, then use default local ip
@@ -240,7 +240,7 @@ impl RTcpROpenPackage {
             cmd: CmdType::ROpen.into(),
             seq: seq,
             body: RTcpROpenBody {
-                streamid: session_key,
+                stream_id: session_key,
                 dest_port,
                 dest_host,
             },
@@ -307,7 +307,7 @@ impl RTcpROpenRespPackage {
 // Same as RTcpROpenBody
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct RTcpOpenBody {
-    pub streamid: String,
+    pub stream_id: String,
 
     pub dest_port: u16,
     // Dest host in ip or domain format, if none, then use default local ip
@@ -324,7 +324,7 @@ impl RTcpOpenPackage {
             cmd: CmdType::Open.into(),
             seq: seq,
             body: RTcpOpenBody {
-                streamid: session_key,
+                stream_id: session_key,
                 dest_port,
                 dest_host,
             },

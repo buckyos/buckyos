@@ -9,7 +9,6 @@ use buckyos_kit::buckyos_get_unix_timestamp;
 use buckyos_kit::AsyncStream;
 use log::*;
 use rand::Rng;
-use tokio::sync::Notify;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -19,6 +18,7 @@ use std::time::Duration;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::task;
 use tokio::time::timeout;
 
@@ -66,7 +66,7 @@ impl RTcpTunnel {
             aes_key: aes_key,
             read_stream: Arc::new(Mutex::new(read_stream)),
             write_stream: Arc::new(Mutex::new(write_stream)),
-            
+
             next_seq: Arc::new(AtomicU32::new(0)),
             open_resp_notify: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -83,7 +83,8 @@ impl RTcpTunnel {
     }
 
     fn next_seq(&self) -> u32 {
-        self.next_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        self.next_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
     async fn process_package(&self, package: RTcpTunnelPackage) -> Result<(), anyhow::Error> {
@@ -108,10 +109,10 @@ impl RTcpTunnel {
                     request_target_addr
                 );
 
-                let nonce_bytes: [u8; 16] = hex::decode(ropen_package.body.streamid.as_str())
-                    .map_err(|op| anyhow::format_err!("decode streamid error:{}", op))?
+                let nonce_bytes: [u8; 16] = hex::decode(ropen_package.body.stream_id.as_str())
+                    .map_err(|op| anyhow::format_err!("decode stream_id error:{}", op))?
                     .try_into()
-                    .map_err(|_op| anyhow::format_err!("decode streamid error"))?;
+                    .map_err(|_op| anyhow::format_err!("decode stream_id error"))?;
 
                 // 1. open stream to remote and send hello stream
                 let mut target_addr = self.peer_addr.clone();
@@ -143,7 +144,7 @@ impl RTcpTunnel {
                 //let random_bytes: [u8; 16] =
                 RTcpTunnelPackage::send_hello_stream(
                     &mut rtcp_stream,
-                    ropen_package.body.streamid.as_str(),
+                    ropen_package.body.stream_id.as_str(),
                 )
                 .await?;
 
@@ -251,7 +252,7 @@ impl RTcpTunnel {
                 let real_key = format!(
                     "{}_{}",
                     self.this_device.as_str(),
-                    open_package.body.streamid
+                    open_package.body.stream_id
                 );
                 WAIT_ROPEN_STREAM_MAP
                     .lock()
@@ -267,12 +268,12 @@ impl RTcpTunnel {
                 }
 
                 // 5. Wait for the new stream
-                let stream = self.wait_ropen_stream(&open_package.body.streamid).await?;
+                let stream = self.wait_ropen_stream(&open_package.body.stream_id).await?;
 
-                let nonce_bytes: [u8; 16] = hex::decode(open_package.body.streamid.as_str())
-                    .map_err(|op| anyhow::format_err!("decode streamid error:{}", op))?
+                let nonce_bytes: [u8; 16] = hex::decode(open_package.body.stream_id.as_str())
+                    .map_err(|op| anyhow::format_err!("decode stream_id error:{}", op))?
                     .try_into()
-                    .map_err(|_op| anyhow::format_err!("decode streamid error"))?;
+                    .map_err(|_op| anyhow::format_err!("decode stream_id error"))?;
                 let aes_key = self.get_key().clone();
                 let mut aes_stream = EncryptedStream::new(stream, &aes_key, &nonce_bytes);
 
@@ -319,11 +320,18 @@ impl RTcpTunnel {
             }
             RTcpTunnelPackage::OpenResp(open_resp_package) => {
                 // Notify the open_stream waiter with the seq
-                let notify = self.open_resp_notify.lock().await.remove(&open_resp_package.seq);
+                let notify = self
+                    .open_resp_notify
+                    .lock()
+                    .await
+                    .remove(&open_resp_package.seq);
                 if notify.is_some() {
                     notify.unwrap().notify_one();
                 } else {
-                    warn!("open stream notify not found: seq={}", open_resp_package.seq);
+                    warn!(
+                        "open stream notify not found: seq={}",
+                        open_resp_package.seq
+                    );
                 }
 
                 return Ok(());
@@ -368,26 +376,47 @@ impl RTcpTunnel {
         }
     }
 
-    async fn post_ropen(&self, dest_port: u16, dest_host: Option<String>, session_key: &str) -> Result<(), std::io::Error> {
-        let ropen_package = RTcpROpenPackage::new(self.next_seq(), session_key.to_string(), dest_port, dest_host);
+    async fn post_ropen(
+        &self,
+        dest_port: u16,
+        dest_host: Option<String>,
+        session_key: &str,
+    ) -> Result<(), std::io::Error> {
+        let ropen_package = RTcpROpenPackage::new(
+            self.next_seq(),
+            session_key.to_string(),
+            dest_port,
+            dest_host,
+        );
         let mut write_stream = self.write_stream.lock().await;
         let write_stream = Pin::new(&mut *write_stream);
-        RTcpTunnelPackage::send_package(write_stream, ropen_package).await.map_err(|e| {
-            let msg = format!("send ropen package error:{}", e);
-            error!("{}", msg);
-            std::io::Error::new(std::io::ErrorKind::Other, msg)
-        })
+        RTcpTunnelPackage::send_package(write_stream, ropen_package)
+            .await
+            .map_err(|e| {
+                let msg = format!("send ropen package error:{}", e);
+                error!("{}", msg);
+                std::io::Error::new(std::io::ErrorKind::Other, msg)
+            })
     }
 
-    async fn post_open(&self, seq: u32, dest_port: u16, dest_host: Option<String>, session_key: &str) -> Result<(), std::io::Error> {
-        let ropen_package = RTcpOpenPackage::new(seq, session_key.to_string(), dest_port, dest_host);
+    async fn post_open(
+        &self,
+        seq: u32,
+        dest_port: u16,
+        dest_host: Option<String>,
+        session_key: &str,
+    ) -> Result<(), std::io::Error> {
+        let ropen_package =
+            RTcpOpenPackage::new(seq, session_key.to_string(), dest_port, dest_host);
         let mut write_stream = self.write_stream.lock().await;
         let write_stream = Pin::new(&mut *write_stream);
-        RTcpTunnelPackage::send_package(write_stream, ropen_package).await.map_err(|e| {
-            let msg = format!("send open package error:{}", e);
-            error!("{}", msg);
-            std::io::Error::new(std::io::ErrorKind::Other, msg)
-        })
+        RTcpTunnelPackage::send_package(write_stream, ropen_package)
+            .await
+            .map_err(|e| {
+                let msg = format!("send open package error:{}", e);
+                error!("{}", msg);
+                std::io::Error::new(std::io::ErrorKind::Other, msg)
+            })
     }
 
     async fn wait_ropen_stream(&self, session_key: &str) -> Result<TcpStream, std::io::Error> {
@@ -457,7 +486,7 @@ impl Tunnel for RTcpTunnel {
             // Must wait openresp package then we can build a direct stream
             let wait_result = timeout(Duration::from_secs(60), notify.notified()).await;
             if wait_result.is_err() {
-                self.open_resp_notify.lock().await.remove(&seq);    // Remove the notify if timeout
+                self.open_resp_notify.lock().await.remove(&seq); // Remove the notify if timeout
                 error!(
                     "Timeout: open stream {} was not found within the time limit.",
                     real_key.as_str()
@@ -522,7 +551,8 @@ impl Tunnel for RTcpTunnel {
 
     async fn create_datagram_client(
         &self,
-        _dest_port: u16,
+        dest_port: u16,
+        dest_host: Option<String>,
     ) -> Result<Box<dyn DatagramClientBox>, std::io::Error> {
         unimplemented!()
     }

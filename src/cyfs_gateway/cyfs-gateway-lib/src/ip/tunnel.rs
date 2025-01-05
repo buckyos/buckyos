@@ -51,8 +51,13 @@ impl Tunnel for IPTunnel {
     async fn create_datagram_client(
         &self,
         dest_port: u16,
+        dest_host: Option<String>,
     ) -> Result<Box<dyn DatagramClientBox>, std::io::Error> {
-        let dest_host = self.target.host_str().unwrap();
+        let dest_host = match dest_host {
+            Some(host) => host,
+            None => self.target.host_str().unwrap().to_string(),
+        };
+        
         let client = UdpClient::new(dest_host.to_string(), dest_port).await?;
         Ok(Box::new(client))
     }

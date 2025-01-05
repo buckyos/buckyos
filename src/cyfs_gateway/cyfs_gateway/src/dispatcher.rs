@@ -134,7 +134,7 @@ impl ServiceDispatcher {
                                 continue;
                             }
                             let target_tunnel = target_tunnel.unwrap();
-                            let datagram_client = target_tunnel.create_datagram_client(target_port).await;
+                            let datagram_client = target_tunnel.create_datagram_client(target_port, None).await;
                             if datagram_client.is_err() {
                                 warn!("datagram-forward create datagram client failed: {}", datagram_client.err().unwrap());
                                 continue;
