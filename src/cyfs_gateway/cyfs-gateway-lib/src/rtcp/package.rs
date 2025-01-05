@@ -222,10 +222,26 @@ impl RTcpPongPackage {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum StreamPurpose {
+    Stream = 0,
+    Datagram = 1,
+}
+
+impl Default for StreamPurpose {
+    fn default() -> Self {
+        StreamPurpose::Stream
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct RTcpROpenBody {
     pub stream_id: String,
 
+    // Stream purpose, None is default as Stream
+    pub purpose: Option<StreamPurpose>,
+
     pub dest_port: u16,
+
     // Dest host in ip or domain format, if none, then use default local ip
     pub dest_host: Option<String>,
 }
@@ -233,7 +249,7 @@ pub(crate) struct RTcpROpenBody {
 pub(crate) type RTcpROpenPackage = RTcpTunnelPackageImpl<RTcpROpenBody>;
 
 impl RTcpROpenPackage {
-    pub fn new(seq: u32, session_key: String, dest_port: u16, dest_host: Option<String>) -> Self {
+    pub fn new(seq: u32, session_key: String, purpose: Option<StreamPurpose>, dest_port: u16, dest_host: Option<String>) -> Self {
         RTcpROpenPackage {
             len: 0,
             json_pos: 0,
@@ -241,6 +257,7 @@ impl RTcpROpenPackage {
             seq: seq,
             body: RTcpROpenBody {
                 stream_id: session_key,
+                purpose,
                 dest_port,
                 dest_host,
             },
@@ -304,12 +321,17 @@ impl RTcpROpenRespPackage {
     }
 }
 
+
 // Same as RTcpROpenBody
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct RTcpOpenBody {
     pub stream_id: String,
 
+    // Stream purpose, None is default as Stream
+    pub purpose: Option<StreamPurpose>,
+
     pub dest_port: u16,
+
     // Dest host in ip or domain format, if none, then use default local ip
     pub dest_host: Option<String>,
 }
@@ -317,7 +339,7 @@ pub(crate) struct RTcpOpenBody {
 pub(crate) type RTcpOpenPackage = RTcpTunnelPackageImpl<RTcpOpenBody>;
 
 impl RTcpOpenPackage {
-    pub fn new(seq: u32, session_key: String, dest_port: u16, dest_host: Option<String>) -> Self {
+    pub fn new(seq: u32, session_key: String, purpose: Option<StreamPurpose>, dest_port: u16, dest_host: Option<String>) -> Self {
         Self {
             len: 0,
             json_pos: 0,
@@ -325,6 +347,7 @@ impl RTcpOpenPackage {
             seq: seq,
             body: RTcpOpenBody {
                 stream_id: session_key,
+                purpose,
                 dest_port,
                 dest_host,
             },

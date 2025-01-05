@@ -4,6 +4,7 @@ mod tunnel;
 mod stack;
 mod manager;
 mod dispatcher;
+mod datagram;
 
 #[cfg(test)]
 mod tests;

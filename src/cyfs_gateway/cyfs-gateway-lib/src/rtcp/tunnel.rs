@@ -1,3 +1,5 @@
+use super::datagram::RTcpTunnelDatagramClient;
+use super::package::StreamPurpose;
 use super::package::*;
 use super::protocol::*;
 use super::stack::{WaitStream, NOTIFY_ROPEN_STREAM, WAIT_ROPEN_STREAM_MAP};
@@ -97,227 +99,12 @@ impl RTcpTunnel {
                 let _ = RTcpTunnelPackage::send_package(write_stream, pong_package).await?;
                 return Ok(());
             }
-            RTcpTunnelPackage::ROpen(ropen_package) => {
-                // Get real request target address
-                let request_target_addr = match ropen_package.body.dest_host {
-                    Some(ref host) => format!("{}:{}", host, ropen_package.body.dest_port),
-                    None => format!("127.0.0.1:{}", ropen_package.body.dest_port),
-                };
-
-                info!(
-                    "rtcp tunnel ropen request target stream to {}",
-                    request_target_addr
-                );
-
-                let nonce_bytes: [u8; 16] = hex::decode(ropen_package.body.stream_id.as_str())
-                    .map_err(|op| anyhow::format_err!("decode stream_id error:{}", op))?
-                    .try_into()
-                    .map_err(|_op| anyhow::format_err!("decode stream_id error"))?;
-
-                // 1. open stream to remote and send hello stream
-                let mut target_addr = self.peer_addr.clone();
-                target_addr.set_port(self.target.stack_port);
-                let rtcp_stream = tokio::net::TcpStream::connect(target_addr).await;
-                if rtcp_stream.is_err() {
-                    error!(
-                        "open rtcp stream to remote {} error:{}",
-                        target_addr,
-                        rtcp_stream.err().unwrap()
-                    );
-                    let ropen_resp_package = RTcpROpenRespPackage::new(ropen_package.seq, 2);
-                    let mut write_stream = self.write_stream.lock().await;
-                    let write_stream = Pin::new(&mut *write_stream);
-                    RTcpTunnelPackage::send_package(write_stream, ropen_resp_package).await?;
-
-                    return Ok(());
-                }
-
-                // 2. send ropen_resp
-                {
-                    let mut write_stream = self.write_stream.lock().await;
-                    let write_stream = Pin::new(&mut *write_stream);
-                    let ropen_resp_package = RTcpROpenRespPackage::new(ropen_package.seq, 0);
-                    RTcpTunnelPackage::send_package(write_stream, ropen_resp_package).await?;
-                }
-
-                let mut rtcp_stream = rtcp_stream.unwrap();
-                //let random_bytes: [u8; 16] =
-                RTcpTunnelPackage::send_hello_stream(
-                    &mut rtcp_stream,
-                    ropen_package.body.stream_id.as_str(),
-                )
-                .await?;
-
-                let aes_key = self.get_key().clone();
-                let mut aes_stream = EncryptedStream::new(rtcp_stream, &aes_key, &nonce_bytes);
-
-                // 3. First try to find if dispatcher exists for the target port
-                let ret = super::dispatcher::RTCP_DISPATCHER_MANAGER
-                    .get_dispatcher(ropen_package.body.dest_port);
-                if let Some(dispatcher) = ret {
-                    let end_point = TunnelEndpoint {
-                        device_id: self.target.get_id_str(),
-                        port: self.target.target_port,
-                    };
-                    dispatcher
-                        .on_new_stream(Box::new(aes_stream), end_point)
-                        .await?;
-                    return Ok(());
-                }
-
-                // 4. If dispatcher does not exist, open a new stream to the real target
-                let raw_stream_to_target =
-                    tokio::net::TcpStream::connect(request_target_addr.clone()).await;
-                if raw_stream_to_target.is_err() {
-                    error!(
-                        "open tcp stream to target {} error:{}",
-                        request_target_addr,
-                        raw_stream_to_target.err().unwrap()
-                    );
-                    let ropen_resp_package = RTcpROpenRespPackage::new(ropen_package.seq, 1);
-                    let mut write_stream = self.write_stream.lock().await;
-                    let write_stream = Pin::new(&mut *write_stream);
-                    let _ =
-                        RTcpTunnelPackage::send_package(write_stream, ropen_resp_package).await?;
-                    return Ok(());
-                }
-                let mut raw_stream_to_target = raw_stream_to_target.unwrap();
-
-                // 5. bind aes_stream and raw_stream_to_target
-                task::spawn(async move {
-                    info!(
-                        "start copy aes_rtcp_stream to raw_tcp_stream,aes_key:{},nonce_bytes:{}",
-                        hex::encode(aes_key),
-                        hex::encode(nonce_bytes)
-                    );
-                    let copy_result =
-                        tokio::io::copy_bidirectional(&mut aes_stream, &mut raw_stream_to_target)
-                            .await;
-                    if copy_result.is_err() {
-                        error!(
-                            "copy aes_rtcp_stream to raw_tcp_stream error:{}",
-                            copy_result.err().unwrap()
-                        );
-                    } else {
-                        let copy_len = copy_result.unwrap();
-                        info!(
-                            "copy aes_rtcp_stream to raw_tcp_stream ok,len:{:?}",
-                            copy_len
-                        );
-                    }
-                });
-
-                return Ok(());
-            }
+            RTcpTunnelPackage::ROpen(ropen_package) => self.on_ropen(ropen_package).await,
             RTcpTunnelPackage::ROpenResp(_ropen_resp_package) => {
                 //check result
                 return Ok(());
             }
-            RTcpTunnelPackage::Open(open_package) => {
-                // Get real request target address
-                let request_target_addr = match open_package.body.dest_host {
-                    Some(ref host) => format!("{}:{}", host, open_package.body.dest_port),
-                    None => format!("127.0.0.1:{}", open_package.body.dest_port),
-                };
-
-                info!(
-                    "rtcp tunnel direct open target stream to {}",
-                    request_target_addr
-                );
-
-                let mut raw_stream_to_target = None;
-                // 1. First check if dispatcher exists for the target port
-                let dispatcher = super::dispatcher::RTCP_DISPATCHER_MANAGER
-                    .get_dispatcher(open_package.body.dest_port);
-                if dispatcher.is_none() {
-                    // 2. If dispatcher does not exist, open a new stream to the real target
-                    let ret = tokio::net::TcpStream::connect(request_target_addr.clone()).await;
-                    if ret.is_err() {
-                        error!(
-                            "open tcp stream to target {} error:{}",
-                            request_target_addr,
-                            ret.err().unwrap()
-                        );
-                        let open_resp_package = RTcpOpenRespPackage::new(open_package.seq, 1);
-                        let mut write_stream = self.write_stream.lock().await;
-                        let write_stream = Pin::new(&mut *write_stream);
-                        RTcpTunnelPackage::send_package(write_stream, open_resp_package).await?;
-                        return Ok(());
-                    }
-
-                    raw_stream_to_target = Some(ret.unwrap());
-                }
-
-                // 3. Prepare wait for the new stream before send open_resp
-                let real_key = format!(
-                    "{}_{}",
-                    self.this_device.as_str(),
-                    open_package.body.stream_id
-                );
-                WAIT_ROPEN_STREAM_MAP
-                    .lock()
-                    .await
-                    .insert(real_key, WaitStream::Waiting);
-
-                // 4. send open_resp with success
-                {
-                    let mut write_stream = self.write_stream.lock().await;
-                    let write_stream = Pin::new(&mut *write_stream);
-                    let open_resp_package = RTcpOpenRespPackage::new(open_package.seq, 0);
-                    RTcpTunnelPackage::send_package(write_stream, open_resp_package).await?;
-                }
-
-                // 5. Wait for the new stream
-                let stream = self.wait_ropen_stream(&open_package.body.stream_id).await?;
-
-                let nonce_bytes: [u8; 16] = hex::decode(open_package.body.stream_id.as_str())
-                    .map_err(|op| anyhow::format_err!("decode stream_id error:{}", op))?
-                    .try_into()
-                    .map_err(|_op| anyhow::format_err!("decode stream_id error"))?;
-                let aes_key = self.get_key().clone();
-                let mut aes_stream = EncryptedStream::new(stream, &aes_key, &nonce_bytes);
-
-                // 6. If dispatcher exists, send the stream to the dispatcher
-                if let Some(dispatcher) = dispatcher {
-                    let end_point = TunnelEndpoint {
-                        device_id: self.target.get_id_str(),
-                        port: self.target.target_port,
-                    };
-                    dispatcher
-                        .on_new_stream(Box::new(aes_stream), end_point)
-                        .await?;
-                    return Ok(());
-                }
-
-                assert!(raw_stream_to_target.is_some());
-                let mut raw_stream_to_target = raw_stream_to_target.unwrap();
-
-                // 7. bind aes_stream and raw_stream_to_target
-                task::spawn(async move {
-                    info!(
-                        "start copy aes_rtcp_stream to raw_tcp_stream,aes_key:{},nonce_bytes:{}",
-                        hex::encode(aes_key),
-                        hex::encode(nonce_bytes)
-                    );
-                    let copy_result =
-                        tokio::io::copy_bidirectional(&mut aes_stream, &mut raw_stream_to_target)
-                            .await;
-                    if copy_result.is_err() {
-                        error!(
-                            "copy aes_rtcp_stream to raw_tcp_stream error:{}",
-                            copy_result.err().unwrap()
-                        );
-                    } else {
-                        let copy_len = copy_result.unwrap();
-                        info!(
-                            "copy aes_rtcp_stream to raw_tcp_stream ok,len:{:?}",
-                            copy_len
-                        );
-                    }
-                });
-
-                return Ok(());
-            }
+            RTcpTunnelPackage::Open(open_package) => self.on_open(open_package).await,
             RTcpTunnelPackage::OpenResp(open_resp_package) => {
                 // Notify the open_stream waiter with the seq
                 let notify = self
@@ -342,6 +129,249 @@ impl RTcpTunnel {
             t @ _ => {
                 error!("Unsupport package type: {:?}", t);
                 return Ok(());
+            }
+        }
+    }
+
+    async fn on_ropen(&self, ropen_package: RTcpROpenPackage) -> Result<(), anyhow::Error> {
+        info!(
+            "rtcp tunnel ropen request: {:?}:{}, {:?}",
+            ropen_package.body.dest_host, ropen_package.body.dest_port, ropen_package.body.purpose
+        );
+
+        // 1. open stream to remote and send hello stream
+        let mut target_addr = self.peer_addr.clone();
+        target_addr.set_port(self.target.stack_port);
+        let rtcp_stream = tokio::net::TcpStream::connect(target_addr).await;
+        if rtcp_stream.is_err() {
+            error!(
+                "open rtcp stream to remote {} error:{}",
+                target_addr,
+                rtcp_stream.err().unwrap()
+            );
+            let ropen_resp_package = RTcpROpenRespPackage::new(ropen_package.seq, 2);
+            let mut write_stream = self.write_stream.lock().await;
+            let write_stream = Pin::new(&mut *write_stream);
+            RTcpTunnelPackage::send_package(write_stream, ropen_resp_package).await?;
+
+            return Ok(());
+        }
+
+        // 2. send ropen_resp
+        {
+            let mut write_stream = self.write_stream.lock().await;
+            let write_stream = Pin::new(&mut *write_stream);
+            let ropen_resp_package = RTcpROpenRespPackage::new(ropen_package.seq, 0);
+            RTcpTunnelPackage::send_package(write_stream, ropen_resp_package).await?;
+        }
+
+        let mut rtcp_stream = rtcp_stream.unwrap();
+
+        // 3. send hello stream
+        RTcpTunnelPackage::send_hello_stream(
+            &mut rtcp_stream,
+            ropen_package.body.stream_id.as_str(),
+        )
+        .await?;
+
+        let nonce_bytes: [u8; 16] = hex::decode(ropen_package.body.stream_id.as_str())
+            .map_err(|op| anyhow::format_err!("decode stream_id error:{}", op))?
+            .try_into()
+            .map_err(|_op| anyhow::format_err!("decode stream_id error"))?;
+        let aes_key = self.get_key().clone();
+        let aes_stream = EncryptedStream::new(rtcp_stream, &aes_key, &nonce_bytes);
+
+        info!(
+            "rtcp stream encrypted with aes_key:{}, nonce_bytes:{}",
+            hex::encode(aes_key),
+            hex::encode(nonce_bytes)
+        );
+
+        let purpose = ropen_package.body.purpose.clone().unwrap_or_default();
+        match purpose {
+            StreamPurpose::Stream => {
+                self.on_stream_ropen(
+                    ropen_package.body.dest_host,
+                    ropen_package.body.dest_port,
+                    Box::new(aes_stream),
+                )
+                .await
+            }
+            StreamPurpose::Datagram => {
+                self.on_datagram_ropen(
+                    ropen_package.body.dest_host,
+                    ropen_package.body.dest_port,
+                    Box::new(aes_stream),
+                )
+                .await
+            }
+        }
+    }
+
+    async fn on_stream_ropen(
+        &self,
+        dest_host: Option<String>,
+        dest_port: u16,
+        mut stream: Box<dyn AsyncStream>,
+    ) -> Result<(), anyhow::Error> {
+        // Get real request target address
+        let request_target_addr = match dest_host {
+            Some(ref host) => format!("{}:{}", host, dest_port),
+            None => format!("127.0.0.1:{}", dest_port),
+        };
+
+        info!(
+            "rtcp tunnel ropen request to target stream to {}",
+            request_target_addr,
+        );
+
+        // 1. First try to find if dispatcher exists for the target port
+        let ret = super::dispatcher::RTCP_DISPATCHER_MANAGER.get_dispatcher(dest_port);
+        if let Some(dispatcher) = ret {
+            let end_point = TunnelEndpoint {
+                device_id: self.target.get_id_str(),
+                port: self.target.target_port,
+            };
+            dispatcher.on_new_stream(stream, end_point).await?;
+            return Ok(());
+        }
+
+        // 2. If dispatcher does not exist, open a new stream to the real target
+        let raw_stream_to_target =
+            tokio::net::TcpStream::connect(request_target_addr.clone()).await;
+        if raw_stream_to_target.is_err() {
+            error!(
+                "open tcp stream to target {} error:{}",
+                request_target_addr,
+                raw_stream_to_target.err().unwrap()
+            );
+
+            return Ok(());
+        }
+        let mut raw_stream_to_target = raw_stream_to_target.unwrap();
+
+        // 3. bind aes_stream and raw_stream_to_target
+        info!(
+            "start copy aes_rtcp_stream to raw_tcp_stream, {} ,-> {}",
+            self.peer_addr, request_target_addr
+        );
+
+        task::spawn(async move {
+            let copy_result =
+                tokio::io::copy_bidirectional(&mut stream, &mut raw_stream_to_target).await;
+            if copy_result.is_err() {
+                error!(
+                    "copy aes_rtcp_stream to raw_tcp_stream error:{}",
+                    copy_result.err().unwrap()
+                );
+            } else {
+                let copy_len = copy_result.unwrap();
+                info!(
+                    "copy aes_rtcp_stream to raw_tcp_stream ok,len:{:?}",
+                    copy_len
+                );
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn on_datagram_ropen(
+        &self,
+        dest_host: Option<String>,
+        dest_port: u16,
+        stream: Box<dyn AsyncStream>,
+    ) -> Result<(), anyhow::Error> {
+        let bind_addr;
+        let request_target_addr = match dest_host {
+            Some(ref host) => {
+                bind_addr = "0.0.0.0:0";
+                format!("{}:{}", host, dest_port)
+            }
+            None => {
+                bind_addr = "127.0.0.1:0";
+                format!("127.0.0.1:{}", dest_port)
+            }
+        };
+
+        info!(
+            "rtcp tunnel ropen request target datagram to {}",
+            request_target_addr
+        );
+
+        // 1. TODO First try to find if dispatcher exists for the target port
+
+        // 2. Create local datagram client and forward
+        let forwarder = super::datagram::DatagramForwarder::new(
+            request_target_addr.as_str(),
+            bind_addr,
+            stream,
+        )
+        .await?;
+
+        forwarder.start();
+
+        Ok(())
+    }
+
+    async fn on_open(&self, open_package: RTcpOpenPackage) -> Result<(), anyhow::Error> {
+        info!(
+            "rtcp tunnel open request: {:?}:{}, {:?}",
+            open_package.body.dest_host, open_package.body.dest_port, open_package.body.purpose
+        );
+
+        // 1. Prepare wait for the new stream before send open_resp
+        let real_key = format!(
+            "{}_{}",
+            self.this_device.as_str(),
+            open_package.body.stream_id
+        );
+        WAIT_ROPEN_STREAM_MAP
+            .lock()
+            .await
+            .insert(real_key, WaitStream::Waiting);
+
+        // 2. send open_resp with success
+        {
+            let mut write_stream = self.write_stream.lock().await;
+            let write_stream = Pin::new(&mut *write_stream);
+            let open_resp_package = RTcpOpenRespPackage::new(open_package.seq, 0);
+            RTcpTunnelPackage::send_package(write_stream, open_resp_package).await?;
+        }
+
+        // 3. Wait for the new stream
+        let stream = self.wait_ropen_stream(&open_package.body.stream_id).await?;
+
+        let nonce_bytes: [u8; 16] = hex::decode(open_package.body.stream_id.as_str())
+            .map_err(|op| anyhow::format_err!("decode stream_id error:{}", op))?
+            .try_into()
+            .map_err(|_op| anyhow::format_err!("decode stream_id error"))?;
+        let aes_key = self.get_key().clone();
+        let aes_stream = EncryptedStream::new(stream, &aes_key, &nonce_bytes);
+
+        info!(
+            "rtcp stream encrypted with aes_key:{}, nonce_bytes:{}",
+            hex::encode(aes_key),
+            hex::encode(nonce_bytes)
+        );
+
+        let purpose = open_package.body.purpose.clone().unwrap_or_default();
+        match purpose {
+            StreamPurpose::Stream => {
+                self.on_stream_ropen(
+                    open_package.body.dest_host,
+                    open_package.body.dest_port,
+                    Box::new(aes_stream),
+                )
+                .await
+            }
+            StreamPurpose::Datagram => {
+                self.on_datagram_ropen(
+                    open_package.body.dest_host,
+                    open_package.body.dest_port,
+                    Box::new(aes_stream),
+                )
+                .await
             }
         }
     }
@@ -378,16 +408,14 @@ impl RTcpTunnel {
 
     async fn post_ropen(
         &self,
+        seq: u32,
+        purpose: Option<StreamPurpose>,
         dest_port: u16,
         dest_host: Option<String>,
         session_key: &str,
     ) -> Result<(), std::io::Error> {
-        let ropen_package = RTcpROpenPackage::new(
-            self.next_seq(),
-            session_key.to_string(),
-            dest_port,
-            dest_host,
-        );
+        let ropen_package =
+            RTcpROpenPackage::new(seq, session_key.to_string(), purpose, dest_port, dest_host);
         let mut write_stream = self.write_stream.lock().await;
         let write_stream = Pin::new(&mut *write_stream);
         RTcpTunnelPackage::send_package(write_stream, ropen_package)
@@ -402,12 +430,13 @@ impl RTcpTunnel {
     async fn post_open(
         &self,
         seq: u32,
+        purpose: Option<StreamPurpose>,
         dest_port: u16,
         dest_host: Option<String>,
         session_key: &str,
     ) -> Result<(), std::io::Error> {
         let ropen_package =
-            RTcpOpenPackage::new(seq, session_key.to_string(), dest_port, dest_host);
+            RTcpOpenPackage::new(seq, session_key.to_string(), purpose, dest_port, dest_host);
         let mut write_stream = self.write_stream.lock().await;
         let write_stream = Pin::new(&mut *write_stream);
         RTcpTunnelPackage::send_package(write_stream, ropen_package)
@@ -448,21 +477,10 @@ impl RTcpTunnel {
             }
         }
     }
-}
-
-#[async_trait]
-impl Tunnel for RTcpTunnel {
-    async fn ping(&self) -> Result<(), std::io::Error> {
-        let timestamp = buckyos_get_unix_timestamp();
-        let ping_package = RTcpPingPackage::new(0, timestamp);
-        let mut write_stream = self.write_stream.lock().await;
-        let write_stream = Pin::new(&mut *write_stream);
-        let _ = RTcpTunnelPackage::send_package(write_stream, ping_package).await;
-        Ok(())
-    }
 
     async fn open_stream(
         &self,
+        purpose: Option<StreamPurpose>,
         dest_port: u16,
         dest_host: Option<String>,
     ) -> Result<Box<dyn AsyncStream>, std::io::Error> {
@@ -470,9 +488,9 @@ impl Tunnel for RTcpTunnel {
         let random_bytes: [u8; 16] = rand::thread_rng().gen();
         let session_key = hex::encode(random_bytes);
         let real_key = format!("{}_{}", self.this_device.as_str(), session_key);
+        let seq = self.next_seq();
 
         if self.can_direct {
-            let seq = self.next_seq();
             let notify = Arc::new(Notify::new());
             self.open_resp_notify
                 .lock()
@@ -480,7 +498,7 @@ impl Tunnel for RTcpTunnel {
                 .insert(seq, notify.clone());
 
             // Send open to target to build a direct stream
-            self.post_open(seq, dest_port, dest_host, session_key.as_str())
+            self.post_open(seq, purpose, dest_port, dest_host, session_key.as_str())
                 .await?;
 
             // Must wait openresp package then we can build a direct stream
@@ -537,7 +555,7 @@ impl Tunnel for RTcpTunnel {
                 .await
                 .insert(real_key.clone(), WaitStream::Waiting);
             //info!("insert session_key {} to wait ropen stream map",real_key.as_str());
-            self.post_ropen(dest_port, dest_host, session_key.as_str())
+            self.post_ropen(seq, purpose, dest_port, dest_host, session_key.as_str())
                 .await?;
 
             //wait new stream with session_key fomr target
@@ -548,12 +566,37 @@ impl Tunnel for RTcpTunnel {
             Ok(Box::new(aes_stream))
         }
     }
+}
+
+#[async_trait]
+impl Tunnel for RTcpTunnel {
+    async fn ping(&self) -> Result<(), std::io::Error> {
+        let timestamp = buckyos_get_unix_timestamp();
+        let ping_package = RTcpPingPackage::new(0, timestamp);
+        let mut write_stream = self.write_stream.lock().await;
+        let write_stream = Pin::new(&mut *write_stream);
+        let _ = RTcpTunnelPackage::send_package(write_stream, ping_package).await;
+        Ok(())
+    }
+
+    async fn open_stream(
+        &self,
+        dest_port: u16,
+        dest_host: Option<String>,
+    ) -> Result<Box<dyn AsyncStream>, std::io::Error> {
+        self.open_stream(Some(StreamPurpose::Stream), dest_port, dest_host)
+            .await
+    }
 
     async fn create_datagram_client(
         &self,
         dest_port: u16,
         dest_host: Option<String>,
     ) -> Result<Box<dyn DatagramClientBox>, std::io::Error> {
-        unimplemented!()
+        let stream = self
+            .open_stream(Some(StreamPurpose::Datagram), dest_port, dest_host)
+            .await?;
+        let client = RTcpTunnelDatagramClient::new(Box::new(stream));
+        Ok(Box::new(client) as Box<dyn DatagramClientBox>)
     }
 }

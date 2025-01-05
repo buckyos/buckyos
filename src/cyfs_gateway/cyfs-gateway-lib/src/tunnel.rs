@@ -84,9 +84,6 @@ pub trait Tunnel: Send + Sync {
         dest_port: u16,
         dest_host: Option<String>,
     ) -> Result<Box<dyn DatagramClientBox>, std::io::Error>;
-
-    //async fn create_listener();
-    //async fn create_datagram_server(&self, bind_port:u16) -> Result<Box<dyn DatagramTunnel>,std::io::Error>;
 }
 
 pub trait TunnelBox: Tunnel {
