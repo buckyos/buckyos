@@ -333,30 +333,91 @@ e = priority(p.eft) || deny
 [matchers]
 m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.sub) || keyGet3(r.obj, p.obj, p.sub) =="") && keyMatch3(r.obj,p.obj)) && regexMatch(r.act, p.act)
 """
-"system/rbac/policy" = """
+# 权限有4种:Read,Write,Create,Delete
+"system/rbac/base_policy" = """
 p, kernel, kv://*, read|write,allow
 p, kernel, dfs://*, read|write,allow
-
 p, owner, kv://*, read|write,allow
 p, owner, dfs://*, read|write,allow
-
 p, root, kv://*, read|write,allow
 p, root, dfs://*, read|write,allow
 
-p, user, kv://*, read,allow
-p, app, kv://*, read,allow
-p, user, dfs://public/*,read|write,allow
-p, user, dfs://homes/{user}/*, read|write,allow
-p, app,  dfs://homes/*/apps/{app}/*, read|write,allow
+p, ood,kv://*,read
+p, ood,kv://nodes/{device}/*,read|write,allow
 
-p, limit, dfs://public/*, read,allow
-p, guest, dfs://public/*, read,allow
+
+p, admin,kv://users/{user}/*,read|write,allow
+p, admin,dfs://users/{user}/*,read|write,allow
+p, admin,dfs://library/*,read|write,allow
+
+p, service,kv://services/{service}/setting,read|write,allow
+p, service,kv://services/{service}/info,read|write,allow
+p, service,kv://system/*,read,allow
+
+p, user,kv://users/{user}/*,read|write,allow
+p, user,dfs://users/{user}/*,read|write,allow
+p, user,dfs://library/*,read|create,allow
+
+p, app, kv://users/*/apps/{app}/setting,read|write,allow
+p, app, kv://users/*/apps/{app}/config,read,allow
+p, app, kv://users/*/apps/{app}/info,read,allow
+
+p, app,  dfs://usrs/*/appdata/{app}/*, read|write,allow
+p, app,  dfs://usrs/*/cache/{app}/*, read|write,allow
+
+p, *, kv://boot/*, read,allow
 
 g, node_daemon, kernel
-g, ood1,ood
-g, test,app
-g, {{user_name}}, user
-g, {{user_name}}, root
+g, scheduler, kernel
+g, system_config, kernel
+g, verify_hub, kernel
+g, repo_service, kernel
+g, control_panel, service
+
+"""
+
+"system/rbac/policy" = """
+p, kernel, kv://*, read|write,allow
+p, kernel, dfs://*, read|write,allow
+p, owner, kv://*, read|write,allow
+p, owner, dfs://*, read|write,allow
+p, root, kv://*, read|write,allow
+p, root, dfs://*, read|write,allow
+
+p, ood,kv://*,read,allow
+p, ood,kv://nodes/{device}/*,read|write,allow
+
+
+p, admin,kv://users/{user}/*,read|write,allow
+p, admin,dfs://users/{user}/*,read|write,allow
+p, admin,dfs://library/*,read|write,allow
+
+p, service,kv://services/{service}/setting,read|write,allow
+p, service,kv://services/{service}/info,read|write,allow
+p, service,kv://system/*,read,allow
+
+p, user,kv://users/{user}/*,read|write,allow
+p, user,dfs://users/{user}/*,read|write,allow
+p, user,dfs://library/*,read|create,allow
+
+p, app, kv://users/*/apps/{app}/setting,read|write,allow
+p, app, kv://users/*/apps/{app}/config,read,allow
+p, app, kv://users/*/apps/{app}/info,read,allow
+
+p, app,  dfs://users/*/appdata/{app}/*, read|write,allow
+p, app,  dfs://users/*/cache/{app}/*, read|write,allow
+
+p, admin, kv://boot/*, read,allow
+p, user, kv://boot/*, read,allow
+p, service, kv://boot/*, read,allow
+p, app, kv://boot/*, read,allow
+
+g, node_daemon, kernel
+g, scheduler, kernel
+g, system_config, kernel
+g, verify_hub, kernel
+g, repo_service, kernel
+g, control_panel, kernel
 
 """
 
