@@ -159,7 +159,7 @@ extern "C" fn bucky_status_scaner_scan(
                             let mut not_exist_process = buckyos_process.clone();
 
                             for process in system.processes().values() {
-                                let name = process.name().to_string_lossy().to_ascii_lowercase();
+                                let name = process.name().to_ascii_lowercase();
                                 if buckyos_process.contains(name.as_str()) {
                                     not_exist_process.remove(name.as_str());
                                     exist_process.insert(name);
@@ -811,7 +811,7 @@ extern "C" fn stop_buckyos() {
 
     let mut kill_count = 0;
     for (pid, process) in system.processes() {
-        let name = process.name().to_string_lossy().to_ascii_lowercase();
+        let name = process.name().to_ascii_lowercase();
         if buckyos_process.contains(name.as_str()) {
             process.kill();
             kill_count += 1;

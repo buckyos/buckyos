@@ -136,8 +136,18 @@
     <ClCompile Include="TrayMenu.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="resource.h" />
     <ClInclude Include="SystemState.h" />
     <ClInclude Include="TrayMenu.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="tray_controller.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="app.ico" />
+    <Image Include="error.ico" />
+    <Image Include="icon1.ico" />
+    <Image Include="pause.ico" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

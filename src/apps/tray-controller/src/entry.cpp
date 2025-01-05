@@ -4,9 +4,9 @@
 
 #include "TrayMenu.h"
 #include "ffi_extern.h"
+#include "resource.h"
 
 #define WM_TRAYICON (WM_USER + 1)
-#define ID_TRAY_APP_ICON 1001
 
 HINSTANCE hInst;
 NOTIFYICONDATA g_tray_icon_nid;
@@ -22,10 +22,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     case WM_CREATE:
         g_tray_icon_nid.cbSize = sizeof(NOTIFYICONDATA);
         g_tray_icon_nid.hWnd = hwnd;
-        g_tray_icon_nid.uID = ID_TRAY_APP_ICON;
+        g_tray_icon_nid.uID = IDI_TRAY_APP;
         g_tray_icon_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         g_tray_icon_nid.uCallbackMessage = WM_TRAYICON;
-        g_tray_icon_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+        g_tray_icon_nid.hIcon = LoadIcon(hInst, MAKEINTRESOURCE(IDI_TRAY_APP));
         wcscpy_s(g_tray_icon_nid.szTip, L"BuckyOS Controller");
         Shell_NotifyIcon(NIM_ADD, &g_tray_icon_nid);
         break;
@@ -79,26 +79,28 @@ extern "C" void entry() {
 }
 
 void on_status_changed_callback(BuckyStatus new_status, BuckyStatus old_status, void* userdata) {
-    LPWSTR strIconId = IDI_APPLICATION;
+//*
+    LPWSTR strIconId = MAKEINTRESOURCE(IDI_TRAY_APP);
     switch (new_status) {
     case BuckyStatus::Running:
-        strIconId = IDI_APPLICATION;
+        strIconId = MAKEINTRESOURCE(IDI_TRAY_APP);
         break;
     case BuckyStatus::Stopped:
-        strIconId = IDI_HAND;
+        strIconId = MAKEINTRESOURCE(IDI_TRAY_PAUSE);
         break;
     case BuckyStatus::NotActive:
         strIconId = IDI_QUESTION;
         break;
     case BuckyStatus::NotInstall:
-        strIconId = IDI_APPLICATION;
+        strIconId = IDI_QUESTION;
         break;
     case BuckyStatus::Failed:
-        strIconId = IDI_ERROR;
+        strIconId = MAKEINTRESOURCE(IDI_TRAY_ERROR);
         break;
     }
-    g_tray_icon_nid.hIcon = LoadIcon(NULL, strIconId);
+    g_tray_icon_nid.hIcon = LoadIcon(hInst, strIconId);
     Shell_NotifyIcon(NIM_MODIFY, &g_tray_icon_nid);
+    //*/
 }
 
 // extern "C" void entry() {}

@@ -1,3 +1,6 @@
+use std::env;
+use std::path::PathBuf;
+
 fn main() {
     cc::Build::new()
         .cpp(true)
@@ -10,6 +13,20 @@ fn main() {
         .file("src/TrayMenu.cpp")
         .file("src/process_kits.cpp")
         .compile("tray-controller");
+
+    println!("cargo:rerun-if-changed=resource.rc");
+
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let res_path = PathBuf::from(&out_dir).join("resource.res");
+
+    let output = std::process::Command::new("windres")
+        .args(&["src/tray_controller.rc", "-o"])
+        .arg(res_path.to_str().unwrap())
+        .status()
+        .expect("Failed to compile resource file");
+    assert!(output.success());
+
+    println!("cargo:rustc-link-arg={}", res_path.display());
 
     println!("cargo:rustc-link-lib=user32");
     println!("cargo:rustc-link-lib=shell32");
