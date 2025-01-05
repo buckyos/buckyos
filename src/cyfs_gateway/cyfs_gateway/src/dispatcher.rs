@@ -59,14 +59,14 @@ impl ServiceDispatcher {
         if incoming_category != target_category {
             let msg = format!("start_forward_service failed, incoming protocol and target protocol must be the same: {} {}", incoming, target);
             error!("{}", msg);
-            return Err(Box::new(TunnelError::UnknowProtocol(msg)));
+            return Err(Box::new(TunnelError::UnknownProtocol(msg)));
         }
 
         let target_port = target.port().unwrap_or(incoming.port().unwrap_or(0));
         if target_port == 0 {
             let msg = format!("start_forward_service failed, target port is not specified: {}", target);
             error!("{}", msg);
-            return Err(Box::new(TunnelError::UnknowProtocol(msg)));
+            return Err(Box::new(TunnelError::UnknownProtocol(msg)));
         }
 
         match target_category {

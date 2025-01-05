@@ -102,7 +102,7 @@ impl RTcpTunnel {
             RTcpTunnelPackage::ROpen(ropen_package) => self.on_ropen(ropen_package).await,
             RTcpTunnelPackage::ROpenResp(_ropen_resp_package) => {
                 //check result
-                return Ok(());
+                Ok(())
             }
             RTcpTunnelPackage::Open(open_package) => self.on_open(open_package).await,
             RTcpTunnelPackage::OpenResp(open_resp_package) => {
@@ -116,26 +116,26 @@ impl RTcpTunnel {
                     notify.unwrap().notify_one();
                 } else {
                     warn!(
-                        "open stream notify not found: seq={}",
+                        "Tunnel open stream notify not found: seq={}",
                         open_resp_package.seq
                     );
                 }
 
-                return Ok(());
+                Ok(())
             }
             RTcpTunnelPackage::Pong(_pong_package) => {
-                return Ok(());
+                Ok(())
             }
             t @ _ => {
-                error!("Unsupport package type: {:?}", t);
-                return Ok(());
+                error!("Unsupport tunnel package type: {:?}", t);
+                Ok(())
             }
         }
     }
 
     async fn on_ropen(&self, ropen_package: RTcpROpenPackage) -> Result<(), anyhow::Error> {
         info!(
-            "rtcp tunnel ropen request: {:?}:{}, {:?}",
+            "RTcp tunnel ropen request: {:?}:{}, {:?}",
             ropen_package.body.dest_host, ropen_package.body.dest_port, ropen_package.body.purpose
         );
 
@@ -182,7 +182,7 @@ impl RTcpTunnel {
         let aes_stream = EncryptedStream::new(rtcp_stream, &aes_key, &nonce_bytes);
 
         info!(
-            "rtcp stream encrypted with aes_key:{}, nonce_bytes:{}",
+            "RTcp stream encrypted with aes_key:{}, nonce_bytes:{}",
             hex::encode(aes_key),
             hex::encode(nonce_bytes)
         );
@@ -221,7 +221,7 @@ impl RTcpTunnel {
         };
 
         info!(
-            "rtcp tunnel ropen request to target stream to {}",
+            "RTcp tunnel ropen request to target stream to {}",
             request_target_addr,
         );
 
@@ -252,7 +252,7 @@ impl RTcpTunnel {
 
         // 3. bind aes_stream and raw_stream_to_target
         info!(
-            "start copy aes_rtcp_stream to raw_tcp_stream, {} ,-> {}",
+            "Start copy aes_rtcp_stream to raw_tcp_stream, {} ,-> {}",
             self.peer_addr, request_target_addr
         );
 
@@ -295,7 +295,7 @@ impl RTcpTunnel {
         };
 
         info!(
-            "rtcp tunnel ropen request target datagram to {}",
+            "RTcp tunnel ropen request target datagram to {}",
             request_target_addr
         );
 
@@ -325,7 +325,7 @@ impl RTcpTunnel {
 
     async fn on_open(&self, open_package: RTcpOpenPackage) -> Result<(), anyhow::Error> {
         info!(
-            "rtcp tunnel open request: {:?}:{}, {:?}",
+            "RTcp tunnel open request: {:?}:{}, {:?}",
             open_package.body.dest_host, open_package.body.dest_port, open_package.body.purpose
         );
 
@@ -359,7 +359,7 @@ impl RTcpTunnel {
         let aes_stream = EncryptedStream::new(stream, &aes_key, &nonce_bytes);
 
         info!(
-            "rtcp stream encrypted with aes_key:{}, nonce_bytes:{}",
+            "RTcp stream encrypted with aes_key:{}, nonce_bytes:{}",
             hex::encode(aes_key),
             hex::encode(nonce_bytes)
         );
@@ -399,17 +399,18 @@ impl RTcpTunnel {
             let read_stream = Pin::new(&mut *read_stream);
             //info!("rtcp tunnel try read package from {}",self.peer_addr.to_string());
 
-            let package =
+            let ret =
                 RTcpTunnelPackage::read_package(read_stream, false, source_info.as_str()).await;
             //info!("rtcp tunnel read package from {} ok",source_info.as_str());
-            if package.is_err() {
-                error!("read package error:{:?}", package.err().unwrap());
+            if ret.is_err() {
+                error!("Read package from tunnel error: {}, {:?}", source_info, ret.err().unwrap());
                 break;
             }
-            let package = package.unwrap();
+
+            let package = ret.unwrap();
             let result = self.process_package(package).await;
             if result.is_err() {
-                error!("process package error:{}", result.err().unwrap());
+                error!("process package error: {}, {}", source_info, result.err().unwrap());
                 break;
             }
         }
@@ -498,6 +499,13 @@ impl RTcpTunnel {
         let session_key = hex::encode(random_bytes);
         let real_key = format!("{}_{}", self.this_device.as_str(), session_key);
         let seq = self.next_seq();
+
+        info!(
+            "RTcp tunnel open stream to {}, {}, can_direct:{}",
+            dest_host.clone().unwrap_or_default(),
+            dest_port,
+            self.can_direct
+        );
 
         if self.can_direct {
             let notify = Arc::new(Notify::new());

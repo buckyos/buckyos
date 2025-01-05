@@ -8,7 +8,7 @@ use anyhow::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CmdType {
-    UnknowProtocol = 0,
+    UnknownProtocol = 0,
     Hello = 1,
     HelloAck = 2,
     Ping = 3,
@@ -30,7 +30,7 @@ impl From<u8> for CmdType {
             6 => CmdType::ROpenResp,
             7 => CmdType::Open,
             8 => CmdType::OpenResp,
-            _ => CmdType::UnknowProtocol,
+            _ => CmdType::UnknownProtocol,
         }
     }
 }
@@ -235,6 +235,7 @@ impl Default for StreamPurpose {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct RTcpROpenBody {
+    #[serde(rename = "streamid", alias = "stream_id")]
     pub stream_id: String,
 
     // Stream purpose, None is default as Stream
@@ -325,6 +326,7 @@ impl RTcpROpenRespPackage {
 // Same as RTcpROpenBody
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct RTcpOpenBody {
+    #[serde(rename = "streamid", alias = "stream_id")]
     pub stream_id: String,
 
     // Stream purpose, None is default as Stream
@@ -438,10 +440,14 @@ impl RTcpTunnelPackage {
         S: AsyncReadExt + 'a,
     {
         let mut buf = [0; 2];
-        //info!("try read 2 bytespackage len");
-        stream.read_exact(&mut buf).await?;
+        //info!("try read 2 bytes package len");
+        stream.read_exact(&mut buf).await.map_err(|e| {
+            error!("Read tunnel package len error: {}, {}", source_info, e);
+            e
+        })?;
+
         let len = u16::from_be_bytes(buf);
-        info!("{}==> rtcp package, len:{}", source_info, len);
+        info!("{} ==> rtcp package, len: {}", source_info, len);
         if len == 0 {
             if !is_first_package {
                 error!("HelloStream MUST be first package.");
@@ -452,23 +458,30 @@ impl RTcpTunnelPackage {
             }
 
             let mut buf = [0; 32];
+            stream.read_exact(&mut buf).await.map_err(|e| {
+                error!("Read HelloStream error: {}, {}", source_info, e);
+                e
+            })?;
 
-            stream.read_exact(&mut buf).await?;
             let session_key = String::from_utf8_lossy(&buf);
             return Ok(RTcpTunnelPackage::HelloStream(session_key.to_string()));
         } else {
             let _len = len - 2;
             let mut buf = vec![0; _len as usize];
             //info!("read package data len:{}",_len);
-            stream.read_exact(&mut buf).await?;
+            stream.read_exact(&mut buf).await.map_err(|e| {
+                error!("Read package data error: {}, {}", source_info, e);
+                e
+            })?;
 
             let mut pos = 0;
             let json_pos = buf[pos];
             if json_pos < 6 {
-                error!("json_pos is invalid");
+                let msg = format!("json_pos is invalid: {}", json_pos);
+                error!("{}", msg);
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "json_pos is invalid",
+                    msg,
                 ));
             }
             pos = pos + 1;
@@ -489,10 +502,11 @@ impl RTcpTunnelPackage {
             //info!("read json:{}",json_str);
             let package_value = serde_json::from_str(json_str.as_ref());
             if package_value.is_err() {
-                error!("parse package error:{}", package_value.err().unwrap());
+                let msg = format!("Parse package error: {}, {}", json_str, package_value.err().unwrap());
+                error!("{}", msg);
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "parse package error",
+                    msg,
                 ));
             }
             let package_value = package_value.unwrap();
@@ -532,11 +546,12 @@ impl RTcpTunnelPackage {
                     let result_package = RTcpOpenRespPackage::from_json(seq, package_value)?;
                     return Ok(RTcpTunnelPackage::OpenResp(result_package));
                 }
-                _ => {
-                    error!("unsupport package type");
+                v @ _ => {
+                    let msg = format!("Unsupported package type {:?}", v);
+                    error!("{}", msg);
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "unsupport package type",
+                        msg,
                     ));
                 }
             }
@@ -559,8 +574,9 @@ impl RTcpTunnelPackage {
         let json_pos: u8 = 2 + 1 + 1 + 4;
         let total_len = 2 + 1 + 1 + 4 + body_bytes.len();
         if total_len > 0xffff {
-            error!("package too long");
-            return Err(anyhow::format_err!("package too long"));
+            let msg = format!("package too long: {}", total_len);
+            error!("{}", msg);
+            return Err(anyhow::anyhow!(msg).into());
         }
 
         let mut write_buf: Vec<u8> = Vec::new();
@@ -573,12 +589,17 @@ impl RTcpTunnelPackage {
         write_buf.extend_from_slice(body_bytes);
 
         info!(
-            "send package {} len:{} buflen:{}",
+            "Send package cmd:{} {} len:{} buf_len:{}",
+            pkg.cmd,
             json_body.as_str(),
             total_len,
             write_buf.len()
         );
-        stream.write_all(&write_buf).await?;
+
+        stream.write_all(&write_buf).await.map_err(|e| {
+            error!("Send package error: {}", e);
+            e
+        })?;
 
         Ok(())
     }
@@ -593,7 +614,11 @@ impl RTcpTunnelPackage {
         let bytes = u16::to_be_bytes(total_len);
         write_buf.extend_from_slice(&bytes);
         write_buf.extend_from_slice(session_key.as_bytes());
-        stream.write_all(&write_buf).await?;
+        stream.write_all(&write_buf).await.map_err(|e| {
+            error!("Send HelloStream error: {}", e);
+            e
+        })?;
+
         Ok(())
     }
 }

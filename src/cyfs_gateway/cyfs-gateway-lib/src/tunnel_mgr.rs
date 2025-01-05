@@ -1,21 +1,16 @@
-#![allow(unused)]
-
+use crate::ip::IPTunnelBuilder;
 use crate::rtcp::RTCP_STACK_MANAGER;
 use crate::{
-    DatagramServer, DatagramServerBox, RTcpStack, StreamListener, Tunnel, TunnelBox, TunnelBuilder,
-    TunnelError, TunnelResult,
+    DatagramServerBox, StreamListener, TunnelBox, TunnelBuilder, TunnelError, TunnelResult,
 };
-use core::error;
+
 use lazy_static::lazy_static;
 use log::*;
-use name_lib::*;
-use once_cell::sync::OnceCell;
-use serde_json::Value;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use url::Url;
-use crate::ip::IPTunnelBuilder;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProtocolCategory {
@@ -35,7 +30,7 @@ pub fn get_protocol_category(str_protocol: &str) -> TunnelResult<ProtocolCategor
         _ => {
             let msg = format!("Unknow protocol: {}", str_protocol);
             error!("{}", msg);
-            Err(TunnelError::UnknowProtocol(msg))
+            Err(TunnelError::UnknownProtocol(msg))
         }
     }
 }
@@ -49,27 +44,27 @@ pub async fn get_tunnel_builder_by_protocol(
         "rtcp" => {
             let stack = RTCP_STACK_MANAGER.get_current_device_stack().await?;
             Ok(Box::new(stack))
-        },
+        }
         "rudp" => {
             let stack = RTCP_STACK_MANAGER.get_current_device_stack().await?;
             Ok(Box::new(stack))
-        },
+        }
         _ => {
             let msg = format!("Unknow protocol: {}", protocol);
             error!("{}", msg);
-            Err(TunnelError::UnknowProtocol(msg))
+            Err(TunnelError::UnknownProtocol(msg))
         }
     }
 }
 
 lazy_static! {
     static ref TUNNEL_MAP: Arc<Mutex<HashMap<String, Box<dyn TunnelBox>>>> =
-        { Arc::new(Mutex::new(HashMap::new())) };
+        Arc::new(Mutex::new(HashMap::new()));
 }
 
 pub async fn get_tunnel(
     target_url: &Url,
-    enable_tunnel: Option<Vec<String>>,
+    _enable_tunnel: Option<Vec<String>>,
 ) -> TunnelResult<Box<dyn TunnelBox>> {
     //url like tcp://deviceid
     let builder = get_tunnel_builder_by_protocol(target_url.scheme()).await?;

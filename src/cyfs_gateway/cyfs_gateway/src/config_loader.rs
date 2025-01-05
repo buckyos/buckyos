@@ -3,7 +3,7 @@ use cyfs_gateway_lib::DNSServerConfig;
 use cyfs_gateway_lib::DispatcherConfig;
 use cyfs_gateway_lib::ServerConfig;
 use cyfs_gateway_lib::WarpServerConfig;
-use cyfs_gateway_lib::CURRENT_DEVICE_RRIVATE_KEY;
+use cyfs_gateway_lib::CURRENT_DEVICE_PRIVATE_KEY;
 use cyfs_sn::*;
 use cyfs_socks::SocksProxyConfig;
 use cyfs_warp::register_inner_service_builder;
@@ -34,7 +34,7 @@ impl GatewayConfig {
             );
             let private_key_array = load_pem_private_key(&device_key_path)
                 .map_err(|e| format!("load device private key failed! {}", e))?;
-            CURRENT_DEVICE_RRIVATE_KEY.set(private_key_array).unwrap();
+            CURRENT_DEVICE_PRIVATE_KEY.set(private_key_array).unwrap();
             info!("load device private key success!");
         }
 
@@ -138,10 +138,11 @@ impl GatewayConfig {
                             .map_err(|e| format!("load socks config failed! {}", e))?;
 
                         // Try load rule config
-                        socks_config.load_rules().await.map_err(|e| {
-                            format!("load socks rule config failed! {}", e)
-                        })?;
-                        
+                        socks_config
+                            .load_rules()
+                            .await
+                            .map_err(|e| format!("load socks rule config failed! {}", e))?;
+
                         servers_cfg.insert(k.clone(), ServerConfig::Socks(socks_config));
                     }
                     _ => {
@@ -219,7 +220,7 @@ impl GatewayConfig {
                             error!("{}", msg);
                             msg
                         })?;
-                        
+
                         new_config =
                             DispatcherConfig::new_forward(incoming_url, target_url, enable_tunnel);
                     }

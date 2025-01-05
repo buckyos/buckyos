@@ -1,5 +1,5 @@
 use super::stack::RTcpStack;
-use crate::CURRENT_DEVICE_RRIVATE_KEY;
+use crate::CURRENT_DEVICE_PRIVATE_KEY;
 use crate::{TunnelError, TunnelResult};
 use name_lib::{CURRENT_DEVICE_CONFIG, DID};
 use std::collections::HashMap;
@@ -48,7 +48,7 @@ impl RTcpStackManager {
         }
 
         info!("create rtcp stack for {}", this_device_hostname.as_str());
-        let this_device_private_key = CURRENT_DEVICE_RRIVATE_KEY.get();
+        let this_device_private_key = CURRENT_DEVICE_PRIVATE_KEY.get();
         if this_device_private_key.is_none() {
             error!("CURRENT_DEVICE_PRIVATE_KEY not set!");
             return Err(TunnelError::InvalidState(

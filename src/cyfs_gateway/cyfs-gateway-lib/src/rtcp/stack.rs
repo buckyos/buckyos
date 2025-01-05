@@ -221,7 +221,6 @@ impl RTcpStack {
         hasher.update(shared_secret.as_bytes());
         let key_bytes = hasher.finalize();
         return key_bytes.try_into().unwrap();
-        //return shared_secret.as_bytes().clone();
     }
 
     pub async fn start(&mut self) -> TunnelResult<()> {
@@ -234,7 +233,7 @@ impl RTcpStack {
         })?;
 
         info!(
-            "rtcp stack {} start ok: {}",
+            "RTcp stack {} start ok: {}",
             self.this_device_hostname.as_str(),
             bind_addr
         );
@@ -243,7 +242,7 @@ impl RTcpStack {
         task::spawn(async move {
             loop {
                 let (stream, addr) = rtcp_listener.accept().await.unwrap();
-                info!("rtcp stack accept new tcp stream from {}", addr.clone());
+                info!("RTcp stack accept new tcp stream from {}", addr.clone());
 
                 let this = this.clone();
                 task::spawn(async move {
@@ -261,28 +260,30 @@ impl RTcpStack {
             RTcpTunnelPackage::read_package(Pin::new(&mut stream), true, source_info.as_str())
                 .await;
         if first_package.is_err() {
-            error!("read first package error:{}", first_package.err().unwrap());
+            error!("Read first package error: {}, {}", addr, first_package.err().unwrap());
             return;
         }
 
         debug!(
-            "rtcp stack {} read first package ok",
+            "RTcp stream {} read first package ok",
             self.this_device_hostname.as_str()
         );
         let package = first_package.unwrap();
         match package {
             RTcpTunnelPackage::HelloStream(session_key) => {
                 info!(
-                    "rtcp stack {} accept new stream: {}",
+                    "RTcp stack {} accept new stream: {}, {}",
                     self.this_device_hostname.as_str(),
+                    addr,
                     session_key
                 );
                 self.on_new_stream(stream, session_key).await;
             }
             RTcpTunnelPackage::Hello(hello_package) => {
                 info!(
-                    "rtcp stack {} accept new tunnel: {} -> {}",
+                    "RTcp stack {} accept new tunnel: {}, {} -> {}",
                     self.this_device_hostname.as_str(),
+                    addr,
                     hello_package.body.from_id,
                     hello_package.body.to_id
                 );
@@ -290,7 +291,7 @@ impl RTcpStack {
                 self.on_new_tunnel(stream, hello_package).await;
             }
             _ => {
-                error!("unsupport first package type for rtcp stack");
+                error!("Unsupported first package type for rtcp stack: {}", addr);
             }
         }
     }
@@ -307,7 +308,7 @@ impl RTcpStack {
         let wait_session = wait_streams.get_mut(real_key.as_str());
         if wait_session.is_none() {
             error!(
-                "no wait session for {},map is {:?}",
+                "No wait session for {}, map is {:?}",
                 real_key.as_str(),
                 clone_map
             );
@@ -323,7 +324,7 @@ impl RTcpStack {
     }
 
     async fn on_new_tunnel(&self, stream: TcpStream, hello_package: RTcpHelloPackage) {
-        //decode hello.body.tunnel_token
+        // decode hello.body.tunnel_token
         if hello_package.body.tunnel_token.is_none() {
             error!("hello.body.tunnel_token is none");
             return;
@@ -378,7 +379,7 @@ impl RTcpStack {
             info!("accept tunnel from {}", hello_package.body.from_id.as_str());
             all_tunnel.insert(tunnel_key.clone(), tunnel.clone());
         }
-        info!("tunnel {} accept OK,start runing", tunnel_key.as_str());
+        info!("tunnel {} accept OK,start running", tunnel_key.as_str());
         tunnel.run().await;
 
         info!("tunnel {} end", tunnel_key.as_str());
@@ -459,7 +460,7 @@ impl TunnelBuilder for RTcpStack {
                 remote_addr
             )));
         }
-        //create tunnel token
+        // create tunnel token
         let (tunnel_token, aes_key, random_pk) = self
             .generate_tunnel_token(target_id_str.clone())
             .await
@@ -469,7 +470,7 @@ impl TunnelBuilder for RTcpStack {
                 e
             })?;
 
-        //send hello to target
+        // send hello to target
         let mut tunnel_stream = tunnel_stream.unwrap();
         let hello_package = RTcpHelloPackage::new(
             0,
@@ -492,7 +493,7 @@ impl TunnelBuilder for RTcpStack {
             )));
         }
 
-        //create tunnel and add to map
+        // create tunnel and add to map
         let tunnel = RTcpTunnel::new(
             self.this_device_hostname.clone(),
             &target,
@@ -503,7 +504,7 @@ impl TunnelBuilder for RTcpStack {
         );
         all_tunnel.insert(tunnel_key.clone(), tunnel.clone());
         info!(
-            "create tunnel {} ok,remote addr is {}",
+            "create tunnel {} ok, remote addr is {}",
             tunnel_key.as_str(),
             remote_addr.as_str()
         );
@@ -512,14 +513,14 @@ impl TunnelBuilder for RTcpStack {
         let result: TunnelResult<Box<dyn TunnelBox>> = Ok(Box::new(tunnel.clone()));
         task::spawn(async move {
             info!(
-                "rtcp tunnel {} established, tunnel running",
+                "RTcp tunnel {} established, tunnel running",
                 tunnel_key.as_str()
             );
             tunnel.run().await;
             //remove tunnel from map
             let mut all_tunnel = RTCP_TUNNEL_MAP.lock().await;
             all_tunnel.remove(&tunnel_key);
-            info!("rtcp tunnel {} end", tunnel_key.as_str());
+            info!("RTcp tunnel {} end", tunnel_key.as_str());
         });
 
         return result;
