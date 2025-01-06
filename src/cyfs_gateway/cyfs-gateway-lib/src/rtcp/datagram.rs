@@ -57,6 +57,7 @@ impl AsyncStreamWithDatagram {
     pub async fn send_datagram(&self, buffer: &[u8]) -> Result<usize, std::io::Error> {
         let mut stream = self.stream.lock().await;
 
+        //TODO: u16 is enough?
         // First write the length of the datagram in u32, to the buffer
         let len = buffer.len() as u32;
         let len_buffer = len.to_be_bytes();

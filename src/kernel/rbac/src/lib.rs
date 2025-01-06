@@ -42,6 +42,8 @@ p, ood,kv://nodes/{device}/*,read|write,allow
 
 p, admin,kv://users/{user}/*,read|write,allow
 p, admin,dfs://users/{user}/*,read|write,allow
+p, admin,kv://services/*,read|write,allow
+p, admin,dfs://services/*,read|write,allow
 p, admin,dfs://library/*,read|write,allow
 
 p, service,kv://services/{service}/setting,read|write,allow
@@ -70,14 +72,18 @@ g, system_config, kernel
 g, verify_hub, kernel
 g, repo_service, kernel
 g, control_panel, kernel
+g, samba,services
+
 
 # test subs
 g, alice,user
 g, bob,user
+g, wugren,admin
 g, su_alice,admin
 g, ood1,ood
 g, app1,app
 g, app2,app
+
 "#;
 
 
@@ -275,6 +281,9 @@ m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)
 
         //su_alice has more permission than alice
         assert_eq!(enforce("su_alice", Some("control_panel"), "kv://users/alice/apps/app2/config", "write").await, true);
+
+
+        assert_eq!(enforce("wugren", Some("control_panel"), "kv://services/samba/setting", "write").await, true);
 
 
     }

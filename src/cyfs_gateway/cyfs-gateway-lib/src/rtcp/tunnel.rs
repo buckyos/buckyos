@@ -610,6 +610,7 @@ impl Tunnel for RTcpTunnel {
         dest_port: u16,
         dest_host: Option<String>,
     ) -> Result<Box<dyn DatagramClientBox>, std::io::Error> {
+        //todo 是否可以支持配置成udp session,而不是强制使用tcp stream
         let stream = self
             .open_stream(Some(StreamPurpose::Datagram), dest_port, dest_host)
             .await?;

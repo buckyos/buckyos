@@ -342,54 +342,13 @@ p, owner, dfs://*, read|write,allow
 p, root, kv://*, read|write,allow
 p, root, dfs://*, read|write,allow
 
-p, ood,kv://*,read
-p, ood,kv://nodes/{device}/*,read|write,allow
-
-
-p, admin,kv://users/{user}/*,read|write,allow
-p, admin,dfs://users/{user}/*,read|write,allow
-p, admin,dfs://library/*,read|write,allow
-
-p, service,kv://services/{service}/setting,read|write,allow
-p, service,kv://services/{service}/info,read|write,allow
-p, service,kv://system/*,read,allow
-
-p, user,kv://users/{user}/*,read|write,allow
-p, user,dfs://users/{user}/*,read|write,allow
-p, user,dfs://library/*,read|create,allow
-
-p, app, kv://users/*/apps/{app}/setting,read|write,allow
-p, app, kv://users/*/apps/{app}/config,read,allow
-p, app, kv://users/*/apps/{app}/info,read,allow
-
-p, app,  dfs://usrs/*/appdata/{app}/*, read|write,allow
-p, app,  dfs://usrs/*/cache/{app}/*, read|write,allow
-
-p, *, kv://boot/*, read,allow
-
-g, node_daemon, kernel
-g, scheduler, kernel
-g, system_config, kernel
-g, verify_hub, kernel
-g, repo_service, kernel
-g, control_panel, service
-
-"""
-
-"system/rbac/policy" = """
-p, kernel, kv://*, read|write,allow
-p, kernel, dfs://*, read|write,allow
-p, owner, kv://*, read|write,allow
-p, owner, dfs://*, read|write,allow
-p, root, kv://*, read|write,allow
-p, root, dfs://*, read|write,allow
-
 p, ood,kv://*,read,allow
 p, ood,kv://nodes/{device}/*,read|write,allow
 
 
 p, admin,kv://users/{user}/*,read|write,allow
 p, admin,dfs://users/{user}/*,read|write,allow
+p, admin,kv://services/*,read|write,allow
 p, admin,dfs://library/*,read|write,allow
 
 p, service,kv://services/{service}/setting,read|write,allow
@@ -418,6 +377,58 @@ g, system_config, kernel
 g, verify_hub, kernel
 g, repo_service, kernel
 g, control_panel, kernel
+
+g, samba,services
+
+"""
+
+"system/rbac/policy" = """
+p, kernel, kv://*, read|write,allow
+p, kernel, dfs://*, read|write,allow
+p, owner, kv://*, read|write,allow
+p, owner, dfs://*, read|write,allow
+p, root, kv://*, read|write,allow
+p, root, dfs://*, read|write,allow
+
+p, ood,kv://*,read,allow
+p, ood,kv://nodes/{device}/*,read|write,allow
+
+
+p, admin,kv://users/{user}/*,read|write,allow
+p, admin,dfs://users/{user}/*,read|write,allow
+p, admin,kv://services/*,read|write,allow
+p, admin,dfs://services/*,read|write,allow
+p, admin,dfs://library/*,read|write,allow
+
+p, service,kv://services/{service}/setting,read|write,allow
+p, service,kv://services/{service}/info,read|write,allow
+p, service,kv://system/*,read,allow
+
+p, user,kv://users/{user}/*,read|write,allow
+p, user,dfs://users/{user}/*,read|write,allow
+p, user,dfs://library/*,read|create,allow
+
+p, app, kv://users/*/apps/{app}/setting,read|write,allow
+p, app, kv://users/*/apps/{app}/config,read,allow
+p, app, kv://users/*/apps/{app}/info,read,allow
+
+p, app,  dfs://users/*/appdata/{app}/*, read|write,allow
+p, app,  dfs://users/*/cache/{app}/*, read|write,allow
+
+p, admin, kv://boot/*, read,allow
+p, user, kv://boot/*, read,allow
+p, service, kv://boot/*, read,allow
+p, app, kv://boot/*, read,allow
+
+g, node_daemon, kernel
+g, scheduler, kernel
+g, system_config, kernel
+g, verify_hub, kernel
+g, repo_service, kernel
+g, control_panel, kernel
+g, samba,services
+
+g, {{user_name}},admin
 
 """
 
