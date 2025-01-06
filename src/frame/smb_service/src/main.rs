@@ -34,6 +34,13 @@ mod linux_smb;
 mod samba;
 mod error;
 
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct UserInfo {
+    #[serde(rename = "type")]
+    ty: String,
+    username: String,
+    password: String,
+}
 
 
 static proc_lock: OnceLock<File> = OnceLock::new();
@@ -58,13 +65,6 @@ fn check_process_exist(name: &str) -> bool {
 }
 
 async fn async_main() {
-    Logger::new("smb-service")
-        .set_log_path(get_buckyos_root_dir().join("logs").join("smb").to_string_lossy().to_string().as_str())
-        .set_log_to_file(true)
-        .set_log_file_count(5)
-        .set_log_level("info")
-        .start().unwrap();
-
     let matches = Command::new("smb-service")
         .subcommand(Command::new("start"))
         .subcommand(Command::new("stop"))
@@ -73,9 +73,16 @@ async fn async_main() {
     match matches.subcommand() {
         Some(("start", _)) => {
             if check_process_exist("smb_service") {
-                log::error!("smb_service is already running");
+                println!("smb_service is already running");
                 return;
             }
+            Logger::new("smb-service")
+                .set_log_path(get_buckyos_root_dir().join("logs").join("smb").to_string_lossy().to_string().as_str())
+                .set_log_to_file(true)
+                .set_log_file_count(5)
+                .set_log_level("info")
+                .start().unwrap();
+
             enter_update_smb_loop().await;
         },
         Some(("stop", _)) => {
@@ -86,11 +93,11 @@ async fn async_main() {
         Some(("status", _)) => {
             match check_status().await {
                 Ok(ret) => {
-                    log::info!("status {}", ret);
+                    println!("status {}", ret);
                     std::process::exit(ret);
                 }
                 Err(e) => {
-                    log::error!("check status failed: {}", e);
+                    println!("check status failed: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -117,7 +124,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
 
     let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
 
-    let mut latest_smb_items = match system_config_client.get("services/smb/latest_smb_items").await {
+    let mut latest_smb_items = match system_config_client.get("services/samba/latest_smb_items").await {
         Ok((latest_smb_items_str, _)) => {
             serde_json::from_str(latest_smb_items_str.as_str())
                 .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_smb_items failed"))?
@@ -130,7 +137,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
             }
         }
     };
-    let mut latest_users = match system_config_client.get("services/smb/latest_users").await {
+    let mut latest_users = match system_config_client.get("services/samba/latest_users").await {
         Ok((latest_users_str, _)) => {
             serde_json::from_str(latest_users_str.as_str())
                 .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_users failed"))?
@@ -149,7 +156,23 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
     let mut smb_items = Vec::new();
     let mut smb_users = Vec::new();
     for user in list {
-        let user_info = match system_config_client.get(format!("users/{}/samba_info", user).as_str()).await {
+        let buckyos_user_info = match system_config_client.get(format!("users/{}/info", user).as_str()).await {
+            Ok((info_str, _)) => {
+                let info: UserInfo = serde_json::from_str(info_str.as_str())
+                    .map_err(into_smb_err!(SmbErrorCode::Failed, "parse user info failed"))?;
+                info
+            }
+            Err(e) => {
+                if let SystemConfigError::KeyNotFound(path) = e {
+                    log::debug!("user {} samba_info not found", user);
+                    continue;
+                } else {
+                    return Err(smb_err!(SmbErrorCode::Failed, "get samba_info failed: {}", e));
+                }
+            }
+        };
+
+        let user_info = match system_config_client.get(format!("users/{}/samba/setting", user).as_str()).await {
             Ok((samba_info_str, _)) => {
                 let samba_info: UserSambaInfo = serde_json::from_str(samba_info_str.as_str())
                     .map_err(into_smb_err!(SmbErrorCode::Failed, "parse samba_info failed"))?;
@@ -169,7 +192,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
             continue;
         }
 
-        let user_home = get_buckyos_root_dir().join("data").join(user.clone()).join("home");
+        let user_home = get_buckyos_root_dir().join("data").join(buckyos_user_info.username.as_str()).join("home");
         if !user_home.exists() {
             //create user home
             std::fs::create_dir_all(user_home.clone())
@@ -179,8 +202,8 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
         let user_home = std::fs::canonicalize(user_home)
             .map_err(into_smb_err!(SmbErrorCode::Failed, "canonicalize user home failed"))?;
         let smb_item = SmbItem {
-            smb_name: format!("{} Home", user),
-            allow_users: vec![user.clone()],
+            smb_name: format!("{} Home", buckyos_user_info.username.as_str()),
+            allow_users: vec![buckyos_user_info.username.clone()],
             path: user_home.to_string_lossy().to_string(),
         };
         smb_items.push(smb_item);
@@ -208,7 +231,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
     let new_smb_items = smb_items.iter().filter(|smb_item| !latest_smb_items.contains(smb_item)).collect::<Vec<_>>();
     if !is_first {
         if new_users.is_empty() && new_smb_items.is_empty() && delete_users.is_empty() && delete_smb_items.is_empty() {
-            log::debug!("samba config no change");
+            log::info!("samba config no change");
             return Ok(());
         }
     }
@@ -218,9 +241,9 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
 
     latest_smb_items = smb_items;
     latest_users = smb_users;
-    system_config_client.set("services/smb/latest_users", serde_json::to_string(&latest_users).unwrap().as_str()).await
+    system_config_client.set("services/samba/latest_users", serde_json::to_string(&latest_users).unwrap().as_str()).await
         .map_err(into_smb_err!(SmbErrorCode::Failed, "set latest_users failed"))?;
-    system_config_client.set("services/smb/latest_smb_items", serde_json::to_string(&latest_smb_items).unwrap().as_str()).await
+    system_config_client.set("services/samba/latest_smb_items", serde_json::to_string(&latest_smb_items).unwrap().as_str()).await
         .map_err(into_smb_err!(SmbErrorCode::Failed, "set latest_smb_items failed"))?;
 
     Ok(())

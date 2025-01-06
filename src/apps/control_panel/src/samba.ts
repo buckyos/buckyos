@@ -32,10 +32,10 @@ window.onload = async () => {
 
 
 
-    let system_config_client = new buckyos.kRPCClient("http://"+zone_host+"/kapi/system_config",null,Date.now());
+    let system_config_client = new buckyos.kRPCClient("http://"+zone_host+"/kapi/system_config",token,Date.now());
     let samba_info: UserSambaInfo | null = null;
     try {
-        samba_info = await system_config_client.call("sys_config_get", {"key": `users/${username}/samba_info`});
+        samba_info = JSON.parse(await system_config_client.call("sys_config_get", {"key": `users/${username}/samba/setting`}));
     } catch (e) {
     }
     if (samba_info == null) {
@@ -49,6 +49,7 @@ window.onload = async () => {
     const passwordInput = document.getElementById('txt-samba-password');
     const setButton = document.getElementById('btn-set-samba-password');
 
+    checkbox!.checked = samba_info.is_enable;
     passwordInput!.diabled = !samba_info.is_enable;
     passwordInput!.value = samba_info.password;
     // 监听checkbox状态变化
@@ -60,7 +61,7 @@ window.onload = async () => {
         let password = (document.getElementById('txt-samba-password') as HTMLInputElement).value;
         let is_enable = (document.getElementById('chk-samba') as HTMLInputElement).checked;
         if (is_enable) {
-            if (password == null || password == "") {
+            if (password == undefined || password == "") {
                 alert("password is null");
                 return;
             }
@@ -68,7 +69,7 @@ window.onload = async () => {
             password = "";
         }
         try {
-            await system_config_client.call("sys_config_set", {"key": `users/${username}/samba_info`, "value": JSON.stringify({"is_enable": is_enable, "password": password})});
+            await system_config_client.call("sys_config_set", {"key": `users/${username}/samba/setting`, "value": JSON.stringify({"is_enable": is_enable, "password": password})});
             alert("Set success");
         } catch (e) {
             alert("Set failed");
