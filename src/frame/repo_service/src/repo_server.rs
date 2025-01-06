@@ -4,6 +4,7 @@ use crate::source_manager::SourceManager;
 use ::kRPC::*;
 use async_trait::async_trait;
 use buckyos_kit::buckyos_get_unix_timestamp;
+use log::*;
 use package_lib::PackageId;
 use serde_json::{json, Value};
 use std::net::IpAddr;
@@ -41,7 +42,12 @@ impl RepoServer {
     }
 
     async fn handle_update_index(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        let update = req.params.get("update").unwrap().as_bool().unwrap();
+        info!("handle_update_index, params:{:?}", req.params);
+        let update = req
+            .params
+            .get("update")
+            .and_then(|update| update.as_bool())
+            .unwrap_or(false);
         match self.source_mgr.update_index(update).await {
             Ok(task_id) => Ok(RPCResponse::new(
                 RPCResult::Success(json!({
@@ -95,7 +101,10 @@ impl kRPCHandler for RepoServer {
             "update_index" => self.handle_update_index(req).await,
             "pub_pkg" => self.handle_pub_pkg(req).await,
             "pub_index" => self.handle_pub_index(req).await,
-            _ => Err(RPCErrors::UnknownMethod(req.method)),
+            _ => {
+                error!("Unknown method:{}", req.method);
+                Err(RPCErrors::UnknownMethod(req.method))
+            }
         }
     }
 }

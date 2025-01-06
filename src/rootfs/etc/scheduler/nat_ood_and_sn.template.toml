@@ -446,12 +446,14 @@ g, {{user_name}},admin
 """
 
 "services/repo/index_source" = """
-[
-    {
-        "did":"did:ens:xxxx",
-        "chunk_id":"",
-        "sign":"",
-        "version":"",
-    }
-]
+{
+    "source_list":[
+        {
+            "did":"did:bns:ssssss",
+            "chunk_id":"",
+            "sign":"",
+            "version":""
+        }
+    ]
+}
 """

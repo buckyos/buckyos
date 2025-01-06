@@ -70,6 +70,8 @@ impl Downloader {
                 ))
             })?;
 
+        info!("init repo chunk mgr success");
+
         Ok(())
     }
 

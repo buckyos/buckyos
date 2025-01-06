@@ -21,6 +21,7 @@ use std::fmt::format;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use sys_config::{SystemConfigClient, SystemConfigError};
+use tokio::sync::oneshot::error;
 use tokio::{sync::RwLock, task};
 
 #[derive(PartialEq, Debug, Clone, Copy)]
@@ -51,8 +52,8 @@ impl SourceManager {
 
     async fn load_index_source_list(&self) -> RepoResult<Vec<SourceNodeConfig>> {
         let rpc_session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
-            error!("Repo service session token not found! err:{}", e);
-            RepoError::NotReadyError("Repo service session token not found!".to_string())
+            error!("repo service session token not found! err:{}", e);
+            RepoError::NotReadyError("repo service session token not found!".to_string())
         })?;
 
         let sys_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
@@ -61,18 +62,30 @@ impl SourceManager {
             .get("services/repo/index_source")
             .await
             .map_err(|e| {
-                error!("Get index source config failed! err:{}", e);
-                RepoError::NotReadyError("Get index source config failed!".to_string())
+                error!("get index source config failed! err:{}", e);
+                RepoError::LoadError("index_source".to_string(), e.to_string())
             })?;
 
         let index_source = index_source_config.0;
 
-        //parse index_source(json) to SourceNodeConfig
-        let source_config_list: Vec<SourceNodeConfig> = serde_json::from_str(&index_source)
-            .map_err(|e| {
-                error!("Parse index source config failed! err:{}", e);
-                RepoError::ParseError(index_source.clone(), e.to_string())
+        let index_source: serde_json::Value =
+            serde_json::from_str(index_source.as_str()).map_err(|e| {
+                error!("parse index_source failed: {:?}", e);
+                RepoError::ParseError("index_source".to_string(), e.to_string())
             })?;
+
+        let source_config_list = if index_source["source_list"].is_array() {
+            serde_json::from_value(index_source["source_list"].clone()).map_err(|e| {
+                error!("parse source_list failed: {:?}", e);
+                RepoError::ParseError("source_list".to_string(), e.to_string())
+            })?
+        } else {
+            error!("source_list not found in index_source");
+            return Err(RepoError::LoadError(
+                "source_list".to_string(),
+                "source_list not found in index_source".to_string(),
+            ));
+        };
 
         Ok(source_config_list)
     }
@@ -142,6 +155,7 @@ impl SourceManager {
     async fn get_remote_source_meta(source_config: &SourceNodeConfig) -> RepoResult<SourceMeta> {
         //TODO 拼接meta url
         let url = format!("http://{}/repo/index_meta", source_config.did);
+        info!("get_remote_source_meta url: {}", url);
         let resp = reqwest::get(&url).await.map_err(|e| {
             error!("get_remote_source_meta failed: {:?}", e);
             RepoError::HttpError(format!("get_remote_source_meta failed: {:?}", e))
@@ -508,6 +522,7 @@ impl SourceManager {
     }
 
     pub async fn check_exist(&self, pkg_meta: &PackageMeta) -> RepoResult<bool> {
+        debug!("check chunk exist: {}", pkg_meta.chunk_id);
         let chunk_id = ChunkId::new(&pkg_meta.chunk_id).map_err(|e| {
             error!("Parse chunk id failed: {:?}", e);
             RepoError::ParseError(pkg_meta.chunk_id.clone(), e.to_string())
@@ -516,10 +531,12 @@ impl SourceManager {
             .await
             .ok_or_else(|| RepoError::NdnError("no chunk mgr".to_string()))?;
         let mut named_mgr = named_mgr.lock().await;
-        named_mgr.is_chunk_exist(&chunk_id).await.map_err(|e| {
+        let ret = named_mgr.is_chunk_exist(&chunk_id).await.map_err(|e| {
             error!("is_chunk_exist failed: {:?}", e);
             RepoError::NdnError(format!("is_chunk_exist failed: {:?}", e))
-        })
+        })?;
+        info!("check chunk {} exist: {}", pkg_meta.chunk_id, ret);
+        Ok(ret)
     }
 
     async fn get_local_index_node(&self) -> RepoResult<SourceNode> {
