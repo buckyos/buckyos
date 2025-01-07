@@ -155,6 +155,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
         .map_err(into_smb_err!(SmbErrorCode::ListUserFailed, "get user list failed"))?;
     let mut smb_items = Vec::new();
     let mut smb_users = Vec::new();
+    let mut root_users = Vec::new();
     for user in list {
         let buckyos_user_info = match system_config_client.get(format!("users/{}/info", user).as_str()).await {
             Ok((info_str, _)) => {
@@ -192,6 +193,10 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
             continue;
         }
 
+        if user == "root" {
+            root_users.push(user.clone());
+        }
+
         let user_home = get_buckyos_root_dir().join("data").join(buckyos_user_info.username.as_str()).join("home");
         if !user_home.exists() {
             //create user home
@@ -211,6 +216,14 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
             user,
             password: user_info.password,
         });
+    }
+
+    for root_user in root_users {
+        for smb_item in smb_items.iter_mut() {
+            if !smb_item.allow_users.contains(&root_user) {
+                smb_item.allow_users.push(root_user.clone());
+            }
+        }
     }
 
     let mut delete_users = Vec::new();
