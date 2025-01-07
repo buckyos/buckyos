@@ -2,6 +2,7 @@ use std::path::Path;
 use ini::Ini;
 use shlex::Shlex;
 use sysinfo::System;
+use tokio::fs::read_to_string;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
@@ -182,13 +183,63 @@ pub async fn exist_smb_user(user_name: &str) -> SmbResult<bool> {
     Ok(true)
 }
 
+fn running_in_docker() -> bool {
+    if let Ok(content) = std::fs::read_to_string("/proc/1/cgroup") {
+        content.contains("/docker/")
+    } else {
+        false
+    }
+}
+
 pub async fn restart_smb_service() -> SmbResult<()> {
-    execute("systemctl restart smbd").await?;
+    kill_smbd().await?;
+
+    if running_in_docker() {
+        execute("smbd").await?;
+        return Ok(());
+    }
+
+    if let Some(version) = sysinfo::System::name() {
+        if version.to_lowercase().contains("ubuntu") || version.to_lowercase().contains("debian") || version.to_lowercase().contains("centos") {
+            execute("systemctl restart smb").await?;
+        } else {
+            execute("smbd").await?;
+        }
+    } else {
+        execute("smbd").await?;
+    }
+    Ok(())
+}
+
+async fn kill_smbd() -> SmbResult<()> {
+    let smbd_pid_file =  Path::new("/run/samba/smbd.pid");
+    if smbd_pid_file.exists() {
+        let pid = read_to_string(smbd_pid_file).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
+        let pid = pid.trim();
+        execute(format!("kill -9 {}", pid).as_str()).await?;
+    } else {
+        // 通过进程列表关闭
+        let mut system = System::new_all();
+        system.refresh_all();
+        for (_, process) in system.processes() {
+            if process.name() == "smbd" {
+                execute(format!("kill -9 {}", process.pid()).as_str()).await?;
+            }
+        }
+    }
     Ok(())
 }
 
 pub async fn stop_smb_service() -> SmbResult<()> {
-    execute("systemctl stop smbd").await?;
+    if let Some(version) = sysinfo::System::name() {
+        if version.to_lowercase().contains("ubuntu") || version.to_lowercase().contains("debian") || version.to_lowercase().contains("centos") {
+            execute("systemctl stop smbd").await?;
+        } else {
+            kill_smbd().await?;
+        }
+    } else {
+        kill_smbd().await?;
+    }
     Ok(())
 }
 
