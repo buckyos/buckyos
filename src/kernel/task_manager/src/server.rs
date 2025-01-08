@@ -122,6 +122,70 @@ impl TaskManagerServer {
         return Ok(RPCResponse::new(RPCResult::Success(json!({})), req.seq));
     }
 
+    async fn handle_resume_task(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let params: Value = match req.params {
+            Value::String(s) => serde_json::from_str(&s).map_err(|e| {
+                error!("Failed to parse params: {}", e);
+                RPCErrors::ReasonError(e.to_string())
+            })?,
+            Value::Object(_) => req.params,
+            _ => {
+                error!("Invalid params type");
+                return self.error(req.seq, "Invalid params type".to_string());
+            }
+        };
+        let id = match params.get("id") {
+            Some(Value::Number(n)) => n.as_u64().unwrap(),
+            Some(_) => {
+                return self.error(req.seq, "'id' field is not a number".to_string());
+            }
+            None => {
+                return self.error(req.seq, "Missing 'id' field in params".to_string());
+            }
+        };
+        let db_manager = DB_MANAGER.lock().await;
+        let result = db_manager
+            .update_task(id, TaskStatus::Running.to_string())
+            .await;
+        if let Err(e) = result {
+            let error_message = e.to_string();
+            return self.error(req.seq, error_message);
+        }
+        return Ok(RPCResponse::new(RPCResult::Success(json!({})), req.seq));
+    }
+
+    async fn handle_complete_task(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let params: Value = match req.params {
+            Value::String(s) => serde_json::from_str(&s).map_err(|e| {
+                error!("Failed to parse params: {}", e);
+                RPCErrors::ReasonError(e.to_string())
+            })?,
+            Value::Object(_) => req.params,
+            _ => {
+                error!("Invalid params type");
+                return self.error(req.seq, "Invalid params type".to_string());
+            }
+        };
+        let id = match params.get("id") {
+            Some(Value::Number(n)) => n.as_u64().unwrap(),
+            Some(_) => {
+                return self.error(req.seq, "'id' field is not a number".to_string());
+            }
+            None => {
+                return self.error(req.seq, "Missing 'id' field in params".to_string());
+            }
+        };
+        let db_manager = DB_MANAGER.lock().await;
+        let result = db_manager
+            .update_task(id, TaskStatus::Completed.to_string())
+            .await;
+        if let Err(e) = result {
+            let error_message = e.to_string();
+            return self.error(req.seq, error_message);
+        }
+        return Ok(RPCResponse::new(RPCResult::Success(json!({})), req.seq));
+    }
+
     fn error(&self, seq: u64, error_message: String) -> Result<RPCResponse, RPCErrors> {
         return Ok(RPCResponse::new(
             RPCResult::Success(json!({"code":"1", "msg": error_message})),
@@ -141,6 +205,8 @@ impl kRPCHandler for TaskManagerServer {
             "create_task" => self.handle_create_task(req).await,
             "list_task" => self.handle_list_task(req).await,
             "pause_task" => self.handle_pause_task(req).await,
+            "resume_task" => self.handle_resume_task(req).await,
+            "complete_task" => self.handle_complete_task(req).await,
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }
     }
