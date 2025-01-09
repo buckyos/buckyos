@@ -8,13 +8,12 @@ use crate::zone_info_helper::ZoneInfoHelper;
 use async_recursion::async_recursion;
 use buckyos_kit::get_buckyos_service_data_dir;
 use core::hash;
-use kv::source;
+use kRPC::kRPC;
 use log::*;
 use ndn_lib::{ChunkId, NamedDataMgr};
 use package_lib::PackageId;
-use reqwest;
 use serde::ser;
-use serde_json::value::Index;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{Executor, Pool, Sqlite, SqlitePool};
 use std::collections::HashMap;
@@ -68,6 +67,8 @@ impl SourceManager {
             })?;
 
         let index_source = index_source_config.0;
+
+        info!("load index source config: {:?}", index_source);
 
         let index_source: serde_json::Value =
             serde_json::from_str(index_source.as_str()).map_err(|e| {
@@ -156,23 +157,32 @@ impl SourceManager {
     }
 
     async fn get_remote_source_meta(source_config: &SourceNodeConfig) -> RepoResult<SourceMeta> {
-        //TODO 拼接meta url
-        let url = format!("http://{}/repo/index_meta", source_config.did);
+        //TODO 拼接meta url，要修改成正式url
+        //let url = format!("http://{}/kapi/repo", source_config.name);
+        let url = format!("http://{}/kapi/repo", "127.0.0.1:4000");
         info!("get_remote_source_meta url: {}", url);
-        let resp = reqwest::get(&url).await.map_err(|e| {
-            error!("get_remote_source_meta failed: {:?}", e);
-            RepoError::HttpError(format!("get_remote_source_meta failed: {:?}", e))
+        let session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
+            error!("repo service session token not found! err:{}", e);
+            RepoError::NotReadyError("repo service session token not found!".to_string())
         })?;
-        if !resp.status().is_success() {
-            return Err(RepoError::HttpError(format!(
-                "get_remote_source_meta failed, status: {}",
-                resp.status()
-            )));
-        }
-        let source_meta: SourceMeta = resp.json().await.map_err(|e| {
-            error!("get_remote_source_meta failed: {:?}", e);
-            RepoError::HttpError(format!("get_remote_source_meta failed: {:?}", e))
+        let rpc_client = kRPC::new(&url, Some(session_token));
+        let resp = rpc_client
+            .call("query_index_meta", json!({}))
+            .await
+            .map_err(|e| {
+                error!("get_remote_source_meta failed: {:?}", e);
+                RepoError::RpcError(format!("get_remote_source_meta failed: {:?}", e))
+            })?;
+
+        let source_meta: SourceMeta = serde_json::from_value(resp).map_err(|e| {
+            error!("parse source_meta failed: {:?}", e);
+            RepoError::ParseError("source_meta".to_string(), e.to_string())
         })?;
+
+        info!(
+            "get remote source meta from {:?} success: {:?}",
+            source_config.name, source_meta
+        );
 
         Ok(source_meta)
     }
@@ -218,6 +228,7 @@ impl SourceManager {
                 if source_meta.chunk_id != source_config.chunk_id {
                     source_config.chunk_id = source_meta.chunk_id;
                     source_config.sign = source_meta.sign;
+                    source_config.version = source_meta.version;
                     need_update_config_list.push(source_config.clone());
                 }
             }

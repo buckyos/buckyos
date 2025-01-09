@@ -121,6 +121,8 @@ pub enum RepoError {
     PermissionError(String),
     #[error("Http Error: {0}")]
     HttpError(String),
+    #[error("rpc Error: {0}")]
+    RpcError(String),
 }
 
 pub type RepoResult<T> = std::result::Result<T, RepoError>;

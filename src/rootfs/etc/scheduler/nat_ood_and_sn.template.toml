@@ -86,6 +86,9 @@
                         },
                         "/kapi/verify_hub":{
                             "upstream":"http://127.0.0.1:3300"
+                        },
+                        "/kapi/repo":{
+                            "upstream":"http://127.0.0.1:4000"
                         }
                     }
                 },
@@ -100,6 +103,9 @@
                         },
                         "/kapi/verify_hub":{
                             "upstream":"http://127.0.0.1:3300"
+                        },
+                        "/kapi/repo":{
+                            "upstream":"http://127.0.0.1:4000"
                         }
                     }
                 }
@@ -282,6 +288,9 @@
                         "/kapi/verify_hub":{
                             "upstream":"http://127.0.0.1:3300"
                         },
+                        "/kapi/repo":{
+                            "upstream":"http://127.0.0.1:4000"
+                        },
                         "/":{
                             "upstream":"http://127.0.0.1:20080"
                         }
@@ -450,7 +459,7 @@ g, {{user_name}},admin
     "source_list":[
         {
             "did":"did:bns:ssssss",
-            "name":"ssssss.web3.buckyos.io"
+            "name":"ssssss.web3.buckyos.io",
             "chunk_id":"",
             "sign":"",
             "version":""
