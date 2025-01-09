@@ -86,9 +86,26 @@ async fn main() -> std::result::Result<(), String> {
                         .required(true),
                 )
                 .arg(
-                    Arg::new("pk")
-                        .long("private_key")
-                        .help("private key file path")
+                    Arg::new("pem")
+                        .long("pem_file")
+                        .help("pem file path")
+                        .required(true),
+                )
+                .arg(Arg::new("url").long("url").help("pub url").required(true)),
+        )
+        .subcommand(
+            Command::new("pub_index")
+                .about("publish index")
+                .arg(
+                    Arg::new("pem")
+                        .long("pem_file")
+                        .help("pem file path")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("version")
+                        .long("version")
+                        .help("index version")
                         .required(true),
                 )
                 .arg(Arg::new("url").long("url").help("pub url").required(true)),
@@ -207,15 +224,49 @@ async fn main() -> std::result::Result<(), String> {
                 })?;
             //从args中取出参数
             let pkg_path = matches.get_one::<String>("pkg_path").unwrap();
-            let private_key_file = matches.get_one::<String>("pk").unwrap();
+            let pem_file = matches.get_one::<String>("pem").unwrap();
             let url = matches.get_one::<String>("url").unwrap();
-            match publish(pkg_path, private_key_file, url, &device_session_token_jwt).await {
+            match publish_package(pkg_path, pem_file, url, &device_session_token_jwt).await {
                 Ok(_) => {
                     println!("publish package success!");
                 }
                 Err(e) => {
                     println!("publish package failed! {}", e);
                     return Err("publish package failed!".to_string());
+                }
+            }
+        }
+        Some(("pub_index", matches)) => {
+            let now = SystemTime::now();
+            let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
+            let timestamp = since_the_epoch.as_secs();
+            let device_session_token = kRPC::RPCSessionToken {
+                token_type: kRPC::RPCSessionTokenType::JWT,
+                nonce: None,
+                userid: Some(device_doc.name.clone()),
+                appid: Some("kernel".to_string()),
+                exp: Some(timestamp + 3600 * 24 * 7),
+                iss: Some(device_doc.name.clone()),
+                token: None,
+            };
+
+            let device_session_token_jwt = device_session_token
+                .generate_jwt(Some(device_doc.did.clone()), &device_private_key)
+                .map_err(|err| {
+                    println!("generate device session token failed! {}", err);
+                    return String::from("generate device session token failed!");
+                })?;
+            //从args中取出参数
+            let pem_file = matches.get_one::<String>("pem").unwrap();
+            let version = matches.get_one::<String>("version").unwrap();
+            let url = matches.get_one::<String>("url").unwrap();
+            match publish_index(pem_file, version, url, &device_session_token_jwt).await {
+                Ok(_) => {
+                    println!("publish index success!");
+                }
+                Err(e) => {
+                    println!("publish index failed! {}", e);
+                    return Err("publish index failed!".to_string());
                 }
             }
         }
@@ -231,7 +282,10 @@ async fn main() -> std::result::Result<(), String> {
                 }
             }
         }
-        _ => unreachable!(),
+        _ => {
+            println!("unknown command!");
+            return Err("unknown command!".to_string());
+        }
     }
 
     // let _ = handle_matches(matches).await?;

@@ -2,7 +2,7 @@ use crate::def::*;
 use log::*;
 use ndn_lib::ChunkId;
 use serde_json::Value;
-use sqlx::{Pool, Sqlite, SqlitePool};
+use sqlx::{database, Pool, Sqlite, SqlitePool};
 use std::path::PathBuf;
 
 fn is_valid_chunk_id(chunk_id: &str) -> bool {
@@ -24,26 +24,32 @@ impl SourceNode {
         local_file: PathBuf,
         is_local: bool,
     ) -> RepoResult<Self> {
-        let database_url = format!("sqlite://{}", local_file.to_string_lossy());
+        let database_url = if is_local {
+            format!("sqlite://{}?mode=rwc", local_file.to_string_lossy())
+        } else {
+            format!("sqlite://{}", local_file.to_string_lossy())
+        };
         let pool = SqlitePool::connect(&database_url).await?;
 
         if is_local {
             sqlx::query(
                 "CREATE TABLE IF NOT EXISTS pkg_db (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL DEFAULT '',
-                    version TEXT NOT NULL DEFAULT '',
-                    author TEXT NOT NULL,
-                    chunk_id TEXT NOT NULL DEFAULT '',
+                    pkg_name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    author_did TEXT NOT NULL,
+                    author_name TEXT NOT NULL,
+                    chunk_id TEXT NOT NULL,
                     dependencies TEXT NOT NULL DEFAULT '',
-                    sign TEXT NOT NULL DEFAULT '',
-                    pub_time INTEGER NOT NULL DEFAULT 0
+                    sign TEXT NOT NULL,
+                    pub_time INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(pkg_name, version)
                 )",
             )
             .execute(&pool)
             .await?;
 
-            sqlx::query("CREATE INDEX IF NOT EXISTS idx_pkg_db_name ON pkg_db (name)")
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_pkg_db_pkg_name ON pkg_db (pkg_name)")
                 .execute(&pool)
                 .await?;
 
@@ -60,11 +66,12 @@ impl SourceNode {
     pub async fn insert_pkg_meta(&self, pkg_meta: &PackageMeta) -> RepoResult<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO pkg_db (name, version, author, chunk_id, dependencies, sign, pub_time) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO pkg_db (pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&pkg_meta.name)
+        .bind(&pkg_meta.pkg_name)
         .bind(&pkg_meta.version)
-        .bind(&pkg_meta.author)
+        .bind(&pkg_meta.author_did)
+        .bind(&pkg_meta.author_name)
         .bind(&pkg_meta.chunk_id)
         .bind(&serde_json::to_string(&pkg_meta.dependencies)?)
         .bind(&pkg_meta.sign)
@@ -72,18 +79,31 @@ impl SourceNode {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+
+        info!(
+            "insert pkg meta success, pkg_name:{}, version:{}, author_did:{}, author_name:{}, chunk_id:{}, dependencies:{}, sign:{}, pub_time:{}",
+            pkg_meta.pkg_name,
+            pkg_meta.version,
+            pkg_meta.author_did,
+            pkg_meta.author_name,
+            pkg_meta.chunk_id,
+            serde_json::to_string(&pkg_meta.dependencies)?,
+            pkg_meta.sign,
+            pkg_meta.pub_time
+        );
+
         Ok(())
     }
 
-    pub async fn remove_pkg_meta(&self, name: &str, version_desc: &str) -> RepoResult<()> {
+    pub async fn remove_pkg_meta(&self, pkg_name: &str, version_desc: &str) -> RepoResult<()> {
         let sql = if is_valid_chunk_id(version_desc) {
-            "DELETE FROM pkg_db WHERE name = ? AND chunk_id = ?"
+            "DELETE FROM pkg_db WHERE pkg_name = ? AND chunk_id = ?"
         } else {
-            "DELETE FROM pkg_db WHERE name = ? AND version = ?"
+            "DELETE FROM pkg_db WHERE pkg_name = ? AND version = ?"
         };
         let mut tx = self.pool.begin().await?;
         sqlx::query(sql)
-            .bind(name)
+            .bind(pkg_name)
             .bind(version_desc)
             .execute(&mut *tx)
             .await?;
@@ -93,16 +113,16 @@ impl SourceNode {
 
     pub async fn get_pkg_meta(
         &self,
-        name: &str,
+        pkg_name: &str,
         version_desc: &str,
     ) -> RepoResult<Option<PackageMeta>> {
         let sql = if is_valid_chunk_id(version_desc) {
-            "SELECT name, version, author, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE name = ? AND chunk_id = ?"
+            "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE pkg_name = ? AND chunk_id = ?"
         } else {
-            "SELECT name, version, author, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE name = ? AND version = ?"
+            "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE pkg_name = ? AND version = ?"
         };
         let result = sqlx::query_as::<_, PackageMeta>(sql)
-            .bind(name)
+            .bind(pkg_name)
             .bind(version_desc)
             .fetch_optional(&self.pool)
             .await?;
@@ -110,22 +130,23 @@ impl SourceNode {
         Ok(result)
     }
 
-    pub async fn get_default_pkg_meta(&self, name: &str) -> RepoResult<Option<PackageMeta>> {
+    pub async fn get_default_pkg_meta(&self, pkg_name: &str) -> RepoResult<Option<PackageMeta>> {
         let result = sqlx::query_as::<_, PackageMeta>(
-            "SELECT name, version, author, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE name = ? ORDER BY pub_time DESC LIMIT 1"
+            "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE pkg_name = ? ORDER BY pub_time DESC LIMIT 1",
         )
-        .bind(name)
+        .bind(pkg_name)
         .fetch_optional(&self.pool)
         .await?;
 
         Ok(result)
     }
 
-    pub async fn get_all_pkg_version(&self, name: &str) -> RepoResult<Vec<String>> {
-        let rows = sqlx::query_as::<_, PackageMeta>("SELECT version FROM pkg_db WHERE name = ?")
-            .bind(name)
-            .fetch_all(&self.pool)
-            .await?;
+    pub async fn get_all_pkg_version(&self, pkg_name: &str) -> RepoResult<Vec<String>> {
+        let rows =
+            sqlx::query_as::<_, PackageMeta>("SELECT version FROM pkg_db WHERE pkg_name = ?")
+                .bind(pkg_name)
+                .fetch_all(&self.pool)
+                .await?;
 
         Ok(rows.into_iter().map(|row| row.version).collect())
     }

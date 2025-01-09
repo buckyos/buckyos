@@ -1,5 +1,6 @@
 use crate::crypto_utils::*;
 use crate::def::*;
+use crate::zone_info_helper::*;
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_service_data_dir};
 use log::*;
 use ndn_lib::*;
@@ -23,7 +24,7 @@ impl IndexPublisher {
         let local_index_sha256 = hasher.finalize().to_vec();
         let chunk_id = ChunkId::from_sha256_result(&local_index_sha256);
 
-        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some("repo_chunk_mgr"))
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(None)
             .await
             .ok_or_else(|| RepoError::NdnError("Failed to get repo named data mgr".to_string()))?;
 
@@ -58,16 +59,17 @@ impl IndexPublisher {
         let local_data_dir = get_buckyos_service_data_dir(SERVICE_NAME).join(LOCAL_INDEX_DATA);
         let index_meta_db_file = local_data_dir.join(LOCAL_INDEX_META_DB);
 
-        let db_url = format!("sqlite://{}", index_meta_db_file.to_string_lossy());
+        let db_url = format!("sqlite://{}?mode=rwc", index_meta_db_file.to_string_lossy());
         let pool = SqlitePool::connect(&db_url).await?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS index_meta_db (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                did TEXT NOT NULL DEFAULT '',
-                version TEXT NOT NULL DEFAULT '',
-                chunk_id TEXT NOT NULL DEFAULT '',
-                sign TEXT NOT NULL DEFAULT '',
+                did TEXT NOT NULL,
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                chunk_id TEXT NOT NULL,
+                sign TEXT NOT NULL,
                 pub_time INTEGER NOT NULL DEFAULT 0
             )",
         )
@@ -82,12 +84,18 @@ impl IndexPublisher {
             .execute(&pool)
             .await?;
 
+        //对version创建唯一索引
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_version ON index_meta_db (version)")
+            .execute(&pool)
+            .await?;
+
         //insert index source meta
         let mut tx = pool.begin().await?;
         sqlx::query(
-            "INSERT INTO index_meta_db (did, version, chunk_id, sign, pub_time) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO index_meta_db (did, name, version, chunk_id, sign, pub_time) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&index_source_meta.did)
+        .bind(&index_source_meta.name)
         .bind(&index_source_meta.version)
         .bind(&index_source_meta.chunk_id)
         .bind(&index_source_meta.sign)
@@ -97,14 +105,22 @@ impl IndexPublisher {
 
         tx.commit().await?;
 
+        info!(
+            "add index source meta success, version:{}, chunk_id:{}, sign:{}, pub_time:{}",
+            index_source_meta.version,
+            index_source_meta.chunk_id,
+            index_source_meta.sign,
+            index_source_meta.pub_time
+        );
+
         Ok(())
     }
 
-    pub async fn pub_index(private_key_file_path: &PathBuf, version: &str) -> RepoResult<()> {
-        if !private_key_file_path.exists() {
+    pub async fn pub_index(pem_file_path: &PathBuf, version: &str) -> RepoResult<()> {
+        if !pem_file_path.exists() {
             return Err(RepoError::NotFound(format!(
                 "Private key file {} not exists",
-                private_key_file_path.to_string_lossy()
+                pem_file_path.to_string_lossy()
             )));
         }
         let local_data_dir = get_buckyos_service_data_dir(SERVICE_NAME).join(LOCAL_INDEX_DATA);
@@ -117,18 +133,16 @@ impl IndexPublisher {
         }
 
         let chunk_id = Self::write_chunk(&local_index_file).await?;
-        let sign = sign_data(
-            &private_key_file_path.to_string_lossy(),
-            &chunk_id.to_string(),
-        )
-        .map_err(|e| {
-            error!("sign_data failed: {:?}", e);
-            RepoError::SignError(format!("sign_data failed: {:?}", e))
-        })?;
+        let sign =
+            sign_data(&pem_file_path.to_string_lossy(), &chunk_id.to_string()).map_err(|e| {
+                error!("sign_data failed: {:?}", e);
+                RepoError::SignError(format!("sign_data failed: {:?}", e))
+            })?;
 
         // TODO fix did
         let index_source_meta = SourceMeta {
-            did: "".to_string(),
+            did: ZoneInfoHelper::get_zone_did()?,
+            name: ZoneInfoHelper::get_zone_name()?,
             version: version.to_string(),
             chunk_id: chunk_id.to_string(),
             sign,
@@ -140,18 +154,27 @@ impl IndexPublisher {
         Ok(())
     }
 
-    pub async fn get_latest_meta() -> RepoResult<Option<SourceMeta>> {
+    pub async fn get_meta(version: Option<&str>) -> RepoResult<Option<SourceMeta>> {
         let local_data_dir = get_buckyos_service_data_dir(SERVICE_NAME).join(LOCAL_INDEX_DATA);
         let index_meta_db_file = local_data_dir.join(LOCAL_INDEX_META_DB);
 
         let db_url = format!("sqlite://{}", index_meta_db_file.to_string_lossy());
         let pool = SqlitePool::connect(&db_url).await?;
 
-        let meta_info = sqlx::query_as::<_, SourceMeta>(
-            "SELECT * FROM index_meta_db ORDER BY pub_time DESC LIMIT 1",
-        )
-        .fetch_optional(&pool)
-        .await?;
+        let meta_info = if let Some(version) = version {
+            sqlx::query_as::<_, SourceMeta>("SELECT * FROM index_meta_db WHERE version = ?")
+                .bind(version)
+                .fetch_optional(&pool)
+                .await?
+        } else {
+            sqlx::query_as::<_, SourceMeta>(
+                "SELECT * FROM index_meta_db ORDER BY pub_time DESC LIMIT 1",
+            )
+            .fetch_optional(&pool)
+            .await?
+        };
+
+        info!("get_meta, version:{:?}, info: {:?}", version, meta_info);
 
         Ok(meta_info)
     }

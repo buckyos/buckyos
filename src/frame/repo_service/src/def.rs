@@ -16,9 +16,10 @@ pub const TASK_EXPIRE_TIME: u64 = 30 * 60; //任务超时时间,单位秒
 
 #[derive(Clone, Debug, FromRow)]
 pub struct PackageMeta {
-    pub name: String,
+    pub pkg_name: String,
     pub version: String,
-    pub author: String, //author did
+    pub author_did: String, //author did
+    pub author_name: String,
     pub chunk_id: String,
     pub dependencies: Value,
     pub sign: String, //sign of the chunk_id
@@ -28,6 +29,7 @@ pub struct PackageMeta {
 #[derive(Debug, Clone, Deserialize, Serialize, FromRow)]
 pub struct SourceMeta {
     pub did: String,
+    pub name: String,
     pub chunk_id: String,
     pub sign: String,
     pub version: String,
@@ -37,6 +39,7 @@ pub struct SourceMeta {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SourceNodeConfig {
     pub did: String,
+    pub name: String,
     pub chunk_id: String,
     pub sign: String,
     pub version: String,

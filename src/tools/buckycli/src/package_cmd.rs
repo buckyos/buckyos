@@ -255,9 +255,9 @@ async fn write_file_to_chunk(
     chunk_id: &ChunkId,
     file_path: &PathBuf,
     file_size: u64,
-    chunk_mgr_id: &str,
+    chunk_mgr_id: Option<&str>,
 ) -> Result<(), String> {
-    let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(chunk_mgr_id))
+    let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(chunk_mgr_id)
         .await
         .ok_or_else(|| "Failed to get repo named data mgr".to_string())?;
 
@@ -331,13 +331,13 @@ async fn write_file_to_chunk(
     Ok(())
 }
 
-pub async fn publish(
-    path: &str,
-    private_key_file: &str,
+pub async fn publish_package(
+    pkg_path: &str,
+    pem_file: &str,
     url: &str,
     session_token: &str,
 ) -> Result<(), String> {
-    let pack_ret = pack(path).await?;
+    let pack_ret = pack(pkg_path).await?;
 
     let pack_file_path = pack_ret.target_file_path.clone();
 
@@ -352,7 +352,7 @@ pub async fn publish(
     let file_info = calculate_file_hash(pack_file_path.to_str().unwrap())?;
     let chunk_id = ChunkId::from_sha256_result(&file_info.sha256);
 
-    let sign: String = sign_data(private_key_file, &chunk_id.to_string())?;
+    let sign: String = sign_data(pem_file, &chunk_id.to_string())?;
     println!(
         "chunk_id: {}, signature_base64: {}:",
         chunk_id.to_string(),
@@ -370,9 +370,17 @@ pub async fn publish(
     };
 
     // 上传chunk到repo
-    write_file_to_chunk(&chunk_id, &pack_file_path, file_info.size, "repo_chunk_mgr")
+    let chunk_mgr_id = None;
+    write_file_to_chunk(&chunk_id, &pack_file_path, file_info.size, chunk_mgr_id)
         .await
-        .map_err(|e| format!("Failed to upload package file to repo, err:{:?}", e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to upload package file to chunk mgr:{:?}, err:{:?}",
+                chunk_mgr_id, e
+            )
+        })?;
+
+    println!("upload chunk to chunk mgr:{:?} success", chunk_mgr_id);
 
     // 上传元数据到repo
     let client = kRPC::new(url, Some(session_token.to_string()));
@@ -391,6 +399,28 @@ pub async fn publish(
         )
         .await
         .map_err(|e| format!("Failed to publish package meta to repo, err:{:?}", e))?;
+
+    Ok(())
+}
+
+pub async fn publish_index(
+    pem_file: &str,
+    version: &str,
+    url: &str,
+    session_token: &str,
+) -> Result<(), String> {
+    let client = kRPC::new(url, Some(session_token.to_string()));
+
+    client
+        .call(
+            "pub_index",
+            json!({
+                "pem_file": pem_file.to_string(),
+                "version": version.to_string(),
+            }),
+        )
+        .await
+        .map_err(|e| format!("Failed to publish index, err:{:?}", e))?;
 
     Ok(())
 }

@@ -4,6 +4,7 @@ use crate::downloader::*;
 use crate::index_publisher::*;
 use crate::source_node::*;
 use crate::task_manager::REPO_TASK_MANAGER;
+use crate::zone_info_helper::ZoneInfoHelper;
 use async_recursion::async_recursion;
 use buckyos_kit::get_buckyos_service_data_dir;
 use core::hash;
@@ -137,15 +138,17 @@ impl SourceManager {
         Ok(())
     }
 
-    fn local_node_config() -> SourceNodeConfig {
+    fn local_node_config() -> RepoResult<SourceNodeConfig> {
         //TODO fix 从系统配置中获取
-        let self_did = "".to_string();
-        SourceNodeConfig {
+        let self_did = ZoneInfoHelper::get_zone_did()?;
+        let self_name = ZoneInfoHelper::get_zone_name()?;
+        Ok(SourceNodeConfig {
             did: self_did,
+            name: self_name,
             chunk_id: "".to_string(),
             sign: "".to_string(),
             version: "".to_string(),
-        }
+        })
     }
 
     fn source_db_file(source_config: &SourceNodeConfig, dir: &PathBuf) -> PathBuf {
@@ -178,6 +181,9 @@ impl SourceManager {
         let mut need_update_config_list = Vec::new();
         let remote_source_db_dir =
             get_buckyos_service_data_dir(SERVICE_NAME).join(REMOTE_INDEX_DIR_NAME);
+        if !remote_source_db_dir.exists() {
+            std::fs::create_dir_all(&remote_source_db_dir)?;
+        }
         let source_config_list = self.load_index_source_list().await?;
 
         let mut new_source_list = Vec::new();
@@ -501,7 +507,7 @@ impl SourceManager {
             .await?;
         REPO_TASK_MANAGER.set_task_deps(task_id, dependencies.clone())?;
         for dep in dependencies {
-            let dep_id = format!("{}#{}", dep.name, dep.version);
+            let dep_id = format!("{}#{}", dep.pkg_name, dep.version);
             Self::set_task_status(
                 task_id,
                 TaskStatus::Running(format!("Downloading {}", dep_id)),
@@ -516,18 +522,24 @@ impl SourceManager {
             return Ok(());
         }
         // TODO: fix this url
-        let url = format!("http://web3.buckyos.com/{}", pkg_meta.author);
-        Downloader::pull_remote_chunk(&url, &pkg_meta.author, &pkg_meta.sign, &pkg_meta.chunk_id)
-            .await
+        let url = format!("http://web3.buckyos.com/{}", pkg_meta.author_did);
+        Downloader::pull_remote_chunk(
+            &url,
+            &pkg_meta.author_did,
+            &pkg_meta.sign,
+            &pkg_meta.chunk_id,
+        )
+        .await
     }
 
     pub async fn check_exist(&self, pkg_meta: &PackageMeta) -> RepoResult<bool> {
+        let chunk_mgr_id = None;
         debug!("check chunk exist: {}", pkg_meta.chunk_id);
         let chunk_id = ChunkId::new(&pkg_meta.chunk_id).map_err(|e| {
             error!("Parse chunk id failed: {:?}", e);
             RepoError::ParseError(pkg_meta.chunk_id.clone(), e.to_string())
         })?;
-        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(REPO_CHUNK_MGR_ID))
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(chunk_mgr_id)
             .await
             .ok_or_else(|| RepoError::NdnError("no chunk mgr".to_string()))?;
         let mut named_mgr = named_mgr.lock().await;
@@ -535,15 +547,21 @@ impl SourceManager {
             error!("is_chunk_exist failed: {:?}", e);
             RepoError::NdnError(format!("is_chunk_exist failed: {:?}", e))
         })?;
-        info!("check chunk {} exist: {}", pkg_meta.chunk_id, ret);
+        info!(
+            "check chunk {} in {:?} exist: {}",
+            pkg_meta.chunk_id, chunk_mgr_id, ret
+        );
         Ok(ret)
     }
 
     async fn get_local_index_node(&self) -> RepoResult<SourceNode> {
         let local_dir = get_buckyos_service_data_dir(SERVICE_NAME).join(LOCAL_INDEX_DATA);
+        if !local_dir.exists() {
+            std::fs::create_dir_all(&local_dir)?;
+        }
         //打开local_index.db，如果不存在就创建
         let local_file = local_dir.join(LOCAL_INDEX_DB);
-        let source_config = Self::local_node_config();
+        let source_config = Self::local_node_config()?;
         SourceNode::new(source_config, local_file, true).await
     }
 
@@ -562,11 +580,11 @@ impl SourceManager {
         local_index_node.insert_pkg_meta(pkg_meta).await
     }
 
-    pub async fn pub_index(&self, private_key_file: &PathBuf, version: &str) -> RepoResult<()> {
-        IndexPublisher::pub_index(private_key_file, version).await
+    pub async fn pub_index(&self, pem_file: &PathBuf, version: &str) -> RepoResult<()> {
+        IndexPublisher::pub_index(pem_file, version).await
     }
 
-    pub async fn get_latest_index_meta(&self) -> RepoResult<Option<SourceMeta>> {
-        IndexPublisher::get_latest_meta().await
+    pub async fn get_index_meta(&self, version: Option<&str>) -> RepoResult<Option<SourceMeta>> {
+        IndexPublisher::get_meta(version).await
     }
 }

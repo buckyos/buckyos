@@ -92,13 +92,10 @@ impl Downloader {
             )));
         }
 
-        let ndn_client = NdnClient::new(url.to_string(), None, Some(REPO_CHUNK_MGR_ID.to_string()));
+        let ndn_client = NdnClient::new(url.to_string(), None, None);
         let chunk_id = ChunkId::new(chunk_id)
             .map_err(|e| RepoError::ParseError(chunk_id.to_string(), e.to_string()))?;
-        match ndn_client
-            .pull_chunk(chunk_id.clone(), Some(REPO_CHUNK_MGR_ID))
-            .await
-        {
+        match ndn_client.pull_chunk(chunk_id.clone(), None).await {
             Ok(_) => Ok(()),
             Err(e) => {
                 if let NdnError::AlreadyExists(_) = e {
