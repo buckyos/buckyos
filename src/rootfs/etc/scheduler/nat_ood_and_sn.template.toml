@@ -450,6 +450,7 @@ g, {{user_name}},admin
     "source_list":[
         {
             "did":"did:bns:ssssss",
+            "name":"ssssss.web3.buckyos.io"
             "chunk_id":"",
             "sign":"",
             "version":""
