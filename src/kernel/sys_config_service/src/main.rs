@@ -541,7 +541,7 @@ async fn init_by_boot_config()->Result<()> {
         let boot_info = boot_info.unwrap();
         if boot_info.is_some() {
             let boot_info_str = boot_info.unwrap();
-        
+            //info!("boot_info: {}",boot_info_str);
             let boot_info:Value = serde_json::from_str(&boot_info_str).unwrap();
             let verify_hub_info = boot_info.get("verify_hub_info");
             if verify_hub_info.is_some() {
@@ -556,7 +556,11 @@ async fn init_by_boot_config()->Result<()> {
                     info!("Insert verify_hub_public_key to trust keys");
                 }
             }
+        } else {
+            error!("Missing verify_hub_info in boot/config");
         }
+    } else {
+        error!("Missing boot/config");
     }
 
     Ok(())
