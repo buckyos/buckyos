@@ -92,6 +92,11 @@ impl Downloader {
             )));
         }
 
+        info!(
+            "will pull remote chunk, url:{}, author:{}, chunk_id:{}",
+            url, author, chunk_id
+        );
+
         let ndn_client = NdnClient::new(url.to_string(), None, None);
         let chunk_id = ChunkId::new(chunk_id)
             .map_err(|e| RepoError::ParseError(chunk_id.to_string(), e.to_string()))?;

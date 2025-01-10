@@ -14,7 +14,7 @@ pub const LOCAL_INDEX_META_DB: &str = "index_meta.db";
 pub const REPO_CONFIG_FILE: &str = "repo_config.json";
 pub const TASK_EXPIRE_TIME: u64 = 30 * 60; //任务超时时间,单位秒
 
-#[derive(Clone, Debug, FromRow)]
+#[derive(Clone, Debug, FromRow, Serialize)]
 pub struct PackageMeta {
     pub pkg_name: String,
     pub version: String,
@@ -45,7 +45,7 @@ pub struct SourceNodeConfig {
     pub version: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum TaskStatus {
     Pending,
     Running(String), //Running status desc
@@ -53,7 +53,19 @@ pub enum TaskStatus {
     Error(String), //Error reason
 }
 
-#[derive(Debug, Clone)]
+//impl to_string for TaskStatus
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            TaskStatus::Pending => write!(f, "Pending"),
+            TaskStatus::Running(desc) => write!(f, "Running:{}", desc),
+            TaskStatus::Finished => write!(f, "Finished"),
+            TaskStatus::Error(reason) => write!(f, "Error:{}", reason),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub enum Task {
     InstallTask {
         id: String,

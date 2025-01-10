@@ -124,15 +124,16 @@ impl SourceManager {
         local_file: &PathBuf,
     ) -> RepoResult<()> {
         if !local_file.exists() {
-            if source.did.is_empty() || source.chunk_id.is_empty() {
+            if source.name.is_empty() || source.chunk_id.is_empty() {
+                error!("source_config is invalid: {:?}", source);
                 return Err(RepoError::ParamError(format!(
                     "source_config is invalid: {:?}",
                     source
                 )));
             }
             //TODO 构建chunk的url
-            let url = format!("http://{}/repo/get_index/{}", source.did, source.chunk_id);
-            Downloader::pull_remote_chunk(&url, &source.did, &source.sign, &source.chunk_id)
+            let url = format!("http://{}", source.name);
+            Downloader::pull_remote_chunk(&url, &source.name, &source.sign, &source.chunk_id)
                 .await?;
             chunk_to_local_file(&source.chunk_id, REPO_CHUNK_MGR_ID, &local_file).await?;
         }
@@ -217,11 +218,12 @@ impl SourceManager {
             }
             //通过url请求最新的source_meta
             if update || source_config.chunk_id.is_empty() || source_config.sign.is_empty() {
+                info!("update source meta info from {}", source_config.name);
                 REPO_TASK_MANAGER.set_task_status(
                     task_id,
                     TaskStatus::Running(format!(
                         "Updating source meta info from {}",
-                        source_config.did
+                        source_config.name
                     )),
                 )?;
                 let source_meta = Self::get_remote_source_meta(&source_config).await?;
@@ -241,11 +243,12 @@ impl SourceManager {
                 keep_source_file_list.push(source_db_file.clone());
                 continue;
             } else {
+                info!("download source index from {}", source_config.name);
                 REPO_TASK_MANAGER.set_task_status(
                     task_id,
                     TaskStatus::Running(format!(
                         "Downloading source index from {}",
-                        source_config.did
+                        source_config.name
                     )),
                 )?;
                 Self::make_sure_source_file_exists(&source_config, &source_db_file).await?;
