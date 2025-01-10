@@ -46,6 +46,6 @@ fn main() {
             return;
         }
     } else {
-        run::run(matches)
+        run::run(matches, false)
     }
 }

@@ -85,10 +85,10 @@ pub(crate) fn service_main(_arguments: Vec<OsString>) -> windows_service::Result
             .help("run as a windows service")
             .action(clap::ArgAction::SetTrue)
             .required(false))
-        .get_matches_from(_arguments.clone());
+        .get_matches();
 
     log::info!("will run real service, param {:?}", _arguments);
-    run::run(matches);
+    run::run(matches, true);
     log::warn!("service exited!!");
     Ok(())
 }

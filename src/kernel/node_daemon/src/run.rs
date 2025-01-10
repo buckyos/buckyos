@@ -526,7 +526,7 @@ async fn start_cyfs_gateway_service(node_id: &String,device_doc: &DeviceConfig, 
 }
 
 
-async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
+async fn async_main(matches: ArgMatches, force_enable_active: bool) -> std::result::Result<(), String> {
     let node_id = matches.get_one::<String>("id");
     let enable_active = matches.get_flag("enable_active");
     let default_node_id = "node".to_string();
@@ -536,7 +536,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     //load node identity config
     let mut node_identity = load_identity_config(node_id);
     if node_identity.is_err() {
-        if enable_active {
+        if enable_active || force_enable_active {
             info!("node identity config not found, start node active service...");
             start_node_active_service().await;
             info!("node active service returned,exit node_daemon.");
@@ -750,10 +750,10 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn run(matches: ArgMatches) {
+pub(crate) fn run(matches: ArgMatches, force_enable_active: bool) {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     if num_cpus::get() < 2 {
         builder.worker_threads(2);
     }
-    builder.enable_all().build().unwrap().block_on(async_main(matches));
+    builder.enable_all().build().unwrap().block_on(async_main(matches, force_enable_active));
 }
