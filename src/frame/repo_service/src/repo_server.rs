@@ -1,6 +1,7 @@
 use crate::def::*;
 use crate::downloader::Downloader;
 use crate::source_manager::SourceManager;
+use crate::task_manager::REPO_TASK_MANAGER;
 use crate::zone_info_helper::ZoneInfoHelper;
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -140,6 +141,19 @@ impl RepoServer {
             }
         }
     }
+
+    async fn handle_query_task(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let task_id = ReqHelper::get_str_param_from_req(&req, "task_id")?;
+        match REPO_TASK_MANAGER.get_task(&task_id).await {
+            Ok(task) => {
+                let task = serde_json::to_value(task).map_err(|e| {
+                    RPCErrors::ReasonError(format!("Failed to serialize task, err:{}", e))
+                })?;
+                Ok(RPCResponse::new(RPCResult::Success(task), req.seq))
+            }
+            Err(e) => Err(RPCErrors::ReasonError(e.to_string())),
+        }
+    }
 }
 
 #[async_trait]
@@ -155,6 +169,7 @@ impl kRPCHandler for RepoServer {
             "pub_pkg" => self.handle_pub_pkg(req).await,
             "pub_index" => self.handle_pub_index(req).await,
             "query_index_meta" => self.handle_query_index_meta(req).await,
+            "query_task" => self.handle_query_task(req).await,
             _ => {
                 error!("Unknown method:{}", req.method);
                 Err(RPCErrors::UnknownMethod(req.method))
