@@ -1,44 +1,31 @@
 /*
-实例化:
-    将一个容器/容器Group (PodItem) 绑定到合适的节点上运行(实例化/部署) 
+通用调度器被称作PodScheduler,其核心逻辑如下:
 
-资源调度:针对PodInstance,调度器可以
-    调整实例的资源控制
-    启动/关闭实例
-
-运维操作:
-    迁移PodInstance
-
-无状态PodItem可以实现无运维迁移
-    删除实例
-    重新实例化
-    调度器实现重新部署
-
-
-扩容添加Node
+定义被调度对象 (Pod)
+定义可使用的资源载体 (Node)
+定义调度任务，实现Instance的迁移
+实现Node调度算法
+    识别新Node，并加入系统资源池
+    排空Node，系统可用资源减少
+    释放Node，Node在系统中删除
     
-
-维护替换添加Node
-    目的是添加一个新的Node,来替换旧的Node
-    新Node的nodeid与旧的node有一定的近视之处
-
-
-
-删除Node(系统d动态缩容)
-   3节点以下是无法缩容的,是在需要,用备份数据->新建zone->恢复数据的方式实现
-
-
-
+实现Pod调度算法
+    实例化调度算法：分配资源：构造PodInstance，将未部署的Pod绑定到Node上
+    反实例化：及时释放资源
+    动态调整：根据运行情况，系统资源剩余情况，相对动态的调整Pod能用的资源
+    动态调整也涉及到实例的迁移
 */
 
 use anyhow::Result;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
+use log::*;
 
+#[derive(Clone)]
 pub enum PodItemType {
     Service, //无状态的系统服务
     App,// 无状态的app服务
 }
-
+#[derive(Clone)]
 pub enum PodItemStatus {
     New,
     Deploying,
@@ -49,7 +36,7 @@ pub enum PodItemStatus {
     Removing,
     Deleted,
 }
-
+#[derive(Clone)]
 pub struct PodItem {
     pub id: String,
     pub pod_type: PodItemType,
@@ -61,19 +48,19 @@ pub struct PodItem {
     pub node_affinity: Option<String>,
     pub network_affinity: Option<String>,
 }
-
+#[derive(Clone)]
 pub enum OPTaskBody {
     NodeInitBaseService,
 }
 
-
+#[derive(Clone)]
 pub enum OPTaskStatus {
     New,
     Running,
     Done,
     Failed,
 }
-
+#[derive(Clone)]
 pub struct OPTask {
     pub id: String,
     pub creator_id: Option<String>,//为None说明创建者是Scheduler
@@ -84,12 +71,13 @@ pub struct OPTask {
     pub body: OPTaskBody,
 }
 
-
+#[derive(Clone)]
 pub struct NodeResource {
     pub total_capacity: u64,
     pub used_capacity: u64,
 }
 
+#[derive(Clone)]
 pub struct NodeItem {
     pub id: String,
     //pub name: String,
@@ -106,7 +94,7 @@ pub struct NodeItem {
     pub op_tasks: Vec<OPTask>,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq,Clone)]
 pub enum NodeStatus {
     New,
     Prepare,//new->ready的准备阶段
@@ -117,20 +105,14 @@ pub enum NodeStatus {
     Deleted,//已删除
 }
 
+#[derive(Clone)]
 pub struct PodInstance {
     pub node_id:String,
     pub pod_id:String,
     pub res_limits: HashMap<String,f64>,
 }
 
-pub struct PodScheduler {
-    schedule_step_id:u64,
-    last_schedule_time:u64,
-    nodes:Vec<NodeItem>,
-    // 系统里所有的PodInstance,key是pod_id
-    pod_instances:HashMap<String,PodInstance>,
-}
-
+#[derive(Clone)]
 pub enum SchedulerAction {
     ChangeNodeStatus(String,NodeStatus),
     CreateOPTask(OPTask),
@@ -140,36 +122,47 @@ pub enum SchedulerAction {
     RemovePodInstance(String),
 }
 
+pub struct PodScheduler {
+    schedule_step_id:u64,
+    last_schedule_time:u64,
+    nodes:Vec<NodeItem>,
+    pods:Vec<PodItem>,
+    // 系统里所有的PodInstance,key是pod_id
+    pod_instances:HashMap<String,PodInstance>,
+}
+
+
 impl PodScheduler {
     pub fn new(step_id:u64,
         last_schedule_time:u64,
         nodes:Vec<NodeItem>,
+        pods:Vec<PodItem>,
         pod_instances:HashMap<String,PodInstance>) -> Self {
         Self { 
             schedule_step_id:step_id,
             last_schedule_time,
             nodes,
+            pods,
             pod_instances
         }
     }
 
-    pub fn schedule(&self, pods: &[PodItem])->Result<Vec<SchedulerAction>> {
-        let mut actions = Vec::new();
-        
-        // 第一阶段：扫描所有Node
+    fn resort_nodes(&mut self)->Result<Vec<SchedulerAction>> {
+        let mut node_actions = Vec::new();
+        // 根据Node的status进行排序
         for node in &self.nodes {
-            // 1. 检查已有op tasks的完成情况
-            self.check_node_op_tasks(node, &mut actions)?;
+            // 1. 检查已有op tasks的完成情况，该部分可能会对可用Node进行一些标记
+            self.check_node_op_tasks(node, &mut node_actions)?;
             
             // 2. 处理新node的初始化
             if node.status == NodeStatus::New {
-                actions.push(SchedulerAction::ChangeNodeStatus(
+                node_actions.push(SchedulerAction::ChangeNodeStatus(
                     node.id.clone(), 
                     NodeStatus::Prepare
                 ));
                 
                 // 创建node初始化任务
-                actions.push(SchedulerAction::CreateOPTask(OPTask {
+                node_actions.push(SchedulerAction::CreateOPTask(OPTask {
                     id: format!("init-{}", node.id),
                     creator_id: None,
                     owner_id: node.id.clone(),
@@ -181,17 +174,44 @@ impl PodScheduler {
             }
         }
 
-        // 获取可用的node列表
-        let available_nodes: Vec<&NodeItem> = self.nodes.iter()
+        Ok(node_actions)
+    }
+
+    pub fn schedule(&mut self)->Result<Vec<SchedulerAction>> {
+        if self.nodes.is_empty() {
+            return Err(anyhow::anyhow!("No nodes found"));
+        }
+
+        let is_small_system = self.nodes.len() <= 7;
+        let mut actions = self.resort_nodes()?;
+        if !actions.is_empty() && is_small_system {
+            // 为了降低复杂度,在系统规模较小时,如果第一个阶段存在动作,则跳过第二阶段,防止复杂度的重叠.
+            // TODO:是否会带来问题?
+            info!("Small system, skip schedule pod instance when have node actions");
+            return Ok(actions);
+        }
+
+
+        let available_nodes: Vec<NodeItem> = self.nodes.iter()
             .filter(|n| n.status == NodeStatus::Ready)
+            .cloned()
             .collect();
 
-        // 第二阶段：扫描所有Pod和PodInstance
-        // 1. 优先处理未实例化的Pod
-        for pod in pods {
+        // 扫描所有Pod和PodInstance
+		//实例化调度算法：分配资源：构造PodInstance，将未部署的Pod绑定到Node上
+		//反实例化：及时释放资源
+		//动态调整：根据运行情况，系统资源剩余情况，相对动态的调整Pod能用的资源
+		//动态调整也涉及到实例的迁移
+
+        for pod in self.pods.iter() {
             if !self.pod_instances.contains_key(&pod.id) {
                 // Pod尚未实例化
                 match pod.status {
+                    PodItemStatus::Removing => {
+                        //首次看到，执行反实例化操作、构造必要的OP
+                        //二次看到，判断相关Node的状态里是否已经上报删除完成
+                        //如果看到完整，则将状态设置为deleted    
+                    },
                     PodItemStatus::New  => {
                         // 尝试实例化Pod
                         match self.instance_pod(pod, &available_nodes) {
@@ -218,46 +238,19 @@ impl PodScheduler {
             }
         }
 
-        // 2. 处理已有实例的Pod
+        // 2. 动态挑战已有的PodInstance:根据运行情况，系统资源剩余情况，相对动态的调整Pod能用的资源
+        //    动态调整也涉及到实例的自动迁移
         for (pod_id, instance) in &self.pod_instances {
             // 找到对应的Pod配置
-            if let Some(pod) = pods.iter().find(|p| p.id == *pod_id) {
+            if let Some(pod) = self.pods.iter().find(|p| p.id == *pod_id) {
                 match pod.status {
-                    PodItemStatus::Removing => {
-                        // 处理正在删除的Pod
-                        actions.push(SchedulerAction::RemovePodInstance(pod_id.clone()));
-                        actions.push(SchedulerAction::ChangePodStatus(
-                            pod_id.clone(), 
-                            PodItemStatus::Deleted
-                        ));
+                    PodItemStatus::Deployed => {
+                        // 检查处于改状态的时间
+                        //self.check_resource_limits(instance, node, &mut actions)?;
                     },
                     _ => {
-                        // 检查实例是否需要迁移或更新
-                        let node = self.nodes.iter()
-                            .find(|n| n.id == instance.node_id);
-                        
-                        match node {
-                            Some(node) if node.status == NodeStatus::Ready => {
-                                // Pod实例正常，检查资源限制是否需要更新
-                                self.check_resource_limits(instance, node, &mut actions)?;
-                            },
-                            _ => {
-                                // Pod需要迁移或重新部署
-                                actions.push(SchedulerAction::RemovePodInstance(pod_id.clone()));
-                                
-                                // 尝试在新节点上重新部署
-                                if let Ok(new_instances) = self.instance_pod(pod, &available_nodes) {
-                                    for new_instance in new_instances {
-                                        actions.push(SchedulerAction::InstancePod(new_instance));
-                                    }
-                                } else {
-                                    actions.push(SchedulerAction::ChangePodStatus(
-                                        pod_id.clone(), 
-                                        PodItemStatus::Abnormal
-                                    ));
-                                }
-                            }
-                        }
+                        // 其他状态的Pod暂不处理
+                        unimplemented!()
                     }
                 }
             }
@@ -287,10 +280,10 @@ impl PodScheduler {
         Ok(vec![])
     }
 
-    pub fn instance_pod(&self, pod_item: &PodItem, node_list: &Vec<&NodeItem>) -> Result<Vec<PodInstance>> {
+    pub fn instance_pod(&self, pod_item: &PodItem, node_list: &Vec<NodeItem>) -> Result<Vec<PodInstance>> {
         
         // 1. 过滤阶段
-        let candidate_nodes : Vec<&&NodeItem> = node_list.iter()
+        let candidate_nodes : Vec<&NodeItem> = node_list.iter()
             .filter(|node| self.filter_node(node, pod_item))
             .collect();
 
@@ -299,7 +292,7 @@ impl PodScheduler {
         }
 
         // 2. 打分阶段
-        let mut scored_nodes: Vec<(f64, &&NodeItem)> = candidate_nodes.iter()
+        let mut scored_nodes: Vec<(f64, &NodeItem)> = candidate_nodes.iter()
             .map(|node| (self.score_node(node, pod_item), *node))
             .collect();
 
@@ -485,7 +478,7 @@ mod tests {
             HashMap::new()
         );
 
-        let result = scheduler.instance_pod(&pod).unwrap();
+        let result = scheduler.instance_pod(&pod, &scheduler.nodes).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].node_id, "node2");
         assert_eq!(result[0].pod_id, "test-pod");
@@ -515,6 +508,6 @@ mod tests {
         )],
         HashMap::new());
 
-        assert!(scheduler.instance_pod(&pod).is_err());
+        assert!(scheduler.instance_pod(&pod, &scheduler.nodes).is_err());
     }
 }
