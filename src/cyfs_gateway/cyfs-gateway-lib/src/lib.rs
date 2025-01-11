@@ -7,6 +7,7 @@ mod rtcp;
 mod tunnel;
 mod tunnel_connector;
 mod tunnel_mgr;
+mod acme_client;
 
 pub use aes_stream::*;
 pub use config::*;

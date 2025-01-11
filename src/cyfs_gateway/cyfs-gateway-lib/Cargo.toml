@@ -33,6 +33,9 @@ cipher = "*"
 futures = "*"
 base64 = "*"
 hyper = "0.14"
+openssl = "0.10"
+ring = "0.17"
+
 name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
