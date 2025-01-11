@@ -1,9 +1,9 @@
 
 use name_lib::*;
-use crate::{NSProvider,NameInfo};
+use crate::{NsProvider,NameInfo, RecordType};
 
 pub struct NameQuery {
-    providers: Vec<Box<dyn NSProvider>>,
+    providers: Vec<Box<dyn NsProvider>>,
 }
 
 impl NameQuery {
@@ -13,18 +13,18 @@ impl NameQuery {
         }
     }
 
-    pub fn add_provider(&mut self, provider: Box<dyn NSProvider>) {
+    pub fn add_provider(&mut self, provider: Box<dyn NsProvider>) {
         self.providers.push(provider);
     }
 
-    pub async fn query(&self, name: &str,record_type:Option<&str>) -> NSResult<NameInfo> {
+    pub async fn query(&self, name: &str,record_type:Option<RecordType>) -> NSResult<NameInfo> {
         if self.providers.len() == 0 {
             let msg = format!("No provider found for {}", name);
             error!("{}", msg);
             return Err(NSError::Failed(msg));
         }
 
-        let record_type = record_type.unwrap_or("A");
+        let record_type = record_type.unwrap_or_default();
 
         for provider in self.providers.iter().rev() {
             match provider.query(name,Some(record_type),None).await {

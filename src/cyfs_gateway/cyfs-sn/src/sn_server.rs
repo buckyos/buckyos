@@ -403,7 +403,7 @@ impl SNServer {
 }
 
 #[async_trait]
-impl NSProvider for SNServer {
+impl NsProvider for SNServer {
     fn get_id(&self) -> String {
         "sn_ns_provider".to_string()
     } 
