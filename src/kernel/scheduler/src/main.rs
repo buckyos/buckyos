@@ -1,5 +1,5 @@
 mod app;
-mod pod;
+mod scheduler;
 
 use std::collections::HashMap;
 use std::process::exit;
