@@ -5,6 +5,10 @@ edition = "2021"
 authors = ["BuckyOS DAO","@waterflier"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["cloudflare"]
+cloudflare = ["name-client/cloudflare"]
+
 [dependencies]
 
 log = "*"
@@ -26,12 +30,19 @@ futures = "*"
 mime_guess = "*"
 async-stream = "*"
 rand = "*"
+reqwest = { version = "0.12", features = ["json"] }
+base64 = "0.22"
+openssl = "0.10"
+ring = "0.17"
+
 tokio-stream = { version = "*", features = ["full"] }
 ndn-lib = { path = "../../components/ndn-lib" }
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 cyfs-sn = { path = "../cyfs-sn" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
 kRPC = { path = "../../kernel/kRPC" }
+name-client = { path = "../../components/name-client"}
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "*"

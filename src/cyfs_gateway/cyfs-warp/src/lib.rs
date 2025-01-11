@@ -3,6 +3,7 @@
 mod router;
 mod http_server;
 mod ndn_router;
+mod acme_client;
 
 
 pub use router::*;
@@ -19,7 +20,7 @@ pub fn parse_range(range: &str, file_size: u64) -> Result<(u64, u64)> {
   let start = parts.next()
       .and_then(|s| s.parse::<u64>().ok())
       .unwrap_or(0);
-    
+
       
   let end = parts.next()
       .and_then(|s| s.parse::<u64>().ok())

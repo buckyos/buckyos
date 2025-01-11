@@ -410,17 +410,17 @@ impl NsProvider for SNServer {
 
 
 
-    async fn query(&self, name: &str,record_type:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<NameInfo> {
+    async fn query(&self, name: &str,record_type:Option<RecordType>,from_ip:Option<IpAddr>) -> NSResult<NameInfo> {
         info!("sn server dns process name query: {}, record_type: {:?}",name,record_type);
-        let record_str = record_type.unwrap_or("A");
+        let record_type = record_type.unwrap_or_default();
         let from_ip = from_ip.unwrap_or(self.server_ip);
         let mut is_support = false;
-        if record_str == "A" || record_str == "AAAA" || record_str == "TXT" {
+        if record_type == RecordType::A || record_type == RecordType::AAAA || record_type == RecordType::TXT {
             is_support = true;
         }
 
         if !is_support {
-            return Err(NSError::NotFound(format!("sn-server not support record type {}",record_str)));
+            return Err(NSError::NotFound(format!("sn-server not support record type {}",record_type.to_string())));
         }
 
         let full_server_host = format!("{}.",self.server_host.as_str());
@@ -446,8 +446,8 @@ impl NsProvider for SNServer {
             }
             let username = username.unwrap();
             info!("sub zone {},enter sn serverquery: {}, record_type: {:?}",username,name,record_type);
-            match record_str {
-                "TXT" => {
+            match record_type {
+                RecordType::TXT => {
                     let zone_config = self.get_user_zone_config(username).await;
                     if zone_config.is_some() {
                         let result_name_info = NameInfo::from_zone_config_str(name, zone_config.unwrap().as_str());
@@ -456,7 +456,7 @@ impl NsProvider for SNServer {
                         return Err(NSError::NotFound(name.to_string()));
                     }
                 },
-                "A" | "AAAA" => {
+                RecordType::A | RecordType::AAAA => {
                     let address_vec = self.get_user_zonegate_address(username).await;
                     if address_vec.is_some() {
                         let address_vec = address_vec.unwrap();
@@ -467,7 +467,7 @@ impl NsProvider for SNServer {
                     }
                 },
                 _ => {
-                    return Err(NSError::NotFound(format!("sn-server not support record type {}",record_str)));
+                    return Err(NSError::NotFound(format!("sn-server not support record type {}",record_type.to_string())));
                 }
             }
             
@@ -479,12 +479,12 @@ impl NsProvider for SNServer {
                 return Err(NSError::NotFound(name.to_string()));
             }
             let (username,public_key,zone_config) = user_info.unwrap();
-            match record_str {
-                "TXT" => {
+            match record_type {
+                RecordType::TXT => {
                     let result_name_info = NameInfo::from_zone_config_str(name, zone_config.as_str());
                     return Ok(result_name_info);
                 },
-                "A" | "AAAA" => {
+                RecordType::A | RecordType::AAAA => {
                     let address_vec = self.get_user_zonegate_address(&username).await;
                     if address_vec.is_some() {
                         let address_vec = address_vec.unwrap();
@@ -493,7 +493,7 @@ impl NsProvider for SNServer {
                     }
                 },
                 _ => {
-                    return Err(NSError::NotFound(format!("sn-server not support record type {}",record_str)));
+                    return Err(NSError::NotFound(format!("sn-server not support record type {}",record_type.to_string())));
                 }
             }
 

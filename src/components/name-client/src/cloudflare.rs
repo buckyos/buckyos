@@ -113,7 +113,7 @@ impl CloudflareProvider {
     }
 }
 
-#[cfg(feature = "cloudflare")]
+
 #[async_trait::async_trait]
 impl NsUpdateProvider for CloudflareProvider {
     async fn update(&self, record_type: RecordType, record: NameInfo) -> NSResult<NameInfo> {
@@ -177,7 +177,7 @@ impl NsUpdateProvider for CloudflareProvider {
     }
 }
 
-#[cfg(feature = "cloudflare")]
+
 #[async_trait::async_trait]
 impl NsProvider for CloudflareProvider {
     fn get_id(&self) -> String {
