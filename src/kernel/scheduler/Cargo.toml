@@ -20,6 +20,7 @@ thiserror = "*"
 jsonwebtoken = "*"
 toml = "*"
 upon = "*"
+anyhow = "*"
 # rocksdb = "*"
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }

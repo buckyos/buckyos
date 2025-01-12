@@ -1,0 +1,23 @@
+[package]
+name = "smb_service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+buckyos-kit = { path = "../../components/buckyos-kit" }
+sys-config = { path = "../../kernel/sys-config" }
+rust-ini = "0.21.1"
+tokio = { version = "1.42.0", features = ["full"] }
+sfo-result = { version = "0.2.4", features = ["backtrace"] }
+sfo-log = "0.1.2"
+log = "0.4.22"
+shlex = "1.3.0"
+num_cpus = "1.16.0"
+clap = "4.5.23"
+serde = "1.0.216"
+serde_json = "1.0.88"
+sysinfo = "0.33.0"
+fs2 = "0.4.3"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58.0", features = ["Win32_Storage_FileSystem", "Win32_NetworkManagement_NetManagement", "Win32_Security", "Win32_Security_Authorization", "Win32_System_SystemServices"] }

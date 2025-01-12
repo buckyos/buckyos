@@ -38,6 +38,9 @@ pub enum NSError {
     DecodeJWTError(String),
     #[error("Final Error: {0}")]
     FinalError(String),
+
+    #[error("Invalid state: {0}")]
+    InvalidState(String),
 }
 
 pub type NSResult<T> = Result<T, NSError>;
@@ -159,23 +162,50 @@ pub fn load_pem_private_key<P: AsRef<Path>>(file_path: P) -> NSResult<[u8;48]> {
     Ok(private_key_bytes.try_into().unwrap())
 }
 
-pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
+// Generate a random private key and return the PKCS#8 encoded bytes
+pub fn generate_ed25519_key() -> (SigningKey, [u8;48]) {
     let mut csprng = OsRng{};
     let signing_key: SigningKey = SigningKey::generate(&mut csprng);
     let private_key_bytes = signing_key.to_bytes();
     let pkcs8_bytes = build_pkcs8(&private_key_bytes);
+
+    (signing_key, pkcs8_bytes.try_into().unwrap())
+}
+
+// Encode the Ed25519 public key to a JWK
+pub fn encode_ed25519_sk_to_pk_jwt(sk: &SigningKey) -> serde_json::Value {
+    let public_key_jwk = json!({
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": encode_ed25519_sk_to_pk(sk),
+    });
+
+    public_key_jwk
+}
+
+pub fn encode_ed25519_sk_to_pk(sk: &SigningKey) -> String {
+    URL_SAFE_NO_PAD.encode(sk.verifying_key().to_bytes())
+}
+
+pub fn encode_ed25519_pkcs8_sk_to_pk(pkcs8_bytes: &[u8]) -> String {
+    let sk_bytes = from_pkcs8(pkcs8_bytes).unwrap();
+    let sk = SigningKey::from_bytes(&sk_bytes);
+
+    encode_ed25519_sk_to_pk(&sk)
+}
+
+pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
+    
+    let (signing_key, pkcs8_bytes) = generate_ed25519_key();
+
     let private_key_pem = format!(
         "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
         STANDARD.encode(&pkcs8_bytes)
     );
 
-    let public_key_jwk = json!({
-        "kty": "OKP",
-        "crv": "Ed25519",
-        "x": URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes()),
-    });
+    let public_key_jwk = encode_ed25519_sk_to_pk_jwt(&signing_key);
 
-    (private_key_pem, public_key_jwk)   
+    (private_key_pem, public_key_jwk)
 }
 
 
@@ -259,6 +289,25 @@ mod test {
         println!("private_key: {}",private_key);
         println!("public_key: {}",serde_json::to_string(&public_key).unwrap());
 
+    }
+
+    #[test]
+    fn generate_ed25519_key_pair_to_local() {
+        // Get temp path
+        let temp_dir = std::env::temp_dir();
+        let key_dir = temp_dir.join("buckyos").join("keys");
+        if !key_dir.is_dir() {
+            std::fs::create_dir_all(&key_dir).unwrap();
+        }
+        println!("key_dir: {:?}",key_dir);
+
+        let (private_key, public_key) = generate_ed25519_key_pair();
+
+        let sk_file = key_dir.join("private_key.pem");
+        std::fs::write(&sk_file, private_key).unwrap();
+
+        let pk_file = key_dir.join("public_key.json");
+        std::fs::write(&pk_file, serde_json::to_string(&public_key).unwrap()).unwrap();
     }
 
     #[test]

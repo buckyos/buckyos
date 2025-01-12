@@ -2,27 +2,45 @@
 
 mod chunk;
 mod object;
+mod link_obj;
 mod local_store;
-mod chunk_mgr;
+mod named_data_mgr;
+mod cyfs_http;
 mod ndn_client;
+mod fileobj;
+mod mtree;
+mod hash;
+mod object_map;
 
+pub use object::*;
 pub use chunk::*;
 pub use local_store::*;
-pub use chunk_mgr::*;
-
+pub use link_obj::*;
+pub use named_data_mgr::*;
+pub use cyfs_http::*;
+pub use ndn_client::*;
+pub use fileobj::*;
+pub use hash::*;
+pub use mtree::*;
+pub use object_map::*;
 
 use thiserror::Error;
 
+#[macro_use]
+extern crate log;
+
 #[derive(Error, Debug)]
-pub enum ChunkError {
+pub enum NdnError {
     #[error("internal error: {0}")]
     Internal(String),
     #[error("invalid chunk id format: {0}")]
     InvalidId(String),
-    #[error("chunk not found: {0}")]
-    ChunkNotFound(String),
-    #[error("chunk already exists: {0}")]
-    ChunkExists(String),
+    #[error("invalid object link: {0}")]
+    InvalidLink(String),
+    #[error("object not found: {0}")]
+    NotFound(String),
+    #[error("already exists: {0}")]
+    AlreadyExists(String),
     #[error("verify chunk error: {0}")]
     VerifyError(String),
     #[error("I/O error: {0}")]
@@ -33,11 +51,34 @@ pub enum ChunkError {
     InComplete(String),
     #[error("get from url failed: {0}")]
     GetFromRemoteError(String),
+    #[error("decode error: {0}")]
+    DecodeError(String),
+    #[error("offset too large: {0}")]
+    OffsetTooLarge(String),
+    #[error("invalid obj type: {0}")]
+    InvalidObjType(String),
+
+    #[error("invalid data: {0}")]
+    InvalidData(String),
+
+    #[error("invalid param: {0}")]
+    InvalidParam(String),
+
+    #[error("invalid state: {0}")]
+    InvalidState(String),
 }
 
 
-pub type ChunkResult<T> = std::result::Result<T, ChunkError>;
+pub type NdnResult<T> = std::result::Result<T, NdnError>;
 
+
+pub const OBJ_TYPE_FILE: &str = "cyfile";
+pub const OBJ_TYPE_DIR: &str = "cydir";
+
+pub const OBJ_TYPE_MTREE: &str = "cytree";
+pub const OBJ_TYPE_OBJMAPT: &str = "cymap"; // object map
+pub const OBJ_TYPE_PACK: &str = "cypack"; // object set
+pub const OBJ_TYPE_LIST: &str = "cylist"; // object list
 // mod http;
 // pub use http::*;
 

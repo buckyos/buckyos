@@ -283,6 +283,8 @@ pub struct DeviceConfig {
     pub did: String,
 
     pub name: String,//host name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
     pub device_type: String,//[ood,node,sensor
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip:Option<IpAddr>,//main_ip
@@ -312,6 +314,7 @@ impl DeviceConfig {
             DeviceConfig {
                 did: did,
                 name: name.to_string(),
+                arch: None,
                 device_type: "node".to_string(),
                 ip: None,
                 net_id: None,
@@ -333,6 +336,7 @@ impl DeviceConfig {
             DeviceConfig {
                 did: name.to_string(),
                 name: name.to_string(),
+                arch: None,
                 device_type: "node".to_string(),
                 ip: None,
                 net_id: None,
@@ -357,6 +361,7 @@ impl DeviceConfig {
         return DeviceConfig {
             did: "did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
             name: "ood1".to_string(),
+            arch: None,
             device_type: "ood".to_string(),
             ip:None,
             net_id:None,
@@ -602,6 +607,8 @@ mod tests {
             iss: "lzc".to_string(),
             ip:None,
             net_id:None,
+            arch: None,
+            ddns_sn_url: None,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };
@@ -647,6 +654,8 @@ mod tests {
             iss: "waterfllier".to_string(),
             ip:Some("23.239.23.54".parse().unwrap()),
             net_id:Some("wan".to_string()),
+            arch: None,
+            ddns_sn_url: None,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };
@@ -685,6 +694,8 @@ mod tests {
             iss: "waterfllier".to_string(),
             ip:None,
             net_id:None,
+            arch: None,
+            ddns_sn_url: None,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };

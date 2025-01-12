@@ -24,10 +24,16 @@ hex = "*"
 url = "*"
 memmap = "*"
 lazy_static = "*"
+base32 = "*"
 sha2 = { version = ">=0.11.0-pre.4" }
 crypto-common = { version = ">=0.2.0-rc.1" }
 buckyos-kit = { path = "../buckyos-kit" }
+name-lib = { path = "../name-lib" }
+bincode = "*"
+rand = "*"
 
 [dev-dependencies]
 tempfile = "*"
 rand = "*"
+cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
+cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }

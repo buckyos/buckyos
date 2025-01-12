@@ -4,8 +4,7 @@ mod name_query;
 mod dns_provider;
 mod zone_provider;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
-use jsonwebtoken::{jwk::Jwk, DecodingKey};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 pub use provider::*;
 pub use name_client::*;
 pub use name_query::*;
@@ -17,6 +16,8 @@ use std::{env, net::IpAddr};
 use once_cell::sync::OnceCell;
 use name_lib::*;
 
+#[macro_use]
+extern crate log;
 
 pub static GLOBAL_BOOT_NAME_CLIENT: OnceCell<NameClient> = OnceCell::new();
 pub static GLOBAL_NAME_CLIENT: OnceCell<NameClient> = OnceCell::new();
@@ -124,6 +125,7 @@ pub async fn resolve(name: &str, record_type: Option<&str>) -> NSResult<NameInfo
     if client.is_none() {
         let client = GLOBAL_BOOT_NAME_CLIENT.get();
         if client.is_none() {
+            error!("Name client not init yet");
             return Err(NSError::NotFound("Name client not init".to_string()));
         }
     }
@@ -146,9 +148,12 @@ pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],Stri
 
     let client = get_name_client();
     if client.is_none() {
-        return Err(NSError::NotFound("Name client not init".to_string()));
+        let msg = "Name client not init yet".to_string();
+        error!("{}",msg);
+        return Err(NSError::InvalidState(msg));
     }
     let did_doc = client.unwrap().resolve_did(hostname,None).await?;
+    info!("did_doc: {:?}",did_doc);
     //try conver did_doc to DeviceConfig
     match did_doc {
         EncodedDocument::JsonLd(value) => {

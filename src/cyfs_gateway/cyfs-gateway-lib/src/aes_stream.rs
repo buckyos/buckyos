@@ -1,17 +1,13 @@
 use aes::cipher::{KeyIvInit, StreamCipher};
 use cipher::StreamCipherSeek;
 use ctr::Ctr128BE;
-use rand::thread_rng;
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use futures::ready;
-use log::*;
-use rand::Rng;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+
+
 
 // 定义AES-256 CTR模式类型
 pub type AesCtr = Ctr128BE<aes::Aes256>;

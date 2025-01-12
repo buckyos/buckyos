@@ -8,7 +8,7 @@ install_root_dir = ""
 
 if platform.system() == "Windows":
     install_root_dir = os.path.join(os.path.expandvars("%AppData%"), "buckyos")
-elif platform.system() == "Linux":
+else:
     install_root_dir = "/opt/buckyos"
 
 def install():
@@ -23,7 +23,8 @@ def install():
     else:
         bin_dir = os.path.join(install_root_dir, "bin")
         print(f'updating files in {bin_dir}')
-        shutil.rmtree(bin_dir)
+        if os.path.exists(bin_dir):
+            shutil.rmtree(bin_dir)
         #just update bin
         shutil.copytree(os.path.join(src_dir, "rootfs/bin"), bin_dir)
 

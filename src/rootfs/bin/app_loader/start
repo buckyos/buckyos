@@ -51,12 +51,7 @@ if ret == 0:
 
 
 # 得到镜像名
-image_list = config.get("service_docker_images")
-if image_list is None:
-    print("Image list not found in the configuration")
-    exit(1)
-
-image_name = image_list.get("x86_server")
+image_name = config.get("docker_image_name")
 if not image_name:
     print("Image name not found in the configuration")
     exit(1)
@@ -70,8 +65,13 @@ if data_mount_point:
 
 local_cache_mount_point = config.get("local_cache_mount_point", "")
 if local_cache_mount_point:
-    os.makedirs(f"/opt/buckyos/cache/{username}/{appid}", exist_ok=True)
-    volume_mapping += f"-v /opt/buckyos/cache/{username}/{appid}/:{local_cache_mount_point} "
+    os.makedirs(f"/opt/buckyos/tmp/{username}/{appid}", exist_ok=True)
+    volume_mapping += f"-v /opt/buckyos/tmp/{username}/{appid}/:{local_cache_mount_point} "
+
+extra_mounts = config.get("extra_mounts", "")
+if extra_mounts:
+    for (k ,v) in extra_mounts.items():
+        docker_command += f"-v {k}:{v} "
 
 #network_settings = config.get("network_settings", "")
 cpu_quota = config.get("cpu_quota", "")
@@ -79,13 +79,16 @@ memory_quota = config.get("memory_quota", "")
 
 print(f"Image Name: {image_name}")
 
-port = config.get("port", "")
-org_port = config.get("org_port", "")
-if port:
-    port = f"-p {port}:{org_port} "
+# 端口映射
+port_cmd = ""
+tcp_ports = config.get("tcp_ports", "")
+for (k,v) in tcp_ports.items():
+    port = f"-p {k}:{v} "
+    port_cmd += port
+
 
 # 构造docker命令
-docker_command = f"docker run --rm {port} --name {container_id} -e {full_appid}.config -e {full_appid}.token -d "
+docker_command = f"docker run --rm {port_cmd} --name {container_id} -e {full_appid}.config -e {full_appid}.token -d "
 
 if volume_mapping:
     docker_command += volume_mapping
@@ -96,8 +99,9 @@ if volume_mapping:
 #if cpu_quota:
 #    docker_command += f"--cpu-quota={cpu_quota} "
 
-#if memory_quota:
-#    docker_command += f"--memory={memory_quota} "
+if memory_quota:
+    docker_command += f"--memory={memory_quota} "
+
 docker_command += f" {image_name}"
 
 

@@ -29,51 +29,63 @@ m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.su
 "#;
 
 pub const DEFAULT_POLICY: &str = r#"
-
 p, kernel, kv://*, read|write,allow
 p, kernel, dfs://*, read|write,allow
-
 p, owner, kv://*, read|write,allow
 p, owner, dfs://*, read|write,allow
+p, root, kv://*, read|write,allow
+p, root, dfs://*, read|write,allow
+
+p, ood,kv://*,read,allow
+p, ood,kv://nodes/{device}/*,read|write,allow
 
 
-p, user, kv://*, read,allow
-p, user, dfs://public/*,read|write,allow
-p, user, dfs://homes/{user}/*, read|write,allow
-p, app,  dfs://homes/*/apps/{app}/*, read|write,allow
+p, admin,kv://users/{user}/*,read|write,allow
+p, admin,dfs://users/{user}/*,read|write,allow
+p, admin,kv://services/*,read|write,allow
+p, admin,dfs://services/*,read|write,allow
+p, admin,dfs://library/*,read|write,allow
 
-p, limit, dfs://public/*, read,allow
-p, guest, dfs://public/*, read,allow
+p, service,kv://services/{service}/setting,read|write,allow
+p, service,kv://services/{service}/info,read|write,allow
+p, service,kv://system/*,read,allow
+
+p, user,kv://users/{user}/*,read|write,allow
+p, user,dfs://users/{user}/*,read|write,allow
+p, user,dfs://library/*,read|create,allow
+
+p, app, kv://users/*/apps/{app}/setting,read|write,allow
+p, app, kv://users/*/apps/{app}/config,read,allow
+p, app, kv://users/*/apps/{app}/info,read,allow
+
+p, app,  dfs://users/*/appdata/{app}/*, read|write,allow
+p, app,  dfs://users/*/cache/{app}/*, read|write,allow
+
+p, admin, kv://boot/*, read,allow
+p, user, kv://boot/*, read,allow
+p, service, kv://boot/*, read,allow
+p, app, kv://boot/*, read,allow
 
 g, node_daemon, kernel
-g, ood01,ood
-g, alice, user
-g, bob, user
-g, app1, app
-g, app2, app
+g, scheduler, kernel
+g, system_config, kernel
+g, verify_hub, kernel
+g, repo_service, kernel
+g, control_panel, kernel
+g, samba,services
+
+
+# test subs
+g, alice,user
+g, bob,user
+g, wugren,admin
+g, su_alice,admin
+g, ood1,ood
+g, app1,app
+g, app2,app
+
 "#;
 
-pub const DEFAULT_POLICY2: &str = r#"
-p, owner, kv://.+$, read|write,allow
-p, owner, dfs://.+$, read|write,allow
-p, owner, fs://[^/]+/.+$, read|write,allow
-
-p, user, ^kv://.+$, read,allow
-p, user, ^dfs://public/.+$,read|write,allow
-
-p, app1, ^dfs://homes/[^/]+/apps/app1/[^/]+, read|write,allow
-
-p, alice, ^dfs://homes/alice/.+$, read|write,allow
-p, alice, ^kv://users/alice/.+$, read|write,allow
-
-p, limit, dfs://public/[^/]+, read,allow
-p, guest, dfs://public/[^/]+, read,allow
-
-g, alice, user
-g, bob, user
-g, app1, app
-g, app2, app
-"#;
 
 lazy_static!{
     static ref SYS_ENFORCE: Arc<Mutex<Option<Enforcer> > > = {
@@ -122,25 +134,25 @@ pub async fn enforce(userid:&str, appid:Option<&str>,res_path:&str,op_name:&str)
     let appid = appid.unwrap_or("kernel");
     let res2 = enforcer.enforce((appid, res_path, op_name));
     if res2.is_err() {
-        error!("enforce error: {}", res2.err().unwrap());
+        warn!("enforce error: {}", res2.err().unwrap());
         return false;
     }
     let res2 = res2.unwrap();
 
-    println!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
-    info!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);    
+    //println!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);
+    debug!("enforce {},{},{}, result:{}",appid, res_path, op_name,res2);    
     if appid == "kernel" {
         return res2;
     }
 
     let res = enforcer.enforce((userid, res_path, op_name));
     if res.is_err() {
-        error!("enforce error: {}", res.err().unwrap());
+        warn!("enforce error: {}", res.err().unwrap());
         return false;
     }
     let res = res.unwrap();
-    println!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
-    info!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
+    //println!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
+    debug!("enforce {},{},{} result:{}",userid, res_path, op_name,res);
     return res2 && res;
 }
 
@@ -237,11 +249,39 @@ m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)
 
     #[test]
     async fn test_enforce() {
+        std::env::set_var("BUCKY_LOG","debug");
+        buckyos_kit::init_logging("test_rbac");
         create_enforcer(None,None).await.unwrap();
-        let res = enforce("ood01", None, "kv://boot", "read").await;
+        let res = enforce("ood1", Some("node_daemon"), "kv://boot/config", "read").await;
         assert_eq!(res, true);
-        assert_eq!(enforce("bob", None, "dfs://homes/alice/apps/app2", "read").await, true);
-        assert_eq!(enforce("alice", Some("app1"), "dfs://homes/alice/apps/app2/data", "write").await, false);
+        assert_eq!(enforce("ood1", Some("node_daemon"), "kv://boot/config", "write").await, false);
+        assert_eq!(enforce("root", Some("node_daemon"), "kv://boot/config", "write").await, true);
+
+        assert_eq!(enforce("bob", Some("node_daemon"), "kv://users/alice/apps/app2", "read").await, false);
+        //app1 can read and write config and info
+        assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app1/config", "read").await, true);
+        assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app1/config", "write").await, false);
+        assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app1/info", "read").await, true);
+        assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app1/info", "write").await, false);
+        assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app1/setting", "write").await, true);
+        //can read and write appdata
+        assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/appdata/app1/readme.txt", "write").await, true);
+        assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/appdata/app1/readme.txt", "read").await, true);
+        //can read and write cache
+        assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/cache/app1/readme_cache.txt", "write").await, true);
+        assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/cache/app1/readme_cache.txt", "read").await, true);
+
+        //can not read and write app2
+        assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app2/setting", "write").await, false);
+        assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app2/info", "read").await, false);
+        assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/appdata/app2/readme.txt", "write").await, false);
+        assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/appdata/app2/readme.txt", "read").await, false);
+        assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/cache/app2/readme_cache.txt", "write").await, false);
+        assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/cache/app2/readme_cache.txt", "read").await, false);
+
+        //su_alice has more permission than alice
+        //assert_eq!(enforce("su_alice", Some("control_panel"), "kv://users/alice/apps/app2/config", "write").await, true);
+
     }
 
 }

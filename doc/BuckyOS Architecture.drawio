@@ -1,4 +1,4 @@
-<mxfile host="Electron" modified="2024-11-14T00:59:39.417Z" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/22.1.2 Chrome/114.0.5735.289 Electron/25.9.4 Safari/537.36" etag="jSUJF8sp_M7ioWJAKmmi" version="22.1.2" type="device" pages="13">
+<mxfile host="Electron" modified="2024-12-06T07:19:51.764Z" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/22.1.2 Chrome/114.0.5735.289 Electron/25.9.4 Safari/537.36" etag="_zopRbGu1Z3RiElUF1ht" version="22.1.2" type="device" pages="14">
   <diagram id="oIMGCOtcYAl4cptAXmcz" name="Architecture">
     <mxGraphModel dx="2896" dy="1168" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
@@ -2751,90 +2751,265 @@
     </mxGraphModel>
   </diagram>
   <diagram id="yT246MxJrNwgLdexHOI-" name="Page-13">
-    <mxGraphModel dx="2261" dy="806" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2896" dy="1168" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="soKJ22ut9W6iChpHjKMU-1" value="安装app&lt;br&gt;bpm install buckyos-filebrowser" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-1" value="安装app&lt;br&gt;bpm install buckyos-filebrowser" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="65" y="80" width="230" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-2" value="升级frame&lt;br&gt;bpm upgrade dfs" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-2" value="升级frame&lt;br&gt;bpm upgrade dfs" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-200" y="80" width="230" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-3" value="升级系统&lt;br&gt;bpm upgrade" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-3" value="升级系统&lt;br&gt;bpm upgrade" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-470" y="80" width="230" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-4" value="自动执行，bpm update&lt;br&gt;同步pakcage index&lt;br&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-4" value="自动执行，bpm update&lt;br&gt;同步pakcage index&lt;br&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="90" y="220" width="170" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-5" value="repo server&lt;br&gt;（other repo）" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-5" value="repo server&lt;br&gt;（other repo）" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="620" y="200" width="160" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.999;entryY=0.433;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="soKJ22ut9W6iChpHjKMU-5" target="soKJ22ut9W6iChpHjKMU-4">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.999;entryY=0.433;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="soKJ22ut9W6iChpHjKMU-5" target="soKJ22ut9W6iChpHjKMU-4" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-7" value="得到buckyos-filebrowser的defualt 版本id" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-7" value="得到buckyos-filebrowser的defualt 版本id" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="90" y="330" width="170" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-8" value="发起下载任务,并等待任务结束" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-8" value="发起下载任务,并等待任务结束" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="90" y="430" width="170" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-13" value="更新zone repo中的 index,让buckyos-filebrowser的版本号指向新版本" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-13" value="更新zone repo中的 index,让buckyos-filebrowser的版本号指向新版本" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="90" y="530" width="170" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-14" value="zone-repo-server的操作完成" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-14" value="zone-repo-server的操作完成" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="90" y="630" width="170" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="soKJ22ut9W6iChpHjKMU-15" target="soKJ22ut9W6iChpHjKMU-8">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="soKJ22ut9W6iChpHjKMU-15" target="soKJ22ut9W6iChpHjKMU-8" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-17" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-17" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;" parent="1" vertex="1">
           <mxGeometry x="50" y="170" width="260" height="550" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-15" value="oods&lt;br&gt;(other repo)" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-15" value="oods&lt;br&gt;(other repo)" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="610" y="415" width="160" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-18" value="repo install pkg" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-18" value="repo install pkg" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="130" y="180" width="100" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-19" value="Bucky Store.install app" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;verticalAlign=top;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-19" value="Bucky Store.install app" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;verticalAlign=top;" parent="1" vertex="1">
           <mxGeometry x="50" y="770" width="260" height="320" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-21" value="询问zone-repo 对应的pkg是否已经就绪" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-21" value="询问zone-repo 对应的pkg是否已经就绪" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="80" y="820" width="200" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-22" value="等待用户Confirm Install (有参数配置)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-22" value="等待用户Confirm Install (有参数配置)" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="80" y="890" width="200" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-23" value="写入SystemConfig" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-23" value="写入SystemConfig" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="80" y="960" width="200" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-24" value="由repo server组成的network" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-24" value="由repo server组成的network" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="380" y="330" width="195" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-25" value="唤醒调度器，调度器构造node-config" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-25" value="唤醒调度器，调度器构造node-config" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="80" y="1020" width="200" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-26" value="node_daemon&lt;br&gt;&lt;br&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;verticalAlign=top;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-26" value="node_daemon&lt;br&gt;&lt;br&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;verticalAlign=top;" parent="1" vertex="1">
           <mxGeometry x="50" y="1150" width="260" height="350" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-27" value="启动app service(有更精细的pkgid)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-27" value="启动app service(有更精细的pkgid)" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="80" y="1190" width="200" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-28" value="尝试load 指定版本的pkg" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-28" value="尝试load 指定版本的pkg" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="80" y="1270" width="200" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-29" value="如load 失败，则去本地的repo-server上下载pkg" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-29" value="如load 失败，则去本地的repo-server上下载pkg" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="80" y="1350" width="200" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-30" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.998;entryY=0.37;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="soKJ22ut9W6iChpHjKMU-17" target="soKJ22ut9W6iChpHjKMU-29">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-30" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.998;entryY=0.37;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="soKJ22ut9W6iChpHjKMU-17" target="soKJ22ut9W6iChpHjKMU-29" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-31" value="再次尝试启动" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-31" value="再次尝试启动" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="80" y="1430" width="200" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="soKJ22ut9W6iChpHjKMU-32" value="一个应用的安装，会给系统里添加多个pkg" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="soKJ22ut9W6iChpHjKMU-32" value="一个应用的安装，会给系统里添加多个pkg" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="365" y="1240" width="155" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="i7rDc_Y2ZXbLJ_Izxtpt" name="ndn-lib">
+    <mxGraphModel dx="1411" dy="1906" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="VGbAvs_T3tfYimthB3y_-7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-1" target="VGbAvs_T3tfYimthB3y_-2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-25" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-1" target="VGbAvs_T3tfYimthB3y_-8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-30" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-1" target="VGbAvs_T3tfYimthB3y_-29">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-1" value="Pull Chunk&lt;br&gt;类似tokio::copy" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="150" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-2" target="VGbAvs_T3tfYimthB3y_-6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-38" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-2" target="VGbAvs_T3tfYimthB3y_-26">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-2" value="1. Open Writer&lt;br&gt;允许断点续传?" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="240" y="70" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-17" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-6" target="VGbAvs_T3tfYimthB3y_-9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-6" value="Chunk&lt;br&gt;Exist?" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="425" y="60" width="145" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-33" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-8" target="VGbAvs_T3tfYimthB3y_-31">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-8" value="3. Try open reader with offset" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="240" y="300" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-9" value="Return Writer" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="630" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-20" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-11" target="VGbAvs_T3tfYimthB3y_-13">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-21" value="否" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="VGbAvs_T3tfYimthB3y_-20">
+          <mxGeometry x="0.1468" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-22" value="可以" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-11" target="VGbAvs_T3tfYimthB3y_-15">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-11" value="通过quickhash验证判断可以断点续传?" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="605" y="130" width="185" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-13" value="删除旧文件并Return Writer" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="840" y="70" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-14" value="Seek and Return Writer" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="990" y="200" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-24" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-15" target="VGbAvs_T3tfYimthB3y_-14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-15" value="读取进度" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="810" y="200" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-19" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.025;entryY=0.497;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-6" target="VGbAvs_T3tfYimthB3y_-11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-26" value="2.know progress" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="240" y="170" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-29" value="4.边下边验证边保存进度(针对不同大小有不同的默认行为)" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="240" y="420" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-34" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-31" target="VGbAvs_T3tfYimthB3y_-32">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-36" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-31" target="VGbAvs_T3tfYimthB3y_-35">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-31" value="Chunk&lt;br&gt;Exist?" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="425" y="290" width="145" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-32" value="Return Reader" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="570" y="230" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-35" value="Return Error" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="580" y="370" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-39" value="常见的Chunk Reader和Chunk Writer的后端" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="80" y="490" width="250" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-46" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-40" target="VGbAvs_T3tfYimthB3y_-41">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-47" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-40" target="VGbAvs_T3tfYimthB3y_-42">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-40" value="Reader" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="125" y="630" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-41" value="FileReader" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="570" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-42" value="(Http) Stream Reader" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="670" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-49" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-43" target="VGbAvs_T3tfYimthB3y_-45">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-43" value="Write" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="120" y="860" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-44" value="File Write" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="310" y="800" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-45" value="(Http) Stream Appender" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="310" y="920" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-48" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=-0.027;entryY=0.429;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-43" target="VGbAvs_T3tfYimthB3y_-44">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-50" value="Chunk Builder: 基于现有数据,构建Chunk&lt;br&gt;普通文件:计算ChunkId和quickhash&lt;br&gt;大文件:构建chunklist&lt;br&gt;小文件:计算ChunkId,(并成为一个大chunk的一部分)&lt;br&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="610" y="495" width="330" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-61" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-53" target="VGbAvs_T3tfYimthB3y_-56">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-62" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-53" target="VGbAvs_T3tfYimthB3y_-57">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-53" value="URL is chunk?" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="160" y="-170" width="145" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-56" value="Return Reader" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="360" y="-100" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-63" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-57" target="VGbAvs_T3tfYimthB3y_-58">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-57" value="URL Point to&amp;nbsp; known named object" style="rounded=1;whiteSpace=wrap;html=1;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="360" y="-230" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-64" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-58" target="VGbAvs_T3tfYimthB3y_-59">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-58" value="parse named object" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="540" y="-230" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-65" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="VGbAvs_T3tfYimthB3y_-59" target="VGbAvs_T3tfYimthB3y_-60">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-59" value="get real chunk url url2" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="710" y="-230" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-60" value="return Open Chunk&lt;br&gt;Reade By URL2" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="870" y="-230" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-66" value="Open Chunk Reader By URL" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="85" y="-260" width="220" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-67" value="Pull Chunk必然是单源的" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="55" y="100" width="110" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-69" value="Put ChunkB" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="475" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="VGbAvs_T3tfYimthB3y_-70" value="Put Named Object&lt;br&gt;Say : ChunkA is ChunkB" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="475" width="120" height="60" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

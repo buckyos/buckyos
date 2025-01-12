@@ -16,15 +16,19 @@ members = [
     "./cyfs_gateway/cyfs-dns",
     "./cyfs_gateway/cyfs-warp",
     "./cyfs_gateway/cyfs-sn",
-    #"./cyfs_gateway/cyfs-socks",
+    "./cyfs_gateway/cyfs-socks",
 
     "./kernel/kRPC",
     "./kernel/rbac",
     "./kernel/sys-config",
-    "./kernel/sys_config_service", 
-    "./kernel/verify_hub",   
+    "./kernel/sys_config_service",
+    "./kernel/verify_hub",
     "./kernel/node_daemon",
-    "./kernel/scheduler", 
-    "./frame/repo-service", 
-    "./components/index-lib",
+    "./kernel/scheduler",
+    "./kernel/task_manager",
+    "./frame/repo_service",
+    "./frame/smb_service",
+
+    "./tools/buckycli",
+    #"./apps/tray-controller"
 ]

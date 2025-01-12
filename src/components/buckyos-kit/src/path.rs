@@ -46,3 +46,15 @@ pub fn get_buckyos_chunk_data_dir(mgr_id: Option<&str>) -> PathBuf {
         get_buckyos_root_dir().join("data").join("chunk").join(mgr_id.unwrap())
     }
 }
+
+pub fn get_relative_path(base_path: &str, full_path: &str) -> String {
+    if full_path.starts_with(base_path) {
+        if base_path.ends_with('/') {
+            full_path[base_path.len()-1..].to_string()
+        } else {
+            full_path[base_path.len()..].to_string()
+        }
+    } else {
+        full_path.to_string()
+    }
+}

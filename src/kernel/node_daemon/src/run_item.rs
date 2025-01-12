@@ -27,6 +27,15 @@ pub enum RunItemTargetState {
     Stopped, 
 }
 
+impl RunItemTargetState {
+    pub fn from_str(state: &str) -> Result<Self> {
+        match state {
+            "Running" => Ok(RunItemTargetState::Running),
+            "Stopped" => Ok(RunItemTargetState::Stopped),
+            _ => Err(ControlRuntItemErrors::ParserConfigError(format!("invalid target state: {}", state))),
+        }
+    }
+}
 
 
 #[derive(Serialize, Deserialize, Debug,Clone)]

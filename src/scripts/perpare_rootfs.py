@@ -38,13 +38,15 @@ def copy_files(rust_target_dir):
     strip_and_copy_rust_file(rust_target_dir, "verify_hub", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "scheduler", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "cyfs_gateway", root_bin_dir, True)
+    strip_and_copy_rust_file(rust_target_dir, "smb_service", root_bin_dir, True)
+    strip_and_copy_rust_file(rust_target_dir, "repo_service", root_bin_dir, True)
 
     strip_and_copy_rust_file(rust_target_dir, "cyfs_gateway", os.path.join(src_dir, "./web3_bridge"))
-    
+
     if os.path.exists(os.path.join(src_dir, "./web3_bridge", "web3_gateway"+ext)):
         os.remove(os.path.join(src_dir, "./web3_bridge", "web3_gateway"+ext))
     os.rename(os.path.join(src_dir, "./web3_bridge", "cyfs_gateway"+ext), os.path.join(src_dir, "./web3_bridge", "web3_gateway"+ext))
-    
+
     shutil.copy(os.path.join(src_dir, "killall.py"), root_bin_dir)
 
     copy_web_apps("kernel/node_active", os.path.join(root_bin_dir, "active"))

@@ -18,7 +18,7 @@ hickory-resolver = { version = "*", features = ["dns-over-rustls"] }
 tokio = { version = "*", features = ["full"] }
 mini-moka = "*" 
 jsonwebtoken = "*"
-ed25519-dalek = { version = "*", features = ["rand_core"] } 
+ed25519-dalek = { version = "*", features = ["rand_core", "pkcs8"] } 
 x25519-dalek = { version = "*", features = ["static_secrets","getrandom"] }
 curve25519-dalek = "*"
 ed25519_to_curve25519 = "*"

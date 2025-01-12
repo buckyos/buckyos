@@ -12,3 +12,6 @@ serde = "*"
 serde_json = "*"
 casbin = {version = "*", features = ["logging","explain"]}
 lazy_static = "*"
+
+[dev-dependencies]
+buckyos-kit = { path = "../../components/buckyos-kit" }

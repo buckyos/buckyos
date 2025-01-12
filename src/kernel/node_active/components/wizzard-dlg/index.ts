@@ -27,12 +27,16 @@ export class BuckyWizzardDlg extends HTMLElement {
 
       const slot = this.shadowRoot?.getElementById('dlg-content') as HTMLSlotElement | null;
       if (!slot) {
+        console.log("no slot");
         return;
       }
 
       const dlgContent = slot.assignedElements() as HTMLElement[];
+      if (dlgContent.length == 0) {
+        return;
+      }
+
       this.dlgStack.push(dlgContent[0]);
-      
     }
 
     pushDlg(dlg: HTMLElement) {

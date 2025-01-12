@@ -4,10 +4,11 @@ use tokio::fs;
 use std::collections::HashMap;
 use serde::Deserialize;
 use url::Url;
+use cyfs_socks::SocksProxyConfig;
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct ChunkMgrRouteConfig {
-    pub chunk_mgr_id : String,
+pub struct NamedDataMgrRouteConfig {
+    pub named_data_mgr_id : String,
     pub read_only:bool,
     pub guest_access:bool,// 是否允许zone外访问
     //是否将chunkid放在路径的第一级，
@@ -17,10 +18,10 @@ pub struct ChunkMgrRouteConfig {
     pub enable_mgr_file_path:bool,// 是否使用mgr路径模式
 }
 
-impl Default for ChunkMgrRouteConfig {
+impl Default for NamedDataMgrRouteConfig {
     fn default()->Self {
         Self { 
-            chunk_mgr_id:"default".to_string(), 
+            named_data_mgr_id:"default".to_string(), 
             read_only:true, 
             guest_access:true, 
             is_chunk_id_in_path:true,
@@ -51,7 +52,7 @@ pub struct RouteConfig {
     pub inner_service: Option<String>,
     pub tunnel_selector: Option<String>,
     pub bucky_service: Option<String>,
-    pub chunk_mgr: Option<ChunkMgrRouteConfig>,
+    pub named_mgr: Option<NamedDataMgrRouteConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -107,9 +108,6 @@ pub struct DNSServerConfig {
     pub fallback : Vec<String>,//fallback dns servers
 }
 
-pub struct SocksProxyConfig {
-
-}
 
 pub enum ServerConfig {
     Warp(WarpServerConfig),
@@ -200,7 +198,12 @@ pub fn gen_demo_gateway_json_config() -> String {
         },
         "main_socks_server":{
             "type":"cyfs-socks",
-            "bind":"localhost:8000",
+            "bind":"localhost",
+            "port":8000,
+
+            "target":"ood02:6000",
+            "enable-tunnel":["direct", "rtcp"],
+
             "rule_config":"http://www.buckyos.io/cyfs-socks-rule.toml"
         },
         "main_dns_server":{

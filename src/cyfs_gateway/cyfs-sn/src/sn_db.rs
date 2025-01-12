@@ -8,7 +8,6 @@ use rusqlite::{params, Connection, OptionalExtension, Result};
 use rand::Rng;
 use std::{path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
 use log::*;
-use buckyos_kit::*;
 
 pub fn get_sn_db_conn() -> Result<Connection> {
     let base_dir = PathBuf::from("/opt/web3_bridge/");

@@ -4,7 +4,7 @@ use url::Url;
 use std::error::Error as StdError;
 use std::task::{Context, Poll};
 use hyper::service::Service;
-use crate::AsyncStream;
+use buckyos_kit::AsyncStream;
 use std::pin::Pin;
 use std::future::Future;
 use hyper::Uri;
@@ -106,7 +106,7 @@ impl Service<Uri> for TunnelConnector {
             let target_port = uri.port_u16().unwrap_or(80);
             let target_tunnel = target_tunnel.unwrap();
             //info!("TunnelConnector Get tunnel OK! {}", target.to_string());
-            let target_stream = target_tunnel.open_stream(target_port).await
+            let target_stream = target_tunnel.open_stream(target_port, None).await
                 .map_err(|e| Box::new(e) as Box<dyn StdError + Send + Sync>)?;
             Ok(TunnelStreamConnection::new(target_stream))
         })

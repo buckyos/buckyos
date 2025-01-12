@@ -1,0 +1,36 @@
+[package]
+name = "tray-controller"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+lazy_static = "*"
+tokio = { version = "*", features = ["full"] }
+futures = "*"
+sysinfo = "*"
+toml = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+log = "*"
+jsonwebtoken = "*"  
+buckyos-kit = { path = "../../components/buckyos-kit" }
+name-lib = { path = "../../components/name-lib" }
+name-client = {path = "../../components/name-client"}
+package-lib = {path = "../../components/package-lib"}
+sys-config = { path = "../../kernel/sys-config" }
+kRPC = { path = "../../kernel/kRPC" }
+
+[build-dependencies]
+cc = "1.0"
+
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+
+[[bin]]
+name = "tray-controller"
+path = "src/main.rs"

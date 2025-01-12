@@ -1,15 +1,28 @@
+#![allow(dead_code)]
+
+use base64::prelude::BASE64_STANDARD_NO_PAD;
+use base64::write;
+use base64::{engine::general_purpose, Engine as _};
+use base64::{
+    engine::general_purpose::STANDARD, engine::general_purpose::URL_SAFE_NO_PAD, Engine as _,
+};
+use ed25519_dalek::{pkcs8::DecodePrivateKey, Signature, Signer, SigningKey};
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use kRPC::kRPC;
+use ndn_lib::*;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::fs::File;
-use std::io::{self, Read};
-use std::path::Path;
+use std::io::{self, BufReader, Read};
+use std::path::{Path, PathBuf};
 use tar::Builder;
+use tokio::io::AsyncWriteExt;
 use toml::Value;
 
 #[derive(Serialize, Debug)]
@@ -21,85 +34,108 @@ struct UploadPackageMeta {
     sha256: String,
 }
 
-#[derive(Deserialize)]
-struct ServerError {
-    error: String,
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PackResult {
+    pkg_id: String,
+    version: String,
+    vendor_did: String,
+    target_file_path: PathBuf, // tarball path
 }
 
-pub async fn pack(path: &str) -> Result<(), String> {
-    let path = Path::new(path);
-    if !path.exists() {
+#[derive(Clone, Debug)]
+pub struct PackageMeta {
+    pub name: String,
+    pub version: String,
+    pub author: String, //author did
+    pub chunk_id: String,
+    pub dependencies: String,
+    pub sign: String, //sign of the chunk_id
+}
+
+/*
+meta.json
+{
+    "name" : "Home Station",
+    "description" : "Home Station",
+    "vendor_did" : "did:bns:buckyos",
+    "pkg_id" : "home-station",
+    "version" : "0.1.0",
+    "pkg_list" : {
+        "amd64_docker_image" : {
+            "pkg_id":"home-station-x86-img",
+            "docker_image_name":"filebrowser/filebrowser:s6"
+        },
+        "aarch64_docker_image" : {
+            "pkg_id":"home-station-arm64-img",
+            "docker_image_name":"filebrowser/filebrowser:s6"
+        },
+        "web_pages" :{
+            "pkg_id" : "home-station-web-page"
+        }
+    }
+}
+ */
+
+pub async fn pack(pkg_path: &str) -> Result<PackResult, String> {
+    println!("pack path: {}", pkg_path);
+    let pkg_path = Path::new(pkg_path);
+    if !pkg_path.exists() {
         eprintln!("Error: Specified directory does not exist");
-        return Err(format!("Path {} does not exist", path.display()));
+        return Err(format!("Path {} does not exist", pkg_path.display()));
     }
 
-    println!("Starting the packing process for directory: {:?}", path);
+    println!("Starting the packing process for directory: {:?}", pkg_path);
 
     // 检查目录
-    let package_toml_path = path.join("package.toml");
-    if !package_toml_path.exists() {
-        eprintln!("Error: package.toml not found in the specified directory");
-        return Err("package.toml not found in the specified directory".to_string());
+    let meta_path = pkg_path.join("meta.json");
+    if !meta_path.exists() {
+        eprintln!("Error: meta.json not found in directory");
+        return Err("meta.json not found in directory".to_string());
     }
 
-    let items: Vec<_> = fs::read_dir(path)
+    let items: Vec<_> = fs::read_dir(pkg_path)
         .map_err(|e| format!("Error: Failed to read directory: {}", e.to_string()))?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_name() != "target")
         .collect();
 
     if items.len() <= 1 {
-        eprintln!("Error: No files or folders found to package (excluding target)");
-        return Err("No files or folders found to package (excluding target)".to_string());
+        eprintln!("Error: No files or folders found to pack");
+        return Err("No files or folders found to pack".to_string());
     }
 
-    println!("Found {} items to package (excluding target)", items.len());
+    println!("Found {} items to pack", items.len());
 
-    // 解析 package.toml
-    let package_toml_content = fs::read_to_string(&package_toml_path)
-        .map_err(|err| format!("Error: Failed to read package.toml: {}", err.to_string()))?;
-    let package_data: Value = toml::from_str(&package_toml_content)
-        .map_err(|err| format!("Error: Failed to parse package.toml: {}", err.to_string()))?;
+    // 解析 meta.json
+    let meta_content = fs::read_to_string(&meta_path)
+        .map_err(|err| format!("Error: Failed to read meta.json: {}", err.to_string()))?;
+    let meta_data: Value = serde_json::from_str(&meta_content)
+        .map_err(|err| format!("Error: Failed to parse meta.json: {}", err.to_string()))?;
 
-    let name = package_data
-        .get("package")
-        .and_then(|pkg| pkg.get("name"))
+    let pkg_id = meta_data
+        .get("pkg_id")
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("Error: Package name missing in package.toml"))?;
+        .ok_or_else(|| format!("Error: pkg_id missing in meta.json"))?;
 
-    let version = package_data
-        .get("package")
-        .and_then(|pkg| pkg.get("version"))
+    let version = meta_data
+        .get("version")
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("Error: Package version missing in package.toml"))?;
+        .ok_or_else(|| format!("Error: version missing in meta.json"))?;
 
-    let author = package_data
-        .get("package")
-        .and_then(|pkg| pkg.get("author"))
+    let vendor_did = meta_data
+        .get("vendor_did")
         .and_then(Value::as_str)
-        .unwrap_or("Unknown");
+        .ok_or_else(|| format!("Error: vendor_did missing in meta.json"))?;
 
-    let default_dependencies = Value::Table(Default::default());
-    let dependencies = package_data
-        .get("dependencies")
-        .unwrap_or(&default_dependencies);
-
+    // TODO dependencies？
     println!(
-        "Parsed package.toml: name = {}, version = {}, author = {}",
-        name, version, author
+        "Parsed meta.json: pkg_id = {}, version = {}, vendor_did = {}",
+        pkg_id, version, vendor_did
     );
-    println!("Dependencies: {:?}", dependencies);
 
     // 创建 tarball
-    let target_dir = path.join("target");
-    fs::create_dir_all(&target_dir).map_err(|err| {
-        format!(
-            "Error: Failed to create target directory for package: {}",
-            err.to_string()
-        )
-    })?;
-    let tarball_name = format!("{}-{}.bkz", name, version);
-    let tarball_path = target_dir.join(&tarball_name);
+    let parent_dir = pkg_path.parent().unwrap();
+    let tarball_name = format!("{}-{}.bkz", pkg_id, version);
+    let tarball_path = parent_dir.join(&tarball_name);
 
     let tar_gz = File::create(&tarball_path)
         .map_err(|err| format!("Error: Failed to create package file: {}", err.to_string()))?;
@@ -117,11 +153,6 @@ pub async fn pack(path: &str) -> Result<(), String> {
             let path = entry.path();
             let name = path.strip_prefix(base).unwrap();
 
-            // 排除 target 目录
-            if name.starts_with("target") {
-                continue;
-            }
-
             if path.is_dir() {
                 tar.append_dir(name, &path)?;
                 append_dir_all(tar, &path, base)?;
@@ -132,7 +163,7 @@ pub async fn pack(path: &str) -> Result<(), String> {
         Ok(())
     }
 
-    append_dir_all(&mut tar, path, path).map_err(|err| {
+    append_dir_all(&mut tar, pkg_path, pkg_path).map_err(|err| {
         format!(
             "Error: Failed to add files and directories to tarball: {}",
             err.to_string()
@@ -148,149 +179,248 @@ pub async fn pack(path: &str) -> Result<(), String> {
 
     println!(
         "Package {} version {} by {} has been packed successfully.",
-        name, version, author
+        pkg_id, version, vendor_did
     );
     println!("Package created at: {:?}", tarball_path);
+
+    let pack_ret = PackResult {
+        pkg_id: pkg_id.to_string(),
+        version: version.to_string(),
+        vendor_did: vendor_did.to_string(),
+        target_file_path: tarball_path,
+    };
+
+    Ok(pack_ret)
+}
+
+struct FileInfo {
+    sha256: Vec<u8>,
+    size: u64,
+}
+
+fn calculate_file_hash(file_path: &str) -> Result<FileInfo, String> {
+    let file: File = File::open(file_path).map_err(|err| {
+        format!(
+            "Error: Failed to open package file {}: {}",
+            file_path,
+            err.to_string()
+        )
+    })?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 10 * 1024 * 1024]; // 10MB 缓冲区
+    let mut file_size = 0;
+
+    loop {
+        let bytes_read = reader.read(&mut buffer).map_err(|err| {
+            format!(
+                "Error: Failed to read package file {} for hashing: {}",
+                file_path,
+                err.to_string()
+            )
+        })?;
+        if bytes_read == 0 {
+            break;
+        }
+        file_size += bytes_read as u64;
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    let hash = hasher.finalize().to_vec();
+
+    Ok(FileInfo {
+        sha256: hash,
+        size: file_size,
+    })
+}
+
+fn sign_data(pem_file: &str, data: &str) -> Result<String, String> {
+    let signing_key = SigningKey::read_pkcs8_pem_file(pem_file).map_err(|e| {
+        format!(
+            "Error: Failed to parse private key from file {}: {:?}",
+            pem_file, e
+        )
+    })?;
+
+    // 对数据进行签名
+    let signature: Signature = signing_key.sign(data.as_bytes());
+
+    // 将签名转换为 base64 编码的字符串
+    let signature_base64 = STANDARD.encode(signature.to_bytes());
+
+    Ok(signature_base64)
+}
+
+async fn write_file_to_chunk(
+    chunk_id: &ChunkId,
+    file_path: &PathBuf,
+    file_size: u64,
+    chunk_mgr_id: Option<&str>,
+) -> Result<(), String> {
+    let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(chunk_mgr_id)
+        .await
+        .ok_or_else(|| "Failed to get repo named data mgr".to_string())?;
+
+    println!("upload chunk_id: {}", chunk_id.to_string());
+
+    let named_mgr = named_mgr.lock().await;
+
+    // 可能重复pub，需要排除AlreadyExists错误
+    let (mut chunk_writer, progress_info) =
+        match named_mgr.open_chunk_writer(chunk_id, file_size, 0).await {
+            Ok(v) => v,
+            Err(e) => {
+                if let NdnError::AlreadyExists(_) = e {
+                    println!("chunk {} already exists", chunk_id.to_string());
+                    return Ok(());
+                } else {
+                    return Err(format!(
+                        "Failed to open chunk writer for chunk_id: {}, err:{}",
+                        chunk_id.to_string(),
+                        e.to_string()
+                    ));
+                }
+            }
+        };
+
+    // 读取文件，按块写入
+    let file = File::open(&file_path).map_err(|e| {
+        format!(
+            "Failed to open package file: {}, err:{}",
+            file_path.display(),
+            e.to_string()
+        )
+    })?;
+    let mut reader = BufReader::new(file);
+    let mut buffer = vec![0u8; 10 * 1024 * 1024]; // 使用 Vec 在堆上分配
+    loop {
+        let bytes_read = reader.read(&mut buffer).map_err(|e| {
+            format!(
+                "Failed to read package file: {}, err:{}",
+                file_path.display(),
+                e.to_string()
+            )
+        })?;
+        if bytes_read == 0 {
+            break;
+        }
+        chunk_writer
+            .write(&buffer[..bytes_read])
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to write chunk data for chunk_id: {}, err:{}",
+                    chunk_id.to_string(),
+                    e.to_string()
+                )
+            })?;
+    }
+
+    drop(chunk_writer);
+    named_mgr
+        .complete_chunk_writer(chunk_id)
+        .await
+        .map_err(|e| {
+            format!(
+                "Failed to complete chunk writer for chunk_id: {}, err:{}",
+                chunk_id.to_string(),
+                e.to_string()
+            )
+        })?;
 
     Ok(())
 }
 
-pub async fn publish(path: &str, server: &str) -> Result<(), String> {
-    let path = Path::new(path);
+pub async fn publish_package(
+    pkg_path: &str,
+    pem_file: &str,
+    url: &str,
+    session_token: &str,
+) -> Result<(), String> {
+    let pack_ret = pack(pkg_path).await?;
 
-    // 解析 package.toml
-    let package_toml_path = path.join("package.toml");
-    let package_toml_content = fs::read_to_string(&package_toml_path)
-        .map_err(|err| format!("Error: Failed to read package.toml: {}", err.to_string()))?;
-    let package_data: Value = toml::from_str(&package_toml_content)
-        .map_err(|e| format!("Error: Failed to parse package.toml: {}", e.to_string()))?;
+    let pack_file_path = pack_ret.target_file_path.clone();
 
-    let name: &str = package_data
-        .get("package")
-        .and_then(|pkg| pkg.get("name"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("Error: Package name missing in package.toml"))?;
+    if !pack_file_path.exists() {
+        eprintln!("Error: Package file {} not found", pack_file_path.display());
+        return Err(format!(
+            "Package file {} not found",
+            pack_file_path.display()
+        ));
+    }
 
-    let version = package_data
-        .get("package")
-        .and_then(|pkg| pkg.get("version"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
+    let file_info = calculate_file_hash(pack_file_path.to_str().unwrap())?;
+    let chunk_id = ChunkId::from_sha256_result(&file_info.sha256);
+
+    let sign: String = sign_data(pem_file, &chunk_id.to_string())?;
+    println!(
+        "chunk_id: {}, signature_base64: {}:",
+        chunk_id.to_string(),
+        sign
+    );
+
+    // 创建元数据
+    let pkg_meta = PackageMeta {
+        name: pack_ret.pkg_id,
+        version: pack_ret.version,
+        author: pack_ret.vendor_did,
+        chunk_id: chunk_id.to_string(),
+        dependencies: "{}".to_string(),
+        sign,
+    };
+
+    // 上传chunk到repo
+    let chunk_mgr_id = None;
+    write_file_to_chunk(&chunk_id, &pack_file_path, file_info.size, chunk_mgr_id)
+        .await
+        .map_err(|e| {
             format!(
-                "Error: Package version missing in package.toml for package {}",
-                name
+                "Failed to upload package file to chunk mgr:{:?}, err:{:?}",
+                chunk_mgr_id, e
             )
         })?;
 
-    let author = package_data
-        .get("package")
-        .and_then(|pkg| pkg.get("author"))
-        .and_then(Value::as_str)
-        .unwrap_or("Unknown");
+    println!("upload chunk to chunk mgr:{:?} success", chunk_mgr_id);
 
-    let default_dependencies = Value::Table(Default::default());
-    let dependencies = package_data
-        .get("dependencies")
-        .unwrap_or(&default_dependencies);
+    // 上传元数据到repo
+    let client = kRPC::new(url, Some(session_token.to_string()));
 
-    println!(
-        "Parsed package.toml: name = {}, version = {}, author = {}",
-        name, version, author
-    );
-    println!("Dependencies: {:?}", dependencies);
-
-    // 确保 tarball 存在
-    let tarball_name = format!("{}-{}.bkz", name, version);
-    let tarball_path = path.join("target").join(&tarball_name);
-
-    if !tarball_path.exists() {
-        eprintln!("Error: Package file {} not found", tarball_name);
-        return Err(format!("Package file {} not found", tarball_name));
-    }
-
-    // 计算 tarball 的 sha256
-    let mut file = File::open(&tarball_path).map_err(|err| {
-        format!(
-            "Error: Failed to open package file {} for reading: {}",
-            tarball_name,
-            err.to_string()
+    client
+        .call(
+            "pub_pkg",
+            json!({
+                "pkg_name": pkg_meta.name,
+                "version": pkg_meta.version,
+                "author": pkg_meta.author,
+                "chunk_id": pkg_meta.chunk_id,
+                "dependencies": pkg_meta.dependencies,
+                "sign": pkg_meta.sign,
+            }),
         )
-    })?;
-    let mut hasher = Sha256::new();
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer).map_err(|err| {
-        format!(
-            "Error: Failed to read package file {} for hashing: {}",
-            tarball_name,
-            err.to_string()
-        )
-    })?;
-    hasher.update(&buffer);
-    let hash = hasher.finalize();
-    let hash_hex = format!("{:x}", hash);
-
-    // 创建元数据
-    let metadata = UploadPackageMeta {
-        name: name.to_string(),
-        version: version.to_string(),
-        author: author.to_string(),
-        deps: dependencies.clone(),
-        sha256: hash_hex,
-    };
-
-    // 将元数据序列化为 JSON
-    let metadata_json = serde_json::to_string(&metadata).map_err(|e| {
-        format!(
-            "Error: Failed to serialize package metadata to JSON: {}",
-            e.to_string()
-        )
-    })?;
-
-    // 可读打印元数据
-    println!("Package metadata: {:#?}", metadata);
-    // 上传文件
-    let client = Client::new();
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "Bkz-Upload-Metadata",
-        HeaderValue::from_str(&metadata_json).unwrap(),
-    );
-
-    let response = client
-        .post(server)
-        .headers(headers)
-        .body(buffer)
-        .send()
         .await
-        .map_err(|e| format!("Error: Failed to send package to server: {}", e.to_string()))?;
+        .map_err(|e| format!("Failed to publish package meta to repo, err:{:?}", e))?;
 
-    if response.status().is_success() {
-        println!(
-            "Package {} version {} by {} has been published successfully.",
-            name, version, author
-        );
-    } else {
-        let status = response.status();
-        let error_message = response.text().await.unwrap_or_else(|e| {
-            eprintln!("Failed to read error message: {}", e);
-            "No error message returned".to_string()
-        });
+    Ok(())
+}
 
-        // 尝试解析 JSON 错误消息
-        if let Ok(server_error) = serde_json::from_str::<ServerError>(&error_message) {
-            eprintln!(
-                "Failed to publish package: {:?}. Error message: {}",
-                status, server_error.error
-            );
-            return Err(server_error.error);
-        } else {
-            eprintln!(
-                "Failed to publish package: {:?}. Error message: {}",
-                status, error_message
-            );
-            return Err(error_message);
-        }
-    }
+pub async fn publish_index(
+    pem_file: &str,
+    version: &str,
+    url: &str,
+    session_token: &str,
+) -> Result<(), String> {
+    let client = kRPC::new(url, Some(session_token.to_string()));
+
+    client
+        .call(
+            "pub_index",
+            json!({
+                "pem_file": pem_file.to_string(),
+                "version": version.to_string(),
+            }),
+        )
+        .await
+        .map_err(|e| format!("Failed to publish index, err:{:?}", e))?;
 
     Ok(())
 }

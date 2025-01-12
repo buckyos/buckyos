@@ -29,7 +29,7 @@ impl ServiceDispatcher {
     }
 
     pub async fn create_income_listener(&self, incoming: &Url) -> Result<Box<dyn StreamListener>> {
-        let new_listener = create_listner_by_url(incoming).await.map_err(|e| {
+        let new_listener = create_listener_by_url(incoming).await.map_err(|e| {
             error!("create_income_listener failed, {}", e);
             Box::new(e)
         })?;
@@ -44,25 +44,29 @@ impl ServiceDispatcher {
         Ok(new_server)
     }
 
-    pub async fn start_foward_service(&self, incoming: &Url, target: &Url) -> Result<()> {
+    pub async fn start_forward_service(&self, incoming: &Url, target: &Url) -> Result<()> {
+        info!("Will start forward service from {} to {}", incoming, target);
+
         let incoming_category = get_protocol_category(incoming.scheme()).map_err(|e| {
-            error!("start_foward_service failed, Invalid incoming protocol: {}", e);
+            error!("start_forward_service failed, Invalid incoming protocol: {}", e);
             e
         })?;
         let target_category = get_protocol_category(target.scheme()).map_err(|e| {
-            error!("start_foward_service failed, Invalid target protocol: {}", e);
+            error!("start_forward_service failed, Invalid target protocol: {}", e);
             e
         })?;
 
         if incoming_category != target_category {
-            error!("start_foward_service failed, incoming protocol and target protocol must be the same");
-            return Err(Box::new(TunnelError::UnknowProtocol("incoming protocol and target protocol must be the same".to_string())));
+            let msg = format!("start_forward_service failed, incoming protocol and target protocol must be the same: {} {}", incoming, target);
+            error!("{}", msg);
+            return Err(Box::new(TunnelError::UnknownProtocol(msg)));
         }
 
         let target_port = target.port().unwrap_or(incoming.port().unwrap_or(0));
         if target_port == 0 {
-            error!("start_foward_service failed, target port is not specified");
-            return Err(Box::new(TunnelError::UnknowProtocol("target port is not specified".to_string())));
+            let msg = format!("start_forward_service failed, target port is not specified: {}", target);
+            error!("{}", msg);
+            return Err(Box::new(TunnelError::UnknownProtocol(msg)));
         }
 
         match target_category {
@@ -85,7 +89,7 @@ impl ServiceDispatcher {
                             continue;
                         }
                         let target_tunnel = target_tunnel.unwrap();
-                        let mut target_stream = target_tunnel.open_stream(target_port).await;
+                        let mut target_stream = target_tunnel.open_stream(target_port, None).await;
                         if target_stream.is_err() {
                             warn!("stream forward service forward connection failed, open target stream failed: {}", target_stream.err().unwrap());
                             continue;
@@ -130,7 +134,7 @@ impl ServiceDispatcher {
                                 continue;
                             }
                             let target_tunnel = target_tunnel.unwrap();
-                            let datagram_client = target_tunnel.create_datagram_client(target_port).await;
+                            let datagram_client = target_tunnel.create_datagram_client(target_port, None).await;
                             if datagram_client.is_err() {
                                 warn!("datagram-forward create datagram client failed: {}", datagram_client.err().unwrap());
                                 continue;
@@ -174,21 +178,21 @@ impl ServiceDispatcher {
         info!("Service dispatcher started");
         let config = self.config.lock().await;
         
-        for (incomeing, target) in config.iter() {
+        for (incoming, target) in config.iter() {
             match &target.target {
                 DispatcherTarget::Forward(target_url) => {
                     //TODO: store the task handle to stop it when the config is changed
-                    match self.start_foward_service(incomeing, target_url).await {
+                    match self.start_forward_service(incoming, target_url).await {
                         Ok(_) => {
-                            info!("Start foward service from {} to {} OK ", incomeing.to_string(), target_url.to_string());
+                            info!("Start forward service from {} to {} OK ", incoming.to_string(), target_url.to_string());
                         },
                         Err(e) => {
-                            error!("Start foward service from {} to {} failed, {}", incomeing.to_string(), target_url.to_string(), e);
+                            error!("Start forward service from {} to {} failed, {}", incoming.to_string(), target_url.to_string(), e);
                         }
                     }
                 }
                 DispatcherTarget::Server(server_id) => {
-                    info!("dispatcher from {} to server {}", incomeing.to_string(), server_id);
+                    info!("dispatcher from {} to server {}", incoming.to_string(), server_id);
                     //looking for server config by server_id
                     //start server with config
                 }

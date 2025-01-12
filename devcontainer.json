@@ -1,0 +1,16 @@
+{
+    "name": "buckyos code-server enviroment",
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu", 
+    "features": {
+      "ghcr.io/devcontainers/features/rust:1": {} 
+    },
+    "postCreateCommand": "sudo apt-get update && sudo apt-get install -y build-essential curl ",
+    "customizations": {
+      "vscode": {
+        "extensions": [
+          "rust-lang.rust-analyzer"
+        ]
+      }
+    }
+  }
+  

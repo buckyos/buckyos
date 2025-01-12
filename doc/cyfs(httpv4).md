@@ -1,5 +1,37 @@
 # CYFS(httpv4)协议设计
 
+
+## 新版本设计与版本的核心理念变化
+
+- 老协议是默认不可变,然后对可变进行特殊处理.新版本承认可变是默认的,不可变是特殊的,通常需要一个发布行为才会产生ObjectId
+- CYFS对http协议的修改分成了正交的两个部分,
+    - URL规范,并约定URL指向了一个NamedObject时,如何用统一的方法产生访问其相关Object的URL
+    - HTTP Response扩展,增加了说明这是一个Named Object,并如何进行验证的在相关字段. 一般包含Object,如果是一个容器的内部路径,还有相关的路径验证信息(避免需要把整个容器的内容都下载回来才能验证)
+- 对容器对象实现方法的反思: 能更好的支持以流的方式来处理容器,而不是必须将整个容器下载回来后才能处理.对mtree对象提供原生支持
+- 使用JSON-LD/JWT等标准格式来描述非容器类的结构化对象
+- 认识到基于Put Named Object的DEX应用是不容易开发的,因此早期协议先不包含Put类协议
+
+## 核心协议
+
+Get-Named-Object
+任意URL都可以返回NamedObject(一定是文本协议,因此mime type是text/plain 或 json)
+在http resp header中增加一个字段，用于客户端校验,说明返回结果的objid(用于校验)
+
+
+通过可信路径,从容器中返回NamedObject
+通常的方法是  $obj_map_id/$paht1/#$path2 
+此时http resp header中有一个字段,用于客户端校验,不但包含objid,还包含路径的必要验证信息
+
+
+Get-Chunk 
+通过一次网络请求,得到一个Chunk 
+
+Get-Chunk by NamedObject
+通过一次网络请求,得到NamedObject引用的Chunk
+比如可以通过一个url http://web3.buckyos.org/$fileid 得到一个Fileobject, 则可以通过标准的参数 
+http://web3.buckyos.org/$file_id?path=$.content[2] 来标识这个请求是为了得到fileobject.content的第二片chunk内容,该url实际上指向的是一个chunk,返回的mime是 application/octet-stream
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 ## 内容包含
 1. 从面向地址的协议变成面向身份的协议
 支持  http://xxx.dev.did 这种形式的域名，并能直接使用去中心的基础设施来解析域名（不依赖传统域名解析服务器）

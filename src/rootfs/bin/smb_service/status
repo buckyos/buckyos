@@ -1,0 +1,25 @@
+#!/bin/python3
+
+import os
+import subprocess
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+def run_command(command):
+    try:
+        # 使用 subprocess.run 执行命令
+        result = subprocess.run(command, shell=True, check=True, text=True, capture_output=True)
+
+        # 获取标准输出和返回码
+        output = result.stdout
+        return_code = result.returncode
+
+        return output, return_code
+    except subprocess.CalledProcessError as e:
+        # 如果命令执行失败，捕获异常并获取错误信息
+        return e.stderr, e.returncode
+
+output, return_code = run_command(f"{current_dir}/smb_service status")
+print(f"smb_service status {return_code}")
+exit(return_code)

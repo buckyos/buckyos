@@ -1,10 +1,36 @@
+#![allow(dead_code)]
 
 mod router;
 mod http_server;
+mod ndn_router;
 
 
 pub use router::*;
 pub use http_server::*;
+
+use anyhow::Result;
+
+// 辅助函数：解析Range header
+pub fn parse_range(range: &str, file_size: u64) -> Result<(u64, u64)> {
+  // 解析 "bytes=start-end" 格式
+  let range = range.trim_start_matches("bytes=");
+  let mut parts = range.split('-');
+  
+  let start = parts.next()
+      .and_then(|s| s.parse::<u64>().ok())
+      .unwrap_or(0);
+      
+  let end = parts.next()
+      .and_then(|s| s.parse::<u64>().ok())
+      .unwrap_or(file_size - 1);
+
+  // 验证范围有效性
+  if start >= file_size || end >= file_size || start > end {
+      return Err(anyhow::anyhow!("Invalid range"));
+  }
+
+  Ok((start, end))
+}
 
 mod test {
     #![allow(unused)]
