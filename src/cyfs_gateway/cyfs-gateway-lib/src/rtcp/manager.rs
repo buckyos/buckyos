@@ -47,7 +47,7 @@ impl RTcpStackManager {
             return Ok(ret);
         }
 
-        info!("create rtcp stack for {}", this_device_hostname.as_str());
+        info!("create current device rtcp stack for {}", this_device_hostname.as_str());
         let this_device_private_key = CURRENT_DEVICE_PRIVATE_KEY.get();
         if this_device_private_key.is_none() {
             error!("CURRENT_DEVICE_PRIVATE_KEY not set!");

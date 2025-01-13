@@ -569,7 +569,7 @@ impl TunnelSelector for SNServer {
                     let device_did = DID::from_str(device_did_str.as_str());
                     if device_did.is_some() {
                         let device_host_name = device_did.unwrap().to_host_name();
-                        let result_str = format!("rtcp://{}",device_host_name.as_str());
+                        let result_str = format!("rtcp://{}/:80",device_host_name.as_str());
                         //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
                         return Some(result_str);
                     }
@@ -596,7 +596,7 @@ impl TunnelSelector for SNServer {
                     let device_did = DID::from_str(device_did_str.as_str());
                     if device_did.is_some() {
                         let device_host_name = device_did.unwrap().to_host_name();
-                        let result_str = format!("rtcp://{}",device_host_name.as_str());
+                        let result_str = format!("rtcp://{}/:80",device_host_name.as_str());
                         //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
                         return Some(result_str);
                     }

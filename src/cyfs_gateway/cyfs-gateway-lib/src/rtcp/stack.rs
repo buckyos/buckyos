@@ -413,11 +413,11 @@ impl TunnelBuilder for RTcpStack {
             self.this_device_hostname.as_str(),
             target_id_str.as_str()
         );
-        //info!("will create tunnel to {} ,tunnel key is {},try reuse",target_id_str.as_str(),tunnel_key.as_str());
+        debug!("will create tunnel to {} ,tunnel key is {},try reuse",target_id_str.as_str(),tunnel_key.as_str());
         let mut all_tunnel = RTCP_TUNNEL_MAP.lock().await;
         let tunnel = all_tunnel.get(tunnel_key.as_str());
         if tunnel.is_some() {
-            info!("reuse tunnel {}", tunnel_key.as_str());
+            debug!("reuse tunnel {}", tunnel_key.as_str());
             return Ok(Box::new(tunnel.unwrap().clone()));
         }
 
@@ -435,17 +435,11 @@ impl TunnelBuilder for RTcpStack {
             )));
         }
         let device_ip = device_ip.unwrap();
-        info!(
-            "resolve target device {} ip is {}",
-            target_id_str.as_str(),
-            device_ip
-        );
-        
         let port = target.stack_port;
         let remote_addr = format!("{}:{}", device_ip, port);
 
         info!(
-            "Will create tunnel to {}, target addr is {}",
+            "Will open tunnel to {}, target addr is {}",
             target_id_str.as_str(),
             remote_addr.as_str()
         );
