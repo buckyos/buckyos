@@ -289,6 +289,8 @@ mod tests {
     use tokio::net::UdpSocket;
     use tokio::task;
     use tokio::test;
+    use crate::config_loader::GatewayConfig;
+
 
     async fn start_test_udp_echo_server() -> Result<()> {
         let socket = UdpSocket::bind("0.0.0.0:8889").await.unwrap();
@@ -303,24 +305,33 @@ mod tests {
     }
 
     #[test]
-    async fn test_service_main() {
-        task::spawn(async {
-            start_test_udp_echo_server().await.unwrap();
-        });
+    async fn test_dispatcher() {
+        std::env::set_var("BUCKY_LOG", "debug");
+        buckyos_kit::init_logging("test_dispatcher");
+        buckyos_kit::start_tcp_echo_server("127.0.0.1:8888").await;
+        buckyos_kit::start_udp_echo_server("127.0.0.1:8889").await;
+
         let config = r#"
         {
-            "dispatcher" : {
-                "tcp://0.0.0.0:6001":{
-                    "type":"forward",
-                    "target":"tcp://192.168.1.188:8888"
-                },
-                "udp://0.0.0.0:6002":{
-                    "type":"forward",
-                    "target":"udp://192.168.1.188:8889"
-                }
+            "tcp://0.0.0.0:6001":{
+                "type":"forward",
+                "target":"tcp:///:8888"
+            },
+            "udp://0.0.0.0:6002":{
+                "type":"forward",
+                "target":"udp:///:8889"
             }
         }
         "#;
-        service_main(config).await.unwrap();
+        let config:serde_json::Value = serde_json::from_str(config).unwrap();
+        let dispatcher_cfg = GatewayConfig::load_dispatcher_config(&config).await.unwrap();
+        
+        let dispatcher = dispatcher::ServiceDispatcher::new(dispatcher_cfg);
+        dispatcher.start().await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        buckyos_kit::start_tcp_echo_client("127.0.0.1:6001").await;
+        buckyos_kit::start_udp_echo_client("127.0.0.1:6002").await;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+       
     }
 }

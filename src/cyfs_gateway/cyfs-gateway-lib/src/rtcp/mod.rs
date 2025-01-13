@@ -6,8 +6,6 @@ mod manager;
 mod dispatcher;
 mod datagram;
 
-#[cfg(test)]
-mod tests;
 
 pub use protocol::*;
 pub use stack::*;

@@ -4,7 +4,7 @@ mod time;
 mod log_util;
 mod stream;
 mod json;
-
+mod test_server;
 
 pub use path::*;
 pub use process::*;
@@ -12,6 +12,7 @@ pub use time::*;
 pub use log_util::*;
 pub use stream::*;
 pub use json::*;
+pub use test_server::*;
 
 #[cfg(test)]
 mod test {

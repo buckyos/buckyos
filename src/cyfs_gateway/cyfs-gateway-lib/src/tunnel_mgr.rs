@@ -11,7 +11,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use url::Url;
-
+use buckyos_kit::AsyncStream;
+use crate::DatagramClientBox;
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProtocolCategory {
     Stream,
@@ -66,9 +67,9 @@ pub async fn get_tunnel(
     target_url: &Url,
     _enable_tunnel: Option<Vec<String>>,
 ) -> TunnelResult<Box<dyn TunnelBox>> {
-    //url like tcp://deviceid
+
     let builder = get_tunnel_builder_by_protocol(target_url.scheme()).await?;
-    let tunnel = builder.create_tunnel(target_url).await?;
+    let tunnel = builder.create_tunnel(target_url.host_str()).await?;
 
     info!("Get tunnel for {} success", target_url);
     return Ok(tunnel);
@@ -76,7 +77,7 @@ pub async fn get_tunnel(
 
 pub async fn create_listener_by_url(bind_url: &Url) -> TunnelResult<Box<dyn StreamListener>> {
     let builder = get_tunnel_builder_by_protocol(bind_url.scheme()).await?;
-    let listener = builder.create_listener(bind_url).await?;
+    let listener = builder.create_stream_listener(bind_url).await?;
     return Ok(listener);
 }
 
@@ -86,4 +87,27 @@ pub async fn create_datagram_server_by_url(
     let builder = get_tunnel_builder_by_protocol(bind_url.scheme()).await?;
     let server = builder.create_datagram_server(bind_url).await?;
     return Ok(server);
+}
+//$tunnel_schema://$tunnel_stack_id/$target_stream_id
+pub async fn open_stream_by_url(url: &Url) -> TunnelResult<Box<dyn AsyncStream>> {
+    let builder = get_tunnel_builder_by_protocol(url.scheme()).await?;
+    let tunnel = builder.create_tunnel(url.host_str()).await?;
+    let stream = tunnel.open_stream(url.path()).await
+        .map_err(|e| {
+            error!("Open stream by url failed: {}", e);
+            TunnelError::ConnectError(format!("Open stream by url failed: {}", e))
+        })?;
+    
+    return Ok(stream);
+}
+
+pub async fn create_datagram_client_by_url(url: &Url) -> TunnelResult<Box<dyn DatagramClientBox>> {
+    let builder = get_tunnel_builder_by_protocol(url.scheme()).await?;
+    let tunnel = builder.create_tunnel(url.host_str()).await?;
+    let client = tunnel.create_datagram_client(url.path()).await
+        .map_err(|e| {
+            error!("Create datagram client by url failed: {}", e);
+            TunnelError::ConnectError(format!("Create datagram client by url failed: {}", e))
+        })?;
+    return Ok(client);
 }

@@ -342,10 +342,9 @@ impl RTcpStack {
         }
 
         let (aes_key, random_pk) = aes_key.unwrap();
-        let target = RTcpTarget::new(
+        let target = RTcpTargetStackId::new(
             hello_package.body.from_id.as_str(),
-            hello_package.body.my_port,
-            80,
+            hello_package.body.my_port
         );
         if target.is_err() {
             error!("parser remote did error:{}", target.err().unwrap());
@@ -393,16 +392,20 @@ impl RTcpStack {
 
 #[async_trait]
 impl TunnelBuilder for RTcpStack {
-    async fn create_tunnel(&self, target: &Url) -> TunnelResult<Box<dyn TunnelBox>> {
+    async fn create_tunnel(&self, tunnel_stack_id: Option<&str>) -> TunnelResult<Box<dyn TunnelBox>> {
         // lookup existing tunnel and resue it
-        let target = parse_rtcp_url(target.as_str());
+        if tunnel_stack_id.is_none() {
+            return Err(TunnelError::ReasonError("rtcp target stack id is none".to_string()));
+        }
+        let tunnel_stack_id = tunnel_stack_id.unwrap();
+        let target = parse_rtcp_stack_id(tunnel_stack_id);
         if target.is_none() {
             return Err(TunnelError::ConnectError(format!(
                 "invalid target url:{:?}",
                 target
             )));
         }
-        let target: RTcpTarget = target.unwrap();
+        let target: RTcpTargetStackId = target.unwrap();
         let target_id_str = target.get_id_str();
 
         let tunnel_key = format!(
@@ -526,7 +529,7 @@ impl TunnelBuilder for RTcpStack {
         return result;
     }
 
-    async fn create_listener(&self, bind_url: &Url) -> TunnelResult<Box<dyn StreamListener>> {
+    async fn create_stream_listener(&self, bind_url: &Url) -> TunnelResult<Box<dyn StreamListener>> {
         let dispatcher = RTCP_DISPATCHER_MANAGER.new_stream_dispatcher(bind_url)?;
         Ok(Box::new(dispatcher) as Box<dyn StreamListener>)
     }
