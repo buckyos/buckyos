@@ -320,6 +320,10 @@ mod tests {
             "udp://0.0.0.0:6002":{
                 "type":"forward",
                 "target":"udp:///:8889"
+            },
+            "tcp://0.0.0.0:6003":{
+                "type":"forward",
+                "target":"rtcp://sn.buckyos.io/google.com:443"
             }
         }
         "#;
