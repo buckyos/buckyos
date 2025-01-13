@@ -13,8 +13,14 @@ pub struct UdpClient {
 }
 
 impl UdpClient {
-    pub async fn new(dest_addr: String, dest_port: u16) -> Result<UdpClient, std::io::Error> {
-        let client = UdpSocket::bind("0.0.0.0:0").await?;
+    pub async fn new(dest_addr: String, dest_port: u16,bind_addr:Option<String>) -> Result<UdpClient, std::io::Error> {
+        let client;
+        if bind_addr.is_some() {
+            client = UdpSocket::bind(bind_addr.unwrap().as_str()).await?;
+        } else {
+            client = UdpSocket::bind("[::]:0").await?;
+        }
+        
         Ok(UdpClient {
             client: Arc::new(client),
             dest_port,

@@ -4,7 +4,7 @@ use super::package::*;
 use super::protocol::*;
 use super::stack::{WaitStream, NOTIFY_ROPEN_STREAM, WAIT_ROPEN_STREAM_MAP};
 use crate::aes_stream::EncryptedStream;
-use crate::tunnel::{DatagramClientBox, Tunnel, TunnelEndpoint};
+use crate::tunnel::*;
 use anyhow::Result;
 use async_trait::async_trait;
 use buckyos_kit::buckyos_get_unix_timestamp;
@@ -26,7 +26,7 @@ use tokio::time::timeout;
 
 #[derive(Clone)]
 pub(crate) struct RTcpTunnel {
-    target: RTcpTarget,
+    target: RTcpTargetStackId,
     can_direct: bool,
     peer_addr: SocketAddr,
     this_device: String,
@@ -46,7 +46,7 @@ pub(crate) struct RTcpTunnel {
 impl RTcpTunnel {
     pub fn new(
         this_device: String,
-        target: &RTcpTarget,
+        target: &RTcpTargetStackId,
         can_direct: bool,
         stream: TcpStream,
         aes_key: [u8; 32],
@@ -59,7 +59,7 @@ impl RTcpTunnel {
         let (read_stream, write_stream) = tokio::io::split(encrypted_stream);
         //let (read_stream,write_stream) =  tokio::io::split(stream);
         let mut this_target = target.clone();
-        this_target.target_port = 0;
+        //this_target.target_port = 0;
         RTcpTunnel {
             target: this_target,
             can_direct, //Considering the limit of port mapping, the default configuration is configured as "NoDirect" mode
@@ -228,9 +228,10 @@ impl RTcpTunnel {
         // 1. First try to find if dispatcher exists for the target port
         let ret = super::dispatcher::RTCP_DISPATCHER_MANAGER.get_stream_dispatcher(dest_port);
         if let Some(dispatcher) = ret {
+            //TODO: bug?
             let end_point = TunnelEndpoint {
                 device_id: self.target.get_id_str(),
-                port: self.target.target_port,
+                port: self.target.stack_port,
             };
             dispatcher.on_new_stream(stream, end_point).await?;
             return Ok(());
@@ -302,9 +303,10 @@ impl RTcpTunnel {
         // 1. First try to find if dispatcher exists for the target port
         let ret = super::dispatcher::RTCP_DISPATCHER_MANAGER.get_datagram_dispatcher(dest_port);
         if let Some(dispatcher) = ret {
+            //TODO: bug?
             let end_point = TunnelEndpoint {
                 device_id: self.target.get_id_str(),
-                port: self.target.target_port,
+                port: self.target.stack_port,
             };
             dispatcher.on_new_stream(stream, end_point).await?;
             return Ok(());
@@ -596,7 +598,7 @@ impl Tunnel for RTcpTunnel {
         Ok(())
     }
 
-    async fn open_stream(
+    async fn open_stream_by_dest(
         &self,
         dest_port: u16,
         dest_host: Option<String>,
@@ -605,7 +607,14 @@ impl Tunnel for RTcpTunnel {
             .await
     }
 
-    async fn create_datagram_client(
+    async fn open_stream(&self,
+        stream_id:&str,
+    ) -> Result<Box<dyn AsyncStream>, std::io::Error> {
+        let (dest_host, dest_port) = get_dest_info_from_url_path(stream_id)?;
+        self.open_stream_by_dest(dest_port, dest_host).await
+    }
+
+    async fn create_datagram_client_by_dest(
         &self,
         dest_port: u16,
         dest_host: Option<String>,
@@ -616,5 +625,13 @@ impl Tunnel for RTcpTunnel {
             .await?;
         let client = RTcpTunnelDatagramClient::new(Box::new(stream));
         Ok(Box::new(client) as Box<dyn DatagramClientBox>)
+    }
+
+    async fn create_datagram_client(
+        &self,
+        session_id:&str,
+    ) -> Result<Box<dyn DatagramClientBox>, std::io::Error> {
+        let (dest_host, dest_port) = get_dest_info_from_url_path(session_id)?;
+        self.create_datagram_client_by_dest(dest_port, dest_host).await
     }
 }

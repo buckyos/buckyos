@@ -83,13 +83,7 @@ impl ServiceDispatcher {
                         }
                         let (mut income_stream, _) = accept_result.unwrap(); 
                         info!("stream forward service accept connection from {}", incoming);
-                        let target_tunnel = get_tunnel(&target,None).await;
-                        if target_tunnel.is_err() {
-                            warn!("stream forward service process accept failed, get target tunnel failed: {}", target_tunnel.err().unwrap());
-                            continue;
-                        }
-                        let target_tunnel = target_tunnel.unwrap();
-                        let mut target_stream = target_tunnel.open_stream(target_port, None).await;
+                        let mut target_stream = open_stream_by_url(&target).await;
                         if target_stream.is_err() {
                             warn!("stream forward service forward connection failed, open target stream failed: {}", target_stream.err().unwrap());
                             continue;
@@ -128,17 +122,12 @@ impl ServiceDispatcher {
                             clientsession.send_datagram(&buffer[0..read_len]);
                             drop(all_sessions);
                         } else {
-                            let target_tunnel = get_tunnel(&target,None).await;
-                            if target_tunnel.is_err() {
-                                warn!("datagram-forward create tunnel failed:{}", target_tunnel.err().unwrap());
-                                continue;
-                            }
-                            let target_tunnel = target_tunnel.unwrap();
-                            let datagram_client = target_tunnel.create_datagram_client(target_port, None).await;
+                            let datagram_client = create_datagram_client_by_url(&target).await;
                             if datagram_client.is_err() {
                                 warn!("datagram-forward create datagram client failed: {}", datagram_client.err().unwrap());
                                 continue;
                             }
+            
                             info!("datagram-forward create a new client from {}", incoming);
                             let datagram_client = datagram_client.unwrap();
                             let _ = datagram_client.send_datagram(&buffer[0..read_len]).await;
@@ -210,3 +199,13 @@ impl ServiceDispatcher {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_dispatcher() {
+        let dispatcher = ServiceDispatcher::new(HashMap::new());
+        dispatcher.start().await;
+    }
+}

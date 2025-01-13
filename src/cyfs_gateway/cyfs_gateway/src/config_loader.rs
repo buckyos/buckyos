@@ -22,6 +22,88 @@ pub struct GatewayConfig {
 }
 
 impl GatewayConfig {
+    pub async fn load_dispatcher_config(dispatcher_config_value: &serde_json::Value) -> Result<HashMap<Url, DispatcherConfig>,String> {
+        let mut dispatcher_cfg = HashMap::new();
+        let dispatcher_config_value = dispatcher_config_value.as_object().unwrap();
+
+        for (k, v) in dispatcher_config_value.iter() {
+            let incoming_url = Url::parse(&k);
+            if incoming_url.is_err() {
+                let msg = format!("Invalid incoming url: {}", k);
+                error!("{}", msg);
+                return Err(msg);
+            }
+            let incoming_url = incoming_url.unwrap();
+            let incoming_url2 = incoming_url.clone();
+
+            let target_type: Result<String, _> = from_value(v["type"].clone());
+            if target_type.is_err() {
+                let msg = format!("Target type not found: {}", k);
+                error!("{}", msg);
+                return Err(msg);
+            }
+
+            let target_type = target_type.unwrap();
+            let enable_tunnel: Result<Vec<String>, _> = from_value(v["enable_tunnel"].clone());
+            let enable_tunnel = enable_tunnel.ok();
+
+            let new_config: DispatcherConfig;
+            match target_type.as_str() {
+                "server" => {
+                    let server_id = v.get("id");
+                    if server_id.is_none() {
+                        let msg = format!("Server id not found: {}", k);
+                        error!("{}", msg);
+                        return Err(msg);
+                    }
+
+                    let server_id = server_id.unwrap().as_str();
+                    if server_id.is_none() {
+                        let msg = format!("Server id not string: {}", k);
+                        error!("{}", msg);
+                        return Err(msg);
+                    }
+
+                    let server_id = server_id.unwrap();
+                    new_config = DispatcherConfig::new_server(
+                        incoming_url,
+                        server_id.to_string(),
+                        enable_tunnel,
+                    );
+                }
+                "forward" => {
+                    let target_url = v.get("target");
+                    if target_url.is_none() {
+                        let msg = format!("Target url not found: {}", k);
+                        error!("{}", msg);
+                        return Err(msg);
+                    }
+                    let target_url = target_url.unwrap().as_str();
+                    if target_url.is_none() {
+                        let msg = format!("Target url not string: {}", k);
+                        error!("{}", msg);
+                        return Err(msg);
+                    }
+
+                    let target_url = target_url.unwrap();
+                    let target_url = Url::parse(target_url).map_err(|e| {
+                        let msg = format!("Invalid target url: {}, {}", target_url, e);
+                        error!("{}", msg);
+                        msg
+                    })?;
+
+                    new_config =
+                        DispatcherConfig::new_forward(incoming_url, target_url, enable_tunnel);
+                }
+                _ => {
+                    return Err(format!("Invalid target type: {}", target_type));
+                }
+            }
+            dispatcher_cfg.insert(incoming_url2, new_config);
+        }
+        Ok(dispatcher_cfg)
+    }
+
     pub async fn load_from_json_value(json_value: serde_json::Value) -> Result<Self, String> {
         let mut device_key_path = PathBuf::new();
         if let Some(Some(path)) = json_value.get("device_key_path").map(|p| p.as_str()) {
@@ -153,87 +235,19 @@ impl GatewayConfig {
         }
 
         //load dispatcher
-        let mut dispatcher_cfg = HashMap::new();
-        if let Some(Some(dispatcher)) = json_value.get("dispatcher").map(|v| v.as_object()) {
-            for (k, v) in dispatcher.iter() {
-                let incoming_url = Url::parse(&k);
-                if incoming_url.is_err() {
-                    let msg = format!("Invalid incoming url: {}", k);
-                    error!("{}", msg);
-                    return Err(msg);
-                }
-                let incoming_url = incoming_url.unwrap();
-                let incoming_url2 = incoming_url.clone();
-
-                let target_type: Result<String, _> = from_value(v["type"].clone());
-                if target_type.is_err() {
-                    let msg = format!("Target type not found: {}", k);
-                    error!("{}", msg);
-                    return Err(msg);
-                }
-
-                let target_type = target_type.unwrap();
-                let enable_tunnel: Result<Vec<String>, _> = from_value(v["enable_tunnel"].clone());
-                let enable_tunnel = enable_tunnel.ok();
-
-                let new_config: DispatcherConfig;
-                match target_type.as_str() {
-                    "server" => {
-                        let server_id = v.get("id");
-                        if server_id.is_none() {
-                            let msg = format!("Server id not found: {}", k);
-                            error!("{}", msg);
-                            return Err(msg);
-                        }
-
-                        let server_id = server_id.unwrap().as_str();
-                        if server_id.is_none() {
-                            let msg = format!("Server id not string: {}", k);
-                            error!("{}", msg);
-                            return Err(msg);
-                        }
-
-                        let server_id = server_id.unwrap();
-                        new_config = DispatcherConfig::new_server(
-                            incoming_url,
-                            server_id.to_string(),
-                            enable_tunnel,
-                        );
-                    }
-                    "forward" => {
-                        let target_url = v.get("target");
-                        if target_url.is_none() {
-                            let msg = format!("Target url not found: {}", k);
-                            error!("{}", msg);
-                            return Err(msg);
-                        }
-                        let target_url = target_url.unwrap().as_str();
-                        if target_url.is_none() {
-                            let msg = format!("Target url not string: {}", k);
-                            error!("{}", msg);
-                            return Err(msg);
-                        }
-
-                        let target_url = target_url.unwrap();
-                        let target_url = Url::parse(target_url).map_err(|e| {
-                            let msg = format!("Invalid target url: {}, {}", target_url, e);
-                            error!("{}", msg);
-                            msg
-                        })?;
-
-                        new_config =
-                            DispatcherConfig::new_forward(incoming_url, target_url, enable_tunnel);
-                    }
-                    _ => {
-                        return Err(format!("Invalid target type: {}", target_type));
-                    }
-                }
-                dispatcher_cfg.insert(incoming_url2, new_config);
-            }
+        let dispatcher_config_value = json_value.get("dispatcher");
+        if dispatcher_config_value.is_some() {
+            let dispatcher_config_value = dispatcher_config_value.unwrap();
+            let dispatcher_cfg = GatewayConfig::load_dispatcher_config(dispatcher_config_value).await?;
+            return Ok(Self {
+                dispatcher: dispatcher_cfg,
+                servers: servers_cfg,
+                device_key_path,
+            })
         }
-
+        
         Ok(Self {
-            dispatcher: dispatcher_cfg,
+            dispatcher: HashMap::new(),
             servers: servers_cfg,
             device_key_path,
         })
