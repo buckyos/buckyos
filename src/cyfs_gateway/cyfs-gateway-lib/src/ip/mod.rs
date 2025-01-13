@@ -3,5 +3,5 @@ mod tunnel;
 mod udp;
 
 // pub use tcp::*;
-// pub use udp::*;
+pub use udp::*;
 pub use tunnel::*;

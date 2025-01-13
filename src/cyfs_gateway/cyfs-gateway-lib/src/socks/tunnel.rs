@@ -4,6 +4,8 @@ use buckyos_kit::AsyncStream;
 use std::sync::Arc;
 use tokio_socks::tcp::Socks5Stream;
 use url::Url;
+use super::udp::SocksUdpClient;
+use crate::ip::UdpClient;
 
 enum SocksAuth {
     None,
@@ -94,8 +96,6 @@ impl Tunnel for SocksTunnel {
         let dest_host = dest_host.unwrap_or("0.0.0.0".to_string());
         let dest_port = if dest_port == 0 { 80 } else { dest_port };
 
-        let dest_addr = format!("{}:{}", dest_host, dest_port);
-
         match self.socks_server {
             Some(ref socks_server) => {
                 // Establish a SOCKS5 tunnel with optional username and password
@@ -154,10 +154,54 @@ impl Tunnel for SocksTunnel {
 
     async fn create_datagram_client_by_dest(
         &self,
-        _dest_port: u16,
-        _dest_host: Option<String>,
+        dest_port: u16,
+        dest_host: Option<String>,
     ) -> Result<Box<dyn DatagramClientBox>, std::io::Error> {
-        unimplemented!("SocksTunnel create_datagram_client_by_dest not implemented");
+        // FIXME what should we do if dest_host is None or the port is 0?
+        let dest_host = dest_host.unwrap_or("0.0.0.0".to_string());
+        let dest_port = if dest_port == 0 { 80 } else { dest_port };
+
+        match self.socks_server {
+            Some(ref socks_server) => {
+                let client =
+                    libsocks_client::SocksClientBuilder::new(&socks_server.host, socks_server.port)
+                        .socks5();
+                let client = match socks_server.auth {
+                    SocksAuth::UsernamePassword(ref username, ref password) => {
+                        client.username(username).password(password)
+                    }
+                    SocksAuth::None => client,
+                };
+
+                let mut client = client.build_udp_client();
+                client.udp_associate("0.0.0.0", 0).await.map_err(|e| {
+                    let msg = format!(
+                        "Failed to establish SOCKS5 UDP tunnel: {:?}, {:?}, {}",
+                        socks_server.server(), (&dest_host, dest_port),
+                        e
+                    );
+                    error!("{}", msg);
+                    std::io::Error::new(std::io::ErrorKind::Other, msg)
+                })?;
+
+                let socket: libsocks_client::SocksUdpSocket = client.get_udp_socket("0.0.0.0:0").await.map_err(|e| {
+                    let msg = format!(
+                        "Failed to get UDP socket for SOCKS5 UDP tunnel: {:?}, {:?}, {}",
+                        socks_server.server(), (&dest_host, dest_port),
+                        e
+                    );
+                    error!("{}", msg);
+                    std::io::Error::new(std::io::ErrorKind::Other, msg)
+                })?;
+
+                let client = SocksUdpClient::new(socket, dest_host, dest_port);
+                Ok(Box::new(client))
+            }
+            None => {
+                let client = UdpClient::new(dest_host, dest_port, None).await?;
+                Ok(Box::new(client))
+            }
+        }
     }
 
     async fn create_datagram_client(
