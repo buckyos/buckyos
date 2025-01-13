@@ -8,6 +8,7 @@ mod tunnel;
 mod tunnel_connector;
 mod tunnel_mgr;
 mod acme_client;
+mod cert_mgr;
 
 pub use aes_stream::*;
 pub use config::*;
@@ -15,6 +16,8 @@ pub use rtcp::*;
 pub use tunnel::*;
 pub use tunnel_connector::*;
 pub use tunnel_mgr::*;
+pub use cert_mgr::*;
+pub use acme_client::*;
 
 use once_cell::sync::OnceCell;
 use thiserror::Error;

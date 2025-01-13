@@ -8,8 +8,8 @@ use openssl::{
     pkey::{PKey, Private},
     rsa::Rsa,
 };
-use std::path::PathBuf;
-use std::fs;
+use std::path::Path;
+use tokio::fs;
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use base64::Engine;
@@ -56,28 +56,28 @@ impl NonceManager {
 
 /// ACME 账户信息
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Account {
+pub struct AcmeAccount {
     email: String,
     #[serde(serialize_with = "serialize_key", deserialize_with = "deserialize_key")]
     key: PKey<Private>,
 }
 
-impl Account {
-    pub fn new(email: String) -> Result<Self> {
-        let rsa = Rsa::generate(2048)?;
-        let key = PKey::from_rsa(rsa)?;
+impl AcmeAccount {
+    pub fn new(email: String) -> Self {
+        let rsa = Rsa::generate(2048).unwrap();
+        let key = PKey::from_rsa(rsa).unwrap();
         
-        Ok(Self { email, key })
+        Self { email, key }
     }
 
-    pub fn from_file(path: &PathBuf) -> Result<Self> {
-        let content = fs::read_to_string(path)?;
+    pub async fn from_file(path: &Path) -> Result<Self> {
+        let content = fs::read_to_string(path).await?;
         serde_json::from_str(&content).map_err(|e| e.into())
     }
 
-    fn save_to_file(&self, path: &PathBuf) -> Result<()> {
+    pub async fn save_to_file(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self)?;
-        fs::write(path, json)?;
+        fs::write(path, json).await?;
         Ok(())
     }
 }
@@ -130,12 +130,12 @@ struct AcmeClientInner {
     directory: Directory,
     http_client: reqwest::Client,
     nonce_manager: NonceManager,
-    account: Account,
+    account: AcmeAccount,
 }
 
 /// 挑战响应接口
 #[async_trait::async_trait]
-pub trait ChallengeResponder {
+pub trait AcmeChallengeResponder: Send + Sync {
     /// 响应 HTTP 挑战
     async fn respond_http(&self, token: &str, key_auth: &str) -> Result<()>;
     
@@ -151,7 +151,7 @@ pub trait ChallengeResponder {
 
 /// 证书订单会话
 #[derive(Debug)]
-pub struct OrderSession<R: ChallengeResponder> {
+pub struct AcmeOrderSession<R: AcmeChallengeResponder> {
     domains: Vec<String>,
     valid_days: u32,
     key_type: KeyType,
@@ -161,7 +161,7 @@ pub struct OrderSession<R: ChallengeResponder> {
     order_info: Option<OrderInfo>,
 }
 
-impl<R: ChallengeResponder> OrderSession<R> {
+impl<R: AcmeChallengeResponder> AcmeOrderSession<R> {
     pub fn new(
         domains: Vec<String>,
         client: AcmeClient,
@@ -266,7 +266,7 @@ struct OrderResponse {
     finalize: String,
 }
 
-impl<R: ChallengeResponder> OrderSession<R> {
+impl<R: AcmeChallengeResponder> AcmeOrderSession<R> {
     // 更新状态的方法
     fn update_status(&mut self, new_status: OrderStatus) {
         self.status = new_status;
@@ -285,7 +285,7 @@ struct Challenge {
 
 impl AcmeClient {
     // 已有方法改为使用 inner
-    pub async fn new(account: Account) -> Result<Self> {
+    pub async fn new(account: AcmeAccount) -> Result<Self> {
         let http_client = reqwest::Client::new();
         
         // 从 ACME 服务器获取目录
