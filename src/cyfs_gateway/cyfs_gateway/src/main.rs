@@ -323,7 +323,7 @@ mod tests {
             },
             "tcp://0.0.0.0:6003":{
                 "type":"forward",
-                "target":"rtcp://sn.buckyos.io/google.com:443"
+                "target":"socks://192.168.1.188:7890/qq.com:80"
             }
         }
         "#;
@@ -335,7 +335,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         buckyos_kit::start_tcp_echo_client("127.0.0.1:6001").await;
         buckyos_kit::start_udp_echo_client("127.0.0.1:6002").await;
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(100)).await;
        
     }
 }

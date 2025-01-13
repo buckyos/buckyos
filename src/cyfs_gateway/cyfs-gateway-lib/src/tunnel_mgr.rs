@@ -30,6 +30,7 @@ pub fn get_protocol_category(str_protocol: &str) -> TunnelResult<ProtocolCategor
         "rtcp" => Ok(ProtocolCategory::Stream),
         "udp" => Ok(ProtocolCategory::Datagram),
         "rudp" => Ok(ProtocolCategory::Datagram),
+        "socks" => Ok(ProtocolCategory::Stream),
         _ => {
             let msg = format!("Unknow protocol: {}", str_protocol);
             error!("{}", msg);
@@ -97,7 +98,14 @@ pub async fn create_datagram_server_by_url(
 //$tunnel_schema://$tunnel_stack_id/$target_stream_id
 pub async fn open_stream_by_url(url: &Url) -> TunnelResult<Box<dyn AsyncStream>> {
     let builder = get_tunnel_builder_by_protocol(url.scheme()).await?;
-    let tunnel = builder.create_tunnel(url.host_str()).await?;
+    let auth_str = url.authority();
+    let tunnel;
+    if auth_str.is_empty() {
+        tunnel = builder.create_tunnel(None).await?;
+    } else {
+        tunnel = builder.create_tunnel(Some(auth_str)).await?;
+    }
+
     let stream = tunnel.open_stream(url.path()).await
         .map_err(|e| {
             error!("Open stream by url failed: {}", e);
