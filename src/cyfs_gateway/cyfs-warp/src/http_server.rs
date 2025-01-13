@@ -33,6 +33,7 @@ struct ChallengeEntry {
     router: Router,
 }
 
+
 impl AcmeChallengeEntry for ChallengeEntry {
     type Responder = ChallengeResponder;
     fn create_challenge_responder(&self) -> Self::Responder {
@@ -70,6 +71,17 @@ impl AcmeChallengeResponder for ChallengeResponder {
     fn revert_http(&self, domain: &str, token: &str) {
         self.router.remove_route_config(domain, token);
     }
+
+}
+
+struct ChallengeResponder;
+
+#[async_trait::async_trait]
+impl AcmeChallengeResponder for ChallengeResponder {
+    async fn respond_http(&self, token: &str, key_auth: &str) -> Result<()> {
+        Ok(())
+    }
+>>>>>>> 29d6bae (Add cert manager with acme client;)
 
     async fn respond_dns(&self, domain: &str, digest: &str) -> Result<()> {
         Ok(())
@@ -180,7 +192,7 @@ async fn listen_https(https_bind_addr: String, https_router: Router, cert_mgr: A
     Ok(())
 }
 
-pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> {    
+pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> {
     let https_router = Router::new(HashMap::from_iter(
         config.hosts.iter().map(|(host, host_config)| {
             (host.clone(), HashMap::from_iter(host_config.routes.iter().map(|(route, route_config)| (route.clone(), Arc::new(route_config.clone())))))
@@ -211,7 +223,6 @@ pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> {
             }
         })
     ));
-
 
     let root_path = get_buckyos_service_data_dir("cyfs-warp");
     let mut cert_mgr = CertManager::new(
