@@ -13,6 +13,8 @@ use tokio::sync::Mutex;
 use url::Url;
 use buckyos_kit::AsyncStream;
 use crate::DatagramClientBox;
+use crate::socks::SocksTunnelBuilder;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProtocolCategory {
     Stream,
@@ -50,8 +52,12 @@ pub async fn get_tunnel_builder_by_protocol(
             let stack = RTCP_STACK_MANAGER.get_current_device_stack().await?;
             Ok(Box::new(stack))
         }
+        "socks" => {
+            let builder = SocksTunnelBuilder::new();
+            Ok(Box::new(builder))
+        }
         _ => {
-            let msg = format!("Unknow protocol: {}", protocol);
+            let msg = format!("Unknown protocol: {}", protocol);
             error!("{}", msg);
             Err(TunnelError::UnknownProtocol(msg))
         }
