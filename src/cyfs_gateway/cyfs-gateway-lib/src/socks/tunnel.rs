@@ -23,8 +23,10 @@ impl SocksServerInfo {
         (self.host.as_str(), self.port)
     }
 
-    pub fn from_target(target: &str) -> TunnelResult<Self> {
-        let url = Url::parse(target).map_err(|e| {
+    pub fn from_target(target_id: &str) -> TunnelResult<Self> {
+        let target = format!("socks://{}", target_id);
+        debug!("socks target: {}", target);
+        let url = Url::parse(target.as_str()).map_err(|e| {
             let msg = format!("Invalid socks target url: {}", e);
             error!("{}", msg);
             TunnelError::UrlParseError(target.to_owned(), msg)
@@ -92,6 +94,7 @@ impl Tunnel for SocksTunnel {
         dest_port: u16,
         dest_host: Option<String>,
     ) -> Result<Box<dyn AsyncStream>, std::io::Error> {
+        debug!("socks_tunnel open_stream_by_dest: {:?}:{}", dest_host, dest_port);
         // FIXME what should we do if dest_host is None or the port is 0?
         let dest_host = dest_host.unwrap_or("0.0.0.0".to_string());
         let dest_port = if dest_port == 0 { 80 } else { dest_port };
@@ -228,6 +231,7 @@ impl TunnelBuilder for SocksTunnelBuilder {
         &self,
         tunnel_stack_id: Option<&str>,
     ) -> TunnelResult<Box<dyn TunnelBox>> {
+        debug!("socks_tunnel_builder create_tunnel: {}", tunnel_stack_id.unwrap_or(""));
         let tunnel = SocksTunnel::new(tunnel_stack_id).await?;
         Ok(Box::new(tunnel))
     }
