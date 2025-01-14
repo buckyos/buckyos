@@ -51,7 +51,6 @@ result:u32
 */
 
 use name_lib::DID;
-use url::Url;
 use anyhow::Result;
 
 pub const DEFAULT_RTCP_STACK_PORT: u16 = 2980;
@@ -118,7 +117,7 @@ impl RTcpTargetStackId {
 }
 
 // xxx.dev.did:2980 or xxx:2980 
-pub fn parse_rtcp_stack_id(stack_id: &str) -> Option<RTcpTargetStackId> {
+pub(crate) fn parse_rtcp_stack_id(stack_id: &str) -> Option<RTcpTargetStackId> {
     let mut stack_port = DEFAULT_RTCP_STACK_PORT;
     let mut target_host_name = stack_id.to_string();
     let parts = stack_id.split(":").collect::<Vec<&str>>();

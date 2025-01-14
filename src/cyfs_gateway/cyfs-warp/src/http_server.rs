@@ -72,17 +72,6 @@ impl AcmeChallengeResponder for ChallengeResponder {
         self.router.remove_route_config(domain, token);
     }
 
-}
-
-struct ChallengeResponder;
-
-#[async_trait::async_trait]
-impl AcmeChallengeResponder for ChallengeResponder {
-    async fn respond_http(&self, token: &str, key_auth: &str) -> Result<()> {
-        Ok(())
-    }
->>>>>>> 29d6bae (Add cert manager with acme client;)
-
     async fn respond_dns(&self, domain: &str, digest: &str) -> Result<()> {
         Ok(())
     }

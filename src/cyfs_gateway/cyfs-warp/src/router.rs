@@ -273,10 +273,10 @@ impl Router {
         return Err(anyhow::anyhow!("No tunnel selected"));
     }
 
-    async fn handle_upstream(&self, req: Request<Body>, upstream: &str, upstream: &UpstreamRouteConfig) -> Result<Response<Body>> {
+    async fn handle_upstream(&self, req: Request<Body>, upstream: &UpstreamRouteConfig) -> Result<Response<Body>> {
         let org_url = req.uri().to_string();
-        let url = format!("{}{}", upstream, req.uri().path_and_query().map_or("", |x| x.as_str()));
-        let upstream_url = Url::parse(upstream);
+        let url = format!("{}{}", upstream.target, req.uri().path_and_query().map_or("", |x| x.as_str()));
+        let upstream_url = Url::parse(upstream.target.as_str());
         if upstream_url.is_err() {
             return Err(anyhow::anyhow!("Failed to parse upstream url: {}", upstream_url.err().unwrap()));
         }

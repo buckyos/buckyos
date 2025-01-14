@@ -2,7 +2,7 @@ use log::*;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
-use crate::init_logging;
+// use crate::init_logging;
 
 pub async fn start_tcp_echo_server(bind_addr: &str) {
     // run tcp echo server on 127.0.0.1:1008 for test
