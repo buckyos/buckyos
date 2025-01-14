@@ -107,9 +107,12 @@ async fn handle_request(
 
 
 async fn listen_http(http_bind_addr: String, http_router: Router) -> Result<()> {
-    let listener_http = TcpListener::bind(http_bind_addr.clone()).await;
-    let listener_http = listener_http.unwrap();
-    let listener_stream_http = TcpListenerStream::new(listener_http);
+    let listener = TcpListener::bind(http_bind_addr.clone()).await
+        .map_err(|e| {
+            error!("bind http server {} failed,  {}",http_bind_addr, e);
+            anyhow::anyhow!("bind http server {} failed, {}",http_bind_addr, e)
+        })?;
+    let listener_stream_http = TcpListenerStream::new(listener);
     let http_acceptor = from_stream(listener_stream_http);
 
     let make_svc = make_service_fn(move |conn: &tokio::net::TcpStream| {
@@ -136,8 +139,8 @@ async fn listen_https(https_bind_addr: String, https_router: Router, cert_mgr: A
     let tls_acceptor = TlsAcceptor::from(tls_cfg.clone());
     let listener = TcpListener::bind(https_bind_addr.clone()).await;
     if listener.is_err() {
-        error!("bind https server failed, please check the port is used");
-        return Err(anyhow::anyhow!("bind https server failed, please check the port is used"));
+        error!("bind https server {} failed, please check the port is used",https_bind_addr);
+        return Err(anyhow::anyhow!("bind https server {} failed, please check the port is used",https_bind_addr));
     }
     let listener = listener.unwrap();
     let listener_stream = TcpListenerStream::new(listener); 
@@ -228,14 +231,20 @@ pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> {
     
 
     
-    let bind = config.bind.unwrap_or("0.0.0.0;::0".to_string());
+    let bind = config.bind.unwrap_or("::;0.0.0.0".to_string());
     let bind_addrs: Vec<&str> = bind.split(';').collect();
     for bind_addr in bind_addrs {
         let http_router = http_router.clone();
         let https_router = https_router.clone();
         let cert_mgr = cert_mgr.clone();
-        let bind_addr_http = format!("{}:{}",bind_addr,config.http_port);
-        let bind_addr_https = format!("{}:{}",bind_addr,config.tls_port);
+
+        let formatted_bind_addr = if bind_addr.contains(":") && !bind_addr.starts_with("[") {
+            format!("[{}]", bind_addr)
+        } else {
+            bind_addr.to_string()
+        };
+        let bind_addr_http = format!("{}:{}",formatted_bind_addr, config.http_port);
+        let bind_addr_https = format!("{}:{}",formatted_bind_addr, config.tls_port);
         task::spawn(async move {
             listen_http(bind_addr_http, http_router).await;
         });
@@ -243,6 +252,9 @@ pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> {
             listen_https(bind_addr_https, https_router, cert_mgr.clone()).await;
         });
     }
+
+    tokio::signal::ctrl_c().await?;
+    info!("Received shutdown signal");
     
     Ok(())
 }
