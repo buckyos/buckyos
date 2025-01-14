@@ -66,11 +66,11 @@ pub async fn get_tunnel_builder_by_protocol(
     }
 }
 
-pub fn get_stream_probe(probe_id:&str) -> TunnelResult<Box<dyn StreamProbe + Send>> {
+pub fn get_stream_probe(_probe_id:&str) -> TunnelResult<Box<dyn StreamProbe + Send>> {
     unimplemented!()
 }
 
-pub fn get_stream_selector(selector_id:&str) -> TunnelResult<Box<dyn StreamSelector + Send>> {
+pub fn get_stream_selector(_selector_id:&str) -> TunnelResult<Box<dyn StreamSelector + Send>> {
     unimplemented!()
 }
 

@@ -2,7 +2,8 @@
 
 use core::error;
 
-use crate::dns_provider::DNSProvider;
+use crate::provider::RecordType;
+use crate::dns_provider::{DnsProvider};
 use crate::name_query::NameQuery;
 use crate::zone_provider::ZoneProvider;
 use crate::NameInfo;
@@ -43,7 +44,7 @@ pub struct NameClient {
 impl NameClient {
     pub fn new(config: NameClientConfig) -> Self {
         let mut name_query = NameQuery::new();
-        name_query.add_provider(Box::new(DNSProvider::new(None)));
+        name_query.add_provider(Box::new(DnsProvider::new(None)));
         //name_query.add_provider(Box::new(ZoneProvider::new()));
         let cache_size = config.cache_size;
 
@@ -78,7 +79,7 @@ impl NameClient {
         Ok(())
     }
 
-    pub async fn resolve(&self, name: &str, record_type: Option<&str>) -> NSResult<NameInfo> {
+    pub async fn resolve(&self, name: &str, record_type: Option<RecordType>) -> NSResult<NameInfo> {
         if self.config.enable_cache {
             let cache_info = self.cache.get(&name.to_string());
             if cache_info.is_some() {

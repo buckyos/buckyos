@@ -19,6 +19,7 @@ pub fn parse_range(range: &str, file_size: u64) -> Result<(u64, u64)> {
   let start = parts.next()
       .and_then(|s| s.parse::<u64>().ok())
       .unwrap_or(0);
+
       
   let end = parts.next()
       .and_then(|s| s.parse::<u64>().ok())
@@ -68,6 +69,36 @@ mod test {
         "#;
         let warp_config:WarpServerConfig = serde_json::from_str(config_str).unwrap();
         //init_logging();
+        let start_result = start_cyfs_warp_server(warp_config).await;
+        println!("result: {:?}", start_result);
+        assert!(start_result.is_ok());
+    }
+
+
+    #[tokio::test]
+    async fn test_cyfs_warp_https() {
+        use env_logger;
+        env_logger::builder().filter_level(log::LevelFilter::Info).init();
+        let config_str = r#"
+        {
+            "hosts": {
+                "dev.photosssa.org": {
+                    "routes": {
+                        "/": {
+                            "response": {
+                                "status": 200,
+                                "headers": {
+                                    "Content-Type": "text/html"
+                                },
+                                "body": "Hello, BuckyOS!"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "#;
+        let warp_config:WarpServerConfig = serde_json::from_str(config_str).unwrap();
         let start_result = start_cyfs_warp_server(warp_config).await;
         println!("result: {:?}", start_result);
         assert!(start_result.is_ok());

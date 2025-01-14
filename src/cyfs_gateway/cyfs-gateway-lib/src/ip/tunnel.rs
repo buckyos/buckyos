@@ -2,7 +2,7 @@ use super::tcp::TcpStreamListener;
 use super::udp::UdpClient;
 use super::udp::UdpDatagramServer;
 use crate::tunnel::*;
-use crate::{TunnelError, TunnelResult};
+use crate::TunnelResult;
 use async_trait::async_trait;
 use buckyos_kit::AsyncStream;
 use url::Url;

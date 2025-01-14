@@ -16,7 +16,7 @@ use hickory_server::authority::{Catalog, MessageRequest, MessageResponse, Messag
 use hickory_proto::serialize::binary::{BinEncodable,BinDecodable};
 
 use anyhow::Result;
-use name_client::{DNSProvider, NSProvider, NameInfo};
+use name_client::{DnsProvider, NsProvider, NameInfo, RecordType};
 use cyfs_gateway_lib::*;
 use tokio::time::timeout;
 use url::Url;
@@ -33,19 +33,21 @@ pub enum Error {
     InvalidMessageType(MessageType),
     #[error("Invalid Zone {0:}")]
     InvalidZone(LowerName),
+    #[error("Invalid RecordType {0:}")]
+    InvalidRecordType(String),
     #[error("IO error: {0:}")]
     Io(#[from] std::io::Error),
 }
 
 pub struct DnsServer {
     config : DNSServerConfig,
-    resolver_chain: Vec<Box<dyn NSProvider>>,
+    resolver_chain: Vec<Box<dyn NsProvider>>,
 }
 
-pub async fn create_ns_provider(provider_config: &DNSProviderConfig) -> Result<Box<dyn NSProvider>> {
+pub async fn create_ns_provider(provider_config: &DNSProviderConfig) -> Result<Box<dyn NsProvider>> {
     match provider_config.provider_type {
         DNSProviderType::DNS => {
-            let dns_provider = DNSProvider::new(None);
+            let dns_provider = DnsProvider::new(None);
             Ok(Box::new(dns_provider))
         },
         DNSProviderType::SN => {
@@ -162,7 +164,7 @@ fn nameinfo_to_rdata(record_type:&str, name_info: &NameInfo) -> Result<Vec<RData
 
 impl DnsServer {
     pub async fn new(config: DNSServerConfig) -> Result<Self> {
-        let mut resolver_chain : Vec<Box<dyn NSProvider>> = Vec::new();
+        let mut resolver_chain : Vec<Box<dyn NsProvider>> = Vec::new();
 
         for provider_config in config.resolver_chain.iter() {
             let provider = create_ns_provider(provider_config).await;
@@ -232,18 +234,25 @@ impl DnsServer {
         // Be careful to handle the request that may be delivered to the DNS-Server again to avoid the dead cycle
         
         let name = request.query().name().to_string();
-        let record_type = request.query().query_type().to_string();
-        info!("|==>DNS query name:{},record_type:{}", name,record_type);
-        //foreach provider in resolver_chain 
+        let record_type_str = request.query().query_type().to_string();
+        let record_type = RecordType::from_str(&record_type_str)
+            .ok_or_else(|| Error::InvalidRecordType(record_type_str))?;
+
+        info!("|==>DNS query name:{}, record_type:{:?}", name, record_type);
+
         for provider in self.resolver_chain.iter() {
-            let name_info = provider.query(name.as_str(),Some(record_type.as_str()),Some(from_ip)).await;
+            let name_info = provider.query(
+                name.as_str(),
+                Some(record_type.clone()),
+                Some(from_ip)
+            ).await;
             if name_info.is_err() {
                 trace!("Provider {} can't resolve name:{}", provider.get_id(), name);
                 continue;
             }
 
             let name_info = name_info.unwrap();
-            let rdata_vec = nameinfo_to_rdata(record_type.as_str(),&name_info);
+            let rdata_vec = nameinfo_to_rdata(record_type.to_string().as_str(),&name_info);
             if rdata_vec.is_err() {
                 error!("Failed to convert nameinfo to rdata:{}", rdata_vec.err().unwrap());
                 continue;
@@ -258,7 +267,7 @@ impl DnsServer {
             let records = rdata_vec.into_iter().map(|rdata| Record::from_rdata(request.query().name().into(), ttl, rdata)).collect::<Vec<_>>();
             let mut message = builder.build(header,records.iter(),&[],&[],&[]);
             response.send_response(message).await;
-            info!("<==|name:{} {} resolved by provider:{}", name, record_type,provider.get_id());
+            info!("<==|name:{} {} resolved by provider:{}", name, record_type.to_string(),provider.get_id());
             //let mut response = message.into();
             return Ok(header.into());
         }

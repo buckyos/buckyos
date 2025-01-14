@@ -7,13 +7,13 @@ use hickory_resolver::{config::*, Resolver};
 use hickory_resolver::proto::rr::record_type;
 use hickory_resolver::TokioAsyncResolver;
 
-use crate::{NSProvider, NameInfo, NameProof};
+use crate::{NsProvider, NameInfo, NameProof, RecordType};
 use name_lib::*;
-pub struct DNSProvider {
+pub struct DnsProvider {
     dns_server: Option<String>,
 }
 
-impl DNSProvider {
+impl DnsProvider {
     pub fn new(dns_server: Option<String>) -> Self {
         Self {
             dns_server,
@@ -47,11 +47,12 @@ impl DNSProvider {
    
 }
 #[async_trait::async_trait]
-impl NSProvider for DNSProvider {
+impl NsProvider for DnsProvider {
     fn get_id(&self) -> String {
-        return  "dns provider".to_string();
+        return "dns provider".to_string();
     }
-    async fn query(&self, name: &str,record_type:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<NameInfo> {
+
+    async fn query(&self, name: &str, record_type: Option<RecordType>, from_ip: Option<IpAddr>) -> NSResult<NameInfo> {
         let mut server_config = ResolverConfig::default();
         if self.dns_server.is_some() {
             let dns_server = self.dns_server.clone().unwrap();
@@ -69,9 +70,12 @@ impl NSProvider for DNSProvider {
         let resolver = TokioAsyncResolver::tokio(server_config, ResolverOpts::default());
         //resolver.lookup(name, record_type)
         //for dns proivder,default record type is A.
-        let record_type = record_type.unwrap_or("A");
-        match record_type {
-            "TXT" => {
+        let record_type_str = record_type
+            .map(|rt| rt.to_string())
+            .unwrap_or_else(|| "A".to_string());
+
+        match record_type.unwrap_or(RecordType::A) {
+            RecordType::TXT => {
                 let response = resolver.txt_lookup(name).await;
                 if response.is_err() {
                     return Err(NSError::Failed(format!("lookup txt failed! {}",response.err().unwrap())));
@@ -98,7 +102,7 @@ impl NSProvider for DNSProvider {
                 };
                 return Ok(name_info);
             },
-            "A" | "AAAA" => {
+            RecordType::A | RecordType::AAAA => {
                 let response = resolver.lookup_ip(name).await;
                 if response.is_err() {
                     return Err(NSError::Failed(format!("lookup ip failed! {}",response.err().unwrap())));
@@ -120,7 +124,7 @@ impl NSProvider for DNSProvider {
                 };
                 return Ok(name_info);
             },
-            "DID"=>{
+            RecordType::DID => {
                 let response = resolver.txt_lookup(name).await;
                 if response.is_err() {
                     return Err(NSError::Failed(format!("lookup txt failed! {}",response.err().unwrap())));
@@ -156,14 +160,13 @@ impl NSProvider for DNSProvider {
                 return Err(NSError::Failed("DID not found".to_string()));
             },
             _ => {
-                //resolver.lookup(name, record_type).await;
-                return Err(NSError::Failed(format!("Invalid record type: {}", record_type)));
+                return Err(NSError::Failed(format!("Invalid record type: {:?}", record_type)));
             }
         }
         
     }
 
-    async fn query_did(&self, did: &str,fragment:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<EncodedDocument> {
+    async fn query_did(&self, did: &str, fragment: Option<&str>, from_ip: Option<IpAddr>) -> NSResult<EncodedDocument> {
         return Err(NSError::Failed("Not implemented".to_string()));
     }
 }

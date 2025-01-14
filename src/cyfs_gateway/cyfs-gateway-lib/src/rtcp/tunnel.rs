@@ -58,7 +58,7 @@ impl RTcpTunnel {
         let encrypted_stream = EncryptedStream::new(stream, &aes_key, &iv);
         let (read_stream, write_stream) = tokio::io::split(encrypted_stream);
         //let (read_stream,write_stream) =  tokio::io::split(stream);
-        let mut this_target = target.clone();
+        let this_target = target.clone();
         //this_target.target_port = 0;
         RTcpTunnel {
             target: this_target,

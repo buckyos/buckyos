@@ -193,10 +193,10 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
 mod tests {
     use super::*;
     use buckyos_kit::*;
+    use tokio::io::{AsyncReadExt,AsyncWriteExt};
     use crate::*;
     use serde_json::json;
     use cyfs_gateway_lib::*;
-    use ndn_lib::*;
     use rand::{thread_rng, RngCore};
 
     fn generate_random_bytes(size: u64) -> Vec<u8> {
@@ -234,7 +234,7 @@ mod tests {
 
         tokio::spawn(async move {
             info!("start test ndn server(powered by cyfs-warp)...");
-            start_cyfs_warp_server(test_server_config).await;
+            let _ =start_cyfs_warp_server(test_server_config).await;
         });
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
@@ -257,7 +257,7 @@ mod tests {
         let hash_a = hasher.calc_from_bytes(&chunk_a);
         let chunk_id_a = ChunkId::from_sha256_result(&hash_a);
         info!("chunk_id_a:{}",chunk_id_a.to_string());
-        let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer(&chunk_id_a, chunk_a_size, 0).await.unwrap();
+        let (mut chunk_writer,_) = named_mgr.open_chunk_writer(&chunk_id_a, chunk_a_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_a).await.unwrap();
         drop(chunk_writer);
         named_mgr.complete_chunk_writer(&chunk_id_a).await.unwrap();
@@ -269,7 +269,7 @@ mod tests {
         let hash_b = hasher.calc_from_bytes(&chunk_b);
         let chunk_id_b = ChunkId::from_sha256_result(&hash_b);
         info!("chunk_id_b:{}",chunk_id_b.to_string());
-        let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer(&chunk_id_b, chunk_b_size, 0).await.unwrap();
+        let (mut chunk_writer,_) = named_mgr.open_chunk_writer(&chunk_id_b, chunk_b_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_b).await.unwrap();
         drop(chunk_writer);
         named_mgr.complete_chunk_writer(&chunk_id_b).await.unwrap();
