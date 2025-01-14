@@ -38,11 +38,7 @@ impl SocksServerInfo {
             TunnelError::UrlParseError(target.to_owned(), msg)
         })?;
 
-        let port = url.port().ok_or_else(|| {
-            let msg = format!("Invalid socks target port");
-            error!("{}", msg);
-            TunnelError::UrlParseError(target.to_owned(), msg)
-        })?;
+        let port = url.port().unwrap_or(1080);
 
         // Parse auth
         let username = url.username().to_string();

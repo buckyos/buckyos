@@ -10,6 +10,8 @@ mod tunnel_mgr;
 mod acme_client;
 mod cert_mgr;
 mod socks;
+mod selector;
+
 
 
 pub use aes_stream::*;
@@ -21,6 +23,7 @@ pub use tunnel_mgr::*;
 pub use cert_mgr::*;
 pub use acme_client::*;
 pub use socks::*;
+pub use selector::*;
 
 use once_cell::sync::OnceCell;
 use thiserror::Error;

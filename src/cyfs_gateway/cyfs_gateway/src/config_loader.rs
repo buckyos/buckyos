@@ -44,8 +44,8 @@ impl GatewayConfig {
             }
 
             let target_type = target_type.unwrap();
-            let enable_tunnel: Result<Vec<String>, _> = from_value(v["enable_tunnel"].clone());
-            let enable_tunnel = enable_tunnel.ok();
+            //let enable_tunnel: Result<Vec<String>, _> = from_value(v["enable_tunnel"].clone());
+            //let enable_tunnel = enable_tunnel.ok();
 
             let new_config: DispatcherConfig;
             match target_type.as_str() {
@@ -67,8 +67,7 @@ impl GatewayConfig {
                     let server_id = server_id.unwrap();
                     new_config = DispatcherConfig::new_server(
                         incoming_url,
-                        server_id.to_string(),
-                        enable_tunnel,
+                        server_id.to_string()
                     );
                 }
                 "forward" => {
@@ -93,7 +92,29 @@ impl GatewayConfig {
                     })?;
 
                     new_config =
-                        DispatcherConfig::new_forward(incoming_url, target_url, enable_tunnel);
+                        DispatcherConfig::new_forward(incoming_url, target_url);
+                }
+                "selector" => {
+                    let selector_id = v.get("selector_id");
+                    if selector_id.is_none() {
+                        let msg = format!("Selector id not found: {}", k);
+                        error!("{}", msg);
+                        return Err(msg);
+                    }
+                    let selector_id = selector_id.unwrap().as_str().unwrap();
+                    new_config = DispatcherConfig::new_selector(incoming_url, selector_id.to_string());
+                }
+                "probe_selector" => {
+                    let probe_id = v.get("probe_id");
+                    let selector_id = v.get("selector_id");
+                    if probe_id.is_none() || selector_id.is_none() {
+                        let msg = format!("Probe id or selector id not found: {}", k);
+                        error!("{}", msg);
+                        return Err(msg);
+                    }
+                    new_config = DispatcherConfig::new_probe_selector(incoming_url, 
+                        probe_id.unwrap().as_str().unwrap().to_string(), 
+                        selector_id.unwrap().as_str().unwrap().to_string());
                 }
                 _ => {
                     return Err(format!("Invalid target type: {}", target_type));
