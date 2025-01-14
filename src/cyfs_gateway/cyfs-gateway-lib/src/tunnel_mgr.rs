@@ -2,6 +2,7 @@ use crate::ip::IPTunnelBuilder;
 use crate::rtcp::RTCP_STACK_MANAGER;
 use crate::{
     DatagramServerBox, StreamListener, TunnelBox, TunnelBuilder, TunnelError, TunnelResult,
+    StreamProbe, StreamSelector,
 };
 
 use lazy_static::lazy_static;
@@ -63,6 +64,14 @@ pub async fn get_tunnel_builder_by_protocol(
             Err(TunnelError::UnknownProtocol(msg))
         }
     }
+}
+
+pub fn get_stream_probe(probe_id:&str) -> TunnelResult<Box<dyn StreamProbe + Send>> {
+    unimplemented!()
+}
+
+pub fn get_stream_selector(selector_id:&str) -> TunnelResult<Box<dyn StreamSelector + Send>> {
+    unimplemented!()
 }
 
 lazy_static! {

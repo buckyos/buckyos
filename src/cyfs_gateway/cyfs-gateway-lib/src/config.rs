@@ -119,30 +119,43 @@ pub enum ServerConfig {
 pub enum DispatcherTarget {
     Forward(Url),
     Server(String),
+    Selector(String),
+    ProbeSelector(String,String), //probeid,selectorid
 }
 
 #[derive(Clone,Debug)]
 pub struct DispatcherConfig {
     pub incoming: Url,
-    pub target: DispatcherTarget,
-    pub enable_tunnels:Option<Vec<String>>,
+    pub target: DispatcherTarget
 }
 
 
 impl DispatcherConfig {
-    pub fn new_forward(incoming: Url, target: Url, enable_tunnels:Option<Vec<String>>) -> Self {
+    pub fn new_forward(incoming: Url, target: Url) -> Self {
         DispatcherConfig {
             incoming,
-            target : DispatcherTarget::Forward(target),
-            enable_tunnels,
+            target : DispatcherTarget::Forward(target)
         }
     }
 
-    pub fn new_server(incoming: Url, server_id: String, enable_tunnels:Option<Vec<String>>) -> Self {
+    pub fn new_server(incoming: Url, server_id: String) -> Self {
         DispatcherConfig {
             incoming,
             target : DispatcherTarget::Server(server_id),
-            enable_tunnels,
+        }
+    }
+
+    pub fn new_selector(incoming: Url, selector_id: String) -> Self {
+        DispatcherConfig {
+            incoming,
+            target : DispatcherTarget::Selector(selector_id),
+        }
+    }
+
+    pub fn new_probe_selector(incoming: Url, probe_id: String, selector_id: String) -> Self {
+        DispatcherConfig {
+            incoming,
+            target : DispatcherTarget::ProbeSelector(probe_id, selector_id),
         }
     }
 }

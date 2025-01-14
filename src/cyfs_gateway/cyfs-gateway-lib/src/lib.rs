@@ -8,6 +8,8 @@ mod tunnel;
 mod tunnel_connector;
 mod tunnel_mgr;
 mod socks;
+mod selector;
+
 
 pub use aes_stream::*;
 pub use config::*;
@@ -16,6 +18,7 @@ pub use tunnel::*;
 pub use tunnel_connector::*;
 pub use tunnel_mgr::*;
 pub use socks::*;
+pub use selector::*;
 
 use once_cell::sync::OnceCell;
 use thiserror::Error;
