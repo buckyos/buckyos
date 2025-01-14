@@ -116,6 +116,17 @@ impl Router {
             .map(|(route, config)| (route.clone(), config.clone()))
     }
 
+    pub fn insert_route_config(&self, host:&str, path:&str, config: RouteConfig) -> Option<Arc<RouteConfig>> {
+        let mut hosts = self.inner.hosts.write().unwrap();
+        let host_config = hosts.entry(host.to_string()).or_insert(HashMap::new());
+        host_config.insert(path.to_string(), Arc::new(config))
+    }
+
+    pub fn remove_route_config(&self, host:&str, path:&str) -> Option<Arc<RouteConfig>> {
+        let mut hosts = self.inner.hosts.write().unwrap();
+        let host_config = hosts.entry(host.to_string()).or_insert(HashMap::new());
+        host_config.remove(path)
+    }
 
 
     pub async fn route(

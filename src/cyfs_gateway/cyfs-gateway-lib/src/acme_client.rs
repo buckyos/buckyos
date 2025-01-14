@@ -137,16 +137,16 @@ struct AcmeClientInner {
 #[async_trait::async_trait]
 pub trait AcmeChallengeResponder: Send + Sync {
     /// 响应 HTTP 挑战
-    async fn respond_http(&self, token: &str, key_auth: &str) -> Result<()>;
+    async fn respond_http(&self, domain: &str, token: &str, key_auth: &str) -> Result<()>;
+    fn revert_http(&self, domain: &str, token: &str);
     
     /// 响应 DNS 挑战
     async fn respond_dns(&self, domain: &str, digest: &str) -> Result<()>;
-    
+    fn revert_dns(&self, domain: &str, digest: &str);
+
     /// 响应 TLS-ALPN 挑战
     async fn respond_tls_alpn(&self, domain: &str, key_auth: &str) -> Result<()>;
-    
-    /// 清理挑战响应
-    async fn cleanup(&self) -> Result<()>;
+    fn revert_tls_alpn(&self, domain: &str, key_auth: &str);
 }
 
 /// 证书订单会话
@@ -156,8 +156,9 @@ pub struct AcmeOrderSession<R: AcmeChallengeResponder> {
     valid_days: u32,
     key_type: KeyType,
     status: OrderStatus,
-    client: AcmeClient,
+    client: AcmeClient, 
     responder: R,
+    respond_logs: Vec<Challenge>,
     order_info: Option<OrderInfo>,
 }
 
@@ -173,7 +174,8 @@ impl<R: AcmeChallengeResponder> AcmeOrderSession<R> {
             key_type: KeyType::Rsa2048,
             status: OrderStatus::New,
             client,
-            responder,
+            responder, 
+            respond_logs: vec![],
             order_info: None,
         }
     }
@@ -199,7 +201,7 @@ impl<R: AcmeChallengeResponder> AcmeOrderSession<R> {
                 // 准备挑战响应
                 match challenge.type_.as_str() {
                     "http-01" => {
-                        self.responder.respond_http(&challenge.token, &challenge.key_auth).await?;
+                        self.responder.respond_http(challenge.domain.as_str(), &challenge.token, &challenge.key_auth).await?;
                     }
                     "dns-01" => {
                         self.responder.respond_dns(&challenge.domain, &challenge.digest).await?;
@@ -215,6 +217,8 @@ impl<R: AcmeChallengeResponder> AcmeOrderSession<R> {
                 
                 // 等待验证完成
                 self.client.poll_authorization(auth_url).await?;
+
+                self.respond_logs.push(challenge);
             }
         }
 
@@ -229,12 +233,29 @@ impl<R: AcmeChallengeResponder> AcmeOrderSession<R> {
             // 下载证书
             let cert = self.client.download_certificate(&cert_url).await?;
             
-            // 清理挑战响应
-            self.responder.cleanup().await?;
-            
             Ok((cert, private_key))
         } else {
             Err(anyhow::anyhow!("No order information available"))
+        }
+    }
+}
+
+
+impl<R: AcmeChallengeResponder> Drop for AcmeOrderSession<R> {
+    fn drop(&mut self) {
+        for log in self.respond_logs.iter() {
+            match log.type_.as_str() {
+                "http-01" => {
+                    self.responder.revert_http(log.domain.as_str(), log.token.as_str());
+                }
+                "dns-01" => {
+                    self.responder.revert_dns(log.domain.as_str(), log.digest.as_str());
+                }
+                "tls-alpn-01" => {
+                    self.responder.revert_tls_alpn(log.domain.as_str(), log.key_auth.as_str());
+                },
+                _ => {unreachable!()}
+            }
         }
     }
 }

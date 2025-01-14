@@ -29,33 +29,60 @@ use crate::router::*;
 
 
 
-struct ChallengeEntry;
+struct ChallengeEntry {
+    router: Router,
+}
 
 impl AcmeChallengeEntry for ChallengeEntry {
     type Responder = ChallengeResponder;
     fn create_challenge_responder(&self) -> Self::Responder {
-        ChallengeResponder {}
+        ChallengeResponder {
+            router: self.router.clone(),
+        }
     }
 }
 
-struct ChallengeResponder;
+struct ChallengeResponder {
+    router: Router,
+}
 
 #[async_trait::async_trait]
 impl AcmeChallengeResponder for ChallengeResponder {
-    async fn respond_http(&self, token: &str, key_auth: &str) -> Result<()> {
+    async fn respond_http(&self, domain: &str, token: &str, key_auth: &str) -> Result<()> {
+        let path = format!("/.well-known/acme-challenge/{}",token);
+        let config = RouteConfig {
+            enable_cors: false,
+            response: Some(ResponseRouteConfig {
+                status: Some(200),
+                headers: Some(HashMap::from_iter(vec![("Content-Type".to_string(), "text/plain".to_string())])),
+                body: Some(key_auth.to_string()),
+            }),
+            upstream: None,
+            local_dir: None,
+            inner_service: None,
+            tunnel_selector: None,
+            bucky_service: None,
+            named_mgr: None,
+        };
+        self.router.insert_route_config(domain, path.as_str(), config);
         Ok(())
+    }
+    fn revert_http(&self, domain: &str, token: &str) {
+        self.router.remove_route_config(domain, token);
     }
 
     async fn respond_dns(&self, domain: &str, digest: &str) -> Result<()> {
         Ok(())
     }
+    fn revert_dns(&self, domain: &str, digest: &str) {
+        
+    }
 
     async fn respond_tls_alpn(&self, domain: &str, key_auth: &str) -> Result<()> {
         Ok(())
     }
-
-    async fn cleanup(&self) -> Result<()> {
-        Ok(())
+    fn revert_tls_alpn(&self, domain: &str, key_auth: &str) {
+        
     }
 }
 
@@ -153,18 +180,7 @@ async fn listen_https(https_bind_addr: String, https_router: Router, cert_mgr: A
     Ok(())
 }
 
-pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> { 
-    let root_path = get_buckyos_service_data_dir("cyfs-warp");
-    let mut cert_mgr = CertManager::new(
-        root_path.to_string_lossy().to_string(), 
-        ChallengeEntry {}
-    ).await?;
-
-    for (host, host_config) in config.hosts.iter() {
-        cert_mgr.insert_config(host.clone(), host_config.tls.clone())?;
-    }
-    let cert_mgr = Arc::new(cert_mgr);
-    
+pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> {    
     let https_router = Router::new(HashMap::from_iter(
         config.hosts.iter().map(|(host, host_config)| {
             (host.clone(), HashMap::from_iter(host_config.routes.iter().map(|(route, route_config)| (route.clone(), Arc::new(route_config.clone())))))
@@ -195,6 +211,20 @@ pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> {
             }
         })
     ));
+
+
+    let root_path = get_buckyos_service_data_dir("cyfs-warp");
+    let mut cert_mgr = CertManager::new(
+        root_path.to_string_lossy().to_string(), 
+        ChallengeEntry {
+            router: http_router.clone(),
+        }
+    ).await?;
+
+    for (host, host_config) in config.hosts.iter() {
+        cert_mgr.insert_config(host.clone(), host_config.tls.clone())?;
+    }
+    let cert_mgr = Arc::new(cert_mgr);
     
 
     
