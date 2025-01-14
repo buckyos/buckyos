@@ -102,7 +102,10 @@ impl ServiceDispatcher {
                                     return;
                                 }
                                 let probe = this_probe.as_ref().unwrap();
-                                probe.probe(&probe_buffer[0..read_len], &mut stream_request);
+                                let probe_result = probe.probe(&probe_buffer[0..read_len], &mut stream_request);
+                                if probe_result.is_ok() {
+                                    stream_request = probe_result.unwrap();
+                                }
                             }
                             let target_url = this_selector.select(stream_request).await;
                             if target_url.is_err() {

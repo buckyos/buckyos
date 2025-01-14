@@ -324,7 +324,17 @@ mod tests {
             "tcp://0.0.0.0:6003":{
                 "type":"forward",
                 "target":"socks://192.168.1.188:7890/qq.com:80"
+            },
+            "tcp://0.0.0.0:6004":{
+                "type":"probe_selector",
+                "probe_id":"https-sni",
+                "selector_id":"smart-selector",
+            },
+            "tcp://0.0.0.0:6005":{
+                "type":"selector",
+                "selector_id":"smart-selector",
             }
+
         }
         "#;
         let config:serde_json::Value = serde_json::from_str(config).unwrap();
