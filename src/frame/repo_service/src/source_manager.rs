@@ -50,6 +50,11 @@ impl SourceManager {
         })
     }
 
+    pub async fn init(&self) -> RepoResult<()> {
+        let _ = self.update_index(false).await?;
+        Ok(())
+    }
+
     async fn load_index_source_list(&self) -> RepoResult<Vec<SourceNodeConfig>> {
         let rpc_session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
             error!("repo service session token not found! err:{}", e);

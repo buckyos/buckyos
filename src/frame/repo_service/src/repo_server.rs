@@ -166,6 +166,10 @@ impl RepoServer {
             Err(e) => Err(RPCErrors::ReasonError(e.to_string())),
         }
     }
+
+    pub async fn init(&self) -> RepoResult<()> {
+        self.source_mgr.init().await
+    }
 }
 
 #[async_trait]
