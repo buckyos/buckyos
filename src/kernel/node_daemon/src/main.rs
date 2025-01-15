@@ -225,7 +225,7 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
         //owner zone is a NAME, need query NameInfo to get DID
         info!("owner zone is a NAME, try nameclient.query to get did");
 
-        let zone_jwt = resolve(node_identity.zone_name.as_str(),Some("DID")).await
+        let zone_jwt = resolve(node_identity.zone_name.as_str(),RecordType::from_str("DID")).await
             .map_err(|err| {
                 error!("query zone config by nameclient failed! {}", err);
                 return NodeDaemonErrors::ReasonError("query zone config failed!".to_string());
