@@ -224,8 +224,12 @@ pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> {
             return Err(anyhow::anyhow!("创建cyfs-warp数据目录失败: {}", e));
         }
     }
-    let mut cert_mgr = CertManager::new(
-        root_path.to_string_lossy().to_string(), 
+
+    let mut cert_mgr_config = CertManagerConfig::default();
+    cert_mgr_config.keystore_path = root_path.to_string_lossy().to_string();
+
+    let cert_mgr = CertManager::new(
+        cert_mgr_config,
         ChallengeEntry {
             router: http_router.clone(),
         }
@@ -234,9 +238,6 @@ pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> {
     for (host, host_config) in config.hosts.iter() {
         cert_mgr.insert_config(host.clone(), host_config.tls.clone())?;
     }
-    let cert_mgr = Arc::new(cert_mgr);
-    
-
     
     let bind = config.bind.unwrap_or("::;0.0.0.0".to_string());
     let bind_addrs: Vec<&str> = bind.split(';').collect();
@@ -256,7 +257,7 @@ pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> {
             listen_http(bind_addr_http, http_router).await;
         });
         task::spawn(async move {
-            listen_https(bind_addr_https, https_router, cert_mgr.clone()).await;
+            listen_https(bind_addr_https, https_router, Arc::new(cert_mgr.clone())).await;
         });
     }
 

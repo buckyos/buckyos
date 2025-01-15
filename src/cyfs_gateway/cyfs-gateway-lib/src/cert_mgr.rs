@@ -6,11 +6,14 @@ use std::path::Path;
 use rustls::server::{ResolvesServerCert, ClientHello};
 use rustls::sign::CertifiedKey;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::RwLock;
 use tokio::task;
 use log::*;
 use crate::acme_client::{AcmeClient, AcmeOrderSession, AcmeChallengeResponder, AcmeAccount};
 use crate::config::TlsConfig;
+use openssl::x509::X509;
+use std::sync::Mutex;
+use serde::Deserialize;
 
 #[derive(Clone)]
 struct CertInfo {
@@ -60,7 +63,13 @@ impl<R: AcmeChallengeEntry> std::fmt::Display for CertStub<R> {
 
 
 impl<R: AcmeChallengeEntry> CertStub<R> {
-    fn new(domains: Vec<String>, keystore_path: String, acme_client: AcmeClient, responder: Arc<R>, config: TlsConfig) -> Self {
+    fn new(
+        domains: Vec<String>, 
+        keystore_path: String, 
+        acme_client: AcmeClient, 
+        responder: Arc<R>, 
+        config: TlsConfig
+    ) -> Self {
         Self {
             inner: Arc::new(CertStubInner {
                 domains,
@@ -86,6 +95,13 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
         
         let cert_chain = cert_chain.into_iter().map(rustls::Certificate).collect();
         Ok(CertifiedKey::new(cert_chain, signing_key))
+    }
+
+    fn get_cert_expiry(cert_data: &[u8]) -> Result<chrono::DateTime<chrono::Utc>> {
+        let cert = X509::from_pem(cert_data)?;
+        let not_after = cert.not_after().to_string();
+        let expires = chrono::DateTime::parse_from_str(&not_after, "%b %d %H:%M:%S %Y %Z")?;
+        Ok(expires.with_timezone(&chrono::Utc))
     }
 
     pub fn get_cert(&self) -> Option<Arc<CertifiedKey>> {
@@ -139,18 +155,20 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
             .map_err(|e| anyhow::anyhow!("load cert failed, stub: {}, key_path: {}, {}", self, key_path, e))?;
         
         let certified_key = Self::create_certified_key(&cert_data, &key_data)?;
-        info!("load cert success, stub: {}, cert_path: {}, key_path: {}", self, cert_path, key_path);
+        let expires = Self::get_cert_expiry(&cert_data)?;
+        
+        info!("load cert success, stub: {}, cert_path: {}, key_path: {}, expires: {}", self, cert_path, key_path, expires);
 
         let mut mut_part = self.inner.mut_part.lock().unwrap();
         mut_part.state = CertState::Ready(CertInfo {
             key: Arc::new(certified_key),
-            expires: chrono::Utc::now() + chrono::Duration::days(90)
+            expires
         });
 
         Ok(())
     }
 
-    pub async fn check_cert(&self) -> Result<()> {
+    async fn check_cert(&self, renew_before_expiry: chrono::Duration) -> Result<()> {
         let should_order = {
             let mut mut_part = self.inner.mut_part.lock().unwrap();
             if mut_part.ordering {
@@ -160,8 +178,8 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
             match &mut_part.state {
                 CertState::None => true,
                 CertState::Ready(info) => {
-                    let thirty_days_later = chrono::Utc::now() + chrono::Duration::days(30);
-                    if info.expires <= thirty_days_later {
+                    let renew_time = info.expires - renew_before_expiry;
+                    if chrono::Utc::now() >= renew_time {
                         mut_part.state = CertState::Expired(info.clone());
                         true
                     } else {
@@ -179,7 +197,7 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
         Ok(())
     }
 
-    async fn order_inner(&self) -> Result<CertifiedKey> {
+    async fn order_inner(&self) -> Result<(CertifiedKey, chrono::DateTime<chrono::Utc>)> {
         let order = AcmeOrderSession::new(
             self.inner.domains.clone(),
             self.inner.acme_client.clone(),
@@ -194,8 +212,13 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
         fs::write(&cert_path, &cert_data).await?;
         fs::write(&key_path, &key_data).await?;
 
-        info!("save cert success, stub: {}, cert_path: {}, key_path: {}", self, cert_path, key_path);
-        Self::create_certified_key(&cert_data, &key_data)
+        let certified_key = Self::create_certified_key(&cert_data, &key_data)?;
+        let expires = Self::get_cert_expiry(&cert_data)?;
+
+        info!("save cert success, stub: {}, cert_path: {}, key_path: {}, expires: {}", 
+            self, cert_path, key_path, expires);
+        
+        Ok((certified_key, expires))
     }
 
     async fn start_order(&self) -> Result<()> {
@@ -212,10 +235,10 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
         let mut mut_part = self.inner.mut_part.lock().unwrap();
         mut_part.ordering = false;
         match result {
-            Ok(certified_key) => {
+            Ok((certified_key, expires)) => {
                 mut_part.state = CertState::Ready(CertInfo {
                     key: Arc::new(certified_key),
-                    expires: chrono::Utc::now() + chrono::Duration::days(90)
+                    expires,
                 });
                 Ok(())
             }
@@ -232,10 +255,49 @@ pub trait AcmeChallengeEntry: Send + Sync {
 }
 
 pub struct CertManager<R: AcmeChallengeEntry> {
-    keystore_path: String,
+    inner: Arc<CertManagerInner<R>>
+}
+
+impl<R: AcmeChallengeEntry> Clone for CertManager<R> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone()
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CertManagerConfig {
+    pub keystore_path: String,
+    #[serde(default = "default_check_interval")]
+    pub check_interval: chrono::Duration,     // 检查证书的时间间隔
+    #[serde(default = "default_renew_before_expiry")]
+    pub renew_before_expiry: chrono::Duration, // 过期前多久开始续期
+}
+
+fn default_check_interval() -> chrono::Duration {
+    chrono::Duration::hours(12)  // 默认每12小时检查一次
+}
+
+fn default_renew_before_expiry() -> chrono::Duration {
+    chrono::Duration::days(30)   // 默认过期前30天续期
+}
+
+impl Default for CertManagerConfig {
+    fn default() -> Self {
+        Self {
+            keystore_path: String::new(),
+            check_interval: default_check_interval(),
+            renew_before_expiry: default_renew_before_expiry(),
+        }
+    }
+}
+
+struct CertManagerInner<R: AcmeChallengeEntry> {
+    config: CertManagerConfig,
     acme_client: AcmeClient,
     responder: Arc<R>,
-    certs: HashMap<String, CertStub<R>>,
+    certs: RwLock<HashMap<String, CertStub<R>>>,
 }
 
 impl<R: 'static + AcmeChallengeEntry> std::fmt::Display for CertManager<R> {
@@ -245,10 +307,10 @@ impl<R: 'static + AcmeChallengeEntry> std::fmt::Display for CertManager<R> {
 }
 
 impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
-    pub async fn new(keystore_path: String, responder: R) -> Result<Self> {
-        info!("create cert manager, keystore_path: {}", keystore_path);
-        // 检查是否存在 acme_account.json
-        let account_path = format!("{}/acme_account.json", &keystore_path);
+    pub async fn new(config: CertManagerConfig, responder: R) -> Result<Self> {
+        info!("create cert manager, config: {:?}", config);
+        
+        let account_path = format!("{}/acme_account.json", &config.keystore_path);
         let account = match AcmeAccount::from_file(Path::new(&account_path)).await {
             Ok(account) => {
                 info!("从{}加载ACME账号", account_path);
@@ -273,31 +335,51 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
         if let Err(e) = account.save_to_file(Path::new(&account_path)).await {
             error!("保存ACME账号失败: {}", e);
         }
-        Ok(Self {
-            keystore_path,
-            acme_client,
-            responder: Arc::new(responder),
-            certs: HashMap::new(),
-        })
+
+        let manager = Self {
+            inner: Arc::new(CertManagerInner {
+                config: config.clone(),
+                acme_client,
+                responder: Arc::new(responder),
+                certs: RwLock::new(HashMap::new()),
+            })
+        };
+
+        // 启动定期检查任务
+        {
+            let manager = manager.clone();
+            tokio::spawn(async move {
+                let check_interval = tokio::time::Duration::from_secs(
+                    config.check_interval.num_seconds() as u64
+                );
+                let mut interval = tokio::time::interval(check_interval);
+                loop {
+                    interval.tick().await;
+                    if let Err(e) = manager.check_all_certs().await {
+                        error!("check certs failed: {}", e);
+                    }
+                }
+            });
+        }
+
+        Ok(manager)
     }
 
-    pub fn insert_config(&mut self, host: String, config: TlsConfig) -> Result<()> {
-        info!("insert cert config, manager: {}, host: {}, config: {:?}", self, host, config);
-        // 为域名列表生成唯一的keystore路径
-        let keystore_path = format!("{}/{}", self.keystore_path, host);
-
-        // 确保目录存在
+    pub fn insert_config(&self, host: String, tls_config: TlsConfig) -> Result<()> {
+        let keystore_path = format!("{}/{}", self.inner.config.keystore_path, host);
         if let Err(e) = std::fs::create_dir_all(&keystore_path) {
             error!("创建证书存储目录失败: {}", e);
             return Err(anyhow::anyhow!("创建证书存储目录失败: {}", e));
         }
+
         let cert_stub = CertStub::new(
             vec![host.clone()], 
             keystore_path, 
-            self.acme_client.clone(), 
-            self.responder.clone(), 
-            config);
-        self.certs.insert(host, cert_stub.clone());
+            self.inner.acme_client.clone(), 
+            self.inner.responder.clone(), 
+            tls_config
+        );
+        self.inner.certs.write().unwrap().insert(host, cert_stub.clone());
         
         task::spawn(async move {
             let _ = cert_stub.load_cert().await;
@@ -306,13 +388,14 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
     }
 
     fn get_cert_by_host(&self,host:&str) -> Option<CertStub<R>> {
-        let cert = self.certs.get(host);
+        let certs = self.inner.certs.read().unwrap();
+        let cert = certs.get(host);
         if cert.is_some() {
             info!("find tls config for host: {}", host);
             return Some(cert.unwrap().clone());
         }
 
-        for (key,value) in self.certs.iter() {
+        for (key,value) in certs.iter() {
             if key.starts_with("*.") {
                 if host.ends_with(&key[2..]) {
                     info!("find tls config for host: {} ==> key:{}",host,key);
@@ -322,6 +405,17 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
         }
 
         None
+    }
+
+    async fn check_all_certs(&self) -> Result<()> {
+        let certs = self.inner.certs.read().unwrap().values().cloned().collect::<Vec<_>>();
+        
+        for cert in certs {
+            if let Err(e) = cert.check_cert(self.inner.config.renew_before_expiry).await {
+                error!("check cert failed, stub: {}, error: {}", cert, e);
+            }
+        }
+        Ok(())
     }
 }
 
