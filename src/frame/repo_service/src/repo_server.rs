@@ -154,6 +154,18 @@ impl RepoServer {
             Err(e) => Err(RPCErrors::ReasonError(e.to_string())),
         }
     }
+
+    async fn handle_query_all_latest_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        match self.source_mgr.query_all_latest_pkg().await {
+            Ok(pkgs) => {
+                let pkgs = serde_json::to_value(pkgs).map_err(|e| {
+                    RPCErrors::ReasonError(format!("Failed to serialize pkgs, err:{}", e))
+                })?;
+                Ok(RPCResponse::new(RPCResult::Success(pkgs), req.seq))
+            }
+            Err(e) => Err(RPCErrors::ReasonError(e.to_string())),
+        }
+    }
 }
 
 #[async_trait]
@@ -164,6 +176,7 @@ impl kRPCHandler for RepoServer {
         ip_from: IpAddr,
     ) -> Result<RPCResponse, RPCErrors> {
         match req.method.as_str() {
+            "query_all_latest_pkg" => self.handle_query_all_latest_pkg(req).await,
             "install_pkg" => self.handle_install_pkg(req).await,
             "update_index" => self.handle_update_index(req).await,
             "pub_pkg" => self.handle_pub_pkg(req).await,
