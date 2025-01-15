@@ -654,7 +654,7 @@ async fn async_main() -> std::result::Result<(), String> {
     let defualt_node_id = "node".to_string();
     let node_id = node_id.unwrap_or(&defualt_node_id);
 
-    info!("node_dameon start...");
+    info!("node_daemon start...");
     //load node identity config
     let mut node_identity = load_identity_config(node_id);
     if node_identity.is_err() {

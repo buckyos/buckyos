@@ -231,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_nameinfo() {
-        let name_info = resolve("buckyos.io",Some("DID")).await.unwrap();
+        let name_info = resolve("buckyos.io", crate::provider::RecordType::from_str("DID")).await.unwrap();
         println!("name_info: {:?}",name_info);
     }
 
