@@ -46,15 +46,26 @@ mod test {
 {
   "tls_port":3002,
   "http_port":3000,
+  "bind":"0.0.0.0",
   "hosts": {
     "another.com": {
       "routes": {
-        "/": {
+        "1": {
           "upstream": "http://localhost:9090"
+        }, 
+        "2": {
+          "upstream": "http://localhost:9091 redirect"
+        },
+        "3": {
+          "upstream": "http://localhost:9092 redirect permanent"
         }
       }
     },
     "example.com": {
+      "tls": {
+        "cert_path": "D:\\temp\\cert.pem",
+        "key_path": "D:\\temp\\key.pem"
+      },
       "routes": {
         "/api": {
           "upstream": "http://localhost:8080"
