@@ -83,6 +83,7 @@ mod test {
         {
             "hosts": {
                 "dev.photosssa.org": {
+                    "redirect_to_https": true,
                     "routes": {
                         "/": {
                             "response": {

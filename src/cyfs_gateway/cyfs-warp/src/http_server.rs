@@ -217,6 +217,13 @@ pub async fn start_cyfs_warp_server(config: WarpServerConfig) -> Result<()> {
     ));
 
     let root_path = get_buckyos_service_data_dir("cyfs-warp");
+    info!("创建cyfs-warp数据目录: {}", root_path.display());
+    if !root_path.exists() {
+        if let Err(e) = std::fs::create_dir_all(&root_path) {
+            error!("创建cyfs-warp数据目录失败: {}", e);
+            return Err(anyhow::anyhow!("创建cyfs-warp数据目录失败: {}", e));
+        }
+    }
     let mut cert_mgr = CertManager::new(
         root_path.to_string_lossy().to_string(), 
         ChallengeEntry {

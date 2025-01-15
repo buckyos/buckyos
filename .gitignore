@@ -30,3 +30,4 @@ src/apps/sys_test/node_modules/
 target/
 cargo.lock
 pnpm-lock.yaml
+data/
