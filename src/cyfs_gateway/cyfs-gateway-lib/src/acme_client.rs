@@ -654,24 +654,6 @@ impl AcmeClient {
         }
     }
 
-    /// 发送 POST-as-GET 请求
-    async fn post_as_get<R>(&self, url: &str) -> Result<R>
-    where
-        R: DeserializeOwned,
-    {
-        let nonce = self.get_nonce().await?;
-        let jws = self.sign_request(url, &nonce, &"")?;
-        
-        let response = self.inner.http_client
-            .post(url)
-            .header("Content-Type", "application/jose+json")
-            .json(&jws)
-            .send()
-            .await?;
-
-        self.handle_response(response).await
-    }
-
     /// 下载证书
     async fn download_certificate(&self, url: &str) -> Result<Vec<u8>> {
         info!("download acme certificate, client: {}, url: {}", self, url);
@@ -699,7 +681,7 @@ impl AcmeClient {
     }
 
     /// 创建新的订单
-    pub async fn create_order(&self, domains: &[String]) -> Result<(Vec<String>, String)> {
+    async fn create_order(&self, domains: &[String]) -> Result<(Vec<String>, String)> {
         info!("create acme order, client: {}, domains: {}", self, domains.join(","));
         // 构造订单请求
         let request = OrderRequest {
@@ -903,14 +885,14 @@ impl AcmeClient {
 
 
 #[derive(Debug)]
-pub enum KeyType {
+enum KeyType {
     Rsa2048,
     Rsa4096,
     // 可以后续添加 ECC 等其他类型
 }
 
 #[derive(Debug, PartialEq)]
-pub enum OrderStatus {
+enum OrderStatus {
     New,
     Pending,
     Ready,

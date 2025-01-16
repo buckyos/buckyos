@@ -69,7 +69,8 @@ impl AcmeChallengeResponder for ChallengeResponder {
         Ok(())
     }
     fn revert_http(&self, domain: &str, token: &str) {
-        self.router.remove_route_config(domain, token);
+        let path = format!("/.well-known/acme-challenge/{}",token);
+        self.router.remove_route_config(domain, path.as_str());
     }
 
     async fn respond_dns(&self, domain: &str, digest: &str) -> Result<()> {
