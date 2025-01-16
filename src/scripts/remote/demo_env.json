@@ -1,0 +1,45 @@
+{
+    "gateway1": {
+        "hostname": "192.168.1.10",
+        "username": "root",
+        "port": 22,
+        "ssh_key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDOp5v/jpV1mgOC9ZOLrV7z3FtuRAR4DqdqMMzHprP2t2IFLzHhrlAxM8TEk+ymZdzynSvpGMjshze7VrGVPlcMJXBE64BNSIkFTxnjuuigmgsot5/Huhpo+JIetSkXnAfCWCn8aecQ6l4QSLPI58pnn/WpPGUa6GaZz4cKMDlmFbtbBMIU5ihEwsTCXYU7/9ISUdJ4IJpAQr2hKaK5FwQYwNnsVT4cPgFLcY1hNLHpoLFO2ZXkhimkT6CUnaIt2EJTdS6RIXec7pP6uQ2FObOXDDikTN5t0NfMjdVaLqVLn6NR3Oglpv1wGEfsphm9Qj/hi1lR0ots3/7q9l42DnbvATqqaJwxqb/V+Cbw2wn/FYpNHupusguRvK8uTta+LbMtr43bCRTRjTYEKp5J0aAdFQl7j2OQNX1h+S5QlQhMFZvDMv7tJLCLNOAkMp+iHLleCAwsdRB0DlKoawcXteWUBlaBogA9q4Ayixc47KdfrALTPU+71qZPHOg/p6H45ltwRlULDMriUNeIWubfb+d+09L6hiy2RLS+2n2qrgsPhEECADAzru18GA5sDDATEb41mTkD8UDKHvT/9fkdNtGinLpiusivXwlZpOGv6BFwqNGpjbF10oIQeQaOvq0Nexlf9B+EnO0q6RZU3kX/533F7XgMqoSpJZMJIUbv3+eY8Q== lzc",
+        "vm": {
+            "cpu": 2,
+            "memory": "1G",
+            "disk": "10G",
+            "ip": "192.168.1.20",
+            "network": {
+                "type": "bridge",
+                "bridge": "br0",
+                "gateway": "192.168.1.254"
+            }
+        },
+        "apps": {
+            "cyfs-gateway": {
+                "binary": "/opt/buckyos/bin/cyfs-gateway"
+            }
+        }
+    },
+    "node1": {
+        "hostname": "10.10.11.100",
+        "username": "root",
+        "port": 22,
+        "ssh_key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDOp5v/jpV1mgOC9ZOLrV7z3FtuRAR4DqdqMMzHprP2t2IFLzHhrlAxM8TEk+ymZdzynSvpGMjshze7VrGVPlcMJXBE64BNSIkFTxnjuuigmgsot5/Huhpo+JIetSkXnAfCWCn8aecQ6l4QSLPI58pnn/WpPGUa6GaZz4cKMDlmFbtbBMIU5ihEwsTCXYU7/9ISUdJ4IJpAQr2hKaK5FwQYwNnsVT4cPgFLcY1hNLHpoLFO2ZXkhimkT6CUnaIt2EJTdS6RIXec7pP6uQ2FObOXDDikTN5t0NfMjdVaLqVLn6NR3Oglpv1wGEfsphm9Qj/hi1lR0ots3/7q9l42DnbvATqqaJwxqb/V+Cbw2wn/FYpNHupusguRvK8uTta+LbMtr43bCRTRjTYEKp5J0aAdFQl7j2OQNX1h+S5QlQhMFZvDMv7tJLCLNOAkMp+iHLleCAwsdRB0DlKoawcXteWUBlaBogA9q4Ayixc47KdfrALTPU+71qZPHOg/p6H45ltwRlULDMriUNeIWubfb+d+09L6hiy2RLS+2n2qrgsPhEECADAzru18GA5sDDATEb41mTkD8UDKHvT/9fkdNtGinLpiusivXwlZpOGv6BFwqNGpjbF10oIQeQaOvq0Nexlf9B+EnO0q6RZU3kX/533F7XgMqoSpJZMJIUbv3+eY8Q== lzc",
+        "vm": {
+            "cpu": 1,
+            "memory": "1G",
+            "disk": "10G",
+            "ip": "10.10.11.100",
+            "network": {
+                "type": "nat",
+                "gateway": "10.10.11.1"
+            }
+        },
+        "apps": {
+            "cyfs-runtime": {
+                "binary": "/opt/buckyos/bin/cyfs-runtime"
+            }
+        }
+    }
+}
