@@ -31,3 +31,4 @@ target/
 cargo.lock
 pnpm-lock.yaml
 data/
+src/Cargo.lock
