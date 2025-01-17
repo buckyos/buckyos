@@ -23,7 +23,7 @@ use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, Dec
 use lazy_static::lazy_static;
 use sys_config::*;
 use toml;
-use serde_json::{from_value, json};
+use serde_json::{from_value, json, Value};
 use name_lib::*;
 use name_client::*;
 
@@ -52,11 +52,11 @@ type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 #[derive(Deserialize, Debug)]
 struct NodeIdentityConfig {
     zone_name: String,// $name.buckyos.org or did:ens:$name
-    owner_public_key: Jwk, //owner is zone_owner
+    owner_public_key: jsonwebtoken::jwk::Jwk, //owner is zone_owner
     owner_name:String,//owner's name
-    device_doc_jwt:String,//device document,jwt string,signed by owner
+    device_doc_jwt:String,//device document,jwt string,siged by owner
     zone_nonce:String,// random string, is default password of some service
-    //device_private_key: ,storage in particular file
+    //device_private_key: ,storage in partical file
 }
 
 //load from SystemConfig,node的配置分为下面几个部分
@@ -76,13 +76,14 @@ struct NodeConfig {
 
 impl NodeConfig {
     fn from_json_str(jons_str: &str) -> Result<Self> {
-        if let Ok(node_config) = serde_json::from_str::<NodeConfig>(jons_str) {
-            Ok(node_config)
-        } else {
-            Err(NodeDaemonErrors::ParserConfigError(
-                "Failed to parse NodeConfig JSON".to_string(),
-            ))
+        let node_config: std::result::Result<NodeConfig, serde_json::Error> =
+            serde_json::from_str(jons_str);
+        if node_config.is_ok() {
+            return Ok(node_config.unwrap());
         }
+        return Err(NodeDaemonErrors::ParserConfigError(
+            "Failed to parse NodeConfig JSON".to_string(),
+        ));
     }
 }
 
@@ -166,12 +167,12 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
     let json_config = std::fs::read_to_string(json_config_path.clone());
     if json_config.is_ok() {
         let zone_config = serde_json::from_str(&json_config.unwrap());
-        return if zone_config.is_ok() {
+        if zone_config.is_ok() {
             warn!("debug load zone config from {} success!",json_config_path.as_str());
-            Ok(zone_config.unwrap())
+            return Ok(zone_config.unwrap());
         } else {
             error!("parse debug zone config {} failed! {}", json_config_path.as_str(),zone_config.err().unwrap());
-            Err(NodeDaemonErrors::ReasonError("parse debug zone config from local file failed!".to_string()))
+            return Err(NodeDaemonErrors::ReasonError("parse debug zone config from local file failed!".to_string()));
         }
     }
 
@@ -183,7 +184,7 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
             return NodeDaemonErrors::ReasonError("parse owner public key failed!".to_string());
         })?;
 
-    if !is_did(node_identity.zone_name.as_str()) {
+    if !name_lib::is_did(node_identity.zone_name.as_str()) {
         //owner zone is a NAME, need query NameInfo to get DID
         info!("owner zone is a NAME, try nameclient.query to get did");
 
@@ -231,12 +232,12 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
         zone_config.name = Some(node_identity.zone_name.clone());
     }
 
-    Ok(zone_config)
+    return Ok(zone_config);
 }
 
 async fn load_app_info(app_id: &str,username: &str,sys_config_client: &SystemConfigClient) -> Result<AppInfo> {
     let app_key = format!("users/{}/apps/{}/config", username,app_id);
-    let (app_cfg_result, reversion) = sys_config_client.get(app_key.as_str()).await
+    let (app_cfg_result,rversion) = sys_config_client.get(app_key.as_str()).await
         .map_err(|error| {
             let err_str = format!("get app config failed from system_config! {}", error);
             warn!("{}",err_str.as_str());
@@ -249,11 +250,39 @@ async fn load_app_info(app_id: &str,username: &str,sys_config_client: &SystemCon
     }
     let err_str = format!("parse app info failed! {}", app_info.err().unwrap());
     warn!("{}",err_str.as_str());
-    Err(NodeDaemonErrors::SystemConfigError(err_str))
+    return Err(NodeDaemonErrors::SystemConfigError(err_str));
 }
 
+async fn load_node_gateway_config(node_host_name: &str,sys_config_client: &SystemConfigClient) -> Result<Value> {
+    let json_config_path = format!("{}_node_gateway.json", node_host_name);
+    let json_config = std::fs::read_to_string(json_config_path);
+    if json_config.is_ok() {
+        let json_config = json_config.unwrap();
+        let gateway_config = serde_json::from_str(json_config.as_str()).map_err(|err| {
+            error!("parse DEBUG node gateway_config  failed! {}", err);
+            return NodeDaemonErrors::SystemConfigError("parse DEBUG node gateway_config failed!".to_string());
+        })?;
 
-async fn get_node_config(node_host_name: &str,sys_config_client: &SystemConfigClient) -> Result<NodeConfig> {
+        warn!("Debug load node gateway_config from ./{}_node_gateway.json success!",node_host_name);
+        return Ok(gateway_config);
+    }
+
+    let node_key = format!("nodes/{}/gateway", node_host_name);
+    let (node_cfg_result,rversion) = sys_config_client.get(node_key.as_str()).await
+        .map_err(|error| {
+            error!("get node gateway_config failed from system_config_service! {}", error);
+            return NodeDaemonErrors::SystemConfigError("get node gateway_config failed from system_config_service!".to_string());
+        })?;
+
+    let gateway_config = serde_json::from_str(&node_cfg_result).map_err(|err| {
+        error!("parse node gateway_config failed! {}", err);
+        return NodeDaemonErrors::SystemConfigError("parse gateway_config failed!".to_string());
+    })?;
+
+    Ok(gateway_config)
+}
+
+async fn load_node_config(node_host_name: &str,sys_config_client: &SystemConfigClient) -> Result<NodeConfig> {
     let json_config_path = format!("{}_node_config.json", node_host_name);
     let json_config = std::fs::read_to_string(json_config_path);
     if json_config.is_ok() {
@@ -268,18 +297,16 @@ async fn get_node_config(node_host_name: &str,sys_config_client: &SystemConfigCl
     }
 
     let node_key = format!("nodes/{}/config", node_host_name);
-    let (node_cfg_result, reversion) = sys_config_client.get(node_key.as_str()).await
+    let (node_cfg_result,rversion) = sys_config_client.get(node_key.as_str()).await
         .map_err(|error| {
             error!("get node config failed from etcd! {}", error);
-            return NodeDaemonErrors::SystemConfigError("get node config failed from etcd!".to_string());
+            return NodeDaemonErrors::SystemConfigError("get node config failed from system_config_service!".to_string());
         })?;
 
     let node_config = serde_json::from_str(&node_cfg_result).map_err(|err| {
         error!("parse node config failed! {}", err);
         return NodeDaemonErrors::SystemConfigError("parse node config failed!".to_string());
     })?;
-
-    info!("load node config from system_config success!",);
 
     Ok(node_config)
 }
@@ -288,10 +315,15 @@ async fn node_main(node_host_name: &str,
                    sys_config_client: &SystemConfigClient,
                    device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
 
-    let node_config= get_node_config(node_host_name, sys_config_client).await
+    //get node_gateway_config
+
+
+    let target_state = RunItemTargetState::from_str("Running").unwrap();
+
+    let node_config= load_node_config(node_host_name, sys_config_client).await
         .map_err(|err| {
             error!("load node config failed! {}", err);
-            return NodeDaemonErrors::SystemConfigError("can't load node config!".to_string());
+            return NodeDaemonErrors::SystemConfigError("cann't load node config!".to_string());
         })?;
 
     if !node_config.is_running {
@@ -331,16 +363,15 @@ async fn node_main(node_host_name: &str,
     let app_stream = stream::iter(node_config.apps);
     app_stream.for_each_concurrent(1, |(app_id_with_name, app_cfg)| async move {
 
-        let app_info = load_app_info(app_cfg.app_id.as_str(),app_cfg.username.as_str(),sys_config_client).await;
-        if app_info.is_err() {
-            error!("load {} info failed! ,app not install?", app_cfg.app_id);
-            return;
-        }
-        let app_info = app_info.unwrap();
-        let app_run_item = AppRunItem::new(&app_cfg.app_id,app_info,
+        //let app_info = load_app_info(app_cfg.app_id.as_str(),app_cfg.username.as_str(),sys_config_client).await;
+        //if app_info.is_err() {
+        //    error!("load {} info failed! ,app not install?", app_cfg.app_id);
+        //    return;
+        //}
+        //let app_info = app_info.unwrap();
+        let app_run_item = AppRunItem::new(&app_cfg.app_id,app_cfg.clone(),
                                            device_doc,device_private_key);
-
-        let target_state = app_cfg.target_state.clone();
+        let target_state = RunItemTargetState::from_str(&app_cfg.target_state).unwrap();
         let _ = control_run_item_to_target_state(&app_run_item, target_state, device_private_key)
             .await
             .map_err(|_err| {
@@ -349,7 +380,6 @@ async fn node_main(node_host_name: &str,
             });
     }).await;
 
-    info!("node daemon main success end.");
     Ok(true)
 }
 
@@ -384,18 +414,20 @@ async fn register_device_doc(device_doc:&DeviceConfig,sys_config_client: &System
 }
 
 async fn node_daemon_main_loop(
+    node_id:&str,
     node_host_name:&str,
     sys_config_client: &SystemConfigClient,
     device_doc:&DeviceConfig,
     device_private_key: &EncodingKey,
+    zone_config: &ZoneConfig
 ) -> Result<()> {
     let mut loop_step = 0;
     let mut is_running = true;
     let mut last_register_time = 0;
 
-    //try register device doc
+    //try regsiter device doc
     register_device_doc(device_doc, sys_config_client).await;
-
+    let mut node_gateway_config = None;
     loop {
         if !is_running {
             break;
@@ -409,12 +441,40 @@ async fn node_daemon_main_loop(
             last_register_time = now;
         }
 
+
         let main_result = node_main(node_host_name, sys_config_client, device_doc, device_private_key).await;
         if main_result.is_err() {
             error!("node_main failed! {}", main_result.err().unwrap());
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         } else {
             is_running = main_result.unwrap();
+            let new_node_gateway_config = load_node_gateway_config(node_host_name, sys_config_client).await;
+            if new_node_gateway_config.is_ok() {
+                let mut need_restart = false;
+                let new_node_gateway_config = new_node_gateway_config.unwrap();
+                if node_gateway_config.is_none() {
+                    node_gateway_config = Some(new_node_gateway_config);
+                    need_restart = true;
+                } else {
+                    if new_node_gateway_config == node_gateway_config.unwrap() {
+                        need_restart = false;
+                    } else {
+                        need_restart = true;
+                    }
+                    node_gateway_config = Some(new_node_gateway_config);
+                }
+
+                if need_restart {
+                    info!("node gateway_config changed, update node_gateway_config!");
+                    let gateway_config_path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
+                    std::fs::write(gateway_config_path, serde_json::to_string(&node_gateway_config).unwrap()).unwrap();
+                    start_cyfs_gateway_service(node_id,&device_doc, &device_private_key,&zone_config,true).await.map_err(|err| {
+                        error!("start cyfs_gateway service failed! {}", err);
+                    });
+                }
+            } else {
+                error!("load node gateway_config failed!");
+            }
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
     }
@@ -488,17 +548,25 @@ async fn start_update_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt
     Ok(sn_url)
 }
 
-async fn start_cyfs_gateway_service(node_id: &String,device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig) -> std::result::Result<(),String> {
+async fn start_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig,is_restart:bool) -> std::result::Result<(),String> {
     let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs_gateway".to_string(),get_buckyos_system_bin_dir());
     let _ = cyfs_gateway_service_pkg.load().await.map_err(|err| {
         error!("load cyfs_gateway service pkg failed! {}", err);
         return String::from("load cyfs_gateway service pkg failed!");
     })?;
 
-    let running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
+    let mut running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
         error!("check cyfs_gateway running failed! {}", err);
         return String::from("check cyfs_gateway running failed!");
     })?;
+    if is_restart {
+        cyfs_gateway_service_pkg.stop(None).await.map_err(|err| {
+            error!("stop cyfs_gateway service failed! {}", err);
+            return String::from("stop cyfs_gateway service failed!");
+        })?;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        running_state = ServiceState::Stopped;
+    }
 
     if running_state == ServiceState::Stopped {
         warn!("check cyfs_gateway is stopped,try to start cyfs_gateway");
@@ -508,9 +576,9 @@ async fn start_cyfs_gateway_service(node_id: &String,device_doc: &DeviceConfig, 
         let params : Vec<String>;
         if zone_config.sn.is_some() {
             let sn_url = zone_config.sn.as_ref().unwrap();
-            params = vec!["--node_id".to_string(),node_id.clone(),"--keep_tunnel".to_string(),sn_url.clone()];
+            params = vec!["--node_id".to_string(),node_id.to_string(),"--keep_tunnel".to_string(),sn_url.clone()];
         } else {
-            params = vec!["--node_id".to_string(),node_id.clone()];
+            params = vec!["--node_id".to_string(),node_id.to_string()];
         }
         let start_result = cyfs_gateway_service_pkg.start(Some(&params)).await.map_err(|err| {
             error!("start cyfs_gateway failed! {}", err);
@@ -526,17 +594,17 @@ async fn start_cyfs_gateway_service(node_id: &String,device_doc: &DeviceConfig, 
 }
 
 
-async fn async_main(matches: ArgMatches, force_enable_active: bool) -> std::result::Result<(), String> {
+async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = matches.get_one::<String>("id");
     let enable_active = matches.get_flag("enable_active");
-    let default_node_id = "node".to_string();
-    let node_id = node_id.unwrap_or(&default_node_id);
+    let defualt_node_id = "node".to_string();
+    let node_id = node_id.unwrap_or(&defualt_node_id);
 
-    info!("node_daemon start...");
+    info!("node_dameon start...");
     //load node identity config
     let mut node_identity = load_identity_config(node_id);
     if node_identity.is_err() {
-        if enable_active || force_enable_active {
+        if enable_active {
             info!("node identity config not found, start node active service...");
             start_node_active_service().await;
             info!("node active service returned,exit node_daemon.");
@@ -580,7 +648,7 @@ async fn async_main(matches: ArgMatches, force_enable_active: bool) -> std::resu
             error!("decode device doc failed! {}", err);
             return String::from("decode device doc from jwt failed!");
         })?;
-    let device_doc : DeviceConfig = from_value(device_doc_json).map_err(|err| {
+    let device_doc : DeviceConfig = serde_json::from_value(device_doc_json).map_err(|err| {
         error!("parse device doc failed! {}", err);
         return String::from("parse device doc failed!");
     })?;
@@ -610,17 +678,17 @@ async fn async_main(matches: ArgMatches, force_enable_active: bool) -> std::resu
     }
 
     let is_ood = zone_config.oods.contains(&device_doc.name);
-    CURRENT_ZONE_CONFIG.set(zone_config).unwrap();
+    name_lib::CURRENT_ZONE_CONFIG.set(zone_config).unwrap();
     if is_ood {
         info!("Booting OOD {}......",node_host_name);
     } else {
         info!("Booting Node {}......",node_host_name);
     }
 
-    let zone_config = CURRENT_ZONE_CONFIG.get().unwrap();
-    env::set_var("BUCKY_ZONE_OWNER", serde_json::to_string(&node_identity.owner_public_key).unwrap());
-    env::set_var("BUCKY_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
-    env::set_var("BUCKY_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
+    let zone_config = name_lib::CURRENT_ZONE_CONFIG.get().unwrap();
+    std::env::set_var("BUCKY_ZONE_OWNER", serde_json::to_string(&node_identity.owner_public_key).unwrap());
+    std::env::set_var("BUCKY_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
+    std::env::set_var("BUCKY_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
 
     info!("set var BUCKY_ZONE_OWNER to {}", env::var("BUCKY_ZONE_OWNER").unwrap());
     info!("set var BUCKY_ZONE_CONFIG to {}", env::var("BUCKY_ZONE_CONFIG").unwrap());
@@ -653,9 +721,9 @@ async fn async_main(matches: ArgMatches, force_enable_active: bool) -> std::resu
     })?;
 
     //init kernel_service:cyfs-gateway service
-    env::set_var("GATEWAY_SESSIONT_TOKEN",device_session_token_jwt.clone());
+    std::env::set_var("GATEWAY_SESSIONT_TOKEN",device_session_token_jwt.clone());
     info!("set var GATEWAY_SESSIONT_TOKEN to {}", device_session_token_jwt);
-    start_cyfs_gateway_service(node_id,&device_doc, &device_private_key,&zone_config).await.map_err(|err| {
+    start_cyfs_gateway_service(node_id.as_str(),&device_doc, &device_private_key,&zone_config,false).await.map_err(|err| {
         error!("init cyfs_gateway service failed! {}", err);
         return String::from("init cyfs_gateway service failed!");
     })?;
@@ -693,7 +761,7 @@ async fn async_main(matches: ArgMatches, force_enable_active: bool) -> std::resu
         match boot_config_result {
             sys_config::Result::Err(SystemConfigError::KeyNotFound(_)) => {
                 warn!("boot config is not exist, try first scheduler to generate it!");
-                env::set_var("SCHEDULER_SESSION_TOKEN", device_session_token_jwt.clone());
+                std::env::set_var("SCHEDULER_SESSION_TOKEN", device_session_token_jwt.clone());
                 info!("set var SCHEDULER_SESSION_TOKEN {}", device_session_token_jwt);
                 do_boot_scheduler().await.map_err(|err| {
                     error!("do boot scheduler failed! {}", err);
@@ -735,12 +803,12 @@ async fn async_main(matches: ArgMatches, force_enable_active: bool) -> std::resu
         }
     }
 
-    //use boot config to init name-lib. etc kernel libs.
+    //use boot config to init name-lib.. etc kernel libs.
     let gateway_ip = resolve_ip("gateway").await;
     info!("gateway ip: {:?}", gateway_ip);
 
     info!("{}@{} boot OK, enter node daemon main loop!", device_doc.name, node_identity.zone_name);
-    node_daemon_main_loop(&device_doc.name.as_str(), &syc_cfg_client, &device_doc, &device_private_key)
+    node_daemon_main_loop(node_id,&device_doc.name.as_str(), &syc_cfg_client, &device_doc, &device_private_key, &zone_config)
         .await
         .map_err(|err| {
             error!("node daemon main loop failed! {}", err);
@@ -750,10 +818,10 @@ async fn async_main(matches: ArgMatches, force_enable_active: bool) -> std::resu
     Ok(())
 }
 
-pub(crate) fn run(matches: ArgMatches, force_enable_active: bool) {
+pub(crate) fn run(matches: ArgMatches) {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     if num_cpus::get() < 2 {
         builder.worker_threads(2);
     }
-    builder.enable_all().build().unwrap().block_on(async_main(matches, force_enable_active));
+    builder.enable_all().build().unwrap().block_on(async_main(matches));
 }

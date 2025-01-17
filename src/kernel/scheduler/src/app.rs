@@ -19,6 +19,13 @@ fn build_app_service_config(user_id:&str,app_config:&AppConfigNode,node_info:&De
 
     let mut result_config = AppServiceConfig::new(user_id,app_config);
     result_config.docker_image_name = Some(docker_pkg_info.docker_image_name.clone().unwrap());
+
+    // 解析是否有<arch>_direct_image字段
+    let direct_pkg_name = format!("{}_direct_image", arch_name.as_str());
+    if let Some(info) = app_config.app_info.pkg_list.get(&direct_pkg_name) {
+        result_config.direct_image = Some(info.package_url.clone().unwrap_or(String::new()));
+    }
+
     if  app_config.app_index  > 400 {
         warn!("app_index: {} is too large,skip",app_config.app_index);
         return Err(format!("app_index: {} is too large",app_config.app_index).into());
@@ -29,7 +36,7 @@ fn build_app_service_config(user_id:&str,app_config:&AppConfigNode,node_info:&De
         result_config.tcp_ports.insert(real_port, inner_port.clone());
         real_port += 1;
     }
-    return Ok(result_config)    
+    return Ok(result_config)
 }
 
 

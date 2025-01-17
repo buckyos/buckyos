@@ -1,5 +1,7 @@
+use std::cell::OnceCell;
 use std::ffi::OsString;
 use std::process::exit;
+use std::sync::OnceLock;
 use std::time::Duration;
 use clap::{Arg, ArgMatches, Command};
 use lazy_static::lazy_static;
@@ -28,6 +30,8 @@ lazy_static! {
             process_id: None,
     }});
 }
+
+static MATCHES: OnceLock<ArgMatches> = OnceLock::new();
 
 pub(crate) fn service_main(_arguments: Vec<OsString>) -> windows_service::Result<()> {
     let status_handle = service_control_handler::register("buckyos", move |event| {
@@ -66,33 +70,14 @@ pub(crate) fn service_main(_arguments: Vec<OsString>) -> windows_service::Result
 
     }
 
-    let matches = Command::new("BuckyOS Node Daemon")
-        .arg(
-            Arg::new("id")
-                .long("node_id")
-                .help("This node's id")
-                .required(false),
-        )
-        .arg(
-            Arg::new("enable_active")
-                .long("enable_active")
-                .help("Enable node active service")
-                .action(clap::ArgAction::SetTrue)
-                .required(false),
-        )
-        .arg(Arg::new("as_win_srv")
-            .long("as_win_srv")
-            .help("run as a windows service")
-            .action(clap::ArgAction::SetTrue)
-            .required(false))
-        .get_matches();
+    let matches = MATCHES.get().unwrap().clone();
 
-    log::info!("will run real service, param {:?}", _arguments);
-    run::run(matches, true);
+    run::run(matches);
     log::warn!("service exited!!");
     Ok(())
 }
 
 pub(crate) fn service_start(matches: ArgMatches) -> windows_service::Result<()> {
+    MATCHES.set(matches).unwrap();
     service_dispatcher::start("buckyos", ffi_service_main)
 }
