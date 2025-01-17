@@ -21,7 +21,8 @@ def create_rootfs_tarball():
     # 获取当前工程根目录
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     rootfs_path = os.path.join(project_root, "rootfs")
-    
+
+    print(f"rootfs_path: {rootfs_path}")
     if not os.path.exists(rootfs_path):
         raise Exception("rootfs directory not found")
     
@@ -59,8 +60,7 @@ def install(device_id: str):
         # 4. 上传tar包
         print("Uploading rootfs...")
         remote_tar = os.path.join(remote_temp_dir, "rootfs.tar.gz")
-        scp_command = f"scp {tar_path} {device.config['username']}@{device.config['hostname']}:{remote_tar}"
-        subprocess.run(scp_command, shell=True, check=True)
+        device.scp_put(tar_path, remote_tar)
         
         # 5. 安装过程
         if is_fresh_install:
@@ -74,21 +74,22 @@ def install(device_id: str):
             print("Updating existing installation...")
             install_commands = [
                 "rm -rf /opt/buckyos/bin",
-                f"cd /opt/buckyos && tar xzf {remote_tar} bin"
+                f"cd /opt/buckyos && tar xzf {remote_tar} ./bin"
             ]
         
         for cmd in install_commands:
+            print(f"Running remote command: {cmd}")
             stdout, stderr = device.run_command(cmd)
             if stderr:
                 raise Exception(f"Installation failed: {stderr}")
         
         # 6. 如果是新安装，复制设备配置文件
-        if is_fresh_install and 'identity_file' in device.config:
-            local_identity = device.config['identity_file']
-            if os.path.exists(local_identity):
-                remote_identity = "/opt/buckyos/etc/device.conf"
-                scp_command = f"scp {local_identity} {device.config['username']}@{device.config['hostname']}:{remote_identity}"
-                subprocess.run(scp_command, shell=True, check=True)
+        #if is_fresh_install and 'identity_file' in device.config:
+        #    local_identity = device.config['identity_file']
+        #     if os.path.exists(local_identity):
+        #        remote_identity = "/opt/buckyos/etc/device.conf"
+        #        scp_command = f"scp {local_identity} {device.config['username']}@{device.config['hostname']}:{remote_identity}"
+        #        subprocess.run(scp_command, shell=True, check=True)
         
         # 7. 清理临时文件
         device.run_command(f"rm -rf {remote_temp_dir}")

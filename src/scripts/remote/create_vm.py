@@ -23,7 +23,7 @@ class VMCreator:
     def _validate_config(self):
         """验证配置文件格式"""
         for device_id, device_config in self.devices.items():
-            required_fields = ['hostname', 'username', 'vm']
+            required_fields = ['node_id', 'vm']
             if not all(field in device_config for field in required_fields):
                 raise ValueError(f"Device {device_id} must contain: {required_fields}")
             
@@ -59,7 +59,7 @@ class VMCreator:
         disk = vm_config.get('disk', '10G')
         
         # 创建VM的基本命令
-        cmd = f"multipass launch --name {device_id} --cpus {cpu} --memory {memory} --disk {disk} --cloud-init user_config.yaml "
+        cmd = f"multipass launch --name {device_id} --cpus {cpu} --memory {memory} --disk {disk} --cloud-init vm_init.yaml "
         
         # 添加网络配置
         if 'network' in vm_config:
@@ -70,72 +70,15 @@ class VMCreator:
         # 启动VM
         self._run_command(cmd)
         time.sleep(5)  # 等待VM完全启动
-        
-        # 配置静态IP（如果指定）
-        if 'ip' in vm_config:
-            self._configure_static_ip(device_id, vm_config)
+    
         
         # 配置hostname
         self._run_command(f"multipass exec {device_id} -- sudo hostnamectl set-hostname {device_id}")
-        
-        # 配置hosts文件
-        self._configure_hosts(device_id)
-        
-        # 配置SSH密钥
-        if 'ssh_key' in device_config:
-            self._configure_ssh(device_id, device_config)
+
         
         print(f"VM {device_id} created successfully")
 
-    def _configure_static_ip(self, device_id: str, vm_config: dict):
-        """配置静态IP"""
-        net_config = vm_config['network']
-        netplan_config = {
-            "network": {
-                "version": 2,
-                "ethernets": {
-                    "eth0": {
-                        "addresses": [f"{vm_config['ip']}/24"],
-                        "gateway4": net_config.get('gateway'),
-                        "nameservers": {
-                            "addresses": ["8.8.8.8", "8.8.4.4"]
-                        }
-                    }
-                }
-            }
-        }
-        
-        # 写入netplan配置
-        config_str = json.dumps(netplan_config)
-        self._run_command(f"""multipass exec {device_id} -- bash -c 'echo \'{config_str}\' | sudo tee /etc/netplan/50-cloud-init.yaml'""")
-        self._run_command(f"multipass exec {device_id} -- sudo netplan apply")
-        
-    def _configure_hosts(self, device_id: str):
-        """配置hosts文件"""
-        hosts_entries = []
-        for dev_id, dev_conf in self.devices.items():
-            if 'vm' in dev_conf and 'ip' in dev_conf['vm']:
-                hosts_entries.append(f"{dev_conf['vm']['ip']} {dev_id}")
-        
-        if hosts_entries:
-            hosts_str = "\n".join(hosts_entries)
-            self._run_command(f"""multipass exec {device_id} -- bash -c 'echo "{hosts_str}" | sudo tee -a /etc/hosts'""")
-
-    def _configure_ssh(self, device_id: str, device_config: dict):
-        """配置SSH密钥"""
-        ssh_key = device_config['ssh_key']
-        username = device_config['username']
-        
-        # 确保.ssh目录存在
-        self._run_command(f"multipass exec {device_id} -- sudo mkdir -p /home/{username}/.ssh")
-        
-        # 写入SSH密钥
-        self._run_command(f"""multipass exec {device_id} -- bash -c 'echo "{ssh_key}" | sudo tee /home/{username}/.ssh/authorized_keys'""")
-        
-        # 设置正确的权限
-        self._run_command(f"multipass exec {device_id} -- sudo chown -R {username}:{username} /home/{username}/.ssh")
-        self._run_command(f"multipass exec {device_id} -- sudo chmod 700 /home/{username}/.ssh")
-        self._run_command(f"multipass exec {device_id} -- sudo chmod 600 /home/{username}/.ssh/authorized_keys")
+    
 
     def create_all(self):
         """创建所有配置的虚拟机"""
@@ -156,6 +99,8 @@ class VMCreator:
             except Exception as e:
                 print(f"Failed to create VM {device_id}: {str(e)}")
                 continue
+
+        # TODO: 通过multipass list 获取所有vm的ip
 
 def main():
     if len(sys.argv) != 2:
