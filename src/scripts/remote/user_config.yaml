@@ -1,9 +1,0 @@
-#cloud-config
-users:
-  - name: root
-    gecos: "root"
-    primary_group: root
-    groups: sudo
-    shell: /bin/bash
-    #buckyos2025
-    passwd: "$6$rounds=4096$vumjqMkVLNRXUvJw$iaiDsWKCGKgjeC7sp.PpGw6BOJkUaRCQ.XInFhfq39DEp6lRNswnyF4gVrE9UW7qqIF0zvQisY/OwglgPO2oc1"
