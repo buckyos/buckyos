@@ -14,8 +14,9 @@
             }
         },
         "apps": {
-            "cyfs-gateway": {
-                "binary": "/opt/buckyos/bin/cyfs-gateway"
+            "web3_bridge": {
+                "start":"python3 /opt/web3_bridge/start.py",
+                "stop":"python3 /opt/web3_bridge/stop.py"
             }
         }
     },
@@ -34,7 +35,8 @@
         },
         "apps": {
             "buckyos": {
-                "binary": "/opt/buckyos/bin/node_daemon"
+                "start": "nohup /opt/buckyos/bin/node_daemon > /dev/null 2>&1 &",
+                "stop":"python3 /opt/buckyos/bin/killall.py"
             }
         }
     },
@@ -54,7 +56,8 @@
         },
         "apps": {
             "buckyos": {
-                "binary": "/opt/buckyos/bin/node_daemon"
+                "start": "nohup /opt/buckyos/bin/node_daemon > /dev/null 2>&1 &",
+                "stop":"python3 /opt/buckyos/bin/killall.py"
             }
         }
     }

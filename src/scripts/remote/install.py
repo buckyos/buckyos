@@ -8,13 +8,18 @@
 
 import sys
 import os
+import json
 import tempfile
 import subprocess
-from control import remote_device
+from remote_device import remote_device
 
 def print_usage():
     print("Usage: install.py <device_id>")
     sys.exit(1)
+
+def get_project_dir():
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return project_root
 
 def create_rootfs_tarball():
     """创建rootfs的tar包"""
@@ -39,6 +44,8 @@ def create_rootfs_tarball():
     
     return tar_path
 
+
+
 def install(device_id: str):
     device = remote_device(device_id)
     
@@ -62,6 +69,7 @@ def install(device_id: str):
         remote_tar = os.path.join(remote_temp_dir, "rootfs.tar.gz")
         device.scp_put(tar_path, remote_tar)
         
+        
         # 5. 安装过程
         if is_fresh_install:
             print("Performing fresh installation...")
@@ -74,16 +82,23 @@ def install(device_id: str):
             print("Updating existing installation...")
             install_commands = [
                 "rm -rf /opt/buckyos/bin",
-                f"cd /opt/buckyos && tar xzf {remote_tar} ./bin"
+                f"cd /opt/buckyos && tar xzf {remote_tar} ./bin",
             ]
-        
+
+        if device.has_app("web3_bridge"):
+            print("uploading web3_bridge ...")
+            project_dir = get_project_dir()
+            device.scp_put(f"{project_dir}/web3_bridge", "/opt/web3_bridge", recursive=True)
+
         for cmd in install_commands:
             print(f"Running remote command: {cmd}")
             stdout, stderr = device.run_command(cmd)
             if stderr:
                 raise Exception(f"Installation failed: {stderr}")
+            
         
-        # 6. 如果是新安装，复制设备配置文件
+        
+        # 6. 如果是新安装，复制配置文件
         #if is_fresh_install and 'identity_file' in device.config:
         #    local_identity = device.config['identity_file']
         #     if os.path.exists(local_identity):
@@ -107,12 +122,17 @@ def install(device_id: str):
         print(f"Error during installation: {str(e)}", file=sys.stderr)
         return False
 
+g_all_devices = None
+
 def main():
     if len(sys.argv) != 2:
         print_usage()
     
+    config_path = os.path.expanduser("~/buckyos_dev_env.json")
+    with open(config_path, 'r') as f:
+        g_all_devices = json.load(f)
+
     device_id = sys.argv[1]
-    
     try:
         success = install(device_id)
         sys.exit(0 if success else 1)

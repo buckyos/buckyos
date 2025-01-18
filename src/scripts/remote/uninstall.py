@@ -2,7 +2,7 @@
 
 import sys
 import os
-from control import remote_device
+from scripts.remote.remote_device import remote_device
 
 def print_usage():
     print("Usage: uninstall.py <device_id> [-clean]")

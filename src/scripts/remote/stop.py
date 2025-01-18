@@ -1,82 +1,42 @@
 #!/usr/bin/env python3
 
 import sys
+import os
 import time
-from control import remote_device
+from remote_device import remote_device
 
 def print_usage():
-    print("Usage: stop.py <device_id> [app_id]")
-    print("  app_id: Optional. If not specified, all configured apps will be stopped")
+    print("Usage: stop.py device_id [app_id]")
+    print("  app_id: Optional. If not specified, all configured apps will be started")
     sys.exit(1)
 
 def stop_app(device: remote_device, app_id: str) -> bool:
-    """停止单个应用"""
-    if 'apps' not in device.config:
-        raise Exception(f"No apps configured for device {device.device_id}")
-    
-    app_config = device.config['apps'].get(app_id)
-    if not app_config:
+
+    app_config = device.get_app_config(app_id)
+    if app_config is None:
         raise Exception(f"App {app_id} not found in configuration")
+
+    start_cmd = app_config.get('start')
+    if start_cmd is None:
+        raise Exception(f"Start command for {app_id} not found in configuration")
     
-    binary = app_config.get('binary', f'/opt/buckyos/bin/{app_id}')
+    # 执行启动命令
+    stdout, stderr = device.run_command(start_cmd)
+    if stderr:
+        print(f"Warning while starting {app_id}: {stderr}")
     
-    # 获取进程ID
-    stdout, stderr = device.run_command(f"pgrep -f {binary}")
-    pids = stdout.strip().split('\n')
+    time.sleep(1)  # 等待进程启动
     
-    if not pids or not pids[0]:
-        print(f"No running process found for {app_id}")
-        return True
-    
-    success = True
-    for pid in pids:
-        pid = pid.strip()
-        if not pid:
-            continue
-            
-        print(f"Stopping {app_id} (PID: {pid})...")
-        
-        # 首先尝试正常终止进程
-        stdout, stderr = device.run_command(f"kill {pid}")
-        
-        # 等待进程终止
-        for _ in range(5):  # 最多等待5秒
-            stdout, stderr = device.run_command(f"kill -0 {pid} 2>/dev/null || echo 'stopped'")
-            if 'stopped' in stdout:
-                break
-            time.sleep(1)
-        else:
-            # 如果进程仍然存在，使用SIGKILL强制终止
-            print(f"Force stopping {app_id} (PID: {pid})...")
-            stdout, stderr = device.run_command(f"kill -9 {pid}")
-            
-            # 最后检查一次
-            stdout, stderr = device.run_command(f"kill -0 {pid} 2>/dev/null || echo 'stopped'")
-            if 'stopped' not in stdout:
-                print(f"Failed to stop {app_id} (PID: {pid})", file=sys.stderr)
-                success = False
-                continue
-        
-        print(f"Successfully stopped {app_id} (PID: {pid})")
-    
-    return success
+    print(f"Successfully started {app_id}")
+    return True
 
 def stop_all_apps(device: remote_device) -> bool:
-    """停止所有配置的应用"""
-    if 'apps' not in device.config:
-        raise Exception(f"No apps configured for device {device.device_id}")
-    
-    # 按照配置文件中的顺序反向停止服务
-    app_ids = list(device.config['apps'].keys())
-    app_ids.reverse()
-    
     success = True
-    for app_id in app_ids:
+    for app_id in device.apps.keys():
         try:
-            if not stop_app(device, app_id):
-                success = False
+            start_app(device, app_id)
         except Exception as e:
-            print(f"Failed to stop {app_id}: {str(e)}", file=sys.stderr)
+            print(f"Failed to start {app_id}: {str(e)}", file=sys.stderr)
             success = False
     
     return success
@@ -86,16 +46,15 @@ def main():
         print_usage()
     
     device_id = sys.argv[1]
+    device = remote_device(device_id)
     app_id = sys.argv[2] if len(sys.argv) > 2 else None
     
     try:
-        device = remote_device(device_id)
-        
         if app_id:
             success = stop_app(device, app_id)
         else:
             success = stop_all_apps(device)
-        
+
         sys.exit(0 if success else 1)
         
     except Exception as e:

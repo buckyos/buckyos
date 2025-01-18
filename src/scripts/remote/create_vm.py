@@ -5,7 +5,7 @@ import os
 import json
 import subprocess
 import time
-from control import remote_device
+from scripts.remote.remote_device import remote_device
 
 def print_usage():
     print("Usage: create_vm.py config_file")

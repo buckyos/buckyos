@@ -2,8 +2,9 @@
 
 import sys
 import os
+import json
 import subprocess
-from control import remote_device
+from remote_device import remote_device
 
 def print_usage():
     print("Usage: clog.py [device_id]")
@@ -30,15 +31,14 @@ def get_device_log(device: remote_device) -> bool:
         local_dir = ensure_local_dir(device_id)
         
         # 检查日志目录是否存在
-        stdout, stderr = device.run_command("test -d /opt/buckyos/log && echo 'exists'")
+        stdout, stderr = device.run_command("test -d /opt/buckyos/logs && echo 'exists'")
         if 'exists' not in stdout:
             print(f"No log directory found on {device_id}")
             return True
         
         # 直接使用scp下载整个日志目录
         print(f"Downloading logs from {device_id}...")
-        scp_command = f"scp -r -P {device.config.get('port', 22)} {device.config['username']}@{device.config['hostname']}:/opt/buckyos/log/* {local_dir}/"
-        subprocess.run(scp_command, shell=True, check=True)
+        device.scp_pull("/opt/buckyos/logs", local_dir, recursive=True)
         
         print(f"Logs from {device_id} saved to {local_dir}")
         return True
@@ -49,11 +49,8 @@ def get_device_log(device: remote_device) -> bool:
 
 def get_all_logs() -> bool:
     """获取所有设备的日志"""
-    import json
-    import os
-    
     # 从control.py的配置文件中读取所有设备
-    config_path = os.path.expanduser('~/.remote_devices/config.json')
+    config_path = os.path.expanduser('~/.buckyos_dev/env_config.json')
     try:
         with open(config_path, 'r') as f:
             configs = json.load(f)
