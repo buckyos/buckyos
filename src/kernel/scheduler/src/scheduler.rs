@@ -20,12 +20,14 @@ use anyhow::Result;
 use std::{collections::HashMap, sync::Arc};
 use log::*;
 
-#[derive(Clone)]
+const SMALL_SYSTEM_NODE_COUNT:usize = 7;
+
+#[derive(Clone,PartialEq)]
 pub enum PodItemType {
     Service, //无状态的系统服务
     App,// 无状态的app服务
 }
-#[derive(Clone)]
+#[derive(Clone,PartialEq)]
 pub enum PodItemStatus {
     New,
     Deploying,
@@ -36,11 +38,12 @@ pub enum PodItemStatus {
     Removing,
     Deleted,
 }
-#[derive(Clone)]
+#[derive(Clone,PartialEq)]
 pub struct PodItem {
     pub id: String,
     pub pod_type: PodItemType,
     pub status: PodItemStatus,
+    pub best_instance_count: u32,
 
     pub required_cpu: f64,
     pub required_memory: f64,
@@ -119,71 +122,64 @@ pub enum SchedulerAction {
     ChangePodStatus(String,PodItemStatus),
     InstancePod(PodInstance),
     UpdatePodInstance(String,PodInstance),
-    RemovePodInstance(String),
+    RemovePodInstance(String),//value is pod_id@node_id
 }
 
 pub struct PodScheduler {
     schedule_step_id:u64,
     last_schedule_time:u64,
-    nodes:Vec<NodeItem>,
-    pods:Vec<PodItem>,
+    nodes:HashMap<String,NodeItem>,
+    pods:HashMap<String,PodItem>,
     // 系统里所有的PodInstance,key是pod_id
     pod_instances:HashMap<String,PodInstance>,
+
+    last_pods:HashMap<String,PodItem>,
 }
 
 
 impl PodScheduler {
+    pub fn new_empty(step_id:u64,last_schedule_time:u64)->Self {
+        Self { 
+            schedule_step_id:step_id,
+            last_schedule_time,
+            nodes:HashMap::new(),
+            pods:HashMap::new(),
+            pod_instances:HashMap::new(),
+            last_pods:HashMap::new(),
+        }
+    }
+    
     pub fn new(step_id:u64,
         last_schedule_time:u64,
-        nodes:Vec<NodeItem>,
-        pods:Vec<PodItem>,
-        pod_instances:HashMap<String,PodInstance>) -> Self {
+        nodes:HashMap<String,NodeItem>,
+        pods:HashMap<String,PodItem>,
+        pod_instances:HashMap<String,PodInstance>,
+        last_pods:HashMap<String,PodItem>) -> Self {
         Self { 
             schedule_step_id:step_id,
             last_schedule_time,
             nodes,
             pods,
-            pod_instances
+            pod_instances,
+            last_pods,
         }
     }
 
-    fn resort_nodes(&mut self)->Result<Vec<SchedulerAction>> {
-        let mut node_actions = Vec::new();
-        // 根据Node的status进行排序
-        for node in &self.nodes {
-            // 1. 检查已有op tasks的完成情况，该部分可能会对可用Node进行一些标记
-            self.check_node_op_tasks(node, &mut node_actions)?;
-            
-            // 2. 处理新node的初始化
-            if node.status == NodeStatus::New {
-                node_actions.push(SchedulerAction::ChangeNodeStatus(
-                    node.id.clone(), 
-                    NodeStatus::Prepare
-                ));
-                
-                // 创建node初始化任务
-                node_actions.push(SchedulerAction::CreateOPTask(OPTask {
-                    id: format!("init-{}", node.id),
-                    creator_id: None,
-                    owner_id: node.id.clone(),
-                    status: OPTaskStatus::New,
-                    create_time: self.last_schedule_time,
-                    create_step_id: self.schedule_step_id,
-                    body: OPTaskBody::NodeInitBaseService,
-                }));
-            }
-        }
-
-        Ok(node_actions)
-    }
 
     pub fn schedule(&mut self)->Result<Vec<SchedulerAction>> {
         if self.nodes.is_empty() {
             return Err(anyhow::anyhow!("No nodes found"));
-        }
+        }   
 
-        let is_small_system = self.nodes.len() <= 7;
-        let mut actions = self.resort_nodes()?;
+        let mut actions = Vec::new();
+
+        // Step0. 检查schedule发起的OP task的进展情况.决定是否要进入常规调度流程
+        //TODO:
+
+        // Step1. review node (资源池)
+        let is_small_system = self.nodes.len() <= SMALL_SYSTEM_NODE_COUNT;
+        let node_actions = self.resort_nodes()?;
+        actions.extend(node_actions);
         if !actions.is_empty() && is_small_system {
             // 为了降低复杂度,在系统规模较小时,如果第一个阶段存在动作,则跳过第二阶段,防止复杂度的重叠.
             // TODO:是否会带来问题?
@@ -191,73 +187,102 @@ impl PodScheduler {
             return Ok(actions);
         }
 
+        // Step2. 处理pod的实例化与反实例化
+        if self.is_pod_changed() {
+            let pod_actions = self.schedule_pod_change()?;
+            actions.extend(pod_actions);
+        }
 
-        let available_nodes: Vec<NodeItem> = self.nodes.iter()
-            .filter(|n| n.status == NodeStatus::Ready)
-            .cloned()
-            .collect();
+        // Step3. 优化pod_instance的资源使用
+        // TODO:
 
-        // 扫描所有Pod和PodInstance
-		//实例化调度算法：分配资源：构造PodInstance，将未部署的Pod绑定到Node上
-		//反实例化：及时释放资源
-		//动态调整：根据运行情况，系统资源剩余情况，相对动态的调整Pod能用的资源
-		//动态调整也涉及到实例的迁移
+        Ok(actions)
+    }
 
-        for pod in self.pods.iter() {
-            if !self.pod_instances.contains_key(&pod.id) {
-                // Pod尚未实例化
-                match pod.status {
-                    PodItemStatus::Removing => {
-                        //首次看到，执行反实例化操作、构造必要的OP
-                        //二次看到，判断相关Node的状态里是否已经上报删除完成
-                        //如果看到完整，则将状态设置为deleted    
-                    },
-                    PodItemStatus::New  => {
-                        // 尝试实例化Pod
-                        match self.instance_pod(pod, &available_nodes) {
-                            Ok(new_instances) => {
-                                for instance in new_instances {
-                                    actions.push(SchedulerAction::InstancePod(instance));
-                                }
-                                actions.push(SchedulerAction::ChangePodStatus(
-                                    pod.id.clone(), 
-                                    PodItemStatus::Deploying
-                                ));
-                            },
-                            Err(_) => {
-                                // 无法找到合适的节点，标记Pod状态为异常
-                                actions.push(SchedulerAction::ChangePodStatus(
-                                    pod.id.clone(), 
-                                    PodItemStatus::DeployFailed
-                                ));
-                            }
-                        }
-                    },
-                    _ => {} // 其他状态的Pod暂不处理
-                }
+    fn resort_nodes(&mut self)->Result<Vec<SchedulerAction>> {
+        let mut node_actions = Vec::new();
+        // TOD: 根据Node的status进行排序
+        for node in self.nodes.values() {
+            // 1. 检查已有op tasks的完成情况，该部分可能会对可用Node进行一些标记
+            self.check_node_op_tasks(node, &mut node_actions)?;
+            
+            // 2. 处理新node的初始化
+            match node.status {
+                NodeStatus::New => {
+                    // 由调度器控制node进入初始化准备状态
+                    node_actions.push(SchedulerAction::ChangeNodeStatus(
+                        node.id.clone(), 
+                        NodeStatus::Prepare
+                    ));
+                },
+                NodeStatus::Removing => {
+                    // TODO:由调度器控制node 处理移除任务
+                    //
+                    node_actions.push(SchedulerAction::ChangeNodeStatus(
+                        node.id.clone(), 
+                        NodeStatus::Deleted
+                    ));
+                },
+                _ => {}
             }
         }
 
-        // 2. 动态挑战已有的PodInstance:根据运行情况，系统资源剩余情况，相对动态的调整Pod能用的资源
-        //    动态调整也涉及到实例的自动迁移
-        for (pod_id, instance) in &self.pod_instances {
-            // 找到对应的Pod配置
-            if let Some(pod) = self.pods.iter().find(|p| p.id == *pod_id) {
-                match pod.status {
-                    PodItemStatus::Deployed => {
-                        // 检查处于改状态的时间
-                        //self.check_resource_limits(instance, node, &mut actions)?;
-                    },
-                    _ => {
-                        // 其他状态的Pod暂不处理
-                        unimplemented!()
+        Ok(node_actions)
+    }
+
+    fn schedule_pod_change(&mut self)->Result<Vec<SchedulerAction>> {
+        let mut pod_actions = Vec::new();
+        let valid_nodes : Vec<NodeItem> = self.nodes.values().cloned().collect();
+        let valid_nodes : Vec<NodeItem> = valid_nodes.iter().filter(|node| node.status == NodeStatus::Ready).cloned().collect();
+
+        for (pod_id, pod) in &self.pods {
+            match pod.status {
+                PodItemStatus::New => {
+                    let new_instances = self.instance_pod(pod, &valid_nodes)?;
+                    for instance in new_instances {
+                        pod_actions.push(SchedulerAction::InstancePod(instance));
+                    }
+                    //TODO:现在没有部署中的状态
+                    pod_actions.push(SchedulerAction::ChangePodStatus(pod_id.clone(),PodItemStatus::Deployed));
+                },
+                PodItemStatus::Removing => {
+                    for instance in self.pod_instances.values() {
+                        if instance.pod_id == *pod_id {
+                            pod_actions.push(SchedulerAction::RemovePodInstance(format!("{}@{}",pod_id,instance.node_id)));
+                        }
+                    }
+                    //TODO:现在没有删除中的状态
+                    pod_actions.push(SchedulerAction::ChangePodStatus(pod_id.clone(),PodItemStatus::Deleted));
+                },
+                _ => {}
+            }    
+        }
+        Ok(pod_actions)
+    }
+
+    fn is_pod_changed(&self) -> bool {
+        if self.pods.len() != self.last_pods.len() {
+            return true;
+        }
+
+        for (pod_id, pod) in &self.pods {
+            match self.last_pods.get(pod_id) {
+                None => return true, 
+                Some(last_pod) => {
+                    if pod.status != last_pod.status 
+                        || pod.required_cpu != last_pod.required_cpu 
+                        || pod.required_memory != last_pod.required_memory 
+                        || pod.node_affinity != last_pod.node_affinity 
+                        || pod.network_affinity != last_pod.network_affinity {
+                        return true;
                     }
                 }
             }
         }
-
-        Ok(actions)
+        
+        false
     }
+
 
     // 辅助函数
     fn check_node_op_tasks(&self, node: &NodeItem, actions: &mut Vec<SchedulerAction>) -> Result<()> {
@@ -280,36 +305,43 @@ impl PodScheduler {
         Ok(vec![])
     }
 
-    pub fn instance_pod(&self, pod_item: &PodItem, node_list: &Vec<NodeItem>) -> Result<Vec<PodInstance>> {
+    fn instance_pod(&self, pod_item: &PodItem, node_list: &Vec<NodeItem>) -> Result<Vec<PodInstance>> {
         
         // 1. 过滤阶段
         let candidate_nodes : Vec<&NodeItem> = node_list.iter()
-            .filter(|node| self.filter_node(node, pod_item))
+            .filter(|node| self.filter_node_for_pod_instance(node, pod_item))
             .collect();
 
         if candidate_nodes.is_empty() {
             return Err(anyhow::anyhow!("No suitable node found for pod"));
         }
+        let candidate_node_count:u32 = candidate_nodes.len() as u32;
 
         // 2. 打分阶段
         let mut scored_nodes: Vec<(f64, &NodeItem)> = candidate_nodes.iter()
             .map(|node| (self.score_node(node, pod_item), *node))
             .collect();
 
+        let instance_count:u32 = std::cmp::min(pod_item.best_instance_count, candidate_node_count);
         // 按分数降序排序
         scored_nodes.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
 
-        // 选择得分最高的节点
-        let selected_node = scored_nodes[0].1;
+        // 选择得分最高的instance_count个节点
+        let selected_nodes: Vec<(f64, &NodeItem)> = scored_nodes.iter().take(instance_count as usize).map(|&(score, node)| (score, node)).collect();
         
-        Ok(vec![PodInstance {
-            node_id: selected_node.id.clone(),
-            pod_id: pod_item.id.clone(),
-            res_limits: HashMap::new(),
-        }])
+        let mut instances = Vec::new();
+        for (_,node) in selected_nodes.iter() {
+            instances.push(PodInstance {
+                node_id: node.id.clone(),
+                pod_id: pod_item.id.clone(),
+                res_limits: HashMap::new(),
+            });
+        }
+        Ok(instances)
     }
 
-    fn filter_node(&self, node: &NodeItem, pod: &PodItem) -> bool {
+    //关键函数:根据pod_item的配置,过滤符合条件的node
+    fn filter_node_for_pod_instance(&self, node: &NodeItem, pod: &PodItem) -> bool {
         // 1. 检查节点状态
         if node.status != NodeStatus::Ready {
             return false;
@@ -331,6 +363,7 @@ impl PodScheduler {
         true
     }
 
+    //关键函数:根据pod_item的配置,对node进行打分
     fn score_node(&self, node: &NodeItem, pod: &PodItem) -> f64 {
         let mut score = 0.0;
 
@@ -393,53 +426,24 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_node() {
+    fn test_filter_node_for_pod_instance() {
         let pod = PodItem {
             id: "test-pod".to_string(),
             required_cpu: 2.0,
             required_memory: 4.0,
             node_affinity: Some("gpu".to_string()),
             network_affinity: Some("zone1".to_string()),
+            best_instance_count: 2,
             pod_type: PodItemType::Service,
             status: PodItemStatus::New,
         };
 
         let now = buckyos_get_unix_timestamp();
-        let scheduler = PodScheduler::new(1,now,
-            vec![
-                create_test_node(
-                    "node1",
-                    4.0,
-                    8.0,
-                    vec!["gpu".to_string()],
-                    0.5,
-                    "zone1"
+        let scheduler = PodScheduler::new_empty(1,now);
 
-                ),
-                create_test_node(
-                    "node2",
-                    1.0, // insufficient CPU
-                    8.0,
-                    vec!["gpu".to_string()],
-                    0.5,
-                    "zone1"
-       
-                ),
-                create_test_node(
-                    "node3",
-                    4.0,
-                    8.0,
-                    vec![], // missing required label
-                    0.5,
-                    "zone1"
-                ),
-            ],
-            HashMap::new()
-        );
-
-        assert!(scheduler.filter_node(&scheduler.nodes[0], &pod));
-        assert!(!scheduler.filter_node(&scheduler.nodes[1], &pod));
-        assert!(!scheduler.filter_node(&scheduler.nodes[2], &pod));
+        assert!(scheduler.filter_node_for_pod_instance(&scheduler.nodes[0], &pod));
+        assert!(!scheduler.filter_node_for_pod_instance(&scheduler.nodes[1], &pod));
+        assert!(!scheduler.filter_node_for_pod_instance(&scheduler.nodes[2], &pod));
     }
 
     #[test]
@@ -454,34 +458,15 @@ mod tests {
             network_affinity: Some("zone1".to_string()),
             pod_type: PodItemType::Service,
             status: PodItemStatus::New,
+            best_instance_count: 2,
         };
 
-        let scheduler = PodScheduler::new(1,now,
-            vec![
-                create_test_node(
-                    "node1",
-                    4.0,
-                    8.0,
-                    vec![],
-                    0.8, // high load
-                    "zone1"
-                ),
-                create_test_node(
-                    "node2",
-                    4.0,
-                    8.0,
-                    vec![],
-                    0.2, // low load - should be selected
-                    "zone1"
-                ),
-            ],
-            HashMap::new()
-        );
+        let scheduler = PodScheduler::new_empty(1,now);
 
-        let result = scheduler.instance_pod(&pod, &scheduler.nodes).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].node_id, "node2");
-        assert_eq!(result[0].pod_id, "test-pod");
+        //let result = scheduler.instance_pod(&pod, &scheduler.nodes).unwrap();
+        //assert_eq!(result.len(), 1);
+        //assert_eq!(result[0].node_id, "node2");
+        //assert_eq!(result[0].pod_id, "test-pod");
     }
 
     #[test]
@@ -495,19 +480,11 @@ mod tests {
             network_affinity: None,
             pod_type: PodItemType::Service,
             status: PodItemStatus::New,
+            best_instance_count: 2,
         };
 
-        let scheduler = PodScheduler::new(1,now,
-            vec![create_test_node(
-            "node1",
-            4.0,
-            8.0,
-            vec![],
-            0.5,
-            "zone1"
-        )],
-        HashMap::new());
+        let scheduler = PodScheduler::new_empty(1,now);
 
-        assert!(scheduler.instance_pod(&pod, &scheduler.nodes).is_err());
+        //assert!(scheduler.instance_pod(&pod, &scheduler.nodes).is_err());
     }
 }

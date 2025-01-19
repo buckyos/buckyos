@@ -4,6 +4,8 @@ mod scheduler;
 use std::collections::HashMap;
 use std::process::exit;
 use log::*;
+use scheduler::PodScheduler;
+use scheduler::SchedulerAction;
 use serde_json::json;
 use serde_json::Value;
 //use upon::Engine;
@@ -11,6 +13,7 @@ use serde_json::Value;
 use name_lib::*;
 use name_client::*;
 use buckyos_kit::*;
+use sys_config::KVAction;
 use sys_config::SystemConfigClient;
 use app::*;
 
@@ -301,6 +304,43 @@ fn path_is_gateway_config(path: &str) -> bool {
     return false;
 }
 
+fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> Result<PodScheduler> {
+    let mut pod_scheduler = PodScheduler::new_empty(1,buckyos_get_unix_timestamp());
+    Ok(pod_scheduler)
+}
+
+fn conver_action_to_tx_actions(action:&SchedulerAction) -> HashMap<String,KVAction> {
+    let mut result = HashMap::new();
+    match action {
+        SchedulerAction::ChangeNodeStatus(node_id,node_status) => {
+            let key = format!("nodes/{}/config",node_id);
+            //TODO:
+            unimplemented!();
+        }
+        SchedulerAction::ChangePodStatus(pod_id,pod_status) => {
+            //TODO:根据PoD的类型,来执行修改状态的操作
+            unimplemented!();
+        }
+        SchedulerAction::CreateOPTask(new_op_task) => {
+            //TODO:
+            unimplemented!();
+        }
+        SchedulerAction::InstancePod(new_instance) => {
+            //最复杂的流程,需要根据pod的类型,来执行实例化操作
+            unimplemented!();
+        }
+        SchedulerAction::RemovePodInstance(instance_id) => {
+            //相对比较复杂的操作:需要根据pod的类型,来执行反实例化操作
+            unimplemented!();
+        }
+        SchedulerAction::UpdatePodInstance(instance_id,pod_instance_item) => {
+            //相对比较复杂的操作:需要根据pod的类型,来执行更新实例化操作
+            unimplemented!();
+        }
+    }
+    result
+}
+
 async fn schedule_loop() -> Result<()> {
     let mut loop_step = 0;
     let is_running = true;
@@ -332,43 +372,57 @@ async fn schedule_loop() -> Result<()> {
             continue;
         }
         let input_config = input_config.unwrap();
-        // According to the configuration of OOD, it is 1 OOD, 2 OOD, 3 OOD, 3-7 OOD,
-        // 7OOD or above multi -OOD general -purpose scheduling loop
-        let schedule_result = do_one_ood_schedule(&input_config).await;
-        if schedule_result.is_err() {
-            error!("do_one_ood_schedule failed: {:?}", schedule_result.err().unwrap());
-            continue;
-        }
-        let (schedule_result,base_gateway_config) = schedule_result.unwrap();
 
-        //write to system_config
-        for (path,value) in schedule_result.iter() {
-            match value {
-                JsonValueAction::Create(value) => {
-                   //TODO:
-                   unimplemented!();
-                }
-                JsonValueAction::Update(value) => {
-                    system_config_client.set(path,value).await?;
-                }
-                JsonValueAction::SetByPath(value) => {
-                    let mut old_value:Value;
-                    if path_is_gateway_config(path) {
-                        old_value = base_gateway_config.clone();
-                    } else {
-                        let remote_value = input_config.get(path).unwrap();
-                        old_value = serde_json::from_str(remote_value).unwrap();
-                    }
-                    for (sub_path,sub_value) in value.iter() {
-                        set_json_by_path(&mut old_value,sub_path,Some(sub_value));
-                    }
-                    system_config_client.set(path,old_value.to_string().as_str()).await?;
-                }
-                JsonValueAction::Remove => {
-                    system_config_client.delete(path).await?;
-                }
-            }
+        //init scheduler
+        let mut pod_scheduler = create_scheduler_by_input_config(&input_config)?;
+
+        //schedule
+        let action_list = pod_scheduler.schedule();
+        if action_list.is_err() {
+            error!("pod_scheduler.schedule failed: {:?}", action_list.err().unwrap());
+            return Err("pod_scheduler.schedule failed".into());
         }
+
+        let action_list = action_list.unwrap();
+        let mut tx_actions = HashMap::new();
+        for action in action_list {
+            let new_tx_actions = conver_action_to_tx_actions(&action);
+            tx_actions.extend(new_tx_actions);
+        }
+        //TODO 记录"上一次调度成功的信息"
+        
+        //执行调度动作
+        system_config_client.exec_tx(tx_actions, None).await?;
+
+        //cover action_list to system_config operations
+        //write to system_config
+        // for (path,value) in schedule_result.iter() {
+        //     match value {
+        //         JsonValueAction::Create(value) => {
+        //            //TODO:
+        //            unimplemented!();
+        //         }
+        //         JsonValueAction::Update(value) => {
+        //             system_config_client.set(path,value).await?;
+        //         }
+        //         JsonValueAction::SetByPath(value) => {
+        //             let mut old_value:Value;
+        //             if path_is_gateway_config(path) {
+        //                 old_value = base_gateway_config.clone();
+        //             } else {
+        //                 let remote_value = input_config.get(path).unwrap();
+        //                 old_value = serde_json::from_str(remote_value).unwrap();
+        //             }
+        //             for (sub_path,sub_value) in value.iter() {
+        //                 set_json_by_path(&mut old_value,sub_path,Some(sub_value));
+        //             }
+        //             system_config_client.set(path,old_value.to_string().as_str()).await?;
+        //         }
+        //         JsonValueAction::Remove => {
+        //             system_config_client.delete(path).await?;
+        //         }
+        //     }
+        // }
     }
     Ok(())
 
