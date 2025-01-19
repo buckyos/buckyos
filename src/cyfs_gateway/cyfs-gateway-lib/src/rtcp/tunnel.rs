@@ -2,7 +2,7 @@ use super::datagram::RTcpTunnelDatagramClient;
 use super::package::StreamPurpose;
 use super::package::*;
 use super::protocol::*;
-use super::stack::{WaitStream, NOTIFY_ROPEN_STREAM, WAIT_ROPEN_STREAM_MAP};
+use super::stream_helper::RTcpStreamBuildHelper;
 use crate::aes_stream::EncryptedStream;
 use crate::tunnel::*;
 use anyhow::Result;
@@ -26,6 +26,8 @@ use tokio::time::timeout;
 
 #[derive(Clone)]
 pub(crate) struct RTcpTunnel {
+    build_helper: RTcpStreamBuildHelper,
+
     target: RTcpTargetStackId,
     can_direct: bool,
     peer_addr: SocketAddr,
@@ -45,6 +47,7 @@ pub(crate) struct RTcpTunnel {
 
 impl RTcpTunnel {
     pub fn new(
+        build_helper: RTcpStreamBuildHelper,
         this_device: String,
         target: &RTcpTargetStackId,
         can_direct: bool,
@@ -59,8 +62,10 @@ impl RTcpTunnel {
         let (read_stream, write_stream) = tokio::io::split(encrypted_stream);
         //let (read_stream,write_stream) =  tokio::io::split(stream);
         let this_target = target.clone();
+
         //this_target.target_port = 0;
-        RTcpTunnel {
+        Self {
+            build_helper,
             target: this_target,
             can_direct, //Considering the limit of port mapping, the default configuration is configured as "NoDirect" mode
             peer_addr: peer_addr,
@@ -123,9 +128,7 @@ impl RTcpTunnel {
 
                 Ok(())
             }
-            RTcpTunnelPackage::Pong(_pong_package) => {
-                Ok(())
-            }
+            RTcpTunnelPackage::Pong(_pong_package) => Ok(()),
             t @ _ => {
                 error!("Unsupport tunnel package type: {:?}", t);
                 Ok(())
@@ -337,10 +340,9 @@ impl RTcpTunnel {
             self.this_device.as_str(),
             open_package.body.stream_id
         );
-        WAIT_ROPEN_STREAM_MAP
-            .lock()
-            .await
-            .insert(real_key, WaitStream::Waiting);
+        self.build_helper
+            .wait_ropen_stream(&real_key)
+            .await?;
 
         // 2. send open_resp with success
         {
@@ -405,14 +407,22 @@ impl RTcpTunnel {
                 RTcpTunnelPackage::read_package(read_stream, false, source_info.as_str()).await;
             //info!("rtcp tunnel read package from {} ok",source_info.as_str());
             if ret.is_err() {
-                error!("Read package from tunnel error: {}, {:?}", source_info, ret.err().unwrap());
+                error!(
+                    "Read package from tunnel error: {}, {:?}",
+                    source_info,
+                    ret.err().unwrap()
+                );
                 break;
             }
 
             let package = ret.unwrap();
             let result = self.process_package(package).await;
             if result.is_err() {
-                error!("process package error: {}, {}", source_info, result.err().unwrap());
+                error!(
+                    "process package error: {}, {}",
+                    source_info,
+                    result.err().unwrap()
+                );
                 break;
             }
         }
@@ -461,33 +471,8 @@ impl RTcpTunnel {
     }
 
     async fn wait_ropen_stream(&self, session_key: &str) -> Result<TcpStream, std::io::Error> {
-        //let wait_map = WAIT_ROPEN_STREAM_MAP.clone();
-        let wait_nofity = NOTIFY_ROPEN_STREAM.clone();
         let real_key = format!("{}_{}", self.this_device.as_str(), session_key);
-        loop {
-            let mut map = WAIT_ROPEN_STREAM_MAP.lock().await;
-            let wait_stream = map.remove(real_key.as_str());
-
-            if wait_stream.is_some() {
-                match wait_stream.unwrap() {
-                    WaitStream::OK(stream) => {
-                        return Ok(stream);
-                    }
-                    WaitStream::Waiting => {
-                        //do nothing
-                        map.insert(real_key.clone(), WaitStream::Waiting);
-                    }
-                }
-            }
-            drop(map);
-            if let Err(_) = timeout(Duration::from_secs(30), wait_nofity.notified()).await {
-                warn!(
-                    "Timeout: ropen stream {} was not found within the time limit.",
-                    real_key.as_str()
-                );
-                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Timeout"));
-            }
-        }
+        self.build_helper.wait_ropen_stream(&real_key).await
     }
 
     async fn open_stream(
@@ -569,15 +554,13 @@ impl RTcpTunnel {
         } else {
             //send ropen to target
 
-            WAIT_ROPEN_STREAM_MAP
-                .lock()
-                .await
-                .insert(real_key.clone(), WaitStream::Waiting);
+            self.build_helper.new_wait_stream(&real_key).await;
+
             //info!("insert session_key {} to wait ropen stream map",real_key.as_str());
             self.post_ropen(seq, purpose, dest_port, dest_host, session_key.as_str())
                 .await?;
 
-            //wait new stream with session_key fomr target
+            // wait new stream with session_key from target
             let stream = self.wait_ropen_stream(&session_key.as_str()).await?;
             let aes_stream: EncryptedStream<TcpStream> =
                 EncryptedStream::new(stream, &self.get_key(), &random_bytes);
@@ -607,9 +590,7 @@ impl Tunnel for RTcpTunnel {
             .await
     }
 
-    async fn open_stream(&self,
-        stream_id:&str,
-    ) -> Result<Box<dyn AsyncStream>, std::io::Error> {
+    async fn open_stream(&self, stream_id: &str) -> Result<Box<dyn AsyncStream>, std::io::Error> {
         let (dest_host, dest_port) = get_dest_info_from_url_path(stream_id)?;
         self.open_stream_by_dest(dest_port, dest_host).await
     }
@@ -629,9 +610,10 @@ impl Tunnel for RTcpTunnel {
 
     async fn create_datagram_client(
         &self,
-        session_id:&str,
+        session_id: &str,
     ) -> Result<Box<dyn DatagramClientBox>, std::io::Error> {
         let (dest_host, dest_port) = get_dest_info_from_url_path(session_id)?;
-        self.create_datagram_client_by_dest(dest_port, dest_host).await
+        self.create_datagram_client_by_dest(dest_port, dest_host)
+            .await
     }
 }
