@@ -56,9 +56,6 @@ pub enum TunnelError {
 
 pub type TunnelResult<T> = std::result::Result<T, TunnelError>;
 
-// Only used in gateway service now
-pub static CURRENT_DEVICE_PRIVATE_KEY: OnceCell<[u8; 48]> = OnceCell::new();
-
 
 pub struct GatewayDevice {
     pub config: DeviceConfig,
@@ -67,6 +64,6 @@ pub struct GatewayDevice {
 
 pub type GatewayDeviceRef = Arc<GatewayDevice>;
 
-// Because of the limitation of some usage such as tunnel_connector, we need to use static variable to store the gateway device
+// FIXME: Because of the limitation of some usage such as tunnel_connector, we need to use static variable to store the gateway device
 pub static CURRENT_GATEWAY_DEVICE: OnceCell<GatewayDeviceRef> = OnceCell::new();
 pub static GATEWAY_TUNNEL_MANAGER: OnceCell<TunnelManager> = OnceCell::new();

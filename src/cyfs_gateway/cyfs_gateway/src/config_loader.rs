@@ -3,7 +3,6 @@ use cyfs_gateway_lib::DNSServerConfig;
 use cyfs_gateway_lib::DispatcherConfig;
 use cyfs_gateway_lib::ServerConfig;
 use cyfs_gateway_lib::WarpServerConfig;
-use cyfs_gateway_lib::CURRENT_DEVICE_PRIVATE_KEY;
 use cyfs_sn::*;
 use cyfs_socks::SocksProxyConfig;
 use cyfs_warp::register_inner_service_builder;
@@ -18,6 +17,7 @@ pub struct GatewayConfig {
     pub dispatcher: HashMap<Url, DispatcherConfig>,
     pub servers: HashMap<String, ServerConfig>,
     pub device_key_path: PathBuf,
+    pub device_private_key: Option<[u8; 48]>,
     //tunnel_builder_config : HashMap<String,TunnelBuilderConfig>,
 }
 
@@ -127,6 +127,7 @@ impl GatewayConfig {
 
     pub async fn load_from_json_value(json_value: serde_json::Value) -> Result<Self, String> {
         let mut device_key_path = PathBuf::new();
+        let mut device_private_key = None;
         if let Some(Some(path)) = json_value.get("device_key_path").map(|p| p.as_str()) {
             device_key_path =
                 adjust_path(path).map_err(|e| format!("adjust path failed! {}", e))?;
@@ -135,13 +136,13 @@ impl GatewayConfig {
                 path,
                 device_key_path.display()
             );
-            let private_key_array = load_pem_private_key(&device_key_path)
+            let ret = load_pem_private_key(&device_key_path)
                 .map_err(|e| format!("load device private key failed! {}", e))?;
-            CURRENT_DEVICE_PRIVATE_KEY.set(private_key_array).unwrap();
-            info!("load device private key success!");
+            device_private_key = Some(ret);
+            info!("Load device private key success!");
         }
 
-        //register inner serveric
+        // register inner services
         if let Some(Some(inner_services)) = json_value.get("inner_services").map(|v| v.as_object())
         {
             for (server_id, server_config) in inner_services.iter() {
@@ -257,20 +258,19 @@ impl GatewayConfig {
 
         //load dispatcher
         let dispatcher_config_value = json_value.get("dispatcher");
-        if dispatcher_config_value.is_some() {
+        let dispatcher = if dispatcher_config_value.is_some() {
             let dispatcher_config_value = dispatcher_config_value.unwrap();
             let dispatcher_cfg = GatewayConfig::load_dispatcher_config(dispatcher_config_value).await?;
-            return Ok(Self {
-                dispatcher: dispatcher_cfg,
-                servers: servers_cfg,
-                device_key_path,
-            })
-        }
+            dispatcher_cfg
+        } else {
+            HashMap::new()
+        };
         
         Ok(Self {
-            dispatcher: HashMap::new(),
+            dispatcher,
             servers: servers_cfg,
             device_key_path,
+            device_private_key,
         })
     }
 }

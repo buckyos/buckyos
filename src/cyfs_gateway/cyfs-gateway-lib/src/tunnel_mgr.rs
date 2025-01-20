@@ -33,6 +33,7 @@ pub fn get_protocol_category(str_protocol: &str) -> TunnelResult<ProtocolCategor
     }
 }
 
+#[derive(Clone)]
 pub struct TunnelManager {
     device: GatewayDeviceRef,
     rtcp_stack_manager: RTcpStackManager,

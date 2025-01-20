@@ -19,6 +19,7 @@ clap = "*"
 env_logger = "*"
 bytes = "*"
 dirs = "*"
+once_cell = "*"
 
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 buckyos-kit = { path = "../../components/buckyos-kit" }

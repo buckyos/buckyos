@@ -163,7 +163,7 @@ pub enum DNSProviderType {
     SN,//query name info by sn server
 }
 
-#[derive(Deserialize,Clone)]
+#[derive(Deserialize,Clone,Debug)]
 pub struct DNSProviderConfig {
     #[serde(rename = "type")]
     pub provider_type: DNSProviderType,
@@ -171,7 +171,7 @@ pub struct DNSProviderConfig {
     pub config: serde_json::Value,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct DNSServerConfig {
     pub bind : Option<String>,
     pub port : u16,
@@ -184,7 +184,7 @@ pub struct DNSServerConfig {
     pub fallback : Vec<String>,//fallback dns servers
 }
 
-
+#[derive(Debug)]
 pub enum ServerConfig {
     Warp(WarpServerConfig),
     DNS(DNSServerConfig),
