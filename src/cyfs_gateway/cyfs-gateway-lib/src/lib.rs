@@ -26,6 +26,8 @@ pub use acme_client::*;
 
 use once_cell::sync::OnceCell;
 use thiserror::Error;
+use std::sync::Arc;
+use name_lib::DeviceConfig;
 
 #[macro_use]
 extern crate log;
@@ -56,3 +58,15 @@ pub type TunnelResult<T> = std::result::Result<T, TunnelError>;
 
 // Only used in gateway service now
 pub static CURRENT_DEVICE_PRIVATE_KEY: OnceCell<[u8; 48]> = OnceCell::new();
+
+
+pub struct GatewayDevice {
+    pub config: DeviceConfig,
+    pub private_key: [u8; 48],
+}
+
+pub type GatewayDeviceRef = Arc<GatewayDevice>;
+
+// Because of the limitation of some usage such as tunnel_connector, we need to use static variable to store the gateway device
+pub static CURRENT_GATEWAY_DEVICE: OnceCell<GatewayDeviceRef> = OnceCell::new();
+pub static GATEWAY_TUNNEL_MANAGER: OnceCell<TunnelManager> = OnceCell::new();

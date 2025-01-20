@@ -1,4 +1,3 @@
-use super::dispatcher::RTCP_DISPATCHER_MANAGER;
 use super::package::*;
 use super::protocol::*;
 use super::stream_helper::RTcpStreamBuildHelper;
@@ -21,11 +20,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task;
 use url::Url;
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
+use super::dispatcher::RTcpDispatcherManager;
 
 #[derive(Clone)]
 pub struct RTcpStack {
     tunnel_map: RTcpTunnelMap,
     stream_helper: RTcpStreamBuildHelper,
+    dispatcher_manager: RTcpDispatcherManager,
 
     tunnel_port: u16,
     this_device_hostname: String, //name or did
@@ -59,6 +60,8 @@ impl RTcpStack {
         let result = RTcpStack {
             tunnel_map: RTcpTunnelMap::new(),
             stream_helper: RTcpStreamBuildHelper::new(),
+            dispatcher_manager: RTcpDispatcherManager::new(),
+
             tunnel_port: port,
             this_device_hostname,
             this_device_ed25519_sk: this_device_ed25519_sk, //for sign tunnel token
@@ -323,6 +326,7 @@ impl RTcpStack {
         let target = target.unwrap();
         let tunnel = RTcpTunnel::new(
             self.stream_helper.clone(),
+            self.dispatcher_manager.clone(),
             self.this_device_hostname.clone(),
             &target,
             false,
@@ -472,6 +476,7 @@ impl TunnelBuilder for RTcpStack {
         // create tunnel and add to map
         let tunnel = RTcpTunnel::new(
             self.stream_helper.clone(),
+            self.dispatcher_manager.clone(),
             self.this_device_hostname.clone(),
             &target,
             true,
@@ -509,7 +514,7 @@ impl TunnelBuilder for RTcpStack {
         &self,
         bind_url: &Url,
     ) -> TunnelResult<Box<dyn StreamListener>> {
-        let dispatcher = RTCP_DISPATCHER_MANAGER.new_stream_dispatcher(bind_url)?;
+        let dispatcher = self.dispatcher_manager.new_stream_dispatcher(bind_url)?;
         Ok(Box::new(dispatcher) as Box<dyn StreamListener>)
     }
 
@@ -517,7 +522,7 @@ impl TunnelBuilder for RTcpStack {
         &self,
         bind_url: &Url,
     ) -> TunnelResult<Box<dyn DatagramServerBox>> {
-        let dispatcher = RTCP_DISPATCHER_MANAGER.new_datagram_dispatcher(bind_url)?;
+        let dispatcher = self.dispatcher_manager.new_datagram_dispatcher(bind_url)?;
         Ok(Box::new(dispatcher) as Box<dyn DatagramServerBox>)
     }
 }

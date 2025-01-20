@@ -1,19 +1,21 @@
 use super::stack::RTcpStack;
-use crate::CURRENT_DEVICE_PRIVATE_KEY;
-use crate::{TunnelError, TunnelResult};
-use name_lib::{CURRENT_DEVICE_CONFIG, DID};
+use crate::GatewayDeviceRef;
+use crate::TunnelResult;
+use name_lib::DID;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct RTcpStackManager {
+    device: GatewayDeviceRef,
     stack_map: Arc<Mutex<HashMap<String, RTcpStack>>>,
 }
 
 impl RTcpStackManager {
-    pub fn new() -> Self {
+    pub fn new(device: GatewayDeviceRef) -> Self {
         Self {
+            device,
             stack_map: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -24,18 +26,10 @@ impl RTcpStackManager {
     }
 
     pub async fn get_current_device_stack(&self) -> TunnelResult<RTcpStack> {
-        let this_device_config = CURRENT_DEVICE_CONFIG.get();
-        if this_device_config.is_none() {
-            let msg = "CURRENT_DEVICE_CONFIG not set".to_string();
-            error!("{}", msg);
-            return Err(TunnelError::InvalidState(msg));
-        }
-
-        let this_device_config = this_device_config.unwrap();
         let this_device_hostname: String;
-        let this_device_did = DID::from_str(this_device_config.did.as_str());
+        let this_device_did = DID::from_str(self.device.config.did.as_str());
         if this_device_did.is_none() {
-            this_device_hostname = this_device_config.did.clone();
+            this_device_hostname = self.device.config.did.clone();
         } else {
             this_device_hostname = this_device_did.unwrap().to_host_name();
         }
@@ -47,25 +41,20 @@ impl RTcpStackManager {
             return Ok(ret);
         }
 
-        info!("create current device rtcp stack for {}", this_device_hostname.as_str());
-        let this_device_private_key = CURRENT_DEVICE_PRIVATE_KEY.get();
-        if this_device_private_key.is_none() {
-            error!("CURRENT_DEVICE_PRIVATE_KEY not set!");
-            return Err(TunnelError::InvalidState(
-                "CURRENT_DEVICE_PRIVATE_KEY not set".to_string(),
-            ));
-        }
+        info!(
+            "create current device rtcp stack for {}",
+            this_device_hostname.as_str()
+        );
 
         info!(
             "RTCP stack will init by this_device_config: {:?}",
-            this_device_config
+            self.device.config
         );
-        let this_device_private_key = this_device_private_key.unwrap().clone();
 
         let mut result_rtcp_stack = crate::RTcpStack::new(
             this_device_hostname.clone(),
             2980,
-            Some(this_device_private_key),
+            Some(self.device.private_key.clone()),
         );
         result_rtcp_stack.start().await?;
 
@@ -73,8 +62,4 @@ impl RTcpStackManager {
 
         return Ok(result_rtcp_stack);
     }
-}
-
-lazy_static::lazy_static! {
-    pub static ref RTCP_STACK_MANAGER: RTcpStackManager = RTcpStackManager::new();
 }

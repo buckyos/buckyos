@@ -9,7 +9,6 @@ use std::pin::Pin;
 use std::future::Future;
 use hyper::Uri;
 use log::*;
-use crate::tunnel_mgr::*;
 
 
 pub struct TunnelStreamConnection {
@@ -84,8 +83,9 @@ impl Service<Uri> for TunnelConnector {
 
     fn call(&mut self, uri: Uri) -> Self::Future {
         Box::pin(async move {
+            let tunnel_manager = crate::GATEWAY_TUNNEL_MANAGER.get().unwrap();
             let stream_url = Url::parse(&uri.to_string()).unwrap();
-            let target_stream = open_stream_by_url(&stream_url).await.map_err(|e| {
+            let target_stream = tunnel_manager.open_stream_by_url(&stream_url).await.map_err(|e| {
                 warn!("TunnelConnector open_stream_by_url  failed! {}", e);
                 Box::new(e) as Box<dyn StdError + Send + Sync>
             })?;

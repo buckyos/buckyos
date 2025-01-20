@@ -1,4 +1,5 @@
 use super::datagram::RTcpTunnelDatagramClient;
+use super::dispatcher::RTcpDispatcherManager;
 use super::package::StreamPurpose;
 use super::package::*;
 use super::protocol::*;
@@ -27,6 +28,7 @@ use tokio::time::timeout;
 #[derive(Clone)]
 pub(crate) struct RTcpTunnel {
     build_helper: RTcpStreamBuildHelper,
+    dispatcher_manager: RTcpDispatcherManager,
 
     target: RTcpTargetStackId,
     can_direct: bool,
@@ -48,6 +50,7 @@ pub(crate) struct RTcpTunnel {
 impl RTcpTunnel {
     pub fn new(
         build_helper: RTcpStreamBuildHelper,
+        dispatcher_manager: RTcpDispatcherManager,
         this_device: String,
         target: &RTcpTargetStackId,
         can_direct: bool,
@@ -66,6 +69,7 @@ impl RTcpTunnel {
         //this_target.target_port = 0;
         Self {
             build_helper,
+            dispatcher_manager,
             target: this_target,
             can_direct, //Considering the limit of port mapping, the default configuration is configured as "NoDirect" mode
             peer_addr: peer_addr,
@@ -229,7 +233,7 @@ impl RTcpTunnel {
         );
 
         // 1. First try to find if dispatcher exists for the target port
-        let ret = super::dispatcher::RTCP_DISPATCHER_MANAGER.get_stream_dispatcher(dest_port);
+        let ret = self.dispatcher_manager.get_stream_dispatcher(dest_port);
         if let Some(dispatcher) = ret {
             //TODO: bug?
             let end_point = TunnelEndpoint {
@@ -304,7 +308,7 @@ impl RTcpTunnel {
         );
 
         // 1. First try to find if dispatcher exists for the target port
-        let ret = super::dispatcher::RTCP_DISPATCHER_MANAGER.get_datagram_dispatcher(dest_port);
+        let ret = self.dispatcher_manager.get_datagram_dispatcher(dest_port);
         if let Some(dispatcher) = ret {
             //TODO: bug?
             let end_point = TunnelEndpoint {
@@ -340,9 +344,7 @@ impl RTcpTunnel {
             self.this_device.as_str(),
             open_package.body.stream_id
         );
-        self.build_helper
-            .wait_ropen_stream(&real_key)
-            .await?;
+        self.build_helper.wait_ropen_stream(&real_key).await?;
 
         // 2. send open_resp with success
         {
