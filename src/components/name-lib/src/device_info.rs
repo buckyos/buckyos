@@ -20,6 +20,8 @@ pub struct DeviceInfo {
     pub hostname:String,
     pub device_type:String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub state:Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub arch:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub did:Option<String>,
@@ -89,6 +91,7 @@ impl DeviceInfo {
         DeviceInfo {
             hostname:hostname.to_string(),
             device_type:"ood".to_string(),
+            state:Some("Ready".to_string()),
             arch:None,
             ip:ip,
             did:did,

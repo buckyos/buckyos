@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+
+
 #[derive(Serialize, Deserialize)]
 pub struct SubPkgInfo {
     pub pkg_id: String,
@@ -24,13 +26,27 @@ pub struct AppInfo {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct ServiceInfo {
+    pub name: String,
+    pub description: String,
+    pub vendor_did: String,
+    pub pkg_id: String,
+    pub port: u16,
+    pub node_list: Vec<String>,
+    pub state: String,
+    pub service_type: String,
+    pub instance: u32
+}
+
+
+#[derive(Serialize, Deserialize)]
 pub struct AppConfigNode {
     pub app_id: String,
     pub app_info: AppInfo,
     pub app_index: u16, //app index in user's app list
     pub enable: bool,
-    pub instance: u32,
-    pub deployed: bool,
+    pub instance: u32,//期望的instance数量
+    pub state: String,
     //mount pint
     pub data_mount_point: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,6 +70,9 @@ pub struct AppConfigNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub udp_ports: Option<HashMap<String,u16>>,
 }
+
+
+
 
 #[derive(Serialize, Deserialize,Clone)]
 pub struct AppServiceConfig {
@@ -85,6 +104,7 @@ pub struct AppServiceConfig {
     pub udp_ports: Option<HashMap<u16,u16>>,
     //pub service_image_name : String, // support mutil platform image name (arm/x86...)
 }
+
 
 
 impl AppServiceConfig {

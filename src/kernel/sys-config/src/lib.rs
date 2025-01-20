@@ -3,10 +3,12 @@
 mod system_config;
 mod sn_client;
 mod app_list;
+mod node_list;
 
 pub use system_config::*;
 pub use sn_client::*;
 pub use app_list::*;
+pub use node_list::*;
 
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;

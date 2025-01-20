@@ -19,6 +19,7 @@
 use anyhow::Result;
 use std::{collections::HashMap, sync::Arc};
 use log::*;
+use std::fmt;
 
 const SMALL_SYSTEM_NODE_COUNT:usize = 7;
 
@@ -28,7 +29,7 @@ pub enum PodItemType {
     App,// 无状态的app服务
 }
 #[derive(Clone,PartialEq)]
-pub enum PodItemStatus {
+pub enum PodItemState {
     New,
     Deploying,
     Deployed,
@@ -38,11 +39,44 @@ pub enum PodItemStatus {
     Removing,
     Deleted,
 }
+
+impl fmt::Display for PodItemState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let status_str = match self {
+            PodItemState::New => "New",
+            PodItemState::Deploying => "Deploying",
+            PodItemState::Deployed => "Deployed",
+            PodItemState::DeployFailed => "DeployFailed",
+            PodItemState::Abnormal => "Abnormal",
+            PodItemState::Unavailable => "Unavailable",
+            PodItemState::Removing => "Removing",
+            PodItemState::Deleted => "Deleted",
+        };
+        write!(f, "{}", status_str)
+    }
+}
+
+impl From<String> for PodItemState {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "New" => PodItemState::New,
+            "Deploying" => PodItemState::Deploying,
+            "Deployed" => PodItemState::Deployed,
+            "DeployFailed" => PodItemState::DeployFailed,
+            "Abnormal" => PodItemState::Abnormal,
+            "Unavailable" => PodItemState::Unavailable,
+            "Removing" => PodItemState::Removing,
+            "Deleted" => PodItemState::Deleted,
+            _ => PodItemState::Unavailable,
+        }
+    }
+}
+
 #[derive(Clone,PartialEq)]
 pub struct PodItem {
     pub id: String,
     pub pod_type: PodItemType,
-    pub status: PodItemStatus,
+    pub state: PodItemState,
     pub best_instance_count: u32,
 
     pub required_cpu: f64,
@@ -57,7 +91,7 @@ pub enum OPTaskBody {
 }
 
 #[derive(Clone)]
-pub enum OPTaskStatus {
+pub enum OPTaskState {
     New,
     Running,
     Done,
@@ -68,7 +102,7 @@ pub struct OPTask {
     pub id: String,
     pub creator_id: Option<String>,//为None说明创建者是Scheduler
     pub owner_id: String,// owner id 可以是node_id,也可以是pod_id
-    pub status: OPTaskStatus,
+    pub status: OPTaskState,
     pub create_time: u64,
     pub create_step_id: u64,
     pub body: OPTaskBody,
@@ -89,16 +123,16 @@ pub struct NodeItem {
     pub network_zone: String,
 
     //Node的可变状态
-    pub status: NodeStatus,
-    pub available_cpu: f64,
-    pub available_memory: f64,
-    pub current_load: f64,
+    pub state: NodeState,
+    pub available_cpu: f64, //percent 0.01 - 1.0
+    pub available_memory: f64, //MB, 
+    pub current_load: f64, // 0.01 - 1.0
     pub resources: HashMap<String, NodeResource>,
     pub op_tasks: Vec<OPTask>,
 }
 
 #[derive(PartialEq,Clone)]
-pub enum NodeStatus {
+pub enum NodeState {
     New,
     Prepare,//new->ready的准备阶段
     Ready,//正常可用
@@ -108,21 +142,69 @@ pub enum NodeStatus {
     Deleted,//已删除
 }
 
+impl fmt::Display for NodeState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let status_str = match self {
+            NodeState::New => "New",
+            NodeState::Prepare => "Prepare",
+            NodeState::Ready => "Ready",
+            NodeState::Abnormal => "Abnormal",
+            NodeState::Unavailable => "Unavailable",
+            NodeState::Removing => "Removing",
+            NodeState::Deleted => "Deleted",
+        };
+        write!(f, "{}", status_str)
+    }
+}
+
+impl From<String> for NodeState {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "New" => NodeState::New,
+            "Prepare" => NodeState::Prepare,
+            "Ready" => NodeState::Ready,
+            "Abnormal" => NodeState::Abnormal,
+            "Unavailable" => NodeState::Unavailable,
+            "Removing" => NodeState::Removing,
+            "Deleted" => NodeState::Deleted,
+            _ => NodeState::New,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PodInstance {
     pub node_id:String,
     pub pod_id:String,
     pub res_limits: HashMap<String,f64>,
+    pub instance_id:String,
 }
 
 #[derive(Clone)]
 pub enum SchedulerAction {
-    ChangeNodeStatus(String,NodeStatus),
+    ChangeNodeStatus(String,NodeState),
     CreateOPTask(OPTask),
-    ChangePodStatus(String,PodItemStatus),
+    ChangePodStatus(String,PodItemState),
     InstancePod(PodInstance),
     UpdatePodInstance(String,PodInstance),
     RemovePodInstance(String),//value is pod_id@node_id
+}
+//pod_id@node_id
+pub fn parse_instance_id(instance_id:&str)->Result<(String,String)> {
+    let parts: Vec<&str> = instance_id.split('@').collect();
+    if parts.len() != 2 {
+        return Err(anyhow::anyhow!("Invalid instance_id format: {}", instance_id));
+    }
+    Ok((parts[0].to_string(), parts[1].to_string()))
+}
+
+// app_id@user_id
+pub fn parse_app_pod_id(pod_id:&str)->Result<(String,String)> {
+    let parts: Vec<&str> = pod_id.split('@').collect();
+    if parts.len() != 2 {
+        return Err(anyhow::anyhow!("Invalid pod_id format: {}", pod_id));
+    }
+    Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
 pub struct PodScheduler {
@@ -163,6 +245,26 @@ impl PodScheduler {
             pod_instances,
             last_pods,
         }
+    }
+
+    pub fn add_node(&mut self,node:NodeItem) {
+        self.nodes.insert(node.id.clone(), node);
+    }
+
+    pub fn add_pod(&mut self,pod:PodItem) {
+        self.pods.insert(pod.id.clone(), pod);
+    }
+
+    pub fn get_pod_item(&self,pod_id:&str)->Option<&PodItem> {
+        self.pods.get(pod_id)
+    }
+
+    pub fn get_pod_instance(&self,pod_id:&str)->Option<&PodInstance> {
+        self.pod_instances.get(pod_id)
+    }
+
+    pub fn add_pod_instance(&mut self,instance:PodInstance) {
+        self.pod_instances.insert(instance.pod_id.clone(), instance);
     }
 
 
@@ -207,20 +309,20 @@ impl PodScheduler {
             self.check_node_op_tasks(node, &mut node_actions)?;
             
             // 2. 处理新node的初始化
-            match node.status {
-                NodeStatus::New => {
+            match node.state {
+                NodeState::New => {
                     // 由调度器控制node进入初始化准备状态
                     node_actions.push(SchedulerAction::ChangeNodeStatus(
                         node.id.clone(), 
-                        NodeStatus::Prepare
+                        NodeState::Prepare
                     ));
                 },
-                NodeStatus::Removing => {
+                NodeState::Removing => {
                     // TODO:由调度器控制node 处理移除任务
                     //
                     node_actions.push(SchedulerAction::ChangeNodeStatus(
                         node.id.clone(), 
-                        NodeStatus::Deleted
+                        NodeState::Deleted
                     ));
                 },
                 _ => {}
@@ -233,26 +335,26 @@ impl PodScheduler {
     fn schedule_pod_change(&mut self)->Result<Vec<SchedulerAction>> {
         let mut pod_actions = Vec::new();
         let valid_nodes : Vec<NodeItem> = self.nodes.values().cloned().collect();
-        let valid_nodes : Vec<NodeItem> = valid_nodes.iter().filter(|node| node.status == NodeStatus::Ready).cloned().collect();
+        let valid_nodes : Vec<NodeItem> = valid_nodes.iter().filter(|node| node.state == NodeState::Ready).cloned().collect();
 
         for (pod_id, pod) in &self.pods {
-            match pod.status {
-                PodItemStatus::New => {
+            match pod.state {
+                PodItemState::New => {
                     let new_instances = self.instance_pod(pod, &valid_nodes)?;
                     for instance in new_instances {
                         pod_actions.push(SchedulerAction::InstancePod(instance));
                     }
                     //TODO:现在没有部署中的状态
-                    pod_actions.push(SchedulerAction::ChangePodStatus(pod_id.clone(),PodItemStatus::Deployed));
+                    pod_actions.push(SchedulerAction::ChangePodStatus(pod_id.clone(),PodItemState::Deployed));
                 },
-                PodItemStatus::Removing => {
+                PodItemState::Removing => {
                     for instance in self.pod_instances.values() {
                         if instance.pod_id == *pod_id {
                             pod_actions.push(SchedulerAction::RemovePodInstance(format!("{}@{}",pod_id,instance.node_id)));
                         }
                     }
                     //TODO:现在没有删除中的状态
-                    pod_actions.push(SchedulerAction::ChangePodStatus(pod_id.clone(),PodItemStatus::Deleted));
+                    pod_actions.push(SchedulerAction::ChangePodStatus(pod_id.clone(),PodItemState::Deleted));
                 },
                 _ => {}
             }    
@@ -269,7 +371,7 @@ impl PodScheduler {
             match self.last_pods.get(pod_id) {
                 None => return true, 
                 Some(last_pod) => {
-                    if pod.status != last_pod.status 
+                    if pod.state != last_pod.state 
                         || pod.required_cpu != last_pod.required_cpu 
                         || pod.required_memory != last_pod.required_memory 
                         || pod.node_affinity != last_pod.node_affinity 
@@ -330,11 +432,13 @@ impl PodScheduler {
         let selected_nodes: Vec<(f64, &NodeItem)> = scored_nodes.iter().take(instance_count as usize).map(|&(score, node)| (score, node)).collect();
         
         let mut instances = Vec::new();
+        let instance_id_uuid = uuid::Uuid::new_v4();
         for (_,node) in selected_nodes.iter() {
             instances.push(PodInstance {
                 node_id: node.id.clone(),
                 pod_id: pod_item.id.clone(),
                 res_limits: HashMap::new(),
+                instance_id: format!("{}_{}",pod_item.id,instance_id_uuid),
             });
         }
         Ok(instances)
@@ -343,7 +447,7 @@ impl PodScheduler {
     //关键函数:根据pod_item的配置,过滤符合条件的node
     fn filter_node_for_pod_instance(&self, node: &NodeItem, pod: &PodItem) -> bool {
         // 1. 检查节点状态
-        if node.status != NodeStatus::Ready {
+        if node.state != NodeState::Ready {
             return false;
         }
 
@@ -416,7 +520,7 @@ mod tests {
             id: id.to_string(),
             available_cpu: cpu,
             available_memory: memory,
-            status: NodeStatus::Ready,
+            state: NodeState::Ready,
             labels,
             current_load: load,
             network_zone: network_zone.to_string(),
@@ -435,7 +539,7 @@ mod tests {
             network_affinity: Some("zone1".to_string()),
             best_instance_count: 2,
             pod_type: PodItemType::Service,
-            status: PodItemStatus::New,
+            state: PodItemState::New,
         };
 
         let now = buckyos_get_unix_timestamp();
@@ -457,7 +561,7 @@ mod tests {
             node_affinity: None,
             network_affinity: Some("zone1".to_string()),
             pod_type: PodItemType::Service,
-            status: PodItemStatus::New,
+            state: PodItemState::New,
             best_instance_count: 2,
         };
 
@@ -479,7 +583,7 @@ mod tests {
             node_affinity: None,
             network_affinity: None,
             pod_type: PodItemType::Service,
-            status: PodItemStatus::New,
+            state: PodItemState::New,
             best_instance_count: 2,
         };
 

@@ -2,6 +2,7 @@
 "users/root/info" = '{"type":"root","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 "users/{{user_name}}/info" = '{"type":"admin","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 # devices,set & update by register_device_doc@node_daemon
+
 "devices/ood1/doc" = "ood1_doc"
 # devices,set & update by update_device_info@node_daemon
 #"devices/ood1/info" = "ood1_info"
@@ -14,9 +15,15 @@
 # frames & services
 "services/verify_hub/info" = """
 {
+    "name":"verify_hub",
+    "description":"verify hub is SSO service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"buckyos.verify_hub",
     "port":3300,
     "node_list":["ood1"],
-    "type":"kernel"
+    "service_type":"kernel",
+    "state":"Deployed",
+    "instance":1
 }
 """
 "services/verify_hub/setting" = """
@@ -26,26 +33,32 @@
 """
 "services/scheduler/info" = """
 {
+    "name":"scheduler",
+    "description":"scheduler is the core service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"buckyos.scheduler",
     "port":3400,
     "node_list":["ood1"],
-    "type":"kernel"
+    "service_type":"kernel",
+    "state":"Deployed",
+    "instance":1
 }
 """
 # info for zone-gateway
 "services/gateway/info" = """
 {
+    "name":"gateway",
+    "description":"gateway is the gateway service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"buckyos.gateway",
     "port":3100,
     "node_list":["ood1"],
-    "type":"kernel"
+    "service_type":"kernel",
+    "state":"Deployed",
+    "instance":1
 }
 """
-"services/repo_service/info" = """
-{
-    "port":4000,
-    "node_list":["ood1"],
-    "type":"frame"
-}
-"""
+
 "services/gateway/setting" = """
 {
     "shortcuts": {
@@ -124,6 +137,34 @@
     }
 }
 """
+"services/repo/info" = """
+{
+    "name":"repo_service",
+    "description":"repo_service is the repo service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"buckyos.repo",
+    "port":4000,
+    "node_list":["ood1"],
+    "service_type":"frame",
+    "state":"Deployed",
+    "instance":1
+}
+"""
+
+
+"services/repo/setting" = """
+{
+    "source_list":[
+        {
+            "did":"did:bns:ssssss",
+            "name":"ssssss.web3.buckyos.io",
+            "chunk_id":"",
+            "sign":"",
+            "version":""
+        }
+    ]
+}
+"""
 
 # install apps
 "users/{{user_name}}/apps/home-station/config" = """
@@ -150,8 +191,8 @@
     },
     "app_index" : 0,
     "enable" : true,
-    "instance" : 1,
-    "deployed" : false,
+    "state":"Deployed",
+    "instance" : 2,
 
     "data_mount_point" : "/srv",
     "cache_mount_point" : "/database/",
@@ -167,6 +208,7 @@
 # node config
 "nodes/ood1/config" = """
 {
+    "state:":"Ready",
     "is_running":true,
     "revision" : 0,
     "gateway" : {
@@ -268,6 +310,8 @@
     }
 }
 """
+# apps config's key is instance_id ? 
+
 
 "nodes/ood1/gateway" = """
 {
@@ -451,19 +495,5 @@ g, {{user_name}},admin
         "node_name":"ood1",
         "public_key":{{verify_hub_public_key}}
     }
-}
-"""
-
-"services/repo/index_source" = """
-{
-    "source_list":[
-        {
-            "did":"did:bns:ssssss",
-            "name":"ssssss.web3.buckyos.io",
-            "chunk_id":"",
-            "sign":"",
-            "version":""
-        }
-    ]
 }
 """

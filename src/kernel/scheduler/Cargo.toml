@@ -21,6 +21,7 @@ jsonwebtoken = "*"
 toml = "*"
 upon = "*"
 anyhow = "*"
+uuid = { version = "*", features = ["v4"] }
 # rocksdb = "*"
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }

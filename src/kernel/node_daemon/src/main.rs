@@ -76,6 +76,7 @@ struct NodeIdentityConfig {
 // 系统资源情况，（比如可用内存等），改变密度很大。这一块暂时不用etcd实现，而是用专门的监控服务保存
 // RunItem的配置。这块由调度器改变，一旦改变,node_daemon就会产生相应的控制命令
 // Task(Cmd)配置，暂时不实现
+
 #[derive(Serialize, Deserialize)]
 struct NodeConfig {
     revision: u64,
@@ -83,6 +84,7 @@ struct NodeConfig {
     apps: HashMap<String, AppServiceConfig>,
     services: HashMap<String, FrameServiceConfig>,
     is_running: bool,
+    state:Option<String>,
     
 }
 

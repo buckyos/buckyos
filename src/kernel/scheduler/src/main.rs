@@ -1,11 +1,10 @@
 mod app;
 mod scheduler;
+mod service;
 
 use std::collections::HashMap;
 use std::process::exit;
 use log::*;
-use scheduler::PodScheduler;
-use scheduler::SchedulerAction;
 use serde_json::json;
 use serde_json::Value;
 //use upon::Engine;
@@ -13,11 +12,16 @@ use serde_json::Value;
 use name_lib::*;
 use name_client::*;
 use buckyos_kit::*;
+use sys_config::AppConfigNode;
 use sys_config::KVAction;
+use sys_config::ServiceInfo;
 use sys_config::SystemConfigClient;
+
+use scheduler::*;
+use service::*;
 use app::*;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+use anyhow::Result;
 
 async fn generate_app_config(user_name:&str) -> Result<HashMap<String,String>> {
     let mut init_list : HashMap<String,String> = HashMap::new();
@@ -136,7 +140,7 @@ async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
         .to_string()?;
 
     if result.find("{{").is_some() {
-        return Err("template contains unescaped double curly braces".into());
+        return Err(anyhow::anyhow!("template contains unescaped double curly braces"));
     }
 
     //wwrite result to file
@@ -155,7 +159,7 @@ async fn do_boot_scheduler() -> Result<()> {
 
     if zone_config_str.is_err() {
         warn!("BUCKY_ZONE_CONFIG is not set, use default zone config");
-        return Err("BUCKY_ZONE_CONFIG is not set".into());
+        return Err(anyhow::anyhow!("BUCKY_ZONE_CONFIG is not set"));
     }
 
     info!("zone_config_str:{}",zone_config_str.as_ref().unwrap());
@@ -163,14 +167,14 @@ async fn do_boot_scheduler() -> Result<()> {
     let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
 
     if rpc_session_token_str.is_err() {
-        return Err("SCHEDULER_SESSION_TOKEN is not set".into());
+        return Err(anyhow::anyhow!("SCHEDULER_SESSION_TOKEN is not set"));
     }
 
     let rpc_session_token = rpc_session_token_str.unwrap();
     let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
     let boot_config = system_config_client.get("boot/config").await;
     if boot_config.is_ok() {
-        return Err("boot/config already exists, boot scheduler failed".into());
+        return Err(anyhow::anyhow!("boot/config already exists, boot scheduler failed"));
     }
 
     let init_list = create_init_list_by_template().await
@@ -218,7 +222,7 @@ async fn do_one_ood_schedule(input_config: &HashMap<String, String>) -> Result<(
                 let app_config = deploy_app_service(user_name, app_id,&device_list, &input_config).await;
                 if app_config.is_err() {
                     error!("do_one_ood_schedule Failed to install app {} for user {}: {:?}", app_id, user_name, app_config.err().unwrap());
-                    return Err("do_one_ood_schedule Failed to install app".into());
+                    return Err(anyhow::anyhow!("do_one_ood_schedule Failed to install app"));
                 }
                 let (app_config,http_port) = app_config.unwrap();
                 extend_json_action_map(&mut result_config, &app_config);
@@ -301,25 +305,143 @@ fn path_is_gateway_config(path: &str) -> bool {
     if path.starts_with("nodes") && path.ends_with("gateway") {
         return true;
     }
-    return false;
+
+    false
 }
 
-fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> Result<PodScheduler> {
+
+fn craete_node_item_by_device_info(device_name: &str,device_info: &DeviceInfo) -> NodeItem {
+    let node_state = NodeState::from(device_info.state.clone().unwrap_or("Ready".to_string()));
+    let cpu_usage:f64 = device_info.cpu_usage.unwrap_or(0.1) as f64;
+    let total_memory:f64 = device_info.total_mem.unwrap_or(1024*2) as f64;
+    let memory_usage:f64 = device_info.mem_usage.unwrap_or(0.2) as f64;
+    let available_memory = total_memory * (1.0 - memory_usage);
+    let net_id = device_info.net_id.clone().unwrap_or("".to_string());
+    NodeItem {
+        id: device_name.to_string(),
+        labels: vec![],
+        network_zone:net_id,
+        state: node_state,
+        available_cpu: 1.0 - cpu_usage,
+        available_memory,
+        current_load: cpu_usage,
+        resources: HashMap::new(),
+        op_tasks: vec![],
+    }
+}
+
+
+fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfigNode) -> PodItem {
+    let pod_state = PodItemState::from(app_config.state.clone());
+    PodItem {
+        id: app_id.to_string(),
+        pod_type: PodItemType::App,
+        state: pod_state,
+        best_instance_count: app_config.instance,
+        required_cpu: 0.1,
+        required_memory: 1024.0,
+        node_affinity: None,
+        network_affinity: None,
+    }
+}
+
+fn create_pod_item_by_service_config(service_name: &str,service_info: &ServiceInfo) -> PodItem {
+    let pod_state = PodItemState::from(service_info.state.clone());
+    PodItem {
+        id: service_name.to_string(),
+        pod_type: PodItemType::Service,
+        state: pod_state,
+        best_instance_count: service_info.instance,
+        required_cpu: 0.1,
+        required_memory: 1024.0,
+        node_affinity: None,
+        network_affinity: None,
+    }
+}
+
+fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> Result<(PodScheduler,HashMap<String, DeviceInfo>)> {
     let mut pod_scheduler = PodScheduler::new_empty(1,buckyos_get_unix_timestamp());
-    Ok(pod_scheduler)
+    let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
+    for (key, value) in input_config.iter() {
+        //add node
+        if key.starts_with("devices/") && key.ends_with("/info") {
+            let device_name = key.split('/').nth(1).unwrap();
+            let device_info:DeviceInfo = serde_json::from_str(value)
+                .map_err(|e| {
+                    error!("serde_json::from_str failed: {:?}", e);
+                    e
+                })?;
+            let node_item = craete_node_item_by_device_info(device_name,&device_info);
+            device_list.insert(device_name.to_string(), device_info);
+            pod_scheduler.add_node(node_item);
+        }
+
+        //add app pod
+        if key.starts_with("users/") && key.ends_with("/config") {
+            let parts: Vec<&str> = key.split('/').collect();
+            if parts.len() >= 4 && parts[2] == "apps" {
+                let user_id = parts[1];
+                let app_id = parts[3];
+                let full_appid = format!("{}@{}",app_id,user_id);
+                let app_config:AppConfigNode = serde_json::from_str(value.as_str())
+                    .map_err(|e| {
+                        error!("AppConfigNode serde_json::from_str failed: {:?}", e);
+                        e
+                    })?;
+                let pod_item = create_pod_item_by_app_config(full_appid.as_str(),&app_config);
+                pod_scheduler.add_pod(pod_item);
+            }
+        }
+
+        //add service pod
+        if key.starts_with("services/") && key.ends_with("/info") {
+            let service_name = key.split('/').nth(1).unwrap();
+            let service_info:ServiceInfo = serde_json::from_str(value.as_str())
+                .map_err(|e| {
+                    error!("ServiceInfo serde_json::from_str failed: {:?}", e);
+                    e
+                })?;
+            let pod_item = create_pod_item_by_service_config(service_name,&service_info);
+            pod_scheduler.add_pod(pod_item);
+        }
+
+
+        //add pod_instance
+        if key.starts_with("nodes/") && key.ends_with("/config") {
+            let node_id = key.split('/').nth(1).unwrap();
+  
+        }
+    }
+
+
+    Ok((pod_scheduler,device_list))
 }
 
-fn conver_action_to_tx_actions(action:&SchedulerAction) -> HashMap<String,KVAction> {
+fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodScheduler,device_list:&HashMap<String,DeviceInfo>,input_config:&HashMap<String,String>) -> Result<HashMap<String,KVAction>> {
     let mut result = HashMap::new();
     match action {
         SchedulerAction::ChangeNodeStatus(node_id,node_status) => {
             let key = format!("nodes/{}/config",node_id);
-            //TODO:
-            unimplemented!();
+            let mut set_paths = HashMap::new();
+            set_paths.insert("state".to_string(),json!(node_status.to_string()));
+            result.insert(key,KVAction::SetByJsonPath(set_paths));
         }
         SchedulerAction::ChangePodStatus(pod_id,pod_status) => {
-            //TODO:根据PoD的类型,来执行修改状态的操作
-            unimplemented!();
+            let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
+            if pod_item.is_none() {
+                return Err(anyhow::anyhow!("pod_item not found"));
+            }
+            let pod_item = pod_item.unwrap();
+            match pod_item.pod_type {
+                PodItemType::App => {
+                   let set_state_action = set_app_service_state(pod_id.as_str(),pod_status)?;
+                   result.extend(set_state_action);
+                }
+                PodItemType::Service => {
+                    let set_state_action = set_service_state(pod_id.as_str(),pod_status)?;
+                    result.extend(set_state_action);
+                }
+            }
         }
         SchedulerAction::CreateOPTask(new_op_task) => {
             //TODO:
@@ -327,18 +449,66 @@ fn conver_action_to_tx_actions(action:&SchedulerAction) -> HashMap<String,KVActi
         }
         SchedulerAction::InstancePod(new_instance) => {
             //最复杂的流程,需要根据pod的类型,来执行实例化操作
-            unimplemented!();
+            let pod_item = pod_scheduler.get_pod_item(new_instance.pod_id.as_str());
+            if pod_item.is_none() {
+                return Err(anyhow::anyhow!("pod_item not found"));
+            }
+            let pod_item = pod_item.unwrap();
+            match pod_item.pod_type {
+                PodItemType::App => {
+                    let instance_action = instance_app_service(new_instance,&device_list,&input_config)?;
+                    result.extend(instance_action);
+                }
+                PodItemType::Service => {
+                    let instance_action = instance_service(new_instance)?;
+                    result.extend(instance_action);
+                }
+            }
         }
         SchedulerAction::RemovePodInstance(instance_id) => {
-            //相对比较复杂的操作:需要根据pod的类型,来执行反实例化操作
-            unimplemented!();
+            let (pod_id,node_id) = parse_instance_id(instance_id.as_str())?;
+            let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
+            if pod_item.is_none() {
+                return Err(anyhow::anyhow!("pod_item not found"));
+            }
+            let pod_item = pod_item.unwrap();
+            let pod_instance = pod_scheduler.get_pod_instance(instance_id.as_str());
+            if pod_instance.is_none() {
+                return Err(anyhow::anyhow!("pod_instance not found"));
+            }
+            let pod_instance = pod_instance.unwrap();
+            match pod_item.pod_type {
+                PodItemType::App => {
+                    let uninstance_action = uninstance_app_service(&pod_instance)?;
+                    result.extend(uninstance_action);
+                }
+                PodItemType::Service => {
+                    let uninstance_action = uninstance_service(&pod_instance)?;
+                    result.extend(uninstance_action);
+                }
+            }
         }
-        SchedulerAction::UpdatePodInstance(instance_id,pod_instance_item) => {
+        SchedulerAction::UpdatePodInstance(instance_id,pod_instance) => {
             //相对比较复杂的操作:需要根据pod的类型,来执行更新实例化操作
-            unimplemented!();
+            let (pod_id,node_id) = parse_instance_id(instance_id.as_str())?;
+            let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
+            if pod_item.is_none() {
+                return Err(anyhow::anyhow!("pod_item not found"));
+            }
+            let pod_item = pod_item.unwrap();
+            match pod_item.pod_type {
+                PodItemType::App => {
+                    let update_action = update_app_service_instance(&pod_instance)?;
+                    result.extend(update_action);
+                }
+                PodItemType::Service => {
+                    let update_action = update_service_instance(&pod_instance)?;
+                    result.extend(update_action);
+                }
+            }
         }
     }
-    result
+    Ok(result)
 }
 
 async fn schedule_loop() -> Result<()> {
@@ -354,7 +524,7 @@ async fn schedule_loop() -> Result<()> {
         info!("schedule loop step:{}.", loop_step);
         let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
         if rpc_session_token_str.is_err() {
-            return Err("SCHEDULER_SESSION_TOKEN is not set".into());
+            return Err(anyhow::anyhow!("SCHEDULER_SESSION_TOKEN is not set"));
         }
 
         let rpc_session_token = rpc_session_token_str.unwrap();
@@ -374,19 +544,19 @@ async fn schedule_loop() -> Result<()> {
         let input_config = input_config.unwrap();
 
         //init scheduler
-        let mut pod_scheduler = create_scheduler_by_input_config(&input_config)?;
+        let (mut pod_scheduler,device_list) = create_scheduler_by_input_config(&input_config)?;
 
         //schedule
         let action_list = pod_scheduler.schedule();
         if action_list.is_err() {
             error!("pod_scheduler.schedule failed: {:?}", action_list.err().unwrap());
-            return Err("pod_scheduler.schedule failed".into());
+            return Err(anyhow::anyhow!("pod_scheduler.schedule failed"));
         }
 
         let action_list = action_list.unwrap();
         let mut tx_actions = HashMap::new();
         for action in action_list {
-            let new_tx_actions = conver_action_to_tx_actions(&action);
+            let new_tx_actions = schedule_action_to_tx_actions(&action,&pod_scheduler,&device_list,&input_config)?;
             tx_actions.extend(new_tx_actions);
         }
         //TODO 记录"上一次调度成功的信息"

@@ -129,7 +129,9 @@ mod tests {
         });
 
         assert_eq!(data,data2);
-    
+        // 设置值
+        set_json_by_path(&mut data, "state", Some(&json!("Normal")));
+        println!("{}", data);
         // 设置值
         set_json_by_path(&mut data, "/user/address/add/street", Some(&json!("Bob")));
         println!("{}", data);
