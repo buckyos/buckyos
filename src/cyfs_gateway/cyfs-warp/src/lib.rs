@@ -3,7 +3,7 @@
 mod router;
 mod http_server;
 mod ndn_router;
-
+mod cert;
 
 pub use router::*;
 pub use http_server::*;
