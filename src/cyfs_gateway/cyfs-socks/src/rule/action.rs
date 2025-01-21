@@ -4,6 +4,8 @@ use std::str::FromStr;
 // Action constants
 pub const ACTION_DIRECT: &str = "DIRECT";
 pub const ACTION_PROXY: &str = "PROXY";
+pub const ACTION_PROXY_SOCKS: &str = "SOCKS";
+pub const ACTION_PROXY_SOCKS5: &str = "SOCKS5";
 pub const ACTION_REJECT: &str = "REJECT";
 pub const ACTION_PASS: &str = "PASS";
 
@@ -29,7 +31,7 @@ impl FromStr for RuleAction {
 
         match parts[0].to_uppercase().as_str() {
             ACTION_DIRECT => Ok(RuleAction::Direct),
-            ACTION_PROXY => {
+            ACTION_PROXY | ACTION_PROXY_SOCKS | ACTION_PROXY_SOCKS5 => {
                 if parts.len() > 1 {
                     Ok(RuleAction::Proxy(parts[1].to_string()))
                 } else {
