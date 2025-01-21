@@ -3,10 +3,10 @@ use serde_json::json;
 use std::collections::HashMap;
 use serde::{Serialize,Deserialize};
 #[derive(Debug,Clone,Serialize,Deserialize)]
-pub enum JsonValueAction {
+pub enum KVAction {
     Create(String),//创建一个节点并设置值
     Update(String),//完整更新
-    SetByPath(HashMap<String,Option<Value>>),//当成json设置其中的一个值,针对一个对象,set可以是一个数组
+    SetByJsonPath(HashMap<String,Option<Value>>),//当成json设置其中的一个值,针对一个对象,set可以是一个数组
     Remove,//删除
     //Create(String),
 }
@@ -101,30 +101,30 @@ pub fn get_by_json_path(data: &Value, path: &str) -> Option<Value> {
     Some(current.clone())
 }
 
-pub fn extend_json_action_map(dest_map: &mut HashMap<String, JsonValueAction>, from_map: &HashMap<String, JsonValueAction>) {
+pub fn extend_kv_action_map(dest_map: &mut HashMap<String, KVAction>, from_map: &HashMap<String, KVAction>) {
     for (key, value) in from_map.iter() {
         let old_value = dest_map.get_mut(key);
         match old_value {
             Some(old_value) => {
                 match value {
-                    JsonValueAction::Create(new_value) => {
-                        *old_value = JsonValueAction::Create(new_value.clone());
+                    KVAction::Create(new_value) => {
+                        *old_value = KVAction::Create(new_value.clone());
                     },
-                    JsonValueAction::Update(new_value) => {
-                        *old_value = JsonValueAction::Update(new_value.clone());
+                    KVAction::Update(new_value) => {
+                        *old_value = KVAction::Update(new_value.clone());
                     },
-                    JsonValueAction::SetByPath(new_value) => {
+                    KVAction::SetByJsonPath(new_value) => {
                         match old_value {
-                            JsonValueAction::SetByPath(old_value) => {
+                            KVAction::SetByJsonPath(old_value) => {
                                 old_value.extend(new_value.clone());
                             }
                             _ => {
-                                *old_value = JsonValueAction::SetByPath(new_value.clone());
+                                *old_value = KVAction::SetByJsonPath(new_value.clone());
                             }
                         }
                     },
-                    JsonValueAction::Remove => {
-                        *old_value = JsonValueAction::Remove;
+                    KVAction::Remove => {
+                        *old_value = KVAction::Remove;
                     }
                 }
 
@@ -143,6 +143,7 @@ mod tests {
     #[test]
     fn test_hash_map_option_value() {
         let mut test_map:HashMap<String,Option<Value>> = HashMap::new();
+ 
         test_map.insert("state".to_string(),None);
         test_map.insert("abc".to_string(),Some(json!("123")));
         let test_value = serde_json::to_value(test_map).unwrap();
@@ -175,15 +176,17 @@ mod tests {
             }
         });
 
-
-
-
         assert_eq!(data,data2);
+        let json_path = format!("servers/main_http_server/hosts/*/routes/\"/kapi/{}\"","ood1");
+        set_json_by_path(&mut data,json_path.as_str(),Some(&json!({
+            "upstream":format!("http://127.0.0.1:{}",3200),
+        })));
+
         // 设置值
         set_json_by_path(&mut data, "state", Some(&json!("Normal")));
         println!("{}", data);
         // 设置值
-        set_json_by_path(&mut data, "/user/\"ad/dr/ess\"/add/street", Some(&json!("Bob")));
+        set_json_by_path(&mut data, "/user/name", Some(&json!("Bob")));
         println!("{}", data);
         // 删除字段
         set_json_by_path(&mut data, "/user/age", None);

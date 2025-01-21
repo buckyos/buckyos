@@ -15,7 +15,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use clap::{Arg, Command};
-use kernel_mgr::KernelServiceConfig;
 use time::macros::format_description;
 use std::{collections::HashMap, fs::File};
 use std::path::{Path, PathBuf};
@@ -36,6 +35,7 @@ use toml;
 use serde_json::{from_value, json,Value};
 use name_lib::*;
 use name_client::*;
+
 
 
 use crate::run_item::*;
@@ -71,35 +71,6 @@ struct NodeIdentityConfig {
     //device_private_key: ,storage in partical file
 }
 
-//load from SystemConfig,node的配置分为下面几个部分
-// 固定的硬件配置，一般只有硬件改变或损坏才会修改
-// 系统资源情况，（比如可用内存等），改变密度很大。这一块暂时不用etcd实现，而是用专门的监控服务保存
-// RunItem的配置。这块由调度器改变，一旦改变,node_daemon就会产生相应的控制命令
-// Task(Cmd)配置，暂时不实现
-
-#[derive(Serialize, Deserialize)]
-struct NodeConfig {
-    revision: u64,
-    kernel: HashMap<String, KernelServiceConfig>,
-    apps: HashMap<String, AppServiceConfig>,
-    services: HashMap<String, FrameServiceConfig>,
-    is_running: bool,
-    state:Option<String>,
-    
-}
-
-impl NodeConfig {
-    fn from_json_str(jons_str: &str) -> Result<Self> {
-        let node_config: std::result::Result<NodeConfig, serde_json::Error> =
-            serde_json::from_str(jons_str);
-        if node_config.is_ok() {
-            return Ok(node_config.unwrap());
-        }
-        return Err(NodeDaemonErrors::ParserConfigError(
-            "Failed to parse NodeConfig JSON".to_string(),
-        ));
-    }
-}
 
 fn init_log_config() {
     // 创建一个日志配置对象
@@ -274,7 +245,7 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
     return Ok(zone_config);
 }
 
-async fn load_app_info(app_id: &str,username: &str,sys_config_client: &SystemConfigClient) -> Result<AppInfo> {
+async fn load_app_info(app_id: &str,username: &str,sys_config_client: &SystemConfigClient) -> Result<AppDoc> {
     let app_key = format!("users/{}/apps/{}/config", username,app_id);
     let (app_cfg_result,rversion) = sys_config_client.get(app_key.as_str()).await
         .map_err(|error| {
@@ -306,7 +277,7 @@ async fn load_node_gateway_config(node_host_name: &str,sys_config_client: &Syste
         return Ok(gateway_config);
     }
 
-    let node_key = format!("nodes/{}/gateway", node_host_name);
+    let node_key = format!("nodes/{}/gateway_config", node_host_name);
     let (node_cfg_result,rversion) = sys_config_client.get(node_key.as_str()).await
         .map_err(|error| {
             error!("get node gateway_config failed from system_config_service! {}", error);
@@ -357,9 +328,9 @@ async fn node_main(node_host_name: &str,
     //get node_gateway_config
 
 
-    let target_state = RunItemTargetState::from_str("Running").unwrap();
+    let target_state = RunItemTargetState::Running;
 
-    let node_config= load_node_config(node_host_name, sys_config_client).await
+    let node_config = load_node_config(node_host_name, sys_config_client).await
         .map_err(|err| {
             error!("load node config failed! {}", err);
             return NodeDaemonErrors::SystemConfigError("cann't load node config!".to_string());
@@ -377,7 +348,7 @@ async fn node_main(node_host_name: &str,
                 &device_private_key
             );
             
-            let target_state = kernel_cfg.target_state.clone();
+            let target_state = RunItemTargetState::from_str(&kernel_cfg.target_state.as_str()).unwrap();
 
             let _ = control_run_item_to_target_state(&kernel_run_item, target_state, device_private_key)
                 .await
@@ -815,7 +786,7 @@ async fn async_main() -> std::result::Result<(), String> {
         syc_cfg_client = SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()));
         let boot_config_result = syc_cfg_client.get("boot/config").await;
         match boot_config_result {
-            sys_config::Result::Err(SystemConfigError::KeyNotFound(_)) => {
+            sys_config::SytemConfigResult::Err(SystemConfigError::KeyNotFound(_)) => {
                 warn!("boot config is not exist, try first scheduler to generate it!");
                 std::env::set_var("SCHEDULER_SESSION_TOKEN", device_session_token_jwt.clone());
                 info!("set var SCHEDULER_SESSION_TOKEN {}", device_session_token_jwt);
@@ -826,7 +797,7 @@ async fn async_main() -> std::result::Result<(), String> {
                 info!("Init boot config OK, wat 2 secs.");
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             },
-            sys_config::Result::Ok(r) => {
+            sys_config::SytemConfigResult::Ok(r) => {
                 boot_config = serde_json::from_str(r.0.as_str()).map_err(|err| {
                     error!("parse boot config failed! {}", err);
                     return String::from("parse boot config failed!");

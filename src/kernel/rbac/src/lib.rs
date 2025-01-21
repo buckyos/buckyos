@@ -46,15 +46,15 @@ p, admin,kv://services/*,read|write,allow
 p, admin,dfs://services/*,read|write,allow
 p, admin,dfs://library/*,read|write,allow
 
-p, service,kv://services/{service}/setting,read|write,allow
-p, service,kv://services/{service}/info,read|write,allow
+p, service,kv://services/{service}/settings,read|write,allow
+p, service,kv://services/{service}/config,read|write,allow
 p, service,kv://system/*,read,allow
 
 p, user,kv://users/{user}/*,read|write,allow
 p, user,dfs://users/{user}/*,read|write,allow
 p, user,dfs://library/*,read|create,allow
 
-p, app, kv://users/*/apps/{app}/setting,read|write,allow
+p, app, kv://users/*/apps/{app}/settings,read|write,allow
 p, app, kv://users/*/apps/{app}/config,read,allow
 p, app, kv://users/*/apps/{app}/info,read,allow
 
@@ -263,7 +263,7 @@ m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)
         assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app1/config", "write").await, false);
         assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app1/info", "read").await, true);
         assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app1/info", "write").await, false);
-        assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app1/setting", "write").await, true);
+        assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app1/settings", "write").await, true);
         //can read and write appdata
         assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/appdata/app1/readme.txt", "write").await, true);
         assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/appdata/app1/readme.txt", "read").await, true);
@@ -272,7 +272,7 @@ m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)
         assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/cache/app1/readme_cache.txt", "read").await, true);
 
         //can not read and write app2
-        assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app2/setting", "write").await, false);
+        assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app2/settings", "write").await, false);
         assert_eq!(enforce("alice", Some("app1"), "kv://users/alice/apps/app2/info", "read").await, false);
         assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/appdata/app2/readme.txt", "write").await, false);
         assert_eq!(enforce("alice", Some("app1"), "dfs://users/alice/appdata/app2/readme.txt", "read").await, false);

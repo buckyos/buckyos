@@ -12,13 +12,9 @@ use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use tokio::sync::RwLock;
+use sys_config::*;
 
-#[derive(Serialize, Deserialize)]
-pub struct KernelServiceConfig {
-    pub target_state: RunItemTargetState,
-    pub pkg_id: String,
-    pub operations: HashMap<String, RunItemControlOperation>,
-}
+use crate::run_item::*;
 
 pub struct KernelServiceRunItem {
     pub target_state: RunItemTargetState,
@@ -30,12 +26,12 @@ pub struct KernelServiceRunItem {
 
 impl KernelServiceRunItem {
     pub fn new(
-        kernel_config: &KernelServiceConfig,
+        kernel_config: &KernelServiceInstanceConfig,
         device_doc: &DeviceConfig,
         device_private_key: &EncodingKey,
     ) -> Self {
         Self {
-            target_state: kernel_config.target_state.clone(),
+            target_state: RunItemTargetState::from_str(&kernel_config.target_state.as_str()).unwrap(),
             pkg_id: kernel_config.pkg_id.clone(),
             service_pkg: RwLock::new(None),
             device_doc: device_doc.clone(),

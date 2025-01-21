@@ -30,7 +30,7 @@
   "source" : "http://xxx.com/index.db",//是从哪个源得到的app_info
   "enable" : "true", //是否启用
   "single_instance" : true,
- //安装配置,注意与app自己的setting区分,app没有权限修改本配置
+ //安装配置,注意与app自己的settings区分,app没有权限修改本配置
   "data_mount_point" : "/opt/data", //$data_dir是系统基于appid和userid构造的,位于DFS上的目录.系统会自动备份该目录. 有状态应用需要将该目录与docker内部的一个目录关联
   "cache_mount_point" : "/opt/cache",//$data_dir是系统基于appid和userid构造的,位于DFS上的缓存目录.系统会尽量保留该目录以帮助应用提升性能.该配置可为空
   "local_cache_mount_point" : "/opt/tmp",//$local_cache_dir是系统基于appid和userid构造的,位于本地文件系统上的缓存目录.该目录可能随时被清理并且永远不会被备份.该配置可为空

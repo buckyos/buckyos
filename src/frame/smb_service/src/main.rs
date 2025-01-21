@@ -173,7 +173,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
             }
         };
 
-        let user_info = match system_config_client.get(format!("users/{}/samba/setting", user).as_str()).await {
+        let user_info = match system_config_client.get(format!("users/{}/samba/settings", user).as_str()).await {
             Ok((samba_info_str, _)) => {
                 let samba_info: UserSambaInfo = serde_json::from_str(samba_info_str.as_str())
                     .map_err(into_smb_err!(SmbErrorCode::Failed, "parse samba_info failed"))?;

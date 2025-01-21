@@ -12,101 +12,12 @@ use serde_json::Value;
 use name_lib::*;
 use name_client::*;
 use buckyos_kit::*;
-use sys_config::AppConfigNode;
-use sys_config::KVAction;
-use sys_config::ServiceInfo;
-use sys_config::SystemConfigClient;
-
+use sys_config::*;
 use scheduler::*;
 use service::*;
 use app::*;
 
 use anyhow::Result;
-
-async fn generate_app_config(user_name:&str) -> Result<HashMap<String,String>> {
-    let mut init_list : HashMap<String,String> = HashMap::new();
-    let config_str = serde_json::to_string(&json!({
-        "app_id":"buckyos.home_station",
-        "app_name" : "Home Station",
-        "app_description" : "Home Station",
-        "vendor_id" : "buckyos",
-        "pkg_id" : "home_station",
-        "username" : user_name.to_string(),
-        "service_docker_images" : {
-            "x86_server" : "filebrowser/filebrowser:s6"
-        },
-        "data_mount_point" : "/srv",
-        "cache_mount_point" : "/database/",
-        "local_cache_mount_point" : "/config/",
-        "max_cpu_num" : Some(4),
-        "max_cpu_percent" : Some(80),
-        "memory_quota" : 1024*1024*1024*1, //1GB
-        "host_name" : Some("home".to_string()),
-        "port" : 20080,
-        "org_port" : 80
-    })).unwrap();
-    init_list.insert(format!("users/{}/apps/{}/config",user_name.to_string(),"buckyos.home_station"),config_str);
-    Ok(init_list)
-}
-
-async fn generate_ood_config(ood_name:&str,owner_name:&str) -> Result<HashMap<String,String>> {
-    let mut init_list : HashMap<String,String> = HashMap::new();
-    let config_str = serde_json::to_string(&json!({
-        "is_running":true,
-        "revision" : 0,
-        "kernel" : {
-            "verify_hub" : {
-                "target_state":"Running",
-                "pkg_id":"verify_hub",
-                "operations":{
-                    "status":{
-                        "command":"status",
-                        "params":[]
-                    },
-                    "start":{
-                        "command":"start",
-                        "params":[]
-                    },
-                    "stop":{
-                        "command":"stop",
-                        "params":[]
-                    },
-                }
-            },
-            "scheduler" : {
-                "target_state":"Running",
-                "pkg_id":"scheduler",
-                "operations":{
-                    "status":{
-                        "command":"status",
-                        "params":[]
-                    },
-                    "start":{
-                        "command":"start",
-                        "params":[]
-                    },
-                    "stop":{
-                        "command":"stop",
-                        "params":[]
-                    },
-                }
-            }
-        },
-        "services":{
-        },
-        "apps":{
-            format!("{}#buckyos.home_station",owner_name):{
-                "target_state":"Running",
-                "app_id":"buckyos.home_station",
-                "username":owner_name,
-            }
-        }
-    })).unwrap();
-    //init ood config
-    init_list.insert(format!("nodes/{}/config",ood_name),config_str);
-
-    Ok(init_list)
-}
 
 async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
     //load start_parms from active_service.
@@ -188,126 +99,130 @@ async fn do_boot_scheduler() -> Result<()> {
     for (key,value) in init_list.iter() {
         system_config_client.create(key,value).await?;
     }
+
+    info!("do first schedule!");
+    schedule_loop(true).await?;
+
     info!("boot scheduler success");
     return Ok(());
 }
 
 
 
-async fn do_one_ood_schedule(input_config: &HashMap<String, String>) -> Result<(HashMap<String, JsonValueAction>,Value)> {
-    let mut result_config: HashMap<String, JsonValueAction> = HashMap::new();
-    let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
-    for (key, value) in input_config.iter() {
-        if key.starts_with("devices/") && key.ends_with("/info") {
-            let device_name = key.split('/').nth(1).unwrap();
-            let device_info:DeviceInfo = serde_json::from_str(value)
-                .map_err(|e| {
-                    error!("serde_json::from_str failed: {:?}", e);
-                    e
-                })?;
-            device_list.insert(device_name.to_string(), device_info);
-        }
-    }
-    let mut all_app_http_port:HashMap<String,u16> = HashMap::new();
+// async fn do_one_ood_schedule(input_config: &HashMap<String, String>) -> Result<(HashMap<String, JsonValueAction>,Value)> {
+//     let mut result_config: HashMap<String, JsonValueAction> = HashMap::new();
+//     let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
+//     for (key, value) in input_config.iter() {
+//         if key.starts_with("devices/") && key.ends_with("/info") {
+//             let device_name = key.split('/').nth(1).unwrap();
+//             let device_info:DeviceInfo = serde_json::from_str(value)
+//                 .map_err(|e| {
+//                     error!("serde_json::from_str failed: {:?}", e);
+//                     e
+//                 })?;
+//             device_list.insert(device_name.to_string(), device_info);
+//         }
+//     }
+//     let mut all_app_http_port:HashMap<String,u16> = HashMap::new();
 
-    // deploy all app configurations
-    for (key, value) in input_config.iter() {
-        if key.starts_with("users/") && key.ends_with("/config") {
-            let parts: Vec<&str> = key.split('/').collect();
-            if parts.len() >= 4 && parts[2] == "apps" {
-                let user_name = parts[1];
-                let app_id = parts[3];
+//     // deploy all app configurations
+//     for (key, value) in input_config.iter() {
+//         if key.starts_with("users/") && key.ends_with("/config") {
+//             let parts: Vec<&str> = key.split('/').collect();
+//             if parts.len() >= 4 && parts[2] == "apps" {
+//                 let user_name = parts[1];
+//                 let app_id = parts[3];
 
-                // Install app for user
-                let app_config = deploy_app_service(user_name, app_id,&device_list, &input_config).await;
-                if app_config.is_err() {
-                    error!("do_one_ood_schedule Failed to install app {} for user {}: {:?}", app_id, user_name, app_config.err().unwrap());
-                    return Err(anyhow::anyhow!("do_one_ood_schedule Failed to install app"));
-                }
-                let (app_config,http_port) = app_config.unwrap();
-                extend_json_action_map(&mut result_config, &app_config);
-                if http_port.is_some() {
-                    all_app_http_port.insert(format!("{}.{}",app_id,user_name),http_port.unwrap());
-                }
-            }
-        }
-    }
+//                 // Install app for user
+//                 let app_config = deploy_app_service(user_name, app_id,&device_list, &input_config).await;
+//                 if app_config.is_err() {
+//                     error!("do_one_ood_schedule Failed to install app {} for user {}: {:?}", app_id, user_name, app_config.err().unwrap());
+//                     return Err(anyhow::anyhow!("do_one_ood_schedule Failed to install app"));
+//                 }
+//                 let (app_config,http_port) = app_config.unwrap();
+//                 extend_json_action_map(&mut result_config, &app_config);
+//                 if http_port.is_some() {
+//                     all_app_http_port.insert(format!("{}.{}",app_id,user_name),http_port.unwrap());
+//                 }
+//             }
+//         }
+//     }
 
-    //结合系统的快捷方式配置,设置nodes/gateway 配置,目前所有节点的gateway配置都是一样的
-    let mut real_base_gateway_config : Value = json!({});
-    let base_gateway_config = input_config.get("services/gateway/base_config");
-    if base_gateway_config.is_some() {
-        let base_gateway_config = base_gateway_config.unwrap();
-        let base_gateway_config = serde_json::from_str(base_gateway_config);
-        if base_gateway_config.is_ok() {
-            real_base_gateway_config = base_gateway_config.unwrap();
-        } else {
-            error!("serde_json::from_str failed: {:?}", base_gateway_config.err().unwrap());
-        }
-    } else {
-        error!("services/gateway/base_config is not set");
-    }
+//     //结合系统的快捷方式配置,设置nodes/gateway 配置,目前所有节点的gateway配置都是一样的
+//     let mut real_base_gateway_config : Value = json!({});
+//     let base_gateway_config = input_config.get("services/gateway/base_config");
+//     if base_gateway_config.is_some() {
+//         let base_gateway_config = base_gateway_config.unwrap();
+//         let base_gateway_config = serde_json::from_str(base_gateway_config);
+//         if base_gateway_config.is_ok() {
+//             real_base_gateway_config = base_gateway_config.unwrap();
+//         } else {
+//             error!("serde_json::from_str failed: {:?}", base_gateway_config.err().unwrap());
+//         }
+//     } else {
+//         error!("services/gateway/base_config is not set");
+//     }
 
-    let gateway_setting = input_config.get("services/gateway/setting");
-    if gateway_setting.is_some() {
-        info!("gateway_setting:{}",gateway_setting.unwrap());
-        let gateway_setting = gateway_setting.unwrap();
-        let gateway_setting = serde_json::from_str(gateway_setting);
-        if gateway_setting.is_ok() {
-            let gateway_setting:Value = gateway_setting.unwrap();
-            let shortcuts = gateway_setting.get("shortcuts");
-            if shortcuts.is_some() {
-                let shortcuts = shortcuts.unwrap();
-                for (short_name,value) in shortcuts.as_object().unwrap() {
-                    let short_type = value.get("type");
-                    let short_owner = value.get("user_id");
-                    let short_app_id = value.get("app_id");
-                    if short_type.is_some() && short_owner.is_some() && short_app_id.is_some() {
-                        //let short_type = short_type.unwrap();
-                        let short_owner = short_owner.unwrap().as_str().unwrap();
-                        let short_app_id = short_app_id.unwrap().as_str().unwrap();
-                        let short_app_key = format!("{}.{}",short_app_id,short_owner);
-                        if all_app_http_port.contains_key(&short_app_key) {
-                            let http_port = all_app_http_port.get(&short_app_key).unwrap();
-                            info!("find shortcut to app_service :{} http_port:{},modify gateway_config",short_app_key,http_port);
-                            let app_gateway_config = json!({
-                                "routes":{
-                                    "/":{
-                                        "upstream":format!("http://127.0.0.1:{}",http_port)
-                                    }
-                                }
-                            });
-                            if short_name == "www" {
-                                let default_upstream = json!({
-                                    "/":{
-                                        "upstream":format!("http://127.0.0.1:{}",http_port)
-                                    }
-                                });
+//     let gateway_setting = input_config.get("services/gateway/settings");
+//     if gateway_setting.is_some() {
+//         info!("gateway_setting:{}",gateway_setting.unwrap());
+//         let gateway_setting = gateway_setting.unwrap();
+//         let gateway_setting = serde_json::from_str(gateway_setting);
+//         if gateway_setting.is_ok() {
+//             let gateway_setting:Value = gateway_setting.unwrap();
+//             let shortcuts = gateway_setting.get("shortcuts");
+//             if shortcuts.is_some() {
+//                 let shortcuts = shortcuts.unwrap();
+//                 for (short_name,value) in shortcuts.as_object().unwrap() {
+//                     let short_type = value.get("type");
+//                     let short_owner = value.get("user_id");
+//                     let short_app_id = value.get("app_id");
+//                     if short_type.is_some() && short_owner.is_some() && short_app_id.is_some() {
+//                         //let short_type = short_type.unwrap();
+//                         let short_owner = short_owner.unwrap().as_str().unwrap();
+//                         let short_app_id = short_app_id.unwrap().as_str().unwrap();
+//                         let short_app_key = format!("{}.{}",short_app_id,short_owner);
+//                         if all_app_http_port.contains_key(&short_app_key) {
+//                             let http_port = all_app_http_port.get(&short_app_key).unwrap();
+//                             info!("find shortcut to app_service :{} http_port:{},modify gateway_config",short_app_key,http_port);
+//                             let app_gateway_config = json!({
+//                                 "routes":{
+//                                     "/":{
+//                                         "upstream":format!("http://127.0.0.1:{}",http_port)
+//                                     }
+//                                 }
+//                             });
+//                             if short_name == "www" {
+//                                 let default_upstream = json!({
+//                                     "/":{
+//                                         "upstream":format!("http://127.0.0.1:{}",http_port)
+//                                     }
+//                                 });
 
-                                set_json_by_path(&mut real_base_gateway_config,"/servers/main_http_server/hosts/*/routes",Some(&default_upstream));
+//                                 set_json_by_path(&mut real_base_gateway_config,"/servers/main_http_server/hosts/*/routes",Some(&default_upstream));
 
-                            }
-                            set_json_by_path(&mut real_base_gateway_config,format!("/servers/main_http_server/hosts/{}.*",short_name).as_str(),Some(&app_gateway_config));
-                        } else {
-                            warn!("find shortcut to app_service :{} not found",short_app_key);
-                        }
-                    }
-                }
-            }
-        }
-    }
+//                             }
+//                             set_json_by_path(&mut real_base_gateway_config,format!("/servers/main_http_server/hosts/{}.*",short_name).as_str(),Some(&app_gateway_config));
+//                         } else {
+//                             warn!("find shortcut to app_service :{} not found",short_app_key);
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//     }
 
 
-    Ok((result_config,real_base_gateway_config))
-}
+//     Ok((result_config,real_base_gateway_config))
+// }
 
-fn path_is_gateway_config(path: &str) -> bool {
-    if path.starts_with("nodes") && path.ends_with("gateway") {
-        return true;
-    }
+// fn path_is_gateway_config(path: &str) -> bool {
+//     if path.starts_with("nodes") && path.ends_with("gateway") {
+//         return true;
+//     }
 
-    false
-}
+//     false
+// }
 
 
 fn craete_node_item_by_device_info(device_name: &str,device_info: &DeviceInfo) -> NodeItem {
@@ -331,7 +246,7 @@ fn craete_node_item_by_device_info(device_name: &str,device_info: &DeviceInfo) -
 }
 
 
-fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfigNode) -> PodItem {
+fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfig) -> PodItem {
     let pod_state = PodItemState::from(app_config.state.clone());
     PodItem {
         id: app_id.to_string(),
@@ -345,7 +260,7 @@ fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfigNode) -> Pod
     }
 }
 
-fn create_pod_item_by_service_config(service_name: &str,service_info: &ServiceInfo) -> PodItem {
+fn create_pod_item_by_service_config(service_name: &str,service_info: &KernelServiceConfig) -> PodItem {
     let pod_state = PodItemState::from(service_info.state.clone());
     PodItem {
         id: service_name.to_string(),
@@ -383,7 +298,7 @@ fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> R
                 let user_id = parts[1];
                 let app_id = parts[3];
                 let full_appid = format!("{}@{}",app_id,user_id);
-                let app_config:AppConfigNode = serde_json::from_str(value.as_str())
+                let app_config:AppConfig = serde_json::from_str(value.as_str())
                     .map_err(|e| {
                         error!("AppConfigNode serde_json::from_str failed: {:?}", e);
                         e
@@ -396,7 +311,7 @@ fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> R
         //add service pod
         if key.starts_with("services/") && key.ends_with("/info") {
             let service_name = key.split('/').nth(1).unwrap();
-            let service_info:ServiceInfo = serde_json::from_str(value.as_str())
+            let service_info:KernelServiceConfig = serde_json::from_str(value.as_str())
                 .map_err(|e| {
                     error!("ServiceInfo serde_json::from_str failed: {:?}", e);
                     e
@@ -424,6 +339,7 @@ fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodSched
             let key = format!("nodes/{}/config",node_id);
             let mut set_paths = HashMap::new();
             set_paths.insert("state".to_string(),Some(json!(node_status.to_string())));
+            //TODO:需要将insert替换成合并
             result.insert(key,KVAction::SetByJsonPath(set_paths));
         }
         SchedulerAction::ChangePodStatus(pod_id,pod_status) => {
@@ -465,7 +381,7 @@ fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodSched
                         return Err(anyhow::anyhow!("service_info not found"));
                     }
                     let service_info = service_info.unwrap();
-                    let service_info:ServiceInfo = serde_json::from_str(service_info.as_str())?;
+                    let service_info:KernelServiceConfig = serde_json::from_str(service_info.as_str())?;
                     let instance_action = instance_service(new_instance,&service_info)?;
                     result.extend(instance_action);
                 }
@@ -517,7 +433,7 @@ fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodSched
     Ok(result)
 }
 
-async fn schedule_loop() -> Result<()> {
+async fn schedule_loop(is_boot:bool) -> Result<()> {
     let mut loop_step = 0;
     let is_running = true;
     info!("schedule loop start...");
@@ -563,42 +479,15 @@ async fn schedule_loop() -> Result<()> {
         let mut tx_actions = HashMap::new();
         for action in action_list {
             let new_tx_actions = schedule_action_to_tx_actions(&action,&pod_scheduler,&device_list,&input_config)?;
-            tx_actions.extend(new_tx_actions);
+            extend_kv_action_map(&mut tx_actions,&new_tx_actions);
         }
         //TODO 记录"上一次调度成功的信息"
         
         //执行调度动作
         system_config_client.exec_tx(tx_actions, None).await?;
-
-        //cover action_list to system_config operations
-        //write to system_config
-        // for (path,value) in schedule_result.iter() {
-        //     match value {
-        //         JsonValueAction::Create(value) => {
-        //            //TODO:
-        //            unimplemented!();
-        //         }
-        //         JsonValueAction::Update(value) => {
-        //             system_config_client.set(path,value).await?;
-        //         }
-        //         JsonValueAction::SetByPath(value) => {
-        //             let mut old_value:Value;
-        //             if path_is_gateway_config(path) {
-        //                 old_value = base_gateway_config.clone();
-        //             } else {
-        //                 let remote_value = input_config.get(path).unwrap();
-        //                 old_value = serde_json::from_str(remote_value).unwrap();
-        //             }
-        //             for (sub_path,sub_value) in value.iter() {
-        //                 set_json_by_path(&mut old_value,sub_path,Some(sub_value));
-        //             }
-        //             system_config_client.set(path,old_value.to_string().as_str()).await?;
-        //         }
-        //         JsonValueAction::Remove => {
-        //             system_config_client.delete(path).await?;
-        //         }
-        //     }
-        // }
+        if is_boot {
+            break;
+        }
     }
     Ok(())
 
@@ -620,7 +509,7 @@ async fn service_main(is_boot:bool) -> Result<i32> {
     }
 
     info!("Enter schedule loop.");
-    schedule_loop().await.map_err(|e| {
+    schedule_loop(false).await.map_err(|e| {
         error!("schedule_loop failed: {:?}", e);
         e
     })?;
@@ -699,7 +588,7 @@ mod test {
     "type":"kernel"
 }
 """
-"services/verify_hub/setting" = """
+"services/verify_hub/settings" = """
 {
     "trust_keys" : []
 }
@@ -719,7 +608,7 @@ mod test {
     "type":"kernel"
 }
 """
-"services/gateway/setting" = """
+"services/gateway/settings" = """
 {
     "shortcuts": {
         "www": {
@@ -1009,8 +898,8 @@ g, app2, app
         "#;
         buckyos_kit::init_logging("scheduler");
         let input_config: HashMap<String, String> = toml::from_str(input_config_str).unwrap();
-        let schedule_result = do_one_ood_schedule(&input_config).await;
-        let schedule_result = schedule_result.unwrap();
+        //let schedule_result = do_one_ood_schedule(&input_config).await;
+        //let schedule_result = schedule_result.unwrap();
         println!("schedule_result:{}",serde_json::to_string(&schedule_result).unwrap());
     }
 }

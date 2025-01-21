@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 
 #[derive(Serialize, Deserialize)]
-pub struct SubPkgInfo {
+pub struct SubPkgDesc {
     pub pkg_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_image_name:Option<String>,
@@ -16,17 +16,17 @@ pub struct SubPkgInfo {
 }
 //App info is store at Index-db, publish to bucky store
 #[derive(Serialize, Deserialize)]
-pub struct AppInfo {
+pub struct AppDoc {
     pub name: String,
     pub description: String,
     pub vendor_did: String,
     pub pkg_id: String,
     //service name -> full image url
-    pub pkg_list: HashMap<String, SubPkgInfo>,
+    pub pkg_list: HashMap<String, SubPkgDesc>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct ServiceInfo {
+pub struct KernelServiceConfig {
     pub name: String,
     pub description: String,
     pub vendor_did: String,
@@ -40,9 +40,9 @@ pub struct ServiceInfo {
 
 
 #[derive(Serialize, Deserialize)]
-pub struct AppConfigNode {
+pub struct AppConfig {
     pub app_id: String,
-    pub app_info: AppInfo,
+    pub app_info: AppDoc,
     pub app_index: u16, //app index in user's app list
     pub enable: bool,
     pub instance: u32,//期望的instance数量
@@ -75,7 +75,7 @@ pub struct AppConfigNode {
 
 
 #[derive(Serialize, Deserialize,Clone)]
-pub struct AppServiceConfig {
+pub struct AppServiceInstanceConfig {
     pub target_state: String,
     pub app_id: String,
     pub user_id: String,
@@ -107,9 +107,9 @@ pub struct AppServiceConfig {
 
 
 
-impl AppServiceConfig {
-    pub fn new(owner_user_id:&str,app_config:&AppConfigNode) -> AppServiceConfig {
-        AppServiceConfig {
+impl AppServiceInstanceConfig {
+    pub fn new(owner_user_id:&str,app_config:&AppConfig) -> AppServiceInstanceConfig {
+        AppServiceInstanceConfig {
             target_state: "Running".to_string(),
             app_id: app_config.app_id.clone(),
             user_id:owner_user_id.to_string(),

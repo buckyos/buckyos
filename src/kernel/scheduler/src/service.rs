@@ -1,17 +1,15 @@
 use std::collections::HashMap;
 use serde_json::{json,Value};
 use sys_config::*;
-use name_lib::*;
+use buckyos_kit::*;
 use crate::scheduler::*;
-
 use anyhow::Result;
 
-
-pub fn instance_service(new_instance:&PodInstance,server_info:&ServiceInfo)->Result<HashMap<String,KVAction>> {
+pub fn instance_service(new_instance:&PodInstance,server_info:&KernelServiceConfig)->Result<HashMap<String,KVAction>> {
     let mut result = HashMap::new();
     //目前所有的service都是kernel service (no docker) ,有标准的frame service也是应该运行在docker中的.
     //add instance to node config
-    let kernel_service_config = KernelServiceConfig::new(server_info.pkg_id.clone());
+    let kernel_service_config = KernelServiceInstanceConfig::new(server_info.pkg_id.clone());
     let key_path = format!("nodes/{}/config",new_instance.node_id.as_str());
     let json_path = format!("kernel/{}",new_instance.pod_id.as_str());
     let set_value = serde_json::to_value(kernel_service_config)?;
