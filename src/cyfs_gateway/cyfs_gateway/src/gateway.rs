@@ -1,12 +1,15 @@
 use super::config_loader::GatewayConfig;
 use super::dispatcher::ServiceDispatcher;
 use cyfs_dns::start_cyfs_dns_server;
+use cyfs_dns::DNSServer;
 use cyfs_gateway_lib::ServerConfig;
 use cyfs_gateway_lib::{GatewayDevice, GatewayDeviceRef, TunnelManager};
+use cyfs_socks::Socks5Proxy;
 use cyfs_warp::start_cyfs_warp_server;
 use name_client::*;
 use name_lib::*;
 use once_cell::sync::OnceCell;
+use tokio::sync::Mutex;
 use url::Url;
 
 pub struct GatewayParams {
@@ -19,6 +22,10 @@ pub struct Gateway {
     tunnel_manager: OnceCell<TunnelManager>,
 
     device_config: OnceCell<DeviceConfig>,
+
+    // servers
+    dns_servers: Mutex<Vec<DNSServer>>,
+    socks_servers: Mutex<Vec<Socks5Proxy>>,
 }
 
 impl Gateway {
@@ -27,6 +34,8 @@ impl Gateway {
             config,
             tunnel_manager: OnceCell::new(),
             device_config: OnceCell::new(),
+            dns_servers: Mutex::new(Vec::new()),
+            socks_servers: Mutex::new(Vec::new()),
         }
     }
 
@@ -178,21 +187,36 @@ impl Gateway {
                 }
                 ServerConfig::DNS(dns_config) => {
                     let dns_config = dns_config.clone();
-                    tokio::task::spawn(async move {
-                        if let Err(e) = start_cyfs_dns_server(dns_config).await {
+
+                    let ret = cyfs_dns::start_cyfs_dns_server(dns_config).await;
+                    match ret {
+                        Ok(dns_server) => {
+                            let mut dns_servers = self.dns_servers.lock().await;
+                            dns_servers.push(dns_server);
+                        }
+                        Err(e) => {
+                            // FIXME: should we return error here? or just ignore it?
                             error!("Error starting dns server: {}", e);
                         }
-                    });
+                    }
                 }
                 ServerConfig::Socks(socks_config) => {
                     let tunnel_provider =
                         crate::socks::SocksTunnelBuilder::new_ref(self.tunnel_manager().clone());
 
                     let socks_config = socks_config.clone();
-                    if let Err(e) =
-                        cyfs_socks::start_cyfs_socks_server(socks_config, tunnel_provider).await
-                    {
-                        error!("Error starting socks server: {}", e);
+                    let ret =
+                        cyfs_socks::start_cyfs_socks_server(socks_config, tunnel_provider).await;
+
+                    match ret {
+                        Ok(socks_server) => {
+                            let mut socks_servers = self.socks_servers.lock().await;
+                            socks_servers.push(socks_server);
+                        }
+                        Err(e) => {
+                            // FIXME: should we return error here? or just ignore it?
+                            error!("Error starting socks server: {}", e);
+                        }
                     }
                 }
             }
