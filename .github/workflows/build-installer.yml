@@ -1,0 +1,46 @@
+name: Build Buckyos Deb Package
+on: 
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version of the package'
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: build
+    runs-on: windows-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: "latest"
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.x'
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: x86_64-pc-windows-msvc
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+    - name: build web apps
+      working-directory: ./src
+      run: python3 scripts/build_web_apps.py
+    - name: build x64 bin
+      working-directory: ./src
+      run: python3 scripts/build.py --no-build-web-apps --no-install
+    - name: make deb
+      working-directory: ./src
+      run: python3 scripts/make_win_installer.py ${{inputs.version}}
+    - name: Upload deb
+      uses: actions/upload-artifact@v4
+      with:
+        name: buckyos-x86_64-${{inputs.version}}.deb
+        path: ./src/buckyos-installer-${{inputs.version}}.deb
+        if-no-files-found: error
