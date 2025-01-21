@@ -63,26 +63,26 @@ impl SourceManager {
 
         let sys_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
 
-        let index_source_config = sys_config_client
-            .get("services/repo/index_source")
+        let repo_config = sys_config_client
+            .get("services/repo/setting")
             .await
             .map_err(|e| {
                 error!("get index source config failed! err:{}", e);
                 RepoError::LoadError("index_source".to_string(), e.to_string())
             })?;
 
-        let index_source = index_source_config.0;
+        let repo_config = repo_config.0;
 
-        info!("load index source config: {:?}", index_source);
+        info!("load repo config: {:?}", repo_config);
 
-        let index_source: serde_json::Value =
-            serde_json::from_str(index_source.as_str()).map_err(|e| {
+        let repo_config: serde_json::Value =
+            serde_json::from_str(repo_config.as_str()).map_err(|e| {
                 error!("parse index_source failed: {:?}", e);
                 RepoError::ParseError("index_source".to_string(), e.to_string())
             })?;
 
-        let source_config_list = if index_source["source_list"].is_array() {
-            serde_json::from_value(index_source["source_list"].clone()).map_err(|e| {
+        let source_config_list = if repo_config["source_list"].is_array() {
+            serde_json::from_value(repo_config["source_list"].clone()).map_err(|e| {
                 error!("parse source_list failed: {:?}", e);
                 RepoError::ParseError("source_list".to_string(), e.to_string())
             })?
@@ -118,7 +118,7 @@ impl SourceManager {
         let sys_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
 
         sys_config_client
-            .set("services/repo/index_source", &source_config_str)
+            .set("services/repo/setting", &source_config_str)
             .await
             .map_err(|e| {
                 error!("Set index source config failed! err:{}", e);
