@@ -1,4 +1,4 @@
-name: Build Buckyos Deb Package
+name: Build Buckyos Windows Installer Package
 on: 
   workflow_dispatch:
     inputs:
