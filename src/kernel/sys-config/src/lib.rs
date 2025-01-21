@@ -20,7 +20,7 @@ use buckyos_kit::*;
 pub enum KVAction {
     Create(String),//创建一个节点并设置值
     Update(String),//完整更新
-    SetByJsonPath(HashMap<String,Value>),//当成json设置其中的一个值,针对一个对象,set可以是一个数组
+    SetByJsonPath(HashMap<String,Option<Value>>),//当成json设置其中的一个值,针对一个对象,set可以是一个数组
     Remove,//删除
     //Create(String),
 }

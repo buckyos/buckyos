@@ -6,14 +6,49 @@ use serde::{Serialize,Deserialize};
 pub enum JsonValueAction {
     Create(String),//创建一个节点并设置值
     Update(String),//完整更新
-    SetByPath(HashMap<String,Value>),//当成json设置其中的一个值,针对一个对象,set可以是一个数组
+    SetByPath(HashMap<String,Option<Value>>),//当成json设置其中的一个值,针对一个对象,set可以是一个数组
     Remove,//删除
     //Create(String),
 }
 
+pub fn split_json_path(path: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut escaped = false;
+
+    for c in path.chars() {
+        match c {
+            '\\' if !escaped => escaped = true,
+            '"' if !escaped => in_quotes = !in_quotes,
+            '/' if !in_quotes && !escaped => {
+                if !current.is_empty() {
+                    parts.push(current.trim().to_string());
+                    current = String::new();
+                }
+            },
+            _ => {
+                if escaped && c != '"' && c != '\\' {
+                    current.push('\\');
+                }
+                current.push(c);
+                escaped = false;
+            }
+        }
+    }
+    
+    if !current.is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    
+    parts.into_iter()
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 pub fn set_json_by_path(data: &mut Value, path: &str, value: Option<&Value>) {
-    // 将路径按 '/' 分割，移除可能的前导 '/'
-    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    // 使用新的路径解析方法
+    let parts = split_json_path(path);
     
     // 如果路径为空，直接替换或删除整个 Value
     if parts.is_empty() {
@@ -26,7 +61,7 @@ pub fn set_json_by_path(data: &mut Value, path: &str, value: Option<&Value>) {
     
     // 从根开始遍历和构建路径
     let mut current = data;
-    for (i, &part) in parts.iter().enumerate() {
+    for (i, part) in parts.iter().enumerate() {
         // 最后一个部分：设置或删除值
         if i == parts.len() - 1 {
             if let Value::Object(map) = current {
@@ -105,6 +140,18 @@ pub fn extend_json_action_map(dest_map: &mut HashMap<String, JsonValueAction>, f
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn test_hash_map_option_value() {
+        let mut test_map:HashMap<String,Option<Value>> = HashMap::new();
+        test_map.insert("state".to_string(),None);
+        test_map.insert("abc".to_string(),Some(json!("123")));
+        let test_value = serde_json::to_value(test_map).unwrap();
+        let test_str = serde_json::to_string(&test_value).unwrap();
+        let test_value2 : HashMap<String,Option<Value>> = serde_json::from_str(&test_str).unwrap();
+        for (key,value) in test_value2.iter() {
+            println!("key:{},value:{:?}",key,value);
+        }
+    }
 
     #[test]
     fn test_set_json_by_path() {
@@ -128,12 +175,15 @@ mod tests {
             }
         });
 
+
+
+
         assert_eq!(data,data2);
         // 设置值
         set_json_by_path(&mut data, "state", Some(&json!("Normal")));
         println!("{}", data);
         // 设置值
-        set_json_by_path(&mut data, "/user/address/add/street", Some(&json!("Bob")));
+        set_json_by_path(&mut data, "/user/\"ad/dr/ess\"/add/street", Some(&json!("Bob")));
         println!("{}", data);
         // 删除字段
         set_json_by_path(&mut data, "/user/age", None);
@@ -142,6 +192,8 @@ mod tests {
         set_json_by_path(&mut data, "/user/address/city", None);
         println!("{}", data);
         // 完全删除 address 对象
+        set_json_by_path(&mut data, "/user/address", None);
+        println!("{}", data);
         set_json_by_path(&mut data, "/user/address", None);
         println!("{}", data);
     }
@@ -172,5 +224,33 @@ mod tests {
         let name = get_by_json_path(&data, "/user/friends/0/name").unwrap();
         assert_eq!(name.as_str().unwrap(),"Bob");
 
+    }
+
+    #[test]
+    fn test_split_json_path() {
+        assert_eq!(
+            split_json_path(r#"/state/"space add"/value"#),
+            vec!["state", "space add", "value"]
+        );
+        assert_eq!(
+            split_json_path(r#"/path/with\ space/value"#),
+            vec!["path", r#"with\ space"#, "value"]
+        );
+    }
+
+    #[test]
+    fn test_set_json_by_path_with_spaces() {
+        let mut data = json!({});
+        set_json_by_path(&mut data, r#"/state/"space add"/value"#, Some(&json!("test")));
+        assert_eq!(
+            data,
+            json!({
+                "state": {
+                    "space add": {
+                        "value": "test"
+                    }
+                }
+            })
+        );
     }
 }

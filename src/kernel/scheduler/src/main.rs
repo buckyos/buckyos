@@ -423,7 +423,7 @@ fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodSched
         SchedulerAction::ChangeNodeStatus(node_id,node_status) => {
             let key = format!("nodes/{}/config",node_id);
             let mut set_paths = HashMap::new();
-            set_paths.insert("state".to_string(),json!(node_status.to_string()));
+            set_paths.insert("state".to_string(),Some(json!(node_status.to_string())));
             result.insert(key,KVAction::SetByJsonPath(set_paths));
         }
         SchedulerAction::ChangePodStatus(pod_id,pod_status) => {
@@ -460,7 +460,13 @@ fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodSched
                     result.extend(instance_action);
                 }
                 PodItemType::Service => {
-                    let instance_action = instance_service(new_instance)?;
+                    let service_info = input_config.get(format!("servers/{}/info",pod_item.id.as_str()).as_str());
+                    if service_info.is_none() {
+                        return Err(anyhow::anyhow!("service_info not found"));
+                    }
+                    let service_info = service_info.unwrap();
+                    let service_info:ServiceInfo = serde_json::from_str(service_info.as_str())?;
+                    let instance_action = instance_service(new_instance,&service_info)?;
                     result.extend(instance_action);
                 }
             }

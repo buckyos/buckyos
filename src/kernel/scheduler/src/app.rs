@@ -77,7 +77,8 @@ pub async fn deploy_app_service(user_id:&str,app_id:&str,device_list:&HashMap<St
     let app_service_config = build_app_service_config(user_id,&app_config,&node_info)?;
     let app_index = app_config.app_index;
     let mut set_action = HashMap::new();
-    set_action.insert(format!("/apps/{}",app_index),serde_json::to_value(&app_service_config).unwrap());
+    set_action.insert(format!("/apps/{}",app_index),
+        Some(serde_json::to_value(&app_service_config).unwrap()));
     let app_service_config_set_action = JsonValueAction::SetByPath(set_action);
     result_config.insert(format!("nodes/{}/config",node_id),app_service_config_set_action);
 
@@ -103,7 +104,7 @@ pub async fn deploy_app_service(user_id:&str,app_id:&str,device_list:&HashMap<St
             }
         );    
         let mut set_action = HashMap::new();
-        set_action.insert(gateway_path,app_gateway_config);
+        set_action.insert(gateway_path,Some(app_gateway_config));
         let node_gateway_set_action = JsonValueAction::SetByPath(set_action);
         result_config.insert(format!("nodes/{}/gateway",node_id),node_gateway_set_action);  
         result_port = Some(http_port);
@@ -113,7 +114,7 @@ pub async fn deploy_app_service(user_id:&str,app_id:&str,device_list:&HashMap<St
 
     //修改deployed为true
     let mut set_action = HashMap::new();
-    set_action.insert(format!("/deployed"),Value::Bool(true));
+    set_action.insert(format!("/deployed"),Some(Value::Bool(true)));
     let set_deployed_action = JsonValueAction::SetByPath(set_action);
     result_config.insert(format!("users/{}/apps/{}/config",user_id,app_id),set_deployed_action);
     return Ok((result_config,result_port));
@@ -147,7 +148,8 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
     //write to node_config
     let app_service_config = build_app_service_config(user_id.as_str(),&app_config,&node_info)?;
     let mut set_action = HashMap::new();
-    set_action.insert(format!("/apps/{}",new_instance.instance_id.as_str()),serde_json::to_value(&app_service_config).unwrap());
+    set_action.insert(format!("/apps/{}",new_instance.instance_id.as_str()),
+        Some(serde_json::to_value(&app_service_config).unwrap()));
     let app_service_config_set_action =  KVAction::SetByJsonPath(set_action);
     result.insert(format!("nodes/{}/config",new_instance.node_id),app_service_config_set_action);
 
@@ -173,21 +175,37 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
             }
         );    
         let mut set_action = HashMap::new();
-        set_action.insert(gateway_path,app_gateway_config);
+        set_action.insert(gateway_path,Some(app_gateway_config));
         let node_gateway_set_action = KVAction::SetByJsonPath(set_action);
         result.insert(format!("nodes/{}/gateway",new_instance.node_id.as_str()),node_gateway_set_action);  
     }
 
-    // if http_port.is_some() {
-    //     all_app_http_port.insert(format!("{}.{}",app_id,user_name),http_port.unwrap());
-    // }
+
 
     //调度器不处理权限,权限是在安装应用的时候就完成的配置
     Ok(result)
 }
 
 pub fn uninstance_app_service(instance:&PodInstance)->Result<HashMap<String,KVAction>> {
-    unimplemented!();
+    let mut result = HashMap::new();
+    let (app_id,user_id) = parse_app_pod_id(instance.pod_id.as_str())?;
+
+    let key_path = format!("nodes/{}/config",instance.node_id.as_str());
+    let mut set_action = HashMap::new();
+    set_action.insert(format!("/apps/{}",instance.instance_id.as_str()), None);
+    result.insert(key_path,KVAction::SetByJsonPath(set_action));
+
+    let key_path = format!("nodes/{}/gateway",instance.node_id.as_str());
+    let mut set_action = HashMap::new();
+    let app_prefix;
+    if user_id == "root" {
+        app_prefix = format!("{}.*",app_id);
+    } else {
+        app_prefix = format!("{}_{}.*",app_id,user_id);
+    }
+    set_action.insert(format!("/servers/main_http_server/hosts/{}",app_prefix.as_str()), None);
+    result.insert(key_path,KVAction::SetByJsonPath(set_action));
+    Ok(result)
 }
 
 pub fn update_app_service_instance(instance:&PodInstance)->Result<HashMap<String,KVAction>> {
@@ -199,7 +217,7 @@ pub fn set_app_service_state(pod_id:&str,state:&PodItemState)->Result<HashMap<St
     let (app_id,user_id) = parse_app_pod_id(pod_id)?;
     let key = format!("users/{}/apps/{}/config",user_id,app_id);
     let mut set_paths = HashMap::new();
-    set_paths.insert("state".to_string(),json!(state.to_string()));
+    set_paths.insert("state".to_string(),Some(json!(state.to_string())));
     let mut result = HashMap::new();
     result.insert(key,KVAction::SetByJsonPath(set_paths));
     Ok(result)

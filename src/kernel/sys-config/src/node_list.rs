@@ -19,6 +19,30 @@ pub struct KernelServiceConfig {
     pub operations: HashMap<String, RunItemControlOperation>,
 }
 
+impl KernelServiceConfig {
+    pub fn new(pkg_id:String)->Self {
+        let mut operations = HashMap::new();
+        operations.insert("status".to_string(),RunItemControlOperation {
+            command: "status".to_string(),
+            params: None,
+        });
+        operations.insert("start".to_string(),RunItemControlOperation {
+            command: "start".to_string(),
+            params: None,
+        });
+        operations.insert("stop".to_string(),RunItemControlOperation {
+            command: "stop".to_string(),
+            params: None,
+        });
+        
+        Self {
+            target_state: "Running".to_string(),
+            pkg_id,
+            operations,
+        }
+    }
+}
+
 
 #[derive(Serialize, Deserialize)]
 pub struct NodeConfig {

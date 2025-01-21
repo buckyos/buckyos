@@ -304,7 +304,7 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
                 let all_set = action.get("all_set")
                     .ok_or(RPCErrors::ReasonError("Missing all_set for set_by_path".to_string()))?;
                 //all_set is a json map
-                let all_set:HashMap<String,Value> = serde_json::from_value(all_set.clone())
+                let all_set:HashMap<String,Option<Value>> = serde_json::from_value(all_set.clone())
                     .map_err(|err| RPCErrors::ReasonError(err.to_string()))? ;
                 KVAction::SetByJsonPath(all_set)
             },
