@@ -643,6 +643,9 @@ mod test {
             "tls_port":443,
             "hosts": {
                 "*": {
+                    "tls": {
+                        "disable_tls": true
+                    },
                     "enable_cors":true,
                     "routes": {
                         "/kapi/system_config":{
@@ -654,6 +657,9 @@ mod test {
                     }
                 },
                 "sys.*": {
+                    "tls": {
+                            "disable_tls": true
+                    },
                     "enable_cors":true,
                     "routes": {
                         "/":{

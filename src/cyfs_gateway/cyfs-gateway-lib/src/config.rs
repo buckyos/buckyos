@@ -113,6 +113,7 @@ pub struct RouteConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct TlsConfig {
+    pub disable_tls: bool,
     pub cert_path: Option<String>,
     pub key_path: Option<String>,
 }
@@ -121,6 +122,7 @@ pub struct TlsConfig {
 impl Default for TlsConfig {
     fn default() -> Self {
         Self {
+            disable_tls: false,
             cert_path: None,
             key_path: None,
         }

@@ -366,6 +366,10 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
     }
 
     pub fn insert_config(&self, host: String, tls_config: TlsConfig) -> Result<()> {
+        if tls_config.disable_tls {
+            return Ok(());
+        }
+
         let keystore_path = format!("{}/{}", self.inner.config.keystore_path, host);
         if let Err(e) = std::fs::create_dir_all(&keystore_path) {
             error!("创建证书存储目录失败: {}", e);
