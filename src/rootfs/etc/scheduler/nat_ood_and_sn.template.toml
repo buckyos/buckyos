@@ -139,7 +139,7 @@
 """
 
 
-"services/repo_service/settings" = """
+"services/repo/settings" = """
 {
     "source_list":[
         {

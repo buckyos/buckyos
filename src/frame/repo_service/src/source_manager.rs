@@ -24,6 +24,8 @@ use sys_config::{SystemConfigClient, SystemConfigError};
 use tokio::sync::oneshot::error;
 use tokio::{sync::RwLock, task};
 
+const REPO_SERVICE_CONFIG_KEY: &str = "services/repo/settings";
+
 #[derive(PartialEq, Debug, Clone, Copy)]
 enum RepoStatus {
     Idle,
@@ -64,7 +66,7 @@ impl SourceManager {
         let sys_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
 
         let repo_config = sys_config_client
-            .get("services/repo/setting")
+            .get(REPO_SERVICE_CONFIG_KEY)
             .await
             .map_err(|e| {
                 error!("get index source config failed! err:{}", e);
@@ -118,7 +120,7 @@ impl SourceManager {
         let sys_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
 
         sys_config_client
-            .set("services/repo/setting", &source_config_str)
+            .set(REPO_SERVICE_CONFIG_KEY, &source_config_str)
             .await
             .map_err(|e| {
                 error!("Set index source config failed! err:{}", e);
@@ -171,8 +173,8 @@ impl SourceManager {
 
     async fn get_remote_source_meta(source_config: &SourceNodeConfig) -> RepoResult<SourceMeta> {
         //TODO 拼接meta url，要修改成正式url
-        //let url = format!("http://{}/kapi/repo", source_config.name);
-        let url = format!("http://{}/kapi/repo", "127.0.0.1:4000");
+        let url = format!("http://{}/kapi/repo", source_config.name);
+        //let url = format!("http://{}/kapi/repo", "127.0.0.1:4000");
         info!("get_remote_source_meta url: {}", url);
         let session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
             error!("repo service session token not found! err:{}", e);
