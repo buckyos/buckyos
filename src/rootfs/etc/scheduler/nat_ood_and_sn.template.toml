@@ -80,9 +80,11 @@
             "type":"cyfs-warp",
             "bind":"0.0.0.0",
             "http_port":80,
-            "tls_port":443,
             "hosts": {
                 "*": {
+                    "tls": {
+                        "disable_tls": true
+                    },
                     "enable_cors":true,
                     "routes": {
                         "/kapi/system_config":{
@@ -91,6 +93,9 @@
                     }
                 },
                 "sys.*": {
+                    "tls": {
+                        "disable_tls": true
+                    },
                     "enable_cors":true,
                     "routes": {
                         "/":{
@@ -101,9 +106,6 @@
                         },
                         "/kapi/verify_hub":{
                             "upstream":"http://127.0.0.1:3300"
-                        },
-                        "/kapi/repo_service":{
-                            "upstream":"http://127.0.0.1:4000"
                         }
                     }
                 }
@@ -215,9 +217,11 @@
             "type":"cyfs-warp",
             "bind":"0.0.0.0",
             "http_port":80,
-            "tls_port":443,
             "hosts": {
                 "*": {
+                    "tls": {
+                        "disable_tls": true
+                    },
                     "enable_cors":true,
                     "routes": {
                         "/kapi/system_config":{
@@ -226,6 +230,9 @@
                     }
                 },
                 "sys.*": {
+                    "tls": {
+                        "disable_tls": true
+                    },
                     "enable_cors":true,
                     "routes": {
                         "/":{

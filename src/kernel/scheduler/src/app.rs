@@ -1,4 +1,3 @@
-
 use sys_config::*;
 use name_lib::*;
 use std::collections::HashMap;
@@ -89,8 +88,41 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
         );    
         let mut set_action = HashMap::new();
         set_action.insert(gateway_path,Some(app_gateway_config));
-        let node_gateway_set_action = KVAction::SetByJsonPath(set_action);
-        result.insert(format!("nodes/{}/gateway_config",new_instance.node_id.as_str()),node_gateway_set_action);  
+
+        let gateway_settings = input_config.get("services/gateway/settings");
+        if gateway_settings.is_some() {
+            let gateway_settings = gateway_settings.unwrap();
+            let gateway_settings: GatewaySettings = serde_json::from_str(gateway_settings)?;
+            for (key,node) in gateway_settings.shortcuts.iter() {
+                if node.target_type == "app" {
+                    if node.user_id.is_none() {
+                        continue;
+                    }
+                    let target_user_id = node.user_id.as_ref().unwrap();
+                    if target_user_id != &user_id {
+                        continue;
+                    }
+                    let target_app_id = node.app_id.clone();
+                    if target_app_id != app_id {
+                        continue;
+                    }
+
+                    info!("will create gatewayshortcut: {} -> {}",key,app_prefix);
+                    let short_prefix = match key.as_str() {
+                        "www" => "*".to_string(),
+                        _ => format!("{}.*",key.as_str()),
+                    };
+                    let gateway_path = format!("/servers/main_http_server/hosts/{}/routes/\"/\"",short_prefix);
+                    set_action.insert(gateway_path,Some(json!({
+                        "upstream":format!("http://127.0.0.1:{}",http_port)
+                    })));
+
+                }
+            }
+        }
+
+        result.insert(format!("nodes/{}/gateway_config",new_instance.node_id.as_str()),
+            KVAction::SetByJsonPath(set_action));  
     }
 
 
