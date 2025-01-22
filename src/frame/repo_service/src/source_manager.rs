@@ -553,10 +553,10 @@ impl SourceManager {
             return Ok(());
         }
         // TODO: fix this url
-        let url = format!("http://web3.buckyos.com/{}", pkg_meta.author_did);
+        let url = format!("http://{}", pkg_meta.author_name);
         Downloader::pull_remote_chunk(
             &url,
-            &pkg_meta.author_did,
+            &pkg_meta.author_name,
             &pkg_meta.sign,
             &pkg_meta.chunk_id,
         )
