@@ -22,8 +22,7 @@ use anyhow::Result;
 async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
     //load start_parms from active_service.
     let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
-    println!("start_params_file_path:{}",start_params_file_path.to_string_lossy());
-    info!("try load start_params from :{}",start_params_file_path.to_string_lossy());
+    info!("load start_params from :{}",start_params_file_path.to_string_lossy());
     let start_params_str = tokio::fs::read_to_string(start_params_file_path).await?;
     let mut start_params:serde_json::Value = serde_json::from_str(&start_params_str)?;
 
@@ -238,7 +237,7 @@ fn craete_node_item_by_device_info(device_name: &str,device_info: &DeviceInfo) -
         network_zone:net_id,
         state: node_state,
         available_cpu: 1.0 - cpu_usage,
-        available_memory,
+        available_memory:4096.0,
         current_load: cpu_usage,
         resources: HashMap::new(),
         op_tasks: vec![],
@@ -260,13 +259,13 @@ fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfig) -> PodItem
     }
 }
 
-fn create_pod_item_by_service_config(service_name: &str,service_info: &KernelServiceConfig) -> PodItem {
-    let pod_state = PodItemState::from(service_info.state.clone());
+fn create_pod_item_by_service_config(service_name: &str,service_config: &KernelServiceConfig) -> PodItem {
+    let pod_state = PodItemState::from(service_config.state.clone());
     PodItem {
         id: service_name.to_string(),
         pod_type: PodItemType::Service,
         state: pod_state,
-        best_instance_count: service_info.instance,
+        best_instance_count: service_config.instance,
         required_cpu: 0.1,
         required_memory: 1024.0,
         node_affinity: None,
@@ -300,7 +299,7 @@ fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> R
                 let full_appid = format!("{}@{}",app_id,user_id);
                 let app_config:AppConfig = serde_json::from_str(value.as_str())
                     .map_err(|e| {
-                        error!("AppConfigNode serde_json::from_str failed: {:?}", e);
+                        error!("AppConfig serde_json::from_str failed: {:?} {}", e,value.as_str());
                         e
                     })?;
                 let pod_item = create_pod_item_by_app_config(full_appid.as_str(),&app_config);
@@ -309,14 +308,14 @@ fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> R
         }
 
         //add service pod
-        if key.starts_with("services/") && key.ends_with("/info") {
+        if key.starts_with("services/") && key.ends_with("/config") {
             let service_name = key.split('/').nth(1).unwrap();
-            let service_info:KernelServiceConfig = serde_json::from_str(value.as_str())
+            let service_config:KernelServiceConfig = serde_json::from_str(value.as_str())
                 .map_err(|e| {
-                    error!("ServiceInfo serde_json::from_str failed: {:?}", e);
+                    error!("KernelServiceConfig serde_json::from_str failed: {:?}", e);
                     e
                 })?;
-            let pod_item = create_pod_item_by_service_config(service_name,&service_info);
+            let pod_item = create_pod_item_by_service_config(service_name,&service_config);
             pod_scheduler.add_pod(pod_item);
         }
 
@@ -376,13 +375,13 @@ fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodSched
                     result.extend(instance_action);
                 }
                 PodItemType::Service => {
-                    let service_info = input_config.get(format!("servers/{}/info",pod_item.id.as_str()).as_str());
-                    if service_info.is_none() {
-                        return Err(anyhow::anyhow!("service_info not found"));
+                    let service_config = input_config.get(format!("services/{}/config",pod_item.id.as_str()).as_str());
+                    if service_config.is_none() {
+                        return Err(anyhow::anyhow!("service_config {} not found",pod_item.id.as_str()));
                     }
-                    let service_info = service_info.unwrap();
-                    let service_info:KernelServiceConfig = serde_json::from_str(service_info.as_str())?;
-                    let instance_action = instance_service(new_instance,&service_info)?;
+                    let service_config = service_config.unwrap();
+                    let service_config:KernelServiceConfig = serde_json::from_str(service_config.as_str())?;
+                    let instance_action = instance_service(new_instance,&service_config)?;
                     result.extend(instance_action);
                 }
             }
@@ -790,7 +789,7 @@ mod test {
     }
 }
 """"
-"nodes/ood1/gateway" = """
+"nodes/ood1/gateway_config" = """
 {
     "device_key_path":"/opt/buckyos/etc/node_private_key.pem",
     "servers":{

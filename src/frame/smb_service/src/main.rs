@@ -157,7 +157,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
     let mut smb_users = Vec::new();
     let mut root_users = Vec::new();
     for user in list {
-        let buckyos_user_info = match system_config_client.get(format!("users/{}/info", user).as_str()).await {
+        let buckyos_user_settings = match system_config_client.get(format!("users/{}/settings", user).as_str()).await {
             Ok((info_str, _)) => {
                 let info: UserInfo = serde_json::from_str(info_str.as_str())
                     .map_err(into_smb_err!(SmbErrorCode::Failed, "parse user info failed"))?;
@@ -197,7 +197,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
             root_users.push(user.clone());
         }
 
-        let user_home = get_buckyos_root_dir().join("data").join(buckyos_user_info.username.as_str()).join("home");
+        let user_home = get_buckyos_root_dir().join("data").join(buckyos_user_settings.username.as_str()).join("home");
         if !user_home.exists() {
             //create user home
             std::fs::create_dir_all(user_home.clone())
@@ -207,8 +207,8 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
         let user_home = std::fs::canonicalize(user_home)
             .map_err(into_smb_err!(SmbErrorCode::Failed, "canonicalize user home failed"))?;
         let smb_item = SmbItem {
-            smb_name: format!("{} Home", buckyos_user_info.username.as_str()),
-            allow_users: vec![buckyos_user_info.username.clone()],
+            smb_name: format!("{} Home", buckyos_user_settings.username.as_str()),
+            allow_users: vec![buckyos_user_settings.username.clone()],
             path: user_home.to_string_lossy().to_string(),
         };
         smb_items.push(smb_item);

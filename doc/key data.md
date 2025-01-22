@@ -109,7 +109,7 @@ g,$device_id,devices
 ## node相关
 kv://nodes/$device_id/config 节点的运行配置信息,由调度器构建
 kv://nodes/$device_id/info 节点的状态信息,由node_daemon汇报
-kv://nodes/$device_id/gateway 节点的网关配置,由调度器构建
+kv://nodes/$device_id/gateway_config 节点的网关配置,由调度器构建
 
 
 

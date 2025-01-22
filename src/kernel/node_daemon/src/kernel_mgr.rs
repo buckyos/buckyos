@@ -51,7 +51,8 @@ impl RunItemControl for KernelServiceRunItem {
         //create deploy task
         //install  or upgrade pkg
         //call pkg.deploy() scrpit or 由pkg在自己的start脚本里管理？
-        unimplemented!();
+        warn!("deploy kernel service {}",self.pkg_id);
+        Ok(())
     }
 
     async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {

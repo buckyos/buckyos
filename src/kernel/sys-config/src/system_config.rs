@@ -185,7 +185,7 @@ impl SystemConfigClient {
                 }
                 KVAction::SetByJsonPath(value) => {
                     tx_json.insert(key.to_string(), json!({
-                        "action": "set_py_path",
+                        "action": "set_by_path",
                         "all_set": value
                     }));
                 }

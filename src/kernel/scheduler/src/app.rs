@@ -13,7 +13,7 @@ use anyhow::Result;
 fn build_app_service_config(user_id:&str,app_config:&AppConfig,node_info:&DeviceInfo) -> Result<AppServiceInstanceConfig> {
     let arch_name = node_info.arch.clone().unwrap_or("amd64".to_string());
     let docker_pkg_name = format!("{}_docker_image",arch_name.as_str());
-    let docker_pkg_info =  app_config.app_info.pkg_list.get(&docker_pkg_name);
+    let docker_pkg_info =  app_config.app_doc.pkg_list.get(&docker_pkg_name);
     if docker_pkg_info.is_none() {
         return Err(anyhow::anyhow!("docker_pkg_name: {} not found",docker_pkg_name));
     }
@@ -90,7 +90,7 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
         let mut set_action = HashMap::new();
         set_action.insert(gateway_path,Some(app_gateway_config));
         let node_gateway_set_action = KVAction::SetByJsonPath(set_action);
-        result.insert(format!("nodes/{}/gateway",new_instance.node_id.as_str()),node_gateway_set_action);  
+        result.insert(format!("nodes/{}/gateway_config",new_instance.node_id.as_str()),node_gateway_set_action);  
     }
 
 
@@ -108,7 +108,7 @@ pub fn uninstance_app_service(instance:&PodInstance)->Result<HashMap<String,KVAc
     set_action.insert(format!("/apps/{}",instance.instance_id.as_str()), None);
     result.insert(key_path,KVAction::SetByJsonPath(set_action));
 
-    let key_path = format!("nodes/{}/gateway",instance.node_id.as_str());
+    let key_path = format!("nodes/{}/gateway_config",instance.node_id.as_str());
     let mut set_action = HashMap::new();
     let app_prefix;
     if user_id == "root" {

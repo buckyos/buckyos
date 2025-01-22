@@ -2,9 +2,9 @@
 "users/root/settings" = '{"type":"root","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 "users/{{user_name}}/settings" = '{"type":"admin","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 # devices,set & update by register_device_doc@node_daemon
-"devices/ood1/doc" = ""
+#"devices/ood1/doc" = ""
 # devices,set & update by update_device_info@node_daemon
-"devices/ood1/info" = "{}"
+#"devices/ood1/info" = "{}"
 
 # system settings
 
@@ -17,11 +17,11 @@
     "name":"verify_hub",
     "description":"verify hub is SSO service of buckyos",
     "vendor_did":"did:bns:buckyos",
-    "pkg_id":"buckyos.verify_hub",
+    "pkg_id":"verify_hub",
     "port":3300,
     "node_list":["ood1"],
     "service_type":"kernel",
-    "state":"New",
+    "state":"Deployed",
     "instance":1
 }
 """
@@ -35,7 +35,7 @@
     "name":"scheduler",
     "description":"scheduler is the core service of buckyos",
     "vendor_did":"did:bns:buckyos",
-    "pkg_id":"buckyos.scheduler",
+    "pkg_id":"scheduler",
     "port":3400,
     "node_list":["ood1"],
     "service_type":"kernel",
@@ -128,9 +128,9 @@
 "services/repo/config" = """
 {
     "name":"repo_service",
-    "description":"repo_service is the repo service of buckyos",
+    "description":"repo service is the repo service of buckyos",
     "vendor_did":"did:bns:buckyos",
-    "pkg_id":"buckyos.repo",
+    "pkg_id":"repo",
     "port":4000,
     "node_list":[],
     "service_type":"frame",
@@ -335,7 +335,6 @@ g, {{user_name}},admin
 {
     "did":"did:ens:{{user_name}}",
     "oods":["ood1"],
-    "sn":"{{sn_host}}",
     "verify_hub_info":{
         "port":3300,
         "node_name":"ood1",

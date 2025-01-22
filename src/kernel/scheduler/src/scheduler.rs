@@ -23,12 +23,12 @@ use std::fmt;
 
 const SMALL_SYSTEM_NODE_COUNT:usize = 7;
 
-#[derive(Clone,PartialEq)]
+#[derive(Clone,PartialEq,Debug)]
 pub enum PodItemType {
     Service, //无状态的系统服务
     App,// 无状态的app服务
 }
-#[derive(Clone,PartialEq)]
+#[derive(Clone,PartialEq,Debug)]
 pub enum PodItemState {
     New,
     Deploying,
@@ -72,7 +72,7 @@ impl From<String> for PodItemState {
     }
 }
 
-#[derive(Clone,PartialEq)]
+#[derive(Clone,PartialEq,Debug)]
 pub struct PodItem {
     pub id: String,
     pub pod_type: PodItemType,
@@ -85,19 +85,19 @@ pub struct PodItem {
     pub node_affinity: Option<String>,
     pub network_affinity: Option<String>,
 }
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub enum OPTaskBody {
     NodeInitBaseService,
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub enum OPTaskState {
     New,
     Running,
     Done,
     Failed,
 }
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub struct OPTask {
     pub id: String,
     pub creator_id: Option<String>,//为None说明创建者是Scheduler
@@ -108,13 +108,13 @@ pub struct OPTask {
     pub body: OPTaskBody,
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub struct NodeResource {
     pub total_capacity: u64,
     pub used_capacity: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub struct NodeItem {
     pub id: String,
     //pub name: String,
@@ -131,7 +131,7 @@ pub struct NodeItem {
     pub op_tasks: Vec<OPTask>,
 }
 
-#[derive(PartialEq,Clone)]
+#[derive(PartialEq,Clone,Debug)]
 pub enum NodeState {
     New,
     Prepare,//new->ready的准备阶段
@@ -274,6 +274,14 @@ impl PodScheduler {
         }   
 
         let mut actions = Vec::new();
+        info!("-------------NODE--------------");
+        for (node_id,node) in self.nodes.iter() {
+            info!("- {}:{:?}",node_id,node);
+        }
+        info!("-------------POD--------------");
+        for (pod_id,pod) in self.pods.iter() {
+            info!("- {}:{:?}",pod_id,pod);
+        }
 
         // Step0. 检查schedule发起的OP task的进展情况.决定是否要进入常规调度流程
         //TODO:

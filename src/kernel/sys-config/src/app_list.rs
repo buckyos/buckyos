@@ -42,7 +42,7 @@ pub struct KernelServiceConfig {
 #[derive(Serialize, Deserialize)]
 pub struct AppConfig {
     pub app_id: String,
-    pub app_info: AppDoc,
+    pub app_doc: AppDoc,
     pub app_index: u16, //app index in user's app list
     pub enable: bool,
     pub instance: u32,//期望的instance数量

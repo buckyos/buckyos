@@ -50,7 +50,7 @@ impl KernelServiceInstanceConfig {
 // Task(Cmd)配置，暂时不实现
 #[derive(Serialize, Deserialize)]
 pub struct NodeConfig {
-    pub pure_version: u64,
+    //pub pure_version: u64,
     pub kernel: HashMap<String, KernelServiceInstanceConfig>,
     pub apps: HashMap<String, AppServiceInstanceConfig>,
     pub services: HashMap<String, KernelServiceInstanceConfig>,

@@ -19,7 +19,7 @@ pub fn instance_service(new_instance:&PodInstance,server_info:&KernelServiceConf
     result.insert(key_path,set_action);
 
     //add to node gateway config
-    let key_path = format!("nodes/{}/gateway",new_instance.node_id.as_str());
+    let key_path = format!("nodes/{}/gateway_config",new_instance.node_id.as_str());
     //TODO: fix bug
     let json_path = format!("servers/main_http_server/hosts/*/routes/\"/kapi/{}\"",new_instance.pod_id.as_str());
     let set_value = json!({
@@ -40,7 +40,7 @@ pub fn uninstance_service(instance:&PodInstance)->Result<HashMap<String,KVAction
     set_actions.insert(json_path,None);
     result.insert(key_path,KVAction::SetByJsonPath(set_actions));
 
-    let key_path = format!("nodes/{}/gateway",instance.node_id.as_str());
+    let key_path = format!("nodes/{}/gateway_config",instance.node_id.as_str());
     let json_path = format!("servers/main_http_server/hosts/*/routes/\"/kapi/{}\"",instance.pod_id.as_str());
     let mut set_actions:HashMap<String,Option<Value>> = HashMap::new();
     set_actions.insert(json_path,None);
@@ -55,7 +55,7 @@ pub fn update_service_instance(instance:&PodInstance)->Result<HashMap<String,KVA
 }
 
 pub fn set_service_state(pod_id:&str,state:&PodItemState)->Result<HashMap<String,KVAction>> {
-    let key = format!("services/{}/info",pod_id);
+    let key = format!("services/{}/config",pod_id);
     let mut set_paths = HashMap::new();
     set_paths.insert("state".to_string(),Some(json!(state.to_string())));
     let mut result = HashMap::new();
