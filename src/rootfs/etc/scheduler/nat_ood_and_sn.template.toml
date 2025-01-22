@@ -21,7 +21,7 @@
     "port":3300,
     "node_list":["ood1"],
     "service_type":"kernel",
-    "state":"Deployed",
+    "state":"New",
     "instance":1
 }
 """
@@ -39,7 +39,7 @@
     "port":3400,
     "node_list":["ood1"],
     "service_type":"kernel",
-    "state":"Deployed",
+    "state":"New",
     "instance":1
 }
 """
@@ -87,9 +87,6 @@
                     "routes": {
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
-                        },
-                        "/kapi/verify_hub":{
-                            "upstream":"http://127.0.0.1:3300"
                         }
                     }
                 },
@@ -105,7 +102,7 @@
                         "/kapi/verify_hub":{
                             "upstream":"http://127.0.0.1:3300"
                         },
-                        "/kapi/repo":{
+                        "/kapi/repo_service":{
                             "upstream":"http://127.0.0.1:4000"
                         }
                     }
@@ -125,14 +122,14 @@
     }
 }
 """
-"services/repo/config" = """
+"services/repo_service/config" = """
 {
     "name":"repo_service",
     "description":"repo service is the repo service of buckyos",
     "vendor_did":"did:bns:buckyos",
-    "pkg_id":"repo",
+    "pkg_id":"repo_service",
     "port":4000,
-    "node_list":[],
+    "node_list":["ood1"],
     "service_type":"frame",
     "state":"New",
     "instance":1
@@ -140,7 +137,7 @@
 """
 
 
-"services/repo/settings" = """
+"services/repo_service/settings" = """
 {
     "source_list":[
         {
@@ -210,9 +207,51 @@
 """
 # apps config's key is instance_id ? 
 
-
 "nodes/ood1/gateway_config" = """
 {
+    "device_key_path":"{{BUCKYOS_ROOT}}/etc/node_private_key.pem",
+    "servers":{
+        "main_http_server":{
+            "type":"cyfs-warp",
+            "bind":"0.0.0.0",
+            "http_port":80,
+            "tls_port":443,
+            "hosts": {
+                "*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        }
+                    }
+                },
+                "sys.*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{{BUCKYOS_ROOT}}/bin/control_panel"
+                        },
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/kapi/verify_hub":{
+                            "upstream":"http://127.0.0.1:3300"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "dispatcher" : {
+        "tcp://0.0.0.0:80":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://0.0.0.0:443":{
+            "type":"server",
+            "id":"main_http_server"
+        }
+    }
 }
 """
 

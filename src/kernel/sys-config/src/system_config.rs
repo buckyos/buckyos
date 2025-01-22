@@ -165,7 +165,7 @@ impl SystemConfigClient {
 
     pub async fn exec_tx(&self, tx_actions: HashMap<String, KVAction>, main_key: Option<(String, u64)>) -> SytemConfigResult<u64> {
         if tx_actions.is_empty() {
-            return Err(SystemConfigError::ReasonError("tx actions! is empty".to_string()));
+            return Ok(0);
         }
         let mut tx_json = Map::new();
 

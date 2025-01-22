@@ -435,12 +435,12 @@ fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodSched
 async fn schedule_loop(is_boot:bool) -> Result<()> {
     let mut loop_step = 0;
     let is_running = true;
-    info!("schedule loop start...");
+    //info!("schedule loop start...");
     loop {
         if !is_running {
             break;
         }
-        tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         loop_step += 1;
         info!("schedule loop step:{}.", loop_step);
         let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
@@ -483,7 +483,10 @@ async fn schedule_loop(is_boot:bool) -> Result<()> {
         //TODO 记录"上一次调度成功的信息"
         
         //执行调度动作
-        system_config_client.exec_tx(tx_actions, None).await?;
+        let ret = system_config_client.exec_tx(tx_actions, None).await;
+        if ret.is_err() {
+            error!("exec_tx failed: {:?}", ret.err().unwrap());
+        }
         if is_boot {
             break;
         }
