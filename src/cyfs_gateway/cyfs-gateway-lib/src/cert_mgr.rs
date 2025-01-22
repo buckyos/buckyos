@@ -1,6 +1,7 @@
 use rand::Rng;
 use tokio::fs;
 use anyhow::Result;
+use core::error;
 use std::collections::HashMap;
 use std::path::Path;
 use rustls::server::{ResolvesServerCert, ClientHello};
@@ -100,8 +101,15 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
     fn get_cert_expiry(cert_data: &[u8]) -> Result<chrono::DateTime<chrono::Utc>> {
         let cert = X509::from_pem(cert_data)?;
         let not_after = cert.not_after().to_string();
-        let expires = chrono::DateTime::parse_from_str(&not_after, "%b %d %H:%M:%S %Y %Z")?;
-        Ok(expires.with_timezone(&chrono::Utc))
+        // info!("cert expiry raw: {}", not_after);
+        
+        // 移除最后的时区名称，因为证书时间总是 UTC
+        let datetime_str = not_after.rsplitn(2, ' ')
+            .nth(1)
+            .ok_or_else(|| anyhow::anyhow!("Invalid datetime format"))?;
+        
+        let expires = chrono::NaiveDateTime::parse_from_str(datetime_str, "%b %e %H:%M:%S %Y")?;
+        Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(expires, chrono::Utc))
     }
 
     pub fn get_cert(&self) -> Option<Arc<CertifiedKey>> {
@@ -113,7 +121,25 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
         }
     }
 
+
     pub async fn load_cert(&self) -> Result<()> {
+        // forbid order cert
+        {
+            let mut mut_part = self.inner.mut_part.lock().unwrap();
+            mut_part.ordering = true;
+        }
+    
+        let result = self.load_cert_inner().await;
+
+        {
+            let mut mut_part = self.inner.mut_part.lock().unwrap();
+            mut_part.ordering = false;
+        }
+
+        result
+    }
+
+    async fn load_cert_inner(&self) -> Result<()> {
         let cert_path = if let Some(path) = &self.inner.config.cert_path {
             path.clone()
         } else {
@@ -150,12 +176,26 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
         };
 
         let cert_data = fs::read(&cert_path).await
-            .map_err(|e| anyhow::anyhow!("load cert failed, stub: {}, cert_path: {}, {}", self, cert_path, e))?;
+            .map_err(|e| {
+                error!("load cert failed, stub: {}, cert_path: {}, {}", self, cert_path, e);
+                anyhow::anyhow!("load cert failed, stub: {}, cert_path: {}, {}", self, cert_path, e)
+            })?;
         let key_data = fs::read(&key_path).await
-            .map_err(|e| anyhow::anyhow!("load cert failed, stub: {}, key_path: {}, {}", self, key_path, e))?;
+            .map_err(|e| {
+                error!("load cert failed, stub: {}, key_path: {}, {}", self, key_path, e);
+                anyhow::anyhow!("load cert failed, stub: {}, key_path: {}, {}", self, key_path, e)
+            })?;
         
-        let certified_key = Self::create_certified_key(&cert_data, &key_data)?;
-        let expires = Self::get_cert_expiry(&cert_data)?;
+        let certified_key = Self::create_certified_key(&cert_data, &key_data)
+            .map_err(|e| {
+                error!("create certified key failed, stub: {}, cert_path: {}, key_path: {}, {}", self, cert_path, key_path, e);
+                anyhow::anyhow!("create certified key failed, stub: {}, cert_path: {}, key_path: {}, {}", self, cert_path, key_path, e)
+            })?;
+        let expires = Self::get_cert_expiry(&cert_data)
+            .map_err(|e| {
+                error!("get cert expiry failed, stub: {}, cert_path: {}, key_path: {}, {}", self, cert_path, key_path, e);
+                anyhow::anyhow!("get cert expiry failed, stub: {}, cert_path: {}, key_path: {}, {}", self, cert_path, key_path, e)
+            })?;
         
         info!("load cert success, stub: {}, cert_path: {}, key_path: {}, expires: {}", self, cert_path, key_path, expires);
 
