@@ -226,19 +226,19 @@ async fn do_boot_scheduler() -> Result<()> {
 
 fn craete_node_item_by_device_info(device_name: &str,device_info: &DeviceInfo) -> NodeItem {
     let node_state = NodeState::from(device_info.state.clone().unwrap_or("Ready".to_string()));
-    let cpu_usage:f64 = device_info.cpu_usage.unwrap_or(0.1) as f64;
-    let total_memory:f64 = device_info.total_mem.unwrap_or(1024*2) as f64;
-    let memory_usage:f64 = device_info.mem_usage.unwrap_or(0.2) as f64;
-    let available_memory = total_memory * (1.0 - memory_usage);
     let net_id = device_info.net_id.clone().unwrap_or("".to_string());
     NodeItem {
         id: device_name.to_string(),
         labels: vec![],
         network_zone:net_id,
         state: node_state,
-        available_cpu: 1.0 - cpu_usage,
-        available_memory:4096.0,
-        current_load: cpu_usage,
+        available_cpu_mhz: device_info.cpu_mhz.unwrap_or(2000) as u32,
+        total_cpu_mhz: device_info.cpu_mhz.unwrap_or(2000) as u32,
+        total_memory:device_info.total_mem.unwrap_or(1024*1024*1024*2) as u64,
+        available_memory:device_info.total_mem.unwrap_or(1024*1024*1024*2) as u64 - device_info.mem_usage.unwrap_or(0) as u64,
+        total_gpu_memory:device_info.gpu_total_mem.unwrap_or(0) as u64,
+        available_gpu_memory:device_info.gpu_total_mem.unwrap_or(0) as u64 - device_info.gpu_used_mem.unwrap_or(0) as u64,
+        gpu_tflops:device_info.gpu_tflops.unwrap_or(0.0) as f32,
         resources: HashMap::new(),
         op_tasks: vec![],
     }
@@ -252,8 +252,10 @@ fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfig) -> PodItem
         pod_type: PodItemType::App,
         state: pod_state,
         best_instance_count: app_config.instance,
-        required_cpu: 0.1,
-        required_memory: 1024.0,
+        required_cpu_mhz: 200,
+        required_memory: 1024*1024*256,
+        required_gpu_tflops: 0.0,
+        required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
     }
@@ -266,8 +268,10 @@ fn create_pod_item_by_service_config(service_name: &str,service_config: &KernelS
         pod_type: PodItemType::Service,
         state: pod_state,
         best_instance_count: service_config.instance,
-        required_cpu: 0.1,
-        required_memory: 1024.0,
+        required_cpu_mhz: 300,
+        required_memory: 1024*1024*256,
+        required_gpu_tflops: 0.0,
+        required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
     }

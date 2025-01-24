@@ -25,6 +25,7 @@ ed25519_to_curve25519 = "*"
 base64="*"
 once_cell="*"
 lazy_static="*"
+nvml-wrapper = { version = "*" }
 buckyos-kit = { path = "../buckyos-kit" }
 kRPC = { path = "../../kernel/kRPC" }
 

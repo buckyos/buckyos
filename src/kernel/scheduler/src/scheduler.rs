@@ -79,8 +79,10 @@ pub struct PodItem {
     pub state: PodItemState,
     pub best_instance_count: u32,
 
-    pub required_cpu: f64,
-    pub required_memory: f64,
+    pub required_cpu_mhz: u32,
+    pub required_memory: u64,
+    pub required_gpu_tflops: f32,
+    pub required_gpu_mem: u64,
     // 亲和性规则
     pub node_affinity: Option<String>,
     pub network_affinity: Option<String>,
@@ -124,9 +126,15 @@ pub struct NodeItem {
 
     //Node的可变状态
     pub state: NodeState,
-    pub available_cpu: f64, //percent 0.01 - 1.0
-    pub available_memory: f64, //MB, 
-    pub current_load: f64, // 0.01 - 1.0
+
+    pub available_cpu_mhz: u32,//available mhz
+    pub total_cpu_mhz: u32,//total mhz
+    pub available_memory: u64, //bytes
+    pub total_memory: u64, //bytes
+    pub available_gpu_memory: u64, //bytes
+    pub total_gpu_memory: u64, //bytes
+    pub gpu_tflops: f32, //tflops
+    
     pub resources: HashMap<String, NodeResource>,
     pub op_tasks: Vec<OPTask>,
 }
@@ -380,7 +388,7 @@ impl PodScheduler {
                 None => return true, 
                 Some(last_pod) => {
                     if pod.state != last_pod.state 
-                        || pod.required_cpu != last_pod.required_cpu 
+                        || pod.required_cpu_mhz != last_pod.required_cpu_mhz 
                         || pod.required_memory != last_pod.required_memory 
                         || pod.node_affinity != last_pod.node_affinity 
                         || pod.network_affinity != last_pod.network_affinity {
@@ -460,8 +468,13 @@ impl PodScheduler {
         }
 
         // 2. 检查资源是否充足
-        if node.available_cpu < pod.required_cpu || 
-           node.available_memory < pod.required_memory {
+        if node.total_cpu_mhz < pod.required_cpu_mhz || 
+           node.total_memory < pod.required_memory {
+            return false;
+        }
+
+        if node.total_gpu_memory < pod.required_gpu_mem ||
+           node.gpu_tflops < pod.required_gpu_tflops as f32 {
             return false;
         }
 
@@ -480,12 +493,12 @@ impl PodScheduler {
         let mut score = 0.0;
 
         // 1. 资源充足度评分
-        let cpu_score = (node.available_cpu - pod.required_cpu) / node.available_cpu;
-        let memory_score = (node.available_memory - pod.required_memory) / node.available_memory;
-        score += (cpu_score + memory_score) / 2.0 * 100.0;
+        let cpu_score = (node.available_cpu_mhz - pod.required_cpu_mhz) / node.total_cpu_mhz;
+        let memory_score = (node.available_memory - pod.required_memory) / node.total_memory;
+        score += (cpu_score as f64 + memory_score as f64) / 2.0 * 100.0;
 
         // 2. 节点负载均衡评分
-        let load_score = 1.0 - node.current_load;
+        let load_score = 1.0 - (node.available_cpu_mhz / node.total_cpu_mhz) as f64;
         score += load_score * 50.0;
 
         // 3. 网络亲和性评分
@@ -518,19 +531,23 @@ mod tests {
 
     fn create_test_node(
         id: &str,
-        cpu: f64,
-        memory: f64,
+        cpu: u32,
+        memory: u64,
         labels: Vec<String>,
         load: f64,
         network_zone: &str,
     ) -> NodeItem {
         NodeItem {
             id: id.to_string(),
-            available_cpu: cpu,
+            total_cpu_mhz: cpu,
+            available_cpu_mhz: cpu,
+            total_memory: memory,
             available_memory: memory,
+            total_gpu_memory: 0,
+            available_gpu_memory: 0,
+            gpu_tflops: 0,
             state: NodeState::Ready,
             labels,
-            current_load: load,
             network_zone: network_zone.to_string(),
             resources: HashMap::new(),
             op_tasks: vec![],
@@ -541,8 +558,10 @@ mod tests {
     fn test_filter_node_for_pod_instance() {
         let pod = PodItem {
             id: "test-pod".to_string(),
-            required_cpu: 2.0,
-            required_memory: 4.0,
+            required_cpu_mhz: 200,
+            required_gpu_tflops: 0,
+            required_gpu_mem: 0,
+            required_memory: 1024*1025*256,
             node_affinity: Some("gpu".to_string()),
             network_affinity: Some("zone1".to_string()),
             best_instance_count: 2,
@@ -564,8 +583,10 @@ mod tests {
 
         let pod = PodItem {
             id: "test-pod".to_string(),
-            required_cpu: 2.0,
-            required_memory: 4.0,
+            required_cpu_mhz: 200,
+            required_memory: 1024*1025*256,
+            required_gpu_tflops: 0,
+            required_gpu_mem: 0,
             node_affinity: None,
             network_affinity: Some("zone1".to_string()),
             pod_type: PodItemType::Service,
@@ -586,8 +607,10 @@ mod tests {
         let now = buckyos_get_unix_timestamp();
         let pod = PodItem {
             id: "test-pod".to_string(),
-            required_cpu: 8.0, // requires more CPU than available
-            required_memory: 4.0,
+            required_cpu_mhz: 800, // requires more CPU than available
+            required_memory: 1024*1025*256,
+            required_gpu_tflops: 0,
+            required_gpu_mem: 0,
             node_affinity: None,
             network_affinity: None,
             pod_type: PodItemType::Service,
