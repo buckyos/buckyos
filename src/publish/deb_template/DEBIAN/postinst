@@ -8,7 +8,7 @@ Description=buckyos system service
 After=network.target
 
 [Service]
-ExecStart=/opt/buckyos/bin/node_daemon --enable_active
+ExecStart=/opt/buckyos/bin/start_node_daemon.py --enable_active
 User=root
 WorkingDirectory=/opt/buckyos/bin
 Restart=always
