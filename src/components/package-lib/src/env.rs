@@ -289,21 +289,11 @@ mod tests {
         let pkg_dir = env.get_install_dir().join("a#0.1.0");
         fs::create_dir(&pkg_dir).unwrap();
 
-        //创建一个b#0.1.0的文件夹
-        let pkg_dir = env.get_install_dir().join("b#0.1.0");
-        fs::create_dir(&pkg_dir).unwrap();
-
         //测试load
         let media_info = env.load("a#0.1.0").unwrap();
         assert_eq!(media_info.pkg_id.name, "a");
         assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
         assert_eq!(media_info.full_path, env.get_install_dir().join("a#0.1.0"));
-
-        //创建b的meta文件
-        let meta_file_name = "b#0.1.0#sha256xxxx";
-        let meta_file = env.get_meta_dir().join(meta_file_name);
-        let meta_content = r#"{"deps": {}, "sha256": "sha256xxxx"}"#;
-        fs::write(&meta_file, meta_content).unwrap();
 
         //测试get_deps
         let deps = env.get_deps("a#0.1.0").unwrap();
@@ -313,5 +303,20 @@ mod tests {
 
         let is_ready = env.is_pkg_ready("a#0.1.0").unwrap();
         assert_eq!(is_ready, true);
+
+        let media_info = env.load("a#*").unwrap();
+        assert_eq!(media_info.pkg_id.name, "a");
+        assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
+        assert_eq!(media_info.full_path, env.get_install_dir().join("a#0.1.0"));
+
+        let media_info = env.load("a#>0.0.1").unwrap();
+        assert_eq!(media_info.pkg_id.name, "a");
+        assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
+        assert_eq!(media_info.full_path, env.get_install_dir().join("a#0.1.0"));
+
+        let media_info = env.load("a#sha256:sha256xxxx").unwrap();
+        assert_eq!(media_info.pkg_id.name, "a");
+        assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
+        assert_eq!(media_info.full_path, env.get_install_dir().join("a#0.1.0"));
     }
 }
