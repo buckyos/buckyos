@@ -21,7 +21,7 @@ def build(skip_web_app, skip_install, target):
         install.install()
 
 if __name__ == "__main__":
-    skip_web_app = False
+    skip_web_app = True
     skip_install = False
     system = platform.system() # Linux / Windows / Darwin
     arch = platform.machine() # x86_64 / AMD64 / arm64 / arm
