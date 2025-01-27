@@ -107,6 +107,7 @@ impl PackageEnv {
         &self.work_dir
     }
 
+    //目标是让存在pkg.lock的env的所有pkg都处在可(独立)加载的状态
     pub async fn build(&self, update: bool) -> PkgResult<()> {
         // 检查lock文件是否需要更新
         info!("Begin build env, force update: {}", update);
@@ -156,6 +157,7 @@ impl PackageEnv {
 
             // 创建一个异步任务
             let download_future = async move {
+                
                 let task_id = downloader
                     .download(&url, &target_pkg_tmp_file, None)
                     .await?;
