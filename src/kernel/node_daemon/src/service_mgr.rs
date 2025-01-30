@@ -35,7 +35,7 @@ impl RunItemControl for FrameServiceConfig {
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         // 部署文件系统时需要机器名，以root权限运行脚本，默认程序本身应该是root权限
         let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
-        let media_info = env.load(&self.pkg_id).await;
+        let media_info = env.load(&self.pkg_id);
         if media_info.is_ok() {
             self.execute_operation(&media_info.unwrap(), "deploy")
                 .await?;
@@ -65,7 +65,7 @@ impl RunItemControl for FrameServiceConfig {
 
     async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
         let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
-        let media_info = env.load(&self.pkg_id).await;
+        let media_info = env.load(&self.pkg_id);
         if media_info.is_ok() {
             self.execute_operation(&media_info.unwrap(), "start")
                 .await?;
@@ -75,7 +75,7 @@ impl RunItemControl for FrameServiceConfig {
 
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
         let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
-        let media_info = env.load(&self.pkg_id).await;
+        let media_info = env.load(&self.pkg_id);
         if media_info.is_ok() {
             self.execute_operation(&media_info.unwrap(), "stop").await?;
         }
@@ -84,7 +84,7 @@ impl RunItemControl for FrameServiceConfig {
 
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
         let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
-        let media_info = env.load(&self.pkg_id).await;
+        let media_info = env.load(&self.pkg_id);
         if media_info.is_err() {
             return Ok(ServiceState::NotExist);
         }

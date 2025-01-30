@@ -45,7 +45,9 @@ pub fn restart_program() -> std::io::Result<()> {
 }
 
 pub async fn parse_script_file(path: &PathBuf) -> Result<(String, bool)> {
-    let file = File::open(path).await.map_err(|e| ServiceControlError::FileNotFound(e.to_string()))?;
+    let file = File::open(path)
+        .await
+        .map_err(|e| ServiceControlError::FileNotFound(e.to_string()))?;
     let mut reader = BufReader::new(file);
     let mut first_line = String::new();
     let mut script_engine = String::new();
@@ -63,7 +65,10 @@ pub async fn parse_script_file(path: &PathBuf) -> Result<(String, bool)> {
     }
 
     if script_engine.is_empty() {
-        let extension = Path::new(path).extension().and_then(|s| s.to_str()).unwrap_or("");
+        let extension = Path::new(path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
         match extension {
             "py" => script_engine = "python3".to_string(),
             "js" => script_engine = "node".to_string(),
@@ -83,8 +88,13 @@ pub async fn parse_script_file(path: &PathBuf) -> Result<(String, bool)> {
     Ok((script_engine, is_script))
 }
 
-pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String>>,
-                    current_dir: Option<&PathBuf>, env_vars: Option<&HashMap<String, String>>) -> Result<(i32, Vec<u8>)> {
+pub async fn execute(
+    path: &PathBuf,
+    timeout_secs: u64,
+    args: Option<&Vec<String>>,
+    current_dir: Option<&PathBuf>,
+    env_vars: Option<&HashMap<String, String>>,
+) -> Result<(i32, Vec<u8>)> {
     let (script_engine, is_script) = parse_script_file(path).await?;
     let mut command = Command::new(script_engine);
     if is_script {
@@ -109,7 +119,6 @@ pub async fn execute(path: &PathBuf, timeout_secs: u64, args: Option<&Vec<String
     command.stderr(Stdio::piped());
 
     info!("Executing: {:?}", command);
-
 
     let mut child = command
         .spawn()
@@ -189,7 +198,6 @@ impl ServicePkg {
         let media_info = self
             .pkg_env
             .load(&self.pkg_id)
-            .await
             .map_err(|e| ServiceControlError::ReasonError(e.to_string()))?;
         self.media_info = Some(media_info.clone());
         Ok(media_info)

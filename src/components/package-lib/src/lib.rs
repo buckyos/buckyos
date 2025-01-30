@@ -2,7 +2,6 @@
 mod downloader;
 mod env;
 mod error;
-mod installer;
 mod parser;
 mod version_util;
 
