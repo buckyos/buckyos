@@ -37,7 +37,7 @@ impl ToString for PackageId {
             result.push_str(version);
         }
         if let Some(sha256) = &self.sha256 {
-            result.push_str("#sha256:");
+            result.push_str("#");
             result.push_str(sha256);
         }
         result
@@ -62,7 +62,7 @@ impl Parser {
 
         if let Some(version_part) = parts.next() {
             if version_part.starts_with("sha256:") {
-                sha256 = Some(version_part[7..].to_string());
+                sha256 = Some(version_part.to_string()); //Some(version_part[7..].to_string());
             } else {
                 let version_part = version_part.replace(" ", "").replace(",", "");
 
@@ -153,7 +153,7 @@ mod tests {
         let pkg_id = "a#sha256:1234567890";
         let result = Parser::parse(pkg_id).unwrap();
         assert_eq!(&result.name, "a");
-        assert_eq!(result.sha256, Some("1234567890".to_string()));
+        assert_eq!(result.sha256, Some("sha256:1234567890".to_string()));
 
         let pkg_id = "a#>0.1.0";
         let result = Parser::parse(pkg_id).unwrap();

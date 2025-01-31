@@ -73,7 +73,7 @@ pub struct PackageLockList {
 
 /**
  * env下有一个meta文件夹，用来存放当前env已知的所有包的元信息
- * meta文件夹下都是一个个元文件，命名方式为: pkg_name#version#sha256，因为这里都是已经获取确定信息的包了，所以信息是完备的
+ * meta文件夹下都是一个个元文件，命名方式为: pkg_name#version#sha256-xxxx，因为这里都是已经获取确定信息的包了，所以信息是完备的
  * 文件内容为json，包含该pkg的deps及其他信息
  */
 
@@ -130,6 +130,7 @@ impl PackageEnv {
             let name = file_name_parts[0].to_string();
             let version = file_name_parts[1..file_name_len - 1].join("#");
             let sha256 = file_name_parts[file_name_len - 1].to_string();
+            let sha256 = sha256.replace("-", ":");
 
             if name == pkg_id.name {
                 if let Some(sha256) = &pkg_id.sha256 {
@@ -214,6 +215,20 @@ impl PackageEnv {
     }
 
     pub fn load(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
+        match self.load_strictly(pkg_id_str) {
+            Ok(media_info) => {
+                info!("load strictly {} => {:?}", pkg_id_str, media_info);
+                Ok(media_info)
+            }
+            Err(_) => {
+                let ret = self.try_load(pkg_id_str);
+                info!("try load {} => {:?}", pkg_id_str, ret);
+                ret
+            }
+        }
+    }
+
+    pub fn load_strictly(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
         let pkg_id = self.get_exact_pkg_id(pkg_id_str)?;
         if pkg_id.is_none() {
             return Err(PkgError::LoadError(
@@ -247,6 +262,81 @@ impl PackageEnv {
         }
     }
 
+    pub fn try_load(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
+        //尽力加载，判断install目录中是否有目标包，如果有就加载
+        let pkg_id = Parser::parse(pkg_id_str)?;
+        if let Some(ref sha256) = pkg_id.sha256 {
+            let target_pkg = format!("{}#{}", pkg_id.name, sha256.replace(":", "-"));
+            let target_path = self.get_install_dir().join(target_pkg);
+            if target_path.exists() {
+                let media_type = if target_path.is_dir() {
+                    MediaType::Dir
+                } else {
+                    MediaType::File
+                };
+
+                return Ok(MediaInfo {
+                    pkg_id,
+                    full_path: target_path,
+                    media_type,
+                });
+            }
+        } else if let Some(ref pkg_version) = pkg_id.version {
+            //遍历install文件夹下的所有文件，找到所有pkg_name与pkg_id.name相同的文件，并解析出name, Version
+            let install_dir = self.get_install_dir();
+            let valid_file: Vec<PathBuf> = fs::read_dir(&install_dir)?
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let entry_path = entry.path();
+                    if let Some(file_name) = entry_path.file_name() {
+                        if file_name.to_string_lossy().starts_with(&pkg_id.name) {
+                            return Some(entry_path);
+                        }
+                    }
+                    None
+                })
+                .collect();
+
+            for file in valid_file {
+                let file_name = file.file_name().unwrap().to_string_lossy();
+                let file_name_parts: Vec<&str> = file_name.split('#').collect();
+                if file_name_parts.len() < 2 {
+                    return Err(PkgError::ParseError(
+                        file.to_string_lossy().to_string(),
+                        "Invalid file name".to_string(),
+                    ));
+                }
+                let file_name_len = file_name_parts.len();
+                let name = file_name_parts[0].to_string();
+                let version = file_name_parts[1..file_name_len].join("#");
+                if name == pkg_id.name {
+                    if version_util::matches(&pkg_version, &version)? {
+                        let media_type = if file.is_dir() {
+                            MediaType::Dir
+                        } else {
+                            MediaType::File
+                        };
+                        let target_pkg_id = PackageId {
+                            name,
+                            version: Some(version.to_string()),
+                            sha256: None,
+                        };
+                        return Ok(MediaInfo {
+                            pkg_id: target_pkg_id,
+                            full_path: file,
+                            media_type,
+                        });
+                    }
+                }
+            }
+        }
+
+        Err(PkgError::LoadError(
+            pkg_id_str.to_owned(),
+            "Package not found".to_owned(),
+        ))
+    }
+
     pub fn is_pkg_ready(&self, pkg_id_str: &str) -> PkgResult<bool> {
         //获取pkg的依赖，依次检查依赖是否已经安装
         let deps = self.get_deps(pkg_id_str)?;
@@ -270,7 +360,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_pkg_load() {
+    fn test_pkg_load_strictly() {
         //创建一个临时目录
         let tmp_dir = tempdir().unwrap();
         let env = PackageEnv::new(tmp_dir.path().to_path_buf());
@@ -290,7 +380,7 @@ mod tests {
         fs::create_dir(&pkg_dir).unwrap();
 
         //测试load
-        let media_info = env.load("a#0.1.0").unwrap();
+        let media_info = env.load_strictly("a#0.1.0").unwrap();
         assert_eq!(media_info.pkg_id.name, "a");
         assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
         assert_eq!(media_info.full_path, env.get_install_dir().join("a#0.1.0"));
@@ -304,6 +394,41 @@ mod tests {
         let is_ready = env.is_pkg_ready("a#0.1.0").unwrap();
         assert_eq!(is_ready, true);
 
+        let media_info = env.load_strictly("a#*").unwrap();
+        assert_eq!(media_info.pkg_id.name, "a");
+        assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
+        assert_eq!(media_info.full_path, env.get_install_dir().join("a#0.1.0"));
+
+        let media_info = env.load_strictly("a#>0.0.1").unwrap();
+        assert_eq!(media_info.pkg_id.name, "a");
+        assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
+        assert_eq!(media_info.full_path, env.get_install_dir().join("a#0.1.0"));
+
+        let media_info = env.load_strictly("a#sha256:sha256xxxx").unwrap();
+        assert_eq!(media_info.pkg_id.name, "a");
+        assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
+        assert_eq!(media_info.full_path, env.get_install_dir().join("a#0.1.0"));
+    }
+
+    #[test]
+    fn test_try_load() {
+        //创建一个临时目录
+        let tmp_dir = tempdir().unwrap();
+        let env = PackageEnv::new(tmp_dir.path().to_path_buf());
+        //创建meta目录
+        let meta_dir = env.get_meta_dir();
+        fs::create_dir(&meta_dir).unwrap();
+
+        //创建一个a#0.1.0的文件夹
+        let pkg_dir = env.get_install_dir().join("a#0.1.0");
+        fs::create_dir(&pkg_dir).unwrap();
+
+        //测试try_load
+        let media_info = env.load("a#0.1.0").unwrap();
+        assert_eq!(media_info.pkg_id.name, "a");
+        assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
+        assert_eq!(media_info.full_path, env.get_install_dir().join("a#0.1.0"));
+
         let media_info = env.load("a#*").unwrap();
         assert_eq!(media_info.pkg_id.name, "a");
         assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
@@ -314,9 +439,13 @@ mod tests {
         assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
         assert_eq!(media_info.full_path, env.get_install_dir().join("a#0.1.0"));
 
-        let media_info = env.load("a#sha256:sha256xxxx").unwrap();
-        assert_eq!(media_info.pkg_id.name, "a");
-        assert_eq!(media_info.pkg_id.version, Some("0.1.0".to_string()));
-        assert_eq!(media_info.full_path, env.get_install_dir().join("a#0.1.0"));
+        let ret = env.load("a#0.1.1");
+        assert_eq!(ret.is_err(), true);
+
+        let ret = env.load("a#>0.1.0");
+        assert_eq!(ret.is_err(), true);
+
+        let ret = env.load("a#>=0.1.0");
+        assert_eq!(ret.is_ok(), true);
     }
 }
