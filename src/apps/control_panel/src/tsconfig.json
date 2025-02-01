@@ -1,6 +1,6 @@
 {
-    "include": ["components", "utils", "test",  "**/*.ts", "typing.d.ts"],
-    "exclude": ["node_modules/**", "dist/**", "res", "public"],
+    "include": ["components", "utils", "test",  "**/*.ts", "typing.d.ts", "vite.config.mts"],
+    "exclude": ["node_modules/**", "dist/**",  "public", "assets"],
     "compilerOptions": {
       "module": "ESNext",
       "moduleResolution": "bundler",

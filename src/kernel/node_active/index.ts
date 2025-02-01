@@ -24,6 +24,7 @@ import "./dlg/active_result_dlg";
 import {GatewayType, ActiveWizzardData} from './active_lib';
 import i18next from './i18n';
 import Handlebars from 'handlebars';
+
 function update_i18n() {
 
     function updateElementAndShadowRoots(root: Document | Element | ShadowRoot) {

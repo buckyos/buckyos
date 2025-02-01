@@ -241,7 +241,7 @@ async fn handle_login_by_jwt(params:Value,_login_nonce:u64) -> Result<RPCSession
     return Ok(session_token);
 }
 
-async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
+async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<Value> {
     let password = params.get("password")
         .ok_or(RPCErrors::ParseRequestError("Missing password".to_string()))?;
     let password = password.as_str().ok_or(RPCErrors::ReasonError("Invalid password".to_string()))?;
@@ -285,6 +285,10 @@ async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<RPCSes
         .ok_or(RPCErrors::ReasonError("password not set,cann't login by password".to_string()))?;
     let store_password = store_password.as_str()
         .ok_or(RPCErrors::ReasonError("Invalid password".to_string()))?;
+    let user_type = user_info.get("type")
+        .ok_or(RPCErrors::ReasonError("user type not set,cann't login by password".to_string()))?;
+    let user_type = user_type.as_str()
+        .ok_or(RPCErrors::ReasonError("Invalid user type".to_string()))?;
     
     //encode password with nonce and check it is right
     let password_hash_input = STANDARD.decode(password)
@@ -300,7 +304,13 @@ async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<RPCSes
     //generate session token
     info!("login success, generate session token for user:{}",username);
     let session_token = generate_session_token(appid,username,login_nonce,3600*24*7).await;
-    return Ok(session_token);
+    let result_account_info = json!({
+        "user_name": username,
+        "user_id": username,
+        "user_type": user_type,
+        "session_token": session_token.to_string()
+    });
+    return Ok(result_account_info);
     
 }
 
@@ -414,8 +424,8 @@ async fn handle_login(params:Value,login_nonce:u64) -> Result<Value> {
             return Ok(Value::String(session_token.to_string()));
         },
         LoginType::ByPassword => {
-            let session_token = handle_login_by_password(params,login_nonce).await?;
-            return Ok(Value::String(session_token.to_string()));
+            let account_info = handle_login_by_password(params,login_nonce).await?;
+            return Ok(account_info);
         }
         // LoginType::BySignature => {
         //     let session_token =  handle_login_by_signature(params,login_nonce).await?;

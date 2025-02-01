@@ -243,7 +243,7 @@ impl SystemConfigClient {
         }
         let client = client.unwrap();
         client.call("sys_config_create",json!({"key":format!("users/{}/apps/{}/config",user_id,app_id),"value":config_string})).await
-            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+            .map_err(|error: ::kRPC::RPCErrors| SystemConfigError::ReasonError(error.to_string()))?;
         //2. update rbac
         client.call("sys_config_append",json!({"key":"system/rbac/policy","append_value":format!("\ng, {}, app",app_id)})).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;

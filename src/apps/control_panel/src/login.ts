@@ -76,8 +76,8 @@ window.onload = async () => {
         doLogin(username, password, url_appid, source_url).then((token) => {
             console.log("login success,token: ", token);
             alert("login success");
-            localStorage.setItem("token", token);
-            localStorage.setItem("username", username);
+            localStorage.setItem("bs-token", token);
+            localStorage.setItem("bs-username", username);
             window.opener.postMessage({ token: token }, '*');
             window.close();
         })

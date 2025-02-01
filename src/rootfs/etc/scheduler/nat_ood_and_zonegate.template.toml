@@ -294,6 +294,7 @@
             "app_id":"home-station",
             "user_id":"{{user_name}}",
             "docker_image_name" : "filebrowser/filebrowser:s6",
+            "sub_pkg_id":"home-station-x86-img",
             "data_mount_point" : "/srv",
             "cache_mount_point" : "/database/",
             "extra_mounts" : {
