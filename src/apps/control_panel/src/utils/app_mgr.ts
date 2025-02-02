@@ -15,6 +15,7 @@ export interface AppDoc {
     pkg_id: string;
     // service名称 -> 完整镜像URL的映射
     pkg_list: { [key: string]: SubPkgDesc };
+    //TODO:要增加安装配置还是分开？
 }
 
 export interface AppConfig {

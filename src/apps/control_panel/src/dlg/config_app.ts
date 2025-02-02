@@ -1,8 +1,11 @@
 import { html, css, LitElement } from 'lit';
 import { customElement } from 'lit/decorators.js';
+import { AppDoc, AppConfig } from '../utils/app_mgr';
 
 @customElement('config-app-content')
 export class ConfigAppContent extends LitElement {
+  declare app_doc: AppDoc;
+
   static styles = css`
     .config-app-dialog {
       padding: 1rem;
@@ -21,6 +24,33 @@ export class ConfigAppContent extends LitElement {
       padding-left: 1.5rem;
     }
   `;
+
+  setAppDoc(app_doc: AppDoc) {
+    this.app_doc = app_doc;
+  }
+
+  getAppConfig() : AppConfig | null {
+    let app_config: AppConfig = {
+      id: this.app_doc.pkg_id,
+      app_doc: this.app_doc,
+      app_index: 3,
+      enable: true,
+      instance: 1,
+      state: "New",
+      data_mount_point: "/data/",
+      cache_mount_point: "/cache/",
+      local_cache_mount_point: "/local_cache/",
+      extra_mounts: {},
+      max_cpu_num: 2,
+      max_cpu_percent: 100,
+      memory_quota: 1024 * 1024 * 1024,
+      tcp_ports: {
+        "www": 80,
+      },
+      udp_ports: {},
+    }
+    return app_config;
+  }
 
   render() {
     return html`

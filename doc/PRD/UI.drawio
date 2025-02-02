@@ -1,4 +1,228 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/26.0.9 Chrome/128.0.6613.186 Electron/32.2.5 Safari/537.36" version="26.0.9" pages="18">
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/26.0.9 Chrome/128.0.6613.186 Electron/32.2.5 Safari/537.36" version="26.0.9" pages="20">
+  <diagram id="adK-_9Zq3T5H2AhbhxpP" name="BuckyOS App Frame">
+    <mxGraphModel dx="1578" dy="668" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-1" value="node_daemon" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="227.5" y="175" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-18" value="进程内" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-2" target="pp9yyInRN2Q5cvQQRcF1-14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-20" value="跨进程" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-2" target="pp9yyInRN2Q5cvQQRcF1-3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-2" value="cyfs_gateway" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="367.5" y="175" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-3" value="app_services" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="552.5" y="175" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-5" value="" style="endArrow=none;dashed=1;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="137.5" y="160" as="sourcePoint" />
+            <mxPoint x="697.5" y="160" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-8" target="pp9yyInRN2Q5cvQQRcF1-1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-8" value="tray-controller" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" vertex="1" parent="1">
+          <mxGeometry x="232.5" y="100" width="90" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-9" target="pp9yyInRN2Q5cvQQRcF1-2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-9" value="buckyos-desktop" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" vertex="1" parent="1">
+          <mxGeometry x="372.5" y="100" width="90" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-22" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-10" target="pp9yyInRN2Q5cvQQRcF1-2">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="652.5" y="155" />
+              <mxPoint x="467.5" y="155" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-10" value="browser" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" vertex="1" parent="1">
+          <mxGeometry x="607.5" y="100" width="90" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-11" value="services" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="132.5" y="185" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-12" value="UI Apps" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="132.5" y="100" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-21" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-13" target="pp9yyInRN2Q5cvQQRcF1-2">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="532.5" y="155" />
+              <mxPoint x="442.5" y="155" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-13" value="buckyos-app&lt;div&gt;(backup app)&lt;/div&gt;" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" vertex="1" parent="1">
+          <mxGeometry x="487.5" y="100" width="90" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-14" value="inner_services" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+          <mxGeometry x="360.5" y="260" width="115" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-23" value="让当前设备变成可以运行服务的节点" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="215" y="230" width="125" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-24" value="App Web UI应判断自己是否运行在App中，以获得更多的能力，让体验更好" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="522.5" y="50" width="160" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-25" value="标准的,OOD上的运行结构&lt;div&gt;Debain/OpenWRT&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="150" y="370" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-26" value="安装在Windows/OSX上的buckyos" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="150" y="430" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-27" value="安装在手机上的buckyos app运行结构" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="150" y="550" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-28" value="有Root权限的Android TV" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="150" y="490" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-31" value="" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="90" y="380" as="sourcePoint" />
+            <mxPoint x="90" y="580" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-32" value="权限(能力由高到低）&lt;div&gt;UI丰富度由低到高&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="pp9yyInRN2Q5cvQQRcF1-31">
+          <mxGeometry x="0.0985" y="1" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-33" value="进程内" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-34" target="pp9yyInRN2Q5cvQQRcF1-36">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-34" value="cyfs_gateway" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="584.5" y="425" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-37" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-35" target="pp9yyInRN2Q5cvQQRcF1-34">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-38" value="进程内" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="pp9yyInRN2Q5cvQQRcF1-37">
+          <mxGeometry x="-0.4484" y="-1" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-35" value="buckyos-app&lt;div&gt;(backup app)&lt;/div&gt;" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" vertex="1" parent="1">
+          <mxGeometry x="590" y="360" width="90" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-36" value="backup_client" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+          <mxGeometry x="492.5" y="515" width="115" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-39" value="owner_tools&lt;div&gt;激活管理（传统钱包功能）&lt;/div&gt;" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+          <mxGeometry x="632.5" y="515" width="150" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-40" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.468;entryY=0.086;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-34" target="pp9yyInRN2Q5cvQQRcF1-39">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-62" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-47" target="pp9yyInRN2Q5cvQQRcF1-55">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-47" value="用户安装BuckyOS App" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="710" width="85" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-59" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-48" target="pp9yyInRN2Q5cvQQRcF1-47">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-60" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-48" target="pp9yyInRN2Q5cvQQRcF1-53">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-48" value="按说明书打开设备" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="250" y="750" width="85" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-64" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-49" target="pp9yyInRN2Q5cvQQRcF1-56">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-49" value="在App中查找待激活设备" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="622.5" y="710" width="85" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-57" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-50" target="pp9yyInRN2Q5cvQQRcF1-48">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-50" value="激活并创建Zone&lt;div&gt;（首次使用）&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="750" width="120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-73" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-51" target="pp9yyInRN2Q5cvQQRcF1-68">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-74" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-51" target="pp9yyInRN2Q5cvQQRcF1-69">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-51" value="激活设备并加入Zone" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="87.5" y="940" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-58" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-52" target="pp9yyInRN2Q5cvQQRcF1-48">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-52" value="当前机器就是设备" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="250" y="690" width="85" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-67" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-53" target="pp9yyInRN2Q5cvQQRcF1-66">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-53" value="用户在浏览器中输入&lt;div&gt;http://$device_ip:3180/index.html&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="780" width="230" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-61" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-54" target="pp9yyInRN2Q5cvQQRcF1-53">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-54" value="辅助:运行查找脚本" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="472.5" y="840" width="85" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-63" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-55" target="pp9yyInRN2Q5cvQQRcF1-49">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-55" value="完成帐号配置等信息" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="515" y="710" width="85" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-56" value="自动激活" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="735" y="710" width="85" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-66" value="要求保存owner私钥" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="680" y="780" width="85" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-75" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-68" target="pp9yyInRN2Q5cvQQRcF1-71">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="457.5" y="920" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-68" value="通过BuckyOS App访问Control Panel" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="257.5" y="900" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-76" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-69" target="pp9yyInRN2Q5cvQQRcF1-71">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-69" value="通过浏览器访问Control Panel" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="257.5" y="970" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-77" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="pp9yyInRN2Q5cvQQRcF1-71" target="pp9yyInRN2Q5cvQQRcF1-72">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-71" value="添加设备" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="427.5" y="930" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-72" value="查找并添加" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="577.5" y="930" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="pp9yyInRN2Q5cvQQRcF1-78" value="单进程（纯Client)模型" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="550" y="570" width="170" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="O4arjTU5S6MzT74swHxv-1" value="通过浏览器总是访问到服务，通过App则可以控制当前设备，控制当前设设备的功能可以不不依赖buckyos服务" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontColor=#99004D;" vertex="1" parent="1">
+          <mxGeometry x="577.5" y="240" width="240" height="50" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
   <diagram id="RZdW4h8mW8Q3h_B0Vpwn" name="UI Frame">
     <mxGraphModel dx="3223" dy="573" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
@@ -1813,7 +2037,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="8t5dLJr-iKYSUIDq8Arc" name="Control Panel">
-    <mxGraphModel dx="1394" dy="1062" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="1894" dy="801" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -1821,16 +2045,16 @@
           <mxGeometry x="466.25" y="129" width="268.5" height="222" as="geometry" />
         </mxCell>
         <mxCell id="32jAPtFwexRZpFAr-vTY-1" value="Internet Acess" style="rounded=0;whiteSpace=wrap;html=1;align=left;" parent="1" vertex="1">
-          <mxGeometry x="100" y="230" width="260" height="30" as="geometry" />
+          <mxGeometry x="100" y="261" width="260" height="30" as="geometry" />
         </mxCell>
         <mxCell id="32jAPtFwexRZpFAr-vTY-3" value="Account Manage" style="rounded=0;whiteSpace=wrap;html=1;align=left;" parent="1" vertex="1">
-          <mxGeometry x="100" y="200" width="260" height="30" as="geometry" />
+          <mxGeometry x="100" y="231" width="260" height="30" as="geometry" />
         </mxCell>
         <mxCell id="32jAPtFwexRZpFAr-vTY-4" value="Backup &amp;amp; Restore" style="rounded=0;whiteSpace=wrap;html=1;align=left;" parent="1" vertex="1">
-          <mxGeometry x="100" y="290" width="260" height="30" as="geometry" />
+          <mxGeometry x="100" y="321" width="260" height="30" as="geometry" />
         </mxCell>
         <mxCell id="32jAPtFwexRZpFAr-vTY-6" value="Devices" style="rounded=0;whiteSpace=wrap;html=1;align=left;" parent="1" vertex="1">
-          <mxGeometry x="100" y="260" width="260" height="30" as="geometry" />
+          <mxGeometry x="100" y="291" width="260" height="30" as="geometry" />
         </mxCell>
         <mxCell id="Dib75J41LNGRd6cLXKRi-1" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.phone2;strokeColor=#c0c0c0;" parent="1" vertex="1">
           <mxGeometry x="450" y="30" width="300" height="610" as="geometry" />
@@ -1838,8 +2062,8 @@
         <mxCell id="Dib75J41LNGRd6cLXKRi-2" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.phone2;strokeColor=#c0c0c0;" parent="1" vertex="1">
           <mxGeometry x="80" y="30" width="300" height="610" as="geometry" />
         </mxCell>
-        <mxCell id="Dib75J41LNGRd6cLXKRi-3" value="" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-          <mxGeometry x="100" y="100" width="260" height="90" as="geometry" />
+        <mxCell id="Dib75J41LNGRd6cLXKRi-3" value="System Details" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="100" y="131" width="260" height="90" as="geometry" />
         </mxCell>
         <mxCell id="Dib75J41LNGRd6cLXKRi-5" value="Internet Access" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.action_bar;fillColor=#E6E6E6;strokeColor=#c0c0c0;strokeWidth=2;whiteSpace=wrap;" parent="1" vertex="1">
           <mxGeometry x="462" y="89" width="277" height="30" as="geometry" />
@@ -1851,7 +2075,7 @@
           <mxGeometry x="479" y="136" width="120" height="30" as="geometry" />
         </mxCell>
         <mxCell id="sC3-BwTbClKijUrXiolV-4" value="" style="rounded=1;whiteSpace=wrap;html=1;arcSize=13;" parent="1" vertex="1">
-          <mxGeometry x="462" y="391" width="263.5" height="160" as="geometry" />
+          <mxGeometry x="466.25" y="360" width="263.5" height="160" as="geometry" />
         </mxCell>
         <mxCell id="sC3-BwTbClKijUrXiolV-5" value="Gateway Node" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="479" y="161" width="250" height="30" as="geometry" />
@@ -1863,7 +2087,7 @@
           <mxGeometry x="493.87" y="191" width="220.25" height="60" as="geometry" />
         </mxCell>
         <mxCell id="Bu99a4VVx5PcS4KAtDc7-3" value="OOD Network Info" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
-          <mxGeometry x="506.75" y="394" width="170" height="30" as="geometry" />
+          <mxGeometry x="507" y="360" width="170" height="30" as="geometry" />
         </mxCell>
         <mxCell id="Bu99a4VVx5PcS4KAtDc7-4" value="copy zone access test url" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=4;fontColor=#007FFF;" parent="1" vertex="1">
           <mxGeometry x="534" y="320" width="143" height="30" as="geometry" />
@@ -1877,20 +2101,11 @@
         <mxCell id="Bu99a4VVx5PcS4KAtDc7-7" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.switch_on;fillColor=#E6E6E6;sketch=0;" parent="1" vertex="1">
           <mxGeometry x="678.75" y="300" width="50" height="20" as="geometry" />
         </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-1" value="TaskBar" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-          <mxGeometry x="150" y="680" width="140" height="380" as="geometry" />
-        </mxCell>
         <mxCell id="65p5TTC233fDm_swP1ly-2" value="" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="290" y="680" width="410" height="380" as="geometry" />
         </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-3" value="Header" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-          <mxGeometry x="160" y="686" width="120" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-4" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" parent="1" vertex="1">
-          <mxGeometry x="164" y="691" width="30" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-5" value="" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-          <mxGeometry x="300" y="700" width="380" height="90" as="geometry" />
+        <mxCell id="65p5TTC233fDm_swP1ly-5" value="System Details" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="305" y="720" width="380" height="80" as="geometry" />
         </mxCell>
         <mxCell id="65p5TTC233fDm_swP1ly-6" value="Internet Acess" style="rounded=0;whiteSpace=wrap;html=1;align=left;" parent="1" vertex="1">
           <mxGeometry x="300" y="840" width="100" height="30" as="geometry" />
@@ -1904,35 +2119,20 @@
         <mxCell id="65p5TTC233fDm_swP1ly-9" value="Devices" style="rounded=0;whiteSpace=wrap;html=1;align=left;" parent="1" vertex="1">
           <mxGeometry x="300" y="870" width="100" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-10" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;arcSize=6;" parent="1" vertex="1">
-          <mxGeometry x="414.25" y="800" width="268.5" height="222" as="geometry" />
+        <mxCell id="acpu9NZML0dN859_09eD-3" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="410" y="810" width="260" height="230" as="geometry" />
         </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-11" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.switch_on;fillColor=#E6E6E6;sketch=0;" parent="1" vertex="1">
-          <mxGeometry x="627" y="812" width="50" height="20" as="geometry" />
+        <mxCell id="NfO29g9CjNIMX8DiP9Zl-1" value="Header" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="100" y="84" width="270" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-12" value="Zone Internet Access" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
-          <mxGeometry x="427" y="807" width="120" height="30" as="geometry" />
+        <mxCell id="NfO29g9CjNIMX8DiP9Zl-2" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+          <mxGeometry x="330" y="88.99999999999999" width="30" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-14" value="Gateway Node" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
-          <mxGeometry x="427" y="832" width="250" height="30" as="geometry" />
+        <mxCell id="NfO29g9CjNIMX8DiP9Zl-3" value="" style="triangle;whiteSpace=wrap;html=1;rotation=-180;" vertex="1" parent="1">
+          <mxGeometry x="108.00999999999999" y="92.67000000000007" width="17" height="22.67" as="geometry" />
         </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-15" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
-          <mxGeometry x="657" y="840" width="12" height="12" as="geometry" />
-        </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-16" value="202.32.73.2&amp;nbsp;&lt;br&gt;2607:f8b0:4007:803::200e&lt;br&gt;myzoneid.com&lt;br&gt;powerd by buckyos.org, 234 days left" style="text;html=1;strokeColor=default;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
-          <mxGeometry x="441.87" y="862" width="220.25" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-18" value="copy zone access test url" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=4;fontColor=#007FFF;" parent="1" vertex="1">
-          <mxGeometry x="482" y="991" width="143" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-19" value="Can Access by Browser&lt;br&gt;&lt;br&gt;Can Access by SBOX" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
-          <mxGeometry x="435.5" y="941" width="231.5" height="50" as="geometry" />
-        </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-20" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.switch_on;fillColor=#E6E6E6;sketch=0;" parent="1" vertex="1">
-          <mxGeometry x="627" y="942" width="50" height="20" as="geometry" />
-        </mxCell>
-        <mxCell id="65p5TTC233fDm_swP1ly-21" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.switch_on;fillColor=#E6E6E6;sketch=0;" parent="1" vertex="1">
-          <mxGeometry x="626.75" y="971" width="50" height="20" as="geometry" />
+        <mxCell id="NfO29g9CjNIMX8DiP9Zl-6" value="title bar" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="290" y="680" width="410" height="30" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
@@ -2949,7 +3149,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="kGCvWIt6N2KHzVKJu8ju" name="dAppList">
-    <mxGraphModel dx="1491" dy="356" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2054" dy="535" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -2975,13 +3175,10 @@
           <mxGeometry x="274" y="960.01" width="11" height="11" as="geometry" />
         </mxCell>
         <mxCell id="U3Yu3RbYGmVnZCQoIP2i-8" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
-          <mxGeometry x="108.52" y="1030" width="201.48" height="70" as="geometry" />
-        </mxCell>
-        <mxCell id="U3Yu3RbYGmVnZCQoIP2i-9" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
-          <mxGeometry x="108.52" y="1110" width="201.48" height="40" as="geometry" />
+          <mxGeometry x="106.52" y="1030" width="211.48" height="70" as="geometry" />
         </mxCell>
         <mxCell id="QVltk_sgnxMvN6n8ZYA8-3" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
-          <mxGeometry x="120" y="1040" width="30" height="30" as="geometry" />
+          <mxGeometry x="116" y="1040" width="30" height="30" as="geometry" />
         </mxCell>
         <mxCell id="QVltk_sgnxMvN6n8ZYA8-4" value="&lt;b&gt;App1:Auto Find your photo&lt;/b&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
           <mxGeometry x="155.52" y="1040" width="104.48" height="30" as="geometry" />
@@ -2990,10 +3187,55 @@
           <mxGeometry x="255" y="1032" width="60" height="30" as="geometry" />
         </mxCell>
         <mxCell id="QVltk_sgnxMvN6n8ZYA8-6" value="Desc Desc Desc Desc&amp;nbsp;&lt;span style=&quot;text-align: center;&quot;&gt;Desc Desc Desc Desc&lt;/span&gt;&lt;span style=&quot;text-align: center;&quot;&gt;Desc Desc Desc&amp;nbsp;&lt;/span&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="124.02" y="1068" width="179.98" height="30" as="geometry" />
+          <mxGeometry x="155.52" y="1070" width="154" height="28" as="geometry" />
         </mxCell>
         <mxCell id="QVltk_sgnxMvN6n8ZYA8-7" value="Running" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
           <mxGeometry x="255" y="1050" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-1" value="Text" style="text;strokeColor=none;align=center;fillColor=none;html=1;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="-60" y="1140" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-2" value="" style="html=1;verticalLabelPosition=bottom;align=center;labelBackgroundColor=#ffffff;verticalAlign=top;strokeWidth=2;strokeColor=#0080F0;shadow=0;dashed=0;shape=mxgraph.ios7.icons.add;" vertex="1" parent="1">
+          <mxGeometry x="280" y="990" width="30" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-3" value="32 个App" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="106.52" y="990" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-4" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="480" y="960" width="200" height="310" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-6" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+          <mxGeometry x="490" y="967.34" width="30" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-7" value="&lt;b&gt;App1:Auto Find your photo&lt;/b&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="527.76" y="967.34" width="132.24" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-8" value="&lt;div&gt;&lt;br&gt;&lt;/div&gt;v1.0.1&amp;nbsp; 开发者: buckyos&lt;div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="490" y="1002" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-10" value="" style="endArrow=none;html=1;rounded=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" target="FDIrzqBTrmD8sZJ5X2gN-4">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="480" y="1038" as="sourcePoint" />
+            <mxPoint x="530" y="990" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-12" value="您确认要安装该应用么？它将申请下面权限" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="486" y="1048" width="190" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-13" value="- 需要永久存储空间来保存App 数据" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="484" y="1128" width="194" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-14" value="- 安装App服务,可通过浏览器访问" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="486" y="1098" width="194" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-15" value="安装" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="590" y="1230" width="80" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-16" value="拒绝" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="1230" width="80" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="FDIrzqBTrmD8sZJ5X2gN-17" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shape=mxgraph.basic.tick;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="660" y="1010" width="10" height="10" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
@@ -3037,6 +3279,26 @@
         </mxCell>
         <mxCell id="03zJ0VBH6sSTOBOLyytK-11" value="更大，更便宜，隐私更好的永久网盘！" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="50" y="40" width="210" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="xtkZdZ5BZFLxc0HQEeOa" name="Client App Functions">
+    <mxGraphModel dx="947" dy="401" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="LjJz_N775NvG3I0WK7fB-1" value="Backup Client" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="60" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="LjJz_N775NvG3I0WK7fB-2" value="通过配置，尽量自动的把关键数据备份到backup server上。&lt;div&gt;backup server中优先级最高的是当前device所在的zone。&lt;/div&gt;&lt;div&gt;备份方法尽量用SourceDir-&amp;gt;TargetDir的协议，但zone内的backup server的实现可以先简单一点&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="130" width="220" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="LjJz_N775NvG3I0WK7fB-3" value="本机智能网关&lt;div&gt;（优化网络访问）&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="470" y="60" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="LjJz_N775NvG3I0WK7fB-4" value="启动其他app client" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="320" width="120" height="60" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

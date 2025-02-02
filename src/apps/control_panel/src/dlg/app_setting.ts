@@ -78,6 +78,22 @@ export class AppSettingDialog extends LitElement {
     dialog?.show();
   }
 
+  private async handleInstallConfigApp() {
+    const dialog = this.shadowRoot?.querySelector('#config-app-dialog') as any;
+    const config_content = dialog?.querySelector('config-app-content') as any;
+    const app_config = config_content.getAppConfig();
+    dialog?.hide();
+    if (app_config != null) {
+      await install_app_by_config(app_config);
+      alert('发送安装请求成功,系统将很快自动完成所有配置工作');
+    }
+  }
+
+  private closeConfigAppDialog() {
+    const dialog = this.shadowRoot?.querySelector('#config-app-dialog') as any;
+    dialog?.hide();
+  }
+
   private async closeAddAppDialog() {
     const dialog = this.shadowRoot?.querySelector('#add-app-dialog') as any;
     dialog?.hide();
@@ -89,14 +105,19 @@ export class AppSettingDialog extends LitElement {
     console.log('New app config:', input_app_doc);
     let app_doc: AppDoc | null = null;
     if(input_app_doc.startsWith("http")) {
-      app_doc = read_app_doc_from_url(input_app_doc);
-      if(app_doc != null) {
-        app_doc = JSON.parse(app_doc) as AppDoc;
+      app_doc = await read_app_doc_from_url(input_app_doc);
+      if (app_doc == null) {
+        alert("读取应用配置失败");
+        return;
       }
     
     } else {
-      //app_doc = JSON.parse(input_app_doc);
-      app_doc =  {};
+      try {
+        app_doc = JSON.parse(input_app_doc) as AppDoc;
+      } catch (error) {
+        alert("解析应用配置失败");
+        return;
+      }
     }
 
     if (app_doc != null) {
@@ -105,31 +126,9 @@ export class AppSettingDialog extends LitElement {
       await new Promise(resolve => setTimeout(resolve, 1));
       //创建config_app dlg
       const config_dlg = this.shadowRoot?.querySelector('#config-app-dialog') as any;
+      const config_content = config_dlg?.querySelector('config-app-content') as any;
+      config_content.setAppDoc(app_doc);
       config_dlg?.show();
-
-      /*
-      // 创建app配置
-      const app_config: AppConfig = {
-        id: app_doc.pkg_id,
-        app_doc: app_doc,
-        app_index: 0,
-        enable: true,
-        instance: 1,
-        state: 'stopped',
-        data_mount_point: `/data/${app_doc.pkg_id}`,
-        tcp_ports: {}
-      };
-
-      // 为每个服务配置端口
-      for (const [service_name, pkg_desc] of Object.entries(app_doc.pkg_list)) {
-        if (pkg_desc.docker_image_name) {
-          app_config.tcp_ports[service_name] = 0; // 0表示自动分配端口
-        }
-      }
-
-      install_app_by_config(app_config);
-      alert('发送安装请求成功,系统将很快自动完成所有配置工作');
-      */
     }
   }
 
@@ -182,8 +181,8 @@ export class AppSettingDialog extends LitElement {
           <config-app-content></config-app-content>
         </div>
         <div slot="footer">
-          <sl-button variant="neutral" @click=${this.closeAddAppDialog}>取消</sl-button>
-          <sl-button variant="primary" @click=${this.handleAddApp}>确定</sl-button>
+          <sl-button variant="neutral" @click=${this.closeConfigAppDialog}>取消</sl-button>
+          <sl-button variant="primary" @click=${this.handleInstallConfigApp}>确定</sl-button>
         </div>
       </sl-dialog>
     `;
