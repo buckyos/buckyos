@@ -11,6 +11,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use kRPC::kRPC;
 use ndn_lib::*;
+use package_installer::*;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -421,6 +422,28 @@ pub async fn publish_index(
         )
         .await
         .map_err(|e| format!("Failed to publish index, err:{:?}", e))?;
+
+    Ok(())
+}
+
+pub async fn install_pkg(
+    pkg_name: &str,
+    version: &str,
+    dest_dir: &str,
+    url: &str,
+) -> Result<(), String> {
+    println!(
+        "install package: {}, version: {}, dest_dir: {}, url: {}",
+        pkg_name, version, dest_dir, url
+    );
+    let pkg_id = format!("{}#{}", pkg_name, version);
+    let callback = Some(Box::new(|result: InstallResult| {
+        println!("Install result: {:?}", result);
+    }) as Box<dyn FnOnce(InstallResult) + Send>);
+
+    Installer::install(&pkg_id, &PathBuf::from(dest_dir), url, None, callback)
+        .await
+        .map_err(|e| format!("Failed to call install package, err:{:?}", e))?;
 
     Ok(())
 }

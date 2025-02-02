@@ -49,6 +49,8 @@ pub struct MediaInfo {
 struct PackageMetaInfo {
     deps: HashMap<String, String>,
     sha256: String,
+    author_did: String,
+    author_name: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -88,11 +90,53 @@ impl PackageEnv {
     }
 
     pub fn get_meta_dir(&self) -> PathBuf {
-        self.work_dir.join("meta")
+        let meta_dir = self.work_dir.join("meta");
+        if !meta_dir.exists() {
+            fs::create_dir(&meta_dir).unwrap();
+        }
+        meta_dir
     }
 
     pub fn get_install_dir(&self) -> PathBuf {
         self.work_dir.clone()
+    }
+
+    pub fn get_cache_dir(&self) -> PathBuf {
+        let cache_dir = self.work_dir.join("cache");
+        if !cache_dir.exists() {
+            fs::create_dir(&cache_dir).unwrap();
+        }
+        cache_dir
+    }
+
+    pub fn write_meta_file(
+        &self,
+        pkg_id: &PackageId,
+        deps: &HashMap<String, String>,
+        author_did: &str,
+        author_name: &str,
+    ) -> PkgResult<()> {
+        let meta_dir = self.get_meta_dir();
+        let meta_file_name = format!(
+            "{}#{}#{}",
+            pkg_id.name,
+            pkg_id.version.as_ref().unwrap(),
+            pkg_id.sha256.as_ref().unwrap().replace(":", "-")
+        );
+        let meta_file = meta_dir.join(meta_file_name);
+
+        let meta_info = PackageMetaInfo {
+            deps: deps.clone(),
+            sha256: pkg_id.sha256.as_ref().unwrap().to_string(),
+            author_did: author_did.to_string(),
+            author_name: author_name.to_string(),
+        };
+
+        let meta_content = serde_json::to_string(&meta_info)?;
+        let mut file = fs::File::create(meta_file)?;
+        file.write_all(meta_content.as_bytes())?;
+
+        Ok(())
     }
 
     pub fn get_exact_pkg_id(&self, pkg_id_str: &str) -> PkgResult<Option<PackageId>> {
@@ -120,11 +164,8 @@ impl PackageEnv {
             let file_name = meta_file.file_name().unwrap().to_string_lossy();
             //第一部分是name，中间的是version,最后一部分是sha256，要考虑version中有#的情况
             let file_name_parts: Vec<&str> = file_name.split('#').collect();
-            if file_name_parts.len() < 3 {
-                return Err(PkgError::ParseError(
-                    meta_file.to_string_lossy().to_string(),
-                    "Invalid meta file name".to_string(),
-                ));
+            if file_name_parts.len() != 3 {
+                continue;
             }
             let file_name_len = file_name_parts.len();
             let name = file_name_parts[0].to_string();
@@ -201,14 +242,11 @@ impl PackageEnv {
         let meta_file = self.get_meta_dir().join(meta_file_name);
 
         let meta_content = fs::read_to_string(meta_file)?;
-        let meta_json: JsonValue = serde_json::from_str(&meta_content)?;
+        let meta_json: PackageMetaInfo = serde_json::from_str(&meta_content)?;
 
-        if let Some(sub_deps) = meta_json["deps"].as_object() {
-            for (sub_dep_name, sub_dep_version) in sub_deps {
-                info!("find dep: {} => {}", sub_dep_name, sub_dep_version);
-                let sub_dep_str = format!("{}#{}", sub_dep_name, sub_dep_version);
-                self.get_deps_impl(&sub_dep_str, deps, visited)?;
-            }
+        for (dep_name, dep_version) in meta_json.deps.iter() {
+            let dep_id_str = format!("{}#{}", dep_name, dep_version);
+            self.get_deps_impl(&dep_id_str, deps, visited)?;
         }
 
         Ok(())
@@ -340,18 +378,21 @@ impl PackageEnv {
         ))
     }
 
-    pub fn is_pkg_ready(&self, pkg_id_str: &str) -> PkgResult<bool> {
+    pub fn is_pkg_ready(&self, pkg_id_str: &str) -> PkgResult<()> {
         //获取pkg的依赖，依次检查依赖是否已经安装
         let deps = self.get_deps(pkg_id_str)?;
         for dep in deps {
             let target_pkg = format!("{}#{}", dep.name, dep.version.as_ref().unwrap());
             let target_path = self.get_install_dir().join(target_pkg);
             if !target_path.exists() {
-                return Ok(false);
+                return Err(PkgError::LoadError(
+                    pkg_id_str.to_owned(),
+                    format!("Dependency not found: {}", target_path.display()),
+                ));
             }
         }
 
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -394,8 +435,8 @@ mod tests {
         assert_eq!(deps[0].name, "a");
         assert_eq!(deps[0].version, Some("0.1.0".to_string()));
 
-        let is_ready = env.is_pkg_ready("a#0.1.0").unwrap();
-        assert_eq!(is_ready, true);
+        let is_ready = env.is_pkg_ready("a#0.1.0");
+        assert_eq!(is_ready.is_ok(), true);
 
         let media_info = env.load_strictly("a#*").unwrap();
         assert_eq!(media_info.pkg_id.name, "a");

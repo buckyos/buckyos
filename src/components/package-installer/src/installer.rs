@@ -1,6 +1,7 @@
 use buckyos_kit::get_buckyos_system_etc_dir;
 use jsonwebtoken::EncodingKey;
 //use kRPC::kRPC;
+use flate2::read::GzDecoder;
 use log::*;
 use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig};
 use ndn_lib::*;
@@ -8,10 +9,15 @@ use package_lib::*;
 use repo_service::*;
 use serde::Deserialize;
 use serde_json::json;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::fs;
+use std::io;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tar::Archive;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -42,15 +48,22 @@ struct NodeIdentityConfig {
 impl Installer {
     //将pkg下载到对应的目录，接收一个回调函数，用来返回下载结果
     pub async fn install(
-        pkg_id: &str,
+        pkg_id_str: &str,
         target: &PathBuf,
-        callback: Option<Box<dyn FnOnce(Result<(), String>) + Send>>,
+        local_repo_url: &str,
+        named_mgr_id: Option<&str>,
+        callback: Option<Box<dyn FnOnce(InstallResult) + Send>>,
     ) -> Result<(), String> {
         let env = PackageEnv::new(target.clone());
-        if env.is_pkg_ready(pkg_id).map_err(|err| {
-            error!("check pkg ready failed! {:?}", err);
-            format!("check pkg ready failed! {:?}", err)
-        })? {
+        if env.is_pkg_ready(pkg_id_str).is_ok() {
+            info!("package {} is already installed", pkg_id_str);
+            if let Some(callback) = callback {
+                callback(InstallResult {
+                    pkg_id: pkg_id_str.to_string(),
+                    target: target.clone(),
+                    result: Ok(()),
+                });
+            }
             return Ok(());
         }
 
@@ -60,11 +73,11 @@ impl Installer {
             format!("generate rpc session token failed! {}", err)
         })?;
 
-        let pkg_id = PackageId::from_str(pkg_id).map_err(|err| {
+        let pkg_id = PackageId::from_str(pkg_id_str).map_err(|err| {
             error!("parse pkg id failed! {}", err);
             format!("parse pkg id failed! {}", err)
         })?;
-        let client = kRPC::kRPC::new("http://127.0.0.1:4000/kapi/repo", Some(session_token));
+        let client = kRPC::kRPC::new(local_repo_url, Some(session_token));
         let version = match pkg_id.sha256 {
             Some(sha256) => sha256,
             None => match pkg_id.version {
@@ -86,16 +99,17 @@ impl Installer {
                 format!("call install_pkg failed! {}", err)
             })?;
 
-        let install_task_result: InstallRequestResult = serde_json::from_value(result).map_err(|e| {
-            error!(
-                "Failed to deserialize install request result from json_value, error:{:?}",
-                e
-            );
-            format!(
-                "Failed to deserialize install request result from json_value, error:{:?}",
-                e
-            )
-        })?;
+        let install_task_result: InstallRequestResult =
+            serde_json::from_value(result).map_err(|e| {
+                error!(
+                    "Failed to deserialize install request result from json_value, error:{:?}",
+                    e
+                );
+                format!(
+                    "Failed to deserialize install request result from json_value, error:{:?}",
+                    e
+                )
+            })?;
 
         let task_id = install_task_result.task_id;
 
@@ -134,30 +148,34 @@ impl Installer {
                     ..
                 } => match status {
                     TaskStatus::Finished => {
-                        info!("task {} finished, package_id:{:?}, deps:{:?}", id, package_id, deps);
-                        for meta in deps {
-                            // let chunk_id = meta.chunk_id;
-                            // let dest_file =
-                            //     target.join(format!("{}#{}", meta.pkg_name, meta.version));
-                            // match Self::chunk_to_local_file(&chunk_id, None, &local_file).await {
-                            //     Ok(_) => {
-                            //         info!(
-                            //             "chunk {} to local file {} success",
-                            //             chunk_id,
-                            //             local_file.display()
-                            //         );
-                            //     }
-                            //     Err(e) => {
-                            //         error!(
-                            //             "chunk {} to local file {} failed! {}",
-                            //             chunk_id,
-                            //             local_file.display(),
-                            //             e
-                            //         );
-                            //         return Err(e);
-                            //     }
-                            // }
-                            //TODO: install all deps
+                        info!(
+                            "task {} finished, package_id:{:?}, deps:{:?}",
+                            id, package_id, deps
+                        );
+                        match Self::install_pkgs_from_repo(&package_id, &deps, &env, named_mgr_id)
+                            .await
+                        {
+                            Ok(_) => {
+                                info!("install package {:?} success", package_id);
+                            }
+                            Err(e) => {
+                                error!("install package {:?} failed! {}", package_id, e);
+                                if let Some(callback) = callback {
+                                    callback(InstallResult {
+                                        pkg_id: pkg_id_str.to_string(),
+                                        target: target.clone(),
+                                        result: Err(e.clone()),
+                                    });
+                                }
+                                return Err(e);
+                            }
+                        }
+                        if let Some(callback) = callback {
+                            callback(InstallResult {
+                                pkg_id: pkg_id_str.to_string(),
+                                target: target.clone(),
+                                result: Ok(()),
+                            });
                         }
                         break;
                     }
@@ -165,7 +183,11 @@ impl Installer {
                         let err_msg = format!("task {} failed! {}", id, reason);
                         error!("{}", err_msg);
                         if let Some(callback) = callback {
-                            callback(Err(err_msg.clone()));
+                            callback(InstallResult {
+                                pkg_id: pkg_id_str.to_string(),
+                                target: target.clone(),
+                                result: Err(err_msg.clone()),
+                            });
                         }
                         return Err(err_msg);
                     }
@@ -178,7 +200,11 @@ impl Installer {
                     warn!("{}", err_msg);
                     //调用回调函数
                     if let Some(callback) = callback {
-                        callback(Err(err_msg.clone()));
+                        callback(InstallResult {
+                            pkg_id: pkg_id_str.to_string(),
+                            target: target.clone(),
+                            result: Err(err_msg.clone()),
+                        });
                     }
                     return Err(err_msg);
                 }
@@ -190,11 +216,107 @@ impl Installer {
         Ok(())
     }
 
-    async fn install_pkg_from_repo(
+    async fn install_pkgs_from_repo(
         package_id: &PackageId,
-        deps: &Vec<PackageMeta>,
-        target: &PathBuf,
+        pkgs: &Vec<PackageMeta>,
+        env: &PackageEnv,
+        named_mgr_id: Option<&str>,
     ) -> Result<(), String> {
+        //将pkgs依次下载到env的cache目录，下载时用一个临时文件名，下载完成后重命名为chunk_id，以防止下载失败时不完整文件
+        //下载完成后，解压到env的install目录，并将pkg的meta信息写入env的meta目录
+        for pkg in pkgs {
+            let chunk_id = &pkg.chunk_id;
+            let fix_chunk_id = chunk_id.replace(":", "-");
+            let dest_file_tmp = env.get_cache_dir().join(format!("{}.tmp", fix_chunk_id));
+            match Self::chunk_to_local_file(&chunk_id, named_mgr_id, &dest_file_tmp).await {
+                Ok(_) => {
+                    info!(
+                        "chunk {} to local file {} success",
+                        chunk_id,
+                        dest_file_tmp.display()
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "chunk {} to local file {} failed! {}",
+                        chunk_id,
+                        dest_file_tmp.display(),
+                        e
+                    );
+                    return Err(e.to_string());
+                }
+            }
+
+            //重命名文件
+            let dest_file = env.get_cache_dir().join(fix_chunk_id);
+            tokio::fs::rename(dest_file_tmp.clone(), dest_file.clone())
+                .await
+                .map_err(|e| {
+                    let err_msg = format!(
+                        "rename file {} to {} failed! {}",
+                        dest_file_tmp.display(),
+                        dest_file.display(),
+                        e
+                    );
+                    error!("{}", err_msg);
+                    err_msg
+                })?;
+
+            //解压文件
+            let dest_dir = env
+                .get_install_dir()
+                .join(format!("{}#{}", pkg.pkg_name, pkg.version));
+            match Self::unpack(&dest_file, &dest_dir) {
+                Ok(_) => {
+                    info!(
+                        "unpack {} to {} success",
+                        dest_file.display(),
+                        dest_dir.display()
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "unpack {} to {} failed! {}",
+                        dest_file.display(),
+                        dest_dir.display(),
+                        e
+                    );
+                    return Err(e.to_string());
+                }
+            }
+
+            //将pkg的meta信息写入env的meta目录
+            let full_pkg_id = format!("{}#{}#{}", pkg.pkg_name, pkg.version, pkg.chunk_id);
+            let full_pkg_id = PackageId::from_str(&full_pkg_id).map_err(|e| {
+                error!("parse pkg id failed! {}", e);
+                format!("parse pkg id failed! {}", e)
+            })?;
+            //转换dependencies(Value)为HashMap<String, String>
+            let mut dependencies = HashMap::new();
+            match &pkg.dependencies {
+                Value::Object(map) => {
+                    for (k, v) in map.iter() {
+                        if let Value::String(v) = v {
+                            dependencies.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+                _ => {
+                    return Err("dependencies is not a object".to_string());
+                }
+            }
+            env.write_meta_file(
+                &full_pkg_id,
+                &dependencies,
+                &pkg.author_did,
+                &pkg.author_name,
+            )
+            .map_err(|e| {
+                error!("write meta file failed! {}", e);
+                format!("write meta file failed! {}", e)
+            })?;
+        }
+
         Ok(())
     }
 
@@ -203,6 +325,7 @@ impl Installer {
         chunk_mgr_id: Option<&str>,
         local_file: &PathBuf,
     ) -> RepoResult<()> {
+        // TODO 下载完毕后检查chunk_id是否正确
         let named_mgr =
             NamedDataMgr::get_named_data_mgr_by_id(None)
                 .await
@@ -238,6 +361,18 @@ impl Installer {
         }
         file.flush().await?;
 
+        Ok(())
+    }
+
+    fn unpack(tar_gz_path: &PathBuf, target_dir: &PathBuf) -> io::Result<()> {
+        if target_dir.exists() {
+            fs::remove_dir_all(target_dir)?;
+        }
+        fs::create_dir_all(target_dir)?;
+        let tar_gz = std::fs::File::open(tar_gz_path)?;
+        let tar = GzDecoder::new(tar_gz);
+        let mut archive = Archive::new(tar);
+        archive.unpack(target_dir)?;
         Ok(())
     }
 

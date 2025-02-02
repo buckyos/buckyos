@@ -16,3 +16,5 @@ log = "*"
 tokio = { version = "*", features = ["full"] }
 jsonwebtoken = "9.3.0"
 toml = "0.5"
+tar = "*"
+flate2 = "*"

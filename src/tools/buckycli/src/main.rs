@@ -63,6 +63,8 @@ fn load_device_private_key(node_id: &str) -> Result<EncodingKey, String> {
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), String> {
+    env_logger::init();
+
     let matches = Command::new("buckyos control tool")
         .author("buckyos")
         .about("control tools")
@@ -91,7 +93,7 @@ async fn main() -> std::result::Result<(), String> {
                         .help("pem file path")
                         .required(true),
                 )
-                .arg(Arg::new("url").long("url").help("pub url").required(true)),
+                .arg(Arg::new("url").long("url").help("repo url").required(true)),
         )
         .subcommand(
             Command::new("pub_index")
@@ -108,7 +110,7 @@ async fn main() -> std::result::Result<(), String> {
                         .help("index version")
                         .required(true),
                 )
-                .arg(Arg::new("url").long("url").help("pub url").required(true)),
+                .arg(Arg::new("url").long("url").help("repo url").required(true)),
         )
         .subcommand(
             Command::new("pack_pkg").about("pack package").arg(
@@ -117,6 +119,34 @@ async fn main() -> std::result::Result<(), String> {
                     .help("package path")
                     .required(true),
             ),
+        )
+        .subcommand(
+            Command::new("install_pkg")
+                .about("install pkg")
+                .arg(
+                    Arg::new("pkg_name")
+                        .long("pkg_name")
+                        .help("pkg name")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("version")
+                        .long("version")
+                        .help("index version")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("dest_dir")
+                        .long("dest_dir")
+                        .help("dest dir")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("url")
+                        .long("url")
+                        .help("local repo url")
+                        .required(true),
+                ),
         )
         // .arg(
         //     Arg::new("snapshot")
@@ -279,6 +309,21 @@ async fn main() -> std::result::Result<(), String> {
                 Err(e) => {
                     println!("pack package failed! {}", e);
                     return Err("pack package failed!".to_string());
+                }
+            }
+        }
+        Some(("install_pkg", matches)) => {
+            let pkg_name = matches.get_one::<String>("pkg_name").unwrap();
+            let version = matches.get_one::<String>("version").unwrap();
+            let dest_dir = matches.get_one::<String>("dest_dir").unwrap();
+            let url = matches.get_one::<String>("url").unwrap();
+            match install_pkg(pkg_name, version, dest_dir, url).await {
+                Ok(_) => {
+                    println!("install package success!");
+                }
+                Err(e) => {
+                    println!("install package failed! {}", e);
+                    return Err("install package failed!".to_string());
                 }
             }
         }
