@@ -332,7 +332,6 @@ impl PackageEnv {
                     }
                 }
             }
-        } else {
         }
 
         Err(PkgError::LoadError(
