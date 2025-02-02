@@ -299,12 +299,15 @@ impl PackageEnv {
 
             for file in valid_file {
                 let file_name = file.file_name().unwrap().to_string_lossy();
-                let file_name_parts: Vec<&str> = file_name.split('#').collect();
-                if file_name_parts.len() < 2 {
+                let mut file_name_parts: Vec<&str> = file_name.split('#').collect();
+                if file_name_parts.len() < 1 {
                     return Err(PkgError::ParseError(
                         file.to_string_lossy().to_string(),
                         "Invalid file name".to_string(),
                     ));
+                }
+                if file_name_parts.len() == 1 {
+                    file_name_parts.append(&mut vec!["*"]);
                 }
                 let file_name_len = file_name_parts.len();
                 let name = file_name_parts[0].to_string();
@@ -329,6 +332,7 @@ impl PackageEnv {
                     }
                 }
             }
+        } else {
         }
 
         Err(PkgError::LoadError(
@@ -447,5 +451,26 @@ mod tests {
 
         let ret = env.load("a#>=0.1.0");
         assert_eq!(ret.is_ok(), true);
+    }
+
+    #[test]
+    fn test_try_load_without_version() {
+        //创建一个临时目录
+        let tmp_dir = tempdir().unwrap();
+        let env = PackageEnv::new(tmp_dir.path().to_path_buf());
+
+        //创建一个a#0.1.0的文件夹
+        let pkg_dir = env.get_install_dir().join("a");
+        fs::create_dir(&pkg_dir).unwrap();
+
+        let media_info = env.load("a#*").unwrap();
+        assert_eq!(media_info.pkg_id.name, "a");
+        assert_eq!(media_info.pkg_id.version, Some("*".to_string()));
+        assert_eq!(media_info.full_path, env.get_install_dir().join("a"));
+
+        let media_info = env.load("a").unwrap();
+        assert_eq!(media_info.pkg_id.name, "a");
+        assert_eq!(media_info.pkg_id.version, Some("*".to_string()));
+        assert_eq!(media_info.full_path, env.get_install_dir().join("a"));
     }
 }
