@@ -146,7 +146,7 @@ impl SourceManager {
             let url = format!("http://{}", source.name);
             Downloader::pull_remote_chunk(&url, &source.name, &source.sign, &source.chunk_id)
                 .await?;
-            chunk_to_local_file(&source.chunk_id, REPO_CHUNK_MGR_ID, &local_file).await?;
+            Downloader::chunk_to_local_file(&source.chunk_id, None, &local_file).await?;
         }
         Ok(())
     }
@@ -173,8 +173,8 @@ impl SourceManager {
 
     async fn get_remote_source_meta(source_config: &SourceNodeConfig) -> RepoResult<SourceMeta> {
         //TODO 拼接meta url，要修改成正式url
-        let url = format!("http://{}/kapi/repo", source_config.name);
-        //let url = format!("http://{}/kapi/repo", "127.0.0.1:4000");
+        //let url = format!("http://{}/kapi/repo", source_config.name);
+        let url = format!("http://{}/kapi/repo", "127.0.0.1:4000");
         info!("get_remote_source_meta url: {}", url);
         let session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
             error!("repo service session token not found! err:{}", e);
@@ -530,7 +530,7 @@ impl SourceManager {
             version.clone()
         } else {
             if let Some(sha256) = &package_id.sha256 {
-                format!("sha256:{}", sha256)
+                sha256.clone()
             } else {
                 "*".to_string()
             }

@@ -19,7 +19,7 @@ use toml::*;
 use crate::downloader::{self, *};
 use crate::error::*;
 use crate::parser::*;
-use crate::version_util;
+use crate::version_util::*;
 
 #[derive(Debug, Clone)]
 pub struct PackageEnv {
@@ -143,7 +143,7 @@ impl PackageEnv {
                         break;
                     }
                 } else if let Some(pkg_version) = &pkg_id.version {
-                    if version_util::matches(pkg_version, &version)? {
+                    if VersionUtil::matches(pkg_version, &version)? {
                         found_pkg = Some(PackageId {
                             name,
                             version: Some(version.to_string()),
@@ -313,7 +313,7 @@ impl PackageEnv {
                 let name = file_name_parts[0].to_string();
                 let version = file_name_parts[1..file_name_len].join("#");
                 if name == pkg_id.name {
-                    if version_util::matches(&pkg_version, &version)? {
+                    if VersionUtil::matches(&pkg_version, &version)? {
                         let media_type = if file.is_dir() {
                             MediaType::Dir
                         } else {

@@ -86,7 +86,7 @@ impl Installer {
                 format!("call install_pkg failed! {}", err)
             })?;
 
-        let install_result: InstallRequestResult = serde_json::from_value(result).map_err(|e| {
+        let install_task_result: InstallRequestResult = serde_json::from_value(result).map_err(|e| {
             error!(
                 "Failed to deserialize install request result from json_value, error:{:?}",
                 e
@@ -97,7 +97,7 @@ impl Installer {
             )
         })?;
 
-        let task_id = install_result.task_id;
+        let task_id = install_task_result.task_id;
 
         //轮询task_id，直到下载完成，间隔2s
         loop {
@@ -134,7 +134,7 @@ impl Installer {
                     ..
                 } => match status {
                     TaskStatus::Finished => {
-                        info!("task {} finished", id);
+                        info!("task {} finished, package_id:{:?}, deps:{:?}", id, package_id, deps);
                         for meta in deps {
                             // let chunk_id = meta.chunk_id;
                             // let dest_file =
@@ -164,6 +164,9 @@ impl Installer {
                     TaskStatus::Error(reason) => {
                         let err_msg = format!("task {} failed! {}", id, reason);
                         error!("{}", err_msg);
+                        if let Some(callback) = callback {
+                            callback(Err(err_msg.clone()));
+                        }
                         return Err(err_msg);
                     }
                     v => {
@@ -173,6 +176,10 @@ impl Installer {
                 _ => {
                     let err_msg = format!("task {} is not an InstallTask", task_id);
                     warn!("{}", err_msg);
+                    //调用回调函数
+                    if let Some(callback) = callback {
+                        callback(Err(err_msg.clone()));
+                    }
                     return Err(err_msg);
                 }
             }
@@ -180,6 +187,14 @@ impl Installer {
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
 
+        Ok(())
+    }
+
+    async fn install_pkg_from_repo(
+        package_id: &PackageId,
+        deps: &Vec<PackageMeta>,
+        target: &PathBuf,
+    ) -> Result<(), String> {
         Ok(())
     }
 
@@ -319,5 +334,29 @@ impl Installer {
             .map_err(|err| format!("parse device private key failed! {}", err))?;
 
         Ok(private_key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::remove_file;
+
+    #[tokio::test]
+    async fn test_install() {
+        let pkg_id = "buckyos-kit";
+        let target = PathBuf::from("/tmp/buckyos");
+        let result = Installer::install(pkg_id, &target, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_chunk_to_local_file() {
+        let chunk_id = "buckyos-kit";
+        let chunk_mgr_id = None;
+        let local_file = PathBuf::from("/tmp/buckyos/buckyos-kit");
+        let result = Installer::chunk_to_local_file(chunk_id, chunk_mgr_id, &local_file).await;
+        assert!(result.is_ok());
+        remove_file(local_file).unwrap();
     }
 }

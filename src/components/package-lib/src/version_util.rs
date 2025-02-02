@@ -5,11 +5,11 @@ use semver::{Version, VersionReq};
 use std::cmp::Ordering;
 use version_compare::{compare as version_compare, Cmp};
 
-pub mod version_util {
-    use super::*;
+pub struct VersionUtil {}
 
+impl VersionUtil {
     pub fn compare(a: &str, b: &str) -> PkgResult<Ordering> {
-        cmp_to_ordering(
+        VersionUtil::cmp_to_ordering(
             version_compare(a, b).map_err(|_| {
                 PkgError::VersionError(format!("Version compare error: {} {}", a, b))
             })?,
@@ -88,7 +88,7 @@ pub mod version_util {
 
     pub fn find_matched_version(version_condition: &str, versions: &[String]) -> PkgResult<String> {
         for version in versions {
-            if matches(version_condition, version)? {
+            if VersionUtil::matches(version_condition, version)? {
                 return Ok(version.to_string());
             }
         }
@@ -99,8 +99,6 @@ pub mod version_util {
     }
 }
 
-pub use version_util::*;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,32 +107,32 @@ mod tests {
     #[test]
     fn test_compare() {
         assert_eq!(
-            version_util::compare("1.0.0", "1.0.1").unwrap(),
+            VersionUtil::compare("1.0.0", "1.0.1").unwrap(),
             Ordering::Less
         );
         assert_eq!(
-            version_util::compare("1.0.1", "1.0.0").unwrap(),
+            VersionUtil::compare("1.0.1", "1.0.0").unwrap(),
             Ordering::Greater
         );
         assert_eq!(
-            version_util::compare("1.0.0", "1.0.0").unwrap(),
+            VersionUtil::compare("1.0.0", "1.0.0").unwrap(),
             Ordering::Equal
         );
     }
 
     #[test]
     fn test_matches() {
-        assert!(version_util::matches(">1.0.0", "1.0.1").unwrap());
-        assert!(!version_util::matches(">1.0.1", "1.0.0").unwrap());
-        assert!(version_util::matches(">=1.0.0", "1.0.0").unwrap());
-        assert!(version_util::matches("<1.0.1", "1.0.0").unwrap());
-        assert!(version_util::matches("<=1.0.0", "1.0.0").unwrap());
-        assert!(version_util::matches(">1.0.0<2.0.0", "1.5.0").unwrap());
-        assert!(!version_util::matches(">1.0.0<2.0.0", "2.5.0").unwrap());
-        assert!(version_util::matches(">=1.0.0<=2.0.0", "2.0.0").unwrap());
-        assert!(version_util::matches("*", "2.0.0").unwrap());
-        assert!(version_util::matches("1.0.1", "1.0.1").unwrap());
-        assert!(!version_util::matches("1.0.1", "1.0.2").unwrap());
+        assert!(VersionUtil::matches(">1.0.0", "1.0.1").unwrap());
+        assert!(!VersionUtil::matches(">1.0.1", "1.0.0").unwrap());
+        assert!(VersionUtil::matches(">=1.0.0", "1.0.0").unwrap());
+        assert!(VersionUtil::matches("<1.0.1", "1.0.0").unwrap());
+        assert!(VersionUtil::matches("<=1.0.0", "1.0.0").unwrap());
+        assert!(VersionUtil::matches(">1.0.0<2.0.0", "1.5.0").unwrap());
+        assert!(!VersionUtil::matches(">1.0.0<2.0.0", "2.5.0").unwrap());
+        assert!(VersionUtil::matches(">=1.0.0<=2.0.0", "2.0.0").unwrap());
+        assert!(VersionUtil::matches("*", "2.0.0").unwrap());
+        assert!(VersionUtil::matches("1.0.1", "1.0.1").unwrap());
+        assert!(!VersionUtil::matches("1.0.1", "1.0.2").unwrap());
     }
 
     #[test]
@@ -147,39 +145,39 @@ mod tests {
         ];
 
         assert_eq!(
-            version_util::find_matched_version("1.0.0", &versions).unwrap(),
+            VersionUtil::find_matched_version("1.0.0", &versions).unwrap(),
             "1.0.0"
         );
 
         assert_eq!(
-            version_util::find_matched_version(">1.0.0<1.1.0", &versions).unwrap(),
+            VersionUtil::find_matched_version(">1.0.0<1.1.0", &versions).unwrap(),
             "1.0.1"
         );
         assert_eq!(
-            version_util::find_matched_version(">=1.0.0<1.0.1", &versions).unwrap(),
+            VersionUtil::find_matched_version(">=1.0.0<1.0.1", &versions).unwrap(),
             "1.0.0"
         );
         assert_eq!(
-            version_util::find_matched_version(">=1.0.0<1.0.1", &versions).unwrap(),
+            VersionUtil::find_matched_version(">=1.0.0<1.0.1", &versions).unwrap(),
             "1.0.0"
         );
         assert_eq!(
-            version_util::find_matched_version(">=1.0.0<1.0.1", &versions).unwrap(),
+            VersionUtil::find_matched_version(">=1.0.0<1.0.1", &versions).unwrap(),
             "1.0.0"
         );
         assert_eq!(
-            version_util::find_matched_version(">1.0.0<=1.0.1", &versions).unwrap(),
+            VersionUtil::find_matched_version(">1.0.0<=1.0.1", &versions).unwrap(),
             "1.0.1"
         );
         assert_eq!(
-            version_util::find_matched_version("<2.0.0", &versions).unwrap(),
+            VersionUtil::find_matched_version("<2.0.0", &versions).unwrap(),
             "1.1.0"
         );
         assert_eq!(
-            version_util::find_matched_version("<=1.1.0", &versions).unwrap(),
+            VersionUtil::find_matched_version("<=1.1.0", &versions).unwrap(),
             "1.1.0"
         );
 
-        assert!(version_util::find_matched_version(">2.0.0", &versions).is_err());
+        assert!(VersionUtil::find_matched_version(">2.0.0", &versions).is_err());
     }
 }
