@@ -358,11 +358,7 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
             }
             Err(_) => {
                 // 生成随机邮箱并创建新账号
-                let random_str: String = rand::thread_rng()
-                    .sample_iter(&rand::distributions::Alphanumeric)
-                    .take(10)
-                    .map(char::from)
-                    .collect();
+                let random_str = rand::thread_rng().gen_range(0..1000000);
                 let email = format!("{}@buckyos.com", random_str);
                 info!("生成随机邮箱地址: {}", email);
                 

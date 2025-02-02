@@ -18,6 +18,6 @@ simplelog = "*"
 env_logger = "*"
 ed25519-dalek = { version = "*", features = ["rand_core"] } 
 pkcs8 = "*"
-rand = "*"
+#rand = ""
 base64 = "*"
 package-lib = { path = "../package-lib" }
