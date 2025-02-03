@@ -11,7 +11,7 @@ import '@material/web/radio/radio.js';
 import '@material/web/textfield/outlined-text-field.js';
 import '@material/web/textfield/filled-text-field.js';
 import { MdOutlinedButton } from '@material/web/button/outlined-button.js';
-import buckyos from 'buckyos';
+import {buckyos} from 'buckyos';
 
 
 async function login() : Promise<string> {

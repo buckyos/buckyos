@@ -15,8 +15,8 @@ importers:
         specifier: ^2.4.3
         version: 2.4.3
       buckyos:
-        specifier: file:../../kernel/buckyos_sdk/
-        version: file:../../kernel/buckyos_sdk
+        specifier: https://github.com/buckyos/buckyos-websdk.git
+        version: https://codeload.github.com/buckyos/buckyos-websdk/tar.gz/417b19462ebcb170daeca4b58b741d5d43f8b64e
       handlebars:
         specifier: ^4.7.8
         version: 4.7.8
@@ -567,8 +567,9 @@ packages:
     engines: {node: ^6 || ^7 || ^8 || ^9 || ^10 || ^11 || ^12 || >=13.7}
     hasBin: true
 
-  buckyos@file:../../kernel/buckyos_sdk:
-    resolution: {directory: ../../kernel/buckyos_sdk, type: directory}
+  buckyos@https://codeload.github.com/buckyos/buckyos-websdk/tar.gz/417b19462ebcb170daeca4b58b741d5d43f8b64e:
+    resolution: {tarball: https://codeload.github.com/buckyos/buckyos-websdk/tar.gz/417b19462ebcb170daeca4b58b741d5d43f8b64e}
+    version: 1.0.0
 
   buffer-from@1.1.2:
     resolution: {integrity: sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ==}
@@ -1825,7 +1826,7 @@ snapshots:
       node-releases: 2.0.18
       update-browserslist-db: 1.1.1(browserslist@4.24.2)
 
-  buckyos@file:../../kernel/buckyos_sdk:
+  buckyos@https://codeload.github.com/buckyos/buckyos-websdk/tar.gz/417b19462ebcb170daeca4b58b741d5d43f8b64e:
     dependencies:
       jssha: 3.3.1
       terser: 5.36.0

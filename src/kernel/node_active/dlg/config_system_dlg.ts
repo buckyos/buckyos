@@ -4,7 +4,7 @@ import { MdFilledButton } from '@material/web/button/filled-button.js';
 import {BuckyCheckBox} from '../components/checkbox/index';
 import { WizzardDlg } from '../components/wizzard-dlg/index';
 import { ActiveWizzardData} from '../active_lib';
-import buckyos from 'buckyos';
+import { buckyos } from 'buckyos';
 
 class ConfigSystemDlg extends HTMLElement {
     constructor() {

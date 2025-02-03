@@ -1,4 +1,4 @@
-import buckyos from 'buckyos';
+import {buckyos} from 'buckyos';
 
 export enum GatewayType {
     BuckyForward = "BuckyForward",

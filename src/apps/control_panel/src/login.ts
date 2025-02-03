@@ -39,16 +39,14 @@ async function doLogin(username:string, password:string,appId:string,source_url:
 
 //after dom loaded
 window.onload = async () => {
-    buckyos.add_web3_bridge("web3.buckyos.io");
-    let zone_host = buckyos.get_zone_host_name(window.location.host);
-    buckyos.init_buckyos(zone_host);
-    console.log(zone_host);
+
+    var url_appid:string|null = parsedUrl.searchParams.get('client_id');
+    console.log("url_appid: ", url_appid);
+    buckyos.init_buckyos(url_appid);
+    //console.log(zone_host);
 
     const source_url = document.referrer;
     const parsedUrl = new URL(window.location.href);
-    var url_appid:string|null = parsedUrl.searchParams.get('client_id');
-    console.log("url_appid: ", url_appid);
-
 
     if (url_appid == null) {
        alert("client_id(appid) is null");
@@ -72,13 +70,11 @@ window.onload = async () => {
             return;
         }
         login_button.disabled = true;
-        console.log("do login");
-        doLogin(username, password, url_appid, source_url).then((token) => {
-            console.log("login success,token: ", token);
-            alert("login success");
-            localStorage.setItem("bs-token", token);
-            localStorage.setItem("bs-username", username);
-            window.opener.postMessage({ token: token }, '*');
+        //console.log("do login");
+        
+        buckyos.doLogin(username, password).then((account_info) => {
+            let account_info_json = JSON.stringify(account_info);
+            window.opener.postMessage({ token: account_info_json }, '*');
             window.close();
         })
         .catch((error) => {
