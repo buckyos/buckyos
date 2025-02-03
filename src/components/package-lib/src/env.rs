@@ -116,6 +116,10 @@ impl PackageEnv {
         author_did: &str,
         author_name: &str,
     ) -> PkgResult<()> {
+        debug!(
+            "write_meta_file: {:?}, deps:{:?}, author_did:{}, author_name:{}",
+            pkg_id, deps, author_did, author_name
+        );
         let meta_dir = self.get_meta_dir();
         let meta_file_name = format!(
             "{}#{}#{}",
@@ -234,7 +238,7 @@ impl PackageEnv {
             "{}#{}#{}",
             pkg_id.name,
             pkg_id.version.as_ref().unwrap(),
-            pkg_id.sha256.as_ref().unwrap()
+            pkg_id.sha256.as_ref().unwrap().replace(":", "-")
         );
         visited.insert(meta_file_name.clone());
         deps.push(pkg_id.clone());
@@ -378,13 +382,23 @@ impl PackageEnv {
         ))
     }
 
-    pub fn is_pkg_ready(&self, pkg_id_str: &str) -> PkgResult<()> {
+    pub fn check_pkg_ready(&self, pkg_id_str: &str) -> PkgResult<Vec<PackageId>> {
         //获取pkg的依赖，依次检查依赖是否已经安装
-        let deps = self.get_deps(pkg_id_str)?;
-        for dep in deps {
+        let deps: Vec<PackageId> = match self.get_deps(pkg_id_str) {
+            Ok(deps) => deps,
+            Err(e) => {
+                info!("check package ready failed. error: {}", e);
+                return Err(e);
+            }
+        };
+        for dep in &deps {
             let target_pkg = format!("{}#{}", dep.name, dep.version.as_ref().unwrap());
             let target_path = self.get_install_dir().join(target_pkg);
             if !target_path.exists() {
+                info!(
+                    "Dependency not found: {}, pkg is not ready!",
+                    target_path.display()
+                );
                 return Err(PkgError::LoadError(
                     pkg_id_str.to_owned(),
                     format!("Dependency not found: {}", target_path.display()),
@@ -392,7 +406,9 @@ impl PackageEnv {
             }
         }
 
-        Ok(())
+        debug!("Package is ready: {}", pkg_id_str);
+
+        Ok(deps)
     }
 }
 
@@ -435,7 +451,7 @@ mod tests {
         assert_eq!(deps[0].name, "a");
         assert_eq!(deps[0].version, Some("0.1.0".to_string()));
 
-        let is_ready = env.is_pkg_ready("a#0.1.0");
+        let is_ready = env.check_pkg_ready("a#0.1.0");
         assert_eq!(is_ready.is_ok(), true);
 
         let media_info = env.load_strictly("a#*").unwrap();

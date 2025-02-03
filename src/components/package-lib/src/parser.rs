@@ -74,6 +74,17 @@ impl Parser {
                 }
 
                 version = Some(version_part);
+
+                if let Some(sha256_part) = parts.next() {
+                    if sha256_part.starts_with("sha256:") {
+                        sha256 = Some(sha256_part.to_string()); //Some(sha256_part[7..].to_string());
+                    } else {
+                        return Err(PkgError::ParseError(
+                            pkg_id.to_string(),
+                            "Invalid sha256".to_string(),
+                        ));
+                    }
+                }
             }
         } else {
             version = Some("*".to_string());

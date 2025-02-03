@@ -437,13 +437,12 @@ pub async fn install_pkg(
         pkg_name, version, dest_dir, url
     );
     let pkg_id = format!("{}#{}", pkg_name, version);
-    let callback = Some(Box::new(|result: InstallResult| {
-        println!("Install result: {:?}", result);
-    }) as Box<dyn FnOnce(InstallResult) + Send>);
 
-    Installer::install(&pkg_id, &PathBuf::from(dest_dir), url, None, callback)
+    let deps = Installer::install(&pkg_id, &PathBuf::from(dest_dir), url, None)
         .await
         .map_err(|e| format!("Failed to call install package, err:{:?}", e))?;
+
+    println!("install package success, deps: {:?}", deps);
 
     Ok(())
 }
