@@ -10,7 +10,6 @@ def build(dir):
 
 def build_web_apps():
     print(f'will build web apps')
-    build("kernel/buckyos_sdk")
     build("kernel/node_active")
     build("apps/control_panel/src")
     build("apps/sys_test")
