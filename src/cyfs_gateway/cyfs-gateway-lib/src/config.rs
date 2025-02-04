@@ -31,23 +31,79 @@ impl Default for NamedDataMgrRouteConfig {
 }
 
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct HostConfig {
     #[serde(default)]
     pub enable_cors: bool,
+    #[serde(default)]
+    pub redirect_to_https: bool, 
+    #[serde(default)]
+    pub tls: TlsConfig,
     pub routes: HashMap<String, RouteConfig>,
-    pub tls: Option<TlsConfig>,
 }
 
-impl Default for HostConfig {
-    fn default() -> Self {
-        HostConfig { enable_cors: false, routes: HashMap::new(), tls: None}
+
+#[derive(Debug, Clone)]
+pub enum RedirectType {
+    None,
+    Permanent,
+    Temporary,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(from = "String")]
+
+pub struct UpstreamRouteConfig {
+    pub target: String,
+    pub redirect: RedirectType,
+}
+
+impl From<String> for UpstreamRouteConfig {
+    fn from(s: String) -> Self {
+        Self::from_str(&s)
+    }
+}
+
+impl UpstreamRouteConfig {
+    pub fn from_str(s: &str) -> Self {
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        let target = parts[0].to_string();
+        let mut redirect = RedirectType::None;
+
+        if parts.len() > 1 && parts[1] == "redirect" {
+            if parts.len() > 2 {
+                redirect = match parts[2] {
+                    "permanent" => RedirectType::Permanent,
+                    "temporary" => RedirectType::Temporary,
+                    _ => RedirectType::None
+                };
+            } else {
+                redirect = RedirectType::Temporary;
+            }
+        }
+
+        Self {
+            target,
+            redirect
+        }
     }
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct ResponseRouteConfig {
+    pub status: Option<u16>,
+    pub headers: Option<HashMap<String, String>>,
+    pub body: Option<String>,
+}
+
+
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct RouteConfig {
-    pub upstream: Option<String>,
+    #[serde(default)]
+    pub enable_cors: bool, 
+    pub response: Option<ResponseRouteConfig>,
+    pub upstream: Option<UpstreamRouteConfig>,
     pub local_dir: Option<String>,
     pub inner_service: Option<String>,
     pub tunnel_selector: Option<String>,
@@ -57,16 +113,38 @@ pub struct RouteConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct TlsConfig {
-    pub cert_path: String,
-    pub key_path: String,
+    pub disable_tls: bool,
+    pub cert_path: Option<String>,
+    pub key_path: Option<String>,
+}
+
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            disable_tls: false,
+            cert_path: None,
+            key_path: None,
+        }
+    }
+}
+
+
+fn default_tls_port() -> u16 {
+    443
+}
+
+fn default_http_port() -> u16 {
+    80
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct WarpServerConfig {
+    #[serde(default = "default_tls_port")]
     pub tls_port:u16,
+    #[serde(default = "default_http_port")]
     pub http_port:u16,
     pub bind:Option<String>,
-    pub default_tls_host: Option<String>,
     pub hosts: HashMap<String, HostConfig>,
 }
 
@@ -87,7 +165,7 @@ pub enum DNSProviderType {
     SN,//query name info by sn server
 }
 
-#[derive(Deserialize,Clone)]
+#[derive(Deserialize,Clone,Debug)]
 pub struct DNSProviderConfig {
     #[serde(rename = "type")]
     pub provider_type: DNSProviderType,
@@ -95,7 +173,7 @@ pub struct DNSProviderConfig {
     pub config: serde_json::Value,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct DNSServerConfig {
     pub bind : Option<String>,
     pub port : u16,
@@ -108,7 +186,7 @@ pub struct DNSServerConfig {
     pub fallback : Vec<String>,//fallback dns servers
 }
 
-
+#[derive(Debug)]
 pub enum ServerConfig {
     Warp(WarpServerConfig),
     DNS(DNSServerConfig),
@@ -119,30 +197,43 @@ pub enum ServerConfig {
 pub enum DispatcherTarget {
     Forward(Url),
     Server(String),
+    Selector(String),
+    ProbeSelector(String,String), //probeid,selectorid
 }
 
 #[derive(Clone,Debug)]
 pub struct DispatcherConfig {
     pub incoming: Url,
-    pub target: DispatcherTarget,
-    pub enable_tunnels:Option<Vec<String>>,
+    pub target: DispatcherTarget
 }
 
 
 impl DispatcherConfig {
-    pub fn new_forward(incoming: Url, target: Url, enable_tunnels:Option<Vec<String>>) -> Self {
+    pub fn new_forward(incoming: Url, target: Url) -> Self {
         DispatcherConfig {
             incoming,
-            target : DispatcherTarget::Forward(target),
-            enable_tunnels,
+            target : DispatcherTarget::Forward(target)
         }
     }
 
-    pub fn new_server(incoming: Url, server_id: String, enable_tunnels:Option<Vec<String>>) -> Self {
+    pub fn new_server(incoming: Url, server_id: String) -> Self {
         DispatcherConfig {
             incoming,
             target : DispatcherTarget::Server(server_id),
-            enable_tunnels,
+        }
+    }
+
+    pub fn new_selector(incoming: Url, selector_id: String) -> Self {
+        DispatcherConfig {
+            incoming,
+            target : DispatcherTarget::Selector(selector_id),
+        }
+    }
+
+    pub fn new_probe_selector(incoming: Url, probe_id: String, selector_id: String) -> Self {
+        DispatcherConfig {
+            incoming,
+            target : DispatcherTarget::ProbeSelector(probe_id, selector_id),
         }
     }
 }

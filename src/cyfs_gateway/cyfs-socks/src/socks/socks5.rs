@@ -250,10 +250,11 @@ impl Socks5Proxy {
                     }
                 },
                 Err(e) => {
-                    let msg = format!("Error selecting rule: {}", e);
-                    error!("{}", msg);
-                    Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::GeneralFailure)
-                        .await
+                    let msg = format!("Error selecting rule, now will use direct: {}", e);
+                    warn!("{}", msg);
+                    // Socks5Util::reply_error(&mut socket, fast_socks5::ReplyError::GeneralFailure)
+                    //    .await
+                    self.process_socket_direct(socket, target).await
                 }
             }
         } else {

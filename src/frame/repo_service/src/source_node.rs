@@ -150,4 +150,19 @@ impl SourceNode {
 
         Ok(rows.into_iter().map(|row| row.version).collect())
     }
+
+    pub async fn get_all_latest_pkg(&self) -> RepoResult<Vec<PackageMeta>> {
+        let rows = sqlx::query_as::<_, PackageMeta>(
+            "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE (pkg_name, pub_time) IN (SELECT pkg_name, MAX(pub_time) FROM pkg_db GROUP BY pkg_name)",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        debug!(
+            "get_all_latest_pkg, index:{}, rows:{:?}",
+            self.source_config.name, rows
+        );
+
+        Ok(rows)
+    }
 }

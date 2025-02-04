@@ -5,6 +5,7 @@
 //mod interface;
 mod config_loader;
 mod dispatcher;
+mod gateway;
 mod socks;
 
 //mod peer;
@@ -16,6 +17,7 @@ mod socks;
 #[macro_use]
 extern crate log;
 
+use crate::gateway::{Gateway, GatewayParams};
 use buckyos_kit::*;
 use clap::{Arg, ArgAction, Command};
 use console_subscriber::{self, Server};
@@ -32,14 +34,15 @@ use url::Url;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 async fn service_main(config: &str, matches: &clap::ArgMatches) -> Result<()> {
-    let _json = serde_json::from_str(config).map_err(|e| {
+    // Parse config in json format
+    let json = serde_json::from_str(config).map_err(|e| {
         let msg = format!("Error parsing config: {} {}", e, config);
         error!("{}", msg);
         Box::new(e) as Box<dyn std::error::Error>
     })?;
 
-    //load config
-    let load_result = config_loader::GatewayConfig::load_from_json_value(_json).await;
+    // Load config from json
+    let load_result = config_loader::GatewayConfig::load_from_json_value(json).await;
     if load_result.is_err() {
         let msg = format!("Error loading config: {}", load_result.err().unwrap());
         error!("{}", msg);
@@ -47,112 +50,20 @@ async fn service_main(config: &str, matches: &clap::ArgMatches) -> Result<()> {
     }
     let config_loader = load_result.unwrap();
 
-    let disable_buckyos = matches.get_flag("disable-buckyos");
-    if !disable_buckyos {
-        init_global_buckyos_value_by_env("GATEWAY");
-        let this_device = CURRENT_DEVICE_CONFIG.get();
-        let this_device = this_device.unwrap();
-        let this_device_info = DeviceInfo::from_device_doc(this_device);
-        let session_token = CURRENT_APP_SESSION_TOKEN.get();
-        let _ = enable_zone_provider(Some(&this_device_info), session_token, true).await;
-        //keep tunnel
-        let keep_tunnel = matches.get_many::<String>("keep_tunnel");
-        if keep_tunnel.is_some() {
-            let keep_tunnel = keep_tunnel.unwrap();
-            let keep_tunnel: Vec<String> = keep_tunnel.map(|s| s.to_owned()).collect();
+    // Extract necessary params from command line
+    let params = GatewayParams {
+        disable_buckyos: matches.get_flag("disable-buckyos"),
+        keep_tunnel: matches
+            .get_many::<String>("keep_tunnel")
+            .unwrap_or_default()
+            .map(|s| s.to_string())
+            .collect(),
+    };
 
-            for tunnel in keep_tunnel.iter() {
-                let tunnel_url = format!("rtcp://{}", tunnel);
-                info!("keep tunnel: {}", tunnel_url);
-                let tunnel_url = Url::parse(tunnel_url.as_str());
-                if tunnel_url.is_err() {
-                    warn!("Invalid tunnel url: {}", tunnel_url.err().unwrap());
-                    continue;
-                }
+    let gateway = Gateway::new(config_loader);
+    gateway.start(params).await;
 
-                task::spawn(async move {
-                    let tunnel_url = tunnel_url.unwrap();
-                    loop {
-                        let last_ok;
-                        let tunnle = get_tunnel(&tunnel_url, None).await;
-                        if tunnle.is_err() {
-                            warn!("Error getting tunnel: {}", tunnle.err().unwrap());
-                            last_ok = false;
-                        } else {
-                            let tunnel = tunnle.unwrap();
-                            let ping_result = tunnel.ping().await;
-                            if ping_result.is_err() {
-                                warn!("Error pinging tunnel: {}", ping_result.err().unwrap());
-                                last_ok = false;
-                            } else {
-                                last_ok = true;
-                            }
-                        }
-
-                        if last_ok {
-                            tokio::time::sleep(std::time::Duration::from_secs(60 * 2)).await;
-                        } else {
-                            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                        }
-                    }
-                });
-            }
-        }
-    } else {
-        info!("TODO:disable buckyos,set device config for test");
-        init_default_name_client().await.unwrap();
-
-        let pk = if let Some(sk) = CURRENT_DEVICE_PRIVATE_KEY.get() {
-            let pk_value = encode_ed25519_pkcs8_sk_to_pk(sk);
-            info!("Will use device pk: {}", pk_value);
-            pk_value
-        } else {
-            // TODO use default pk or set it to none?
-            let pk_value = "8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no".to_string();
-            info!("Will use default device pk: {}", pk_value);
-            pk_value
-        };
-
-        let this_device_config = DeviceConfig::new("web3.buckyos.io", Some(pk));
-        // load device config from config files
-        let set_result = CURRENT_DEVICE_CONFIG.set(this_device_config);
-        if set_result.is_err() {
-            error!("Failed to set CURRENT_DEVICE_CONFIG");
-        }
-    }
-
-    //start servers
-    for (_server_id, server_config) in config_loader.servers.into_iter() {
-        match server_config {
-            ServerConfig::Warp(warp_config) => {
-                let warp_config = warp_config.clone();
-                task::spawn(async move {
-                    let _ = start_cyfs_warp_server(warp_config).await;
-                });
-            }
-            ServerConfig::DNS(dns_config) => {
-                let dns_config = dns_config.clone();
-                task::spawn(async move {
-                    let _ = start_cyfs_dns_server(dns_config).await;
-                });
-            }
-            ServerConfig::Socks(socks_config) => {
-                let tunnel_provider = crate::socks::SocksTunnelBuilder::new_ref();
-
-                // let socks_config_param = socks_config.clone();
-                if let Err(e) =
-                    cyfs_socks::start_cyfs_socks_server(socks_config, tunnel_provider).await
-                {
-                    error!("Error starting socks server: {}", e);
-                }
-            }
-        }
-    }
-
-    //start dispatcher
-    let dispatcher = dispatcher::ServiceDispatcher::new(config_loader.dispatcher.clone());
-    dispatcher.start().await;
-    // sleep forever
+    // Sleep forever
     let _ = tokio::signal::ctrl_c().await;
 
     Ok(())
@@ -200,6 +111,8 @@ fn generate_ed25519_key_pair_to_local() {
 }
 
 fn main() {
+    std::env::set_var("RUST_BACKTRACE", "1");
+
     let matches = Command::new("CYFS Gateway Service")
         .arg(
             Arg::new("config")
@@ -286,6 +199,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_loader::GatewayConfig;
     use tokio::net::UdpSocket;
     use tokio::task;
     use tokio::test;
@@ -303,24 +217,48 @@ mod tests {
     }
 
     #[test]
-    async fn test_service_main() {
-        task::spawn(async {
-            start_test_udp_echo_server().await.unwrap();
-        });
+    async fn test_dispatcher() {
+        std::env::set_var("BUCKY_LOG", "debug");
+        buckyos_kit::init_logging("test_dispatcher");
+        buckyos_kit::start_tcp_echo_server("127.0.0.1:8888").await;
+        buckyos_kit::start_udp_echo_server("127.0.0.1:8889").await;
+
         let config = r#"
         {
-            "dispatcher" : {
-                "tcp://0.0.0.0:6001":{
-                    "type":"forward",
-                    "target":"tcp://192.168.1.188:8888"
-                },
-                "udp://0.0.0.0:6002":{
-                    "type":"forward",
-                    "target":"udp://192.168.1.188:8889"
-                }
+            "tcp://0.0.0.0:6001":{
+                "type":"forward",
+                "target":"tcp:///:8888"
+            },
+            "udp://0.0.0.0:6002":{
+                "type":"forward",
+                "target":"udp:///:8889"
+            },
+            "tcp://0.0.0.0:6003":{
+                "type":"forward",
+                "target":"socks://192.168.1.188:7890/qq.com:80"
+            },
+            "tcp://0.0.0.0:6004":{
+                "type":"probe_selector",
+                "probe_id":"https-sni",
+                "selector_id":"smart-selector",
+            },
+            "tcp://0.0.0.0:6005":{
+                "type":"selector",
+                "selector_id":"smart-selector",
             }
+
         }
         "#;
-        service_main(config).await.unwrap();
+        let config: serde_json::Value = serde_json::from_str(config).unwrap();
+        let dispatcher_cfg = GatewayConfig::load_dispatcher_config(&config)
+            .await
+            .unwrap();
+
+        let dispatcher = dispatcher::ServiceDispatcher::new(dispatcher_cfg);
+        dispatcher.start().await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        buckyos_kit::start_tcp_echo_client("127.0.0.1:6001").await;
+        buckyos_kit::start_udp_echo_client("127.0.0.1:6002").await;
+        tokio::time::sleep(std::time::Duration::from_secs(100)).await;
     }
 }

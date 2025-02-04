@@ -2,7 +2,8 @@
 
 use core::error;
 
-use crate::dns_provider::DNSProvider;
+use crate::provider::RecordType;
+use crate::dns_provider::{DnsProvider};
 use crate::name_query::NameQuery;
 use crate::zone_provider::ZoneProvider;
 use crate::NameInfo;
@@ -43,7 +44,7 @@ pub struct NameClient {
 impl NameClient {
     pub fn new(config: NameClientConfig) -> Self {
         let mut name_query = NameQuery::new();
-        name_query.add_provider(Box::new(DNSProvider::new(None)));
+        name_query.add_provider(Box::new(DnsProvider::new(None)));
         //name_query.add_provider(Box::new(ZoneProvider::new()));
         let cache_size = config.cache_size;
 
@@ -78,7 +79,7 @@ impl NameClient {
         Ok(())
     }
 
-    pub async fn resolve(&self, name: &str, record_type: Option<&str>) -> NSResult<NameInfo> {
+    pub async fn resolve(&self, name: &str, record_type: Option<RecordType>) -> NSResult<NameInfo> {
         if self.config.enable_cache {
             let cache_info = self.cache.get(&name.to_string());
             if cache_info.is_some() {
@@ -117,7 +118,11 @@ impl NameClient {
             // Try load from local cache
             if self.config.local_cache_dir.is_some() {
                 let cache_dir = self.config.local_cache_dir.as_ref().unwrap();
-                let file_path = format!("{}/{}.doc.json", cache_dir, did);
+                // let file_path = format!("{}/{}.doc.json", cache_dir, did);
+                let mut file_path = std::path::PathBuf::new();
+                file_path.push(cache_dir);
+                file_path.push(format!("{}.doc.json", did));
+                let file_path = file_path.to_str().unwrap().to_string();
 
                 info!("try load did doc from local cache: {}", file_path);
                 let ret = std::fs::read_to_string(file_path.as_str());

@@ -24,6 +24,8 @@ use sys_config::{SystemConfigClient, SystemConfigError};
 use tokio::sync::oneshot::error;
 use tokio::{sync::RwLock, task};
 
+const REPO_SERVICE_CONFIG_KEY: &str = "services/repo/settings";
+
 #[derive(PartialEq, Debug, Clone, Copy)]
 enum RepoStatus {
     Idle,
@@ -50,6 +52,11 @@ impl SourceManager {
         })
     }
 
+    pub async fn init(&self) -> RepoResult<()> {
+        let _ = self.update_index(false).await?;
+        Ok(())
+    }
+
     async fn load_index_source_list(&self) -> RepoResult<Vec<SourceNodeConfig>> {
         let rpc_session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
             error!("repo service session token not found! err:{}", e);
@@ -58,26 +65,26 @@ impl SourceManager {
 
         let sys_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
 
-        let index_source_config = sys_config_client
-            .get("services/repo/index_source")
+        let repo_config = sys_config_client
+            .get(REPO_SERVICE_CONFIG_KEY)
             .await
             .map_err(|e| {
                 error!("get index source config failed! err:{}", e);
                 RepoError::LoadError("index_source".to_string(), e.to_string())
             })?;
 
-        let index_source = index_source_config.0;
+        let repo_config = repo_config.0;
 
-        info!("load index source config: {:?}", index_source);
+        info!("load repo config: {:?}", repo_config);
 
-        let index_source: serde_json::Value =
-            serde_json::from_str(index_source.as_str()).map_err(|e| {
+        let repo_config: serde_json::Value =
+            serde_json::from_str(repo_config.as_str()).map_err(|e| {
                 error!("parse index_source failed: {:?}", e);
                 RepoError::ParseError("index_source".to_string(), e.to_string())
             })?;
 
-        let source_config_list = if index_source["source_list"].is_array() {
-            serde_json::from_value(index_source["source_list"].clone()).map_err(|e| {
+        let source_config_list = if repo_config["source_list"].is_array() {
+            serde_json::from_value(repo_config["source_list"].clone()).map_err(|e| {
                 error!("parse source_list failed: {:?}", e);
                 RepoError::ParseError("source_list".to_string(), e.to_string())
             })?
@@ -96,10 +103,14 @@ impl SourceManager {
         &self,
         source_config_list: &Vec<SourceNodeConfig>,
     ) -> RepoResult<()> {
-        let source_config_list_str = serde_json::to_string(source_config_list).map_err(|e| {
-            error!("to_string source_config_list failed: {:?}", e);
+        let source_config = json!({
+            "source_list": source_config_list
+        });
+        let source_config_str = serde_json::to_string(&source_config).map_err(|e| {
+            error!("to_string source_config failed: {:?}", e);
             RepoError::ParseError("source_config_list".to_string(), e.to_string())
         })?;
+        info!("save source config list: {}", source_config_str);
 
         let rpc_session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
             error!("Repo service session token not found! err:{}", e);
@@ -109,7 +120,7 @@ impl SourceManager {
         let sys_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
 
         sys_config_client
-            .set("services/repo/index_source", &source_config_list_str)
+            .set(REPO_SERVICE_CONFIG_KEY, &source_config_str)
             .await
             .map_err(|e| {
                 error!("Set index source config failed! err:{}", e);
@@ -124,15 +135,16 @@ impl SourceManager {
         local_file: &PathBuf,
     ) -> RepoResult<()> {
         if !local_file.exists() {
-            if source.did.is_empty() || source.chunk_id.is_empty() {
+            if source.name.is_empty() || source.chunk_id.is_empty() {
+                error!("source_config is invalid: {:?}", source);
                 return Err(RepoError::ParamError(format!(
                     "source_config is invalid: {:?}",
                     source
                 )));
             }
             //TODO 构建chunk的url
-            let url = format!("http://{}/repo/get_index/{}", source.did, source.chunk_id);
-            Downloader::pull_remote_chunk(&url, &source.did, &source.sign, &source.chunk_id)
+            let url = format!("http://{}", source.name);
+            Downloader::pull_remote_chunk(&url, &source.name, &source.sign, &source.chunk_id)
                 .await?;
             chunk_to_local_file(&source.chunk_id, REPO_CHUNK_MGR_ID, &local_file).await?;
         }
@@ -153,13 +165,16 @@ impl SourceManager {
     }
 
     fn source_db_file(source_config: &SourceNodeConfig, dir: &PathBuf) -> PathBuf {
-        dir.join(format!("index_{}.db", source_config.chunk_id))
+        //去掉chunkid中冒号之前的部分
+        let hex = source_config.chunk_id.split(':').last().unwrap();
+        let fix_name = source_config.name.replace(":", "-");
+        dir.join(format!("index_{}_{}.db", fix_name, hex))
     }
 
     async fn get_remote_source_meta(source_config: &SourceNodeConfig) -> RepoResult<SourceMeta> {
         //TODO 拼接meta url，要修改成正式url
-        //let url = format!("http://{}/kapi/repo", source_config.name);
-        let url = format!("http://{}/kapi/repo", "127.0.0.1:4000");
+        let url = format!("http://{}/kapi/repo", source_config.name);
+        //let url = format!("http://{}/kapi/repo", "127.0.0.1:4000");
         info!("get_remote_source_meta url: {}", url);
         let session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
             error!("repo service session token not found! err:{}", e);
@@ -217,11 +232,12 @@ impl SourceManager {
             }
             //通过url请求最新的source_meta
             if update || source_config.chunk_id.is_empty() || source_config.sign.is_empty() {
+                info!("update source meta info from {}", source_config.name);
                 REPO_TASK_MANAGER.set_task_status(
                     task_id,
                     TaskStatus::Running(format!(
                         "Updating source meta info from {}",
-                        source_config.did
+                        source_config.name
                     )),
                 )?;
                 let source_meta = Self::get_remote_source_meta(&source_config).await?;
@@ -235,17 +251,22 @@ impl SourceManager {
             let source_db_file = Self::source_db_file(&source_config, &remote_source_db_dir);
             if source_db_file.exists() {
                 //也许以前下载过?
+                info!(
+                    "source index file {} exists",
+                    source_db_file.to_string_lossy()
+                );
                 let source_node =
                     SourceNode::new(source_config, source_db_file.clone(), false).await?;
                 new_source_list.push(source_node);
                 keep_source_file_list.push(source_db_file.clone());
                 continue;
             } else {
+                info!("download source index from {}", source_config.name);
                 REPO_TASK_MANAGER.set_task_status(
                     task_id,
                     TaskStatus::Running(format!(
                         "Downloading source index from {}",
-                        source_config.did
+                        source_config.name
                     )),
                 )?;
                 Self::make_sure_source_file_exists(&source_config, &source_db_file).await?;
@@ -292,6 +313,7 @@ impl SourceManager {
         //         })?;
         //     }
         // }
+        info!("build source list success");
 
         Ok(())
     }
@@ -533,10 +555,10 @@ impl SourceManager {
             return Ok(());
         }
         // TODO: fix this url
-        let url = format!("http://web3.buckyos.com/{}", pkg_meta.author_did);
+        let url = format!("http://{}", pkg_meta.author_name);
         Downloader::pull_remote_chunk(
             &url,
-            &pkg_meta.author_did,
+            &pkg_meta.author_name,
             &pkg_meta.sign,
             &pkg_meta.chunk_id,
         )
@@ -597,5 +619,15 @@ impl SourceManager {
 
     pub async fn get_index_meta(&self, version: Option<&str>) -> RepoResult<Option<SourceMeta>> {
         IndexPublisher::get_meta(version).await
+    }
+
+    pub async fn query_all_latest_pkg(&self) -> RepoResult<Vec<PackageMeta>> {
+        let source_list = self.source_list.read().await;
+        let mut all_latest_pkg = Vec::new();
+        for source in source_list.iter() {
+            let latest_pkg = source.get_all_latest_pkg().await?;
+            all_latest_pkg.extend(latest_pkg);
+        }
+        Ok(all_latest_pkg)
     }
 }

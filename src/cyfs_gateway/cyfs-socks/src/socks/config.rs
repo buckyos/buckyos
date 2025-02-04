@@ -13,7 +13,7 @@ pub enum SocksProxyAuth {
     Password(String, String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SocksProxyConfig {
     pub id: String,
 

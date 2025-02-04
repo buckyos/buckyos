@@ -51,7 +51,6 @@ result:u32
 */
 
 use name_lib::DID;
-use url::Url;
 use anyhow::Result;
 
 pub const DEFAULT_RTCP_STACK_PORT: u16 = 2980;
@@ -77,39 +76,35 @@ impl RTcpTargetId {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct RTcpTarget {
+pub(crate) struct RTcpTargetStackId {
     pub id: RTcpTargetId,
-    pub stack_port: u16,
-    pub target_port: u16,
+    pub stack_port: u16
 }
 
-impl RTcpTarget {
-    pub fn new(hostname: &str, stack_port: u16, target_port: u16) -> Result<Self> {
+impl RTcpTargetStackId {
+    pub fn new(hostname: &str, stack_port: u16) -> Result<Self> {
         let id = RTcpTargetId::from_str(hostname);
         if id.is_none() {
             return Err(anyhow::anyhow!("invalid hostname:{}", hostname));
         }
-        Ok(RTcpTarget {
+        Ok(RTcpTargetStackId {
             id: id.unwrap(),
-            stack_port,
-            target_port,
+            stack_port
         })
     }
 
     pub fn from_did_str(did: String) -> Self {
         let did = DID::from_str(&did).unwrap();
-        RTcpTarget {
+        RTcpTargetStackId {
             id: RTcpTargetId::DeviceDid(did),
             stack_port: DEFAULT_RTCP_STACK_PORT,
-            target_port: 80,
         }
     }
 
     pub fn from_hostname(name: String) -> Self {
-        RTcpTarget {
+        RTcpTargetStackId {
             id: RTcpTargetId::DeviceName(name),
             stack_port: DEFAULT_RTCP_STACK_PORT,
-            target_port: 80,
         }
     }
 
@@ -121,42 +116,40 @@ impl RTcpTarget {
     }
 }
 
-pub(crate) fn parse_rtcp_url(url: &str) -> Option<RTcpTarget> {
-    let url = Url::parse(url);
-    if url.is_err() {
-        return None;
-    }
-    let url = url.unwrap();
-    if url.scheme() != "rtcp" {
+// xxx.dev.did:2980 or xxx:2980 
+pub(crate) fn parse_rtcp_stack_id(stack_id: &str) -> Option<RTcpTargetStackId> {
+    let mut stack_port = DEFAULT_RTCP_STACK_PORT;
+    let mut target_host_name = stack_id.to_string();
+    let parts = stack_id.split(":").collect::<Vec<&str>>();
+    if parts.len() > 2 {
         return None;
     }
 
-    let mut stack_port = DEFAULT_RTCP_STACK_PORT;
-    if url.username().len() > 0 {
-        let _port = url.username().parse::<u16>();
+    if parts.len() == 2 {
+        let _port = parts[1].parse::<u16>();
         if _port.is_ok() {
             stack_port = _port.unwrap();
+        } else {
+            return None;
         }
+        target_host_name = parts[0].to_string();
     }
-
-    let host = url.host();
-    if host.is_none() {
+    if target_host_name.len() < 2 {
         return None;
     }
-    let host = host.unwrap();
+
     let result_id: RTcpTargetId;
 
-    let target_did = DID::from_host_name(host.to_string().as_str());
+    let target_did = DID::from_host_name(target_host_name.as_str());
     if target_did.is_some() {
         result_id = RTcpTargetId::DeviceDid(target_did.unwrap());
     } else {
-        result_id = RTcpTargetId::DeviceName(host.to_string());
+        result_id = RTcpTargetId::DeviceName(target_host_name);
     }
 
-    let target = RTcpTarget {
+    let target = RTcpTargetStackId {
         id: result_id,
         stack_port: stack_port,
-        target_port: url.port().unwrap_or(80),
     };
 
     return Some(target);

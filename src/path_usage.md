@@ -10,7 +10,7 @@
 - kv://devices/$device_did/config
 - kv://users/$username/info
 - kv://nodes/$node_name/config
-- kv://services/$service_name/info
-- kv://services/$service_name/setting
+- kv://services/$service_name/config
+- kv://services/$service_name/settings
 
 ## DFS

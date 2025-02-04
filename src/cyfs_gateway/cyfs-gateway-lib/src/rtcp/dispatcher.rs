@@ -193,6 +193,7 @@ impl DatagramServer for RTcpDatagramDispatcher {
     }
 }
 
+#[derive(Clone)]
 pub struct RTcpDispatcherManager {
     stream_dispatchers: Arc<Mutex<HashMap<u16, RTcpStreamDispatcher>>>,
     datagram_dispatchers: Arc<Mutex<HashMap<u16, RTcpDatagramDispatcher>>>,
@@ -255,8 +256,4 @@ impl RTcpDispatcherManager {
         let dispatcher = dispatchers.get(&port);
         dispatcher.map(|d| d.clone())
     }
-}
-
-lazy_static::lazy_static! {
-    pub static ref RTCP_DISPATCHER_MANAGER: RTcpDispatcherManager = RTcpDispatcherManager::new();
 }

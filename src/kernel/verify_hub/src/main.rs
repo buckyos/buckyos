@@ -270,12 +270,12 @@ async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<RPCSes
     //TODO:verify appid && source_url
     
     //read account info from system config service
-    let user_info_path = format!("users/{}/info",username);
+    let user_info_path = format!("users/{}/settings",username);
     let token_from_device = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().token_from_device.clone();
     let system_config_client = SystemConfigClient::new(None,Some(token_from_device.as_str()));
     let user_info_result = system_config_client.get(user_info_path.as_str()).await;
     if user_info_result.is_err() {
-        warn!("handle_login_by_password:user info not found {}",user_info_path);
+        warn!("handle_login_by_password:user settings not found {}",user_info_path);
         return Err(RPCErrors::UserNotFound(username.to_string()));
     }
     let (user_info,_version) = user_info_result.unwrap();
@@ -309,7 +309,7 @@ async fn handle_query_userid(params:Value) -> Result<Value> {
         .ok_or(RPCErrors::ReasonError("Missing uername".to_string()))?;
     let username = username.as_str().ok_or(RPCErrors::ReasonError("Invalid uername".to_string()))?;
 
-    let user_info_path = format!("users/{}/info",username);
+    let user_info_path = format!("users/{}/settings",username);
     let token_from_device = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().token_from_device.clone();
     let system_config_client = SystemConfigClient::new(None,Some(token_from_device.as_str()));
     let user_info_result = system_config_client.get(user_info_path.as_str()).await;
@@ -328,7 +328,7 @@ async fn handle_query_userid(params:Value) -> Result<Value> {
         }
     }
 
-    let root_info_path = "users/root/info";
+    let root_info_path = "users/root/settings";
     let user_info_result = system_config_client.get(root_info_path).await;
     if user_info_result.is_ok() {
         let (user_info,_version) = user_info_result.unwrap();

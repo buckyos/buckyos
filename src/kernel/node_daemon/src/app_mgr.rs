@@ -14,12 +14,12 @@ use crate::run_item::*;
 use buckyos_kit::*;
 use package_lib::*;
 
-use sys_config::AppServiceConfig;
+use sys_config::AppServiceInstanceConfig;
 
 
 pub struct AppRunItem {
     pub app_id: String,
-    pub app_service_config: AppServiceConfig,
+    pub app_service_config: AppServiceInstanceConfig,
     pub app_loader: RwLock<Option<ServicePkg>>,
     device_doc: DeviceConfig,
     device_private_key: EncodingKey,
@@ -28,7 +28,7 @@ pub struct AppRunItem {
 impl AppRunItem {
     pub fn new(
         app_id: &String,
-        app_service_config: AppServiceConfig,
+        app_service_config: AppServiceInstanceConfig,
         device_doc: &DeviceConfig,
         device_private_key: &EncodingKey,
     ) -> Self {

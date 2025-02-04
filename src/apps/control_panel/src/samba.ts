@@ -35,7 +35,7 @@ window.onload = async () => {
     let system_config_client = new buckyos.kRPCClient("http://"+zone_host+"/kapi/system_config",token,Date.now());
     let samba_info: UserSambaInfo | null = null;
     try {
-        samba_info = JSON.parse(await system_config_client.call("sys_config_get", {"key": `users/${username}/samba/setting`}));
+        samba_info = JSON.parse(await system_config_client.call("sys_config_get", {"key": `users/${username}/samba/settings`}));
     } catch (e) {
     }
     if (samba_info == null) {
@@ -69,7 +69,7 @@ window.onload = async () => {
             password = "";
         }
         try {
-            await system_config_client.call("sys_config_set", {"key": `users/${username}/samba/setting`, "value": JSON.stringify({"is_enable": is_enable, "password": password})});
+            await system_config_client.call("sys_config_set", {"key": `users/${username}/samba/settings`, "value": JSON.stringify({"is_enable": is_enable, "password": password})});
             alert("Set success");
         } catch (e) {
             alert("Set failed");

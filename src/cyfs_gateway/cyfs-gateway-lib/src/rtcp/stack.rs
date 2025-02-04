@@ -1,7 +1,8 @@
-use super::dispatcher::RTCP_DISPATCHER_MANAGER;
 use super::package::*;
 use super::protocol::*;
+use super::stream_helper::RTcpStreamBuildHelper;
 use super::tunnel::RTcpTunnel;
+use super::tunnel_map::RTcpTunnelMap;
 use crate::tunnel::{DatagramServerBox, StreamListener, TunnelBox, TunnelBuilder};
 use crate::{TunnelError, TunnelResult};
 use anyhow::Result;
@@ -9,50 +10,28 @@ use async_trait::async_trait;
 use buckyos_kit::buckyos_get_unix_timestamp;
 use hex::ToHex;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use lazy_static::lazy_static;
 use log::*;
 use name_client::*;
 use name_lib::*;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Notify};
 use tokio::task;
 use url::Url;
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
+use super::dispatcher::RTcpDispatcherManager;
 
 #[derive(Clone)]
 pub struct RTcpStack {
+    tunnel_map: RTcpTunnelMap,
+    stream_helper: RTcpStreamBuildHelper,
+    dispatcher_manager: RTcpDispatcherManager,
+
     tunnel_port: u16,
     this_device_hostname: String, //name or did
     this_device_ed25519_sk: Option<EncodingKey>,
     this_device_x25519_sk: Option<StaticSecret>,
-}
-
-pub(crate) enum WaitStream {
-    Waiting,
-    OK(TcpStream),
-}
-
-impl WaitStream {
-    fn unwarp(self) -> TcpStream {
-        match self {
-            WaitStream::OK(stream) => stream,
-            _ => panic!("unwarp WaitStream error"),
-        }
-    }
-}
-
-lazy_static! {
-    pub(crate) static ref NOTIFY_ROPEN_STREAM: Arc<Notify> = Arc::new(Notify::new());
-    pub(crate) static ref WAIT_ROPEN_STREAM_MAP: Arc<Mutex<HashMap<String, WaitStream>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-    pub(crate) static ref RTCP_TUNNEL_MAP: Arc<Mutex<HashMap<String, RTcpTunnel>>> =
-        Arc::new(Mutex::new(HashMap::new()));
 }
 
 impl RTcpStack {
@@ -79,6 +58,10 @@ impl RTcpStack {
         }
 
         let result = RTcpStack {
+            tunnel_map: RTcpTunnelMap::new(),
+            stream_helper: RTcpStreamBuildHelper::new(),
+            dispatcher_manager: RTcpDispatcherManager::new(),
+
             tunnel_port: port,
             this_device_hostname,
             this_device_ed25519_sk: this_device_ed25519_sk, //for sign tunnel token
@@ -260,7 +243,11 @@ impl RTcpStack {
             RTcpTunnelPackage::read_package(Pin::new(&mut stream), true, source_info.as_str())
                 .await;
         if first_package.is_err() {
-            error!("Read first package error: {}, {}", addr, first_package.err().unwrap());
+            error!(
+                "Read first package error: {}, {}",
+                addr,
+                first_package.err().unwrap()
+            );
             return;
         }
 
@@ -296,31 +283,17 @@ impl RTcpStack {
         }
     }
 
-    async fn on_new_stream(&self, mut stream: TcpStream, session_key: String) {
+    async fn on_new_stream(&self, stream: TcpStream, session_key: String) {
         // find waiting ropen stream by session_key
-        let mut wait_streams = WAIT_ROPEN_STREAM_MAP.lock().await;
-        let clone_map: Vec<String> = wait_streams.keys().cloned().collect();
         let real_key = format!(
             "{}_{}",
             self.this_device_hostname.as_str(),
             session_key.as_str()
         );
-        let wait_session = wait_streams.get_mut(real_key.as_str());
-        if wait_session.is_none() {
-            error!(
-                "No wait session for {}, map is {:?}",
-                real_key.as_str(),
-                clone_map
-            );
-            let _ = stream.shutdown();
-            return;
-        }
 
-        // bind stream to session and notify
-        let wait_session = wait_session.unwrap();
-        *wait_session = WaitStream::OK(stream);
-
-        NOTIFY_ROPEN_STREAM.notify_waiters();
+        self.stream_helper
+            .notify_ropen_stream(stream, real_key.as_str())
+            .await;
     }
 
     async fn on_new_tunnel(&self, stream: TcpStream, hello_package: RTcpHelloPackage) {
@@ -342,10 +315,9 @@ impl RTcpStack {
         }
 
         let (aes_key, random_pk) = aes_key.unwrap();
-        let target = RTcpTarget::new(
+        let target = RTcpTargetStackId::new(
             hello_package.body.from_id.as_str(),
             hello_package.body.my_port,
-            80,
         );
         if target.is_err() {
             error!("parser remote did error:{}", target.err().unwrap());
@@ -353,6 +325,8 @@ impl RTcpStack {
         }
         let target = target.unwrap();
         let tunnel = RTcpTunnel::new(
+            self.stream_helper.clone(),
+            self.dispatcher_manager.clone(),
             self.this_device_hostname.clone(),
             &target,
             false,
@@ -368,41 +342,46 @@ impl RTcpStack {
         );
         {
             //info!("accept tunnel from {} try get lock",hello_package.body.from_id.as_str());
-            let mut all_tunnel = RTCP_TUNNEL_MAP.lock().await;
-            //info!("accept tunnel from {} get lock ok",hello_package.body.from_id.as_str());
-            let mut_old_tunnel = all_tunnel.get(tunnel_key.as_str());
-            if mut_old_tunnel.is_some() {
-                warn!("tunnel {} already exist", tunnel_key.as_str());
-                mut_old_tunnel.unwrap().close().await;
-            }
-
-            info!("accept tunnel from {}", hello_package.body.from_id.as_str());
-            all_tunnel.insert(tunnel_key.clone(), tunnel.clone());
+            self.tunnel_map
+                .on_new_tunnel(&tunnel_key, tunnel.clone())
+                .await;
+            // info!("Accept tunnel from {}", hello_package.body.from_id.as_str());
         }
-        info!("tunnel {} accept OK,start running", tunnel_key.as_str());
+
+        info!(
+            "Tunnel {} accept from {} OK,start running",
+            hello_package.body.from_id.as_str(),
+            tunnel_key.as_str()
+        );
         tunnel.run().await;
 
-        info!("tunnel {} end", tunnel_key.as_str());
+        info!("Tunnel {} end", tunnel_key.as_str());
 
-        {
-            let mut all_tunnel = RTCP_TUNNEL_MAP.lock().await;
-            all_tunnel.remove(tunnel_key.as_str());
-        }
+        self.tunnel_map.remove_tunnel(&tunnel_key).await;
     }
 }
 
 #[async_trait]
 impl TunnelBuilder for RTcpStack {
-    async fn create_tunnel(&self, target: &Url) -> TunnelResult<Box<dyn TunnelBox>> {
+    async fn create_tunnel(
+        &self,
+        tunnel_stack_id: Option<&str>,
+    ) -> TunnelResult<Box<dyn TunnelBox>> {
         // lookup existing tunnel and resue it
-        let target = parse_rtcp_url(target.as_str());
+        if tunnel_stack_id.is_none() {
+            return Err(TunnelError::ReasonError(
+                "rtcp target stack id is none".to_string(),
+            ));
+        }
+        let tunnel_stack_id = tunnel_stack_id.unwrap();
+        let target = parse_rtcp_stack_id(tunnel_stack_id);
         if target.is_none() {
             return Err(TunnelError::ConnectError(format!(
                 "invalid target url:{:?}",
                 target
             )));
         }
-        let target: RTcpTarget = target.unwrap();
+        let target: RTcpTargetStackId = target.unwrap();
         let target_id_str = target.get_id_str();
 
         let tunnel_key = format!(
@@ -410,15 +389,22 @@ impl TunnelBuilder for RTcpStack {
             self.this_device_hostname.as_str(),
             target_id_str.as_str()
         );
-        //info!("will create tunnel to {} ,tunnel key is {},try reuse",target_id_str.as_str(),tunnel_key.as_str());
-        let mut all_tunnel = RTCP_TUNNEL_MAP.lock().await;
+        debug!(
+            "will create tunnel to {} ,tunnel key is {},try reuse",
+            target_id_str.as_str(),
+            tunnel_key.as_str()
+        );
+
+        // First check if the tunnel already exists, then we can reuse it
+        let tunnels = self.tunnel_map.tunnel_map().clone();
+        let mut all_tunnel = tunnels.lock().await;
         let tunnel = all_tunnel.get(tunnel_key.as_str());
         if tunnel.is_some() {
-            info!("reuse tunnel {}", tunnel_key.as_str());
+            debug!("Reuse tunnel {}", tunnel_key.as_str());
             return Ok(Box::new(tunnel.unwrap().clone()));
         }
 
-        //1） resolve target auth-key and ip (rtcp base on tcp,so need ip)
+        // 1） resolve target auth-key and ip (rtcp base on tcp,so need ip)
 
         let device_ip = resolve_ip(target_id_str.as_str()).await;
         if device_ip.is_err() {
@@ -432,17 +418,11 @@ impl TunnelBuilder for RTcpStack {
             )));
         }
         let device_ip = device_ip.unwrap();
-        info!(
-            "resolve target device {} ip is {}",
-            target_id_str.as_str(),
-            device_ip
-        );
-        
         let port = target.stack_port;
         let remote_addr = format!("{}:{}", device_ip, port);
 
         info!(
-            "Will create tunnel to {}, target addr is {}",
+            "Will open tunnel to {}, target addr is {}",
             target_id_str.as_str(),
             remote_addr.as_str()
         );
@@ -495,6 +475,8 @@ impl TunnelBuilder for RTcpStack {
 
         // create tunnel and add to map
         let tunnel = RTcpTunnel::new(
+            self.stream_helper.clone(),
+            self.dispatcher_manager.clone(),
             self.this_device_hostname.clone(),
             &target,
             true,
@@ -511,23 +493,28 @@ impl TunnelBuilder for RTcpStack {
         drop(all_tunnel);
 
         let result: TunnelResult<Box<dyn TunnelBox>> = Ok(Box::new(tunnel.clone()));
+        let tunnel_map = self.tunnel_map.clone();
         task::spawn(async move {
             info!(
                 "RTcp tunnel {} established, tunnel running",
                 tunnel_key.as_str()
             );
             tunnel.run().await;
-            //remove tunnel from map
-            let mut all_tunnel = RTCP_TUNNEL_MAP.lock().await;
-            all_tunnel.remove(&tunnel_key);
+
+            // remove tunnel from manager
+            tunnel_map.remove_tunnel(&tunnel_key).await;
+
             info!("RTcp tunnel {} end", tunnel_key.as_str());
         });
 
         return result;
     }
 
-    async fn create_listener(&self, bind_url: &Url) -> TunnelResult<Box<dyn StreamListener>> {
-        let dispatcher = RTCP_DISPATCHER_MANAGER.new_stream_dispatcher(bind_url)?;
+    async fn create_stream_listener(
+        &self,
+        bind_url: &Url,
+    ) -> TunnelResult<Box<dyn StreamListener>> {
+        let dispatcher = self.dispatcher_manager.new_stream_dispatcher(bind_url)?;
         Ok(Box::new(dispatcher) as Box<dyn StreamListener>)
     }
 
@@ -535,7 +522,7 @@ impl TunnelBuilder for RTcpStack {
         &self,
         bind_url: &Url,
     ) -> TunnelResult<Box<dyn DatagramServerBox>> {
-        let dispatcher = RTCP_DISPATCHER_MANAGER.new_datagram_dispatcher(bind_url)?;
+        let dispatcher = self.dispatcher_manager.new_datagram_dispatcher(bind_url)?;
         Ok(Box::new(dispatcher) as Box<dyn DatagramServerBox>)
     }
 }

@@ -1,13 +1,13 @@
 mod protocol;
 mod package;
 mod tunnel;
+mod tunnel_map;
+mod stream_helper;
 mod stack;
 mod manager;
 mod dispatcher;
 mod datagram;
-
-#[cfg(test)]
-mod tests;
+mod test;
 
 pub use protocol::*;
 pub use stack::*;

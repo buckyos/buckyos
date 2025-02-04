@@ -10,7 +10,7 @@ use thiserror::Error;
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::OnceCell;
-use crate::app_list::AppConfigNode;
+use crate::app_list::AppConfig;
 use crate::KVAction;
 #[derive(Error, Debug)]
 pub enum SystemConfigError {
@@ -24,7 +24,7 @@ pub enum SystemConfigError {
     Timeout(String),
 }
 
-pub type Result<T> = std::result::Result<T, SystemConfigError>;
+pub type SytemConfigResult<T> = std::result::Result<T, SystemConfigError>;
 pub struct SystemConfigClient {
     client: OnceCell<Arc<kRPC>>,
     session_token: Option<String>,
@@ -48,7 +48,7 @@ impl SystemConfigClient {
         }
     }
 
-    async fn get_krpc_client(&self) -> Result<Arc<kRPC>> {
+    async fn get_krpc_client(&self) -> SytemConfigResult<Arc<kRPC>> {
         let client = self.client.get();
         if client.is_none() {
             return Err(SystemConfigError::ReasonError("krpc client not found!".to_string()));
@@ -56,7 +56,7 @@ impl SystemConfigClient {
         Ok(client.unwrap().clone())
     }
 
-    pub async fn get(&self, key: &str) -> Result<(String,u64)> {
+    pub async fn get(&self, key: &str) -> SytemConfigResult<(String,u64)> {
         let client = self.get_krpc_client().await;
         if client.is_err() {
             return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
@@ -75,7 +75,7 @@ impl SystemConfigClient {
         Ok((value.to_string(),revision))
     }
 
-    pub async fn set(&self, key: &str, value: &str) -> Result<u64> {
+    pub async fn set(&self, key: &str, value: &str) -> SytemConfigResult<u64> {
         if key.is_empty() || value.is_empty() {
             return Err(SystemConfigError::ReasonError("key or value is empty".to_string()));
         }
@@ -97,7 +97,7 @@ impl SystemConfigClient {
         Ok(0)
     }
 
-    pub async fn set_by_json_path(&self,key:&str,json_path:&str,value:&str) -> Result<u64> {
+    pub async fn set_by_json_path(&self,key:&str,json_path:&str,value:&str) -> SytemConfigResult<u64> {
         let client = self.get_krpc_client().await;
         if client.is_err() {
             return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
@@ -108,7 +108,7 @@ impl SystemConfigClient {
         Ok(0)
     }
 
-    pub async fn create(&self,key:&str,value:&str) -> Result<u64> {
+    pub async fn create(&self,key:&str,value:&str) -> SytemConfigResult<u64> {
         let client = self.get_krpc_client().await;
         if client.is_err() {
             return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
@@ -122,7 +122,7 @@ impl SystemConfigClient {
         Ok(0)
     }
 
-    pub async fn delete(&self,key:&str) -> Result<u64> {
+    pub async fn delete(&self,key:&str) -> SytemConfigResult<u64> {
         let client = self.get_krpc_client().await;
         if client.is_err() {
             return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
@@ -134,7 +134,7 @@ impl SystemConfigClient {
         Ok(0)
     }
 
-    pub async fn append(&self,key:&str,value:&str) -> Result<u64> {
+    pub async fn append(&self,key:&str,value:&str) -> SytemConfigResult<u64> {
         let client = self.get_krpc_client().await;
         if client.is_err() {
             return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
@@ -146,7 +146,7 @@ impl SystemConfigClient {
     }
 
     //list direct children
-    pub async fn list(&self,key:&str) -> Result<Vec<String>> {
+    pub async fn list(&self,key:&str) -> SytemConfigResult<Vec<String>> {
         let client = self.get_krpc_client().await;
         if client.is_err() {
             return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
@@ -163,9 +163,9 @@ impl SystemConfigClient {
             })
     }
 
-    pub async fn exec_tx(&self, tx_actions: HashMap<String, KVAction>, main_key: Option<(String, u64)>) -> Result<u64> {
+    pub async fn exec_tx(&self, tx_actions: HashMap<String, KVAction>, main_key: Option<(String, u64)>) -> SytemConfigResult<u64> {
         if tx_actions.is_empty() {
-            return Err(SystemConfigError::ReasonError("tx actions! is empty".to_string()));
+            return Ok(0);
         }
         let mut tx_json = Map::new();
 
@@ -185,7 +185,7 @@ impl SystemConfigClient {
                 }
                 KVAction::SetByJsonPath(value) => {
                     tx_json.insert(key.to_string(), json!({
-                        "action": "set_py_path",
+                        "action": "set_by_path",
                         "all_set": value
                     }));
                 }
@@ -214,7 +214,7 @@ impl SystemConfigClient {
         Ok(0)
     }
 
-    pub async fn dump_configs_for_scheduler(&self) -> Result<Value> {
+    pub async fn dump_configs_for_scheduler(&self) -> SytemConfigResult<Value> {
         let client = self.get_krpc_client().await;
         if client.is_err() {
             return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
@@ -227,7 +227,7 @@ impl SystemConfigClient {
     }
 
     //TODO: help app installer dev easy to generate right app-index
-    pub async fn install_app_service(&self,user_id:&str,app_config:&AppConfigNode,shortcut:Option<String>) -> Result<u64> {
+    pub async fn install_app_service(&self,user_id:&str,app_config:&AppConfig,shortcut:Option<String>) -> SytemConfigResult<u64> {
         // TODO: if you want install a web-client-app, use another function
         //1. create users/{user_id}/apps/{appid}/config
         let app_id = app_config.app_id.as_str();
@@ -257,7 +257,7 @@ impl SystemConfigClient {
                 "user_id":user_id,
                 "app_id":app_id
             });
-            client.call("sys_config_set_by_json_path",json!({"key":"services/gateway/setting","json_path":short_json_path,"value":short_json_value})).await
+            client.call("sys_config_set_by_json_path",json!({"key":"services/gateway/settings","json_path":short_json_path,"value":short_json_value})).await
                 .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
             info!("set shortcut {} for user {}'s app {} success!",short_name,user_id,app_id);
@@ -267,16 +267,16 @@ impl SystemConfigClient {
         Ok(0)
     }
 
-    pub async fn get_valid_app_index(&self,user_id:&str) -> Result<u64> {
+    pub async fn get_valid_app_index(&self,user_id:&str) -> SytemConfigResult<u64> {
         unimplemented!();
     }
 
-    pub async fn remove_app(&self,appid:&str) -> Result<u64> {
+    pub async fn remove_app(&self,appid:&str) -> SytemConfigResult<u64> {
         unimplemented!();
     }
 
 
-    pub async fn disable_app(&self,appid:&str) -> Result<u64> {
+    pub async fn disable_app(&self,appid:&str) -> SytemConfigResult<u64> {
         unimplemented!();
     }
 

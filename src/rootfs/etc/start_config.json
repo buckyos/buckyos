@@ -1,23 +1,21 @@
 {
     "admin_password_hash": "$2a$11$SXL5Z8HnmxtU5Pf4v9kPt.AkmpPInb5uVFk5ttowDlyx9ng2ulmZS",
-    "device_private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIPbVmm6bc8KZSDU3GAB5jCGbKh386rM10TOyIwviPiQy\n-----END PRIVATE KEY-----\n",
+    "device_private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG\n-----END PRIVATE KEY-----\n",
     "device_public_key": {
         "crv": "Ed25519",
         "kty": "OKP",
-        "x": "KDaXSdU1Y3JeLlXl8JG3GSoSAw1l9UuqV1oiyWcELtM"
+        "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
     },
     "friend_passcode": "sdfsdfsdf",
-    "gateway_type": "BuckyForward",
+    "gateway_type": "PortForward",
     "guest_access": true,
-    "private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIIoMTCRIAv3nhfIAXJQlTTQl4u1FqUdtyci4WMawaf11\n-----END PRIVATE KEY-----\n",
+    "private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr\n-----END PRIVATE KEY-----\n",
     "public_key": {
         "crv": "Ed25519",
         "kty": "OKP",
-        "x": "eZeXYbYK1mAIMBsYfmPusveTXT40zPTcXN_Jl9tFtHg"
+        "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
     },
-    "user_name": "bucky05",
-    "zone_name": "bucky05.web3.buckyos.io",
-    "sn_host":"web3.buckyos.io",
-    "sn_url": "web3.buckyos.io",
+    "user_name": "devtest",
+    "zone_name": "test.buckyos.io",
     "BUCKYOS_ROOT":"/opt/buckyos"
 }

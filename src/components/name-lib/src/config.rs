@@ -543,14 +543,14 @@ mod tests {
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         let zone_config = ZoneConfig {
-            did: "did:ens:lzc".to_string(),
+            did: "did:bns:dev_test".to_string(),
             name: None,
             owner_name: None,
             gateway: None,
             auth_key: None, 
             oods: vec!["ood1".to_string()],
             services: None,
-            sn: Some("web3.buckyos.io".to_string()),
+            sn: None,
             vlan: None,
             verify_hub_info: None,
             iat:None,
@@ -586,10 +586,11 @@ mod tests {
             }
         );
         let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(owner_jwk).unwrap();
-        let private_key: EncodingKey = EncodingKey::from_ed_pem(owner_private_key_pem.as_bytes()).unwrap();
+        let owner_private_key: EncodingKey = EncodingKey::from_ed_pem(owner_private_key_pem.as_bytes()).unwrap();
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
         
-        
+        //ood1 privete key:
+
         
         let ood_public_key = json!(
             {
@@ -616,12 +617,12 @@ mod tests {
         let json_str = serde_json::to_string(&device_config).unwrap();
         println!("ood json_str: {:?}",json_str);
 
-        let encoded = device_config.encode(Some(&private_key)).unwrap();
+        let encoded = device_config.encode(Some(&owner_private_key)).unwrap();
         println!("ood encoded: {:?}",encoded);
 
         let decoded = DeviceConfig::decode(&encoded,Some(&public_key)).unwrap();
         println!("ood decoded: {:?}",serde_json::to_string(&decoded).unwrap());
-        let token2 = decoded.encode(Some(&private_key)).unwrap();
+        let token2 = decoded.encode(Some(&owner_private_key)).unwrap();
 
         let mut device_info_ood = DeviceInfo::from_device_doc(&decoded);
         device_info_ood.auto_fill_by_system_info().await;
@@ -663,12 +664,12 @@ mod tests {
         let json_str = serde_json::to_string(&device_config).unwrap();
         println!("gateway json_str: {:?}",json_str);
 
-        let encoded = device_config.encode(Some(&private_key)).unwrap();
+        let encoded = device_config.encode(Some(&owner_private_key)).unwrap();
         println!("gateway encoded: {:?}",encoded);
 
         let decoded = DeviceConfig::decode(&encoded,Some(&public_key)).unwrap();
         println!("gateway decoded: {:?}",serde_json::to_string(&decoded).unwrap());
-        let token2 = decoded.encode(Some(&private_key)).unwrap();
+        let token2 = decoded.encode(Some(&owner_private_key)).unwrap();
 
         assert_eq!(device_config,decoded);
         assert_eq!(encoded,token2); 
@@ -702,12 +703,12 @@ mod tests {
         let json_str = serde_json::to_string(&device_config).unwrap();
         println!("server json_str: {:?}",json_str);
 
-        let encoded = device_config.encode(Some(&private_key)).unwrap();
+        let encoded = device_config.encode(Some(&owner_private_key)).unwrap();
         println!("server encoded: {:?}",encoded);
 
         let decoded = DeviceConfig::decode(&encoded,Some(&public_key)).unwrap();
         println!("server decoded: {:?}",serde_json::to_string(&decoded).unwrap());
-        let token2 = decoded.encode(Some(&private_key)).unwrap();
+        let token2 = decoded.encode(Some(&owner_private_key)).unwrap();
 
         assert_eq!(device_config,decoded);
         assert_eq!(encoded,token2); 

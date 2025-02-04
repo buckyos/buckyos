@@ -19,7 +19,7 @@ use serde_json::{Value,json};
 use sys_config::*;
 use ::kRPC::*;
 
-use crate::{DeviceInfo, EncodedDocument, NSError, NSProvider, NSResult, NameInfo, CURRENT_ZONE_CONFIG};
+use crate::{DeviceInfo, EncodedDocument, NSError, NsProvider, NSResult, NameInfo, CURRENT_ZONE_CONFIG, RecordType};
 
 
 pub fn is_unicast_link_local_stable(ipv6: &Ipv6Addr) -> bool {
@@ -237,14 +237,14 @@ impl ZoneProvider {
 
 
 #[async_trait]
-impl NSProvider for ZoneProvider {
+impl NsProvider for ZoneProvider {
     fn get_id(&self) -> String {
         "zone provider".to_string()
     }
 
-    async fn query(&self, name: &str,record_type:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<NameInfo> {
-        let record_type = record_type.unwrap_or("A");
-        if record_type != "A"  {
+    async fn query(&self, name: &str,record_type:Option<RecordType>,from_ip:Option<IpAddr>) -> NSResult<NameInfo> {
+        let record_type = record_type.unwrap_or_default();
+        if record_type != RecordType::A  {
             return Err(NSError::NotFound("only support A record now".to_string()));
         }
 

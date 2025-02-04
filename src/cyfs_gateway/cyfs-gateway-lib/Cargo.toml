@@ -33,8 +33,15 @@ cipher = "*"
 futures = "*"
 base64 = "*"
 hyper = "0.14"
+openssl = "0.10"
+rustls = "0.21"
+rustls-pemfile = "1.0"
+ring = "0.17"
+
 name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
 ndn-lib = { path = "../../components/ndn-lib" }
 cyfs-socks = { path = "../cyfs-socks" }
+tokio-socks = "*"
+libsocks_client = "*"

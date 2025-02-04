@@ -4,6 +4,9 @@ version = "0.2.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = ["cloudflare"]
+cloudflare = ["dep:reqwest"]
 
 [dependencies]
 sysinfo = "*"
@@ -24,4 +27,6 @@ name-lib = { path = "../name-lib" }
 buckyos-kit = { path = "../buckyos-kit" }
 kRPC = { path = "../../kernel/kRPC" }
 sys-config = { path = "../../kernel/sys-config" }
+cfg-if = "1.0"
+reqwest = { version = "0.12", features = ["json"], optional = true }
 

@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 // Manager the rules load from config files
+#[derive(Clone)]
 pub struct RuleEngine {
     root_dir: PathBuf,
     rules: Arc<Mutex<Vec<RuleItem>>>,

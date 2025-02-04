@@ -4,7 +4,6 @@ use std::{collections::HashMap, sync::Arc};
 use crate::kv_provider::*;
 use log::*;
 use buckyos_kit::*;
-use sys_config::KVAction;
 use serde_json::Value;
 pub struct SledStore {
     db: Arc<Db>,
@@ -201,12 +200,16 @@ impl KVStoreProvider for SledStore {
                         };
 
                         let mut existing_value: Value = serde_json::from_slice(&existing_value)
-                            .map_err(|err| sled::transaction::ConflictableTransactionError::Abort(
+                            .map_err(|err| sled::transaction::ConflictableTransactionError::Abort(  
                                 KVStoreErrors::InternalError(err.to_string())
                             ))?;
 
                         for (path, sub_value) in value.iter() {
-                            set_json_by_path(&mut existing_value, path, Some(sub_value));
+                            if sub_value.is_some() {
+                                set_json_by_path(&mut existing_value, path, Some(sub_value.as_ref().unwrap()));
+                            } else {
+                                set_json_by_path(&mut existing_value, path, None);
+                            }
                         }
 
                         let updated_value = serde_json::to_vec(&existing_value)

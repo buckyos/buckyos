@@ -94,9 +94,9 @@ impl TaskManager {
         Err(RepoError::NotFound(err_msg))
     }
 
-    pub async fn get_task(&self, task_id: String) -> RepoResult<Option<Task>> {
+    pub async fn get_task(&self, task_id: &str) -> RepoResult<Option<Task>> {
         let tasks = self.tasks.lock().unwrap();
-        Ok(tasks.get(&task_id).cloned())
+        Ok(tasks.get(task_id).cloned())
     }
 
     pub async fn get_all_tasks(&self) -> RepoResult<Vec<Task>> {
@@ -104,9 +104,9 @@ impl TaskManager {
         Ok(tasks.values().cloned().collect())
     }
 
-    pub async fn remove_task(&self, task_id: String) -> RepoResult<()> {
+    pub async fn remove_task(&self, task_id: &str) -> RepoResult<()> {
         let mut tasks = self.tasks.lock().unwrap();
-        tasks.remove(&task_id);
+        tasks.remove(task_id);
         Ok(())
     }
 }

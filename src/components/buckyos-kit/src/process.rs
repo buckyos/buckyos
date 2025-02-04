@@ -216,7 +216,6 @@ impl ServicePkg {
         }
         let media_info = self.media_info.clone().unwrap();
         let op_file = media_info.full_path.join(op_name);
-        //info!("start execute {} ...", op_file.display());
         let (result, output) = execute(
             &op_file,
             5,

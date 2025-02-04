@@ -3,8 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+
+
 #[derive(Serialize, Deserialize)]
-pub struct SubPkgInfo {
+pub struct SubPkgDesc {
     pub pkg_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_image_name:Option<String>,
@@ -18,7 +20,7 @@ pub struct SubPkgInfo {
 }
 //App info is store at Index-db, publish to bucky store
 #[derive(Serialize, Deserialize)]
-pub struct AppInfo {
+pub struct AppDoc {
     pub name: String,
     pub description: String,
     pub vendor_did: String,
@@ -26,17 +28,31 @@ pub struct AppInfo {
     //service name -> full image url
     // 命名逻辑:<arch>_<type>_image, 我们把所有的都看作是image，也为了和现在的保持一致
     // type: direct/docker, 以后可能还有vm
-    pub pkg_list: HashMap<String, SubPkgInfo>,
+    pub pkg_list: HashMap<String, SubPkgDesc>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct AppConfigNode {
+pub struct KernelServiceConfig {
+    pub name: String,
+    pub description: String,
+    pub vendor_did: String,
+    pub pkg_id: String,
+    pub port: u16,
+    pub node_list: Vec<String>,
+    pub state: String,
+    pub service_type: String,
+    pub instance: u32
+}
+
+
+#[derive(Serialize, Deserialize)]
+pub struct AppConfig {
     pub app_id: String,
-    pub app_info: AppInfo,
+    pub app_doc: AppDoc,
     pub app_index: u16, //app index in user's app list
     pub enable: bool,
-    pub instance: u32,
-    pub deployed: bool,
+    pub instance: u32,//期望的instance数量
+    pub state: String,
     //mount pint
     pub data_mount_point: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -61,8 +77,11 @@ pub struct AppConfigNode {
     pub udp_ports: Option<HashMap<String,u16>>,
 }
 
+
+
+
 #[derive(Serialize, Deserialize,Clone)]
-pub struct AppServiceConfig {
+pub struct AppServiceInstanceConfig {
     pub target_state: String,
     pub app_id: String,
     pub user_id: String,
@@ -94,9 +113,10 @@ pub struct AppServiceConfig {
 }
 
 
-impl AppServiceConfig {
-    pub fn new(owner_user_id:&str,app_config:&AppConfigNode) -> AppServiceConfig {
-        AppServiceConfig {
+
+impl AppServiceInstanceConfig {
+    pub fn new(owner_user_id:&str,app_config:&AppConfig) -> AppServiceInstanceConfig {
+        AppServiceInstanceConfig {
             target_state: "Running".to_string(),
             app_id: app_config.app_id.clone(),
             user_id:owner_user_id.to_string(),

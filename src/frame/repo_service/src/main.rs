@@ -28,6 +28,7 @@ async fn service_main() {
     init_logging("repo_service");
 
     let repo_server = RepoServer::new().await.unwrap();
+    repo_server.init().await.unwrap();
     register_inner_service_builder("repo_server", move || Box::new(repo_server.clone())).await;
 
     let repo_server_dir = get_buckyos_system_bin_dir().join("repo");

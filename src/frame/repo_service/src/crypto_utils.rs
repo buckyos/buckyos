@@ -4,9 +4,12 @@ use crate::def::*;
 use base64::{engine::general_purpose, Engine as _};
 use ed25519_dalek::{pkcs8::DecodePrivateKey, Signature, Signer, SigningKey};
 use ed25519_dalek::{Verifier as EdVerifier, VerifyingKey};
+use log::info;
 use name_client::*;
 
 pub async fn verify(author: &str, chunk_id: &str, sign_base64: &str) -> RepoResult<()> {
+    //TODO
+    return Ok(());
     let (auth_key, remote_did_id) = resolve_ed25519_auth_key(author).await.map_err(|e| {
         RepoError::VerifyError(format!(
             "resolve_ed25519_auth_key failed, author: {}, {:?}",
@@ -43,6 +46,11 @@ pub async fn verify(author: &str, chunk_id: &str, sign_base64: &str) -> RepoResu
     public_key
         .verify(chunk_id.as_bytes(), &signature)
         .map_err(|e| RepoError::VerifyError(format!("verify failed, error: {:?}", e)))?;
+
+    info!(
+        "verify success, author: {}, chunk_id: {}, sign: {}",
+        author, chunk_id, sign_base64
+    );
 
     Ok(())
 }

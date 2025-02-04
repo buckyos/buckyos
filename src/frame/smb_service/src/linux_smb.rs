@@ -313,6 +313,11 @@ pub async fn update_samba_conf(_remove_users: Vec<SmbUserItem>, new_all_users: V
         add_smb_user(item.user.as_str(), item.password.as_str()).await?;
     }
 
+    // 需要让每个samba目录能够让指定用户有权限访问
+    for item in new_samba_list.iter() {
+        execute(format!("chmod 777 -R {}", item.path).as_str()).await?;
+    }
+
     generate_smb_conf(&new_samba_list).await?;
     restart_smb_service().await?;
     Ok(())

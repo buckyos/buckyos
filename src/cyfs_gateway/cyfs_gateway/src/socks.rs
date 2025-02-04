@@ -1,16 +1,20 @@
 use buckyos_kit::AsyncStream;
-use cyfs_gateway_lib::get_tunnel;
+use cyfs_gateway_lib::TunnelManager;
 use cyfs_socks::{
     SocksDataTunnelProvider, SocksDataTunnelProviderRef, SocksError, SocksResult, TargetAddr,
 };
 use std::sync::Arc;
 use url::Url;
 
-pub struct SocksTunnelBuilder {}
+pub struct SocksTunnelBuilder {
+    tunnel_manager: TunnelManager,
+}
 
 impl SocksTunnelBuilder {
-    pub fn new_ref() -> SocksDataTunnelProviderRef {
-        Arc::new(Box::new(Self {}))
+    pub fn new_ref(tunnel_manager: TunnelManager) -> SocksDataTunnelProviderRef {
+        Arc::new(Box::new(Self {
+            tunnel_manager,
+        }))
     }
 }
 
@@ -26,7 +30,7 @@ impl SocksDataTunnelProvider for SocksTunnelBuilder {
             "Will build tunnel for request: {:?}, {:?}",
             request_target, proxy_target
         );
-        let target_tunnel = get_tunnel(proxy_target, enable_tunnel.clone())
+        let target_tunnel = self.tunnel_manager.get_tunnel(proxy_target, enable_tunnel.clone())
             .await
             .map_err(|e| {
                 let msg = format!(
@@ -52,11 +56,14 @@ impl SocksDataTunnelProvider for SocksTunnelBuilder {
             TargetAddr::Domain(domain, _) => domain.clone(),
         };
 
-        let target_stream = target_tunnel.open_stream(target_port, Some(target_host)).await.map_err(|e| {
-            let msg = format!("Open target stream failed: {}, {:?}", request_target, e);
-            error!("{}", msg);
-            SocksError::IoError(msg)
-        })?;
+        let target_stream = target_tunnel
+            .open_stream_by_dest(target_port, Some(target_host))
+            .await
+            .map_err(|e| {
+                let msg = format!("Open target stream failed: {}, {:?}", request_target, e);
+                error!("{}", msg);
+                SocksError::IoError(msg)
+            })?;
 
         Ok(target_stream)
     }

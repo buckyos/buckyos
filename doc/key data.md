@@ -1,5 +1,26 @@
 # 系统里的关键数据(理解备份与恢复)
 
+## 基本术语
+1. info: 保存上报的信息,出了上报方,对其他人只读
+    DeviceInfo, (NodeInfo) 目前没有区分DeviceInfo和NodeInfo,所以暂时没有NodeInfo 
+    
+2. Settings:会允许用户调整的功能配置,调度器(系统)不会自动修改
+        AppSettings
+        ServerSettings
+        UserSettings
+        SystemSettings
+    
+3. Config:调度器(系统)自动构建的运行配置,不允许用户手动修改
+        AppConfig, ServerConfig
+        AppInstanceCopnfig/KernelServiceInstanceConfig/NodeConfig
+        InstanceConfig通常是NodeConfig的一部分
+        
+4. Doc:对系统来说只读的一些可验证的配置,通常由明确的签发人
+    保存在doc中的内容不能修改 ,修改需要走重发布流程
+    DeviceDoc
+    AppDoc 由发行者创建
+    ServiceDoc 由发行者创建
+
 ## 权限配置
 按权限由高到低:
 
@@ -34,18 +55,16 @@ dfs://sys/data 系统的一些关键数据,一般是内核服务会读取和保�
 
 
 ## 服务相关
-kv://services/$servic_id/config (目前未使用)
-kv://services/$servic_id/info 服务的运行状态,一般由调度器读写
-kv://services/$servic_id/setting 服务自己的配置,一般由服务自己的面板配置
+kv://services/$servic_id/config 服务的运行状态,一般由调度器读写
+kv://services/$servic_id/settings 服务自己的配置,一般由服务自己的面板配置
 
 权限信息:(注意服务的servic_id都是srv_开头的)
 g,$servic_id,services
 
 
 ## 应用相关
-kv://users/$userid/apps/$appid/config 应用的安装配置信息 (通常是不可变的),一般由系统的控制面板设置
-kv://users/$userid/apps/$appid/info 应用的运行状态,一般由调度器读写
-kv://users/$userid/apps/$appid/setting 应用的语义配置(一般由应用的配置面板配置,如为空则为默认配置)
+kv://users/$userid/apps/$appid/config 应用的运行配置
+kv://users/$userid/apps/$appid/settings 应用的语义配置(一般由应用的配置面板配置,如为空则为默认配置)
 
 权限: (注意应用的appid不能和userid相同,目前系统无法区分这种情况)
 g,$appid,apps
@@ -79,7 +98,7 @@ g,$userid,administrators (管理员)
 
 
 ## 设备数据
-kv://devices/$device_id/info 设备的状态信息
+kv://devices/$device_id/info 设备的实时状态信息,由node_daemon汇报
 kv://devices/$device_id/doc 设备的DID Document,一般是身份信息
 
 权限:
@@ -90,7 +109,7 @@ g,$device_id,devices
 ## node相关
 kv://nodes/$device_id/config 节点的运行配置信息,由调度器构建
 kv://nodes/$device_id/info 节点的状态信息,由node_daemon汇报
-kv://nodes/$device_id/gateway 节点的网关配置,由调度器构建
+kv://nodes/$device_id/gateway_config 节点的网关配置,由调度器构建
 
 
 

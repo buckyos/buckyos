@@ -1,10 +1,11 @@
 use super::datagram::RTcpTunnelDatagramClient;
+use super::dispatcher::RTcpDispatcherManager;
 use super::package::StreamPurpose;
 use super::package::*;
 use super::protocol::*;
-use super::stack::{WaitStream, NOTIFY_ROPEN_STREAM, WAIT_ROPEN_STREAM_MAP};
+use super::stream_helper::RTcpStreamBuildHelper;
 use crate::aes_stream::EncryptedStream;
-use crate::tunnel::{DatagramClientBox, Tunnel, TunnelEndpoint};
+use crate::tunnel::*;
 use anyhow::Result;
 use async_trait::async_trait;
 use buckyos_kit::buckyos_get_unix_timestamp;
@@ -26,7 +27,10 @@ use tokio::time::timeout;
 
 #[derive(Clone)]
 pub(crate) struct RTcpTunnel {
-    target: RTcpTarget,
+    build_helper: RTcpStreamBuildHelper,
+    dispatcher_manager: RTcpDispatcherManager,
+
+    target: RTcpTargetStackId,
     can_direct: bool,
     peer_addr: SocketAddr,
     this_device: String,
@@ -45,8 +49,10 @@ pub(crate) struct RTcpTunnel {
 
 impl RTcpTunnel {
     pub fn new(
+        build_helper: RTcpStreamBuildHelper,
+        dispatcher_manager: RTcpDispatcherManager,
         this_device: String,
-        target: &RTcpTarget,
+        target: &RTcpTargetStackId,
         can_direct: bool,
         stream: TcpStream,
         aes_key: [u8; 32],
@@ -58,9 +64,12 @@ impl RTcpTunnel {
         let encrypted_stream = EncryptedStream::new(stream, &aes_key, &iv);
         let (read_stream, write_stream) = tokio::io::split(encrypted_stream);
         //let (read_stream,write_stream) =  tokio::io::split(stream);
-        let mut this_target = target.clone();
-        this_target.target_port = 0;
-        RTcpTunnel {
+        let this_target = target.clone();
+
+        //this_target.target_port = 0;
+        Self {
+            build_helper,
+            dispatcher_manager,
             target: this_target,
             can_direct, //Considering the limit of port mapping, the default configuration is configured as "NoDirect" mode
             peer_addr: peer_addr,
@@ -123,9 +132,7 @@ impl RTcpTunnel {
 
                 Ok(())
             }
-            RTcpTunnelPackage::Pong(_pong_package) => {
-                Ok(())
-            }
+            RTcpTunnelPackage::Pong(_pong_package) => Ok(()),
             t @ _ => {
                 error!("Unsupport tunnel package type: {:?}", t);
                 Ok(())
@@ -226,11 +233,12 @@ impl RTcpTunnel {
         );
 
         // 1. First try to find if dispatcher exists for the target port
-        let ret = super::dispatcher::RTCP_DISPATCHER_MANAGER.get_stream_dispatcher(dest_port);
+        let ret = self.dispatcher_manager.get_stream_dispatcher(dest_port);
         if let Some(dispatcher) = ret {
+            //TODO: bug?
             let end_point = TunnelEndpoint {
                 device_id: self.target.get_id_str(),
-                port: self.target.target_port,
+                port: self.target.stack_port,
             };
             dispatcher.on_new_stream(stream, end_point).await?;
             return Ok(());
@@ -300,11 +308,12 @@ impl RTcpTunnel {
         );
 
         // 1. First try to find if dispatcher exists for the target port
-        let ret = super::dispatcher::RTCP_DISPATCHER_MANAGER.get_datagram_dispatcher(dest_port);
+        let ret = self.dispatcher_manager.get_datagram_dispatcher(dest_port);
         if let Some(dispatcher) = ret {
+            //TODO: bug?
             let end_point = TunnelEndpoint {
                 device_id: self.target.get_id_str(),
-                port: self.target.target_port,
+                port: self.target.stack_port,
             };
             dispatcher.on_new_stream(stream, end_point).await?;
             return Ok(());
@@ -335,10 +344,7 @@ impl RTcpTunnel {
             self.this_device.as_str(),
             open_package.body.stream_id
         );
-        WAIT_ROPEN_STREAM_MAP
-            .lock()
-            .await
-            .insert(real_key, WaitStream::Waiting);
+        self.build_helper.wait_ropen_stream(&real_key).await?;
 
         // 2. send open_resp with success
         {
@@ -403,14 +409,22 @@ impl RTcpTunnel {
                 RTcpTunnelPackage::read_package(read_stream, false, source_info.as_str()).await;
             //info!("rtcp tunnel read package from {} ok",source_info.as_str());
             if ret.is_err() {
-                error!("Read package from tunnel error: {}, {:?}", source_info, ret.err().unwrap());
+                error!(
+                    "Read package from tunnel error: {}, {:?}",
+                    source_info,
+                    ret.err().unwrap()
+                );
                 break;
             }
 
             let package = ret.unwrap();
             let result = self.process_package(package).await;
             if result.is_err() {
-                error!("process package error: {}, {}", source_info, result.err().unwrap());
+                error!(
+                    "process package error: {}, {}",
+                    source_info,
+                    result.err().unwrap()
+                );
                 break;
             }
         }
@@ -459,33 +473,8 @@ impl RTcpTunnel {
     }
 
     async fn wait_ropen_stream(&self, session_key: &str) -> Result<TcpStream, std::io::Error> {
-        //let wait_map = WAIT_ROPEN_STREAM_MAP.clone();
-        let wait_nofity = NOTIFY_ROPEN_STREAM.clone();
         let real_key = format!("{}_{}", self.this_device.as_str(), session_key);
-        loop {
-            let mut map = WAIT_ROPEN_STREAM_MAP.lock().await;
-            let wait_stream = map.remove(real_key.as_str());
-
-            if wait_stream.is_some() {
-                match wait_stream.unwrap() {
-                    WaitStream::OK(stream) => {
-                        return Ok(stream);
-                    }
-                    WaitStream::Waiting => {
-                        //do nothing
-                        map.insert(real_key.clone(), WaitStream::Waiting);
-                    }
-                }
-            }
-            drop(map);
-            if let Err(_) = timeout(Duration::from_secs(30), wait_nofity.notified()).await {
-                warn!(
-                    "Timeout: ropen stream {} was not found within the time limit.",
-                    real_key.as_str()
-                );
-                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Timeout"));
-            }
-        }
+        self.build_helper.wait_ropen_stream(&real_key).await
     }
 
     async fn open_stream(
@@ -567,15 +556,13 @@ impl RTcpTunnel {
         } else {
             //send ropen to target
 
-            WAIT_ROPEN_STREAM_MAP
-                .lock()
-                .await
-                .insert(real_key.clone(), WaitStream::Waiting);
+            self.build_helper.new_wait_stream(&real_key).await;
+
             //info!("insert session_key {} to wait ropen stream map",real_key.as_str());
             self.post_ropen(seq, purpose, dest_port, dest_host, session_key.as_str())
                 .await?;
 
-            //wait new stream with session_key fomr target
+            // wait new stream with session_key from target
             let stream = self.wait_ropen_stream(&session_key.as_str()).await?;
             let aes_stream: EncryptedStream<TcpStream> =
                 EncryptedStream::new(stream, &self.get_key(), &random_bytes);
@@ -596,7 +583,7 @@ impl Tunnel for RTcpTunnel {
         Ok(())
     }
 
-    async fn open_stream(
+    async fn open_stream_by_dest(
         &self,
         dest_port: u16,
         dest_host: Option<String>,
@@ -605,7 +592,12 @@ impl Tunnel for RTcpTunnel {
             .await
     }
 
-    async fn create_datagram_client(
+    async fn open_stream(&self, stream_id: &str) -> Result<Box<dyn AsyncStream>, std::io::Error> {
+        let (dest_host, dest_port) = get_dest_info_from_url_path(stream_id)?;
+        self.open_stream_by_dest(dest_port, dest_host).await
+    }
+
+    async fn create_datagram_client_by_dest(
         &self,
         dest_port: u16,
         dest_host: Option<String>,
@@ -616,5 +608,14 @@ impl Tunnel for RTcpTunnel {
             .await?;
         let client = RTcpTunnelDatagramClient::new(Box::new(stream));
         Ok(Box::new(client) as Box<dyn DatagramClientBox>)
+    }
+
+    async fn create_datagram_client(
+        &self,
+        session_id: &str,
+    ) -> Result<Box<dyn DatagramClientBox>, std::io::Error> {
+        let (dest_host, dest_port) = get_dest_info_from_url_path(session_id)?;
+        self.create_datagram_client_by_dest(dest_port, dest_host)
+            .await
     }
 }

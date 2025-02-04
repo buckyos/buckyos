@@ -1,8 +1,11 @@
+#![allow(dead_code)]
+
 mod provider;
 mod name_client;
 mod name_query;
 mod dns_provider;
 mod zone_provider;
+mod utility;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 pub use provider::*;
@@ -10,6 +13,16 @@ pub use name_client::*;
 pub use name_query::*;
 pub use dns_provider::*;
 pub use zone_provider::*;
+pub use utility::*;
+
+use cfg_if::cfg_if;
+cfg_if! {
+    if #[cfg(feature = "cloudflare")] {
+        mod cloudflare;
+        pub use cloudflare::*;
+    }
+}
+
 
 use log::*;
 use std::{env, net::IpAddr};
@@ -120,7 +133,7 @@ fn get_name_client() -> Option<&'static NameClient> {
     return client;
 }
 
-pub async fn resolve(name: &str, record_type: Option<&str>) -> NSResult<NameInfo> {
+pub async fn resolve(name: &str, record_type: Option<RecordType>) -> NSResult<NameInfo> {
     let client = get_name_client();
     if client.is_none() {
         let client = GLOBAL_BOOT_NAME_CLIENT.get();
@@ -218,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_nameinfo() {
-        let name_info = resolve("buckyos.io",Some("DID")).await.unwrap();
+        let name_info = resolve("buckyos.io", crate::provider::RecordType::from_str("DID")).await.unwrap();
         println!("name_info: {:?}",name_info);
     }
 

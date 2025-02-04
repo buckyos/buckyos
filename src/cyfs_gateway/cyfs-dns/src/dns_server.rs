@@ -4,25 +4,27 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 
-use log::trace;
-use log::{debug, error, info, warn};
-use rdata::{CNAME,TXT,A,AAAA};
-use tokio::net::UdpSocket;
+use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
+use hickory_server::authority::{Catalog, MessageRequest, MessageResponse, MessageResponseBuilder};
 use hickory_server::proto::op::*;
 use hickory_server::proto::rr::*;
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use hickory_server::ServerFuture;
-use hickory_server::authority::{Catalog, MessageRequest, MessageResponse, MessageResponseBuilder};
-use hickory_proto::serialize::binary::{BinEncodable,BinDecodable};
+use log::trace;
+use log::{debug, error, info, warn};
+use rdata::{A, AAAA, CNAME, TXT};
+use tokio::net::UdpSocket;
 
 use anyhow::Result;
-use name_client::{DNSProvider, NSProvider, NameInfo};
 use cyfs_gateway_lib::*;
-use tokio::time::timeout;
-use url::Url;
-use std::time::Duration;
 use cyfs_sn::get_sn_server_by_id;
 use futures::stream::{self, StreamExt};
+use name_client::{DnsProvider, NameInfo, NsProvider, RecordType};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
+use url::Url;
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Name not found: {0:}")]
@@ -33,21 +35,26 @@ pub enum Error {
     InvalidMessageType(MessageType),
     #[error("Invalid Zone {0:}")]
     InvalidZone(LowerName),
+    #[error("Invalid RecordType {0:}")]
+    InvalidRecordType(String),
     #[error("IO error: {0:}")]
     Io(#[from] std::io::Error),
 }
 
-pub struct DnsServer {
-    config : DNSServerConfig,
-    resolver_chain: Vec<Box<dyn NSProvider>>,
+#[derive(Clone)]
+pub struct DNSServer {
+    config: DNSServerConfig,
+    resolver_chain: Arc<Vec<Box<dyn NsProvider>>>,
 }
 
-pub async fn create_ns_provider(provider_config: &DNSProviderConfig) -> Result<Box<dyn NSProvider>> {
+pub async fn create_ns_provider(
+    provider_config: &DNSProviderConfig,
+) -> Result<Box<dyn NsProvider>> {
     match provider_config.provider_type {
         DNSProviderType::DNS => {
-            let dns_provider = DNSProvider::new(None);
+            let dns_provider = DnsProvider::new(None);
             Ok(Box::new(dns_provider))
-        },
+        }
         DNSProviderType::SN => {
             let sn_server_id = provider_config.config.get("server_id");
             if sn_server_id.is_none() {
@@ -69,41 +76,42 @@ pub async fn create_ns_provider(provider_config: &DNSProviderConfig) -> Result<B
             }
             let sn_server = sn_server.unwrap();
             Ok(Box::new(sn_server))
-        },
-        _ => {
-            Err(anyhow::anyhow!("Unknown provider type: {:?}", provider_config.provider_type))
         }
+        _ => Err(anyhow::anyhow!(
+            "Unknown provider type: {:?}",
+            provider_config.provider_type
+        )),
     }
 }
 
 //TODO: dns_provider is realy a demo implementation, must refactor before  used in a offical server.
-fn nameinfo_to_rdata(record_type:&str, name_info: &NameInfo) -> Result<Vec<RData>> {
+fn nameinfo_to_rdata(record_type: &str, name_info: &NameInfo) -> Result<Vec<RData>> {
     match record_type {
-        "A"=> {
+        "A" => {
             if name_info.address.is_empty() {
                 return Err(anyhow::anyhow!("Address is none"));
             }
-            
+
             let mut records = Vec::new();
             // Convert all IPv4 addresses to A records
             for addr in name_info.address.iter() {
                 match addr {
                     IpAddr::V4(addr) => {
                         records.push(RData::A(A::from(*addr)));
-                    },
+                    }
                     _ => {
                         debug!("Skipping non-IPv4 address");
                         continue;
                     }
                 }
             }
-            
+
             if records.is_empty() {
                 return Err(anyhow::anyhow!("No valid IPv4 addresses found"));
             }
             Ok(records)
-        },
-        "AAAA"=> {
+        }
+        "AAAA" => {
             if name_info.address.is_empty() {
                 return Err(anyhow::anyhow!("Address is none"));
             }
@@ -113,30 +121,29 @@ fn nameinfo_to_rdata(record_type:&str, name_info: &NameInfo) -> Result<Vec<RData
                 match addr {
                     IpAddr::V6(addr) => {
                         records.push(RData::AAAA(AAAA::from(*addr)));
-                    },
+                    }
                     _ => {
                         debug!("Skipping non-IPv6 address");
                         continue;
                     }
                 }
             }
-            
+
             if records.is_empty() {
                 return Err(anyhow::anyhow!("No valid IPv6 addresses found"));
             }
             Ok(records)
-        },
-        "CNAME"=> {
+        }
+        "CNAME" => {
             if name_info.cname.is_none() {
-                return Err(anyhow::anyhow!("CNAME is none")); 
+                return Err(anyhow::anyhow!("CNAME is none"));
             }
             let cname = name_info.cname.clone().unwrap();
             let mut records = Vec::new();
             records.push(RData::CNAME(CNAME(Name::from_str(cname.as_str()).unwrap())));
             return Ok(records);
-
-        },
-        "TXT"=> {
+        }
+        "TXT" => {
             if name_info.txt.is_none() {
                 warn!("TXT is none");
                 return Err(anyhow::anyhow!("TXT is none"));
@@ -147,22 +154,22 @@ fn nameinfo_to_rdata(record_type:&str, name_info: &NameInfo) -> Result<Vec<RData
                 warn!("TXT is too long, split it");
                 let s1 = txt[0..254].to_string();
                 let s2 = txt[254..].to_string();
-                
-                records.push(RData::TXT(TXT::new(vec![s1,s2])));
+
+                records.push(RData::TXT(TXT::new(vec![s1, s2])));
             } else {
                 records.push(RData::TXT(TXT::new(vec![txt])));
-            }    
-            return Ok(records);        
-        },
+            }
+            return Ok(records);
+        }
         _ => {
             return Err(anyhow::anyhow!("Unknown record type:{}", record_type));
         }
     }
 }
 
-impl DnsServer {
+impl DNSServer {
     pub async fn new(config: DNSServerConfig) -> Result<Self> {
-        let mut resolver_chain : Vec<Box<dyn NSProvider>> = Vec::new();
+        let mut resolver_chain: Vec<Box<dyn NsProvider>> = Vec::new();
 
         for provider_config in config.resolver_chain.iter() {
             let provider = create_ns_provider(provider_config).await;
@@ -173,15 +180,46 @@ impl DnsServer {
             }
         }
 
-        Ok(DnsServer {
+        Ok(DNSServer {
             config,
-            resolver_chain,
+            resolver_chain: Arc::new(resolver_chain),
         })
     }
 
-    async fn handle_fallback<R: ResponseHandler> (
-        &self, request: &Request,server_name:&str,
-        mut response: R
+    async fn start(&self) -> Result<()> {
+        let bind_addr = self.config.bind.clone().unwrap_or("0.0.0.0".to_string());
+        let addr = format!("{}:{}", bind_addr, self.config.port);
+        info!("cyfs-dns-server try bind at:{}", addr);
+        let udp_socket = UdpSocket::bind(addr.clone()).await?;
+
+        let mut server = ServerFuture::new(self.clone());
+        server.register_socket(udp_socket);
+
+        tokio::spawn(async move {
+            info!("cyfs-dns-server run at:{}", addr);
+            match server.block_until_done().await {
+                Ok(_) => {
+                    info!("cyfs-dns-server done: {}", addr);
+                }
+                Err(e) => {
+                    error!("cyfs-dns-server error: {}, {}", e, addr);
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        // TODO: stop server for config dynamic update or outside control
+        Ok(())
+    }
+
+    async fn handle_fallback<R: ResponseHandler>(
+        &self,
+        request: &Request,
+        server_name: &str,
+        mut response: R,
     ) -> Result<Message, Error> {
         let message = request.to_bytes();
         let message = message.unwrap();
@@ -191,14 +229,13 @@ impl DnsServer {
             return Err(Error::NameNotFound("".to_string()));
         }
         let target_url = target_url.unwrap();
-        let host = target_url.host_str().unwrap(); 
+        let host = target_url.host_str().unwrap();
         let port = target_url.port().unwrap_or(53);
         let target_addr = SocketAddr::new(IpAddr::from_str(host).unwrap(), port);
         socket.send_to(&message, target_addr).await?;
-        let mut buf = [0u8; 2048]; 
+        let mut buf = [0u8; 2048];
         let mut resp_len = 512;
-        let proxy_result = timeout(Duration::from_secs(5), 
-            socket.recv_from(&mut buf)).await;
+        let proxy_result = timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await;
         //let resp_vec =buf[0..resp_len].to_vec();
         let resp_message = Message::from_vec(&buf[0..resp_len]);
         if resp_message.is_err() {
@@ -213,9 +250,8 @@ impl DnsServer {
     async fn do_handle_request<R: ResponseHandler>(
         &self,
         request: &Request,
-        mut response: R
+        mut response: R,
     ) -> Result<ResponseInfo, Error> {
-
         // make sure the request is a query
         if request.op_code() != OpCode::Query {
             return Err(Error::InvalidOpCode(request.op_code()));
@@ -227,25 +263,33 @@ impl DnsServer {
         }
 
         let from_ip = request.src().ip();
-    
-        // WARN!!! 
+
+        // WARN!!!
         // Be careful to handle the request that may be delivered to the DNS-Server again to avoid the dead cycle
-        
+
         let name = request.query().name().to_string();
-        let record_type = request.query().query_type().to_string();
-        info!("|==>DNS query name:{},record_type:{}", name,record_type);
-        //foreach provider in resolver_chain 
+        let record_type_str = request.query().query_type().to_string();
+        let record_type = RecordType::from_str(&record_type_str)
+            .ok_or_else(|| Error::InvalidRecordType(record_type_str))?;
+
+        info!("|==>DNS query name:{}, record_type:{:?}", name, record_type);
+
         for provider in self.resolver_chain.iter() {
-            let name_info = provider.query(name.as_str(),Some(record_type.as_str()),Some(from_ip)).await;
+            let name_info = provider
+                .query(name.as_str(), Some(record_type.clone()), Some(from_ip))
+                .await;
             if name_info.is_err() {
                 trace!("Provider {} can't resolve name:{}", provider.get_id(), name);
                 continue;
             }
 
             let name_info = name_info.unwrap();
-            let rdata_vec = nameinfo_to_rdata(record_type.as_str(),&name_info);
+            let rdata_vec = nameinfo_to_rdata(record_type.to_string().as_str(), &name_info);
             if rdata_vec.is_err() {
-                error!("Failed to convert nameinfo to rdata:{}", rdata_vec.err().unwrap());
+                error!(
+                    "Failed to convert nameinfo to rdata:{}",
+                    rdata_vec.err().unwrap()
+                );
                 continue;
             }
 
@@ -255,28 +299,34 @@ impl DnsServer {
             header.set_response_code(ResponseCode::NoError);
 
             let mut ttl = name_info.ttl.unwrap_or(600);
-            let records = rdata_vec.into_iter().map(|rdata| Record::from_rdata(request.query().name().into(), ttl, rdata)).collect::<Vec<_>>();
-            let mut message = builder.build(header,records.iter(),&[],&[],&[]);
+            let records = rdata_vec
+                .into_iter()
+                .map(|rdata| Record::from_rdata(request.query().name().into(), ttl, rdata))
+                .collect::<Vec<_>>();
+            let mut message = builder.build(header, records.iter(), &[], &[], &[]);
             response.send_response(message).await;
-            info!("<==|name:{} {} resolved by provider:{}", name, record_type,provider.get_id());
+            info!(
+                "<==|name:{} {} resolved by provider:{}",
+                name,
+                record_type.to_string(),
+                provider.get_id()
+            );
             //let mut response = message.into();
             return Ok(header.into());
         }
 
-        
         if let Some(server_name) = self.config.this_name.as_ref() {
             if !name.ends_with(server_name.as_str()) {
                 info!("All providers can't resolve name:{} enter fallback", name);
                 // for server_name in self.config.fallback.iter() {
                 //     let resp_message = self.handle_fallback(request,server_name,response.clone()).await;
                 //     if resp_message.is_ok() {
-                        
+
                 //         return resp_info;
                 //     }
                 // }
             }
         }
-
 
         warn!("All providers can't resolve name:{}", name);
         return Err(Error::NameNotFound("".to_string()));
@@ -284,7 +334,7 @@ impl DnsServer {
 }
 
 #[async_trait]
-impl RequestHandler for DnsServer {
+impl RequestHandler for DNSServer {
     async fn handle_request<R: ResponseHandler>(
         &self,
         request: &Request,
@@ -293,34 +343,24 @@ impl RequestHandler for DnsServer {
         // try to handle request
         let mut resp2 = response.clone();
         match self.do_handle_request(request, response).await {
-            Ok(info) => {
-                info
-            },
+            Ok(info) => info,
             Err(error) => {
                 error!("Error in RequestHandler: {error}");
                 let mut builder = MessageResponseBuilder::from_message_request(request);
                 let mut header = Header::response_from_request(request.header());
                 header.set_response_code(ResponseCode::NXDomain);
                 let records = vec![];
-                let mut message = builder.build(header,records.iter(),&[],&[],&[]);
+                let mut message = builder.build(header, records.iter(), &[], &[], &[]);
                 resp2.send_response(message).await;
                 header.into()
             }
-        }  
+        }
     }
 }
 
-pub async fn start_cyfs_dns_server(config:DNSServerConfig) -> anyhow::Result<()> {
-    let bind_addr = config.bind.clone().unwrap_or("0.0.0.0".to_string());
-    let addr = format!("{}:{}", bind_addr,config.port);
-    info!("cyfs-dns-server try bind at:{}", addr);
-    let udp_socket = UdpSocket::bind(addr.clone()).await?;
-    let handler = DnsServer::new(config).await?;
-    let mut server = ServerFuture::new(handler);
-    server.register_socket(udp_socket);
+pub async fn start_cyfs_dns_server(config: DNSServerConfig) -> anyhow::Result<DNSServer> {
+    let server = DNSServer::new(config).await?;
+    server.start().await?;
 
-    info!("cyfs-dns-server run at:{}", addr);
-    server.block_until_done().await?;
-
-    Ok(())
+    Ok(server)
 }
