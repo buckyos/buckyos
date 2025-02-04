@@ -23,7 +23,7 @@ fn build_app_service_config(user_id:&str,app_config:&AppConfig,node_info:&Device
 
     // 解析是否有<arch>_direct_image字段
     let direct_pkg_name = format!("{}_direct_image", arch_name.as_str());
-    if let Some(info) = app_config.app_info.pkg_list.get(&direct_pkg_name) {
+    if let Some(info) = app_config.app_doc.pkg_list.get(&direct_pkg_name) {
         result_config.direct_image = Some(info.package_url.clone().unwrap_or(String::new()));
     }
 
