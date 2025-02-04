@@ -48,7 +48,7 @@ export class AuthClient {
         //return token;
     }
 
-    async _openAuthWindow(redirect_uri:string|null=null) : Promise<string> {
+    async _openAuthWindow(redirect_uri:string) : Promise<string> {
         return new Promise((resolve, reject) => {
             const width = 500;
             const height = 600;
@@ -90,14 +90,14 @@ export class AuthClient {
     logout() {
         this.token = null;
         if (this.useCookie) {
-            this.deleteCookie(this.tokenKey);
+            this.deleteCookie(this.token);
         } else {
-            localStorage.removeItem(this.tokenKey);
+            localStorage.removeItem(this.token!);
         }
     }
 
     // Utility function to set a cookie
-    setCookie(name, value, options = {}) {
+    setCookie(name: string, value: string, options: any) {
         let cookieString = `${encodeURIComponent(name)}=${encodeURIComponent(value)}`;
 
         if (options.expires) {
