@@ -25,7 +25,7 @@
   "dependencies": {
     "@material/web": "^2.2.0",
     "bcryptjs": "^2.4.3",
-    "buckyos": "https://github.com/buckyos/buckyos-websdk.git",
+    "buckyos": "github:buckyos/buckyos-websdk",
     "handlebars": "^4.7.8",
     "i18next": "^24.1.2",
     "i18next-http-backend": "^3.0.1",

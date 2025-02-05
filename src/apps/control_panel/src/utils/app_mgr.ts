@@ -1,4 +1,4 @@
-import buckyos from 'buckyos';
+import {buckyos} from 'buckyos';
 import { get_session_account_info } from './account';
 import { SystemConfigClient } from './sys_config_client';
 

@@ -12,7 +12,7 @@ import '@material/web/textfield/outlined-text-field.js';
 import { MdOutlinedTextField } from '@material/web/textfield/outlined-text-field.js';
 import '@material/web/textfield/filled-text-field.js';
 import { MdOutlinedButton } from '@material/web/button/outlined-button.js';
-import buckyos from 'buckyos';
+import {buckyos} from 'buckyos';
 
 
 async function doLogin(username:string, password:string,appId:string,source_url:string) {
@@ -39,14 +39,13 @@ async function doLogin(username:string, password:string,appId:string,source_url:
 
 //after dom loaded
 window.onload = async () => {
-
-    var url_appid:string|null = parsedUrl.searchParams.get('client_id');
-    console.log("url_appid: ", url_appid);
-    buckyos.init_buckyos(url_appid);
-    //console.log(zone_host);
-
-    const source_url = document.referrer;
     const parsedUrl = new URL(window.location.href);
+    const source_url = document.referrer;
+    
+    var url_appid:string|null = parsedUrl.searchParams.get('client_id');
+    //console.log("url_appid: ", url_appid);
+    await buckyos.initBuckyOS(url_appid);
+    //console.log(zone_host);
 
     if (url_appid == null) {
        alert("client_id(appid) is null");

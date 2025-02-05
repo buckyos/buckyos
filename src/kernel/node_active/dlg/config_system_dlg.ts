@@ -39,7 +39,7 @@ class ConfigSystemDlg extends HTMLElement {
                 return false;
             }
         }
-        wizzard_data.admin_password_hash = await buckyos.AuthClient.hash_password(wizzard_data.sn_user_name,txt_admin_password.value);
+        wizzard_data.admin_password_hash = await buckyos.hashPassword(wizzard_data.sn_user_name,txt_admin_password.value);
         wizzard_data.friend_passcode = txt_friend_code.value;
         let chk_enable_guest = shadow.getElementById('chk_enable_guest') as BuckyCheckBox;
         wizzard_data.enable_guest_access = chk_enable_guest.checked;

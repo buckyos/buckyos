@@ -1,10 +1,8 @@
 
 import './dlg/login-form';
 import { i18next, updateElementAndShadowRoots} from './i18n';
-import buckyos from 'buckyos';
+import {buckyos} from 'buckyos';
 import { LOGIN_EVENT, LoginEventDetail } from './utils/account';
-
-
 
 window.addEventListener(LOGIN_EVENT, (event: CustomEvent<LoginEventDetail>) => {
     console.log("login success: ", event.detail);
@@ -18,14 +16,6 @@ window.onload = async () => {
         updateElementAndShadowRoots(document);
     });
 
-    buckyos.add_web3_bridge("web3.buckyos.io");
-    let zone_host = buckyos.get_zone_host_name(window.location.host);
-    if (zone_host == null) {
-        console.error("zone_host is null");
-        return;
-    }
-    buckyos.init_buckyos(zone_host);
-
-
+    await buckyos.initBuckyOS("control_panel");    
     
 }

@@ -1,6 +1,6 @@
 import "./components/bs-title-bar";
 import {i18next, updateElementAndShadowRoots} from './i18n';
-import buckyos from 'buckyos';
+import {buckyos} from 'buckyos';
 import { LOGIN_EVENT, LoginEventDetail, get_session_account_info } from './utils/account';
 import "./dlg/app_setting";
 import { get_app_list } from './utils/app_mgr';

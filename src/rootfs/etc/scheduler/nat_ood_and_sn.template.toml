@@ -1,4 +1,7 @@
 # users : users/$user_id/setting , user_id is never changed, user_name can changed. User root cann't be deleted and always exists
+# password_hash : shaObj.update(org_password+username+".buckyos");，shaObj.getHash("B64")
+# password_hash : echo -n "org_password+username+.buckyos" | openssl dgst -sha256 -binary | openssl base64
+
 "users/root/settings" = '{"type":"root","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 "users/{{user_name}}/settings" = '{"type":"admin","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 # devices,set & update by register_device_doc@node_daemon
@@ -63,7 +66,7 @@
             "user_id":"{{user_name}}",
             "app_id":"control-panel"
         },
-        "test":{
+        "sys_test":{
             "type":"app",
             "user_id":"{{user_name}}",
             "app_id":"sys-test"
@@ -108,7 +111,16 @@
                             "upstream":"http://127.0.0.1:3300"
                         }
                     }
+                },
+                "test.*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{{BUCKYOS_ROOT}}/bin/sys_test"
+                        }
+                    }
                 }
+
             }
         }
     },
@@ -281,6 +293,14 @@
                             "upstream":"http://127.0.0.1:3300"
                         }
                     }
+                },
+                "sys_test.*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{{BUCKYOS_ROOT}}/bin/sys_test"
+                        }
+                    }
                 }
             }
         }
@@ -410,7 +430,7 @@ g, control_panel, kernel
 g, samba,services
 
 g, {{user_name}},admin
-
+g, sys-test, app
 """
 
 "boot/config" = """

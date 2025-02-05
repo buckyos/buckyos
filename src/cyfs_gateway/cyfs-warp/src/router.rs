@@ -82,14 +82,14 @@ impl Router {
                 let mut host_config =  hosts.get("*");
                 for (key,value) in hosts.iter() {
                     if key.starts_with("*.") {
-                        if host.ends_with(&key[2..]) {
+                        if host.ends_with(&key[1..]) {
                             host_config = Some(value);
                             break;
                         }
                     }
         
                     if key.ends_with(".*") {
-                        if host.starts_with(&key[..key.len()-2]) {
+                        if host.starts_with(&key[..key.len()-1]) {
                             host_config = Some(value);
                             break;
                         }

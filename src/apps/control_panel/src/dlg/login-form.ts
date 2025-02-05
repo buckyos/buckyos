@@ -2,7 +2,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { i18next } from '../i18n';
 import '@shoelace-style/shoelace';
-import { LOGIN_EVENT, LoginEventDetail,doLogin} from '../utils/account';
+import {buckyos} from 'buckyos';
+import { LOGIN_EVENT, LoginEventDetail } from '../utils/account';
 
 
 // 创建事件分发函数
@@ -133,7 +134,7 @@ export class LoginForm extends LitElement {
     let password = (this.shadowRoot?.querySelector('sl-input[name="password"]') as HTMLInputElement)?.value;
     if (username && password) {
       try {
-        let login_result = await doLogin(username, password, "control_panel", window.location.href);
+        let login_result = await buckyos.doLogin(username, password);
         dispatchLoginEvent(login_result);
       } catch (error) {
         console.error("login failed: ", error);

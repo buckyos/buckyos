@@ -7,7 +7,7 @@ use lazy_static::lazy_static;
 use warp::{Filter};
 use serde_json::{json, Value};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256, Sha512};
 
 use jsonwebtoken::{Validation, EncodingKey, DecodingKey};
 use name_lib::*;
@@ -290,7 +290,7 @@ async fn handle_login_by_password(params:Value,login_nonce:u64) -> Result<Value>
     let user_type = user_type.as_str()
         .ok_or(RPCErrors::ReasonError("Invalid user type".to_string()))?;
     
-    //encode password with nonce and check it is right
+    //encode password with nonce and check it is right    
     let password_hash_input = STANDARD.decode(password)
         .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
     

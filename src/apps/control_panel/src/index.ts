@@ -12,7 +12,7 @@ import '@material/web/textfield/outlined-text-field.js';
 import '@material/web/textfield/filled-text-field.js';
 import { MdOutlinedButton } from '@material/web/button/outlined-button.js';
 import './components/bs-title-bar.ts';
-import buckyos from 'buckyos';
+import {buckyos} from 'buckyos';
 import {i18next, updateElementAndShadowRoots} from './i18n';
 
 //after dom loaded
