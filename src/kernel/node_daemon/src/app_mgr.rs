@@ -40,6 +40,39 @@ impl AppRunItem {
             device_private_key: device_private_key.clone(),
         }
     }
+
+    async fn load(&self) -> bool {
+        // only load once
+        // 防重入
+        let mut loader = self.app_loader.write().await;
+        if loader.is_some() {
+            return true;
+        }
+
+        if cfg!(windows) {
+            // 由于现在二进制包是预先安装的，不用考虑下载，这里只要是Some就可以，不关心内容
+            if self.app_service_config.direct_image.is_some() {
+                let mut app_loader =
+                    ServicePkg::new(self.app_id.clone(), get_buckyos_system_bin_dir());
+                let load_result = app_loader.load().await;
+                if load_result.is_ok() {
+                    loader.replace(app_loader);
+                }
+                load_result.is_ok()
+            } else {
+                warn!("app {} not support direct run on windows", self.app_id);
+                false
+            }
+        } else {
+            let mut app_loader =
+                ServicePkg::new("app_loader".to_string(), get_buckyos_system_bin_dir());
+            let load_result = app_loader.load().await;
+            if load_result.is_ok() {
+                loader.replace(app_loader);
+            }
+            load_result.is_ok()
+        }
+    }
 }
 
 #[async_trait]

@@ -188,6 +188,10 @@
             },
             "web_pages" :{
                 "pkg_id" : "home-station-web-page"
+            },
+            "amd64_direct_image" :{
+                "pkg_id" : "home-station-web-page",
+                "package_url": "https://web3.buckyos.io/static/home-station-win.zip"
             }
         }
     },

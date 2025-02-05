@@ -28,5 +28,22 @@ def install():
         #just update bin
         shutil.copytree(os.path.join(src_dir, "rootfs/bin"), bin_dir)
 
+    if platform.system() == "Windows":
+        app_bin_dir = os.path.join(install_root_dir, "bin", "home-station")
+        if not os.path.exists(app_bin_dir):
+            print("downloading filebrowser app on windows")
+            os.makedirs(app_bin_dir,exist_ok=True)
+
+            import urllib.request
+            import zipfile
+            [tmp_path, msg] = urllib.request.urlretrieve("https://web3.buckyos.io/static/home-station-win.zip")
+
+            with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
+                zip_ref.extractall(app_bin_dir)
+            os.remove(tmp_path)
+    else:
+        print("pulling filebrowser docker image...")
+        os.system("docker pull filebrowser/filebrowser:s6")
+
 if __name__ == "__main__":
     install()

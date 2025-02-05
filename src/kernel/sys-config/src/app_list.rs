@@ -10,6 +10,10 @@ pub struct SubPkgDesc {
     pub pkg_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_image_name:Option<String>,
+    // 留一个口子，以后可以通过这个url下载二进制包
+    // 思考：是不是docker_image_name也可以合并进来？docker://<image_name>:<version>
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_url:Option<String>,
     #[serde(flatten)]
     pub configs:HashMap<String,String>,
 
@@ -23,6 +27,8 @@ pub struct AppDoc {
     pub vendor_did: String,
     pub pkg_id: String,
     //service name -> full image url
+    // 命名逻辑:<arch>_<type>_image, 我们把所有的都看作是image，也为了和现在的保持一致
+    // type: direct/docker, 以后可能还有vm
     pub pkg_list: HashMap<String, SubPkgDesc>,
 }
 
@@ -83,7 +89,7 @@ pub struct AppServiceInstanceConfig {
 
     pub image_pkg_id: Option<String>,
     pub docker_image_name : Option<String>,
-    
+    pub direct_image: Option<String>,         // 现在这里只要是Some就可以，以后可以放二进制包的url
     pub data_mount_point: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_mount_point: Option<String>,
@@ -118,6 +124,7 @@ impl AppServiceInstanceConfig {
             user_id:owner_user_id.to_string(),
             image_pkg_id: None,
             docker_image_name: None,
+            direct_image: None,
             data_mount_point: app_config.data_mount_point.clone(),
             cache_mount_point: app_config.cache_mount_point.clone(),
             local_cache_mount_point: app_config.local_cache_mount_point.clone(),
