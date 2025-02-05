@@ -1,4 +1,4 @@
-import buckyos from "../../../kernel/buckyos_sdk";
+import {buckyos} from 'buckyos';
 
 interface UserSambaInfo {
     is_enable: boolean;
@@ -6,10 +6,9 @@ interface UserSambaInfo {
 }
 
 window.onload = async () => {
-    buckyos.add_web3_bridge("web3.buckyos.io");
-    let zone_host = buckyos.get_zone_host_name(window.location.host);
-    buckyos.init_buckyos(zone_host);
-    console.log(zone_host);
+
+    await buckyos.init_buckyos("control_panel");
+
 
     const source_url = document.referrer;
     const parsedUrl = new URL(window.location.href);

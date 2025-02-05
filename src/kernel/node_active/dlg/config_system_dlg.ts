@@ -4,7 +4,7 @@ import { MdFilledButton } from '@material/web/button/filled-button.js';
 import {BuckyCheckBox} from '../components/checkbox/index';
 import { WizzardDlg } from '../components/wizzard-dlg/index';
 import { ActiveWizzardData} from '../active_lib';
-import buckyos from 'buckyos';
+import { buckyos } from 'buckyos';
 
 class ConfigSystemDlg extends HTMLElement {
     constructor() {
@@ -39,7 +39,7 @@ class ConfigSystemDlg extends HTMLElement {
                 return false;
             }
         }
-        wizzard_data.admin_password_hash = await buckyos.AuthClient.hash_password(wizzard_data.sn_user_name,txt_admin_password.value);
+        wizzard_data.admin_password_hash = await buckyos.hashPassword(wizzard_data.sn_user_name,txt_admin_password.value);
         wizzard_data.friend_passcode = txt_friend_code.value;
         let chk_enable_guest = shadow.getElementById('chk_enable_guest') as BuckyCheckBox;
         wizzard_data.enable_guest_access = chk_enable_guest.checked;

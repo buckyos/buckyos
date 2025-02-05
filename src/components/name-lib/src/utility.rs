@@ -164,7 +164,7 @@ pub fn load_pem_private_key<P: AsRef<Path>>(file_path: P) -> NSResult<[u8;48]> {
 
 // Generate a random private key and return the PKCS#8 encoded bytes
 pub fn generate_ed25519_key() -> (SigningKey, [u8;48]) {
-    let mut csprng = OsRng{};
+    let mut csprng = rand::rngs::OsRng{};
     let signing_key: SigningKey = SigningKey::generate(&mut csprng);
     let private_key_bytes = signing_key.to_bytes();
     let pkcs8_bytes = build_pkcs8(&private_key_bytes);
@@ -210,7 +210,7 @@ pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
 
 
 pub fn generate_x25519_key_pair() -> (PublicKey, StaticSecret) {
-    let mut csprng = OsRng{};
+    let mut csprng = OsRng;
     let signing_key: SigningKey = SigningKey::generate(&mut csprng);
     
     let private_key_bytes = signing_key.to_bytes();

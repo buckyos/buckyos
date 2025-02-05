@@ -19,6 +19,7 @@ fn build_app_service_config(user_id:&str,app_config:&AppConfig,node_info:&Device
     let docker_pkg_info = docker_pkg_info.unwrap();
 
     let mut result_config = AppServiceInstanceConfig::new(user_id,app_config);
+    result_config.image_pkg_id = Some(docker_pkg_info.pkg_id.clone());
     result_config.docker_image_name = Some(docker_pkg_info.docker_image_name.clone().unwrap());
 
     // 解析是否有<arch>_direct_image字段

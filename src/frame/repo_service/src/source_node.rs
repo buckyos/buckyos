@@ -1,8 +1,9 @@
 use crate::def::*;
 use log::*;
 use ndn_lib::ChunkId;
+use package_lib::*;
 use serde_json::Value;
-use sqlx::{database, Pool, Sqlite, SqlitePool};
+use sqlx::{database, error, Pool, Sqlite, SqlitePool};
 use std::path::PathBuf;
 
 fn is_valid_chunk_id(chunk_id: &str) -> bool {
@@ -116,14 +117,50 @@ impl SourceNode {
         pkg_name: &str,
         version_desc: &str,
     ) -> RepoResult<Option<PackageMeta>> {
-        let sql = if is_valid_chunk_id(version_desc) {
+        //如果不是>或者<开头，那么就是一个具体的版本号
+        if !version_desc.starts_with('>')
+            && !version_desc.starts_with('<')
+            && !version_desc.starts_with('=')
+        {
+            return self.get_exact_pkg_meta(pkg_name, version_desc).await;
+        }
+
+        //获取所有的版本号
+        let all_versions = self.get_all_pkg_version(pkg_name).await?;
+        let matched_version = VersionUtil::find_matched_version(version_desc, &all_versions)
+            .map_err(|err| {
+                error!("find_matched_version failed, err:{}", err);
+                RepoError::VersionNotFoundError(version_desc.to_string())
+            })?;
+
+        self.get_exact_pkg_meta(pkg_name, &matched_version).await
+    }
+
+    // version is already a specific version number or * or a chunk_id
+    pub async fn get_exact_pkg_meta(
+        &self,
+        pkg_name: &str,
+        version: &str,
+    ) -> RepoResult<Option<PackageMeta>> {
+        let sql = if is_valid_chunk_id(version) {
             "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE pkg_name = ? AND chunk_id = ?"
+        } else if version == "*" {
+            "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE pkg_name = ? ORDER BY pub_time DESC LIMIT 1"
         } else {
+            //如果第一个字符是>或者<，return error
+            if version.starts_with('>') || version.starts_with('<') || version.starts_with('=') {
+                error!(
+                    "Invalid version expression, should be exact version number: {}",
+                    version
+                );
+                return Err(RepoError::VersionError(version.to_string()));
+            }
             "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE pkg_name = ? AND version = ?"
         };
+
         let result = sqlx::query_as::<_, PackageMeta>(sql)
             .bind(pkg_name)
-            .bind(version_desc)
+            .bind(version)
             .fetch_optional(&self.pool)
             .await?;
 
@@ -142,13 +179,17 @@ impl SourceNode {
     }
 
     pub async fn get_all_pkg_version(&self, pkg_name: &str) -> RepoResult<Vec<String>> {
-        let rows =
-            sqlx::query_as::<_, PackageMeta>("SELECT version FROM pkg_db WHERE pkg_name = ?")
-                .bind(pkg_name)
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query_as::<_, (String,)>("SELECT version FROM pkg_db WHERE pkg_name = ?")
+            .bind(pkg_name)
+            .fetch_all(&self.pool)
+            .await?;
 
-        Ok(rows.into_iter().map(|row| row.version).collect())
+        let mut versions = Vec::new();
+        for row in rows {
+            versions.push(row.0);
+        }
+
+        Ok(versions)
     }
 
     pub async fn get_all_latest_pkg(&self) -> RepoResult<Vec<PackageMeta>> {

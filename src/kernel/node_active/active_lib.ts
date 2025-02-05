@@ -1,4 +1,4 @@
-import buckyos from 'buckyos';
+import {buckyos} from 'buckyos';
 
 export enum GatewayType {
     BuckyForward = "BuckyForward",
@@ -30,8 +30,10 @@ export type ActiveWizzardData = {
 
 }
 
+
+
 export async function register_sn_user(user_name:string,active_code:string,public_key:string,zone_config_jwt:string,user_domain:string|null) : Promise<boolean> {
-    let rpc_client = new buckyos.kRPCClient("http://web3.buckyos.io/kapi/sn");
+    let rpc_client = new buckyos.kRPCClient("https://web3.buckyos.io/kapi/sn");
     let params:JsonValue = {
         user_name:user_name,
         active_code:active_code,
@@ -49,8 +51,10 @@ export async function register_sn_user(user_name:string,active_code:string,publi
     return false;
 }
 
+const SN_API_URL = "https://web3.buckyos.io/kapi/sn";
+
 export async function register_sn_main_ood (user_name:string,device_name:string,device_did:string,device_ip:string,device_info:string) : Promise<boolean> {
-    let rpc_client = new buckyos.kRPCClient("http://web3.buckyos.io/kapi/sn");
+    let rpc_client = new buckyos.kRPCClient(SN_API_URL);
     let result = await rpc_client.call("register",{
         user_name:user_name,
         device_name:device_name,
@@ -66,14 +70,14 @@ export async function register_sn_main_ood (user_name:string,device_name:string,
 }
 
 export async function check_sn_active_code(sn_active_code:string) : Promise<boolean> {
-    let rpc_client = new buckyos.kRPCClient("http://web3.buckyos.io/kapi/sn");
+    let rpc_client = new buckyos.kRPCClient(SN_API_URL);
     let result = await rpc_client.call("check_active_code",{active_code:sn_active_code});
     let valid = result["valid"];
     return valid;
 }
 
 export async function check_bucky_username(check_bucky_username:string) : Promise<boolean> {
-    let rpc_client = new buckyos.kRPCClient("http://web3.buckyos.io/kapi/sn");
+    let rpc_client = new buckyos.kRPCClient(SN_API_URL);
     let result = await rpc_client.call("check_username",{username:check_bucky_username});
     let valid = result["valid"];
     return valid;

@@ -29,7 +29,8 @@ members = [
     "./frame/repo_service",
     "./frame/smb_service",
 
-    "./tools/buckycli",
+    "./tools/buckycli", 
+    "components/package-installer", 
     #"./apps/tray-controller"
 ]
 

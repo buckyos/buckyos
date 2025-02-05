@@ -30,7 +30,12 @@ impl RepoServer {
 
     async fn handle_install_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let pkg_name = ReqHelper::get_str_param_from_req(&req, "pkg_name")?;
-        let pkg_version = ReqHelper::get_str_param_from_req(&req, "version")?;
+        //获取version参数，如果未传入，则默认为*
+        let pkg_version = req
+            .params
+            .get("version")
+            .and_then(|version| version.as_str())
+            .unwrap_or("*");
         let pkg_id = format!("{}#{}", pkg_name, pkg_version);
         let pkg_id: PackageId = PackageId::from_str(pkg_id.as_str()).map_err(|e| {
             RPCErrors::ParseRequestError(format!("Failed to parse package id, err:{}", e))

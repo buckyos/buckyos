@@ -82,14 +82,14 @@ impl Router {
                 let mut host_config =  hosts.get("*");
                 for (key,value) in hosts.iter() {
                     if key.starts_with("*.") {
-                        if host.ends_with(&key[2..]) {
+                        if host.ends_with(&key[1..]) {
                             host_config = Some(value);
                             break;
                         }
                     }
         
                     if key.ends_with(".*") {
-                        if host.starts_with(&key[..key.len()-2]) {
+                        if host.starts_with(&key[..key.len()-1]) {
                             host_config = Some(value);
                             break;
                         }
@@ -176,7 +176,7 @@ impl Router {
                 }
                 let body = response.body.clone().unwrap_or_default();
                 let resp = builder.body(Body::from(body))?;
-                return Ok(resp);
+                Ok(resp)
             }
             RouteConfig {
                 upstream: Some(upstream),
@@ -209,7 +209,9 @@ impl Router {
             _ => Err(anyhow::anyhow!("Invalid route configuration")),
         }.map(|mut resp| {
             if route_config.enable_cors {
+                //info!("enable cors for route: {}",route_path);
                 let header = resp.headers_mut();
+                
                 header.insert(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
                 header.insert(hyper::header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, OPTIONS"));
                 header.insert(hyper::header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("Content-Type, Authorization"));

@@ -5,106 +5,153 @@ import sys
 import json
 import platform
 
-
-current_dir = os.path.dirname(os.path.abspath(__file__))
-
-
-appid = sys.argv[1]
-username = sys.argv[2]
-
-full_appid = f"{username}#{appid}"
-app_config = os.getenv(f"{full_appid}.config")
-app_token = os.getenv(f"{full_appid}.token")
+def check_image_exists(image_name):
+    check_image_cmd = f"docker images -q {image_name}"
+    image_exists = os.popen(check_image_cmd).read().strip()
+    return image_exists
 
 
-if app_token is None:
-    print(f"No configuration found for appid: {full_appid}")
-    exit(1)
-    
-if app_config is None:
-    print(f"No configuration found for appid: {full_appid}")
-    exit(1)
+def load_image_from_tar(image_tar_path):
+    load_cmd = f"docker load -i {image_tar_path}"
+    ret = os.system(load_cmd)
+    if ret != 0:
+        print(f"Failed to load image from {image_tar_path}")
+        exit(1)
+    print(f"Successfully loaded image from tar file")
+    # 这里并不删除tar文件，而是通过垃圾回收机制删除
 
-config = json.loads(app_config)
+def start_app():
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # buckyos root是当前目录的　../../
+    buckyos_root = os.path.abspath(os.path.join(current_dir, "../../tmp/"))
+    local_images_dir = os.path.join(buckyos_root, "app_images")
 
-container_id = f"{username}-{appid}"
+    appid = sys.argv[1]
+    username = sys.argv[2]
 
-# 当前默认windows上不支持docker，利用run file机制做一个假启动
-# TODO: 考虑在经过某些手工配置后，windows上也可以支持docker
+    full_appid = f"{username}#{appid}"
+    app_config = os.getenv(f"{full_appid}.config")
+    app_token = os.getenv(f"{full_appid}.token")
+    zone_config = os.getenv(f"buckyos.zone_config")
+    zone_docker_repo_base_url = None
 
-if platform.system() == "Windows":
-    print(f"Windows is not supported for docker, fake start {container_id}")
-    open(f"{current_dir}/{container_id}.win", "w").close()
-    exit(0)
-
-# 如果镜像已经在运行，则先停止再启动
-print(f"Before start, try stopping container: {username}-{appid}")
-docker_command = f"docker kill {container_id}"
-os.system(docker_command)
-
-# 如果容器已经存在，则直接用docker start命令
-ret = os.system(f"docker start {container_id}")
-if ret == 0:
-    print(f"Container {container_id} is already running, skip building")
-    exit(0)
+    if zone_config:
+        docker_repo_base_url = zone_config.get("docker_repo_base_url")
+        if docker_repo_base_url:
+            zone_docker_repo_base_url = docker_repo_base_url
 
 
+    if app_token is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+        
+    if app_config is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
 
-# 得到镜像名
-image_name = config.get("docker_image_name")
-if not image_name:
-    print("Image name not found in the configuration")
-    exit(1)
+    config = json.loads(app_config)
 
-# 通过配置得到镜像的启动参数，包括路径映射，虚拟网络，CPU配额，内存配额
-volume_mapping = ""
-data_mount_point = config.get("data_mount_point", "")
-if data_mount_point:
-    os.makedirs(f"/opt/buckyos/data/{username}/{appid}", exist_ok=True)
-    volume_mapping += f"-v /opt/buckyos/data/{username}/{appid}/:{data_mount_point} "
+    container_id = f"{username}-{appid}"
 
-local_cache_mount_point = config.get("local_cache_mount_point", "")
-if local_cache_mount_point:
-    os.makedirs(f"/opt/buckyos/tmp/{username}/{appid}", exist_ok=True)
-    volume_mapping += f"-v /opt/buckyos/tmp/{username}/{appid}/:{local_cache_mount_point} "
+    # 当前默认windows上不支持docker，利用run file机制做一个假启动
+    # TODO: 考虑在经过某些手工配置后，windows上也可以支持docker
 
-extra_mounts = config.get("extra_mounts", "")
-if extra_mounts:
-    for (k ,v) in extra_mounts.items():
-        docker_command += f"-v {k}:{v} "
+    if platform.system() == "Windows":
+        print(f"Windows is not supported for docker, fake start {container_id}")
+        open(f"{current_dir}/{container_id}.win", "w").close()
+        exit(0)
 
-#network_settings = config.get("network_settings", "")
-cpu_quota = config.get("cpu_quota", "")
-memory_quota = config.get("memory_quota", "")
+    # 如果镜像已经在运行，则先停止再启动
+    print(f"Before start, try stopping container: {username}-{appid}")
+    docker_command = f"docker kill {container_id}"
+    os.system(docker_command)
 
-print(f"Image Name: {image_name}")
+    # 得到镜像名
+    image_name = config.get("docker_image_name")
+    if not image_name:
+        print("Image name not found in the configuration")
+        exit(1)
 
-# 端口映射
-port_cmd = ""
-tcp_ports = config.get("tcp_ports", "")
-for (k,v) in tcp_ports.items():
-    port = f"-p {k}:{v} "
-    port_cmd += port
+    if not check_image_exists(image_name):
+        print(f"Image {image_name} not installed, trying to import docker image from local tar file")
+        image_pkg_id = config.get("image_pkg_id")
+        is_imported = False
+        if image_pkg_id:
+            image_tar_path = f"{local_images_dir}/{image_pkg_id}.tar"
+            if os.path.exists(image_tar_path):
+                load_image_from_tar(image_tar_path)
+                is_imported = True
 
+        if not is_imported:
+            if zone_docker_repo_base_url:
+                image_full_name = f"{zone_docker_repo_base_url}/{image_name}"
+                pull_cmd = f"docker pull {image_full_name}"
+                ret = os.system(pull_cmd)
+                if ret == 0:
+                    is_imported = True
 
-# 构造docker命令
-docker_command = f"docker run --rm {port_cmd} --name {container_id} -e {full_appid}.config -e {full_appid}.token -d "
-
-if volume_mapping:
-    docker_command += volume_mapping
-
-#if network_settings:
-#    docker_command += f"--network {network_settings} "
-
-#if cpu_quota:
-#    docker_command += f"--cpu-quota={cpu_quota} "
-
-if memory_quota:
-    docker_command += f"--memory={memory_quota} "
-
-docker_command += f" {image_name}"
+        if not is_imported:
+            #尝试docker pull
+            pull_cmd = f"docker pull {image_name}"
+            ret = os.system(pull_cmd)
+            if ret != 0:
+                print(f"Failed to pull docker image {image_name}")
+                exit(1)
 
 
-print(f"docker craete container command: {docker_command}")
-os.system(docker_command)
+    # 通过配置得到镜像的启动参数，包括路径映射，虚拟网络，CPU配额，内存配额
+    volume_mapping = ""
+    data_mount_point = config.get("data_mount_point", "")
+    if data_mount_point:
+        os.makedirs(f"/opt/buckyos/data/{username}/{appid}", exist_ok=True)
+        volume_mapping += f"-v /opt/buckyos/data/{username}/{appid}/:{data_mount_point} "
+
+    local_cache_mount_point = config.get("local_cache_mount_point", "")
+    if local_cache_mount_point:
+        os.makedirs(f"/opt/buckyos/tmp/{username}/{appid}", exist_ok=True)
+        volume_mapping += f"-v /opt/buckyos/tmp/{username}/{appid}/:{local_cache_mount_point} "
+
+    extra_mounts = config.get("extra_mounts", "")
+    if extra_mounts:
+        for (k ,v) in extra_mounts.items():
+            docker_command += f"-v {k}:{v} "
+
+    #network_settings = config.get("network_settings", "")
+    cpu_quota = config.get("cpu_quota", "")
+    memory_quota = config.get("memory_quota", "")
+
+    print(f"Image Name: {image_name}")
+
+    # 端口映射
+    port_cmd = ""
+    tcp_ports = config.get("tcp_ports", "")
+    for (k,v) in tcp_ports.items():
+        port = f"-p {k}:{v} "
+        port_cmd += port
+
+
+    # 构造docker命令
+    docker_command = f"docker run --rm {port_cmd} --name {container_id} -e {full_appid}.config -e {full_appid}.token -d "
+
+    if volume_mapping:
+        docker_command += volume_mapping
+
+    #if network_settings:
+    #    docker_command += f"--network {network_settings} "
+
+    #if cpu_quota:
+    #    docker_command += f"--cpu-quota={cpu_quota} "
+
+    if memory_quota:
+        docker_command += f"--memory={memory_quota} "
+
+    docker_command += f" {image_name}"
+
+
+    print(f"docker craete container command: {docker_command}")
+    os.system(docker_command)
+
+
+if __name__ == "__main__":
+    start_app()
 

@@ -1,5 +1,5 @@
 {
-    "admin_password_hash": "$2a$11$SXL5Z8HnmxtU5Pf4v9kPt.AkmpPInb5uVFk5ttowDlyx9ng2ulmZS",
+    "admin_password_hash": "o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4=",
     "device_private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG\n-----END PRIVATE KEY-----\n",
     "device_public_key": {
         "crv": "Ed25519",

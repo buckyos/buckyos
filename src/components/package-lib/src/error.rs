@@ -32,6 +32,8 @@ pub enum PkgError {
     UnknownError(String),
     #[error("IO Error: {0}")]
     IOError(#[from] io::Error),
+    #[error("Json Error: {0}")]
+    JsonError(#[from] serde_json::Error),
 }
 
 pub type PkgResult<T> = std::result::Result<T, PkgError>;

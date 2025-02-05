@@ -86,6 +86,7 @@ pub struct AppServiceInstanceConfig {
     pub app_id: String,
     pub user_id: String,
 
+    pub image_pkg_id: Option<String>,
     pub docker_image_name : Option<String>,
     pub direct_image: Option<String>,         // 现在这里只要是Some就可以，以后可以放二进制包的url
     pub data_mount_point: String,
@@ -96,12 +97,12 @@ pub struct AppServiceInstanceConfig {
     //extra mount pint, real_path:docker_inner_path
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_mounts: Option<HashMap<String,String>>,
+    
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cpu_num: Option<u32>,
     // 0 - 100
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cpu_percent: Option<u32>,
-    
     // memory quota in bytes
     pub memory_quota: Option<u64>,
 
@@ -120,7 +121,8 @@ impl AppServiceInstanceConfig {
             target_state: "Running".to_string(),
             app_id: app_config.app_id.clone(),
             user_id:owner_user_id.to_string(),
-            docker_image_name: None,//TODO
+            image_pkg_id: None,
+            docker_image_name: None,
             direct_image: None,
             data_mount_point: app_config.data_mount_point.clone(),
             cache_mount_point: app_config.cache_mount_point.clone(),

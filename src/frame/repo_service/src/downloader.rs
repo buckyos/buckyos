@@ -8,10 +8,11 @@ use log::*;
 use ndn_lib::*;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
+use std::io::SeekFrom;
 use std::path::PathBuf;
 use std::vec;
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub async fn chunk_to_local_file(
     chunk_id: &str,
@@ -119,6 +120,49 @@ impl Downloader {
                 }
             }
         }
+    }
+
+    pub async fn chunk_to_local_file(
+        chunk_id: &str,
+        chunk_mgr_id: Option<&str>,
+        local_file: &PathBuf,
+    ) -> RepoResult<()> {
+        let named_mgr =
+            NamedDataMgr::get_named_data_mgr_by_id(None)
+                .await
+                .ok_or(RepoError::NotFound(format!(
+                    "chunk mgr {:?} not found",
+                    chunk_mgr_id
+                )))?;
+
+        let chunk_id = ChunkId::new(chunk_id)
+            .map_err(|e| RepoError::ParseError(chunk_id.to_string(), e.to_string()))?;
+
+        let named_mgr = named_mgr.lock().await;
+
+        let (mut reader, size) = named_mgr
+            .open_chunk_reader(&chunk_id, SeekFrom::Start(0), true)
+            .await
+            .unwrap();
+
+        let mut file = File::create(local_file).await?;
+
+        let mut buf = vec![0u8; 1024];
+        let mut read_size = 0;
+        while read_size < size {
+            let read_len = reader
+                .read(&mut buf)
+                .await
+                .map_err(|e| RepoError::NdnError(format!("Read chunk error:{:?}", e)))?;
+            if read_len == 0 {
+                break;
+            }
+            read_size += read_len as u64;
+            file.write_all(&buf[..read_len]).await?;
+        }
+        file.flush().await?;
+
+        Ok(())
     }
 
     pub async fn download_file(url: &str, local_path: &PathBuf, sha256: &str) -> RepoResult<()> {
