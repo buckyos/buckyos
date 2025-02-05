@@ -97,10 +97,12 @@ pub struct ResponseRouteConfig {
 }
 
 
-
+fn default_enable_cors() -> bool {
+    true
+}
 #[derive(Debug, Deserialize, Clone)]
 pub struct RouteConfig {
-    #[serde(default)]
+    #[serde(default = "default_enable_cors")]
     pub enable_cors: bool, 
     pub response: Option<ResponseRouteConfig>,
     pub upstream: Option<UpstreamRouteConfig>,
