@@ -7,7 +7,14 @@ interface UserSambaInfo {
 
 window.onload = async () => {
 
-    await buckyos.init_buckyos("control_panel");
+    await buckyos.initBuckyOS("control_panel");
+    let account_info = await buckyos.login(true);
+    if (account_info == null) {
+        alert("请先登录");
+        window.location.href = "./login_index.html";
+        return;
+    }
+    
 
 
     const source_url = document.referrer;
@@ -31,7 +38,7 @@ window.onload = async () => {
 
 
 
-    let system_config_client = new buckyos.kRPCClient("http://"+zone_host+"/kapi/system_config",token,Date.now());
+    let system_config_client = buckyos.getServiceRpcClient("system_config");
     let samba_info: UserSambaInfo | null = null;
     try {
         samba_info = JSON.parse(await system_config_client.call("sys_config_get", {"key": `users/${username}/samba/settings`}));

@@ -86,6 +86,8 @@ export class AppSettingDialog extends LitElement {
     if (app_config != null) {
       await install_app_by_config(app_config);
       alert('发送安装请求成功,系统将很快自动完成所有配置工作');
+      const dialog2 = this.shadowRoot?.querySelector('#add-app-dialog') as any;
+      dialog2?.hide();
     }
   }
 

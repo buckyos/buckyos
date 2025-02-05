@@ -48,32 +48,18 @@ function show_setting_page(setting_id: string | null,full_url_string: string,nee
 window.onload = async () => {
     console.log("setting.ts onload");
     updateElementAndShadowRoots(document);
-
+    await buckyos.initBuckyOS("control_panel");
     //判断登陆状态，如果未登录，则跳转到登录页面
-    let session_token = get_session_account_info();
-    if (session_token == null) {
-        console.log("session_token is null, will redirect to login page");
+    let account_info = await buckyos.login(true);
+    if (account_info == null) {
+        console.log("account_info is null, will redirect to login page");
         alert("请先登录");
         window.location.href = "./login_index.html";
         return;
-    } else {
-        //TODO：检查session_token是否有效
-
     }
-
-    buckyos.add_web3_bridge("web3.buckyos.io");
-    let zone_host = buckyos.get_zone_host_name(window.location.host);
-    if (zone_host == null) {
-        console.error("zone_host is null");
-        return;
-    }
-    buckyos.init_buckyos(zone_host);
-
     //读取页面的访问参数 ($setting=setting_id),直接显示合适的配置页面
     let url_params = new URLSearchParams(window.location.search);
     let setting_id = url_params.get("setting");
     show_setting_page(setting_id,window.location.href,false);
-
-
    
 }

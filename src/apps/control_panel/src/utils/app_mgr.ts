@@ -1,5 +1,4 @@
 import {buckyos} from 'buckyos';
-import { get_session_account_info } from './account';
 import { SystemConfigClient } from './sys_config_client';
 
 export interface SubPkgDesc {
@@ -9,6 +8,7 @@ export interface SubPkgDesc {
 }
 
 export interface AppDoc {
+    app_id: string;
     name: string;
     description: string;
     vendor_did: string;
@@ -19,7 +19,7 @@ export interface AppDoc {
 }
 
 export interface AppConfig {
-    id: string;
+    app_id: string;
     app_doc: AppDoc;
     app_index: number;  // app在用户app列表中的索引
     enable: boolean;
@@ -50,23 +50,23 @@ export async function read_app_doc_from_url(app_url:string) : Promise<AppDoc|nul
 }
 
 export async function install_app_by_config(app_config: AppConfig) {
-    let session_info = get_session_account_info();
+    let session_info = await buckyos.getAccountInfo();
     if (session_info == null) {
         console.error('session_info is null');
         return;
     }
-    let sys_confog_url = window.location.origin + "/kapi/sys_config";
-    let rpc_client = new buckyos.kRPCClient(sys_confog_url,session_info.session_token);
+  
+    let rpc_client = buckyos.getServiceRpcClient("system_config");
     let user_id = session_info.user_id;
     try {
         let result = await rpc_client.call("sys_config_create", {
-            key: `users/${user_id}/apps/${app_config.id}/config`,
+            key: `users/${user_id}/apps/${app_config.app_id}/config`,
             value: JSON.stringify(app_config)
         });
         console.log('install_app_by_app_doc', result);
         result = await rpc_client.call("sys_config_append", {
             key: `system/rbac/policy`,
-            append_value: `\ng, ${app_config.id}, app`
+            append_value: `\ng, ${app_config.app_id}, app`
         });
         console.log('set app rbac rules:', result);
     } catch (error) {
@@ -83,14 +83,14 @@ export async function enabel_app(app_id:string, is_enable:boolean) {
 }
 
 export async function get_app_config(app_id: string) : Promise<AppConfig|null> {
-    let session_info = get_session_account_info();
+    let session_info = await buckyos.getAccountInfo();
     if (session_info == null) {
         console.error('session_info is null');
         return null;
     }
-    let sys_confog_url = window.location.origin + "/kapi/sys_config";
-    let rpc_client = new SystemConfigClient(sys_confog_url,session_info.session_token);
-    let app_config_result = await rpc_client.get(`users/${session_info.user_id}/apps/${app_id}/config`);
+    let rpc_client = buckyos.getServiceRpcClient("system_config");
+    let sys_client = new SystemConfigClient(rpc_client);
+    let app_config_result = await sys_client.get(`users/${session_info.user_id}/apps/${app_id}/config`);
     if (app_config_result == null) {
         console.error('app_config is null');
         return null;
@@ -105,20 +105,19 @@ export async function get_app_config(app_id: string) : Promise<AppConfig|null> {
     return app_config;
 }
 
-
 export async function get_app_list() : Promise<AppConfig[] | null> {
-    let session_info = get_session_account_info();
+    let session_info = await buckyos.getAccountInfo();
     if (session_info == null) {
         console.error('session_info is null');
         return null;
     }
-    let sys_confog_url = window.location.origin + "/kapi/sys_config";
-    let rpc_client = new SystemConfigClient(sys_confog_url,session_info.session_token);
-    let app_list = await rpc_client.list(`users/${session_info.user_id}/apps`);
+    let rpc_client = buckyos.getServiceRpcClient("system_config");
+    let sys_client = new SystemConfigClient(rpc_client);
+    let app_list = await sys_client.list(`users/${session_info.user_id}/apps`);
     if (app_list == null) {
         console.error('app_list is null');
         return null;
     }
-    let app_configs = await Promise.all(app_list.map((app_id) => get_app_config(app_id)));
-    return app_configs;
+    let app_configs = await Promise.all(app_list.map((app_id: string) => get_app_config(app_id)));
+    return app_configs.filter((app_config): app_config is AppConfig => app_config !== null);
 }

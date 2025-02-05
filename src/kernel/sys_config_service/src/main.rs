@@ -193,7 +193,7 @@ async fn handle_append(params:Value,session_token:&RPCSessionToken) -> Result<Va
     let userid = session_token.userid.as_ref().unwrap();
     let full_res_path = format!("kv://{}",key);
     if !enforce(userid, session_token.appid.as_deref(), full_res_path.as_str(), "write").await {
-        return Err(RPCErrors::NoPermission("No read permission".to_string()));
+        return Err(RPCErrors::NoPermission("No write permission".to_string()));
     }
 
     //read and append

@@ -80,6 +80,42 @@
 }
 """
 
+"users/{{user_name}}/apps/hello-buckyos/config" = """
+{
+    "app_id":"hello-buckyos",
+    "app_doc" : {
+        "app_id":"hello-buckyos",
+        "name" : "Hello BuckyOS",
+        "description" : "Hello BuckyOS, a simple web server implemented by nodejs alway say hello BuckyOS!",
+        "vendor_did" : "did:bns:buckyos",
+        "pkg_id" : "hello_bucky",
+        "pkg_list" : {
+            "amd64_docker_image" : {
+                "pkg_id":"hello_bucky_img_x86",
+                "docker_image_name":"buckyos/hello_bucky"
+            },
+            "aarch64_docker_image" : {
+                "pkg_id":"hello_bucky_img_arm64",
+                "docker_image_name":"buckyos/hello_bucky"
+            }
+        }
+    },
+    "app_index" : 1,
+    "enable" : true,
+    "state":"New",
+    "instance" : 1,
+    "data_mount_point" : "/data/",
+    "cache_mount_point" : "/database/",
+    "local_cache_mount_point" : "/config/",
+    "max_cpu_num" : 1,
+    "max_cpu_percent" : 10,
+    "memory_quota" : 1073741824,
+    "tcp_ports" : {
+        "www":80
+    }
+}
+"""
+
 "services/gateway/base_config" = """
 {
     "device_key_path":"{{BUCKYOS_ROOT}}/etc/node_private_key.pem",

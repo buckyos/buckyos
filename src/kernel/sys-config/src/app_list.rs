@@ -17,6 +17,7 @@ pub struct SubPkgDesc {
 //App info is store at Index-db, publish to bucky store
 #[derive(Serialize, Deserialize)]
 pub struct AppDoc {
+    pub app_id: String,
     pub name: String,
     pub description: String,
     pub vendor_did: String,

@@ -21,4 +21,12 @@ window.onload = async () => {
     i18next.on('initialized', () => {
         updateElementAndShadowRoots(document);
     });
+
+    await buckyos.initBuckyOS("control_panel");
+    let account_info = await buckyos.login(true);
+    if (account_info == null) {
+        alert("请先登录");
+        window.location.href = "./login_index.html";
+        return;
+    }
 }

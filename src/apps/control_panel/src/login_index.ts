@@ -4,11 +4,10 @@ import { i18next, updateElementAndShadowRoots} from './i18n';
 import {buckyos} from 'buckyos';
 import { LOGIN_EVENT, LoginEventDetail } from './utils/account';
 
+
 window.addEventListener(LOGIN_EVENT, (event: CustomEvent<LoginEventDetail>) => {
     console.log("login success: ", event.detail);
-    if (event.detail.login_result.result == "success") {
-        window.location.href = 'index.html';
-    }
+    window.location.href = 'index.html';
 });
 
 window.onload = async () => {

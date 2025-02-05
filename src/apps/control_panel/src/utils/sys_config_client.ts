@@ -11,11 +11,8 @@ export class SystemConfigError extends Error {
 export class SystemConfigClient {
     private client: any;
 
-    constructor(serviceUrl: string, sessionToken?: string) {
-        this.client = new buckyos.kRPCClient(
-            serviceUrl,
-            sessionToken
-        );
+    constructor(rpc_client: any) {
+        this.client = rpc_client;
     }
 
     async get(key: string): Promise<[string, number]> {

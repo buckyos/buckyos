@@ -34,6 +34,10 @@ export default defineConfig({
         {
           src: 'node_modules/@shoelace-style/shoelace/dist/assets/*',
           dest: 'assets'
+        },
+        {
+          src: 'assets/*',
+          dest: 'assets'
         }
       ]
     })
