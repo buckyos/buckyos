@@ -6,7 +6,7 @@ src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 def build(dir):
     print(f'building at {dir}')
     work_dir = os.path.join(src_dir, dir)
-    subprocess.run(f'pnpm update buckyos && pnpm install && pnpm run build', shell=True, cwd=work_dir, check=True)
+    subprocess.run(f'pnpm install && pnpm update buckyos &&pnpm run build', shell=True, cwd=work_dir, check=True)
 
 def build_web_apps():
     print('will build web apps')
