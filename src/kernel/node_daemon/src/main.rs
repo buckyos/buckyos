@@ -39,10 +39,13 @@ fn main() {
             .required(false))
         .get_matches();
     if matches.get_flag("as_win_srv") {
-        if cfg!(windows) {
+        #[cfg(windows)]
+        {
             info!("node daemon running in windows service mode");
             win_srv::service_start(matches);
-        } else {
+        }
+        #[cfg(not(windows))]
+        {
             error!("as_win_srv flag is invalid on other system");
             return;
         }

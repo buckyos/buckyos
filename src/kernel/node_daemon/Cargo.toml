@@ -23,20 +23,15 @@ jsonwebtoken = "*"
 num_cpus = "*"
 time = { version = "^0.3", features = ["formatting"] }
 sysinfo = "*"
-
-[target.'cfg(windows)'.dependencies]
-windows-service = "0.7"
-
 cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
 cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
 package-lib = { path = "../../components/package-lib" }
-kRPC = { path = "../../kernel/kRPC" }
+kRPC = { path = "../kRPC" }
 sys-config = { path = "../sys-config" }
 
-
-
-
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
 

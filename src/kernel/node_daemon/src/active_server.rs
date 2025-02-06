@@ -10,7 +10,6 @@ use name_lib::*;
 use name_client::*;
 use log::*;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
-use ::kRPC::*;
 use sys_config::*;
 
 #[derive(Clone)]
