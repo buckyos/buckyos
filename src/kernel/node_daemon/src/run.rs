@@ -585,6 +585,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             //restart_program();
         } else {
             error!("load node identity config failed! {}", node_identity.err().unwrap());
+            warn!("⚠️Would you like to enable activation mode? (Use `--enable-active` to proceed)");
             return Err(String::from("load node identity config failed!"));
         }
     }
