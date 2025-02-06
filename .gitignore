@@ -1,4 +1,5 @@
 .vscode
+.idea
 .VSCodeCounter
 src/kernel/node_active/node_modules/
 test/test_jwt/node_modules/
@@ -18,6 +19,7 @@ src/rootfs/bin/verify_hub/verify_hub
 src/rootfs/bin/node_daemon
 src/rootfs/bin/repo_service/repo_service
 src/rootfs/bin/smb_service/smb_service
+src/rootfs/logs
 src/apps/control_panel/src/node_modules/.modules.yaml
 src/apps/control_panel/src/node_modules/.bin/handlebars
 src/apps/control_panel/src/node_modules/
