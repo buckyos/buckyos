@@ -58,3 +58,7 @@ pub fn get_relative_path(base_path: &str, full_path: &str) -> String {
         full_path.to_string()
     }
 }
+
+pub fn path_join(base: &str, sub_path: &str) -> PathBuf {
+    PathBuf::from(base).join(sub_path)
+}

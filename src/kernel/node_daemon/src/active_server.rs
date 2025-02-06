@@ -226,7 +226,7 @@ impl kRPCHandler for ActiveServer {
 
 pub async fn start_node_active_service() {
     let active_server = ActiveServer::new();
-    //register activer server as inner service
+    //register active server as inner service
     register_inner_service_builder("active_server", move || {  
         Box::new(active_server.clone())
     }).await;

@@ -3,7 +3,6 @@ use tokio::fs;
 use anyhow::Result;
 use core::error;
 use std::collections::HashMap;
-use std::path::Path;
 use rustls::server::{ResolvesServerCert, ClientHello};
 use rustls::sign::CertifiedKey;
 use std::sync::Arc;
@@ -350,10 +349,10 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
     pub async fn new(config: CertManagerConfig, responder: R) -> Result<Self> {
         info!("create cert manager, config: {:?}", config);
         
-        let account_path = format!("{}/acme_account.json", &config.keystore_path);
-        let account = match AcmeAccount::from_file(Path::new(&account_path)).await {
+        let account_path = buckyos_kit::path_join(&config.keystore_path, "acme_account.json");
+        let account = match AcmeAccount::from_file(&*account_path).await {
             Ok(account) => {
-                info!("从{}加载ACME账号", account_path);
+                info!("从{}加载ACME账号", account_path.to_str().unwrap());
                 account
             }
             Err(_) => {
@@ -368,7 +367,7 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
 
         let acme_client = AcmeClient::new(account).await?;
         let account = acme_client.account();
-        if let Err(e) = account.save_to_file(Path::new(&account_path)).await {
+        if let Err(e) = account.save_to_file(&*account_path).await {
             error!("保存ACME账号失败: {}", e);
         }
 
@@ -406,15 +405,15 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
             return Ok(());
         }
 
-        let keystore_path = format!("{}/{}", self.inner.config.keystore_path, host);
+        let keystore_path = buckyos_kit::path_join(&self.inner.config.keystore_path, &host);
         if let Err(e) = std::fs::create_dir_all(&keystore_path) {
-            error!("创建证书存储目录失败: {}", e);
+            error!("创建证书存储目录失败: {} {}", e, keystore_path.to_str().unwrap());
             return Err(anyhow::anyhow!("创建证书存储目录失败: {}", e));
         }
 
         let cert_stub = CertStub::new(
             vec![host.clone()], 
-            keystore_path, 
+            keystore_path.to_str().unwrap().to_string(),
             self.inner.acme_client.clone(), 
             self.inner.responder.clone(), 
             tls_config
