@@ -253,4 +253,5 @@ pub async fn start_node_active_service() {
     //start!
     info!("start node active service...");
     start_cyfs_warp_server(active_server_config).await;
+    tokio::signal::ctrl_c().await.unwrap();
 }
