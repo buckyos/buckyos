@@ -110,7 +110,7 @@ impl CyfsWarpServer {
         }
 
         // Start all servers
-        let bind = self.config.bind.clone().unwrap_or("::;0.0.0.0".to_string());
+        let bind = self.config.bind.clone().unwrap_or("0.0.0.0".to_string());
         let bind_addrs: Vec<&str> = bind.split(';').collect();
         for bind_addr in bind_addrs {
             let http_router = http_router.clone();
@@ -192,12 +192,13 @@ impl CyfsWarpServer {
         http_bind_addr: String,
         http_router: Router,
     ) -> Result<tokio::task::JoinHandle<()>> {
-        let listener = TcpListener::bind(http_bind_addr.clone())
-            .await
-            .map_err(|e| {
-                error!("bind http server {} failed,  {}", http_bind_addr, e);
-                anyhow::anyhow!("bind http server {} failed, {}", http_bind_addr, e)
-            })?;
+        let listener =
+            TcpListener::bind(http_bind_addr.clone())
+                .await
+                .map_err(|e: std::io::Error| {
+                    error!("bind http server {} failed,  {}", http_bind_addr, e);
+                    anyhow::anyhow!("bind http server {} failed, {}", http_bind_addr, e)
+                })?;
         let listener_stream_http = TcpListenerStream::new(listener);
         let http_acceptor = from_stream(listener_stream_http);
 
