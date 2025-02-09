@@ -18,28 +18,32 @@ def is_container_running(container_name):
         print(f"Windows is not supported for docker, fake check {container_id}")
         return os.path.exists(f"{current_dir}/{container_id}.win")
     
-    import docker
-    # 连接到本地 Docker 客户端
-    client = docker.from_env()
 
     try:
         # 获取指定名字的容器
-        container = client.containers.get(container_name)
-
-        # 检查容器是否在运行
-        if container.status == "running":
+        # 使用docker ps命令检查容器是否运行
+        cmd = f"docker ps -q -f name={container_name}"
+        output = os.popen(cmd).read().strip()
+        if output:
             print(f"Container '{container_name}' is running.")
             return True
         else:
-            print(f"Container '{container_name}' is not running. Status: {container.status}")
+            # 检查容器是否存在但未运行
+            cmd = f"docker ps -aq -f name={container_name}"
+            output = os.popen(cmd).read().strip()
+            if output:
+                print(f"Container '{container_name}' exists but is not running.")
+            else:
+                print(f"Container '{container_name}' not found.")
             return False
-    except docker.errors.NotFound:
-        print(f"Container '{container_name}' not found.")
+
+    except Exception as e:
+        print(f"Error checking container status: {e}")
         return False
 
 def check_port() -> bool:
     return True
-
+# TODO:判断容器是否运行应该增加 unknown 状态的返回值
 if __name__ == "__main__":
     if is_container_running(container_id):
         if check_port():

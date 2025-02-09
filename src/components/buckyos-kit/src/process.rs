@@ -80,9 +80,16 @@ pub async fn parse_script_file(path: &PathBuf) -> Result<(String, bool)> {
         }
     }
 
-    if script_engine == "python3" {
-        // on windows, python3 always has name "python.exe"
-        script_engine = String::from("python");
+    if script_engine.contains("python") {
+        // 根据操作系统选择合适的python命令
+        #[cfg(target_os = "windows")]
+        let python_cmd = "python";
+        #[cfg(target_os = "macos")]
+        let python_cmd = "python3";
+        #[cfg(target_os = "linux")]
+        let python_cmd = "python3";
+        
+        script_engine = String::from(python_cmd);
     }
 
     Ok((script_engine, is_script))
@@ -232,7 +239,7 @@ impl ServicePkg {
             Some(&self.env_vars),
         )
         .await?;
-        info!(
+        debug!(
             "execute {} ==> result: {} \n\t {}",
             op_file.display(),
             result,

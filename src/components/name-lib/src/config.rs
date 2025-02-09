@@ -25,7 +25,6 @@ pub struct VerifyHubInfo {
 }
 
 
-
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct ZoneConfig {
     pub did: String,//full did

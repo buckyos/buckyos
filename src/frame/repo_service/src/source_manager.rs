@@ -171,6 +171,7 @@ impl SourceManager {
         dir.join(format!("index_{}_{}.db", fix_name, hex))
     }
 
+    //todo: 改成标准的NDN FileObject获取逻辑（带验证）
     async fn get_remote_source_meta(source_config: &SourceNodeConfig) -> RepoResult<SourceMeta> {
         //TODO 拼接meta url，要修改成正式url
         //let url = format!("http://{}/kapi/repo", source_config.name);

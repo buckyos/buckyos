@@ -1,5 +1,3 @@
-
-
 use crate::get_buckyos_log_dir;
 use simplelog::*;
 use std::fs::File;
@@ -14,8 +12,9 @@ pub fn init_logging(service_name: &str) {
     std::fs::create_dir_all(log_file.parent().unwrap()).unwrap();
 
     let config = ConfigBuilder::new()
-    .set_time_format_custom(format_description!("[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"))
-    .build();
+        .set_time_format_custom(format_description!("[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"))
+        .set_location_level(LevelFilter::Debug)
+        .build();
 
     CombinedLogger::init(vec![
    
@@ -25,7 +24,6 @@ pub fn init_logging(service_name: &str) {
             TerminalMode::Mixed,
             ColorChoice::Auto,
         ),
-   
         WriteLogger::new(
             LevelFilter::Info,
             config,

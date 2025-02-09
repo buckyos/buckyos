@@ -200,7 +200,7 @@ impl PackageEnv {
             }
         }
 
-        info!("found_pkg: {} => {:?}", pkg_id_str, found_pkg);
+        debug!("found_pkg: {} => {:?}", pkg_id_str, found_pkg);
 
         Ok(found_pkg)
     }
@@ -264,7 +264,7 @@ impl PackageEnv {
             }
             Err(_) => {
                 let ret = self.try_load(pkg_id_str);
-                info!("try load {} => {:?}", pkg_id_str, ret);
+                debug!("try load {} => {:?}", pkg_id_str, ret);
                 ret
             }
         }

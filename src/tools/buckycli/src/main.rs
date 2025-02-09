@@ -1,3 +1,4 @@
+#[allow(unused_mut,dead_code)]
 extern crate core;
 mod package_cmd;
 use buckyos_kit::get_buckyos_system_etc_dir;

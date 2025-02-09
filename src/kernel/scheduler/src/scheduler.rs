@@ -15,7 +15,7 @@
     动态调整：根据运行情况，系统资源剩余情况，相对动态的调整Pod能用的资源
     动态调整也涉及到实例的迁移
 */
-
+#[warn(unused_mut)]
 use anyhow::Result;
 use std::{collections::HashMap, sync::Arc};
 use log::*;

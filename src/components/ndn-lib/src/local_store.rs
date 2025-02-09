@@ -912,12 +912,13 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use buckyos_kit::*;
-    use rand::distributions::{Alphanumeric, DistString};
+    //use rand::distributions::{Alphanumeric, DistString};
     // Helper function to create a test ChunkStore
 
     async fn create_test_store() -> NdnResult<NamedDataStore> {
         init_logging("ndn-lib test");
-        let random_str = Alphanumeric.sample_string(&mut rand::thread_rng(), 6);
+        //let random_str = Alphanumeric.sample_string(&mut rand::thread_rng(), 6);
+        let random_str = format!("{:x}", rand::random::<u32>());
         let temp_dir = format!("/opt/ndn_test/{}", random_str);
         let temp_dir = tempdir().unwrap().path().to_str().unwrap().to_string();
         let result_store = NamedDataStore::new(temp_dir.clone()).await;

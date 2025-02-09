@@ -44,6 +44,7 @@ struct NodeIdentityConfig {
 }
 
 impl Installer {
+    //在指定的env里安装指定的pkg,安装成功后指定的env可以load_pkg成功
     pub async fn install(
         pkg_id_str: &str,
         target: &PathBuf,
