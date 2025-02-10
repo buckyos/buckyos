@@ -78,6 +78,7 @@ pub struct PodItem {
     pub pod_type: PodItemType,
     pub state: PodItemState,
     pub best_instance_count: u32,
+    pub need_container: bool,
 
     pub required_cpu_mhz: u32,
     pub required_memory: u64,
@@ -123,6 +124,7 @@ pub struct NodeItem {
     // 节点标签，用于亲和性匹配
     pub labels: Vec<String>,
     pub network_zone: String,
+    pub support_container: bool,
 
     //Node的可变状态
     pub state: NodeState,
@@ -467,6 +469,10 @@ impl PodScheduler {
             return false;
         }
 
+        if pod.need_container && !node.support_container {
+            return false;
+        }
+
         // 2. 检查资源是否充足
         if node.total_cpu_mhz < pod.required_cpu_mhz || 
            node.total_memory < pod.required_memory {
@@ -549,6 +555,7 @@ mod tests {
             state: NodeState::Ready,
             labels,
             network_zone: network_zone.to_string(),
+            support_container: true,
             resources: HashMap::new(),
             op_tasks: vec![],
         }

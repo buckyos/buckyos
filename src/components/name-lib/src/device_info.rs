@@ -5,7 +5,7 @@ use std::net::ToSocketAddrs;
 use serde::{Serialize,Deserialize};
 use serde_json::json;
 use thiserror::Error;
-
+use buckyos_kit::*;
 
 use crate::config::DeviceConfig;
 use crate::{NSResult,NSError};
@@ -20,6 +20,8 @@ use nvml_wrapper::enum_wrappers::device::Clock;
 pub struct DeviceInfo {
     pub hostname:String,
     pub device_type:String,
+    #[serde(skip_serializing_if = "is_true", default = "bool_default_true")]
+    pub support_container:bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,7 +80,7 @@ impl DeviceInfo {
         device_info.device_type = device_doc.device_type.clone();
         device_info.ip = device_doc.ip.clone();
         device_info.net_id = device_doc.net_id.clone();
-
+        device_info.support_container = device_doc.support_container;
         return device_info;
     }
 
@@ -112,6 +114,7 @@ impl DeviceInfo {
             hostname:hostname.to_string(),
             device_type:"ood".to_string(),
             state:Some("Ready".to_string()),
+            support_container:true,
             arch:None,
             ip:ip,
             did:did,

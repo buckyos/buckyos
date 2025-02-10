@@ -277,6 +277,7 @@ pub enum DeviceType {
     Sensor,
 }
 
+
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct DeviceConfig {
     pub did: String,
@@ -292,7 +293,8 @@ pub struct DeviceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ddns_sn_url:Option<String>,
     pub auth_key : Jwk,
-
+    #[serde(skip_serializing_if = "is_true", default = "bool_default_true")]
+    pub support_container:bool,
     pub iss:String,
     pub exp:u64,
     pub iat:u64,
@@ -319,6 +321,7 @@ impl DeviceConfig {
                 net_id: None,
                 ddns_sn_url: None,
                 auth_key: public_key_jwk,
+                support_container: true,
                 iss: "".to_string(),
                 exp: 0,
                 iat: 0,
@@ -341,6 +344,7 @@ impl DeviceConfig {
                 net_id: None,
                 ddns_sn_url: None,
                 auth_key: public_key_jwk,
+                support_container: true,
                 iss: "".to_string(),
                 exp: 0,
                 iat: 0,
@@ -366,6 +370,7 @@ impl DeviceConfig {
             net_id:None,
             ddns_sn_url: None,
             auth_key: public_key_jwk,
+            support_container: true,
             iss: "waterfllier".to_string(),
             exp: buckyos_get_unix_timestamp() + 3600*24*365, 
             iat: buckyos_get_unix_timestamp(),
@@ -609,6 +614,7 @@ mod tests {
             net_id:None,
             arch: None,
             ddns_sn_url: None,
+            support_container: true,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };
@@ -656,6 +662,7 @@ mod tests {
             net_id:Some("wan".to_string()),
             arch: None,
             ddns_sn_url: None,
+            support_container: true,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };
@@ -696,6 +703,7 @@ mod tests {
             net_id:None,
             arch: None,
             ddns_sn_url: None,
+            support_container: true,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
         };

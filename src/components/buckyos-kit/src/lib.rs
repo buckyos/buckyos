@@ -5,7 +5,7 @@ mod log_util;
 mod stream;
 mod json;
 mod test_server;
-
+mod serde_helper;
 pub use path::*;
 pub use process::*;
 pub use time::*;
@@ -13,7 +13,7 @@ pub use log_util::*;
 pub use stream::*;
 pub use json::*;
 pub use test_server::*;
-
+pub use serde_helper::*;
 #[cfg(test)]
 mod test {
     use std::path::PathBuf;

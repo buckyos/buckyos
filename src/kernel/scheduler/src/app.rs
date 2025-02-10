@@ -78,11 +78,18 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
     if http_port.is_some() {
         let http_port = http_port.unwrap();
         let app_prefix;
+        let mut user_owner_domain:Option<String> = None;
+        //if user_id is owner,then use app_id as prefix
         if user_id == "root" {
             app_prefix = format!("{}.*",app_id);
         } else {
-            app_prefix = format!("{}_{}.*",app_id,user_id);
+            if user_owner_domain.is_none() {
+                app_prefix = format!("{}_{}.*",app_id,user_id);
+            } else {
+                app_prefix = format!("{}.{}",app_id,user_owner_domain.as_ref().unwrap());
+            }
         }
+        
         //创建默认的appid-userid的短域名给node-gateway.json
         let gateway_path = format!("/servers/main_http_server/hosts/{}",app_prefix);
         let app_gateway_config = json!(
@@ -116,6 +123,8 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
                     }
 
                     info!("will create gatewayshortcut: {} -> {}",key,app_prefix);
+                    // 如果用户设置了独立的域名,则使用 app_id.独立域名
+                    // 使用系统快捷方式会让 appid前缀失效（我们不希望有两个不同的URL都可以访问APP），注意谨慎选择
                     let short_prefix = match key.as_str() {
                         "www" => "*".to_string(),
                         _ => format!("{}.*",key.as_str()),

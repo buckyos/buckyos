@@ -10,8 +10,6 @@ pub struct SubPkgDesc {
     pub pkg_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_image_name:Option<String>,
-    // 留一个口子，以后可以通过这个url下载二进制包
-    // 思考：是不是docker_image_name也可以合并进来？docker://<image_name>:<version>
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_url:Option<String>,
     #[serde(flatten)]
@@ -27,8 +25,13 @@ pub struct AppDoc {
     pub vendor_did: String,
     pub pkg_id: String,
     //service name -> full image url
-    // 命名逻辑:<arch>_<type>_image, 我们把所有的都看作是image，也为了和现在的保持一致
-    // type: direct/docker, 以后可能还有vm
+    // 命名逻辑:<arch>_<runtimne_type>_<media_type>, 
+    //"amd64_docker_image" 
+    //"aarch64_docker_image"
+    //"amd64_win_app"
+    //"amd64_linux_app"
+    //"aarch64_linux_app"
+    //"aarch64_macos_app"
     pub pkg_list: HashMap<String, SubPkgDesc>,
 }
 
@@ -88,7 +91,7 @@ pub struct AppServiceInstanceConfig {
     pub user_id: String,
 
     pub image_pkg_id: Option<String>,
-    pub docker_image_name : Option<String>,
+    pub docker_image_name : Option<String>,//TODO:能否从pkg_id中推断出docker_image_name?
     pub direct_image: Option<String>,         // 现在这里只要是Some就可以，以后可以放二进制包的url
     pub data_mount_point: String,
     #[serde(skip_serializing_if = "Option::is_none")]

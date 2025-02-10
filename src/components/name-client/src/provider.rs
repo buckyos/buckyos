@@ -80,6 +80,7 @@ pub struct NameInfo {
     pub cname:Option<String>,
     pub txt:Option<String>,
     pub did_document:Option<EncodedDocument>,
+    pub pk_x_list:Option<Vec<String>>,
     pub proof_type:NameProof,
     pub create_time: u64,
     pub ttl: Option<u32>,
@@ -89,18 +90,21 @@ pub struct NameInfo {
 impl NameInfo {
     pub fn from_address(name:&str,address:IpAddr) -> Self {
         let ttl = 5*60;
-        Self {name:name.to_string(),address:vec![address],cname:None,txt:None,did_document:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
+        Self {name:name.to_string(),address:vec![address],cname:None,txt:None,
+            did_document:None,pk_x_list:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
     }
 
     pub fn from_address_vec(name:&str,address_vec:Vec<IpAddr>) -> Self {
         let ttl = 5*60;
-        Self {name:name.to_string(),address:address_vec,cname:None,txt:None,did_document:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
+        Self {name:name.to_string(),address:address_vec,cname:None,txt:None,
+            did_document:None,pk_x_list:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
     }
 
     pub fn from_zone_config_str(name:&str,zone_config_str:&str) -> Self {
         let txt_string = format!("DID={};",zone_config_str);
         let ttl = 3600;
-        Self {name:name.to_string(),address:vec![],cname:None,txt:Some(txt_string),did_document:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
+        Self {name:name.to_string(),address:vec![],cname:None,txt:Some(txt_string),
+            did_document:None,pk_x_list:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
     }
 }
 

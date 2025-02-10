@@ -206,6 +206,7 @@ impl NsProvider for CloudflareProvider {
             cname: None,
             txt: None,
             did_document: None,
+            pk_x_list: None,
             proof_type: crate::NameProof::None,
             create_time: 0,
             ttl: Some(records[0].ttl),

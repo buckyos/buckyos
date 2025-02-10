@@ -32,6 +32,7 @@ impl ActiveServer {
         let friend_passcode = req.params.get("friend_passcode");
         let device_public_key = req.params.get("device_public_key");
         let device_private_key = req.params.get("device_private_key");
+        let support_container = req.params.get("support_container");
         let sn_url = req.params.get("sn_url");
         //let device_info = req.params.get("device_info");  
         if user_name.is_none() || zone_name.is_none() || gateway_type.is_none() || owner_public_key.is_none() || owner_private_key.is_none() || device_public_key.is_none() || device_private_key.is_none() {
@@ -58,6 +59,10 @@ impl ActiveServer {
         let mut net_id:Option<String> = None;
         let mut ddns_sn_url:Option<String> = None;
         let mut need_sn = false;
+        let mut is_support_container = true;
+        if support_container.is_some() {
+            is_support_container = support_container.unwrap().as_str().unwrap() == "true";
+        }
         //create device doc ,and sign it with owner private key
         match gateway_type {
             "BuckyForward" => {
@@ -85,6 +90,7 @@ impl ActiveServer {
             ip:None,
             net_id:net_id,
             ddns_sn_url:ddns_sn_url,
+            support_container: is_support_container,
             exp: buckyos_get_unix_timestamp() + 3600*24*365*10, 
             iat: buckyos_get_unix_timestamp() as u64,
         };

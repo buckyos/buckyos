@@ -232,6 +232,7 @@ fn craete_node_item_by_device_info(device_name: &str,device_info: &DeviceInfo) -
         labels: vec![],
         network_zone:net_id,
         state: node_state,
+        support_container: device_info.support_container,
         available_cpu_mhz: device_info.cpu_mhz.unwrap_or(2000) as u32,
         total_cpu_mhz: device_info.cpu_mhz.unwrap_or(2000) as u32,
         total_memory:device_info.total_mem.unwrap_or(1024*1024*1024*2) as u64,
@@ -247,10 +248,18 @@ fn craete_node_item_by_device_info(device_name: &str,device_info: &DeviceInfo) -
 
 fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfig) -> PodItem {
     let pod_state = PodItemState::from(app_config.state.clone());
+    let mut need_container = true;
+    if app_config.app_doc.pkg_list.iter().any(|(_, pkg)| pkg.docker_image_name.is_none()) &&
+       //TODO: 需要从配置中获取所有的可信发布商列表
+       app_config.app_doc.vendor_did == "did:bns:buckyos" {
+        need_container = false;
+    }
+
     PodItem {
         id: app_id.to_string(),
         pod_type: PodItemType::App,
         state: pod_state,
+        need_container: need_container,
         best_instance_count: app_config.instance,
         required_cpu_mhz: 200,
         required_memory: 1024*1024*256,
@@ -267,6 +276,7 @@ fn create_pod_item_by_service_config(service_name: &str,service_config: &KernelS
         id: service_name.to_string(),
         pod_type: PodItemType::Service,
         state: pod_state,
+        need_container: false,
         best_instance_count: service_config.instance,
         required_cpu_mhz: 300,
         required_memory: 1024*1024*256,

@@ -9,7 +9,7 @@ pub struct FileObject {
     pub size:u64,
     pub content:String,//chunkid
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub meta_info:Option<serde_json::Value>,
+    pub meta:Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mime:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -24,7 +24,7 @@ pub struct FileObject {
 
 impl FileObject {
     pub fn new(name:String,size:u64,content:String)->Self {
-        Self {name,size,content,meta_info:None,mime:None,owner:None,create_time:None,chunk_list:None,links:None}
+        Self {name,size,content,meta:None,mime:None,owner:None,create_time:None,chunk_list:None,links:None}
     }
 
     pub fn gen_obj_id(&self)->(ObjId, String) {
