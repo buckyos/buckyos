@@ -419,9 +419,10 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
             tls_config
         );
         self.inner.certs.write().unwrap().insert(host, cert_stub.clone());
-        
         task::spawn(async move {
-            let _ = cert_stub.load_cert().await;
+            if let Err(e) = cert_stub.load_cert().await {
+                error!("load cert error: {}", e);
+            }
         });
         Ok(())
     }
