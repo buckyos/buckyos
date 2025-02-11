@@ -194,10 +194,10 @@
                 "package_url": "https://web3.buckyos.io/static/home-station-win.zip"
             },
             "amd64_win_app" :{
-                "pkg_id" : "home-station-win-app",
+                "pkg_id" : "home-station-win-app"
             },
             "amd64_linux_app" :{
-                "pkg_id" : "home-station-linux-app",
+                "pkg_id" : "home-station-linux-app"
             }
         }
     },
