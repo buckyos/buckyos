@@ -135,16 +135,16 @@ fn load_device_private_key(node_id: &str) -> Result<(EncodingKey)> {
 async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneConfig> {
     //If local files exist, priority loads local files
     let etc_dir = get_buckyos_system_etc_dir();
-    let json_config_path = format!("{}/{}_zone_config.json",etc_dir.to_string_lossy(),node_identity.zone_name);
-    info!("try load zone config from {} for debug",json_config_path.as_str());
+    let json_config_path = etc_dir.join(format!("{}_zone.toml",node_identity.zone_name)).to_string_lossy().to_string();
+    info!("try load zone config from {} for debug", json_config_path);
     let json_config = std::fs::read_to_string(json_config_path.clone());
     if json_config.is_ok() {
         let zone_config = serde_json::from_str(&json_config.unwrap());
         if zone_config.is_ok() {
-            warn!("debug load zone config from {} success!",json_config_path.as_str());
+            warn!("debug load zone config from {} success!", json_config_path);
             return Ok(zone_config.unwrap());
         } else {
-            error!("parse debug zone config {} failed! {}", json_config_path.as_str(),zone_config.err().unwrap());
+            error!("parse debug zone config {} failed! {}", json_config_path, zone_config.err().unwrap());
             return Err(NodeDaemonErrors::ReasonError("parse debug zone config from local file failed!".to_string()));
         }
     }
