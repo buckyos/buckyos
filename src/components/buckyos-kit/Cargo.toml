@@ -11,6 +11,8 @@ thiserror = "*"
 sysinfo = "*"
 serde = "*"
 serde_json = "*"
+json_value_merge = "*"
+toml = "*"
 time = { version = "^0.3", features = ["formatting"] }
 tokio = { version = "*", features = ["full"] }
 log = "*"
@@ -21,3 +23,4 @@ pkcs8 = "*"
 #rand = ""
 base64 = "*"
 package-lib = { path = "../package-lib" }
+async-recursion = "*"

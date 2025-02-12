@@ -6,6 +6,11 @@ mod stream;
 mod json;
 mod test_server;
 mod serde_helper;
+mod config;
+
+#[macro_use]
+extern crate log;
+
 pub use path::*;
 pub use process::*;
 pub use time::*;
@@ -14,6 +19,8 @@ pub use stream::*;
 pub use json::*;
 pub use test_server::*;
 pub use serde_helper::*;
+pub use config::*;
+
 #[cfg(test)]
 mod test {
     use std::path::PathBuf;
