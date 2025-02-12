@@ -40,13 +40,24 @@ fn get_root_file(dir: &Path) -> Option<PathBuf> {
 
 // Convert TOML to JSON
 fn toml_to_json(toml_value: toml::Value) -> Result<JsonValue, Box<dyn std::error::Error>> {
-    let json_string = toml::to_string(&toml_value)?;
-    let json_value: JsonValue = serde_json::from_str(&json_string)?;
+    let json_string = serde_json::to_string(&toml_value).map_err(|e| {
+        let msg = format!("Failed to convert TOML to JSON: {:?}", e);
+        error!("{}", msg);
+        msg
+    })?;
+
+    let json_value: JsonValue = serde_json::from_str(&json_string).map_err(|e| {
+        let msg = format!("Failed to parse JSON: {:?}", e);
+        error!("{}", msg);
+        msg
+    })?;
+
     Ok(json_value)
 }
 
 // Load a config file, support JSON and TOML
 async fn load_file(file: &Path) -> Result<JsonValue, Box<dyn std::error::Error>> {
+    debug!("Loading config file: {:?}", file);
     assert!(file.exists());
 
     let content = tokio::fs::read_to_string(file).await.map_err(|e| {
@@ -162,6 +173,7 @@ pub async fn load_dir_with_root(
     Ok(config)
 }
 
+#[derive(Debug)]
 struct IndexedFile {
     index: u32,
     path: PathBuf,
@@ -204,22 +216,23 @@ async fn scan_files(dir: &Path) -> Result<Vec<IndexedFile>, Box<dyn std::error::
     Ok(indexed_files)
 }
 
-// File name format: name.1.json, name.2.toml, dir.3, etc.
+// File name format: for file like name.1.json, name.2.toml, for dir like dir.3, etc.
 fn extract_index_from_filename(path: &Path) -> Option<u32> {
-    if path.is_file() {
-        path.file_stem()?
-            .to_str()?
-            .rsplit('.')
-            .next()?
-            .parse::<u32>()
-            .ok()
+    let file_stem = if path.is_file() {
+        path.file_stem()?.to_str()?
     } else {
-        path.file_stem()?.to_str()?.parse::<u32>().ok()
-    }
+        path.file_name()?.to_str()?
+    };
+
+    let index_part = file_stem.rsplit('.').next()?; 
+    
+    index_part.parse::<u32>().ok()
 }
 
 async fn load_dir_without_root(dir: &Path) -> Result<Vec<ConfigItem>, Box<dyn std::error::Error>> {
     let indexed_files = scan_files(dir).await?;
+
+    debug!("Indexed files: {:?} in {:?}", indexed_files, dir);
 
     let mut config = Vec::new();
     for file in indexed_files {
@@ -247,5 +260,29 @@ pub async fn load_dir(dir: &Path) -> Result<Vec<ConfigItem>, Box<dyn std::error:
     match root_file {
         Some(root_file) => load_dir_with_root(dir, &root_file).await,
         None => load_dir_without_root(dir).await,
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    #[test]
+    fn test_file_index() {
+        // Test extract_index_from_filename
+        let path = std::path::Path::new("name.1.json");
+        let index = super::extract_index_from_filename(path);
+        assert_eq!(index, Some(1));
+
+        let path = std::path::Path::new("name.2.toml");
+        let index = super::extract_index_from_filename(path);
+        assert_eq!(index, Some(2));
+
+        let path = std::path::Path::new("name.json");
+        let index = super::extract_index_from_filename(path);
+        assert_eq!(index, None);
+
+        let path = std::path::Path::new("dir.1");
+        let index = super::extract_index_from_filename(path);
+        assert_eq!(index, Some(1));
     }
 }
