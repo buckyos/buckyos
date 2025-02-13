@@ -352,14 +352,14 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
         let account_path = buckyos_kit::path_join(&config.keystore_path, "acme_account.json");
         let account = match AcmeAccount::from_file(&*account_path).await {
             Ok(account) => {
-                info!("从{}加载ACME账号", account_path.to_str().unwrap());
+                info!("Loading ACME account from {}", account_path.to_str().unwrap());
                 account
             }
             Err(_) => {
                 // 生成随机邮箱并创建新账号
                 let random_str = rand::thread_rng().gen_range(0..1000000);
                 let email = format!("{}@buckyos.com", random_str);
-                info!("生成随机邮箱地址: {}", email);
+                info!("Generated random email address: {}", email);
                 
                 AcmeAccount::new(email)
             }
@@ -368,7 +368,7 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
         let acme_client = AcmeClient::new(account).await?;
         let account = acme_client.account();
         if let Err(e) = account.save_to_file(&*account_path).await {
-            error!("保存ACME账号失败: {}", e);
+            error!("Failed to save ACME account: {}", e);
         }
 
         let manager = Self {
@@ -405,10 +405,14 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
             return Ok(());
         }
 
-        let keystore_path = buckyos_kit::path_join(&self.inner.config.keystore_path, &host);
+        if !tls_config.enable_acme && (tls_config.cert_path.is_none() || tls_config.key_path.is_none()) {
+            return Ok(());
+        }
+
+        let keystore_path = buckyos_kit::path_join(&self.inner.config.keystore_path, &sanitize_path_component(&host));
         if let Err(e) = std::fs::create_dir_all(&keystore_path) {
-            error!("创建证书存储目录失败: {} {}", e, keystore_path.to_str().unwrap());
-            return Err(anyhow::anyhow!("创建证书存储目录失败: {}", e));
+            error!("Failed to create certificate storage directory: {} {}", e, keystore_path.to_str().unwrap());
+            return Err(anyhow::anyhow!("Failed to create certificate storage directory: {}", e));
         }
 
         let cert_stub = CertStub::new(
@@ -474,4 +478,21 @@ impl<R: 'static + AcmeChallengeEntry> ResolvesServerCert for CertManager<R> {
         }
         None
     }
+}
+
+fn sanitize_path_component(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '*' => "_star_".to_string(),
+            '?' => "_qmark_".to_string(),
+            ':' => "_colon_".to_string(),
+            '/' => "_slash_".to_string(),
+            '\\' => "_bslash_".to_string(),
+            '|' => "_pipe_".to_string(),
+            '<' => "_lt_".to_string(),
+            '>' => "_gt_".to_string(),
+            '"' => "_quote_".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
 }

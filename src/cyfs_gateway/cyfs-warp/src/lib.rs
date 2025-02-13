@@ -123,9 +123,6 @@ mod test {
         {
             "hosts": {
                 "dev.photosssa.org": {
-                    "tls": {
-                        "disable_tls": true
-                    },
                     "routes": {
                         "/": {
                             "response": {
