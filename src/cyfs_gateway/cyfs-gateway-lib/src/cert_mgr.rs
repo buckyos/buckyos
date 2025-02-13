@@ -208,6 +208,10 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
     }
 
     async fn check_cert(&self, renew_before_expiry: chrono::Duration) -> Result<()> {
+        if self.inner.config.key_path.is_some() {
+            return Ok(());
+        }
+
         let should_order = {
             let mut mut_part = self.inner.mut_part.lock().unwrap();
             if mut_part.ordering {
