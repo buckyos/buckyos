@@ -23,7 +23,8 @@ struct CertInfo {
 
 enum CertState {
     None, 
-    Ready(CertInfo),
+    Ready(CertInfo), 
+    Renewing(CertInfo),
     Expired(CertInfo),
 }
 
@@ -113,10 +114,11 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
 
     pub fn get_cert(&self) -> Option<Arc<CertifiedKey>> {
         let mut_part = self.inner.mut_part.lock().unwrap();
-        if let CertState::Ready(info) = &mut_part.state {
-            Some(info.key.clone())
-        } else {
-            None
+        match &mut_part.state {
+            CertState::Ready(info) => Some(info.key.clone()),
+            CertState::Renewing(info) => Some(info.key.clone()),
+            CertState::Expired(_) => None,
+            CertState::None => None,
         }
     }
 
@@ -221,14 +223,21 @@ impl<R: AcmeChallengeEntry> CertStub<R> {
             match &mut_part.state {
                 CertState::None => true,
                 CertState::Ready(info) => {
-                    let renew_time = info.expires - renew_before_expiry;
-                    if chrono::Utc::now() >= renew_time {
+                    let now = chrono::Utc::now();
+                    if now >= info.expires {
                         mut_part.state = CertState::Expired(info.clone());
                         true
                     } else {
-                        false
+                        let renew_time = info.expires - renew_before_expiry;
+                        if now >= renew_time {
+                            mut_part.state = CertState::Renewing(info.clone());
+                            true
+                        } else {
+                            false
+                        }
                     }
                 }
+                CertState::Renewing(_) => true,
                 CertState::Expired(_) => true
             }
         };
