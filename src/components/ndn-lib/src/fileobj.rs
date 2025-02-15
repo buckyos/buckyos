@@ -3,6 +3,8 @@ use crate::{ChunkId, LinkData};
 use std::collections::HashMap;
 use crate::{OBJ_TYPE_FILE,build_named_object_by_json,ObjId};
 
+//TODO：NDN如何提供一种通用机制，检查FileObject在本地是 完全存在的 ？ 在这里的逻辑是FileObject的Content(存在)
+// 思路：Object如果引用了另一个Object,要区分这个引用是强引用(依赖）还是弱引用，
 #[derive(Serialize,Deserialize,Clone)]
 pub struct FileObject {
     pub name:String,
