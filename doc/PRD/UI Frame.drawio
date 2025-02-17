@@ -1,13 +1,13 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/26.0.9 Chrome/128.0.6613.186 Electron/32.2.5 Safari/537.36" version="26.0.9" pages="3">
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/26.0.9 Chrome/128.0.6613.186 Electron/32.2.5 Safari/537.36" version="26.0.9" pages="3">
   <diagram id="adK-_9Zq3T5H2AhbhxpP" name="BuckyOS App Frame">
-    <mxGraphModel dx="1179" dy="-417" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="608" dy="-386" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="_leH_aRmLZVj_yA83IQe-132" value="" style="rounded=0;whiteSpace=wrap;fillColor=none;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-132" value="" style="rounded=0;whiteSpace=wrap;fillColor=none;" parent="1" vertex="1">
           <mxGeometry x="462.5" y="1150" width="347.5" height="230" as="geometry" />
         </mxCell>
-        <mxCell id="YNCNPn3-nEm4kQLwaYWh-1" value="BuckyOS &amp;amp; OpenDAN PRD&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;## 目录&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- 术语和主要产品流程定义&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- BuckyOS Desktop 安装&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- 首次使用引导&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- BuckyOS Desktop 的本地功能&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;-&amp;nbsp; 账号管理 （含订阅管理）&amp;nbsp;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;-&amp;nbsp;&amp;nbsp;Zone 管理&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;-&amp;nbsp;&amp;nbsp;资产管理 （域名，BNS, 数字货币）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- BuckyOS 的本机应用&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 智能备份（同步） （管理本机数据与Zone数据的关系）&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 本机网络行为管理（注意开发者模式和普通模式）&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;===== 下面都是Zone UI =====&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;Zone UI （可在浏览器中打开，功能会有些许不同）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- Zone UI 框架&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- 基本UI流程&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- 通用组件：title bar + task bar&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- 首页 (login_index.html, index.html)&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 桌面&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 任务管理 （页内应用 task.html）&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- 系统消息管理 （页内应用 mailbox.html）&lt;/span&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 已发布内容管理 (页内应用,content.html)&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- 系统设置 (settings.html) , 通过页内pannel的模式扩展配置&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- zone内设备设置，包括对设备的上网行为进行管理&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- zone的外网访问设置&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- zone内用户管理（包含用户权限管理，数据管理）&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 已安装内应用管理，包括应用的enable/disable&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 已安装Agent管理&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- AI能力设定 + openDAN设置（拥有AI能力可启用OpenDAN）&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- openDAN设置:ai_settings.html&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 存储+knowledgebase + 备份设置&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- 系统对话框&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 联合登录(login.html)&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- NDN文件发布(publish.html)&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- Store （应用+Agent一起）： store.html&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- 默认应用（拥有独立域名，或独立窗口）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- Filebrowser&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- Knowledge Base(library),重点&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- Social Network(规划)&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;&#x9;&lt;/span&gt;&#x9;&lt;/span&gt;&lt;/span&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); font-weight: 400;&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontStyle=1" parent="1" vertex="1">
+        <mxCell id="YNCNPn3-nEm4kQLwaYWh-1" value="BuckyOS &amp;amp; OpenDAN PRD&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;## 目录&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- 术语和主要产品流程定义&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- BuckyOS Desktop 安装&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- 首次使用引导&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- BuckyOS Desktop 的本地功能&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;-&amp;nbsp; 账号管理 （含订阅管理）&amp;nbsp;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;-&amp;nbsp;&amp;nbsp;Zone 管理&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;-&amp;nbsp;&amp;nbsp;资产管理 （域名，BNS, 数字货币）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- BuckyOS 的本机应用&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 智能备份（同步） （管理本机数据与Zone数据的关系）&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 本机网络行为管理（注意开发者模式和普通模式）&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;===== 下面都是Zone UI =====&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;Zone UI （可在浏览器中打开，功能会有些许不同）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- Zone UI 框架&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- 基本UI流程&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;- 通用组件：title bar + task bar&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- 首页 (login_index.html, index.html)&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 桌面&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 任务管理 （页内应用 task.html）&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- 系统消息管理 （页内应用 mailbox.html）&lt;/span&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 已发布内容管理 (页内应用,content.html)&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- 系统设置 (settings.html) , 通过页内pannel的模式扩展配置&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- zone内设备设置，包括对设备的上网行为进行管理&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- zone的外网访问设置&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- zone内用户管理（包含用户权限管理，数据管理）&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 已安装内应用管理，包括应用的enable/disable&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 已安装Agent管理&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- AI能力设定 + openDAN设置（拥有AI能力可启用OpenDAN）&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- openDAN设置:ai_settings.html&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 存储+knowledgebase + 备份设置&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- 系统对话框&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 联合登录(login.html)&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- NDN文件发布(publish.html)&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- Store （应用+Agent一起）： store.html&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;- 默认应用（拥有独立域名，或独立窗口）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- Filebrowser&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- Knowledge Base(library),重点&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-weight: normal;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- AI Social Network(规划,叫HotPot?)&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); font-weight: 400;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;&#x9;&lt;/span&gt;&#x9;&lt;/span&gt;&lt;/span&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); font-weight: 400;&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="39" y="1110" width="392.5" height="660" as="geometry" />
         </mxCell>
         <mxCell id="m_4mc1w930ErkAejLFpe-1" value="Zone A" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;" parent="1" vertex="1">
@@ -19,45 +19,45 @@
         <mxCell id="m_4mc1w930ErkAejLFpe-3" value="App1" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;" parent="1" vertex="1">
           <mxGeometry x="502.5" y="1210" width="183" height="150" as="geometry" />
         </mxCell>
-        <mxCell id="04UgHpdlyZu8Od1IAqQZ-1" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+        <mxCell id="04UgHpdlyZu8Od1IAqQZ-1" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" parent="1" vertex="1">
           <mxGeometry x="732.5" y="1180" width="30" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-66" value="node_daemon&lt;div&gt;以OS service方式运行&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-66" value="node_daemon&lt;div&gt;以OS service方式运行&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
           <mxGeometry x="187.5" y="1885" width="100" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-67" value="进程内组件" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-70" target="_leH_aRmLZVj_yA83IQe-82">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-67" value="进程内组件" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-70" target="_leH_aRmLZVj_yA83IQe-82" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-68" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-70" target="_leH_aRmLZVj_yA83IQe-130">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-68" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-70" target="_leH_aRmLZVj_yA83IQe-130" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-69" value="Local Dir" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="_leH_aRmLZVj_yA83IQe-68">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-69" value="Local Dir" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="_leH_aRmLZVj_yA83IQe-68" vertex="1" connectable="0">
           <mxGeometry x="-0.1276" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-70" value="cyfs_gateway" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-70" value="cyfs_gateway" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="327.5" y="1885" width="100" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-71" value="" style="endArrow=none;dashed=1;html=1;rounded=0;" edge="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-71" value="" style="endArrow=none;dashed=1;html=1;rounded=0;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="97.5" y="1870" as="sourcePoint" />
             <mxPoint x="657.5" y="1870" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-72" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-73" target="_leH_aRmLZVj_yA83IQe-66">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-72" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-73" target="_leH_aRmLZVj_yA83IQe-66" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-73" value="tray-controller&lt;div&gt;(控制服务）&lt;/div&gt;" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-73" value="tray-controller&lt;div&gt;(控制服务）&lt;/div&gt;" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="192.5" y="1810" width="90" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-74" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-75" target="_leH_aRmLZVj_yA83IQe-70">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-74" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-75" target="_leH_aRmLZVj_yA83IQe-70" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-75" value="buckyos-desktop" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-75" value="buckyos-desktop" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="332.5" y="1810" width="90" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-76" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-77" target="_leH_aRmLZVj_yA83IQe-70">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-76" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-77" target="_leH_aRmLZVj_yA83IQe-70" edge="1">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="612.5" y="1865" />
@@ -65,16 +65,16 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-77" value="browser" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-77" value="browser" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" parent="1" vertex="1">
           <mxGeometry x="567.5" y="1810" width="90" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-78" value="在本机提供服务的进程" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-78" value="在本机提供服务的进程" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="60" y="1890" width="100" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-79" value="UI Apps" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-79" value="UI Apps" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="92.5" y="1810" width="60" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-80" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-81" target="_leH_aRmLZVj_yA83IQe-70">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-80" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-81" target="_leH_aRmLZVj_yA83IQe-70" edge="1">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="492.5" y="1865" />
@@ -82,306 +82,306 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-81" value="buckyos移动app&lt;div&gt;(backup app)&lt;/div&gt;" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-81" value="buckyos移动app&lt;div&gt;(backup app)&lt;/div&gt;" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" parent="1" vertex="1">
           <mxGeometry x="447.5" y="1810" width="112.5" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-82" value="app_inner_services" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-82" value="app_inner_services" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" parent="1" vertex="1">
           <mxGeometry x="272.5" y="1970" width="137.5" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-83" value="让当前设备变成可以运行服务的节点" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-83" value="让当前设备变成可以运行服务的节点" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="175" y="1940" width="125" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-84" value="App Web UI应判断自己是否运行在App中，以获得更多的能力，让体验更好" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-84" value="App Web UI应判断自己是否运行在App中，以获得更多的能力，让体验更好" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="484.5" y="1760" width="160" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-85" value="标准的,OOD上的运行结构&lt;div&gt;Debain/OpenWRT&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-85" value="标准的,OOD上的运行结构&lt;div&gt;Debain/OpenWRT&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="610" y="2310" width="150" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-86" value="安装在Windows/OSX上的buckyos" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-86" value="安装在Windows/OSX上的buckyos" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="610" y="2370" width="150" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-87" value="安装在手机上的buckyos app运行结构" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-87" value="安装在手机上的buckyos app运行结构" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="610" y="2490" width="150" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-88" value="有Root权限的Android TV" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-88" value="有Root权限的Android TV" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="610" y="2430" width="150" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-89" value="" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-89" value="" style="endArrow=classic;html=1;rounded=0;" parent="1" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="550" y="2320" as="sourcePoint" />
             <mxPoint x="550" y="2520" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-90" value="权限(能力由高到低）&lt;div&gt;UI丰富度由低到高&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="_leH_aRmLZVj_yA83IQe-89">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-90" value="权限(能力由高到低）&lt;div&gt;UI丰富度由低到高&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="_leH_aRmLZVj_yA83IQe-89" vertex="1" connectable="0">
           <mxGeometry x="0.0985" y="1" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-91" value="进程内" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-92" target="_leH_aRmLZVj_yA83IQe-96">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-91" value="进程内" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-92" target="_leH_aRmLZVj_yA83IQe-96" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-92" value="cyfs_gateway&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-92" value="cyfs_gateway&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="612" y="2065" width="100" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-93" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.342;entryY=0.085;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-95" target="_leH_aRmLZVj_yA83IQe-92">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-93" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.342;entryY=0.085;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-95" target="_leH_aRmLZVj_yA83IQe-92" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-94" value="进程内" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="_leH_aRmLZVj_yA83IQe-93">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-94" value="进程内" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="_leH_aRmLZVj_yA83IQe-93" vertex="1" connectable="0">
           <mxGeometry x="-0.4484" y="-1" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-95" value="buckyos-app&lt;div&gt;(backup app)&lt;/div&gt;" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-95" value="buckyos-app&lt;div&gt;(backup app)&lt;/div&gt;" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" parent="1" vertex="1">
           <mxGeometry x="560" y="2000" width="90" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-96" value="backup_client" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-96" value="backup_client" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" parent="1" vertex="1">
           <mxGeometry x="520" y="2155" width="115" height="45" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-97" value="owner_tools&lt;div&gt;激活管理（传统钱包功能）&lt;/div&gt;" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-97" value="owner_tools&lt;div&gt;激活管理（传统钱包功能）&lt;/div&gt;" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" parent="1" vertex="1">
           <mxGeometry x="660" y="2155" width="150" height="45" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-98" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.468;entryY=0.086;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-92" target="_leH_aRmLZVj_yA83IQe-97">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-98" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.468;entryY=0.086;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-92" target="_leH_aRmLZVj_yA83IQe-97" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-99" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-100" target="_leH_aRmLZVj_yA83IQe-118">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-99" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-100" target="_leH_aRmLZVj_yA83IQe-118" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-100" value="安装BuckyOS App" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-100" value="安装BuckyOS App" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="213.87" y="2710" width="85" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-101" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-103" target="_leH_aRmLZVj_yA83IQe-100">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-101" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-103" target="_leH_aRmLZVj_yA83IQe-100" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-102" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-103" target="_leH_aRmLZVj_yA83IQe-114">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-102" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-103" target="_leH_aRmLZVj_yA83IQe-114" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-103" value="按说明书打开设备" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-103" value="按说明书打开设备" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="63.870000000000005" y="2750" width="85" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-104" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-105" target="_leH_aRmLZVj_yA83IQe-119">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-104" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-105" target="_leH_aRmLZVj_yA83IQe-119" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-105" value="完成用户配置和zone配置" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-105" value="完成用户配置和zone配置" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="436.37" y="2710" width="85" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-108" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-110" target="_leH_aRmLZVj_yA83IQe-122">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-108" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-110" target="_leH_aRmLZVj_yA83IQe-122" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-109" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-110" target="_leH_aRmLZVj_yA83IQe-124">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-109" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-110" target="_leH_aRmLZVj_yA83IQe-124" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-110" value="激活设备并加入Zone" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-110" value="激活设备并加入Zone" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="60" y="2980" width="120" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-113" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-114" target="_leH_aRmLZVj_yA83IQe-120">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-113" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-114" target="_leH_aRmLZVj_yA83IQe-120" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-114" value="用户在浏览器中输入&lt;div&gt;http://$device_ip:3180/index.html&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-114" value="用户在浏览器中输入&lt;div&gt;http://$device_ip:3180/index.html&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="213.87" y="2780" width="230" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-115" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-116" target="_leH_aRmLZVj_yA83IQe-114">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-115" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-116" target="_leH_aRmLZVj_yA83IQe-114" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-116" value="辅助:运行查找脚本" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-116" value="辅助:运行查找脚本" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="286.37" y="2840" width="85" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-117" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-118" target="_leH_aRmLZVj_yA83IQe-105">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-117" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-118" target="_leH_aRmLZVj_yA83IQe-105" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-118" value="&amp;nbsp;首次运行向导" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-118" value="&amp;nbsp;首次运行向导" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="328.87" y="2710" width="85" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-143" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-119" target="_leH_aRmLZVj_yA83IQe-142">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-143" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-119" target="_leH_aRmLZVj_yA83IQe-142" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-119" value="自动激活" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-119" value="自动激活" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="548.87" y="2710" width="85" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-145" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-120" target="_leH_aRmLZVj_yA83IQe-144">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-145" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-120" target="_leH_aRmLZVj_yA83IQe-144" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-120" value="要求保存owner私钥" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-120" value="要求保存owner私钥" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="493.87" y="2780" width="85" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-121" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-122" target="_leH_aRmLZVj_yA83IQe-126">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-121" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-122" target="_leH_aRmLZVj_yA83IQe-126" edge="1">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="430" y="2960" />
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-122" value="通过BuckyOS App访问Control Panel" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-122" value="通过BuckyOS App访问Control Panel" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="230" y="2940" width="120" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-123" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-124" target="_leH_aRmLZVj_yA83IQe-126">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-123" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-124" target="_leH_aRmLZVj_yA83IQe-126" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-124" value="通过浏览器访问Control Panel" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-124" value="通过浏览器访问Control Panel" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="230" y="3010" width="120" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-125" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-126" target="_leH_aRmLZVj_yA83IQe-127">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-125" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-126" target="_leH_aRmLZVj_yA83IQe-127" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-126" value="添加设备" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-126" value="添加设备" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="400" y="2970" width="120" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-147" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-127" target="_leH_aRmLZVj_yA83IQe-146">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-147" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-127" target="_leH_aRmLZVj_yA83IQe-146" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-127" value="添加成功" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-127" value="添加成功" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="550" y="2970" width="120" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-128" value="App的单进程（纯Client)模型" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-128" value="App的单进程（纯Client)模型" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="577.5" y="2230" width="170" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-129" value="不管有没有装Destop,通过浏览器总是能访问安装在Zone内的应用服务，通过App Client则可以控制当前设备。&lt;div&gt;安装Desktop后控制当前设设备（比如使用cyfs-gateway智能代理）的功能可以不不依赖buckyos服务&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontColor=#99004D;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-129" value="不管有没有装Destop,通过浏览器总是能访问安装在Zone内的应用服务，通过App Client则可以控制当前设备。&lt;div&gt;安装Desktop后控制当前设设备（比如使用cyfs-gateway智能代理）的功能可以不不依赖buckyos服务&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontColor=#99004D;" parent="1" vertex="1">
           <mxGeometry x="570" y="1890" width="250" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-130" value="client_app&lt;div&gt;webui folder&lt;/div&gt;" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-130" value="client_app&lt;div&gt;webui folder&lt;/div&gt;" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" parent="1" vertex="1">
           <mxGeometry x="402.5" y="1970" width="115" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-131" value="用户基于PC 使用BuckyOS时的典型UI&lt;div&gt;BuckyOS Desktop +wallet UI + 2个dApp&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-131" value="用户基于PC 使用BuckyOS时的典型UI&lt;div&gt;BuckyOS Desktop +wallet UI + 2个dApp&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="506.25" y="1110" width="260" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-133" value="&lt;font style=&quot;font-size: 9px;&quot;&gt;21:00&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=middle;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-133" value="&lt;font style=&quot;font-size: 9px;&quot;&gt;21:00&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=middle;" parent="1" vertex="1">
           <mxGeometry x="463" y="1370" width="347" height="12" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-134" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-134" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="770" y="1372" width="8" height="8" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-135" value="&lt;font style=&quot;font-size: 9px;&quot;&gt;如果本机运行了buckyos service,那么控制托盘存在&lt;/font&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-135" value="&lt;font style=&quot;font-size: 9px;&quot;&gt;如果本机运行了buckyos service,那么控制托盘存在&lt;/font&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="750" y="1390" width="60" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-136" value="" style="sketch=0;verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;fillColor=#000000;align=center;outlineConnect=0;pointerEvents=1;shape=mxgraph.citrix2.windows_app;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-136" value="" style="sketch=0;verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;fillColor=#000000;align=center;outlineConnect=0;pointerEvents=1;shape=mxgraph.citrix2.windows_app;" parent="1" vertex="1">
           <mxGeometry x="463.87" y="1371" width="10.13" height="10" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-137" value="BuckyOS Desktop的目标是兼容所有有UI的系统，BuckyOS Service的目标则是兼容所24*7运行的节点设备" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-137" value="BuckyOS Desktop的目标是兼容所有有UI的系统，BuckyOS Service的目标则是兼容所24*7运行的节点设备" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="510" y="2270" width="310" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-139" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="_leH_aRmLZVj_yA83IQe-138" target="_leH_aRmLZVj_yA83IQe-92">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-139" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" parent="1" source="_leH_aRmLZVj_yA83IQe-138" target="_leH_aRmLZVj_yA83IQe-92" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-138" value="移动浏览器" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-138" value="移动浏览器" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;size=10;" parent="1" vertex="1">
           <mxGeometry x="690" y="2000" width="90" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-140" value="下面是站在设备购买者首次开箱的角度，看使用buckyos的流程" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-140" value="下面是站在设备购买者首次开箱的角度，看使用buckyos的流程" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="36.93" y="2660" width="430" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-141" value="## 产品相关术语介绍&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS Service&lt;/div&gt;&lt;div&gt;由node_daemon管理的一系列内核服务。也是BuckyOS的主体。 一个设备上只能运行一个BuckyOS Service实例。BuckyOS Service本身不受本设备的用户系统影响，而是使用BuckyOS Zone的用户系统.&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;当BuckyOS Service运行在有UI的系统上时，可以通过托盘控制程序来对其运行情况进行简单管理&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS，又常称作 Personal Cluster, Zone&lt;/div&gt;&lt;div&gt;由至少一个OOD设备运行的BuckyOS Service组成的集群。Zone由ZoneId标识（通常是一个域名），并有一个Owner（创建者）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS Desktop / App (移动版）&lt;/div&gt;&lt;div&gt;BuckyOS的客户端平台，让安装了BuckyOS Desktop的终端设备能更好的与BuckyOS交互。BuckyOS本身绝对支持通过浏览器使用，但基于Desktop使用的体验会更好，&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;我们鼓励用户尽量用BuckyOS Desktop来使用BuckyOS.&amp;nbsp; （可以参考极空间的本地应用）。&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;在没有可用Zone的情况下，BuckyOS Desktop也有一些功能允许匿名使用。（BuckyOS Desktop不依赖BuckyOS Servicem,但可能共用cyfs-gateway组件）&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS Client App (或称native app)&lt;/div&gt;&lt;div&gt;集成在BuckyOS Desktop中的本地App,这些App有的是在BuckyOS中安装dApp时部署的，有的则是BuckyOS Destop自带的默认client app&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS dApp (缩写为dApp)&lt;/div&gt;&lt;div&gt;安装在zone内的应用程序。其服务端会被BuckyOS 调度到某个具体的node上运行。通过Desktop启动dApp时，通常会让其运行在一个定制的webview中，相比在标准浏览器里运行，可以获得更多的能力。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;从体验上来说，用户一般不区别ClientApp和dApp&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;在移动端，BuckyOS App总是努力让dApp能拥有独立窗口。单受限于iOS的机制，BuckyOS App自己需要实现窗口管理，或则主动用浏览器打开某些dApp&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS 页内应用&lt;/div&gt;&lt;div&gt;以Zone桌面页面的内嵌窗口方式运行的app,通常是一些系统应用。&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-141" value="## 产品相关术语介绍&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS Service&lt;/div&gt;&lt;div&gt;由node_daemon管理的一系列内核服务。也是BuckyOS的主体。 一个设备上只能运行一个BuckyOS Service实例。BuckyOS Service本身不受本设备的用户系统影响，而是使用BuckyOS Zone的用户系统.&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;当BuckyOS Service运行在有UI的系统上时，可以通过托盘控制程序来对其运行情况进行简单管理&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS，又常称作 Personal Cluster, Zone&lt;/div&gt;&lt;div&gt;由至少一个OOD设备运行的BuckyOS Service组成的集群。Zone由ZoneId标识（通常是一个域名），并有一个Owner（创建者）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS Desktop / App (移动版）&lt;/div&gt;&lt;div&gt;BuckyOS的客户端平台，让安装了BuckyOS Desktop的终端设备能更好的与BuckyOS交互。BuckyOS本身绝对支持通过浏览器使用，但基于Desktop使用的体验会更好，&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;我们鼓励用户尽量用BuckyOS Desktop来使用BuckyOS.&amp;nbsp; （可以参考极空间的本地应用）。&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;在没有可用Zone的情况下，BuckyOS Desktop也有一些功能允许匿名使用。（BuckyOS Desktop不依赖BuckyOS Servicem,但可能共用cyfs-gateway组件）&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS Client App (或称native app)&lt;/div&gt;&lt;div&gt;集成在BuckyOS Desktop中的本地App,这些App有的是在BuckyOS中安装dApp时部署的，有的则是BuckyOS Destop自带的默认client app&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS dApp (缩写为dApp)&lt;/div&gt;&lt;div&gt;安装在zone内的应用程序。其服务端会被BuckyOS 调度到某个具体的node上运行。通过Desktop启动dApp时，通常会让其运行在一个定制的webview中，相比在标准浏览器里运行，可以获得更多的能力。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;从体验上来说，用户一般不区别ClientApp和dApp&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;在移动端，BuckyOS App总是努力让dApp能拥有独立窗口。单受限于iOS的机制，BuckyOS App自己需要实现窗口管理，或则主动用浏览器打开某些dApp&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;### BuckyOS 页内应用&lt;/div&gt;&lt;div&gt;以Zone桌面页面的内嵌窗口方式运行的app,通常是一些系统应用。&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="17.74" y="2040" width="476.13" height="605" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-142" value="在Buckyos Desktop中进入Zone首页" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-142" value="在Buckyos Desktop中进入Zone首页" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="674.5" y="2710" width="135.5" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-144" value="在浏览器中进入Zone首页" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-144" value="在浏览器中进入Zone首页" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="640" y="2780" width="85" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-146" value="在设备管理页面看到新设备" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-146" value="在设备管理页面看到新设备" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="708.87" y="2970" width="120" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="_leH_aRmLZVj_yA83IQe-148" value="App2&lt;div&gt;(只支持移动布局)&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="_leH_aRmLZVj_yA83IQe-148" value="App2&lt;div&gt;(只支持移动布局)&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="627.5" y="1190" width="70" height="150" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-2" target="jif5bY9iWy8slkPr43yM-13">
+        <mxCell id="jif5bY9iWy8slkPr43yM-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-2" target="jif5bY9iWy8slkPr43yM-13" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-2" value="http://$oodip:3080/index.html" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-2" value="http://$oodip:3080/index.html" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="64.92999999999995" y="3185" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-4" target="jif5bY9iWy8slkPr43yM-30">
+        <mxCell id="jif5bY9iWy8slkPr43yM-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-4" target="jif5bY9iWy8slkPr43yM-30" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-4" value="BuckyOS Desktop&lt;div&gt;Active Wizzard&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-4" value="BuckyOS Desktop&lt;div&gt;Active Wizzard&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="483.03" y="3215" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-7" target="jif5bY9iWy8slkPr43yM-17">
+        <mxCell id="jif5bY9iWy8slkPr43yM-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-7" target="jif5bY9iWy8slkPr43yM-17" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-7" target="jif5bY9iWy8slkPr43yM-25">
+        <mxCell id="jif5bY9iWy8slkPr43yM-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-7" target="jif5bY9iWy8slkPr43yM-25" edge="1">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="673.93" y="3515" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-7" value="Create / Import Account" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-7" value="Create / Import Account" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="390.92999999999995" y="3365" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-10" target="jif5bY9iWy8slkPr43yM-21">
+        <mxCell id="jif5bY9iWy8slkPr43yM-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-10" target="jif5bY9iWy8slkPr43yM-21" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-9" value="在当前页面打开" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontStyle=1" vertex="1" connectable="0" parent="jif5bY9iWy8slkPr43yM-8">
+        <mxCell id="jif5bY9iWy8slkPr43yM-9" value="在当前页面打开" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontStyle=1" parent="jif5bY9iWy8slkPr43yM-8" vertex="1" connectable="0">
           <mxGeometry x="-0.044" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-10" value="Zone Home Page@Browser" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-10" value="Zone Home Page@Browser" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="64.92999999999995" y="3425" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-11" value="创建账号时备份的密钥可用于导入" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-13" target="jif5bY9iWy8slkPr43yM-7">
+        <mxCell id="jif5bY9iWy8slkPr43yM-11" value="创建账号时备份的密钥可用于导入" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-13" target="jif5bY9iWy8slkPr43yM-7" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-13" target="jif5bY9iWy8slkPr43yM-19">
+        <mxCell id="jif5bY9iWy8slkPr43yM-12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-13" target="jif5bY9iWy8slkPr43yM-19" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-13" value="Create Account&lt;div&gt;Create Zone&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-13" value="Create Account&lt;div&gt;Create Zone&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="64.92999999999995" y="3265" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-15" target="jif5bY9iWy8slkPr43yM-4">
+        <mxCell id="jif5bY9iWy8slkPr43yM-14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-15" target="jif5bY9iWy8slkPr43yM-4" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-15" value="Install BuckyOS Desktop" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-15" value="Install BuckyOS Desktop" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="341.48" y="3135" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-17" target="jif5bY9iWy8slkPr43yM-24">
+        <mxCell id="jif5bY9iWy8slkPr43yM-16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-17" target="jif5bY9iWy8slkPr43yM-24" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-17" value="Create / Select ZoneId" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-17" value="Create / Select ZoneId" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="390.92999999999995" y="3445" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-19" target="jif5bY9iWy8slkPr43yM-10">
+        <mxCell id="jif5bY9iWy8slkPr43yM-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-19" target="jif5bY9iWy8slkPr43yM-10" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-19" value="Search &amp;amp;&amp;amp; Active OOD" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-19" value="Search &amp;amp;&amp;amp; Active OOD" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="64.92999999999995" y="3345" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-20" value="dApp1@Browser" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-20" value="dApp1@Browser" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" parent="1" vertex="1">
           <mxGeometry x="24.92999999999995" y="3545" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-21" value="&lt;div&gt;HomePage内窗口&lt;/div&gt;系统页内应用" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-21" value="&lt;div&gt;HomePage内窗口&lt;/div&gt;系统页内应用" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" parent="1" vertex="1">
           <mxGeometry x="174.92999999999995" y="3545" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-22" value="在新(浏览器)窗口打开" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.542;entryY=0.057;entryDx=0;entryDy=0;entryPerimeter=0;fontStyle=1" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-10" target="jif5bY9iWy8slkPr43yM-20">
+        <mxCell id="jif5bY9iWy8slkPr43yM-22" value="在新(浏览器)窗口打开" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.542;entryY=0.057;entryDx=0;entryDy=0;entryPerimeter=0;fontStyle=1" parent="1" source="jif5bY9iWy8slkPr43yM-10" target="jif5bY9iWy8slkPr43yM-20" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-24" target="jif5bY9iWy8slkPr43yM-26">
+        <mxCell id="jif5bY9iWy8slkPr43yM-23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-24" target="jif5bY9iWy8slkPr43yM-26" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-24" value="Create Zone&amp;nbsp;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-24" value="Create Zone&amp;nbsp;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="343.92999999999995" y="3525" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-49" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-25" target="jif5bY9iWy8slkPr43yM-34">
+        <mxCell id="jif5bY9iWy8slkPr43yM-49" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-25" target="jif5bY9iWy8slkPr43yM-34" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-25" value="Select Zone" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-25" value="Select Zone" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="577" y="3525" width="130" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-26" value="Search &amp;amp;&amp;amp; Active OOD" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-26" value="Search &amp;amp;&amp;amp; Active OOD" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="341.4799999999999" y="3595" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-27" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-30" target="jif5bY9iWy8slkPr43yM-7">
+        <mxCell id="jif5bY9iWy8slkPr43yM-27" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-30" target="jif5bY9iWy8slkPr43yM-7" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-28" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-30" target="jif5bY9iWy8slkPr43yM-45">
+        <mxCell id="jif5bY9iWy8slkPr43yM-28" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-30" target="jif5bY9iWy8slkPr43yM-45" edge="1">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="757.93" y="3307.5" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-50" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-30" target="jif5bY9iWy8slkPr43yM-46">
+        <mxCell id="jif5bY9iWy8slkPr43yM-50" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-30" target="jif5bY9iWy8slkPr43yM-46" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-30" value="wallet UI" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-30" value="wallet UI" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="483.03" y="3295" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-31" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-34" target="jif5bY9iWy8slkPr43yM-10">
+        <mxCell id="jif5bY9iWy8slkPr43yM-31" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-34" target="jif5bY9iWy8slkPr43yM-10" edge="1">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="334.92999999999995" y="3700" />
@@ -389,89 +389,92 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-32" value="桌面端倾向于新窗口" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;fontStyle=1" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-34" target="jif5bY9iWy8slkPr43yM-39">
+        <mxCell id="jif5bY9iWy8slkPr43yM-32" value="桌面端倾向于新窗口" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;fontStyle=1" parent="1" source="jif5bY9iWy8slkPr43yM-34" target="jif5bY9iWy8slkPr43yM-39" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-33" value="移动端是app内tab页" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;fontStyle=1" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-34" target="jif5bY9iWy8slkPr43yM-39">
+        <mxCell id="jif5bY9iWy8slkPr43yM-33" value="移动端是app内tab页" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;fontStyle=1" parent="1" source="jif5bY9iWy8slkPr43yM-34" target="jif5bY9iWy8slkPr43yM-39" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-34" value="Account Home UI" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-34" value="Account Home UI" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="474.71" y="3675" width="222.29" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-35" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-36" target="jif5bY9iWy8slkPr43yM-4">
+        <mxCell id="jif5bY9iWy8slkPr43yM-35" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-36" target="jif5bY9iWy8slkPr43yM-4" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-36" value="Install BuckyOS App" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-36" value="Install BuckyOS App" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="615.48" y="3135" width="190" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-37" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-39" target="jif5bY9iWy8slkPr43yM-43">
+        <mxCell id="jif5bY9iWy8slkPr43yM-37" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-39" target="jif5bY9iWy8slkPr43yM-43" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-38" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-39" target="jif5bY9iWy8slkPr43yM-48">
+        <mxCell id="jif5bY9iWy8slkPr43yM-38" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-39" target="jif5bY9iWy8slkPr43yM-48" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-39" value="Zone Home Page@Natvie Web View" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-39" value="Zone Home Page@Natvie Web View" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="474.7099999999999" y="3795" width="229.22" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-40" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.366;entryY=0.021;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-26" target="jif5bY9iWy8slkPr43yM-34">
+        <mxCell id="jif5bY9iWy8slkPr43yM-40" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.366;entryY=0.021;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="jif5bY9iWy8slkPr43yM-26" target="jif5bY9iWy8slkPr43yM-34" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-42" value="通过应用列表进入，app内页应用" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-42" value="通过应用列表进入，app内页应用" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="674" y="3255" width="73" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-43" value="dApp1@native web view" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-43" value="dApp1@native web view" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" parent="1" vertex="1">
           <mxGeometry x="379.37" y="3905" width="154.56" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-44" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-34" target="jif5bY9iWy8slkPr43yM-46">
+        <mxCell id="jif5bY9iWy8slkPr43yM-44" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="jif5bY9iWy8slkPr43yM-34" target="jif5bY9iWy8slkPr43yM-46" edge="1">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="879.5299999999999" y="3415.1499999999996" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-45" value="&lt;div&gt;页内应用&lt;/div&gt;Backup UI" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-45" value="&lt;div&gt;页内应用&lt;/div&gt;Backup UI" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" parent="1" vertex="1">
           <mxGeometry x="723.5" y="3295" width="120" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-46" value="&lt;div&gt;页内应用&lt;br&gt;&lt;/div&gt;智能网关UI&lt;div&gt;&lt;/div&gt;" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-46" value="&lt;div&gt;页内应用&lt;br&gt;&lt;/div&gt;智能网关UI&lt;div&gt;&lt;/div&gt;" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" parent="1" vertex="1">
           <mxGeometry x="713.78" y="3355" width="126.44" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-47" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.402;entryY=0.996;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="jif5bY9iWy8slkPr43yM-39" target="jif5bY9iWy8slkPr43yM-20">
+        <mxCell id="jif5bY9iWy8slkPr43yM-47" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.402;entryY=0.996;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="jif5bY9iWy8slkPr43yM-39" target="jif5bY9iWy8slkPr43yM-20" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-48" value="&lt;div&gt;HomePage内窗口&lt;/div&gt;系统页内应用" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-48" value="&lt;div&gt;HomePage内窗口&lt;/div&gt;系统页内应用" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;" parent="1" vertex="1">
           <mxGeometry x="585.93" y="3905" width="120" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-53" value="通过应用列表进入，app内页应用" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-53" value="通过应用列表进入，app内页应用" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="705.93" y="3655" width="73" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="jif5bY9iWy8slkPr43yM-54" value="下面是站在使用应用的角度，看使用buckyos的主要流程" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="jif5bY9iWy8slkPr43yM-54" value="下面是站在使用应用的角度，看使用buckyos的主要流程" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="22.5" y="3090" width="430" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="l9FCvOQBztoYZng-uhZL-1" value="该流程展示了BuckyOS中不同类型的App (注意不包含 Agent）的打开流程。 不同的App一般拥有不同的独立子域名" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="l9FCvOQBztoYZng-uhZL-1" value="该流程展示了BuckyOS中不同类型的App (注意不包含 Agent）的打开流程。 不同的App一般拥有不同的独立子域名" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="24.93" y="3135" width="297" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="ZgTW2SP_MnVApMmHek6Y-1" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;AI相关功能&lt;/h1&gt;&lt;p&gt;AI相关功能从Open DAN里合并而来，因此AI部分大块的功能由独立文档描述，主要包括：&lt;/p&gt;&lt;p&gt;- AI能力（模型）管理，包括LLM和AIGC模型&lt;/p&gt;&lt;p&gt;- Agent/Workflow管理（和App管理底层基本相同）&lt;/p&gt;&lt;p&gt;- Agent Session(重点！传统的使用LLM的方法）&lt;/p&gt;&lt;p&gt;- Library(重点！用户的AI文件管理器）&lt;/p&gt;&lt;p&gt;-&amp;nbsp; 知识库构建配置&lt;/p&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="484.5" y="1470" width="283" height="230" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
   <diagram id="RZdW4h8mW8Q3h_B0Vpwn" name="UI Frame">
-    <mxGraphModel dx="2536" dy="991" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="1861" dy="1214" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="F8AhfbdMVNkYQneWF1yG-5" value="" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.browserWindow;rSize=0;strokeColor=#666666;strokeColor2=#008cff;strokeColor3=#c4c4c4;mainText=,;recursiveResize=0;" vertex="1" parent="1">
+        <mxCell id="F8AhfbdMVNkYQneWF1yG-5" value="" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.browserWindow;rSize=0;strokeColor=#666666;strokeColor2=#008cff;strokeColor3=#c4c4c4;mainText=,;recursiveResize=0;" parent="1" vertex="1">
           <mxGeometry x="-780" y="460" width="560" height="490" as="geometry" />
         </mxCell>
-        <mxCell id="F8AhfbdMVNkYQneWF1yG-6" value="Page 1" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.anchor;fontSize=17;fontColor=#666666;align=left;whiteSpace=wrap;" vertex="1" parent="F8AhfbdMVNkYQneWF1yG-5">
+        <mxCell id="F8AhfbdMVNkYQneWF1yG-6" value="Page 1" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.anchor;fontSize=17;fontColor=#666666;align=left;whiteSpace=wrap;" parent="F8AhfbdMVNkYQneWF1yG-5" vertex="1">
           <mxGeometry x="60" y="12" width="110" height="26" as="geometry" />
         </mxCell>
-        <mxCell id="F8AhfbdMVNkYQneWF1yG-7" value="https://$appid.$zoneid" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.anchor;rSize=0;fontSize=17;fontColor=#666666;align=left;" vertex="1" parent="F8AhfbdMVNkYQneWF1yG-5">
+        <mxCell id="F8AhfbdMVNkYQneWF1yG-7" value="https://$appid.$zoneid" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.anchor;rSize=0;fontSize=17;fontColor=#666666;align=left;" parent="F8AhfbdMVNkYQneWF1yG-5" vertex="1">
           <mxGeometry x="130" y="60" width="250" height="26" as="geometry" />
         </mxCell>
         <mxCell id="I_DkyAX16VAMbG26nA5m-22" value="App Page" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="F8AhfbdMVNkYQneWF1yG-5" vertex="1">
           <mxGeometry x="1" y="110" width="419.73" height="380" as="geometry" />
         </mxCell>
-        <mxCell id="F8AhfbdMVNkYQneWF1yG-2" value="TaskBar&lt;div&gt;可悬浮或ping在侧面&lt;/div&gt;&lt;div&gt;能方便的切换。&lt;/div&gt;&lt;div&gt;目前默认是Ping在侧面&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="F8AhfbdMVNkYQneWF1yG-5">
+        <mxCell id="F8AhfbdMVNkYQneWF1yG-2" value="TaskBar&lt;div&gt;可悬浮或ping在侧面&lt;/div&gt;&lt;div&gt;能方便的切换。&lt;/div&gt;&lt;div&gt;目前默认是Ping在侧面&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="F8AhfbdMVNkYQneWF1yG-5" vertex="1">
           <mxGeometry x="420.73" y="110" width="134.5" height="380" as="geometry" />
         </mxCell>
-        <mxCell id="F8AhfbdMVNkYQneWF1yG-3" value="Header" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="F8AhfbdMVNkYQneWF1yG-5">
+        <mxCell id="F8AhfbdMVNkYQneWF1yG-3" value="Header" style="rounded=1;whiteSpace=wrap;html=1;" parent="F8AhfbdMVNkYQneWF1yG-5" vertex="1">
           <mxGeometry x="430.73" y="115.33000000000015" width="120" height="40" as="geometry" />
         </mxCell>
         <mxCell id="I_DkyAX16VAMbG26nA5m-26" value="在浏览器中运行的App，可以用SDK集成taskbar" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="F8AhfbdMVNkYQneWF1yG-5" vertex="1">
@@ -480,7 +483,7 @@
         <mxCell id="jw_11xnyrBqW_af9KvlT-2" value="App Page" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-788.5" y="80" width="400" height="340" as="geometry" />
         </mxCell>
-        <mxCell id="-GDUP3V7nudQFrOhUyFi-3" value="&amp;nbsp;title bar" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="-GDUP3V7nudQFrOhUyFi-3" value="&amp;nbsp;title bar" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-788.5" y="40" width="534.5" height="40" as="geometry" />
         </mxCell>
         <mxCell id="jw_11xnyrBqW_af9KvlT-1" value="TaskBar&lt;div&gt;可悬浮或ping在侧面&lt;/div&gt;&lt;div&gt;能方便的切换。&lt;/div&gt;&lt;div&gt;目前默认是Ping在侧面&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
@@ -573,85 +576,85 @@
         <mxCell id="4sL37871HLAhbi25Yyum-4" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#f8cecc;strokeColor=#b85450;" parent="1" vertex="1">
           <mxGeometry x="-610.48" y="1649.0100000000002" width="11" height="11" as="geometry" />
         </mxCell>
-        <mxCell id="-GDUP3V7nudQFrOhUyFi-4" value="页内应用&lt;div&gt;（考虑到移动逻辑，页内应用默认都是全屏）&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="-GDUP3V7nudQFrOhUyFi-4" value="页内应用&lt;div&gt;（考虑到移动逻辑，页内应用默认都是全屏）&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="-715" y="100" width="181" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="-GDUP3V7nudQFrOhUyFi-5" value="页内应用 title bar" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="-GDUP3V7nudQFrOhUyFi-5" value="页内应用 title bar" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-715" y="100" width="181" height="20" as="geometry" />
         </mxCell>
-        <mxCell id="KcB4m8bk4XOr4HYP2YOO-14" value="App Title Bar" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="KcB4m8bk4XOr4HYP2YOO-14" value="App Title Bar" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-219.49" y="56" width="179.49" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="KcB4m8bk4XOr4HYP2YOO-15" value="Account Home&lt;div&gt;Current Device Info&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="KcB4m8bk4XOr4HYP2YOO-15" value="Account Home&lt;div&gt;Current Device Info&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-219.49" y="96" width="179.49" height="304" as="geometry" />
         </mxCell>
-        <mxCell id="KcB4m8bk4XOr4HYP2YOO-17" value="Wallet UI，保持移动布局" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="KcB4m8bk4XOr4HYP2YOO-17" value="Wallet UI，保持移动布局" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="-186" y="410" width="108" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="KcB4m8bk4XOr4HYP2YOO-18" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+        <mxCell id="KcB4m8bk4XOr4HYP2YOO-18" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" parent="1" vertex="1">
           <mxGeometry x="-68" y="63.33" width="24" height="24" as="geometry" />
         </mxCell>
-        <mxCell id="KcB4m8bk4XOr4HYP2YOO-16" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+        <mxCell id="KcB4m8bk4XOr4HYP2YOO-16" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" parent="1" vertex="1">
           <mxGeometry x="-85" y="60" width="30" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-1" value="Tab Bar" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-1" value="wallet UI Tab Bar" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-783.97" y="1421" width="219" height="39" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-2" value="App Page" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-2" value="App Page" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="-382.47" y="1766" width="60" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-3" value="Header" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-3" value="Header" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="-382.47" y="1636" width="60" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.009;entryY=0.498;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="y3DmrKwY5Ph1f_AQ1BcI-1" target="I_DkyAX16VAMbG26nA5m-13">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.009;entryY=0.498;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="y3DmrKwY5Ph1f_AQ1BcI-1" target="I_DkyAX16VAMbG26nA5m-13" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-14" value="弹出TaskBar" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="92CgmxIeLnmL2cjOxAfo-6">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-14" value="弹出TaskBar" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="92CgmxIeLnmL2cjOxAfo-6" vertex="1" connectable="0">
           <mxGeometry x="-0.2152" y="1" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.496;entryY=0.005;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="I_DkyAX16VAMbG26nA5m-2" target="y3DmrKwY5Ph1f_AQ1BcI-1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.496;entryY=0.005;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="I_DkyAX16VAMbG26nA5m-2" target="y3DmrKwY5Ph1f_AQ1BcI-1" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-26" value="打开应用&lt;div&gt;非业内应用，Android下会尝试用系统多窗口&lt;/div&gt;&lt;div&gt;这里的逻辑和微信小程序类似&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="92CgmxIeLnmL2cjOxAfo-7">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-26" value="打开应用&lt;div&gt;非业内应用，Android下会尝试用系统多窗口&lt;/div&gt;&lt;div&gt;这里的逻辑和微信小程序类似&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="92CgmxIeLnmL2cjOxAfo-7" vertex="1" connectable="0">
           <mxGeometry x="-0.0324" y="-1" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.005;entryY=0.506;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="I_DkyAX16VAMbG26nA5m-10" target="I_DkyAX16VAMbG26nA5m-33">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.005;entryY=0.506;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="I_DkyAX16VAMbG26nA5m-10" target="I_DkyAX16VAMbG26nA5m-33" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-13" value="在系统面板直接切换" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="92CgmxIeLnmL2cjOxAfo-9">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-13" value="在系统面板直接切换" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="92CgmxIeLnmL2cjOxAfo-9" vertex="1" connectable="0">
           <mxGeometry x="-0.3785" relative="1" as="geometry">
             <mxPoint x="29" as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-11" value="Account" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-11" value="Account" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-226.73" y="1430" width="50" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-15" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.phone2;strokeColor=#c0c0c0;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-15" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.phone2;strokeColor=#c0c0c0;" parent="1" vertex="1">
           <mxGeometry x="-800" y="2110" width="241.03" height="470" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-17" value="http://appid.$zoneid" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-17" value="http://appid.$zoneid" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-784.46" y="2160" width="209.49" height="20" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-18" value="App Page&lt;div&gt;在浏览器中运行时，可以用websdk集成buckyos panel(悬浮）&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-18" value="App Page&lt;div&gt;在浏览器中运行时，可以用websdk集成buckyos panel(悬浮）&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="-788.97" y="2180" width="224" height="360" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-19" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-19" value="" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-656.48" y="2450" width="86.01" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-20" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-20" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" parent="1" vertex="1">
           <mxGeometry x="-602.98" y="2454.01" width="30" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-22" value="" style="shape=message;html=1;html=1;outlineConnect=0;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-22" value="" style="shape=message;html=1;html=1;outlineConnect=0;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" parent="1" vertex="1">
           <mxGeometry x="-642.98" y="2460.34" width="30" height="20" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-23" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-23" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#f8cecc;strokeColor=#b85450;" parent="1" vertex="1">
           <mxGeometry x="-618.98" y="2473.01" width="11" height="11" as="geometry" />
         </mxCell>
-        <mxCell id="92CgmxIeLnmL2cjOxAfo-24" value="浏览器tab bar" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="92CgmxIeLnmL2cjOxAfo-24" value="浏览器tab bar" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-788.46" y="2501" width="223.49" height="39" as="geometry" />
         </mxCell>
       </root>

@@ -109,7 +109,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="RZdW4h8mW8Q3h_B0Vpwn" name="UI Frame">
-    <mxGraphModel dx="2084" dy="1905" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="2901" dy="2383" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -485,6 +485,90 @@
         <mxCell id="T8CgeOhQILHpaeLblhcq-17" value="Backup Client" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="-462.03" y="1870" width="92.03" height="30" as="geometry" />
         </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-1" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="279" y="-530" width="330" height="506" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-2" value="*My Name:" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="299" y="-420" width="120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-3" value="" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.text.textBox;fontColor=#666666;align=left;fontSize=17;spacingLeft=4;spacingTop=-3;whiteSpace=wrap;strokeColor=#666666;mainText=" vertex="1" parent="1">
+          <mxGeometry x="299" y="-388.5" width="280" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-4" value="*My Email:" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="299" y="-363.5" width="120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-5" value="" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.text.textBox;fontColor=#666666;align=left;fontSize=17;spacingLeft=4;spacingTop=-3;whiteSpace=wrap;strokeColor=#666666;mainText=" vertex="1" parent="1">
+          <mxGeometry x="299" y="-333.5" width="280" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-6" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="-156" y="-530" width="380" height="506" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-7" value="&lt;h1&gt;1. Configure the LLM Kernel&lt;/h1&gt;&lt;p&gt;OpenDAN, as your Personal AIOS, must be configured with at least one LLM kernel to work properly.&lt;/p&gt;" style="text;html=1;strokeColor=none;fillColor=none;spacing=5;spacingTop=-20;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="-136" y="-494" width="350" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-8" value="Config Main LLM Kernel:" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="-96" y="-393.5" width="155" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-9" value="OpenAI" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.forms.comboBox;strokeColor=#999999;fillColor=#ddeeff;align=left;fillColor2=#aaddff;mainText=;fontColor=#666666;fontSize=17;spacingLeft=3;" vertex="1" parent="1">
+          <mxGeometry x="-96" y="-363.5" width="265" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-10" value="OpenAI API Token：" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="-96" y="-318" width="120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-11" value="&amp;lt;&amp;lt;input your openai API token&amp;gt;&amp;gt;" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.text.textBox;fontColor=#666666;align=left;fontSize=17;spacingLeft=4;spacingTop=-3;whiteSpace=wrap;strokeColor=#666666;mainText=" vertex="1" parent="1">
+          <mxGeometry x="-96" y="-288" width="265" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-12" value="Config Summary LLM Kernel" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="-101" y="-254" width="170" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-13" value="Same as Main LLM Kernel" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.forms.comboBox;strokeColor=#999999;fillColor=#ddeeff;align=left;fillColor2=#aaddff;mainText=;fontColor=#666666;fontSize=17;spacingLeft=3;" vertex="1" parent="1">
+          <mxGeometry x="-96" y="-224" width="265" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-14" value="Config Quick&amp;nbsp; LLM Kernel" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="-103.5" y="-179.5" width="170" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-15" value="Same as Main LLM Kernel" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.forms.comboBox;strokeColor=#999999;fillColor=#ddeeff;align=left;fillColor2=#aaddff;mainText=;fontColor=#666666;fontSize=17;spacingLeft=3;" vertex="1" parent="1">
+          <mxGeometry x="-93.5" y="-149.5" width="265" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-16" value="Next" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="-20" y="-84" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-17" value="&lt;h1&gt;2. Introduce Yourself&lt;/h1&gt;&lt;p&gt;Give Agent more of your personal information so that Agent can serve you better.&lt;/p&gt;" style="text;html=1;strokeColor=none;fillColor=none;spacing=5;spacingTop=-20;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="299" y="-510" width="285" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-18" value="* My Introduce" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="299" y="-244" width="100" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-19" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="299" y="-204" width="280" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-20" value="Next" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="459" y="-84" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-21" value="Back" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="314" y="-84" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-22" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="644" y="-530" width="330" height="506" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-23" value="Back" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="684" y="-84" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-24" value="Done!" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="831.5" y="-84" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-25" value="List Info Already Inputed" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="661.5" y="-394" width="290" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-26" value="&lt;h1&gt;&amp;nbsp; &amp;nbsp; Getting Started !&lt;/h1&gt;" style="text;html=1;strokeColor=none;fillColor=none;spacing=5;spacingTop=-20;whiteSpace=wrap;overflow=hidden;rounded=0;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="664" y="-478.5" width="285" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-27" value="Password&lt;sup&gt;&lt;font color=&quot;#ff0000&quot;&gt;*&lt;/font&gt;&lt;/sup&gt;" style="fillColor=none;strokeColor=none;html=1;fontSize=11;fontStyle=0;align=left;fontColor=#596780;fontStyle=1;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="299" y="-312" width="240" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="uL1Km_W12tFVV9RCzgJx-28" value="&amp;#8226;&amp;#8226;&amp;#8226;&amp;#8226;&amp;#8226;&amp;#8226;&amp;#8226;&amp;#8226;" style="rounded=1;arcSize=9;align=left;spacingLeft=5;strokeColor=#4C9AFF;html=1;strokeWidth=2;fontSize=12" vertex="1" parent="1">
+          <mxGeometry x="299" y="-287" width="285" height="33" as="geometry" />
+        </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
@@ -778,7 +862,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="Bwazp7gAqggCu4c5TZTF" name="backup-suite">
-    <mxGraphModel dx="2536" dy="991" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="2901" dy="1214" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
