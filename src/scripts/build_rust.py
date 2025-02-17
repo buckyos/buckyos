@@ -5,6 +5,12 @@ import subprocess
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
+def check_musl_gcc():
+    """检查 musl-gcc 是否存在"""
+    if shutil.which('musl-gcc') is None:
+        print("Error: musl-gcc not found. Please install musl-tools.")
+        sys.exit(1)
+
 def clean(target_dir):
     print(f"Cleaning build artifacts at ${target_dir}")
     subprocess.run(["cargo", "clean", "--target-dir", target_dir], check=True, cwd=src_dir)
@@ -25,6 +31,8 @@ if __name__ == "__main__":
         print("NEED ARGUMENT: clean|amd64|aarch64")
         exit(1)
     if len(args) > 0:
+        # check musl-gcc exist
+        check_musl_gcc()
         temp_dir = tempfile.gettempdir()
         project_name = "buckyos"
         target_dir = os.path.join(temp_dir, "rust_build", project_name)
