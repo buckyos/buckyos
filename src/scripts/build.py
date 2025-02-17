@@ -31,8 +31,8 @@ if __name__ == "__main__":
         target = "x86_64-unknown-linux-musl"
     elif system == "Windows" and (arch == "x86_64" or arch == "AMD64"):
         target = "x86_64-pc-windows-msvc"
-    elif system == "Linux" and (arch == "x86_64" or arch == "AMD64"):
-        target = "aarch64-unknown-linux-gnu"
+#     elif system == "Linux" and (arch == "x86_64" or arch == "AMD64"):
+#         target = "aarch64-unknown-linux-gnu"
     elif system == "Darwin" and (arch == "arm64" or arch == "arm"):
         target = "aarch64-apple-darwin"
     print(f"DEBUG: target is : {target}")
