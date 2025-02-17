@@ -83,7 +83,7 @@ export async function check_bucky_username(check_bucky_username:string) : Promis
     return valid;
 }
 
-export async function generate_key_pair():Promise<[string,string]> {
+export async function generate_key_pair():Promise<[JsonValue,string]> {
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
     let result = await rpc_client.call("generate_key_pair",{});
     let public_key = result["public_key"]
