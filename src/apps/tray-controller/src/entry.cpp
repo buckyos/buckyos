@@ -34,7 +34,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         if (lParam == WM_RBUTTONUP) {
             POINT pt;
             GetCursorPos(&pt);
-            g_menu->popup(pt, g_bucky_status == BuckyStatus::Running);
+            g_menu->popup(pt, g_bucky_status == BuckyStatus::Running || g_bucky_status == BuckyStatus::NotActive);
         }
         break;
 
@@ -79,7 +79,6 @@ extern "C" void entry() {
 }
 
 void on_status_changed_callback(BuckyStatus new_status, BuckyStatus old_status, void* userdata) {
-//*
     LPWSTR strIconId = MAKEINTRESOURCE(IDI_TRAY_APP);
     switch (new_status) {
     case BuckyStatus::Running:
@@ -98,9 +97,9 @@ void on_status_changed_callback(BuckyStatus new_status, BuckyStatus old_status, 
         strIconId = MAKEINTRESOURCE(IDI_TRAY_ERROR);
         break;
     }
+    g_bucky_status = new_status;
     g_tray_icon_nid.hIcon = LoadIcon(hInst, strIconId);
     Shell_NotifyIcon(NIM_MODIFY, &g_tray_icon_nid);
-    //*/
 }
 
 // extern "C" void entry() {}

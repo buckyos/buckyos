@@ -1,8 +1,10 @@
 use futures::{FutureExt, StreamExt};
 use name_lib::DIDDocumentTrait;
+use windows::core::PCWSTR;
 use std::collections::{HashMap, HashSet};
-use std::ffi::CString;
+use std::ffi::{CString, OsStr};
 use std::os::raw::{c_char, c_int, c_void};
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
 use std::sync::Arc;
 use std::{iter, ptr};
@@ -13,51 +15,30 @@ use buckyos_kit::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
-// #[repr(C)]
-// pub struct MyClass {
-//     value: i32,
-// }
-
-// #[no_mangle]
-// pub extern "C" fn my_class_new(value: i32) -> *mut MyClass {
-//     Box::into_raw(Box::new(MyClass { value }))
-// }
-
-// #[no_mangle]
-// pub extern "C" fn my_class_get_value(obj: *mut MyClass) -> i32 {
-//     unsafe {
-//         if obj.is_null() {
-//             return 0; // 或者处理错误
-//         }
-//         (*obj).value
-//     }
-// }
-
-// #[no_mangle]
-// pub extern "C" fn my_class_free(obj: *mut MyClass) {
-//     if !obj.is_null() {
-//         unsafe {
-//             Box::from_raw(obj);
-//         }
-//     }
-// }
-
 use sysinfo::System;
 use tokio::sync::Mutex;
 
+#[cfg(windows)]
+use windows::{
+    Win32::System::Services::*,
+};
+
 lazy_static::lazy_static! {
+    static ref g_runtime: tokio::runtime::Runtime = tokio::runtime::Runtime::new().unwrap();
+
     static ref bucky_status_scaner_mgr: Mutex<BuckyStatusScanerMgr> = Mutex::new(BuckyStatusScanerMgr {
         next_seq: 1,
         scaners: HashMap::new()
     });
 
-    static ref buckyos_process: HashSet<&'static str> = {
+    static ref buckyos_process: HashSet<&'static str, > = {
         let mut set = HashSet::new();
         set.extend(["node_daemon", "scheduler", "verify_hub", "system_config", "cyfs_gateway"]);
         set
     };
 
     static ref node_infomation: Arc<Mutex<Option<NodeInfomationObj>>> = Arc::new(Mutex::new(None));
+    static ref buckyos_service_name: Vec<u16> = OsStr::new("buckyos").encode_wide().chain(Some(0)).collect();
 }
 
 struct BuckyStatusScanerMgr {
@@ -104,7 +85,6 @@ extern "C" fn bucky_status_scaner_scan(
     _hwnd: *const c_void,
 ) -> *mut BuckyStatusScaner {
     let (sender, mut receiver) = mpsc::channel(32);
-    let rt = tokio::runtime::Runtime::new().unwrap();
 
     // Wrap both callback and userdata in a Send-safe wrapper
     struct CallbackWrapper {
@@ -120,18 +100,22 @@ extern "C" fn bucky_status_scaner_scan(
         _hwnd,
     });
 
-    rt.spawn(async move {
+    g_runtime.spawn(async move {
         let mut status = BuckyStatus::Stopped;
-        let mut interval = std::time::Duration::from_millis(0);
+        let mut interval = std::time::Duration::from_millis(1);
         loop {
             futures::select! {
                 _ = receiver.recv().fuse() => {
+                    log::info!("will stop scan status of buckyos!");
                     break;
                 },
                 _ = tokio::time::sleep(interval).fuse() => {
                     let old_status = status;
+                    status = BuckyStatus::Stopped;
 
                     let bin_dir = get_buckyos_system_bin_dir();
+
+                    log::info!("buckyos has been installed at: {:?}", bin_dir);
 
                     let is_dir = match fs::metadata(bin_dir) {
                         Ok(meta) if meta.is_dir() => true,
@@ -140,43 +124,56 @@ extern "C" fn bucky_status_scaner_scan(
                     if !is_dir {
                         status = BuckyStatus::NotInstall;
                         interval = std::time::Duration::from_millis(5000);
+                        log::warn!("buckyos status: NotInstall");
                     }
 
                     if status != BuckyStatus::NotInstall {
-                        unsafe {
-                            let info = get_node_info();
-                            if info.is_null() || (*info).node_id.is_null() {
-                                status = BuckyStatus::NotActive;
+                        let mut system = System::new_all();
+                        system.refresh_all();
+                        let mut exist_process = HashSet::new();
+                        
+                        #[cfg(windows)]
+                        let ext_path = ".exe";
+
+                        let mut not_exist_process = buckyos_process.iter().map(|name| name.to_string() + ext_path).collect::<HashSet<_>>();
+                        let node_daemon_process = "node_daemon".to_string() + ext_path;
+
+                        for process in system.processes().values() {
+                            let name = process.name().to_ascii_lowercase().into_string().unwrap();
+
+                            if node_daemon_process == name {
+                                unsafe {
+                                    let info = get_node_info_impl().await;
+                                    if info.is_null() || (*info).node_id.is_null() {
+                                        status = BuckyStatus::NotActive;
+                                        log::warn!("buckyos status: NotActive");
+                                    } else {
+                                        status = BuckyStatus::Running;
+                                        log::info!("buckyos status: Running");
+                                    }
+                                    free_node_info(info);
+                                }
                                 interval = std::time::Duration::from_millis(5000);
+                                break;
                             }
-                            free_node_info(info);
+
+                            if buckyos_process.contains(name.as_str()) {
+                                not_exist_process.remove(name.as_str());
+                                exist_process.insert(name);
+                            }
                         }
 
-                        if status != BuckyStatus::NotActive {
-                            let mut system = System::new_all();
-                            system.refresh_all();
-                            let mut exist_process = HashSet::new();
-                            let mut not_exist_process = buckyos_process.clone();
-
-                            for process in system.processes().values() {
-                                let name = process.name().to_ascii_lowercase();
-                                if buckyos_process.contains(name.as_str()) {
-                                    not_exist_process.remove(name.as_str());
-                                    exist_process.insert(name);
-                                }
-                            }
-
+                        if status != BuckyStatus::Running && status != BuckyStatus::NotActive {
                             if !not_exist_process.is_empty() {
                                 if !exist_process.is_empty() {
                                     status = BuckyStatus::Failed;
                                     interval = std::time::Duration::from_millis(500);
+                                    log::warn!("buckyos status: Failed");
                                 } else {
                                     status = BuckyStatus::Stopped;
                                     interval = std::time::Duration::from_millis(5000);
+                                    log::warn!("buckyos status: Stopped");
                                 }
-                            } else {
-                                status = BuckyStatus::Running;
-                                interval = std::time::Duration::from_millis(5000);
                             }
                         }
                     }
@@ -189,7 +186,7 @@ extern "C" fn bucky_status_scaner_scan(
         }
     });
 
-    rt.block_on(async move {
+    g_runtime.block_on(async move {
         let mut scaner_mgr = bucky_status_scaner_mgr.lock().await;
         let seq = scaner_mgr.next_seq;
         scaner_mgr.next_seq = scaner_mgr.next_seq + 1;
@@ -415,9 +412,7 @@ extern "C" fn list_application(seq: c_int, callback: ListAppCallback, userdata: 
     unsafe impl Sync for CallbackWrapper {}
     let callback_wrapper = Arc::new(CallbackWrapper { callback, userdata });
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-
-    rt.spawn(async move {
+    g_runtime.spawn(async move {
         let mut apps = vec![];
         {
             let info = node_infomation.lock().await;
@@ -569,11 +564,11 @@ async fn looking_zone_config(
         //owner zone is a NAME, need query NameInfo to get DID
         log::info!("owner zone is a NAME, try nameclient.query to get did");
 
-        let zone_jwt = name_client::resolve(node_identity.zone_name.as_str(), Some("DID"))
+        let zone_jwt = name_client::resolve(node_identity.zone_name.as_str(), Some(name_client::RecordType::DID))
             .await
             .map_err(|err| {
                 log::error!("query zone config by nameclient failed! {}", err);
-                return "query zone config failed!".to_string();
+                "query zone config failed!".to_string()
             })?;
 
         if zone_jwt.did_document.is_none() {
@@ -714,40 +709,43 @@ async fn select_node() -> Result<Option<NodeInfomationObj>, String> {
     }
 }
 
+
+async fn get_node_info_impl() -> *mut NodeInfomation {
+    let mut info = node_infomation.lock().await;
+    let is_actived = info.is_some();
+    if !is_actived {
+        if let Ok(node) = select_node().await {
+            *info = node;
+        }
+    }
+
+    let is_actived = info.is_some();
+    let c_info = if is_actived {
+        let info = info.as_ref().unwrap();
+        NodeInfomation {
+            node_id: CString::new(info.node_id.clone())
+                .expect("no memory for c_node_id")
+                .into_raw(),
+            home_page_url: CString::new(info.home_page_url.clone())
+                .expect("no memory for c_home_page_url")
+                .into_raw(),
+        }
+    } else {
+        NodeInfomation {
+            node_id: std::ptr::null_mut(),
+            home_page_url: CString::new("http://127.0.0.1:3180/index.html")
+                .expect("no memory for c_home_page_url")
+                .into_raw(),
+        }
+    };
+
+    Box::into_raw(Box::new(c_info))
+}
+
 #[no_mangle]
 extern "C" fn get_node_info() -> *mut NodeInfomation {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-
-    rt.block_on(async move {
-        let mut info = node_infomation.lock().await;
-        let is_actived = info.is_some();
-        if !is_actived {
-            if let Ok(node) = select_node().await {
-                *info = node;
-            }
-        }
-
-        let is_actived = info.is_some();
-        let c_info = if is_actived {
-            let info = info.as_ref().unwrap();
-            NodeInfomation {
-                node_id: CString::new(info.node_id.clone())
-                    .expect("no memory for c_node_id")
-                    .into_raw(),
-                home_page_url: CString::new(info.home_page_url.clone())
-                    .expect("no memory for c_home_page_url")
-                    .into_raw(),
-            }
-        } else {
-            NodeInfomation {
-                node_id: std::ptr::null_mut(),
-                home_page_url: CString::new("http://127.0.0.1:3180/index.html")
-                    .expect("no memory for c_home_page_url")
-                    .into_raw(),
-            }
-        };
-
-        Box::into_raw(Box::new(c_info))
+    g_runtime.block_on(async move {
+        get_node_info_impl().await
     })
 }
 
@@ -766,52 +764,103 @@ extern "C" fn free_node_info(info: *mut NodeInfomation) {
     }
 }
 
+#[cfg(windows)]
+fn start_buckyos_service() -> windows::core::Result<()> {
+    unsafe {
+        let scm_handle = OpenSCManagerW(None, None, SC_MANAGER_CONNECT)?;
+        let service_handle = OpenServiceW(
+            scm_handle,
+            PCWSTR(buckyos_service_name.as_ptr()),
+            SERVICE_START,
+        )?;
+
+        StartServiceW(service_handle, Some(&[]))?;
+
+        CloseServiceHandle(service_handle);
+        CloseServiceHandle(scm_handle);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn stop_buckyos_service() -> windows::core::Result<()> {
+    unsafe {
+        let scm_handle = OpenSCManagerW(None, None, SC_MANAGER_CONNECT)?;
+        
+        let service_handle = OpenServiceW(
+            scm_handle,
+PCWSTR(buckyos_service_name.as_ptr()),
+            SERVICE_STOP | SERVICE_QUERY_STATUS,
+        )?;
+        
+        // 停止服务
+        let mut status = SERVICE_STATUS::default();
+        ControlService(service_handle, SERVICE_CONTROL_STOP, &mut status)?;
+        
+        // 关闭句柄
+        CloseServiceHandle(service_handle);
+        CloseServiceHandle(scm_handle);
+    }
+
+    Ok(())
+}
+
 #[no_mangle]
 extern "C" fn start_buckyos() {
-    let deamon_path = get_buckyos_system_bin_dir().join("node_deamon");
+    // let deamon_path = get_buckyos_system_bin_dir().join("node_deamon");
 
+    // #[cfg(windows)]
+    // let deamon_path = deamon_path.join(".exe");
+
+    // let command = g_runtime.block_on(async move {
+    //     let node_info = node_infomation.lock().await;
+    //     match node_info.as_ref() {
+    //         Some(info) => {
+    //             format!(
+    //                 "{} --enable_active --node_id {}",
+    //                 deamon_path.display(),
+    //                 info.node_id
+    //             )
+    //         }
+    //         None => {
+    //             format!("{} --enable_active", deamon_path.display())
+    //         }
+    //     }
+    // });
+
+    // let mut command = std::process::Command::new(command);
+
+    // #[cfg(windows)]
+    // {
+    //     command.creation_flags(0x00000008 | 0x00000010); // DETACHED_PROCESS | CREATE_NO_WINDOW
+    // }
+
+    // match command.spawn() {
+    //     Ok(_) => println!("Process started successfully"),
+    //     Err(e) => eprintln!("Failed to start process: {}", e),
+    // }
+    
     #[cfg(windows)]
-    let deamon_path = deamon_path.join(".exe");
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
-
-    let command = rt.block_on(async move {
-        let node_info = node_infomation.lock().await;
-        match node_info.as_ref() {
-            Some(info) => {
-                format!(
-                    "{} --enable_active --node_id {}",
-                    deamon_path.display(),
-                    info.node_id
-                )
-            }
-            None => {
-                format!("{} --enable_active", deamon_path.display())
-            }
-        }
-    });
-
-    let mut command = std::process::Command::new(command);
-
-    #[cfg(windows)]
-    {
-        command.creation_flags(0x00000008 | 0x00000010); // DETACHED_PROCESS | CREATE_NO_WINDOW
-    }
-
-    match command.spawn() {
-        Ok(_) => println!("Process started successfully"),
-        Err(e) => eprintln!("Failed to start process: {}", e),
-    }
+    let _ = start_buckyos_service();
 }
 
 #[no_mangle]
 extern "C" fn stop_buckyos() {
+    #[cfg(windows)]
+    let _ = stop_buckyos_service();
+
     let mut system = System::new_all();
     system.refresh_all();
 
     let mut kill_count = 0;
-    for (pid, process) in system.processes() {
-        let name = process.name().to_ascii_lowercase();
+    for (_, process) in system.processes() {
+        let name = std::path::PathBuf::from(process.name());
+
+        #[cfg(windows)]
+        let name = name.with_extension("");
+
+        let name = name.as_os_str().to_ascii_lowercase().into_string().unwrap();
+
         if buckyos_process.contains(name.as_str()) {
             process.kill();
             kill_count += 1;
@@ -824,13 +873,12 @@ extern "C" fn stop_buckyos() {
 
 #[no_mangle]
 extern "C" fn start_app(app_id: *mut c_char) {
-    let rt = tokio::runtime::Runtime::new().unwrap();
     if app_id.is_null() {
         return;
     }
     let c_app_id = unsafe { CString::from_raw(app_id) };
 
-    rt.block_on(async move {
+    g_runtime.block_on(async move {
         let info = node_infomation.lock().await;
         if let Some(node_info) = info.as_ref() {
             let _ = set_node_config(
@@ -847,13 +895,12 @@ extern "C" fn start_app(app_id: *mut c_char) {
 
 #[no_mangle]
 extern "C" fn stop_app(app_id: *mut c_char) {
-    let rt = tokio::runtime::Runtime::new().unwrap();
     if app_id.is_null() {
         return;
     }
     let c_app_id = unsafe { CString::from_raw(app_id) };
 
-    rt.block_on(async move {
+    g_runtime.block_on(async move {
         let info = node_infomation.lock().await;
         if let Some(node_info) = info.as_ref() {
             let _ = set_node_config(

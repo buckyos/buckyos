@@ -1,5 +1,7 @@
 #![windows_subsystem = "windows"]
 
+use buckyos_kit::init_logging;
+
 mod ffi_extern;
 
 extern "C" {
@@ -7,6 +9,9 @@ extern "C" {
 }
 
 fn main() {
+    init_logging("tray-controller");
+
+    log::info!("buckyos tray-controller started.");
     unsafe {
         entry();
     }
