@@ -48,7 +48,7 @@ impl SystemConfigClient {
         }
     }
 
-    async fn get_krpc_client(&self) -> SytemConfigResult<Arc<kRPC>> {
+    fn get_krpc_client(&self) -> SytemConfigResult<Arc<kRPC>> {
         let client = self.client.get();
         if client.is_none() {
             return Err(SystemConfigError::ReasonError("krpc client not found!".to_string()));
@@ -57,12 +57,7 @@ impl SystemConfigClient {
     }
 
     pub async fn get(&self, key: &str) -> SytemConfigResult<(String,u64)> {
-        let client = self.get_krpc_client().await;
-        if client.is_err() {
-            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
-        }
-        let client = client.unwrap();
-
+        let client = self.get_krpc_client()?;
         let result = client.call("sys_config_get", json!({"key": key}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
@@ -84,12 +79,7 @@ impl SystemConfigClient {
             return Err(SystemConfigError::ReasonError("key can not contain ':'".to_string()));
         }
 
-        let client = self.get_krpc_client().await;
-        if client.is_err() {
-            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
-        }
-        let client = client.unwrap();
-
+        let client = self.get_krpc_client()?;
         let result = client.call("sys_config_set", json!({"key": key, "value": value}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
@@ -98,23 +88,14 @@ impl SystemConfigClient {
     }
 
     pub async fn set_by_json_path(&self,key:&str,json_path:&str,value:&str) -> SytemConfigResult<u64> {
-        let client = self.get_krpc_client().await;
-        if client.is_err() {
-            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
-        }
-        let client = client.unwrap();
+        let client = self.get_krpc_client()?;
         client.call("sys_config_set_by_json_path", json!({"key": key, "json_path": json_path, "value": value})).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
         Ok(0)
     }
 
     pub async fn create(&self,key:&str,value:&str) -> SytemConfigResult<u64> {
-        let client = self.get_krpc_client().await;
-        if client.is_err() {
-            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
-        }
-        let client = client.unwrap();
-
+        let client = self.get_krpc_client()?;
         let result = client.call("sys_config_create", json!({"key": key, "value": value}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
@@ -123,11 +104,7 @@ impl SystemConfigClient {
     }
 
     pub async fn delete(&self,key:&str) -> SytemConfigResult<u64> {
-        let client = self.get_krpc_client().await;
-        if client.is_err() {
-            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
-        }
-        let client = client.unwrap();
+        let client = self.get_krpc_client()?;
         let result = client.call("sys_config_delete", json!({"key": key}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
@@ -135,11 +112,7 @@ impl SystemConfigClient {
     }
 
     pub async fn append(&self,key:&str,value:&str) -> SytemConfigResult<u64> {
-        let client = self.get_krpc_client().await;
-        if client.is_err() {
-            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
-        }
-        let client = client.unwrap();
+        let client = self.get_krpc_client()?;
         client.call("sys_config_append", json!({"key": key, "append_value": value})).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
         Ok(0)
@@ -147,11 +120,7 @@ impl SystemConfigClient {
 
     //list direct children
     pub async fn list(&self,key:&str) -> SytemConfigResult<Vec<String>> {
-        let client = self.get_krpc_client().await;
-        if client.is_err() {
-            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
-        }
-        let client = client.unwrap();
+        let client = self.get_krpc_client()?;
         client.call("sys_config_list", json!({"key": key})).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))
             .map(|result| {
@@ -204,22 +173,14 @@ impl SystemConfigClient {
             req_params.insert("main_key".to_string(), Value::String(format!("{}:{}",key,revision)));
         }
 
-        let client = self.get_krpc_client().await;
-        if client.is_err() {
-            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}", client.err().unwrap())));
-        }
-        let client = client.unwrap();
+        let client = self.get_krpc_client()?;
         client.call("sys_config_exec_tx", Value::Object(req_params)).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
         Ok(0)
     }
 
     pub async fn dump_configs_for_scheduler(&self) -> SytemConfigResult<Value> {
-        let client = self.get_krpc_client().await;
-        if client.is_err() {
-            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
-        }
-        let client = client.unwrap();
+        let client = self.get_krpc_client()?;
         let result = client.call("dump_configs_for_scheduler", json!({}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
@@ -237,11 +198,7 @@ impl SystemConfigClient {
             SystemConfigError::ReasonError(error_string)
         })?;
 
-        let client = self.get_krpc_client().await;
-        if client.is_err() {
-            return Err(SystemConfigError::ReasonError(format!("get krpc client failed! {}",client.err().unwrap())));
-        }
-        let client = client.unwrap();
+        let client = self.get_krpc_client()?;
         client.call("sys_config_create",json!({"key":format!("users/{}/apps/{}/config",user_id,app_id),"value":config_string})).await
             .map_err(|error: ::kRPC::RPCErrors| SystemConfigError::ReasonError(error.to_string()))?;
         //2. update rbac

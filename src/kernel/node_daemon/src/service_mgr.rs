@@ -29,7 +29,7 @@ pub struct FrameServiceConfig {
 #[async_trait]
 impl RunItemControl for FrameServiceConfig {
     fn get_item_name(&self) -> Result<String> {
-        return Ok(self.pkg_id.clone());
+        Ok(self.pkg_id.clone())
     }
 
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
@@ -39,7 +39,7 @@ impl RunItemControl for FrameServiceConfig {
         if media_info.is_ok() {
             self.execute_operation(&media_info.unwrap(), "deploy")
                 .await?;
-            return Ok(());
+            Ok(())
         } else {
             //TODO: 补充从env中安装pkg的流程
             error!(
@@ -47,10 +47,10 @@ impl RunItemControl for FrameServiceConfig {
                 self.pkg_id.as_str(),
                 self.pkg_id
             );
-            return Err(ControlRuntItemErrors::ExecuteError(
+            Err(ControlRuntItemErrors::ExecuteError(
                 format!("deploy service {} error", self.pkg_id.as_str()),
                 "install package error".to_string(),
-            ));
+            ))
         }
     }
 
