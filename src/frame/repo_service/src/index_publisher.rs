@@ -30,6 +30,13 @@ impl IndexPublisher {
 
         let named_mgr = named_mgr.lock().await;
 
+        if named_mgr.is_chunk_exist(&chunk_id).await.map_err(|e| {
+            error!("check chunk exists failed: {:?}", e);
+            RepoError::NdnError(format!("check chunk exists failed: {:?}", e))
+        })? {
+            return Ok(chunk_id);
+        }
+
         let (mut chunk_writer, progress_info) = named_mgr
             .open_chunk_writer(&chunk_id, buffer.len() as u64, 0)
             .await
@@ -65,11 +72,10 @@ impl IndexPublisher {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS index_meta_db (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                did TEXT NOT NULL,
-                name TEXT NOT NULL,
+                hostname TEXT NOT NULL,
                 version TEXT NOT NULL,
                 chunk_id TEXT NOT NULL,
-                sign TEXT NOT NULL,
+                jwt TEXT NOT NULL,
                 pub_time INTEGER NOT NULL DEFAULT 0
             )",
         )
@@ -92,13 +98,12 @@ impl IndexPublisher {
         //insert index source meta
         let mut tx = pool.begin().await?;
         sqlx::query(
-            "INSERT INTO index_meta_db (did, name, version, chunk_id, sign, pub_time) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO index_meta_db (hostname, version, chunk_id, jwt, pub_time) VALUES (?, ?, ?, ?, ?)",
         )
-        .bind(&index_source_meta.did)
-        .bind(&index_source_meta.name)
+        .bind(&index_source_meta.hostname)
         .bind(&index_source_meta.version)
         .bind(&index_source_meta.chunk_id)
-        .bind(&index_source_meta.sign)
+        .bind(&index_source_meta.jwt)
         .bind(&index_source_meta.pub_time)
         .execute(&mut *tx)
         .await?;
@@ -106,23 +111,17 @@ impl IndexPublisher {
         tx.commit().await?;
 
         info!(
-            "add index source meta success, version:{}, chunk_id:{}, sign:{}, pub_time:{}",
+            "add index source meta success, version:{}, chunk_id:{}, jwt:{}, pub_time:{}",
             index_source_meta.version,
             index_source_meta.chunk_id,
-            index_source_meta.sign,
+            index_source_meta.jwt,
             index_source_meta.pub_time
         );
 
         Ok(())
     }
 
-    pub async fn pub_index(pem_file_path: &PathBuf, version: &str) -> RepoResult<()> {
-        if !pem_file_path.exists() {
-            return Err(RepoError::NotFound(format!(
-                "Private key file {} not exists",
-                pem_file_path.to_string_lossy()
-            )));
-        }
+    pub async fn pub_index(version: &str, hostname: &str, jwt: &str) -> RepoResult<()> {
         let local_data_dir = get_buckyos_service_data_dir(SERVICE_NAME).join(LOCAL_INDEX_DATA);
         let local_index_file = local_data_dir.join(LOCAL_INDEX_DB);
         if !local_index_file.exists() {
@@ -133,19 +132,12 @@ impl IndexPublisher {
         }
 
         let chunk_id = Self::write_chunk(&local_index_file).await?;
-        let sign =
-            sign_data(&pem_file_path.to_string_lossy(), &chunk_id.to_string()).map_err(|e| {
-                error!("sign_data failed: {:?}", e);
-                RepoError::SignError(format!("sign_data failed: {:?}", e))
-            })?;
 
-        // TODO fix did
         let index_source_meta = SourceMeta {
-            did: ZoneInfoHelper::get_zone_did()?,
-            name: ZoneInfoHelper::get_zone_name()?,
+            hostname: hostname.to_string(),
             version: version.to_string(),
             chunk_id: chunk_id.to_string(),
-            sign,
+            jwt: jwt.to_string(),
             pub_time: buckyos_get_unix_timestamp() as i64,
         };
 

@@ -49,28 +49,7 @@ pub struct MediaInfo {
 struct PackageMetaInfo {
     deps: HashMap<String, String>,
     sha256: String,
-    author_did: String,
-    author_name: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PackageLockInfo {
-    pub name: String,
-    pub version: String,
-    pub sha256: String,
-    pub dependencies: Vec<PackageLockDeps>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PackageLockDeps {
-    pub name: String,
-    pub version: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PackageLockList {
-    #[serde(rename = "package")]
-    pub packages: Vec<PackageLockInfo>,
+    hostname: String,
 }
 
 /**
@@ -113,27 +92,25 @@ impl PackageEnv {
         &self,
         pkg_id: &PackageId,
         deps: &HashMap<String, String>,
-        author_did: &str,
-        author_name: &str,
+        hostname: &str,
     ) -> PkgResult<()> {
         debug!(
-            "write_meta_file: {:?}, deps:{:?}, author_did:{}, author_name:{}",
-            pkg_id, deps, author_did, author_name
+            "write_meta_file: {:?}, deps:{:?}, hostname:{}",
+            pkg_id, deps, hostname
         );
         let meta_dir = self.get_meta_dir();
         let meta_file_name = format!(
             "{}#{}#{}",
             pkg_id.name,
             pkg_id.version.as_ref().unwrap(),
-            pkg_id.sha256.as_ref().unwrap().replace(":", "-")
+            pkg_id.sha256.as_ref().unwrap()
         );
-        let meta_file = meta_dir.join(meta_file_name);
+        let meta_file = meta_dir.join(PackageEnv::fix_path(&meta_file_name));
 
         let meta_info = PackageMetaInfo {
             deps: deps.clone(),
             sha256: pkg_id.sha256.as_ref().unwrap().to_string(),
-            author_did: author_did.to_string(),
-            author_name: author_name.to_string(),
+            hostname: hostname.to_string(),
         };
 
         let meta_content = serde_json::to_string(&meta_info)?;
@@ -175,7 +152,7 @@ impl PackageEnv {
             let name = file_name_parts[0].to_string();
             let version = file_name_parts[1..file_name_len - 1].join("#");
             let sha256 = file_name_parts[file_name_len - 1].to_string();
-            let sha256 = sha256.replace("-", ":");
+            let sha256 = Self::restore_path(&sha256);
 
             if name == pkg_id.name {
                 if let Some(sha256) = &pkg_id.sha256 {
@@ -238,12 +215,12 @@ impl PackageEnv {
             "{}#{}#{}",
             pkg_id.name,
             pkg_id.version.as_ref().unwrap(),
-            pkg_id.sha256.as_ref().unwrap().replace(":", "-")
+            pkg_id.sha256.as_ref().unwrap()
         );
         visited.insert(meta_file_name.clone());
         deps.push(pkg_id.clone());
 
-        let meta_file = self.get_meta_dir().join(meta_file_name);
+        let meta_file = self.get_meta_dir().join(Self::fix_path(&meta_file_name));
 
         let meta_content = fs::read_to_string(meta_file)?;
         let meta_json: PackageMetaInfo = serde_json::from_str(&meta_content)?;
@@ -308,8 +285,8 @@ impl PackageEnv {
         //尽力加载，判断install目录中是否有目标包，如果有就加载
         let pkg_id = Parser::parse(pkg_id_str)?;
         if let Some(ref sha256) = pkg_id.sha256 {
-            let target_pkg = format!("{}#{}", pkg_id.name, sha256.replace(":", "-"));
-            let target_path = self.get_install_dir().join(target_pkg);
+            let target_pkg = format!("{}#{}", pkg_id.name, sha256);
+            let target_path = self.get_install_dir().join(Self::fix_path(&target_pkg));
             if target_path.exists() {
                 let media_type = if target_path.is_dir() {
                     MediaType::Dir
@@ -409,6 +386,14 @@ impl PackageEnv {
         debug!("Package is ready: {}", pkg_id_str);
 
         Ok(deps)
+    }
+
+    pub fn fix_path(path: &str) -> String {
+        path.replace(":", "-")
+    }
+
+    pub fn restore_path(path: &str) -> String {
+        path.replace("-", ":")
     }
 }
 

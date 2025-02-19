@@ -1,56 +1,46 @@
-#![allow(dead_code)]
-
-use base64::prelude::BASE64_STANDARD_NO_PAD;
-use base64::write;
-use base64::{engine::general_purpose, Engine as _};
-use base64::{
-    engine::general_purpose::STANDARD, engine::general_purpose::URL_SAFE_NO_PAD, Engine as _,
-};
-use ed25519_dalek::{pkcs8::DecodePrivateKey, Signature, Signer, SigningKey};
+#[allow(dead_code, unused_variables)]
+use crate::util::*;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use jsonwebtoken::{encode, Algorithm, Header};
 use kRPC::kRPC;
 use ndn_lib::*;
 use package_installer::*;
-use reqwest::header::{HeaderMap, HeaderValue};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json;
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use tar::Builder;
 use tokio::io::AsyncWriteExt;
-use toml::Value;
-
-#[derive(Serialize, Debug)]
-struct UploadPackageMeta {
-    name: String,
-    version: String,
-    author: String,
-    deps: Value,
-    sha256: String,
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PackResult {
-    pkg_id: String,
+    pkg_name: String,
     version: String,
-    vendor_did: String,
+    hostname: String,
+    dependencies: String,
     target_file_path: PathBuf, // tarball path
 }
 
-#[derive(Clone, Debug)]
-pub struct PackageMeta {
-    pub name: String,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PackagePubMeta {
+    pub pkg_name: String,
     pub version: String,
-    pub author: String, //author did
-    pub chunk_id: String,
+    pub hostname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_id: Option<String>,
     pub dependencies: String,
-    pub sign: String, //sign of the chunk_id
+}
+
+//index的chunkid需要在repo中计算
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IndexPubMeta {
+    pub version: String,
+    pub hostname: String,
 }
 
 /*
@@ -77,7 +67,7 @@ meta.json
 }
  */
 
-pub async fn pack(pkg_path: &str) -> Result<PackResult, String> {
+pub async fn pack_pkg(pkg_path: &str) -> Result<PackResult, String> {
     println!("pack path: {}", pkg_path);
     let pkg_path = Path::new(pkg_path);
     if !pkg_path.exists() {
@@ -99,43 +89,106 @@ pub async fn pack(pkg_path: &str) -> Result<PackResult, String> {
         .filter_map(|entry| entry.ok())
         .collect();
 
-    if items.len() <= 1 {
-        eprintln!("Error: No files or folders found to pack");
-        return Err("No files or folders found to pack".to_string());
-    }
+    // if items.len() <= 1 {
+    //     eprintln!("Error: No files or folders found to pack");
+    //     return Err("No files or folders found to pack".to_string());
+    // }
 
     println!("Found {} items to pack", items.len());
 
     // 解析 meta.json
+    /*
+        {
+        "name" : "Home Station",
+        "description" : "Home Station",
+        "hostname" : "test.buckyos.io",
+        "pkg_name" : "test_pkg",
+        "version" : "0.1.0",
+        "pkg_list" : {
+            "amd64_docker_image" : {
+                "package_name":"home-station-x86-img",
+                "version": "*"
+                "docker_image_name":"filebrowser/filebrowser:s6"
+            },
+            "web_pages" :{
+                "package_name" : "home-station-web-page",
+                "version": "0.0.1"
+            }
+        }
+    }
+         */
     let meta_content = fs::read_to_string(&meta_path)
         .map_err(|err| format!("Error: Failed to read meta.json: {}", err.to_string()))?;
     let meta_data: Value = serde_json::from_str(&meta_content)
         .map_err(|err| format!("Error: Failed to parse meta.json: {}", err.to_string()))?;
 
-    let pkg_id = meta_data
-        .get("pkg_id")
+    let pkg_name = meta_data
+        .get("pkg_name")
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("Error: pkg_id missing in meta.json"))?;
+        .ok_or_else(|| format!("Error: pkg_name missing in meta.json"))?;
 
     let version = meta_data
         .get("version")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("Error: version missing in meta.json"))?;
 
-    let vendor_did = meta_data
-        .get("vendor_did")
+    let hostname = meta_data
+        .get("hostname")
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("Error: vendor_did missing in meta.json"))?;
+        .ok_or_else(|| format!("Error: hostname missing in meta.json"))?;
+
+    let deps = match meta_data.get("pkg_list") {
+        Some(deps) => {
+            //转换deps为Value::Object
+            let deps = deps
+                .as_object()
+                .ok_or_else(|| format!("Error: pkg_list is not a map"))?;
+
+            //依次遍历deps，获取pkg_name和version
+            let mut deps_pkgs = HashMap::new();
+            for (item_name, pkg_data) in deps.iter() {
+                let pkg_data = pkg_data
+                    .as_object()
+                    .ok_or_else(|| format!("Error: pkg_list item {} is not a map", pkg_name))?;
+
+                let pkg_name = pkg_data
+                    .get("package_name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        format!("Error: sub pkg name missing in pkg_list item {}", item_name)
+                    })?;
+
+                let version = pkg_data
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        format!(
+                            "Error: sub pkg version missing in pkg_list item {}",
+                            item_name
+                        )
+                    })?;
+
+                deps_pkgs.insert(pkg_name.to_string(), version.to_string());
+            }
+            serde_json::to_string(&deps_pkgs).map_err(|e| {
+                format!(
+                    "Error: Failed to serialize dependencies to json string: {}",
+                    e.to_string()
+                )
+            })?
+        }
+        None => "{}".to_string(),
+    };
 
     // TODO dependencies？
     println!(
-        "Parsed meta.json: pkg_id = {}, version = {}, vendor_did = {}",
-        pkg_id, version, vendor_did
+        "Parsed meta.json: pkg_name = {}, version = {}, hostname = {}, dependencies = {}",
+        pkg_name, version, hostname, deps
     );
 
     // 创建 tarball
     let parent_dir = pkg_path.parent().unwrap();
-    let tarball_name = format!("{}-{}.bkz", pkg_id, version);
+    let tarball_name = format!("{}-{}.bkz", pkg_name, version);
     let tarball_path = parent_dir.join(&tarball_name);
 
     let tar_gz = File::create(&tarball_path)
@@ -180,15 +233,16 @@ pub async fn pack(pkg_path: &str) -> Result<PackResult, String> {
 
     println!(
         "Package {} version {} by {} has been packed successfully.",
-        pkg_id, version, vendor_did
+        pkg_name, version, hostname
     );
     println!("Package created at: {:?}", tarball_path);
 
     let pack_ret = PackResult {
-        pkg_id: pkg_id.to_string(),
+        pkg_name: pkg_name.to_string(),
         version: version.to_string(),
-        vendor_did: vendor_did.to_string(),
+        hostname: hostname.to_string(),
         target_file_path: tarball_path,
+        dependencies: deps,
     };
 
     Ok(pack_ret)
@@ -235,21 +289,15 @@ fn calculate_file_hash(file_path: &str) -> Result<FileInfo, String> {
     })
 }
 
-fn sign_data(pem_file: &str, data: &str) -> Result<String, String> {
-    let signing_key = SigningKey::read_pkcs8_pem_file(pem_file).map_err(|e| {
-        format!(
-            "Error: Failed to parse private key from file {}: {:?}",
-            pem_file, e
-        )
-    })?;
+fn generate_jwt(pem_file: &str, data: &Value) -> Result<String, String> {
+    let private_key = load_private_key_from_file(pem_file)?;
+    let mut header = Header::new(Algorithm::EdDSA);
+    header.kid = None;
+    header.typ = None;
+    let token = encode(&header, data, &private_key)
+        .map_err(|e| format!("Failed to encode data to JWT: {}", e.to_string()))?;
 
-    // 对数据进行签名
-    let signature: Signature = signing_key.sign(data.as_bytes());
-
-    // 将签名转换为 base64 编码的字符串
-    let signature_base64 = STANDARD.encode(signature.to_bytes());
-
-    Ok(signature_base64)
+    Ok(token)
 }
 
 async fn write_file_to_chunk(
@@ -334,11 +382,13 @@ async fn write_file_to_chunk(
 
 pub async fn publish_package(
     pkg_path: &str,
+    did: &str,
+    hostname: &str,
     pem_file: &str,
     url: &str,
     session_token: &str,
 ) -> Result<(), String> {
-    let pack_ret = pack(pkg_path).await?;
+    let pack_ret = pack_pkg(pkg_path).await?;
 
     let pack_file_path = pack_ret.target_file_path.clone();
 
@@ -353,23 +403,6 @@ pub async fn publish_package(
     let file_info = calculate_file_hash(pack_file_path.to_str().unwrap())?;
     let chunk_id = ChunkId::from_sha256_result(&file_info.sha256);
 
-    let sign: String = sign_data(pem_file, &chunk_id.to_string())?;
-    println!(
-        "chunk_id: {}, signature_base64: {}:",
-        chunk_id.to_string(),
-        sign
-    );
-
-    // 创建元数据
-    let pkg_meta = PackageMeta {
-        name: pack_ret.pkg_id,
-        version: pack_ret.version,
-        author: pack_ret.vendor_did,
-        chunk_id: chunk_id.to_string(),
-        dependencies: "{}".to_string(),
-        sign,
-    };
-
     // 上传chunk到repo
     let chunk_mgr_id = None;
     write_file_to_chunk(&chunk_id, &pack_file_path, file_info.size, chunk_mgr_id)
@@ -383,6 +416,24 @@ pub async fn publish_package(
 
     println!("upload chunk to chunk mgr:{:?} success", chunk_mgr_id);
 
+    // 创建元数据
+    let pkg_meta = PackagePubMeta {
+        pkg_name: pack_ret.pkg_name,
+        version: pack_ret.version,
+        hostname: hostname.to_string(),
+        chunk_id: Some(chunk_id.to_string()),
+        dependencies: pack_ret.dependencies,
+    };
+    let meta_json_value = serde_json::to_value(&pkg_meta).map_err(|e| {
+        format!(
+            "Failed to serialize package meta to json value, err:{:?}",
+            e.to_string()
+        )
+    })?;
+
+    let jwt_token: String = generate_jwt(pem_file, &meta_json_value)?;
+    println!("pub meta: {:?}, jwt_token: {}:", pkg_meta, jwt_token);
+
     // 上传元数据到repo
     let client = kRPC::new(url, Some(session_token.to_string()));
 
@@ -390,12 +441,12 @@ pub async fn publish_package(
         .call(
             "pub_pkg",
             json!({
-                "pkg_name": pkg_meta.name,
+                "pkg_name": pkg_meta.pkg_name,
                 "version": pkg_meta.version,
-                "author": pkg_meta.author,
-                "chunk_id": pkg_meta.chunk_id,
+                "hostname": pkg_meta.hostname,
+                "chunk_id": pkg_meta.chunk_id.unwrap(),
                 "dependencies": pkg_meta.dependencies,
-                "sign": pkg_meta.sign,
+                "jwt": jwt_token,
             }),
         )
         .await
@@ -407,17 +458,31 @@ pub async fn publish_package(
 pub async fn publish_index(
     pem_file: &str,
     version: &str,
+    hostname: &str,
     url: &str,
     session_token: &str,
 ) -> Result<(), String> {
+    let pub_meta = IndexPubMeta {
+        version: version.to_string(),
+        hostname: hostname.to_string(),
+    };
+    let meta_json_value = serde_json::to_value(&pub_meta).map_err(|e| {
+        format!(
+            "Failed to serialize index meta to json value, err:{:?}",
+            e.to_string()
+        )
+    })?;
+    let jwt_token: String = generate_jwt(pem_file, &meta_json_value)?;
+
     let client = kRPC::new(url, Some(session_token.to_string()));
 
     client
         .call(
             "pub_index",
             json!({
-                "pem_file": pem_file.to_string(),
                 "version": version.to_string(),
+                "hostname": hostname.to_string(),
+                "jwt": jwt_token,
             }),
         )
         .await
@@ -443,6 +508,79 @@ pub async fn install_pkg(
         .map_err(|e| format!("Failed to call install package, err:{:?}", e))?;
 
     println!("install package success, deps: {:?}", deps);
+
+    Ok(())
+}
+
+pub async fn publish_app(
+    app_desc_file: &PathBuf,
+    did: &str,
+    hostname: &str,
+    pem_file: &str,
+    url: &str,
+    session_token: &str,
+) -> Result<(), String> {
+    if !app_desc_file.exists() {
+        eprintln!("Error: App desc file {} not found", app_desc_file.display());
+        return Err(format!(
+            "App desc file {} not found",
+            app_desc_file.display()
+        ));
+    }
+
+    let app_desc: HashMap<String, String> = serde_json::from_str(
+        &fs::read_to_string(app_desc_file)
+            .map_err(|err| format!("Error: Failed to read app desc file: {}", err.to_string()))?,
+    )
+    .map_err(|err| format!("Error: Failed to parse app desc file: {}", err.to_string()))?;
+
+    let app_name = app_desc
+        .get("app_name")
+        .ok_or_else(|| format!("Error: app_name missing in app desc file"))?;
+    let version = app_desc
+        .get("version")
+        .ok_or_else(|| format!("Error: version missing in app desc file"))?;
+    let hostname = app_desc
+        .get("hostname")
+        .ok_or_else(|| format!("Error: hostname missing in app desc file"))?;
+    let pkg_list = app_desc
+        .get("pkg_list")
+        .ok_or_else(|| format!("Error: pkg_list missing in app desc file"))?;
+
+    // 创建元数据
+    let pkg_meta = PackagePubMeta {
+        pkg_name: app_name.to_string(),
+        version: version.to_string(),
+        hostname: hostname.to_string(),
+        chunk_id: None,
+        dependencies: pkg_list.to_string(),
+    };
+
+    let meta_json_value = serde_json::to_value(&pkg_meta).map_err(|e| {
+        format!(
+            "Failed to serialize app meta to json value, err:{:?}",
+            e.to_string()
+        )
+    })?;
+
+    let jwt_token: String = generate_jwt(pem_file, &meta_json_value)?;
+
+    // 上传元数据到repo
+    let client = kRPC::new(url, Some(session_token.to_string()));
+
+    client
+        .call(
+            "pub_app",
+            json!({
+                "pkg_name": pkg_meta.pkg_name,
+                "version": pkg_meta.version,
+                "hostname": hostname.to_string(),
+                "dependencies": pkg_meta.dependencies,
+                "jwt": jwt_token,
+            }),
+        )
+        .await
+        .map_err(|e| format!("Failed to publish app meta to repo, err:{:?}", e))?;
 
     Ok(())
 }

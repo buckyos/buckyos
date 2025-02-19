@@ -72,33 +72,24 @@ impl RepoServer {
     async fn handle_pub_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let pkg_name = ReqHelper::get_str_param_from_req(&req, "pkg_name")?;
         let version = ReqHelper::get_str_param_from_req(&req, "version")?;
-        let author_did = ReqHelper::get_str_param_from_req(&req, "author")?;
+        let hostname = ReqHelper::get_str_param_from_req(&req, "hostname")?;
         let chunk_id = ReqHelper::get_str_param_from_req(&req, "chunk_id")?;
         let dependencies = ReqHelper::get_str_param_from_req(&req, "dependencies")?;
-        let sign = ReqHelper::get_str_param_from_req(&req, "sign")?;
+        let jwt = ReqHelper::get_str_param_from_req(&req, "jwt")?;
         let pub_time = buckyos_get_unix_timestamp() as i64;
-
-        let zone_did = ZoneInfoHelper::get_zone_did().map_err(|e| {
-            RPCErrors::ParseRequestError(format!("Failed to get zone did, err:{}", e))
-        })?;
-        let zone_name = ZoneInfoHelper::get_zone_name().map_err(|e| {
-            RPCErrors::ParseRequestError(format!("Failed to get zone name, err:{}", e))
-        })?;
-
-        //TODO did应该和author一致？存不存在二次打包的情况？
 
         let pkg_meta = PackageMeta {
             pkg_name,
             version,
-            author_did,
-            author_name: zone_name,
-            chunk_id,
-            dependencies: serde_json::Value::from_str(&dependencies).map_err(|e| {
-                RPCErrors::ParseRequestError(format!("Failed to parse dependencies, err:{}", e))
-            })?,
-            sign: sign.to_string(),
+            hostname,
+            chunk_id: Some(chunk_id),
+            dependencies,
+            jwt,
             pub_time,
         };
+
+        log::info!("recv pub_pkg request, pkg_meta:{:?}", pkg_meta);
+
         match self.source_mgr.pub_pkg(&pkg_meta).await {
             Ok(_) => Ok(RPCResponse::new(RPCResult::Success(Value::Null), req.seq)),
             Err(e) => Err(RPCErrors::ReasonError(e.to_string())),
@@ -106,13 +97,19 @@ impl RepoServer {
     }
 
     async fn handle_pub_index(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        let pem_file = ReqHelper::get_str_param_from_req(&req, "pem_file")?;
         let version = ReqHelper::get_str_param_from_req(&req, "version")?;
-        match self
-            .source_mgr
-            .pub_index(&PathBuf::from(pem_file), &version)
-            .await
-        {
+        let hostname = ReqHelper::get_str_param_from_req(&req, "hostname")?;
+        let jwt = ReqHelper::get_str_param_from_req(&req, "jwt")?;
+
+        log::info!(
+            "recv pub_index request, version:{}, hostname:{}, jwt:{}",
+            version,
+            hostname,
+            jwt
+        );
+
+        //TODO: did 和 hostname 传入的和从zone获取的是否要一致？
+        match self.source_mgr.pub_index(&version, &hostname, &jwt).await {
             Ok(_) => Ok(RPCResponse::new(RPCResult::Success(Value::Null), req.seq)),
             Err(e) => Err(RPCErrors::ReasonError(e.to_string())),
         }

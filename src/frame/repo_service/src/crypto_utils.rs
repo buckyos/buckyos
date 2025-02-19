@@ -1,72 +1,66 @@
 use std::path::PathBuf;
 
 use crate::def::*;
-use base64::{engine::general_purpose, Engine as _};
-use ed25519_dalek::{pkcs8::DecodePrivateKey, Signature, Signer, SigningKey};
-use ed25519_dalek::{Verifier as EdVerifier, VerifyingKey};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Header, TokenData, Validation};
 use log::info;
 use name_client::*;
+use serde_json::Value;
 
-pub async fn verify(author: &str, chunk_id: &str, sign_base64: &str) -> RepoResult<()> {
-    //TODO
-    return Ok(());
-    let (auth_key, remote_did_id) = resolve_ed25519_auth_key(author).await.map_err(|e| {
+pub async fn verify(hostname: &str, jwt: &str) -> RepoResult<Value> {
+    let (auth_key, remote_did_id) = resolve_ed25519_auth_key(hostname).await.map_err(|e| {
+        log::error!(
+            "resolve_ed25519_auth_key failed, author: {}, {:?}",
+            hostname,
+            e
+        );
         RepoError::VerifyError(format!(
             "resolve_ed25519_auth_key failed, author: {}, {:?}",
-            author, e
+            hostname, e
         ))
     })?;
-    //verify sign
-    let public_key = VerifyingKey::from_bytes(&auth_key).map_err(|e| {
-        RepoError::VerifyError(format!(
-            "invalid public key, author: {}, error: {:?}",
-            author, e
-        ))
+    let public_key = DecodingKey::from_ed_der(&auth_key);
+
+    let header: Header = decode_header(jwt).map_err(|error| {
+        log::error!("decode jwt header failed: {:?}", error);
+        RepoError::VerifyError(format!("decode jwt header failed: {:?}", error))
     })?;
 
-    let sign_bytes = general_purpose::STANDARD.decode(sign_base64).map_err(|e| {
-        RepoError::VerifyError(format!(
-            "base64 decode sign failed, sign: {}, error: {:?}",
-            sign_base64, e
-        ))
-    })?;
+    let validation = Validation::new(header.alg);
 
-    // 检查字节数组的长度是否为 64
-    if sign_bytes.len() != 64 {
-        return Err(RepoError::VerifyError(format!(
-            "invalid signature length, expected 64 bytes, got {} bytes",
-            sign_bytes.len()
-        )));
-    }
+    let decoded_token =
+        decode::<serde_json::Value>(jwt, &public_key, &validation).map_err(|error| {
+            log::error!("decode jwt token failed: {:?}", error);
+            RepoError::VerifyError(format!("decode jwt token failed: {:?}", error))
+        })?;
 
-    let signature = Signature::from_bytes(&sign_bytes.try_into().map_err(|e| {
-        RepoError::VerifyError(format!("conversion to fixed-size array failed: {:?}", e))
-    })?);
+    let decoded_json = match decoded_token.claims.as_object() {
+        Some(json) => json.clone(),
+        None => {
+            log::error!("decode jwt token failed: invalid json");
+            return Err(RepoError::VerifyError(
+                "decode jwt token failed: invalid json".to_string(),
+            ));
+        }
+    };
+    let result = Value::Object(decoded_json);
 
-    public_key
-        .verify(chunk_id.as_bytes(), &signature)
-        .map_err(|e| RepoError::VerifyError(format!("verify failed, error: {:?}", e)))?;
-
-    info!(
-        "verify success, author: {}, chunk_id: {}, sign: {}",
-        author, chunk_id, sign_base64
-    );
-
-    Ok(())
+    Ok(result)
 }
 
 pub fn sign_data(pem_file: &str, data: &str) -> RepoResult<String> {
-    let signing_key = SigningKey::read_pkcs8_pem_file(pem_file).map_err(|e| {
-        RepoError::LoadError(
-            pem_file.to_string(),
-            format!("read pkcs8 pem file failed: {:?}", e),
-        )
-    })?;
+    //TODO: 服务内部不应该直接操作私钥，应该通过调用签名服务来签名
+    !unimplemented!("sign_data");
+    // let signing_key = SigningKey::read_pkcs8_pem_file(pem_file).map_err(|e| {
+    //     RepoError::LoadError(
+    //         pem_file.to_string(),
+    //         format!("read pkcs8 pem file failed: {:?}", e),
+    //     )
+    // })?;
 
-    let signature: Signature = signing_key.sign(data.as_bytes());
+    // let signature: Signature = signing_key.sign(data.as_bytes());
 
-    // convert signature to base64
-    let signature_base64 = general_purpose::STANDARD.encode(signature.to_bytes());
+    // // convert signature to base64
+    // let signature_base64 = general_purpose::STANDARD.encode(signature.to_bytes());
 
-    Ok(signature_base64)
+    // Ok(signature_base64)
 }

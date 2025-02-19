@@ -1,6 +1,5 @@
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sqlx::FromRow;
 use std::io;
 use thiserror::Error;
@@ -18,30 +17,27 @@ pub const TASK_EXPIRE_TIME: u64 = 30 * 60; //任务超时时间,单位秒
 pub struct PackageMeta {
     pub pkg_name: String,
     pub version: String,
-    pub author_did: String, //author did
-    pub author_name: String,
-    pub chunk_id: String,
-    pub dependencies: Value,
-    pub sign: String, //sign of the chunk_id
+    pub hostname: String,
+    pub chunk_id: Option<String>, //有些pkg不需要下载
+    pub dependencies: String,     //json string
+    pub jwt: String,
     pub pub_time: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, FromRow)]
 pub struct SourceMeta {
-    pub did: String,
-    pub name: String,
+    pub hostname: String,
     pub chunk_id: String,
-    pub sign: String,
+    pub jwt: String,
     pub version: String,
     pub pub_time: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SourceNodeConfig {
-    pub did: String,
-    pub name: String,
+    pub hostname: String,
     pub chunk_id: String,
-    pub sign: String,
+    pub jwt: String,
     pub version: String,
 }
 

@@ -78,24 +78,24 @@ impl Downloader {
 
     pub async fn pull_remote_chunk(
         url: &str,
-        author: &str,
-        sign: &str,
+        hostname: &str,
+        jwt: &str,
         chunk_id: &str,
     ) -> RepoResult<()> {
         //先验证
-        if let Err(e) = verify(author, chunk_id, sign).await {
+        if let Err(e) = verify(hostname, jwt).await {
             return Err(RepoError::VerifyError(format!(
                 "Verify failed, author: {}, chunk_id: {}, sign: {}, err: {}",
-                author,
+                hostname,
                 chunk_id,
-                sign,
+                jwt,
                 e.to_string()
             )));
         }
 
         info!(
             "will pull remote chunk, url:{}, author:{}, chunk_id:{}",
-            url, author, chunk_id
+            url, hostname, chunk_id
         );
 
         let ndn_client = NdnClient::new(url.to_string(), None, None);

@@ -4,6 +4,7 @@ use ndn_lib::ChunkId;
 use package_lib::*;
 use serde_json::Value;
 use sqlx::{database, error, Pool, Sqlite, SqlitePool};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 fn is_valid_chunk_id(chunk_id: &str) -> bool {
@@ -38,11 +39,10 @@ impl SourceNode {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     pkg_name TEXT NOT NULL,
                     version TEXT NOT NULL,
-                    author_did TEXT NOT NULL,
-                    author_name TEXT NOT NULL,
-                    chunk_id TEXT NOT NULL,
+                    hostname TEXT NOT NULL,
+                    chunk_id TEXT DEFAULT NULL,
                     dependencies TEXT NOT NULL DEFAULT '',
-                    sign TEXT NOT NULL,
+                    jwt TEXT NOT NULL,
                     pub_time INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(pkg_name, version)
                 )",
@@ -57,6 +57,11 @@ impl SourceNode {
             sqlx::query("CREATE INDEX IF NOT EXISTS idx_pkg_db_chunk_id ON pkg_db (chunk_id)")
                 .execute(&pool)
                 .await?;
+
+            //pkg_name与version创建唯一索引
+            sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_pkg_db_pkg_name_version ON pkg_db (pkg_name, version)")
+                .execute(&pool)
+                .await?;
         }
         Ok(SourceNode {
             source_config,
@@ -65,31 +70,36 @@ impl SourceNode {
     }
 
     pub async fn insert_pkg_meta(&self, pkg_meta: &PackageMeta) -> RepoResult<()> {
+        // 判断dependencies是不是一个合法的json
+        let _: HashMap<String, String> =
+            serde_json::from_str(&pkg_meta.dependencies).map_err(|err| {
+                error!("parse dependencies failed, err:{}", err);
+                RepoError::JsonError(err)
+            })?;
+
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO pkg_db (pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO pkg_db (pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&pkg_meta.pkg_name)
         .bind(&pkg_meta.version)
-        .bind(&pkg_meta.author_did)
-        .bind(&pkg_meta.author_name)
+        .bind(&pkg_meta.hostname)
         .bind(&pkg_meta.chunk_id)
-        .bind(&serde_json::to_string(&pkg_meta.dependencies)?)
-        .bind(&pkg_meta.sign)
+        .bind(&pkg_meta.dependencies)
+        .bind(&pkg_meta.jwt)
         .bind(&pkg_meta.pub_time)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
 
         info!(
-            "insert pkg meta success, pkg_name:{}, version:{}, author_did:{}, author_name:{}, chunk_id:{}, dependencies:{}, sign:{}, pub_time:{}",
+            "insert pkg meta success, pkg_name:{}, version:{}, hostname:{}, chunk_id:{:?}, dependencies:{}, jwt:{}, pub_time:{}",
             pkg_meta.pkg_name,
             pkg_meta.version,
-            pkg_meta.author_did,
-            pkg_meta.author_name,
+            pkg_meta.hostname,
             pkg_meta.chunk_id,
-            serde_json::to_string(&pkg_meta.dependencies)?,
-            pkg_meta.sign,
+            pkg_meta.dependencies,
+            pkg_meta.jwt,
             pkg_meta.pub_time
         );
 
@@ -143,9 +153,9 @@ impl SourceNode {
         version: &str,
     ) -> RepoResult<Option<PackageMeta>> {
         let sql = if is_valid_chunk_id(version) {
-            "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE pkg_name = ? AND chunk_id = ?"
+            "SELECT pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time FROM pkg_db WHERE pkg_name = ? AND chunk_id = ?"
         } else if version == "*" {
-            "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE pkg_name = ? ORDER BY pub_time DESC LIMIT 1"
+            "SELECT pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time FROM pkg_db WHERE pkg_name = ? ORDER BY pub_time DESC LIMIT 1"
         } else {
             //如果第一个字符是>或者<，return error
             if version.starts_with('>') || version.starts_with('<') || version.starts_with('=') {
@@ -155,7 +165,7 @@ impl SourceNode {
                 );
                 return Err(RepoError::VersionError(version.to_string()));
             }
-            "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE pkg_name = ? AND version = ?"
+            "SELECT pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time FROM pkg_db WHERE pkg_name = ? AND version = ?"
         };
 
         let result = sqlx::query_as::<_, PackageMeta>(sql)
@@ -169,7 +179,7 @@ impl SourceNode {
 
     pub async fn get_default_pkg_meta(&self, pkg_name: &str) -> RepoResult<Option<PackageMeta>> {
         let result = sqlx::query_as::<_, PackageMeta>(
-            "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE pkg_name = ? ORDER BY pub_time DESC LIMIT 1",
+            "SELECT pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time FROM pkg_db WHERE pkg_name = ? ORDER BY pub_time DESC LIMIT 1",
         )
         .bind(pkg_name)
         .fetch_optional(&self.pool)
@@ -194,14 +204,14 @@ impl SourceNode {
 
     pub async fn get_all_latest_pkg(&self) -> RepoResult<Vec<PackageMeta>> {
         let rows = sqlx::query_as::<_, PackageMeta>(
-            "SELECT pkg_name, version, author_did, author_name, chunk_id, dependencies, sign, pub_time FROM pkg_db WHERE (pkg_name, pub_time) IN (SELECT pkg_name, MAX(pub_time) FROM pkg_db GROUP BY pkg_name)",
+            "SELECT pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time FROM pkg_db WHERE (pkg_name, pub_time) IN (SELECT pkg_name, MAX(pub_time) FROM pkg_db GROUP BY pkg_name)",
         )
         .fetch_all(&self.pool)
         .await?;
 
         debug!(
             "get_all_latest_pkg, index:{}, rows:{:?}",
-            self.source_config.name, rows
+            self.source_config.hostname, rows
         );
 
         Ok(rows)

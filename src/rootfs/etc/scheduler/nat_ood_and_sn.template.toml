@@ -149,10 +149,9 @@
 {
     "source_list":[
         {
-            "did":"did:bns:ssssss",
-            "name":"ssssss.web3.buckyos.io",
+            "hostname":"test.buckyos.io",
             "chunk_id":"",
-            "sign":"",
+            "jwt":"",
             "version":""
         }
     ]

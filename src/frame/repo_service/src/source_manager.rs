@@ -135,7 +135,7 @@ impl SourceManager {
         local_file: &PathBuf,
     ) -> RepoResult<()> {
         if !local_file.exists() {
-            if source.name.is_empty() || source.chunk_id.is_empty() {
+            if source.hostname.is_empty() || source.chunk_id.is_empty() {
                 error!("source_config is invalid: {:?}", source);
                 return Err(RepoError::ParamError(format!(
                     "source_config is invalid: {:?}",
@@ -143,8 +143,8 @@ impl SourceManager {
                 )));
             }
             //TODO 构建chunk的url
-            let url = format!("http://{}", source.name);
-            Downloader::pull_remote_chunk(&url, &source.name, &source.sign, &source.chunk_id)
+            let url = format!("http://{}", source.hostname);
+            Downloader::pull_remote_chunk(&url, &source.hostname, &source.jwt, &source.chunk_id)
                 .await?;
             Downloader::chunk_to_local_file(&source.chunk_id, None, &local_file).await?;
         }
@@ -153,13 +153,12 @@ impl SourceManager {
 
     fn local_node_config() -> RepoResult<SourceNodeConfig> {
         //TODO fix 从系统配置中获取
-        let self_did = ZoneInfoHelper::get_zone_did()?;
+        //let self_did = ZoneInfoHelper::get_zone_did()?;
         let self_name = ZoneInfoHelper::get_zone_name()?;
         Ok(SourceNodeConfig {
-            did: self_did,
-            name: self_name,
+            hostname: self_name,
             chunk_id: "".to_string(),
-            sign: "".to_string(),
+            jwt: "".to_string(),
             version: "".to_string(),
         })
     }
@@ -167,14 +166,14 @@ impl SourceManager {
     fn source_db_file(source_config: &SourceNodeConfig, dir: &PathBuf) -> PathBuf {
         //去掉chunkid中冒号之前的部分
         let hex = source_config.chunk_id.split(':').last().unwrap();
-        let fix_name = source_config.name.replace(":", "-");
+        let fix_name = source_config.hostname.replace(":", "-");
         dir.join(format!("index_{}_{}.db", fix_name, hex))
     }
 
     //todo: 改成标准的NDN FileObject获取逻辑（带验证）
     async fn get_remote_source_meta(source_config: &SourceNodeConfig) -> RepoResult<SourceMeta> {
         //TODO 拼接meta url，要修改成正式url
-        //let url = format!("http://{}/kapi/repo", source_config.name);
+        //let url = format!("http://{}/kapi/repo", source_config.hostname);
         let url = format!("http://{}/kapi/repo", "127.0.0.1:4000");
         info!("get_remote_source_meta url: {}", url);
         let session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
@@ -197,7 +196,7 @@ impl SourceManager {
 
         info!(
             "get remote source meta from {:?} success: {:?}",
-            source_config.name, source_meta
+            source_config.hostname, source_meta
         );
 
         Ok(source_meta)
@@ -217,8 +216,11 @@ impl SourceManager {
         let mut keep_source_file_list = Vec::new();
 
         for mut source_config in source_config_list {
-            if source_config.did.is_empty() {
-                warn!("source_config invalid, did is empty, {:?}", source_config);
+            if source_config.hostname.is_empty() {
+                warn!(
+                    "source_config invalid, hostname is empty, {:?}",
+                    source_config
+                );
                 continue;
             }
             if !source_config.chunk_id.is_empty() {
@@ -232,19 +234,19 @@ impl SourceManager {
                 }
             }
             //通过url请求最新的source_meta
-            if update || source_config.chunk_id.is_empty() || source_config.sign.is_empty() {
-                info!("update source meta info from {}", source_config.name);
+            if update || source_config.chunk_id.is_empty() || source_config.jwt.is_empty() {
+                info!("update source meta info from {}", source_config.hostname);
                 REPO_TASK_MANAGER.set_task_status(
                     task_id,
                     TaskStatus::Running(format!(
                         "Updating source meta info from {}",
-                        source_config.name
+                        source_config.hostname
                     )),
                 )?;
                 let source_meta = Self::get_remote_source_meta(&source_config).await?;
                 if source_meta.chunk_id != source_config.chunk_id {
                     source_config.chunk_id = source_meta.chunk_id;
-                    source_config.sign = source_meta.sign;
+                    source_config.jwt = source_meta.jwt;
                     source_config.version = source_meta.version;
                     need_update_config_list.push(source_config.clone());
                 }
@@ -262,12 +264,16 @@ impl SourceManager {
                 keep_source_file_list.push(source_db_file.clone());
                 continue;
             } else {
-                info!("download source index from {}", source_config.name);
+                info!(
+                    "will download source index from {} to {}",
+                    source_config.hostname,
+                    source_db_file.display()
+                );
                 REPO_TASK_MANAGER.set_task_status(
                     task_id,
                     TaskStatus::Running(format!(
                         "Downloading source index from {}",
-                        source_config.name
+                        source_config.hostname
                     )),
                 )?;
                 Self::make_sure_source_file_exists(&source_config, &source_db_file).await?;
@@ -372,10 +378,10 @@ impl SourceManager {
         );
         let meta_info = meta_info.unwrap();
         let deps = meta_info.dependencies.clone();
-        let deps: HashMap<String, String> = serde_json::from_value(deps.clone()).map_err(|e| {
+        let deps: HashMap<String, String> = serde_json::from_str(&deps).map_err(|e| {
             error!("dependencies from_value failed: {:?}", e);
             RepoError::ParamError(format!(
-                "dependencies from_value failed, deps:{:?} err:{:?}",
+                "dependencies from_value failed, deps:{} err:{:?}",
                 deps, e
             ))
         })?;
@@ -552,26 +558,36 @@ impl SourceManager {
     }
 
     pub async fn pull_pkg(&self, pkg_meta: &PackageMeta) -> RepoResult<()> {
-        if self.check_exist(pkg_meta).await? {
+        if pkg_meta.chunk_id.is_none() {
+            return Ok(());
+        }
+
+        if self.check_chunk_exist(pkg_meta).await? {
             return Ok(());
         }
         // TODO: fix this url
-        let url = format!("http://{}", pkg_meta.author_name);
+        let url = format!("http://{}", pkg_meta.hostname);
         Downloader::pull_remote_chunk(
             &url,
-            &pkg_meta.author_name,
-            &pkg_meta.sign,
-            &pkg_meta.chunk_id,
+            &pkg_meta.hostname,
+            &pkg_meta.jwt,
+            pkg_meta.chunk_id.as_ref().unwrap(),
         )
         .await
     }
 
-    pub async fn check_exist(&self, pkg_meta: &PackageMeta) -> RepoResult<bool> {
+    pub async fn check_chunk_exist(&self, pkg_meta: &PackageMeta) -> RepoResult<bool> {
         let chunk_mgr_id = None;
-        debug!("check chunk exist: {}", pkg_meta.chunk_id);
-        let chunk_id = ChunkId::new(&pkg_meta.chunk_id).map_err(|e| {
+        debug!("check chunk exist: {:?}", pkg_meta.chunk_id);
+        if pkg_meta.chunk_id.is_none() {
+            return Ok(true);
+        }
+
+        let meta_chunk_id = pkg_meta.chunk_id.as_ref().unwrap();
+
+        let chunk_id = ChunkId::new(meta_chunk_id).map_err(|e| {
             error!("Parse chunk id failed: {:?}", e);
-            RepoError::ParseError(pkg_meta.chunk_id.clone(), e.to_string())
+            RepoError::ParseError(meta_chunk_id.clone(), e.to_string())
         })?;
         let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(chunk_mgr_id)
             .await
@@ -582,7 +598,7 @@ impl SourceManager {
             RepoError::NdnError(format!("is_chunk_exist failed: {:?}", e))
         })?;
         info!(
-            "check chunk {} in {:?} exist: {}",
+            "check chunk {:?} in {:?} exist: {}",
             pkg_meta.chunk_id, chunk_mgr_id, ret
         );
         Ok(ret)
@@ -601,12 +617,15 @@ impl SourceManager {
 
     pub async fn pub_pkg(&self, pkg_meta: &PackageMeta) -> RepoResult<()> {
         //需要确认chunk_id是否已经存在
-        if !self.check_exist(pkg_meta).await? {
-            return Err(RepoError::NotFound(format!(
-                "Pub pkg chunk {} not exists",
-                pkg_meta.chunk_id
-            )));
+        if pkg_meta.chunk_id.is_some() {
+            if !self.check_chunk_exist(pkg_meta).await? {
+                return Err(RepoError::NotFound(format!(
+                    "Pub pkg chunk {:?} not exists",
+                    pkg_meta.chunk_id
+                )));
+            }
         }
+
         let local_index_node = self.get_local_index_node().await.map_err(|e| {
             error!("get_local_index_node failed: {:?}", e);
             RepoError::NdnError(format!("get_local_index_node failed: {:?}", e))
@@ -614,8 +633,8 @@ impl SourceManager {
         local_index_node.insert_pkg_meta(pkg_meta).await
     }
 
-    pub async fn pub_index(&self, pem_file: &PathBuf, version: &str) -> RepoResult<()> {
-        IndexPublisher::pub_index(pem_file, version).await
+    pub async fn pub_index(&self, version: &str, hostname: &str, jwt: &str) -> RepoResult<()> {
+        IndexPublisher::pub_index(version, hostname, jwt).await
     }
 
     pub async fn get_index_meta(&self, version: Option<&str>) -> RepoResult<Option<SourceMeta>> {

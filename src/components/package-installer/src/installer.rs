@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
+use std::hash::Hash;
 use std::io;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -139,21 +140,28 @@ impl Installer {
         let mut deps = Vec::new();
         for pkg in pkgs {
             debug!("Installing package {:?}", pkg);
-            let chunk_id = &pkg.chunk_id.replace(":", "-");
-            let dest_file_tmp = env.get_cache_dir().join(format!("{}.tmp", chunk_id));
-            let dest_file = env.get_cache_dir().join(chunk_id);
+            let chunk_id = pkg.chunk_id.clone();
+            if chunk_id.is_none() {
+                debug!("Package {} does not need to download", pkg.pkg_name);
+                continue;
+            }
+            let chunk_id = chunk_id.unwrap();
+            let dest_file_tmp = env
+                .get_cache_dir()
+                .join(format!("{}.tmp", PackageEnv::fix_path(&chunk_id)));
+            let dest_file = env.get_cache_dir().join(&PackageEnv::fix_path(&chunk_id));
 
             if !dest_file.exists()
-                || !Self::verify_file_chunk_id(&dest_file, &pkg.chunk_id)
+                || !Self::verify_file_chunk_id(&dest_file, &chunk_id)
                     .await
                     .is_ok()
             {
                 debug!(
                     "Downloading chunk {} to {}",
-                    pkg.chunk_id,
+                    chunk_id,
                     dest_file_tmp.display()
                 );
-                Self::chunk_to_local_file(&pkg.chunk_id, named_mgr_id, &dest_file_tmp)
+                Self::chunk_to_local_file(&chunk_id, named_mgr_id, &dest_file_tmp)
                     .await
                     .map_err(|e| e.to_string())?;
                 tokio::fs::rename(&dest_file_tmp, &dest_file)
@@ -176,23 +184,18 @@ impl Installer {
                 Self::log_error(format!("Unpack {} failed: {}", dest_file.display(), err))
             })?;
 
-            let full_pkg_id = format!("{}#{}#{}", pkg.pkg_name, pkg.version, pkg.chunk_id);
+            let full_pkg_id = format!("{}#{}#{}", pkg.pkg_name, pkg.version, chunk_id);
             let full_pkg_id = PackageId::from_str(&full_pkg_id)
                 .map_err(|err| Self::log_error(format!("Parse full package id failed: {}", err)))?;
 
             let dependencies = Self::extract_dependencies(&pkg.dependencies)?;
-            env.write_meta_file(
-                &full_pkg_id,
-                &dependencies,
-                &pkg.author_did,
-                &pkg.author_name,
-            )
-            .map_err(|err| {
-                Self::log_error(format!(
-                    "Write meta file for {:?} failed: {}",
-                    full_pkg_id, err
-                ))
-            })?;
+            env.write_meta_file(&full_pkg_id, &dependencies, &pkg.hostname)
+                .map_err(|err| {
+                    Self::log_error(format!(
+                        "Write meta file for {:?} failed: {}",
+                        full_pkg_id, err
+                    ))
+                })?;
 
             deps.push(full_pkg_id);
         }
@@ -318,17 +321,9 @@ impl Installer {
             .map_err(|err| format!("Parse device private key failed! {}", err))
     }
 
-    fn extract_dependencies(dependencies: &Value) -> Result<HashMap<String, String>, String> {
-        let mut result = HashMap::new();
-        if let Value::Object(map) = dependencies {
-            for (k, v) in map.iter() {
-                if let Value::String(v) = v {
-                    result.insert(k.clone(), v.clone());
-                }
-            }
-        } else {
-            return Err("Invalid dependencies format".to_string());
-        }
+    fn extract_dependencies(dependencies: &str) -> Result<HashMap<String, String>, String> {
+        let result: HashMap<String, String> = serde_json::from_str(dependencies)
+            .map_err(|err| format!("Parse dependencies failed: {}", err))?;
         Ok(result)
     }
 

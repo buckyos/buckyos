@@ -1,66 +1,16 @@
-#[allow(unused_mut,dead_code)]
+#[allow(unused_mut, dead_code, unused_variables)]
 extern crate core;
 mod package_cmd;
-use buckyos_kit::get_buckyos_system_etc_dir;
-use clap::{value_parser, Arg, ArgMatches, Command};
-use jsonwebtoken::EncodingKey;
+mod util;
+use clap::{Arg, Command};
 use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig};
 use package_cmd::*;
-use serde::Deserialize;
-use std::collections::HashMap;
-use std::fs;
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command as SystemCommand;
 use std::time::{SystemTime, UNIX_EPOCH};
+use util::*;
 
 const CONFIG_FILE: &str = "~/.buckycli/config";
-
-#[derive(Deserialize, Debug)]
-struct NodeIdentityConfig {
-    zone_name: String,                        // $name.buckyos.org or did:ens:$name
-    owner_public_key: jsonwebtoken::jwk::Jwk, //owner is zone_owner
-    owner_name: String,                       //owner's name
-    device_doc_jwt: String,                   //device document,jwt string,siged by owner
-    zone_nonce: String,                       // random string, is default password of some service
-                                              //device_private_key: ,storage in partical file
-}
-
-fn load_identity_config(node_id: &str) -> Result<NodeIdentityConfig, String> {
-    //load ./node_identity.toml for debug
-    //load from /opt/buckyos/etc/node_identity.toml
-    let mut file_path = PathBuf::from(format!("{}_identity.toml", node_id));
-    let path = Path::new(&file_path);
-    if !path.exists() {
-        let etc_dir = get_buckyos_system_etc_dir();
-        file_path = etc_dir.join(format!("{}_identity.toml", node_id));
-    }
-
-    let contents = std::fs::read_to_string(file_path.clone())
-        .map_err(|err| format!("read node identity config failed! {}", err))?;
-
-    let config: NodeIdentityConfig = toml::from_str(&contents)
-        .map_err(|err| format!("Failed to parse NodeIdentityConfig TOML: {}", err))?;
-
-    Ok(config)
-}
-
-fn load_device_private_key(node_id: &str) -> Result<EncodingKey, String> {
-    let mut file_path = format!("{}_private_key.pem", node_id);
-    let path = Path::new(file_path.as_str());
-    if !path.exists() {
-        let etc_dir = get_buckyos_system_etc_dir();
-        file_path = format!("{}/{}_private_key.pem", etc_dir.to_string_lossy(), node_id);
-    }
-    let private_key = std::fs::read_to_string(file_path.clone())
-        .map_err(|err| format!("read device private key failed! {}", err))?;
-
-    let private_key: EncodingKey = EncodingKey::from_ed_pem(private_key.as_bytes())
-        .map_err(|err| format!("parse device private key failed! {}", err))?;
-
-    Ok(private_key)
-}
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), String> {
@@ -97,6 +47,23 @@ async fn main() -> std::result::Result<(), String> {
                 .arg(Arg::new("url").long("url").help("repo url").required(true)),
         )
         .subcommand(
+            Command::new("pub_app")
+                .about("publish app")
+                .arg(
+                    Arg::new("app_desc_file")
+                        .long("app_desc_file")
+                        .help("app desc file path")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("pem")
+                        .long("pem_file")
+                        .help("pem file path")
+                        .required(true),
+                )
+                .arg(Arg::new("url").long("url").help("repo url").required(true)),
+        )
+        .subcommand(
             Command::new("pub_index")
                 .about("publish index")
                 .arg(
@@ -109,6 +76,12 @@ async fn main() -> std::result::Result<(), String> {
                     Arg::new("version")
                         .long("version")
                         .help("index version")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("hostname")
+                        .long("hostname")
+                        .help("author hostname")
                         .required(true),
                 )
                 .arg(Arg::new("url").long("url").help("repo url").required(true)),
@@ -257,13 +230,66 @@ async fn main() -> std::result::Result<(), String> {
             let pkg_path = matches.get_one::<String>("pkg_path").unwrap();
             let pem_file = matches.get_one::<String>("pem").unwrap();
             let url = matches.get_one::<String>("url").unwrap();
-            match publish_package(pkg_path, pem_file, url, &device_session_token_jwt).await {
+            match publish_package(
+                pkg_path,
+                &device_doc.did,
+                &device_doc.name,
+                pem_file,
+                url,
+                &device_session_token_jwt,
+            )
+            .await
+            {
                 Ok(_) => {
                     println!("publish package success!");
                 }
                 Err(e) => {
                     println!("publish package failed! {}", e);
                     return Err("publish package failed!".to_string());
+                }
+            }
+        }
+        Some(("pub_app", matches)) => {
+            let now = SystemTime::now();
+            let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
+            let timestamp = since_the_epoch.as_secs();
+            let device_session_token = kRPC::RPCSessionToken {
+                token_type: kRPC::RPCSessionTokenType::JWT,
+                nonce: None,
+                userid: Some(device_doc.name.clone()),
+                appid: Some("kernel".to_string()),
+                exp: Some(timestamp + 3600 * 24 * 7),
+                iss: Some(device_doc.name.clone()),
+                token: None,
+            };
+
+            let device_session_token_jwt = device_session_token
+                .generate_jwt(Some(device_doc.did.clone()), &device_private_key)
+                .map_err(|err| {
+                    println!("generate device session token failed! {}", err);
+                    return String::from("generate device session token failed!");
+                })?;
+            //从args中取出参数
+            let app_desc_file = matches.get_one::<String>("app_desc_file").unwrap();
+            let pem_file = matches.get_one::<String>("pem").unwrap();
+            let url = matches.get_one::<String>("url").unwrap();
+            let app_desc_file = PathBuf::from(app_desc_file);
+            match publish_app(
+                &app_desc_file,
+                &device_doc.did,
+                &device_doc.name,
+                pem_file,
+                url,
+                &device_session_token_jwt,
+            )
+            .await
+            {
+                Ok(_) => {
+                    println!("publish app success!");
+                }
+                Err(e) => {
+                    println!("publish app failed! {}", e);
+                    return Err("publish app failed!".to_string());
                 }
             }
         }
@@ -290,8 +316,9 @@ async fn main() -> std::result::Result<(), String> {
             //从args中取出参数
             let pem_file = matches.get_one::<String>("pem").unwrap();
             let version = matches.get_one::<String>("version").unwrap();
+            let hostname = matches.get_one::<String>("hostname").unwrap();
             let url = matches.get_one::<String>("url").unwrap();
-            match publish_index(pem_file, version, url, &device_session_token_jwt).await {
+            match publish_index(pem_file, version, hostname, url, &device_session_token_jwt).await {
                 Ok(_) => {
                     println!("publish index success!");
                 }
@@ -303,7 +330,7 @@ async fn main() -> std::result::Result<(), String> {
         }
         Some(("pack_pkg", matches)) => {
             let pkg_path = matches.get_one::<String>("pkg_path").unwrap();
-            match pack(pkg_path).await {
+            match pack_pkg(pkg_path).await {
                 Ok(_) => {
                     println!("pack package success!");
                 }
