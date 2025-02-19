@@ -31,7 +31,7 @@ members = [
 
     "./tools/buckycli", 
 
-    #"./apps/tray-controller"
+    "./apps/tray-controller"
 ]
 
 exclude = [
