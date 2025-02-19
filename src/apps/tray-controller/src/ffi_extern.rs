@@ -1,13 +1,11 @@
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 use name_lib::DIDDocumentTrait;
 use windows::core::PCWSTR;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, OsStr};
 use std::os::raw::{c_char, c_int, c_void};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::process::CommandExt;
 use std::sync::Arc;
-use std::{iter, ptr};
 use tokio::sync::mpsc;
 use tokio::task;
 
@@ -20,7 +18,9 @@ use tokio::sync::Mutex;
 
 #[cfg(windows)]
 use windows::{
-    Win32::System::Services::*,
+    Win32::UI::Shell::ShellExecuteW,
+    Win32::Foundation::{HWND, HINSTANCE},
+    Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
 };
 
 lazy_static::lazy_static! {
@@ -38,7 +38,6 @@ lazy_static::lazy_static! {
     };
 
     static ref node_infomation: Arc<Mutex<Option<NodeInfomationObj>>> = Arc::new(Mutex::new(None));
-    static ref buckyos_service_name: Vec<u16> = OsStr::new("buckyos").encode_wide().chain(Some(0)).collect();
 }
 
 struct BuckyStatusScanerMgr {
@@ -764,45 +763,42 @@ extern "C" fn free_node_info(info: *mut NodeInfomation) {
     }
 }
 
-#[cfg(windows)]
-fn start_buckyos_service() -> windows::core::Result<()> {
-    unsafe {
-        let scm_handle = OpenSCManagerW(None, None, SC_MANAGER_CONNECT)?;
-        let service_handle = OpenServiceW(
-            scm_handle,
-            PCWSTR(buckyos_service_name.as_ptr()),
-            SERVICE_START,
-        )?;
-
-        StartServiceW(service_handle, Some(&[]))?;
-
-        CloseServiceHandle(service_handle);
-        CloseServiceHandle(scm_handle);
-    }
-    Ok(())
+fn to_wide_string(s: &str) -> Vec<u16> {
+    OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }
 
 #[cfg(windows)]
-fn stop_buckyos_service() -> windows::core::Result<()> {
-    unsafe {
-        let scm_handle = OpenSCManagerW(None, None, SC_MANAGER_CONNECT)?;
-        
-        let service_handle = OpenServiceW(
-            scm_handle,
-PCWSTR(buckyos_service_name.as_ptr()),
-            SERVICE_STOP | SERVICE_QUERY_STATUS,
-        )?;
-        
-        // 停止服务
-        let mut status = SERVICE_STATUS::default();
-        ControlService(service_handle, SERVICE_CONTROL_STOP, &mut status)?;
-        
-        // 关闭句柄
-        CloseServiceHandle(service_handle);
-        CloseServiceHandle(scm_handle);
-    }
+fn run_as_admin(command: &str, parameters: Option<&str>) -> Result<HINSTANCE, ()> {
+    let operation = to_wide_string("runas");
+    let command_wide = to_wide_string(command);
+    let params_wide = parameters.map(|p| to_wide_string(p));
 
-    Ok(())
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(operation.as_ptr() as *const u16),
+            PCWSTR(command_wide.as_ptr() as *const u16),
+            PCWSTR(params_wide.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()) as *const u16),
+            PCWSTR(std::ptr::null() as *const u16),
+            SW_SHOWNORMAL,
+        )
+    };
+
+    if result.0 as isize > 32 {
+        Ok(result)
+    } else {
+        Err(())
+    }
+}
+
+#[cfg(windows)]
+fn start_buckyos_service() -> Result<HINSTANCE, ()> {
+    run_as_admin("cmd.exe", Some("/C net start buckyos"))
+}
+
+#[cfg(windows)]
+fn stop_buckyos_service() -> Result<HINSTANCE, ()> {
+    run_as_admin("cmd.exe", Some("/C net stop buckyos"))
 }
 
 #[no_mangle]
