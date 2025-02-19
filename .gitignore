@@ -19,6 +19,7 @@ src/rootfs/bin/verify_hub/verify_hub
 src/rootfs/bin/node_daemon
 src/rootfs/bin/repo_service/repo_service
 src/rootfs/bin/smb_service/smb_service
+src/rootfs/bin/buckycli/buckycli
 src/rootfs/logs
 src/apps/control_panel/src/node_modules/.modules.yaml
 src/apps/control_panel/src/node_modules/.bin/handlebars
