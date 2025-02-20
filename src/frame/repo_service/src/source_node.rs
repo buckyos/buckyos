@@ -139,8 +139,12 @@ impl SourceNode {
         let all_versions = self.get_all_pkg_version(pkg_name).await?;
         let matched_version = VersionUtil::find_matched_version(version_desc, &all_versions)
             .map_err(|err| {
-                error!("find_matched_version failed, err:{}", err);
-                RepoError::VersionNotFoundError(version_desc.to_string())
+                let err_msg = format!(
+                    "find_matched_version failed, pkg-name:{}, target version:{}, err:{}",
+                    pkg_name, version_desc, err
+                );
+                error!("{}", err_msg);
+                RepoError::VersionNotFoundError(err_msg)
             })?;
 
         self.get_exact_pkg_meta(pkg_name, &matched_version).await

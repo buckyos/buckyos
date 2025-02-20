@@ -24,6 +24,7 @@ pub struct PackResult {
     hostname: String,
     dependencies: String,
     target_file_path: PathBuf, // tarball path
+    meta_content: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -243,6 +244,7 @@ pub async fn pack_pkg(pkg_path: &str) -> Result<PackResult, String> {
         hostname: hostname.to_string(),
         target_file_path: tarball_path,
         dependencies: deps,
+        meta_content,
     };
 
     Ok(pack_ret)
@@ -289,7 +291,7 @@ fn calculate_file_hash(file_path: &str) -> Result<FileInfo, String> {
     })
 }
 
-fn generate_jwt(pem_file: &str, data: &Value) -> Result<String, String> {
+fn generate_jwt(pem_file: &str, data: &String) -> Result<String, String> {
     let private_key = load_private_key_from_file(pem_file)?;
     let mut header = Header::new(Algorithm::EdDSA);
     header.kid = None;
@@ -424,14 +426,8 @@ pub async fn publish_package(
         chunk_id: Some(chunk_id.to_string()),
         dependencies: pack_ret.dependencies,
     };
-    let meta_json_value = serde_json::to_value(&pkg_meta).map_err(|e| {
-        format!(
-            "Failed to serialize package meta to json value, err:{:?}",
-            e.to_string()
-        )
-    })?;
 
-    let jwt_token: String = generate_jwt(pem_file, &meta_json_value)?;
+    let jwt_token: String = generate_jwt(pem_file, &pack_ret.meta_content)?;
     println!("pub meta: {:?}, jwt_token: {}:", pkg_meta, jwt_token);
 
     // 上传元数据到repo
@@ -466,7 +462,7 @@ pub async fn publish_index(
         version: version.to_string(),
         hostname: hostname.to_string(),
     };
-    let meta_json_value = serde_json::to_value(&pub_meta).map_err(|e| {
+    let meta_json_value = serde_json::to_string(&pub_meta).map_err(|e| {
         format!(
             "Failed to serialize index meta to json value, err:{:?}",
             e.to_string()
@@ -528,11 +524,11 @@ pub async fn publish_app(
         ));
     }
 
-    let app_desc: HashMap<String, String> = serde_json::from_str(
-        &fs::read_to_string(app_desc_file)
-            .map_err(|err| format!("Error: Failed to read app desc file: {}", err.to_string()))?,
-    )
-    .map_err(|err| format!("Error: Failed to parse app desc file: {}", err.to_string()))?;
+    let desc_content = fs::read_to_string(app_desc_file)
+        .map_err(|err| format!("Error: Failed to read app desc file: {}", err.to_string()))?;
+
+    let app_desc: HashMap<String, String> = serde_json::from_str(&desc_content)
+        .map_err(|err| format!("Error: Failed to parse app desc file: {}", err.to_string()))?;
 
     let app_name = app_desc
         .get("app_name")
@@ -563,7 +559,7 @@ pub async fn publish_app(
         )
     })?;
 
-    let jwt_token: String = generate_jwt(pem_file, &meta_json_value)?;
+    let jwt_token: String = generate_jwt(pem_file, &desc_content)?;
 
     // 上传元数据到repo
     let client = kRPC::new(url, Some(session_token.to_string()));
