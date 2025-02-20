@@ -19,8 +19,8 @@ use tokio::sync::Mutex;
 #[cfg(windows)]
 use windows::{
     Win32::UI::Shell::ShellExecuteW,
-    Win32::Foundation::{HWND, HINSTANCE},
-    Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+    Win32::Foundation::HINSTANCE,
+    Win32::UI::WindowsAndMessaging::SW_HIDE,
 };
 
 lazy_static::lazy_static! {
@@ -138,7 +138,7 @@ extern "C" fn bucky_status_scaner_scan(
                         let node_daemon_process = "node_daemon".to_string() + ext_path;
 
                         for process in system.processes().values() {
-                            let name = process.name().to_ascii_lowercase().into_string().unwrap();
+                            let name = process.name().to_ascii_lowercase().to_string();
 
                             if node_daemon_process == name {
                                 unsafe {
@@ -780,7 +780,7 @@ fn run_as_admin(command: &str, parameters: Option<&str>) -> Result<HINSTANCE, ()
             PCWSTR(command_wide.as_ptr() as *const u16),
             PCWSTR(params_wide.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()) as *const u16),
             PCWSTR(std::ptr::null() as *const u16),
-            SW_SHOWNORMAL,
+            SW_HIDE,
         )
     };
 

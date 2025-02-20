@@ -1,7 +1,6 @@
 #include "TrayMenu.h"
 #include <map>
 #include <set>
-#include "process_kits.h"
 
 static std::set<TrayMenu*> s_objs;
 static std::map<HWND, TrayMenu*> s_hwnd_objs;

@@ -1,7 +1,7 @@
 #ifndef _SYSTEM_STATE_H_
 #define _SYSTEM_STATE_H_
 
-#include "ffi_extern.h"
+#include "../ffi_extern.h"
 #include <windows.h>
 
 class SystemState

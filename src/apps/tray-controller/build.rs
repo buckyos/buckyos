@@ -1,33 +1,53 @@
 use std::env;
 use std::path::PathBuf;
 
+#[cfg(any(windows, target_os = "macos"))]
 fn main() {
-    cc::Build::new()
+    #[cfg(windows)]
+    let platform_source = "win";
+    #[cfg(target_os = "macos")]
+    let platform_source = "macos";
+
+    let mut build = cc::Build::new();
+    build
         .cpp(true)
-        // .define("_CRT_SECURE_NO_WARNINGS", None)
-        // .define("WIN32", None)
-        .define("_UNICODE", None)
-        .define("UNICODE", None)
-        .flag_if_supported("-std=c11")
-        .file("src/entry.cpp")
-        .file("src/TrayMenu.cpp")
-        .file("src/process_kits.cpp")
-        .compile("tray-controller");
+        .file(format!("src/{}/entry.cpp", platform_source))
+        .file(format!("src/{}/TrayMenu.cpp", platform_source));
 
-    println!("cargo:rerun-if-changed=resource.rc");
+    #[cfg(windows)]
+    {
+        build
+            .define("_UNICODE", None)
+            .define("UNICODE", None)
+            .flag_if_supported("-std=c11")
+            .compile("tray-controller");
 
-    let out_dir = env::var("OUT_DIR").unwrap();
-    let res_path = PathBuf::from(&out_dir).join("resource.res");
+        println!("cargo:rerun-if-changed=src/win/tray_controller.rc");
 
-    let output = std::process::Command::new("windres")
-        .args(&["src/tray_controller.rc", "-o"])
-        .arg(res_path.to_str().unwrap())
-        .status()
-        .expect("Failed to compile resource file");
-    assert!(output.success());
+        let out_dir = env::var("OUT_DIR").unwrap();
+        let res_path = PathBuf::from(&out_dir).join("resource.res");
 
-    println!("cargo:rustc-link-arg={}", res_path.display());
+        let output = std::process::Command::new("windres")
+            .args(&["src/win/tray_controller.rc", "-o"])
+            .arg(res_path.to_str().unwrap())
+            .status()
+            .expect("Failed to compile resource file");
+        assert!(output.success());
 
-    println!("cargo:rustc-link-lib=user32");
-    println!("cargo:rustc-link-lib=shell32");
+        println!("cargo:rustc-link-arg={}", res_path.display());
+        println!("cargo:rustc-link-lib=user32");
+        println!("cargo:rustc-link-lib=shell32");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        build
+            .flag_if_supported("-std=c++11")
+            .compile("tray-controller");
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn main() {
+    println!("This platform is not supported.");
 }

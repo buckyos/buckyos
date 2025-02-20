@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 #include <map>
-#include "ffi_extern.h"
+#include "../ffi_extern.h"
 
 class TrayMenu
 {

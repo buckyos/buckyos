@@ -13,7 +13,7 @@
 #undef APSTUDIO_READONLY_SYMBOLS
 
 /////////////////////////////////////////////////////////////////////////////
-// ÖÐÎÄ(¼òÌå£¬ÖÐ¹ú) resources
+// ï¿½ï¿½ï¿½ï¿½(ï¿½ï¿½ï¿½å£¬ï¿½Ð¹ï¿½) resources
 
 #if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_CHS)
 LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
@@ -52,16 +52,16 @@ END
 
 // Icon with lowest ID value placed first to ensure application icon
 // remains consistent on all systems.
-IDI_TRAY_APP            ICON                    "tray_app.ico"
+IDI_TRAY_APP            ICON                    "../tray_app.ico"
 
 
-IDR_MAINFRAME           ICON                    "tray_app.ico"
+IDR_MAINFRAME           ICON                    "../tray_app.ico"
 
-IDI_TRAY_ERROR          ICON                    "error.ico"
+IDI_TRAY_ERROR          ICON                    "../error.ico"
 
-IDI_TRAY_PAUSE          ICON                    "pause.ico"
+IDI_TRAY_PAUSE          ICON                    "../pause.ico"
 
-#endif    // ÖÐÎÄ(¼òÌå£¬ÖÐ¹ú) resources
+#endif    // ï¿½ï¿½ï¿½ï¿½(ï¿½ï¿½ï¿½å£¬ï¿½Ð¹ï¿½) resources
 /////////////////////////////////////////////////////////////////////////////
 
 

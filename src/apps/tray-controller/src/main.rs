@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::fs::OpenOptions;
 use std::process;
@@ -11,8 +11,14 @@ use std::os::windows::fs::OpenOptionsExt;
 
 mod ffi_extern;
 
+#[cfg(any(windows, target_os = "macos"))]
 extern "C" {
     fn entry();
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn entry() {
+    log::error!("only for windows/macos.")
 }
 
 fn main() {

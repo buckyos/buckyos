@@ -1,7 +1,7 @@
 #include <windows.h>
 #include <vector>
 #include "SystemState.h"
-#include "ffi_extern.h"
+#include "../ffi_extern.h"
 #include "process_kits.h"
 
 extern "C" void entry();

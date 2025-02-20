@@ -3,7 +3,7 @@
 #include <shellapi.h>
 
 #include "TrayMenu.h"
-#include "ffi_extern.h"
+#include "../ffi_extern.h"
 #include "resource.h"
 
 #define WM_TRAYICON (WM_USER + 1)
