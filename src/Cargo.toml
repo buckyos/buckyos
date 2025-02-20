@@ -25,13 +25,13 @@ members = [
     "./kernel/verify_hub",
     "./kernel/node_daemon",
     "./kernel/scheduler",
-    "./kernel/task_manager",
+    "./kernel/task_manager",                      
     "./frame/repo_service",
     "./frame/smb_service",
 
     "./tools/buckycli", 
 
-    "./apps/tray-controller"
+    #"./apps/tray-controller"
 ]
 
 exclude = [
