@@ -127,7 +127,7 @@ impl Installer {
                     return Err(Self::log_error(format!("Invalid task type: {:?}", task)));
                 }
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
 
