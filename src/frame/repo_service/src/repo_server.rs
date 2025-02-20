@@ -57,7 +57,7 @@ impl RepoServer {
             .params
             .get("update")
             .and_then(|update| update.as_bool())
-            .unwrap_or(false);
+            .unwrap_or(true);
         match self.source_mgr.update_index(update).await {
             Ok(task_id) => Ok(RPCResponse::new(
                 RPCResult::Success(json!({
