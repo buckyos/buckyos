@@ -17,6 +17,24 @@ use std::path::{Path, PathBuf};
 use tar::Builder;
 use tokio::io::AsyncWriteExt;
 
+#[derive(Debug)]
+pub enum PackCategory {
+    Pkg,
+    App,
+    Agent,
+}
+
+//为PackCategory实现to_string方法
+impl PackCategory {
+    pub fn to_string(&self) -> String {
+        match self {
+            PackCategory::Pkg => "pkg".to_string(),
+            PackCategory::App => "app".to_string(),
+            PackCategory::Agent => "agent".to_string(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PackResult {
     pkg_name: String,
@@ -89,11 +107,6 @@ pub async fn pack_pkg(pkg_path: &str) -> Result<PackResult, String> {
         .map_err(|e| format!("Error: Failed to read directory: {}", e.to_string()))?
         .filter_map(|entry| entry.ok())
         .collect();
-
-    // if items.len() <= 1 {
-    //     eprintln!("Error: No files or folders found to pack");
-    //     return Err("No files or folders found to pack".to_string());
-    // }
 
     println!("Found {} items to pack", items.len());
 
@@ -383,9 +396,8 @@ async fn write_file_to_chunk(
 }
 
 pub async fn publish_package(
+    category: PackCategory,
     pkg_path: &str,
-    did: &str,
-    hostname: &str,
     pem_file: &str,
     url: &str,
     session_token: &str,
@@ -422,7 +434,7 @@ pub async fn publish_package(
     let pkg_meta = PackagePubMeta {
         pkg_name: pack_ret.pkg_name,
         version: pack_ret.version,
-        hostname: hostname.to_string(),
+        hostname: pack_ret.hostname,
         chunk_id: Some(chunk_id.to_string()),
         dependencies: pack_ret.dependencies,
     };
@@ -439,6 +451,7 @@ pub async fn publish_package(
             json!({
                 "pkg_name": pkg_meta.pkg_name,
                 "version": pkg_meta.version,
+                "category": category.to_string(),
                 "hostname": pkg_meta.hostname,
                 "chunk_id": pkg_meta.chunk_id.unwrap(),
                 "dependencies": pkg_meta.dependencies,
@@ -508,75 +521,75 @@ pub async fn install_pkg(
     Ok(())
 }
 
-pub async fn publish_app(
-    app_desc_file: &PathBuf,
-    did: &str,
-    hostname: &str,
-    pem_file: &str,
-    url: &str,
-    session_token: &str,
-) -> Result<(), String> {
-    if !app_desc_file.exists() {
-        eprintln!("Error: App desc file {} not found", app_desc_file.display());
-        return Err(format!(
-            "App desc file {} not found",
-            app_desc_file.display()
-        ));
-    }
+// pub async fn publish_app(
+//     app_desc_file: &PathBuf,
+//     did: &str,
+//     hostname: &str,
+//     pem_file: &str,
+//     url: &str,
+//     session_token: &str,
+// ) -> Result<(), String> {
+//     if !app_desc_file.exists() {
+//         eprintln!("Error: App desc file {} not found", app_desc_file.display());
+//         return Err(format!(
+//             "App desc file {} not found",
+//             app_desc_file.display()
+//         ));
+//     }
 
-    let desc_content = fs::read_to_string(app_desc_file)
-        .map_err(|err| format!("Error: Failed to read app desc file: {}", err.to_string()))?;
+//     let desc_content = fs::read_to_string(app_desc_file)
+//         .map_err(|err| format!("Error: Failed to read app desc file: {}", err.to_string()))?;
 
-    let app_desc: HashMap<String, String> = serde_json::from_str(&desc_content)
-        .map_err(|err| format!("Error: Failed to parse app desc file: {}", err.to_string()))?;
+//     let app_desc: HashMap<String, String> = serde_json::from_str(&desc_content)
+//         .map_err(|err| format!("Error: Failed to parse app desc file: {}", err.to_string()))?;
 
-    let app_name = app_desc
-        .get("app_name")
-        .ok_or_else(|| format!("Error: app_name missing in app desc file"))?;
-    let version = app_desc
-        .get("version")
-        .ok_or_else(|| format!("Error: version missing in app desc file"))?;
-    let hostname = app_desc
-        .get("hostname")
-        .ok_or_else(|| format!("Error: hostname missing in app desc file"))?;
-    let pkg_list = app_desc
-        .get("pkg_list")
-        .ok_or_else(|| format!("Error: pkg_list missing in app desc file"))?;
+//     let app_name = app_desc
+//         .get("app_name")
+//         .ok_or_else(|| format!("Error: app_name missing in app desc file"))?;
+//     let version = app_desc
+//         .get("version")
+//         .ok_or_else(|| format!("Error: version missing in app desc file"))?;
+//     let hostname = app_desc
+//         .get("hostname")
+//         .ok_or_else(|| format!("Error: hostname missing in app desc file"))?;
+//     let pkg_list = app_desc
+//         .get("pkg_list")
+//         .ok_or_else(|| format!("Error: pkg_list missing in app desc file"))?;
 
-    // 创建元数据
-    let pkg_meta = PackagePubMeta {
-        pkg_name: app_name.to_string(),
-        version: version.to_string(),
-        hostname: hostname.to_string(),
-        chunk_id: None,
-        dependencies: pkg_list.to_string(),
-    };
+//     // 创建元数据
+//     let pkg_meta = PackagePubMeta {
+//         pkg_name: app_name.to_string(),
+//         version: version.to_string(),
+//         hostname: hostname.to_string(),
+//         chunk_id: None,
+//         dependencies: pkg_list.to_string(),
+//     };
 
-    let meta_json_value = serde_json::to_value(&pkg_meta).map_err(|e| {
-        format!(
-            "Failed to serialize app meta to json value, err:{:?}",
-            e.to_string()
-        )
-    })?;
+//     let meta_json_value = serde_json::to_value(&pkg_meta).map_err(|e| {
+//         format!(
+//             "Failed to serialize app meta to json value, err:{:?}",
+//             e.to_string()
+//         )
+//     })?;
 
-    let jwt_token: String = generate_jwt(pem_file, &desc_content)?;
+//     let jwt_token: String = generate_jwt(pem_file, &desc_content)?;
 
-    // 上传元数据到repo
-    let client = kRPC::new(url, Some(session_token.to_string()));
+//     // 上传元数据到repo
+//     let client = kRPC::new(url, Some(session_token.to_string()));
 
-    client
-        .call(
-            "pub_app",
-            json!({
-                "pkg_name": pkg_meta.pkg_name,
-                "version": pkg_meta.version,
-                "hostname": hostname.to_string(),
-                "dependencies": pkg_meta.dependencies,
-                "jwt": jwt_token,
-            }),
-        )
-        .await
-        .map_err(|e| format!("Failed to publish app meta to repo, err:{:?}", e))?;
+//     client
+//         .call(
+//             "pub_app",
+//             json!({
+//                 "pkg_name": pkg_meta.pkg_name,
+//                 "version": pkg_meta.version,
+//                 "hostname": hostname.to_string(),
+//                 "dependencies": pkg_meta.dependencies,
+//                 "jwt": jwt_token,
+//             }),
+//         )
+//         .await
+//         .map_err(|e| format!("Failed to publish app meta to repo, err:{:?}", e))?;
 
-    Ok(())
-}
+//     Ok(())
+// }

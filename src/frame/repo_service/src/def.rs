@@ -17,10 +17,11 @@ pub const TASK_EXPIRE_TIME: u64 = 30 * 60; //任务超时时间,单位秒
 pub struct PackageMeta {
     pub pkg_name: String,
     pub version: String,
+    pub category: String, //分类,app,pkg,agent等
     pub hostname: String,
     pub chunk_id: Option<String>, //有些pkg不需要下载
     pub dependencies: String,     //json string
-    pub jwt: String,
+    pub jwt: String,              //对meta整体的签名
     pub pub_time: i64,
 }
 

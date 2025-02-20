@@ -72,6 +72,7 @@ impl RepoServer {
     async fn handle_pub_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let pkg_name = ReqHelper::get_str_param_from_req(&req, "pkg_name")?;
         let version = ReqHelper::get_str_param_from_req(&req, "version")?;
+        let category = ReqHelper::get_str_param_from_req(&req, "category")?;
         let hostname = ReqHelper::get_str_param_from_req(&req, "hostname")?;
         let chunk_id = ReqHelper::get_str_param_from_req(&req, "chunk_id")?;
         let dependencies = ReqHelper::get_str_param_from_req(&req, "dependencies")?;
@@ -81,6 +82,7 @@ impl RepoServer {
         let pkg_meta = PackageMeta {
             pkg_name,
             version,
+            category,
             hostname,
             chunk_id: Some(chunk_id),
             dependencies,
@@ -158,7 +160,11 @@ impl RepoServer {
     }
 
     async fn handle_query_all_latest_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        match self.source_mgr.query_all_latest_pkg().await {
+        let category = match req.params.get("category") {
+            Some(category) => category.as_str().map(|s| s),
+            None => None,
+        };
+        match self.source_mgr.query_all_latest_pkg(category).await {
             Ok(pkgs) => {
                 let pkgs = serde_json::to_value(pkgs).map_err(|e| {
                     RPCErrors::ReasonError(format!("Failed to serialize pkgs, err:{}", e))

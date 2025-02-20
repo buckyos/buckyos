@@ -641,11 +641,14 @@ impl SourceManager {
         IndexPublisher::get_meta(version).await
     }
 
-    pub async fn query_all_latest_pkg(&self) -> RepoResult<Vec<PackageMeta>> {
+    pub async fn query_all_latest_pkg(
+        &self,
+        category: Option<&str>,
+    ) -> RepoResult<Vec<PackageMeta>> {
         let source_list = self.source_list.read().await;
         let mut all_latest_pkg = Vec::new();
         for source in source_list.iter() {
-            let latest_pkg = source.get_all_latest_pkg().await?;
+            let latest_pkg = source.get_all_latest_pkg(category).await?;
             all_latest_pkg.extend(latest_pkg);
         }
         Ok(all_latest_pkg)

@@ -39,6 +39,7 @@ impl SourceNode {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     pkg_name TEXT NOT NULL,
                     version TEXT NOT NULL,
+                    category TEXT NOT NULL,
                     hostname TEXT NOT NULL,
                     chunk_id TEXT DEFAULT NULL,
                     dependencies TEXT NOT NULL DEFAULT '',
@@ -79,10 +80,11 @@ impl SourceNode {
 
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO pkg_db (pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO pkg_db (pkg_name, version, category, hostname, chunk_id, dependencies, jwt, pub_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&pkg_meta.pkg_name)
         .bind(&pkg_meta.version)
+        .bind(&pkg_meta.category)
         .bind(&pkg_meta.hostname)
         .bind(&pkg_meta.chunk_id)
         .bind(&pkg_meta.dependencies)
@@ -93,9 +95,10 @@ impl SourceNode {
         tx.commit().await?;
 
         info!(
-            "insert pkg meta success, pkg_name:{}, version:{}, hostname:{}, chunk_id:{:?}, dependencies:{}, jwt:{}, pub_time:{}",
+            "insert pkg meta success, pkg_name:{}, version:{}, category:{}, hostname:{}, chunk_id:{:?}, dependencies:{}, jwt:{}, pub_time:{}",
             pkg_meta.pkg_name,
             pkg_meta.version,
+            pkg_meta.category,
             pkg_meta.hostname,
             pkg_meta.chunk_id,
             pkg_meta.dependencies,
@@ -157,9 +160,9 @@ impl SourceNode {
         version: &str,
     ) -> RepoResult<Option<PackageMeta>> {
         let sql = if is_valid_chunk_id(version) {
-            "SELECT pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time FROM pkg_db WHERE pkg_name = ? AND chunk_id = ?"
+            "SELECT * FROM pkg_db WHERE pkg_name = ? AND chunk_id = ?"
         } else if version == "*" {
-            "SELECT pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time FROM pkg_db WHERE pkg_name = ? ORDER BY pub_time DESC LIMIT 1"
+            "SELECT * FROM pkg_db WHERE pkg_name = ? ORDER BY pub_time DESC LIMIT 1"
         } else {
             //如果第一个字符是>或者<，return error
             if version.starts_with('>') || version.starts_with('<') || version.starts_with('=') {
@@ -169,7 +172,7 @@ impl SourceNode {
                 );
                 return Err(RepoError::VersionError(version.to_string()));
             }
-            "SELECT pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time FROM pkg_db WHERE pkg_name = ? AND version = ?"
+            "SELECT * FROM pkg_db WHERE pkg_name = ? AND version = ?"
         };
 
         let result = sqlx::query_as::<_, PackageMeta>(sql)
@@ -183,7 +186,7 @@ impl SourceNode {
 
     pub async fn get_default_pkg_meta(&self, pkg_name: &str) -> RepoResult<Option<PackageMeta>> {
         let result = sqlx::query_as::<_, PackageMeta>(
-            "SELECT pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time FROM pkg_db WHERE pkg_name = ? ORDER BY pub_time DESC LIMIT 1",
+            "SELECT * FROM pkg_db WHERE pkg_name = ? ORDER BY pub_time DESC LIMIT 1",
         )
         .bind(pkg_name)
         .fetch_optional(&self.pool)
@@ -206,16 +209,30 @@ impl SourceNode {
         Ok(versions)
     }
 
-    pub async fn get_all_latest_pkg(&self) -> RepoResult<Vec<PackageMeta>> {
-        let rows = sqlx::query_as::<_, PackageMeta>(
-            "SELECT pkg_name, version, hostname, chunk_id, dependencies, jwt, pub_time FROM pkg_db WHERE (pkg_name, pub_time) IN (SELECT pkg_name, MAX(pub_time) FROM pkg_db GROUP BY pkg_name)",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+    pub async fn get_all_latest_pkg(&self, category: Option<&str>) -> RepoResult<Vec<PackageMeta>> {
+        let rows= match category {
+            Some(category) => {
+                sqlx::query_as::<_, PackageMeta>(
+                    "SELECT * FROM pkg_db WHERE category = ? AND (pkg_name, pub_time) IN (SELECT pkg_name, MAX(pub_time) FROM pkg_db GROUP BY pkg_name)"
+                )
+                .bind(category)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_as::<_, PackageMeta>(
+                    "SELECT * FROM pkg_db WHERE (pkg_name, pub_time) IN (SELECT pkg_name, MAX(pub_time) FROM pkg_db GROUP BY pkg_name)"
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
 
         debug!(
-            "get_all_latest_pkg, index:{}, rows:{:?}",
-            self.source_config.hostname, rows
+            "get_all_latest_pkg, index:{}, category:{:?} count:{:?}",
+            self.source_config.hostname,
+            category,
+            rows.len()
         );
 
         Ok(rows)

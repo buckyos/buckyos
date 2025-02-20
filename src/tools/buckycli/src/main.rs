@@ -50,9 +50,9 @@ async fn main() -> std::result::Result<(), String> {
             Command::new("pub_app")
                 .about("publish app")
                 .arg(
-                    Arg::new("app_desc_file")
-                        .long("app_desc_file")
-                        .help("app desc file path")
+                    Arg::new("app_path")
+                        .long("app_path")
+                        .help("app dir path")
                         .required(true),
                 )
                 .arg(
@@ -231,9 +231,8 @@ async fn main() -> std::result::Result<(), String> {
             let pem_file = matches.get_one::<String>("pem").unwrap();
             let url = matches.get_one::<String>("url").unwrap();
             match publish_package(
+                PackCategory::Pkg,
                 pkg_path,
-                &device_doc.did,
-                &device_doc.name,
                 pem_file,
                 url,
                 &device_session_token_jwt,
@@ -241,10 +240,10 @@ async fn main() -> std::result::Result<(), String> {
             .await
             {
                 Ok(_) => {
-                    println!("publish package success!");
+                    println!("############\nPublish package success!");
                 }
                 Err(e) => {
-                    println!("publish package failed! {}", e);
+                    println!("############\nPublish package failed! {}", e);
                     return Err("publish package failed!".to_string());
                 }
             }
@@ -270,14 +269,12 @@ async fn main() -> std::result::Result<(), String> {
                     return String::from("generate device session token failed!");
                 })?;
             //从args中取出参数
-            let app_desc_file = matches.get_one::<String>("app_desc_file").unwrap();
+            let app_path = matches.get_one::<String>("app_path").unwrap();
             let pem_file = matches.get_one::<String>("pem").unwrap();
             let url = matches.get_one::<String>("url").unwrap();
-            let app_desc_file = PathBuf::from(app_desc_file);
-            match publish_app(
-                &app_desc_file,
-                &device_doc.did,
-                &device_doc.name,
+            match publish_package(
+                PackCategory::App,
+                &app_path,
                 pem_file,
                 url,
                 &device_session_token_jwt,
@@ -285,10 +282,10 @@ async fn main() -> std::result::Result<(), String> {
             .await
             {
                 Ok(_) => {
-                    println!("publish app success!");
+                    println!("############\nPublish app success!");
                 }
                 Err(e) => {
-                    println!("publish app failed! {}", e);
+                    println!("############\nPublish app failed! {}", e);
                     return Err("publish app failed!".to_string());
                 }
             }
@@ -320,10 +317,10 @@ async fn main() -> std::result::Result<(), String> {
             let url = matches.get_one::<String>("url").unwrap();
             match publish_index(pem_file, version, hostname, url, &device_session_token_jwt).await {
                 Ok(_) => {
-                    println!("publish index success!");
+                    println!("############\nPublish index success!");
                 }
                 Err(e) => {
-                    println!("publish index failed! {}", e);
+                    println!("############\nPublish index failed! {}", e);
                     return Err("publish index failed!".to_string());
                 }
             }
@@ -332,10 +329,10 @@ async fn main() -> std::result::Result<(), String> {
             let pkg_path = matches.get_one::<String>("pkg_path").unwrap();
             match pack_pkg(pkg_path).await {
                 Ok(_) => {
-                    println!("pack package success!");
+                    println!("############\nPack package success!");
                 }
                 Err(e) => {
-                    println!("pack package failed! {}", e);
+                    println!("############\nPack package failed! {}", e);
                     return Err("pack package failed!".to_string());
                 }
             }
@@ -347,10 +344,10 @@ async fn main() -> std::result::Result<(), String> {
             let url = matches.get_one::<String>("url").unwrap();
             match install_pkg(pkg_name, version, dest_dir, url).await {
                 Ok(_) => {
-                    println!("install package success!");
+                    println!("############\nInstall package success!");
                 }
                 Err(e) => {
-                    println!("install package failed! {}", e);
+                    println!("############\nInstall package failed! {}", e);
                     return Err("install package failed!".to_string());
                 }
             }
