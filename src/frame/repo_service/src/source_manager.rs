@@ -173,8 +173,8 @@ impl SourceManager {
     //todo: 改成标准的NDN FileObject获取逻辑（带验证）
     async fn get_remote_source_meta(source_config: &SourceNodeConfig) -> RepoResult<SourceMeta> {
         //TODO 拼接meta url，要修改成正式url
-        //let url = format!("http://{}/kapi/repo", source_config.hostname);
-        let url = format!("http://{}/kapi/repo", "127.0.0.1:4000");
+        let url = format!("http://{}/kapi/repo", source_config.hostname);
+        //let url = format!("http://{}/kapi/repo", "127.0.0.1:4000");
         info!("get_remote_source_meta url: {}", url);
         let session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
             error!("repo service session token not found! err:{}", e);
