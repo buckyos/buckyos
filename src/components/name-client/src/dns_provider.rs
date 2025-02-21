@@ -134,7 +134,18 @@ impl NsProvider for DnsProvider {
                 let response = response.unwrap();
                 //let mut did_tx:String;
                 //let mut did_doc = DIDSimpleDocument::new();
-
+                let mut pkx_list = Vec::new();
+                let mut name_info = NameInfo {
+                    name: name.to_string(),
+                    address:Vec::new(),
+                    cname: None,
+                    txt: None,
+                    did_document: None,
+                    pk_x_list: None,
+                    proof_type: NameProof::None,
+                    create_time: 0,
+                    ttl: None,
+                }; 
                 for record in response.iter() {
                     let txt = record.txt_data().iter().map(|s| -> String {
                         let byte_slice: &[u8] = &s;
@@ -143,24 +154,39 @@ impl NsProvider for DnsProvider {
 
                     if txt.starts_with("DID=") {
                         let did_payload = txt.trim_start_matches("DID=").trim_end_matches(";");
-                        println!("did_payload: {}",did_payload);
+                        debug!("did_payload: {}",did_payload);
 
                         let did_doc = EncodedDocument::Jwt(did_payload.to_string());
-                        let name_info = NameInfo {
-                            name: name.to_string(),
-                            address:Vec::new(),
-                            cname: None,
-                            txt: None,
-                            did_document: Some(did_doc),
-                            pk_x_list: None,
-                            proof_type: NameProof::None,
-                            create_time: 0,
-                            ttl: None,
-                        }; 
-                        return Ok(name_info);
+                        name_info.did_document = Some(did_doc);
+                    }
+                   
+                    if txt.starts_with("PKX=") {
+                        let pkx = txt.trim_start_matches("PKX=").trim_end_matches(";");
+                        pkx_list.push(pkx.to_string());
                     }
                 }
-                return Err(NSError::Failed("DID not found".to_string()));
+
+                if name_info.did_document.is_none() {
+                    return Err(NSError::Failed("DID Document not found".to_string()));
+                }
+                if pkx_list.len() > 0 {
+                    debug!("pkx_list: {:?}",pkx_list);
+                    name_info.pk_x_list = Some(pkx_list);  
+                
+                    //verify did_document by pkx_list
+                    let jwt_str = name_info.did_document.as_ref().unwrap();
+                    let owner_public_key = name_info.get_owner_pk();
+                    if owner_public_key.is_none() {
+                        return Err(NSError::Failed("Owner public key not found".to_string()));
+                    }
+                    let owner_public_key = owner_public_key.unwrap();
+                    let zone_config = ZoneConfig::decode(&jwt_str, Some(&owner_public_key));
+                    if zone_config.is_err() {
+                        return Err(NSError::Failed("parse zone config failed!".to_string()));
+                    }
+                    info!("resolve & verify zone_config from {} TXT record OK.",name);
+                }
+                return Ok(name_info);
             },
             _ => {
                 return Err(NSError::Failed(format!("Invalid record type: {:?}", record_type)));

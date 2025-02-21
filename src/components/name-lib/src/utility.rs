@@ -53,7 +53,6 @@ pub fn is_did(identifier: &str) -> bool {
     false
 }
 
-
 pub fn decode_jwt_claim_without_verify(jwt: &str) -> NSResult<serde_json::Value> {
     let parts: Vec<&str> = jwt.split('.').collect();
     if parts.len() != 3 {

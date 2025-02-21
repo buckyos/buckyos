@@ -1,19 +1,21 @@
 use std::net::IpAddr;
+use jsonwebtoken::DecodingKey;
 use serde::{Deserialize, Serialize};
 use name_lib::*;
+use serde_json::json;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum RecordType {
-    A,      // IPv4地址记录
-    AAAA,   // IPv6地址记录
-    CNAME,  // 别名记录
-    TXT,    // 文本记录
-    DID,    // DID文档记录
-    SRV,    // 服务记录
-    MX,     // 邮件交换记录
-    NS,     // 域名服务器记录
-    PTR,    // 指针记录
-    SOA,    // 起始授权记录
+    A,      // IPv4 address
+    AAAA,   // IPv6 address
+    CNAME,  // Alias record
+    TXT,    // Text record
+    DID,    // DID Document
+    SRV,    // Service record
+    MX,     // Mail exchange record
+    NS,     // Name server record
+    PTR,    // Pointer record
+    SOA,    // Start of authority record
 }
 
 
@@ -106,6 +108,37 @@ impl NameInfo {
         Self {name:name.to_string(),address:vec![],cname:None,txt:Some(txt_string),
             did_document:None,pk_x_list:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
     }
+
+     pub fn get_owner_pk(&self) -> Option<DecodingKey> {
+        if self.pk_x_list.is_some() {
+            let pkx_list = self.pk_x_list.as_ref().unwrap();
+            for pkx in pkx_list {
+                if pkx.starts_with("0:") {
+                    let pkx = pkx.split(":").nth(1).unwrap();
+                    let public_key_jwk = json!({
+                        "kty": "OKP",
+                        "crv": "Ed25519",
+                        "x": pkx,
+                    });
+                    let public_key_jwk = serde_json::from_value(public_key_jwk);
+                    if public_key_jwk.is_err() {
+                        error!("parse public key jwk failed! {}",public_key_jwk.err().unwrap());
+                        return None;
+                    }
+                    let public_key_jwk : jsonwebtoken::jwk::Jwk = public_key_jwk.unwrap();
+                    let public_key = DecodingKey::from_jwk(&public_key_jwk);
+                    if public_key.is_err() {
+                        error!("parse public key failed! {}",public_key.err().unwrap());
+                        return None;
+                    }
+                    let public_key = public_key.unwrap();
+                    return Some(public_key);
+                }
+            }
+        }
+        None
+     }
+
 }
 
 
