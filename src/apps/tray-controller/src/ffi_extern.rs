@@ -1,10 +1,8 @@
 use futures::FutureExt;
 use name_lib::DIDDocumentTrait;
-use windows::core::PCWSTR;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, OsStr};
 use std::os::raw::{c_char, c_int, c_void};
-use std::os::windows::ffi::OsStrExt;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task;
@@ -16,6 +14,10 @@ use std::fs;
 use sysinfo::System;
 use tokio::sync::Mutex;
 
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use windows::core::PCWSTR;
 #[cfg(windows)]
 use windows::{
     Win32::UI::Shell::ShellExecuteW,
@@ -133,12 +135,18 @@ extern "C" fn bucky_status_scaner_scan(
                         
                         #[cfg(windows)]
                         let ext_path = ".exe";
+                        
+                        #[cfg(not(any(windows, target_os = "macos")))]
+                        let ext_path = "";
 
                         let mut not_exist_process = buckyos_process.iter().map(|name| name.to_string() + ext_path).collect::<HashSet<_>>();
                         let node_daemon_process = "node_daemon".to_string() + ext_path;
 
                         for process in system.processes().values() {
+                            #[cfg(windows)]
                             let name = process.name().to_ascii_lowercase().to_string();
+                            #[cfg(not(any(windows, target_os = "macos")))]
+                            let name = process.name().to_ascii_lowercase().into_string().unwrap();
 
                             if node_daemon_process == name {
                                 unsafe {
@@ -763,6 +771,7 @@ extern "C" fn free_node_info(info: *mut NodeInfomation) {
     }
 }
 
+#[cfg(windows)]
 fn to_wide_string(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }

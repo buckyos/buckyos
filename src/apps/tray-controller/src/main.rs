@@ -16,11 +16,6 @@ extern "C" {
     fn entry();
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
-fn entry() {
-    log::error!("only for windows/macos.")
-}
-
 fn main() {
     init_logging("tray-controller");
 
@@ -37,9 +32,14 @@ fn main() {
     match file.try_lock_exclusive() {
         Ok(_) => {
             log::info!("buckyos tray-controller started.");
+
+            #[cfg(any(windows, target_os = "macos"))]
             unsafe {
                 entry();
             }
+
+            #[cfg(not(any(windows, target_os = "macos")))]
+            log::error!("only for windows/macos.")
         }
         Err(_) => {
             log::info!("Another tray-controller is already running.");
