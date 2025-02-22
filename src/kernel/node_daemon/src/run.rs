@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use clap::{Arg, ArgMatches, Command};
+use package_lib::PackageEnv;
 use time::macros::format_description;
 use std::{collections::HashMap, fs::File};
 use std::path::{Path, PathBuf};
@@ -292,10 +293,32 @@ async fn load_node_config(node_host_name: &str,sys_config_client: &SystemConfigC
     Ok(node_config)
 }
 
+async fn check_and_update_pkglist(pkg_list: &Vec<String>,sys_config_client: &SystemConfigClient) {
+    let env = PackageEnv::new(get_buckyos_system_etc_dir());
+    for pkg_id in pkg_list {
+        let mut need_update = true;
+        let pkg_meta = env.get_pkg_meta(pkg_id);
+        if pkg_meta.is_ok() {
+            let pkg_meta = pkg_meta.unwrap();
+            if pkg_meta.is_some() {
+                //检查当前pkg是否是最新的
+                //call repo_service.is_pkg_latest(pkg_id,pkg_meta);
+            } 
+        }
+
+        if need_update {
+            //通过repo_service安装pkg
+            //call env.install_pkg_from_repo(pkg_id,local_repo_url);
+        }
+    }    
+}
+
+
 async fn node_main(node_host_name: &str,
                    sys_config_client: &SystemConfigClient,
                    device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
-
+    
+    let mut will_check_update_pkg_list = vec!["cyfs-gateway".to_string()];
     let node_config = load_node_config(node_host_name, sys_config_client).await
         .map_err(|err| {
             error!("load node config failed! {}", err);
@@ -337,6 +360,7 @@ async fn node_main(node_host_name: &str,
     //     .await;
 
     let app_stream = stream::iter(node_config.apps);
+    
     let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
 
         //let app_info = load_app_info(app_cfg.app_id.as_str(),app_cfg.username.as_str(),sys_config_client).await;
@@ -358,6 +382,7 @@ async fn node_main(node_host_name: &str,
 
     tokio::join!(kernel_task,app_task);
 
+    check_and_update_pkglist(&will_check_update_pkg_list,sys_config_client).await;
     Ok(true)
 }
 

@@ -131,7 +131,7 @@ impl Installer {
         }
     }
 
-    async fn install_pkgs_from_repo(
+    pub async fn install_pkgs_from_repo(
         package_id: &PackageId,
         pkgs: &[PackageMeta],
         env: &PackageEnv,

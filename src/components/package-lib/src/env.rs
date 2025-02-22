@@ -46,10 +46,10 @@ pub struct MediaInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct PackageMetaInfo {
-    deps: HashMap<String, String>,
-    sha256: String,
-    hostname: String,
+pub struct PackageMetaInfo {
+    pub deps: HashMap<String, String>,
+    pub sha256: String,
+    pub hostname: String,
 }
 
 /**
@@ -190,6 +190,26 @@ impl PackageEnv {
         self.get_deps_impl(&pkg_id_str, &mut deps, &mut visited)?;
 
         Ok(deps)
+    }
+
+    pub fn get_pkg_meta(&self, pkg_id_str: &str) -> PkgResult<Option<PackageMetaInfo>> {
+        let pkg_id = self.get_exact_pkg_id(pkg_id_str)?;
+        if pkg_id.is_none() {
+            return Ok(None);
+        }
+
+        let pkg_id = pkg_id.unwrap();
+        let meta_file_name = format!(
+            "{}#{}#{}",
+            pkg_id.name,
+            pkg_id.version.as_ref().unwrap(),
+            pkg_id.sha256.as_ref().unwrap()
+        );
+        let meta_file = self.get_meta_dir().join(Self::fix_path(&meta_file_name));
+        let meta_content = fs::read_to_string(meta_file)?;
+        let meta_info: PackageMetaInfo = serde_json::from_str(&meta_content)?;
+
+        Ok(Some(meta_info))
     }
 
     // find all deps(in dep_dir) for a package, the dep is exact version, and all deps are in the form of package_name#version
