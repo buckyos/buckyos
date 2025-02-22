@@ -25,6 +25,7 @@ url = "*"
 memmap = "*"
 lazy_static = "*"
 base32 = "*"
+block-buffer = "=0.11.0-rc.3"
 sha2 = { version = ">=0.11.0-pre.4" }
 crypto-common = { version = ">=0.2.0-rc.1" }
 buckyos-kit = { path = "../buckyos-kit" }
@@ -37,3 +38,4 @@ tempfile = "*"
 rand = "*"
 cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
 cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
+
