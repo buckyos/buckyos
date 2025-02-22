@@ -64,7 +64,7 @@ impl RunItemControl for FrameServiceConfig {
     // }
 
     async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
-        let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
+        let env = PackageEnv::new(PathBuf::from("/opt/buckyos/bin"));
         let media_info = env.load(&self.pkg_id);
         if media_info.is_ok() {
             self.execute_operation(&media_info.unwrap(), "start")
@@ -74,7 +74,7 @@ impl RunItemControl for FrameServiceConfig {
     }
 
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
-        let env = PackageEnv::new(PathBuf::from("/opt/buckyos/cache/service"));
+        let env = PackageEnv::new(PathBuf::from("/opt/buckyos/bin"));
         let media_info = env.load(&self.pkg_id);
         if media_info.is_ok() {
             self.execute_operation(&media_info.unwrap(), "stop").await?;

@@ -4,7 +4,7 @@
 
 mod run_item;
 mod kernel_mgr; // support manager kernel service (run in native, run for system)
-mod service_mgr; // support manager frame service (run in docker,run for all users)
+mod frame_service_mgr; // support manager frame service (run in docker,run for all users)
 mod app_mgr; // support manager app service (run in docker,run for one user)
 mod active_server;
 mod run;

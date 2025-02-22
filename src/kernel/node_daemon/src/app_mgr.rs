@@ -54,11 +54,11 @@ impl AppRunItem {
             if self.app_service_config.direct_image.is_some() {
                 let mut app_loader =
                     ServicePkg::new(self.app_id.clone(), get_buckyos_system_bin_dir());
-                let load_result = app_loader.load().await;
-                if load_result.is_ok() {
+                let load_result = app_loader.try_load().await;
+                if load_result {
                     loader.replace(app_loader);
                 }
-                load_result.is_ok()
+                load_result
             } else {
                 warn!("app {} not support direct run on windows", self.app_id);
                 false
@@ -66,11 +66,11 @@ impl AppRunItem {
         } else {
             let mut app_loader =
                 ServicePkg::new("app_loader".to_string(), get_buckyos_system_bin_dir());
-            let load_result = app_loader.load().await;
-            if load_result.is_ok() {
+            let load_result = app_loader.try_load().await;
+            if load_result {
                 loader.replace(app_loader);
             }
-            load_result.is_ok()
+            load_result
         }
     }
 }
@@ -146,6 +146,7 @@ impl RunItemControl for AppRunItem {
             "failed".to_string(),
         ));
     }
+    
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
         let app_loader = self.app_loader.read().await;
         if app_loader.is_some() {
@@ -202,8 +203,8 @@ impl RunItemControl for AppRunItem {
         if need_load_pkg {
             let mut app_loader =
                 ServicePkg::new("app_loader".to_string(), get_buckyos_system_bin_dir());
-            let load_result = app_loader.load().await;
-            if load_result.is_ok() {
+            let load_result = app_loader.try_load().await;
+            if load_result {
                 let mut new_app_loader = self.app_loader.write().await;
                 let result = app_loader.status(Some(&real_param)).await.map_err(|err| {
                     return ControlRuntItemErrors::ExecuteError(

@@ -11,6 +11,46 @@ if platform.system() == "Windows":
 else:
     install_root_dir = "/opt/buckyos"
 
+def set_data_dir_permissions():
+    if platform.system() != "Windows":  # Windows 不需要设置权限
+        import pwd
+        import grp
+        
+        # 获取 SUDO_USER 环境变量，这是实际运行 sudo 的用户
+        real_user = os.environ.get('SUDO_USER')
+        if real_user:
+            data_dir = os.path.join(install_root_dir, "data")
+            if not os.path.exists(data_dir):
+                os.makedirs(data_dir)
+            
+            # 获取真实用户的 uid 和 gid
+            uid = pwd.getpwnam(real_user).pw_uid
+            gid = pwd.getpwnam(real_user).pw_gid
+            
+            # 递归设置目录权限
+            for root, dirs, files in os.walk(data_dir):
+                os.chown(root, uid, gid)
+                for d in dirs:
+                    os.chown(os.path.join(root, d), uid, gid)
+                for f in files:
+                    os.chown(os.path.join(root, f), uid, gid)
+            
+            # 设置目录权限为 755 (rwxr-xr-x)
+            os.chmod(data_dir, 0o755)
+
+            data_dir = os.path.join(install_root_dir, "tmp")
+                     # 递归设置目录权限
+            for root, dirs, files in os.walk(data_dir):
+                os.chown(root, uid, gid)
+                for d in dirs:
+                    os.chown(os.path.join(root, d), uid, gid)
+                for f in files:
+                    os.chown(os.path.join(root, f), uid, gid)
+            
+            # 设置目录权限为 755 (rwxr-xr-x)
+            os.chmod(data_dir, 0o755)   
+            print(f"set data dir {data_dir} permissions to {real_user}")
+
 def install(install_all=False):
     if install_root_dir == "":
         print("Unknown platform, not support install, skip.")
@@ -66,6 +106,9 @@ def install(install_all=False):
     else:
         print("pulling filebrowser docker image...")
         os.system("docker pull filebrowser/filebrowser:s6")
+    
+    # 在安装完成后设置数据目录权限
+    set_data_dir_permissions()
 
 if __name__ == "__main__":
     import sys

@@ -230,7 +230,7 @@ mod tests {
 
 
     #[tokio::test]
-    async fn test_resolve_nameinfo() {
+    async fn test_resolve_did_nameinfo() {
         std::env::set_var("BUCKY_LOG", "debug");
         let service_name = "name-client-test";
         
@@ -238,10 +238,6 @@ mod tests {
         init_default_name_client().await.unwrap();
         let name_info = resolve("test.buckyos.io", crate::provider::RecordType::from_str("DID")).await.unwrap();
         println!("name_info: {:?}",name_info);
-    }
-
-    fn test_resolve_did() {
-
     }
 
 }

@@ -93,8 +93,9 @@ pub async fn control_run_item_to_target_state(
                 Ok(())
             }
             ServiceState::NotExist => {
-                warn!("{} not exist,deploy it!", item_name);
-                item.deploy(None).await?;
+                //warn!("{} not exist,deploy it!", item_name);
+                //item.deploy(None).await?;
+                debug!("{} not exist,do nothing!", item_name);
                 Ok(())
             }
             ServiceState::Stopped => {

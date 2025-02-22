@@ -38,7 +38,7 @@ impl SystemConfigClient {
         } else {
             real_session_token = None;
         }
-
+        
         let client = kRPC::new(service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"), real_session_token.clone());
         let client = Arc::new(client);
 

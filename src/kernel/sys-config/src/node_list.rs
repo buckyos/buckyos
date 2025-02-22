@@ -42,6 +42,18 @@ impl KernelServiceInstanceConfig {
         }
     }
 }
+#[derive(Serialize, Deserialize)]
+pub struct FrameServiceInstanceConfig {
+    pub target_state: String,
+    pub pkg_id: String,
+    pub operations: HashMap<String, RunItemControlOperation>,
+}
+
+impl FrameServiceInstanceConfig {
+    pub fn new(pkg_id:String)->Self {
+        unimplemented!()
+    }
+}
 
 //load from SystemConfig,node的配置分为下面几个部分
 // 固定的硬件配置，一般只有硬件改变或损坏才会修改
@@ -53,7 +65,7 @@ pub struct NodeConfig {
     //pub pure_version: u64,
     pub kernel: HashMap<String, KernelServiceInstanceConfig>,
     pub apps: HashMap<String, AppServiceInstanceConfig>,
-    pub services: HashMap<String, KernelServiceInstanceConfig>,
+    pub frame_services: HashMap<String, FrameServiceInstanceConfig>,
     pub is_running: bool,
     pub state:Option<String>,
 }

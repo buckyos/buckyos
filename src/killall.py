@@ -9,7 +9,7 @@ if system == "Windows":
     ext = ".exe"
     killall_command = "taskkill /F /IM"
 
-del stop_app_container():
+def stop_app_container(name):
     # TODO 现在只处理了filebrowser，可能还需要处理后续其他app
     # stop and remove 'devtest-home-station' container
     if name == 'filebrowser' and system != "Windows":
@@ -33,6 +33,6 @@ kill_process("verify_hub")
 kill_process("system_config")
 kill_process("cyfs_gateway")
 kill_process("filebrowser")
-stop_app_container()
+stop_app_container("filebrowser")
 kill_process("smb_service")
 kill_process("repo_service")

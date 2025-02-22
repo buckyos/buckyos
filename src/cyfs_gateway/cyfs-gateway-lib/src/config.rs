@@ -125,7 +125,7 @@ pub struct TlsConfig {
 impl Default for TlsConfig {
     fn default() -> Self {
         Self {
-            disable_tls: false,
+            disable_tls: true,
             enable_acme: false,
             cert_path: None,
             key_path: None,

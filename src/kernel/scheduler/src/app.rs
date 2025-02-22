@@ -137,9 +137,10 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
                 }
             }
         }
-
+        info!("instance_app_service set gateway_config: {:?}",set_action);
         result.insert(format!("nodes/{}/gateway_config",new_instance.node_id.as_str()),
             KVAction::SetByJsonPath(set_action));  
+    
     }
 
 

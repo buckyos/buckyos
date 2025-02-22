@@ -198,7 +198,7 @@
     "enable" : true,
     "state":"New",
     "instance" : 2,
-    "data_mount_point" : "/srv",
+    "data_mount_point" : "/srv/",
     "cache_mount_point" : "/database/",
     "local_cache_mount_point" : "/config/",
     "max_cpu_num" : 4,
@@ -220,7 +220,7 @@
     "kernel":{
 
     },
-    "services":{
+    "frame_services":{
     },
     "apps":{
     }

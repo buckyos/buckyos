@@ -8,15 +8,13 @@ if system == "Windows":
     ext = ".exe"
 
 def check_process_exists(process_name):
-    check_args = ["ps", "-A"]
+    check_args = ["pgrep", "-f", process_name]
     if system == "Windows":
         check_args = ["tasklist", "/NH", "/FI", f"IMAGENAME eq {process_name}.exe"]
     try:
         output = subprocess.check_output(check_args).decode()
-        if process_name in output:
-            return True
-        else:
-            return False
+        #print(f"check_process_exists {process_name} output: {output}")
+        return bool(output.strip())  # 如果输出不为空，则进程存在
     except subprocess.CalledProcessError:
         return False
 

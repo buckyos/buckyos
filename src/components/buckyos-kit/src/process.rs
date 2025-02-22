@@ -1,7 +1,10 @@
 use log::*;
 use package_lib::*;
+use sysinfo::NetworkData;
+use tokio::sync::Mutex;
 use std::collections::HashMap;
 use std::env;
+use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Stdio};
 use thiserror::Error;
@@ -20,6 +23,8 @@ pub enum ServiceControlError {
     ReasonError(String),
     #[error("Timeout: {0}")]
     Timeout(String),
+    #[error("Pkg is not loaded")]
+    PkgNotLoaded,
 }
 
 #[derive(PartialEq)]
@@ -176,8 +181,9 @@ pub struct ServicePkg {
     pub pkg_env: PackageEnv,
     pub current_dir: Option<PathBuf>,
     pub env_vars: HashMap<String, String>,
-    pub media_info: Option<MediaInfo>,
+    pub media_info: Mutex<Option<MediaInfo>>,
 }
+
 
 impl Default for ServicePkg {
     fn default() -> Self {
@@ -186,7 +192,7 @@ impl Default for ServicePkg {
             pkg_env: PackageEnv::new(PathBuf::from("")),
             current_dir: None,
             env_vars: HashMap::new(),
-            media_info: None,
+            media_info: Mutex::new(None),
         }
     }
 }
@@ -197,17 +203,24 @@ impl ServicePkg {
             pkg_env: PackageEnv::new(env_path),
             current_dir: None,
             env_vars: HashMap::new(),
-            media_info: None,
+            media_info: Mutex::new(None),
         }
     }
 
-    pub async fn load(&mut self) -> Result<MediaInfo> {
-        let media_info = self
-            .pkg_env
-            .load(&self.pkg_id)
-            .map_err(|e| ServiceControlError::ReasonError(e.to_string()))?;
-        self.media_info = Some(media_info.clone());
-        Ok(media_info)
+    pub async fn try_load(&self) -> bool {
+        let mut media_info = self.media_info.lock().await;
+        if media_info.is_none() {
+            let new_media_info = self
+                .pkg_env
+                .load(&self.pkg_id);
+            if new_media_info.is_ok() {
+                info!("load pkg {} success", self.pkg_id);
+                let new_media_info = new_media_info.unwrap();
+                *media_info = Some(new_media_info);
+                return true;
+            }
+        }
+        false
     }
 
     pub fn set_context(
@@ -224,12 +237,14 @@ impl ServicePkg {
     }
 
     async fn execute_operation(&self, op_name: &str, params: Option<&Vec<String>>) -> Result<i32> {
-        if self.media_info.is_none() {
-            return Err(ServiceControlError::ReasonError(
-                "media info is not loaded".to_string(),
-            ));
+        //let media_info = self.media_info.clone().unwrap();
+        let media_info = self.media_info.lock().await;
+        let media_info = media_info.as_ref();
+        if media_info.is_none() {
+            return Err(ServiceControlError::PkgNotLoaded);
         }
-        let media_info = self.media_info.clone().unwrap();
+        let media_info = media_info.unwrap();
+
         let op_file = media_info.full_path.join(op_name);
         let (result, output) = execute(
             &op_file,
@@ -239,7 +254,7 @@ impl ServicePkg {
             Some(&self.env_vars),
         )
         .await?;
-        debug!(
+        info!(
             "execute {} ==> result: {} \n\t {}",
             op_file.display(),
             result,
@@ -249,16 +264,22 @@ impl ServicePkg {
     }
 
     pub async fn start(&self, params: Option<&Vec<String>>) -> Result<i32> {
-        let result = self.execute_operation("start", params).await?;
+        self.try_load().await;
+        let result = self.execute_operation( "start", params).await?;
         Ok(result)
     }
 
     pub async fn stop(&self, params: Option<&Vec<String>>) -> Result<i32> {
+        self.try_load().await;
         let result = self.execute_operation("stop", params).await?;
         Ok(result)
     }
 
     pub async fn status(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
+        self.try_load().await;
+        if self.media_info.lock().await.is_none() {
+            return Ok(ServiceState::NotExist);
+        }
         let result = self.execute_operation("status", params).await?;
         match result {
             0 => Ok(ServiceState::Started),

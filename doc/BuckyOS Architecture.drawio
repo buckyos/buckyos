@@ -851,7 +851,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="SMHiQNlAgZj_AsD7_GeZ" name="Gateway">
-    <mxGraphModel dx="1770" dy="1742" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="1485" dy="2071" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -1582,6 +1582,9 @@
         </mxCell>
         <mxCell id="c9E1ZpGCzoQJSTbrkEiL-8" value="如何得到ood的IP?进而连接上system_config_service" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="2580" y="1180" width="490" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="TGVcqiYx3WMr8yr4Y4WP-1" value="内部通过&lt;div&gt;service_name@device_id来定位一个服务&lt;/div&gt;&lt;div&gt;根据service name可以知道port和api路径&lt;/div&gt;&lt;div&gt;根据device_id可以建立stream&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="250" y="-690" width="227" height="30" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
