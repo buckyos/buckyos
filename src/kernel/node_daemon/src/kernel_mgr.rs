@@ -13,6 +13,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use tokio::sync::RwLock;
 use sys_config::*;
+use package_installer::*;
 
 use crate::run_item::*;
 
@@ -50,14 +51,40 @@ impl RunItemControl for KernelServiceRunItem {
     }
 
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
-        //这个逻辑是不区分新装和升级的，升级相当于pkg_id改变了
-
-        //check already have deploy task ?
-        //create deploy task
-        //install  or upgrade pkg
-        //call pkg.deploy() scrpit or 由pkg在自己的start脚本里管理？
-        warn!("deploy kernel service {}",self.pkg_id);
-        Ok(())
+        //这个逻辑是不区分新装和升级的
+        let pkg_env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let pkg_id = self.pkg_id.clone();
+        let pkg_meta = pkg_env.get_pkg_meta(pkg_id.as_str())
+            .map_err(|e| {
+                error!("get pkg meta for {} failed! {}", pkg_id, e);
+                return ControlRuntItemErrors::ExecuteError(
+                    "deploy".to_string(),
+                    e.to_string(),
+                );
+            })?;
+        if pkg_meta.is_none() {
+            //pkg meta not exist,cann't deploy
+            warn!("pkg {} meta not exist,cann't deploy",pkg_id);
+            return Err(ControlRuntItemErrors::ExecuteError(
+                "deploy".to_string(),
+                "pkg meta not exist".to_string(),
+            ));
+        } else {
+            warn!("deploy kernel service {}",self.pkg_id);
+            let repo_url = "http://127.0.0.1:8080/repo";
+            //TODO:由install流程管理去重和断点续传,这个去重通常是跨进程的
+            let deps = Installer::install(&self.pkg_id, &PathBuf::from(get_buckyos_system_bin_dir()), repo_url, None)
+                .await
+                .map_err(|e| {
+                    error!("Failed to call install package, err:{:?}", e);
+                    return ControlRuntItemErrors::ExecuteError(
+                        "deploy".to_string(),
+                        e.to_string(),
+                    );
+                })?;
+            warn!("install kernel service {} success, deps: {:?}",self.pkg_id,deps);
+            Ok(())
+        }
     }
 
     async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {

@@ -7,7 +7,7 @@ mod kernel_mgr; // support manager kernel service (run in native, run for system
 mod frame_service_mgr; // support manager frame service (run in docker,run for all users)
 mod app_mgr; // support manager app service (run in docker,run for one user)
 mod active_server;
-mod run;
+mod node_daemon;
 
 #[cfg(target_os = "windows")]
 mod win_srv;
@@ -50,6 +50,6 @@ fn main() {
             return;
         }
     } else {
-        run::run(matches);
+        node_daemon::run(matches);
     }
 }

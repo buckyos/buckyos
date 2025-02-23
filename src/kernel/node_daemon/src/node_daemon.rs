@@ -293,7 +293,7 @@ async fn load_node_config(node_host_name: &str,sys_config_client: &SystemConfigC
     Ok(node_config)
 }
 
-async fn check_and_update_pkglist(pkg_list: &Vec<String>,sys_config_client: &SystemConfigClient) {
+async fn check_and_update_sys_pkgs(pkg_list: &Vec<String>,sys_config_client: &SystemConfigClient) {
     let env = PackageEnv::new(get_buckyos_system_etc_dir());
     for pkg_id in pkg_list {
         let mut need_update = true;
@@ -309,16 +309,41 @@ async fn check_and_update_pkglist(pkg_list: &Vec<String>,sys_config_client: &Sys
         if need_update {
             //通过repo_service安装pkg
             //call env.install_pkg_from_repo(pkg_id,local_repo_url);
+            //env安装新版本完成后，停止进程，等待自动重启。从=
+            // create ServicePkg
+            // call ServicePkg.stop()
         }
     }    
 }
 
+async fn check_and_update_app_img(app_id: &str,sys_config_client: &SystemConfigClient) {
+    //call repo_service.is_pkg_latest(pkg_id,pkg_meta);
+    //if need update, call env.install_pkg_from_repo(pkg_id,local_repo_url);
+    //env安装新版本完成后，停止进程，等待自动重启。
+    // create ServicePkg
+    // call ServicePkg.stop()
+}
+
+async fn check_and_update_env_index_db() -> bool {
+    unimplemented!()
+}
+
 
 async fn node_main(node_host_name: &str,
+                   is_ood: bool,
                    sys_config_client: &SystemConfigClient,
                    device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
+    //1. check and update env index db
+    let pkg_env_changed = check_and_update_env_index_db().await;
     
+    //2. check_and_update system services;
     let mut will_check_update_pkg_list = vec!["cyfs-gateway".to_string()];
+    if is_ood {
+        will_check_update_pkg_list.push("system_config".to_string());
+    }
+    check_and_update_sys_pkgs(&will_check_update_pkg_list,sys_config_client).await;
+
+    //3. control pod instance to target state
     let node_config = load_node_config(node_host_name, sys_config_client).await
         .map_err(|err| {
             error!("load node config failed! {}", err);
@@ -328,7 +353,7 @@ async fn node_main(node_host_name: &str,
     if !node_config.is_running {
         return Ok(false);
     }
-
+    
     let kernel_stream = stream::iter(node_config.kernel);
     let kernel_task = kernel_stream.for_each_concurrent(4, |(kernel_service_name, kernel_cfg)| async move {
         let kernel_run_item = KernelServiceRunItem::new(
@@ -346,8 +371,8 @@ async fn node_main(node_host_name: &str,
                 return NodeDaemonErrors::SystemConfigError(kernel_service_name.clone());
             });
     });
-
-    // let service_stream = stream::iter(node_config.services);
+    // TODO: frame_services is "services run in docker container",not support now
+    // let service_stream = stream::iter(node_config.frame_services);
     // service_stream.for_each_concurrent(1, |(service_name, service_cfg)| async move {
     //         let target_state = service_cfg.target_state.clone();
     //         let _ = control_run_item_to_target_state(&service_cfg, target_state, device_private_key)
@@ -359,16 +384,9 @@ async fn node_main(node_host_name: &str,
     //     })
     //     .await;
 
+    //app services is "userA-appB-service", run in docker container
     let app_stream = stream::iter(node_config.apps);
-    
     let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
-
-        //let app_info = load_app_info(app_cfg.app_id.as_str(),app_cfg.username.as_str(),sys_config_client).await;
-        //if app_info.is_err() {
-        //    error!("load {} info failed! ,app not install?", app_cfg.app_id);
-        //    return;
-        //}
-        //let app_info = app_info.unwrap();
         let app_run_item = AppRunItem::new(&app_cfg.app_id,app_cfg.clone(),
                                            device_doc,device_private_key);
         let target_state = RunItemTargetState::from_str(&app_cfg.target_state).unwrap();
@@ -381,8 +399,6 @@ async fn node_main(node_host_name: &str,
     });
 
     tokio::join!(kernel_task,app_task);
-
-    check_and_update_pkglist(&will_check_update_pkg_list,sys_config_client).await;
     Ok(true)
 }
 
@@ -454,7 +470,7 @@ async fn node_daemon_main_loop(
         }
 
 
-        let main_result = node_main(node_host_name, sys_config_client, device_doc, device_private_key).await;
+        let main_result = node_main(node_host_name,is_ood, sys_config_client, device_doc, device_private_key).await;
         if main_result.is_err() {
             error!("node_main failed! {}", main_result.err().unwrap());
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -500,7 +516,7 @@ async fn node_daemon_main_loop(
 
 async fn do_boot_schedule() -> std::result::Result<(),String> {
     let mut scheduler_pkg = ServicePkg::new("scheduler".to_string(),get_buckyos_system_bin_dir());
-    if !scheduler_pkg.try_load().await {
+    if !scheduler_pkg.try_load(false).await {
         error!("load scheduler pkg failed!");
         return Err(String::from("load scheduler pkg failed!"));
     }
@@ -566,7 +582,7 @@ async fn update_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str
 
 async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig,is_restart:bool) -> std::result::Result<(),String> {
     let mut sys_config_service_pkg = ServicePkg::new("system_config".to_string(),get_buckyos_system_bin_dir());
-    if !sys_config_service_pkg.try_load().await {
+    if !sys_config_service_pkg.try_load(false).await {
         error!("load system_config_service pkg failed!");
         return Err(String::from("load system_config_service failed!"));
     }
@@ -599,7 +615,7 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
 
 async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig,is_restart:bool) -> std::result::Result<(),String> {
     let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs_gateway".to_string(),get_buckyos_system_bin_dir());
-    if !cyfs_gateway_service_pkg.try_load().await {
+    if !cyfs_gateway_service_pkg.try_load(false).await {
         error!("load cyfs_gateway service pkg failed!");
         return Err(String::from("load cyfs_gateway service pkg failed!"));
     }

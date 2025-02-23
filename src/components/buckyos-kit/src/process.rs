@@ -207,9 +207,10 @@ impl ServicePkg {
         }
     }
 
-    pub async fn try_load(&self) -> bool {
+    pub async fn try_load(&self,index_db_only: bool) -> bool {
         let mut media_info = self.media_info.lock().await;
         if media_info.is_none() {
+            //todo: use index_db_only to load media_info
             let new_media_info = self
                 .pkg_env
                 .load(&self.pkg_id);
@@ -264,20 +265,21 @@ impl ServicePkg {
     }
 
     pub async fn start(&self, params: Option<&Vec<String>>) -> Result<i32> {
-        self.try_load().await;
+        self.try_load(false).await;
         let result = self.execute_operation( "start", params).await?;
         Ok(result)
     }
 
     pub async fn stop(&self, params: Option<&Vec<String>>) -> Result<i32> {
-        self.try_load().await;
+        self.try_load(false).await;
         let result = self.execute_operation("stop", params).await?;
         Ok(result)
     }
 
     pub async fn status(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
-        self.try_load().await;
+        self.try_load(true).await;
         if self.media_info.lock().await.is_none() {
+            info!("pkg {} not exist", self.pkg_id);
             return Ok(ServiceState::NotExist);
         }
         let result = self.execute_operation("status", params).await?;

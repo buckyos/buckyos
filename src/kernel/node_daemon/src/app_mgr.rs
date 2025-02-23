@@ -54,7 +54,7 @@ impl AppRunItem {
             if self.app_service_config.direct_image.is_some() {
                 let mut app_loader =
                     ServicePkg::new(self.app_id.clone(), get_buckyos_system_bin_dir());
-                let load_result = app_loader.try_load().await;
+                let load_result = app_loader.try_load(false).await;
                 if load_result {
                     loader.replace(app_loader);
                 }
@@ -66,7 +66,7 @@ impl AppRunItem {
         } else {
             let mut app_loader =
                 ServicePkg::new("app_loader".to_string(), get_buckyos_system_bin_dir());
-            let load_result = app_loader.try_load().await;
+            let load_result = app_loader.try_load(false).await;
             if load_result {
                 loader.replace(app_loader);
             }
@@ -203,7 +203,7 @@ impl RunItemControl for AppRunItem {
         if need_load_pkg {
             let mut app_loader =
                 ServicePkg::new("app_loader".to_string(), get_buckyos_system_bin_dir());
-            let load_result = app_loader.try_load().await;
+            let load_result = app_loader.try_load(false).await;
             if load_result {
                 let mut new_app_loader = self.app_loader.write().await;
                 let result = app_loader.status(Some(&real_param)).await.map_err(|err| {
