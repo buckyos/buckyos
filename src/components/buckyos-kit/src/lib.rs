@@ -7,6 +7,7 @@ mod json;
 mod test_server;
 mod serde_helper;
 mod config;
+mod channel;
 
 #[macro_use]
 extern crate log;
@@ -20,6 +21,7 @@ pub use json::*;
 pub use test_server::*;
 pub use serde_helper::*;
 pub use config::*;
+pub use channel::*;
 
 #[cfg(test)]
 mod test {

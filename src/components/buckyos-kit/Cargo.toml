@@ -6,6 +6,9 @@ authors = ["BuckyOS DAO","@waterflier"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[build-dependencies]
+chrono = "*"
+
 [dependencies]
 thiserror = "*"
 sysinfo = "*"
@@ -24,3 +27,4 @@ pkcs8 = "*"
 base64 = "*"
 package-lib = { path = "../package-lib" }
 async-recursion = "*"
+lazy_static = "*"
