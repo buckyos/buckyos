@@ -8,6 +8,7 @@ mod test_server;
 mod serde_helper;
 mod config;
 mod channel;
+mod event;
 
 #[macro_use]
 extern crate log;
@@ -22,6 +23,7 @@ pub use test_server::*;
 pub use serde_helper::*;
 pub use config::*;
 pub use channel::*;
+pub use event::*;
 
 #[cfg(test)]
 mod test {

@@ -10,6 +10,7 @@ members = [
     "./components/package-lib",
     "./components/buckyos-kit",
     "./components/ndn-lib",
+    "./components/debug-lib",
     "./components/package-installer", 
     "./cyfs_gateway/cyfs-gateway-lib",
     "./cyfs_gateway/cyfs_gateway",
@@ -32,7 +33,7 @@ members = [
     "./tools/buckycli", 
 
     "./apps/tray-controller"
-]
+, "components/debug-lib"]
 
 exclude = [
     "./tools/ns-tool",

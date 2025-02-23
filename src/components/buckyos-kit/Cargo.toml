@@ -28,3 +28,4 @@ base64 = "*"
 package-lib = { path = "../package-lib" }
 async-recursion = "*"
 lazy_static = "*"
+async-trait = "*"
