@@ -17,6 +17,8 @@ pub enum ControlRuntItemErrors {
     ParserConfigError(String),
     #[error("Network Error: {0}")]
     NetworkError(String),
+    #[error("Pkg not exist: {0}")]
+    PkgNotExist(String),
 }
 
 pub type Result<T> = std::result::Result<T, ControlRuntItemErrors>;
@@ -53,7 +55,6 @@ pub trait RunItemControl: Send + Sync {
 
     async fn start(&self, control_key:&EncodingKey,params:Option<&Vec<String>>) -> Result<()>;
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()>;
-
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState>;
 }
 

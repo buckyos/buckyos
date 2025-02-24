@@ -3,7 +3,7 @@ use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
 use name_lib::DeviceConfig;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::io::{BufRead, BufReader};
@@ -13,14 +13,14 @@ use tokio::sync::RwLock;
 use crate::run_item::*;
 use buckyos_kit::*;
 use package_lib::*;
-
+use package_installer::*;
 use sys_config::AppServiceInstanceConfig;
 
 
 pub struct AppRunItem {
     pub app_id: String,
     pub app_service_config: AppServiceInstanceConfig,
-    pub app_loader: RwLock<Option<ServicePkg>>,
+    pub app_loader: ServicePkg,
     device_doc: DeviceConfig,
     device_private_key: EncodingKey,
 }
@@ -29,49 +29,21 @@ impl AppRunItem {
     pub fn new(
         app_id: &String,
         app_service_config: AppServiceInstanceConfig,
+        app_loader: ServicePkg,
         device_doc: &DeviceConfig,
         device_private_key: &EncodingKey,
     ) -> Self {
         AppRunItem {
             app_id: app_id.clone(),
             app_service_config: app_service_config,
-            app_loader: RwLock::new(None),
+            app_loader: app_loader,
             device_doc: device_doc.clone(),
             device_private_key: device_private_key.clone(),
         }
     }
 
-    async fn load(&self) -> bool {
-        // only load once
-        // 防重入
-        let mut loader = self.app_loader.write().await;
-        if loader.is_some() {
-            return true;
-        }
-
-        if cfg!(windows) {
-            // 由于现在二进制包是预先安装的，不用考虑下载，这里只要是Some就可以，不关心内容
-            if self.app_service_config.direct_image.is_some() {
-                let mut app_loader =
-                    ServicePkg::new(self.app_id.clone(), get_buckyos_system_bin_dir());
-                let load_result = app_loader.try_load(false).await;
-                if load_result {
-                    loader.replace(app_loader);
-                }
-                load_result
-            } else {
-                warn!("app {} not support direct run on windows", self.app_id);
-                false
-            }
-        } else {
-            let mut app_loader =
-                ServicePkg::new("app_loader".to_string(), get_buckyos_system_bin_dir());
-            let load_result = app_loader.try_load(false).await;
-            if load_result {
-                loader.replace(app_loader);
-            }
-            load_result
-        }
+    fn get_app_pkg_id(&self) -> String {
+        unimplemented!()
     }
 }
 
@@ -79,151 +51,169 @@ impl AppRunItem {
 impl RunItemControl for AppRunItem {
     fn get_item_name(&self) -> Result<String> {
         //appid#userid
-        Ok(self.app_id.clone())
+        let full_appid = format!("{}#{}", self.app_service_config.user_id, self.app_id);
+        Ok(full_appid)
     }
 
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
-        //check already have deploy task ?
-        //create deploy task
-        //install  or upgrade pkg
-        //call pkg.deploy() scrpit 不要调用，由pkg在自己的start脚本里管理？
-        unimplemented!();
+        let mut app_pkg_id = self.get_app_pkg_id();
+        let env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let pkg_meta = env.get_pkg_meta(app_pkg_id.as_str());
+        if pkg_meta.is_err() {
+            return Err(ControlRuntItemErrors::PkgNotExist(app_pkg_id));
+        }
+        let pkg_meta = pkg_meta.unwrap();
+        if pkg_meta.is_none() {
+            warn!("app pkg {} meta not exist,cann't deploy",app_pkg_id);
+            return Err(ControlRuntItemErrors::PkgNotExist(app_pkg_id));
+        }
+        let pkg_meta = pkg_meta.unwrap();
+        warn!("deploy app {}",app_pkg_id);
+        let repo_url = "http://127.0.0.1:8080/repo";
+        //TODO:由install流程管理去重和断点续传,这个去重通常是跨进程的
+        let deps = Installer::install(app_pkg_id.as_str(), &PathBuf::from(get_buckyos_system_bin_dir()), repo_url, None)
+            .await
+            .map_err(|e| {
+                error!("Failed to call install package, err:{:?}", e);
+                return ControlRuntItemErrors::ExecuteError(
+                    "deploy".to_string(),
+                    e.to_string(),
+                );
+            })?;
+        warn!("install app {} success, deps: {:?}",app_pkg_id,deps);
+        Ok(())
     }
 
     async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
-        let app_loader = self.app_loader.read().await;
-        if app_loader.is_some() {
-            let timestamp = buckyos_get_unix_timestamp();
-            let device_session_token = kRPC::RPCSessionToken {
-                token_type: kRPC::RPCSessionTokenType::JWT,
-                nonce: None,
-                userid: Some(self.app_service_config.user_id.clone()),
-                appid: Some(self.app_id.clone()),
-                exp: Some(timestamp + 3600 * 24 * 7),
-                iss: Some(self.device_doc.name.clone()),
-                token: None,
-            };
+        let mut app_pkg_id = self.get_app_pkg_id();
+        let env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let app_pkg = env.load(app_pkg_id.as_str());
+        if app_pkg.is_err() {
+            return Err(ControlRuntItemErrors::PkgNotExist(app_pkg_id));
+        }
+        let app_pkg = app_pkg.unwrap();
+        let media_info_json = json!({
+            "pkg_id": app_pkg_id,
+            "full_path": app_pkg.full_path.to_string_lossy(),
+        });
+        let media_info_json_str = media_info_json.to_string();
+        std::env::set_var("app_media_info", media_info_json_str);
 
-            let device_session_token_jwt = device_session_token
-                .generate_jwt(Some(self.device_doc.did.clone()), &self.device_private_key)
-                .map_err(|err| {
-                    error!("generate session token for {} failed! {}", self.app_id, err);
-                    return ControlRuntItemErrors::ExecuteError(
-                        "start".to_string(),
-                        err.to_string(),
-                    );
-                })?;
-            let full_appid = format!("{}#{}", self.app_service_config.user_id, self.app_id);
-            let env_key = format!("{}.token", full_appid.as_str());
-            std::env::set_var(env_key.as_str(), device_session_token_jwt);
-            let app_config_str = serde_json::to_string(&self.app_service_config).unwrap();
-            std::env::set_var(format!("{}.config", full_appid.as_str()), app_config_str);
+        let timestamp = buckyos_get_unix_timestamp();
+        let device_session_token = kRPC::RPCSessionToken {
+            token_type: kRPC::RPCSessionTokenType::JWT,
+            nonce: None,
+            userid: Some(self.app_service_config.user_id.clone()),
+            appid: Some(self.app_id.clone()),
+            exp: Some(timestamp + 3600 * 24 * 7),
+            iss: Some(self.device_doc.name.clone()),
+            token: None,
+        };
 
-            let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
-            let result = app_loader
-                .as_ref()
-                .unwrap()
-                .start(Some(&real_param))
-                .await
-                .map_err(|err| {
-                    return ControlRuntItemErrors::ExecuteError(
-                        "start".to_string(),
-                        err.to_string(),
-                    );
-                })?;
-
-            if result == 0 {
-                return Ok(());
-            } else {
-                return Err(ControlRuntItemErrors::ExecuteError(
+        let device_session_token_jwt = device_session_token
+            .generate_jwt(Some(self.device_doc.did.clone()), &self.device_private_key)
+            .map_err(|err| {
+                error!("generate session token for {} failed! {}", self.app_id, err);
+                return ControlRuntItemErrors::ExecuteError(
                     "start".to_string(),
-                    "failed".to_string(),
-                ));
-            }
-        }
-        return Err(ControlRuntItemErrors::ExecuteError(
-            "start".to_string(),
-            "failed".to_string(),
-        ));
-    }
-    
-    async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
-        let app_loader = self.app_loader.read().await;
-        if app_loader.is_some() {
-            let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
-            let result = app_loader
-                .as_ref()
-                .unwrap()
-                .stop(Some(&real_param))
-                .await
-                .map_err(|err| {
-                    return ControlRuntItemErrors::ExecuteError(
-                        "stop".to_string(),
-                        err.to_string(),
-                    );
-                })?;
-            if result == 0 {
-                return Ok(());
-            } else {
-                return Err(ControlRuntItemErrors::ExecuteError(
-                    "stop".to_string(),
-                    "failed".to_string(),
-                ));
-            }
-        }
-        return Err(ControlRuntItemErrors::ExecuteError(
-            "stop".to_string(),
-            "failed".to_string(),
-        ));
-    }
+                    err.to_string(),
+                );
+            })?;
+        let full_appid = format!("{}#{}", self.app_service_config.user_id, self.app_id);
+        let env_key = format!("{}.token", full_appid.as_str());
+        std::env::set_var(env_key.as_str(), device_session_token_jwt);
 
-    async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
-        let mut need_load_pkg = false;
+        let app_config_str = serde_json::to_string(&self.app_service_config).unwrap();
+        std::env::set_var("app_config",app_config_str);
+
         let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
-        {
-            let app_loader = self.app_loader.read().await;
-            if app_loader.is_none() {
-                need_load_pkg = true;
-            } else {
-                let result_state = app_loader
-                    .as_ref()
-                    .unwrap()
-                    .status(Some(&real_param))
-                    .await
-                    .map_err(|err| {
-                        return ControlRuntItemErrors::ExecuteError(
-                            "get_state".to_string(),
-                            err.to_string(),
-                        );
-                    })?;
-                return Ok(result_state);
-            }
-        }
+        let result = self.app_loader
+            .start(Some(&real_param))
+            .await
+            .map_err(|err| {
+                return ControlRuntItemErrors::ExecuteError(
+                    "start".to_string(),
+                    err.to_string(),
+                );
+            })?;
 
-        if need_load_pkg {
-            let mut app_loader =
-                ServicePkg::new("app_loader".to_string(), get_buckyos_system_bin_dir());
-            let load_result = app_loader.try_load(false).await;
-            if load_result {
-                let mut new_app_loader = self.app_loader.write().await;
-                let result = app_loader.status(Some(&real_param)).await.map_err(|err| {
-                    return ControlRuntItemErrors::ExecuteError(
-                        "get_state".to_string(),
-                        err.to_string(),
-                    );
-                })?;
-                *new_app_loader = Some(app_loader);
-                return Ok(result);
-            } else {
-                return Ok(ServiceState::NotExist);
-            }
+        if result == 0 {
+            return Ok(());
         } else {
-            //deead path
-            warn!("DEAD PATH,never enter here");
             return Err(ControlRuntItemErrors::ExecuteError(
-                "get_state".to_string(),
-                "dead path".to_string(),
+                "start".to_string(),
+                "failed".to_string(),
             ));
         }
     }
+
+    
+    async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
+        let mut app_pkg_id = self.get_app_pkg_id();
+        let env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let app_pkg = env.load(app_pkg_id.as_str());
+        if app_pkg.is_err() {
+            return Err(ControlRuntItemErrors::PkgNotExist(app_pkg_id));
+        }
+        let app_pkg = app_pkg.unwrap();
+        let media_info_json = json!({
+            "pkg_id": app_pkg_id,
+            "full_path": app_pkg.full_path.to_string_lossy(),
+        });
+        let media_info_json_str = media_info_json.to_string();
+        std::env::set_var("app_media_info", media_info_json_str);
+
+        let app_config_str = serde_json::to_string(&self.app_service_config).unwrap();
+        std::env::set_var("app_config", app_config_str);
+
+        let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
+        let result = self.app_loader
+            .stop(Some(&real_param))
+            .await
+            .map_err(|err| {
+                return ControlRuntItemErrors::ExecuteError(
+                    "stop".to_string(),
+                    err.to_string(),
+                );
+            })?;
+        if result == 0 {
+            return Ok(());
+        } else {
+            return Err(ControlRuntItemErrors::ExecuteError(
+                "stop".to_string(),
+                "failed".to_string(),
+            ));
+        }
+    }
+
+    async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
+        let mut app_pkg_id = self.get_app_pkg_id();
+        let env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let app_pkg = env.load(app_pkg_id.as_str());
+        if app_pkg.is_err() {
+            return Ok(ServiceState::NotExist);
+        }
+
+        let app_pkg = app_pkg.unwrap();
+        let media_info_json = json!({
+            "pkg_id": app_pkg_id,
+            "full_path": app_pkg.full_path.to_string_lossy(),
+        });
+        let media_info_json_str = media_info_json.to_string();
+        std::env::set_var("app_media_info", media_info_json_str);
+        let app_config_str = serde_json::to_string(&self.app_service_config).unwrap();
+        std::env::set_var("app_config", app_config_str);
+
+        let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
+        let result = self.app_loader.status(Some(&real_param)).await.map_err(|err| {
+            return ControlRuntItemErrors::ExecuteError(
+                "get_state".to_string(),
+                err.to_string(),
+            );
+        })?;
+
+        Ok(result)
+    }
+
+
 }

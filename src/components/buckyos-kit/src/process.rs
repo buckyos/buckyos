@@ -211,6 +211,7 @@ impl ServicePkg {
         let mut media_info = self.media_info.lock().await;
         if media_info.is_none() {
             //todo: use index_db_only to load media_info
+            //todo: 是否需要在接口上进行区分？ 还是只需要兼容无index_db的开发模式就好？即在生产环境一定会有index_db
             let new_media_info = self
                 .pkg_env
                 .load(&self.pkg_id);

@@ -328,80 +328,6 @@ async fn check_and_update_env_index_db() -> bool {
     unimplemented!()
 }
 
-
-async fn node_main(node_host_name: &str,
-                   is_ood: bool,
-                   sys_config_client: &SystemConfigClient,
-                   device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
-    //1. check and update env index db
-    let pkg_env_changed = check_and_update_env_index_db().await;
-    
-    //2. check_and_update system services;
-    let mut will_check_update_pkg_list = vec!["cyfs-gateway".to_string()];
-    if is_ood {
-        will_check_update_pkg_list.push("system_config".to_string());
-    }
-    check_and_update_sys_pkgs(&will_check_update_pkg_list,sys_config_client).await;
-
-    //3. control pod instance to target state
-    let node_config = load_node_config(node_host_name, sys_config_client).await
-        .map_err(|err| {
-            error!("load node config failed! {}", err);
-            return NodeDaemonErrors::SystemConfigError("cann't load node config!".to_string());
-        })?;
-
-    if !node_config.is_running {
-        return Ok(false);
-    }
-    
-    let kernel_stream = stream::iter(node_config.kernel);
-    let kernel_task = kernel_stream.for_each_concurrent(4, |(kernel_service_name, kernel_cfg)| async move {
-        let kernel_run_item = KernelServiceRunItem::new(
-            &kernel_cfg,
-            &device_doc,
-            &device_private_key
-        );
-
-        let target_state = RunItemTargetState::from_str(&kernel_cfg.target_state.as_str()).unwrap();
-        
-        let _ = control_run_item_to_target_state(&kernel_run_item, target_state, device_private_key)
-            .await
-            .map_err(|_err| {
-                error!("control kernel service item {} to target state failed!",kernel_service_name.clone());
-                return NodeDaemonErrors::SystemConfigError(kernel_service_name.clone());
-            });
-    });
-    // TODO: frame_services is "services run in docker container",not support now
-    // let service_stream = stream::iter(node_config.frame_services);
-    // service_stream.for_each_concurrent(1, |(service_name, service_cfg)| async move {
-    //         let target_state = service_cfg.target_state.clone();
-    //         let _ = control_run_item_to_target_state(&service_cfg, target_state, device_private_key)
-    //             .await
-    //             .map_err(|_err| {
-    //                 error!("control service item to target state failed!");
-    //                 return NodeDaemonErrors::SystemConfigError(service_name.clone());
-    //             });
-    //     })
-    //     .await;
-
-    //app services is "userA-appB-service", run in docker container
-    let app_stream = stream::iter(node_config.apps);
-    let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
-        let app_run_item = AppRunItem::new(&app_cfg.app_id,app_cfg.clone(),
-                                           device_doc,device_private_key);
-        let target_state = RunItemTargetState::from_str(&app_cfg.target_state).unwrap();
-        let _ = control_run_item_to_target_state(&app_run_item, target_state, device_private_key)
-            .await
-            .map_err(|_err| {
-                error!("control app service item {} to target state failed!",app_cfg.app_id.clone());
-                return NodeDaemonErrors::SystemConfigError(app_cfg.app_id.clone());
-            });
-    });
-
-    tokio::join!(kernel_task,app_task);
-    Ok(true)
-}
-
 async fn update_device_info(device_doc: &DeviceConfig,sys_config_client: &SystemConfigClient) {
     let mut device_info = DeviceInfo::from_device_doc(device_doc);
     let fill_result = device_info.auto_fill_by_system_info().await;
@@ -431,88 +357,6 @@ async fn register_device_doc(device_doc:&DeviceConfig,sys_config_client: &System
         info!("register device doc to system_config success!");
     }
 }
-
-async fn node_daemon_main_loop(
-    node_id:&str,
-    node_host_name:&str,
-    sys_config_client: &SystemConfigClient,
-    device_doc:&DeviceConfig,
-    device_private_key: &EncodingKey,
-    zone_config: &ZoneConfig,
-    is_ood: bool
-) -> Result<()> {
-    let mut loop_step = 0;
-    let mut is_running = true;
-    let mut last_register_time = 0;
-
-    //TODO: check and upgrade self use repo_service
-    //try regsiter device doc
-    register_device_doc(device_doc, sys_config_client).await;
-    let mut node_gateway_config = None;
-    loop {
-        if !is_running {
-            break;
-        }
-
-        loop_step += 1;
-        info!("node daemon main loop step:{}", loop_step);
-        let now = buckyos_get_unix_timestamp();
-        if now - last_register_time > 30 {
-            update_device_info(&device_doc, sys_config_client).await;
-            last_register_time = now;
-        }
-
-        if(is_ood) {
-            keep_system_config_service(node_id,device_doc, device_private_key,zone_config,false).await.map_err(|err| {
-                error!("start system_config_service failed! {}", err);
-                return NodeDaemonErrors::SystemConfigError("start system_config_service failed!".to_string());
-            })?;
-        }
-
-
-        let main_result = node_main(node_host_name,is_ood, sys_config_client, device_doc, device_private_key).await;
-        if main_result.is_err() {
-            error!("node_main failed! {}", main_result.err().unwrap());
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        } else {
-            is_running = main_result.unwrap();
-            let new_node_gateway_config = load_node_gateway_config(node_host_name, sys_config_client).await;
-            if new_node_gateway_config.is_ok() {
-                let mut need_restart = false;
-                let new_node_gateway_config = new_node_gateway_config.unwrap();
-                if node_gateway_config.is_none() {
-                    node_gateway_config = Some(new_node_gateway_config);
-                    need_restart = true;
-                } else {
-                    if new_node_gateway_config == node_gateway_config.unwrap() {
-                        need_restart = false;
-                    } else {
-                        need_restart = true;
-                    }
-                    node_gateway_config = Some(new_node_gateway_config);
-                }
-
-                if need_restart {
-                    info!("node gateway_config changed, update node_gateway_config!");
-                    let gateway_config_path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
-                    std::fs::write(gateway_config_path, serde_json::to_string(&node_gateway_config).unwrap()).unwrap();
-                    keep_cyfs_gateway_service(node_id,&device_doc, &device_private_key,&zone_config,true).await.map_err(|err| {
-                        error!("start cyfs_gateway service failed! {}", err);
-                    });
-                } else {
-                    keep_cyfs_gateway_service(node_id,&device_doc, &device_private_key,&zone_config,false).await.map_err(|err| {
-                        error!("start cyfs_gateway service failed! {}", err);
-                    });
-                }
-            } else {
-                error!("load node gateway_config failed!");
-            }
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        }
-    }
-    Ok(())
-}
-
 
 async fn do_boot_schedule() -> std::result::Result<(),String> {
     let mut scheduler_pkg = ServicePkg::new("scheduler".to_string(),get_buckyos_system_bin_dir());
@@ -658,6 +502,175 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, devi
     Ok(())
 }
 
+fn get_node_daemon_version() -> u32 {
+    let build_number = 99999999;
+    return build_number;
+}
+
+async fn node_main(node_host_name: &str,
+                   is_ood: bool,
+                   sys_config_client: &SystemConfigClient,
+                   device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
+    //1. check and update env index db
+    let pkg_env_changed = check_and_update_env_index_db().await;
+    
+    let node_daemon_version = get_node_daemon_version();
+    if node_daemon_version < 99999999 {
+        //TODO:check and update node_daemon
+
+    }
+
+    //2. check_and_update system services;
+    let mut will_check_update_pkg_list = vec!["cyfs-gateway".to_string(),"app_loader".to_string()];
+    if is_ood {
+        will_check_update_pkg_list.push("system_config".to_string());
+    }
+    check_and_update_sys_pkgs(&will_check_update_pkg_list,sys_config_client).await;
+
+    //3. control pod instance to target state
+    let node_config = load_node_config(node_host_name, sys_config_client).await
+        .map_err(|err| {
+            error!("load node config failed! {}", err);
+            return NodeDaemonErrors::SystemConfigError("cann't load node config!".to_string());
+        })?;
+
+    if !node_config.is_running {
+        return Ok(false);
+    }
+    
+    let kernel_stream = stream::iter(node_config.kernel);
+    let kernel_task = kernel_stream.for_each_concurrent(4, |(kernel_service_name, kernel_cfg)| async move {
+        let kernel_run_item = KernelServiceRunItem::new(
+            &kernel_cfg,
+            &device_doc,
+            &device_private_key
+        );
+
+        let target_state = RunItemTargetState::from_str(&kernel_cfg.target_state.as_str()).unwrap();
+        
+        let _ = control_run_item_to_target_state(&kernel_run_item, target_state, device_private_key)
+            .await
+            .map_err(|_err| {
+                error!("control kernel service item {} to target state failed!",kernel_service_name.clone());
+                return NodeDaemonErrors::SystemConfigError(kernel_service_name.clone());
+            });
+    });
+    // TODO: frame_services is "services run in docker container",not support now
+    // let service_stream = stream::iter(node_config.frame_services);
+    // service_stream.for_each_concurrent(1, |(service_name, service_cfg)| async move {
+    //         let target_state = service_cfg.target_state.clone();
+    //         let _ = control_run_item_to_target_state(&service_cfg, target_state, device_private_key)
+    //             .await
+    //             .map_err(|_err| {
+    //                 error!("control service item to target state failed!");
+    //                 return NodeDaemonErrors::SystemConfigError(service_name.clone());
+    //             });
+    //     })
+    //     .await;
+    
+
+    //app services is "userA-appB-service", run in docker container
+    let app_stream = stream::iter(node_config.apps);
+    let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
+        let app_loader = ServicePkg::new("app_loader".to_string(),get_buckyos_system_bin_dir());
+  
+        let app_run_item = AppRunItem::new(&app_cfg.app_id,app_cfg.clone(),
+            app_loader,device_doc,device_private_key);
+
+        let target_state = RunItemTargetState::from_str(&app_cfg.target_state).unwrap();
+        let _ = control_run_item_to_target_state(&app_run_item, target_state, device_private_key)
+            .await
+            .map_err(|_err| {
+                error!("control app service item {} to target state failed!",app_cfg.app_id.clone());
+                return NodeDaemonErrors::SystemConfigError(app_cfg.app_id.clone());
+            });
+    });
+
+    tokio::join!(kernel_task,app_task);
+    Ok(true)
+}
+
+async fn node_daemon_main_loop(
+    node_id:&str,
+    node_host_name:&str,
+    sys_config_client: &SystemConfigClient,
+    device_doc:&DeviceConfig,
+    device_private_key: &EncodingKey,
+    zone_config: &ZoneConfig,
+    is_ood: bool
+) -> Result<()> {
+    let mut loop_step = 0;
+    let mut is_running = true;
+    let mut last_register_time = 0;
+
+    //TODO: check and upgrade self use repo_service
+    //try regsiter device doc
+    register_device_doc(device_doc, sys_config_client).await;
+    let mut node_gateway_config = None;
+    loop {
+        if !is_running {
+            break;
+        }
+
+        loop_step += 1;
+        info!("node daemon main loop step:{}", loop_step);
+        let now = buckyos_get_unix_timestamp();
+        if now - last_register_time > 30 {
+            update_device_info(&device_doc, sys_config_client).await;
+            last_register_time = now;
+        }
+
+        if(is_ood) {
+            keep_system_config_service(node_id,device_doc, device_private_key,zone_config,false).await.map_err(|err| {
+                error!("start system_config_service failed! {}", err);
+                return NodeDaemonErrors::SystemConfigError("start system_config_service failed!".to_string());
+            })?;
+        }
+
+        let main_result = node_main(node_host_name,is_ood, sys_config_client, device_doc, device_private_key).await;
+        
+        if main_result.is_err() {
+            error!("node_main failed! {}", main_result.err().unwrap());
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        } else {
+            is_running = main_result.unwrap();
+            let new_node_gateway_config = load_node_gateway_config(node_host_name, sys_config_client).await;
+            if new_node_gateway_config.is_ok() {
+                let mut need_restart = false;
+                let new_node_gateway_config = new_node_gateway_config.unwrap();
+                if node_gateway_config.is_none() {
+                    node_gateway_config = Some(new_node_gateway_config);
+                    need_restart = true;
+                } else {
+                    if new_node_gateway_config == node_gateway_config.unwrap() {
+                        need_restart = false;
+                    } else {
+                        need_restart = true;
+                    }
+                    node_gateway_config = Some(new_node_gateway_config);
+                }
+
+                if need_restart {
+                    info!("node gateway_config changed, update node_gateway_config!");
+                    let gateway_config_path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
+                    std::fs::write(gateway_config_path, serde_json::to_string(&node_gateway_config).unwrap()).unwrap();
+                    keep_cyfs_gateway_service(node_id,&device_doc, &device_private_key,&zone_config,true).await.map_err(|err| {
+                        error!("start cyfs_gateway service failed! {}", err);
+                    });
+                } else {
+                    keep_cyfs_gateway_service(node_id,&device_doc, &device_private_key,&zone_config,false).await.map_err(|err| {
+                        error!("start cyfs_gateway service failed! {}", err);
+                    });
+                }
+            } else {
+                error!("load node gateway_config failed!");
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+    }
+    Ok(())
+}
+
 
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = matches.get_one::<String>("id");
@@ -678,7 +691,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             //restart_program();
         } else {
             error!("load node identity config failed! {}", node_identity.err().unwrap());
-            warn!("⚠️Would you like to enable activation mode? (Use `--enable_active` to proceed)");
+            warn!("Would you like to enable activation mode? (Use `--enable_active` to proceed)");
             return Err(String::from("load node identity config failed!"));
         }
     }
