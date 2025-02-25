@@ -92,6 +92,7 @@ pub struct AppServiceInstanceConfig {
 
     pub image_pkg_id: Option<String>,
     pub docker_image_name : Option<String>,//TODO:能否从pkg_id中推断出docker_image_name?
+    pub docker_image_hash: Option<String>,
     pub direct_image: Option<String>,         // 现在这里只要是Some就可以，以后可以放二进制包的url
     pub data_mount_point: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,6 +128,7 @@ impl AppServiceInstanceConfig {
             user_id:owner_user_id.to_string(),
             image_pkg_id: None,
             docker_image_name: None,
+            docker_image_hash: None,
             direct_image: None,
             data_mount_point: app_config.data_mount_point.clone(),
             cache_mount_point: app_config.cache_mount_point.clone(),

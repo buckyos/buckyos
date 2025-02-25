@@ -1,16 +1,22 @@
 {
-    "name": "buckyos code-server enviroment",
-    "image": "mcr.microsoft.com/devcontainers/base:ubuntu", 
+    "name": "buckyos code-server environment",
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
     "features": {
-      "ghcr.io/devcontainers/features/rust:1": {} 
+        "ghcr.io/devcontainers/features/rust:1": {},
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "latest"
+        },
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {}
     },
-    "postCreateCommand": "sudo apt-get update && sudo apt-get install -y build-essential curl ",
+    "postCreateCommand": "sudo apt-get update && sudo apt-get install -y build-essential curl wget git pkg-config libssl-dev musl-tools gcc-aarch64-linux-gnu && npm install -g pnpm && rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-gnu",
     "customizations": {
-      "vscode": {
-        "extensions": [
-          "rust-lang.rust-analyzer"
-        ]
-      }
-    }
-  }
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "vadimcn.vscode-lldb"
+            ]
+        }
+    },
+    "remoteUser": "vscode"
+}
   

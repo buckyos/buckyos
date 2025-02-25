@@ -3,6 +3,13 @@ import os
 import subprocess
 import sys
 
+def check_package_manager():
+    """Check if apt package manager is available"""
+    result = subprocess.run(['which', 'apt-get'], capture_output=True)
+    if result.returncode != 0:
+        print("This script only supports Debian/Ubuntu")
+        sys.exit(1)
+
 def run_command(command, exit_on_error=True):
     """Run shell command and print output"""
     print(f"Executing command: {command}")
@@ -44,6 +51,9 @@ def install_nodejs():
     run_command("npm install -g pnpm")
 
 def main():
+    # Check if apt is available
+    check_package_manager()
+
     # Check if running with root privileges
     if os.geteuid() != 0:
         print("Please run this script with sudo")

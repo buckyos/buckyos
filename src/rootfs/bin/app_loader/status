@@ -2,7 +2,7 @@
 import sys
 import platform
 import os
-
+import json
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
 appid = sys.argv[1]
@@ -10,45 +10,85 @@ username = sys.argv[2]
 
 container_id = f"{username}-{appid}"
 
-def is_container_running(container_name):
-    # 当前默认windows上不支持docker，利用run file机制做一个假启动
-    # TODO: 考虑在经过某些手工配置后，windows上也可以支持docker
-
-    if platform.system() == "Windows":
-        print(f"Windows is not supported for docker, fake check {container_id}")
-        return os.path.exists(f"{current_dir}/{container_id}.win")
-    
-
+def is_container_running(container_name,docker_image_name,docker_image_hash):
     try:
-        # 获取指定名字的容器
-        # 使用docker ps命令检查容器是否运行
-        cmd = f"docker ps -q -f name={container_name}"
+        cmd = f"docker ps -q -f name=^{container_name}$"
         output = os.popen(cmd).read().strip()
         if output:
             print(f"Container '{container_name}' is running.")
+            if docker_image_hash:
+                cmd = f"docker images -q '{docker_image_name}'"
+                output = os.popen(cmd).read().strip()
+                if output:
+                    if docker_image_hash.startswith(output):
+                        return True
+                    
+                print(f"Container '{container_name}' is running but with wrong image hash.")
+                return False
             return True
-        else:
-            # 检查容器是否存在但未运行
-            cmd = f"docker ps -aq -f name={container_name}"
-            output = os.popen(cmd).read().strip()
-            if output:
-                print(f"Container '{container_name}' exists but is not running.")
-            else:
-                print(f"Container '{container_name}' not found.")
-            return False
-
+        
+        return False
     except Exception as e:
         print(f"Error checking container status: {e}")
         return False
 
 def check_port() -> bool:
     return True
-# TODO:判断容器是否运行应该增加 unknown 状态的返回值
+
+
 if __name__ == "__main__":
-    if is_container_running(container_id):
-        if check_port():
-            print(f"app {container_id} is running")
+
+    appid = sys.argv[1]
+    username = sys.argv[2]
+    full_appid = f"{appid}#{username}"
+    app_token = os.getenv(f"{full_appid}_token")
+    app_instance_config_str = os.getenv("app_instance_config")
+    media_info_str = os.getenv("app_media_info")
+    zone_config_str = os.getenv(f"BUCKY_ZONE_CONFIG")
+    zone_config = None
+    zone_docker_repo_base_url = None
+    device_doc_str = os.getenv(f"BUCKY_THIS_DEVICE")
+    device_doc = None
+
+
+    if device_doc_str:
+        device_doc = json.loads(device_doc_str)
+
+    if app_token is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+        
+    if app_instance_config_str is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+    app_instance_config = json.loads(app_instance_config_str)
+
+    if media_info_str is None:
+        print(f"No media info found for appid: {full_appid}")
+        exit(1)
+    app_media_info = json.loads(media_info_str)
+
+    #container_hash = app_meta_info.get("image_hash")
+    is_support_docker = device_doc.get("support_container", True)
+
+    if is_support_docker:
+        # check docker container status
+        docker_image_hash = app_instance_config.get("docker_image_hash")
+        docker_image_name = app_instance_config.get("docker_image_name")
+        if is_container_running(container_id,docker_image_name,docker_image_hash):
             exit(0)
-    print(f"app {container_id} is not running")
-    exit(1)
+        print(f"app {container_id} is not running")
+        exit(1)
+    else:
+        full_path = app_media_info.get("full_path")
+        if not full_path:
+            print(f"No app media full path found for appid: {full_appid}")
+            exit(1)
+        script_path = f"{full_path}/status"
+        if not os.path.exists(script_path):
+            print(f"No status script found for appid: {full_appid}")
+            exit(1)
+
+        exit(os.system(f"python3 {script_path} {appid} {username}"))
+
 
