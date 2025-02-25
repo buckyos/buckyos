@@ -12,6 +12,8 @@ members = [
     "./components/ndn-lib",
     "./components/debug-lib",
     "./components/package-installer", 
+    "./components/debug-lib",
+
     "./cyfs_gateway/cyfs-gateway-lib",
     "./cyfs_gateway/cyfs_gateway",
     "./cyfs_gateway/cyfs-dns",
@@ -31,9 +33,8 @@ members = [
     "./frame/smb_service",
 
     "./tools/buckycli", 
-
-    "./apps/tray-controller"
-, "components/debug-lib"]
+    #"./apps/tray-controller"
+]
 
 exclude = [
     "./tools/ns-tool",
