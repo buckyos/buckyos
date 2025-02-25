@@ -8,7 +8,7 @@ use lazy_static::lazy_static;
 use windows_service::{define_windows_service, service_control_handler, service_dispatcher, Error};
 use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType};
 use windows_service::service_control_handler::{ServiceControlHandlerResult, ServiceStatusHandle};
-use crate::run;
+use crate::node_daemon;
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -72,7 +72,7 @@ pub(crate) fn service_main(_arguments: Vec<OsString>) -> windows_service::Result
 
     let matches = MATCHES.get().unwrap().clone();
 
-    run::run(matches);
+    node_daemon::run(matches);
     log::warn!("service exited!!");
     Ok(())
 }
