@@ -325,7 +325,7 @@ async fn check_and_update_app_img(app_id: &str,sys_config_client: &SystemConfigC
 }
 
 async fn check_and_update_env_index_db() -> bool {
-    unimplemented!()
+    false
 }
 
 async fn update_device_info(device_doc: &DeviceConfig,sys_config_client: &SystemConfigClient) {
