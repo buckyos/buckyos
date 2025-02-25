@@ -114,6 +114,7 @@ fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
 
     let matches = Command::new("CYFS Gateway Service")
+        .version(buckyos_kit::get_version())
         .arg(
             Arg::new("config")
                 .long("config")
