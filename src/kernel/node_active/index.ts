@@ -21,7 +21,7 @@ import "./dlg/config_system_dlg";
 import "./dlg/final_check_dlg";
 import "./dlg/active_result_dlg";
 
-import {GatewayType, ActiveWizzardData} from './active_lib';
+import {GatewayType, ActiveWizzardData,SN_API_URL,set_sn_api_url} from './active_lib';
 import i18next from './i18n';
 import Handlebars from 'handlebars';
 
@@ -55,27 +55,30 @@ function update_i18n() {
 
 //after dom loaded
 window.onload = async () => {
+    set_sn_api_url("http://web3.buckyos.io/kapi/sn");
+    const wizzard_data : ActiveWizzardData = {
+        is_direct_connect : false,
+        sn_active_code : "",
+        sn_user_name : "",
+        gatewy_type : GatewayType.BuckyForward,
+        use_self_domain : false,
+        self_domain : "",
+        admin_password_hash : "",
+        friend_passcode : "",
+        enable_guest_access : false,
+        owner_public_key : "",
+        owner_private_key : "",
+        zone_config_jwt : "",
+        sn_url : SN_API_URL,
+        sn_host : "",
+    }
+    
+    const activeWizzard = document.getElementById('active-wizzard') as BuckyWizzardDlg;
+    activeWizzard.pushDlg(document.createElement('config-gateway-dlg'));
+    activeWizzard.wizzard_data = wizzard_data;
+
     i18next.on('initialized', function(options:any) {
-        const wizzard_data : ActiveWizzardData = {
-            is_direct_connect : false,
-            sn_active_code : "",
-            sn_user_name : "",
-            gatewy_type : GatewayType.BuckyForward,
-            use_self_domain : false,
-            self_domain : "",
-            admin_password_hash : "",
-            friend_passcode : "",
-            enable_guest_access : false,
-            owner_public_key : "",
-            owner_private_key : "",
-            zone_config_jwt : "",
-            sn_url : "",
-            sn_host : "",
-        }
-        
-        const activeWizzard = document.getElementById('active-wizzard') as BuckyWizzardDlg;
-        activeWizzard.pushDlg(document.createElement('config-gateway-dlg'));
-        activeWizzard.wizzard_data = wizzard_data;
+
         update_i18n();
     });
 

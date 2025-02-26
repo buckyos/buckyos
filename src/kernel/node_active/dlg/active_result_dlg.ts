@@ -19,7 +19,8 @@ class ActiveResultDlg extends HTMLElement {
         shadow.appendChild(template.content.cloneNode(true));
 
         let btn_end = shadow.getElementById('btn_end') as MdFilledButton;
-        let target_url = `http://${wizzard_data.sn_user_name}.web3.buckyos.io/`;
+        //TODO: use sn_host
+        let target_url = `http://${wizzard_data.sn_user_name}.${wizzard_data.sn_host}/`;
         if (wizzard_data.use_self_domain) {
             target_url = `http://${wizzard_data.self_domain}/`;
         }

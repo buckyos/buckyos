@@ -21,6 +21,7 @@ futures = "*"
 lazy_static = "*"
 jsonwebtoken = "*"  
 num_cpus = "*"
+url = "*"
 time = { version = "^0.3", features = ["formatting"] }
 sysinfo = "*"
 cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }

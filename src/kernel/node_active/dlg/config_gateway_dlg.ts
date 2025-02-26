@@ -1,7 +1,7 @@
 import templateContent from './config_gateway_dlg.template?raw';  
 import {BuckyCheckBox} from '../components/checkbox';
 import {BuckyWizzardDlg} from '../components/wizzard-dlg';
-import { GatewayType,ActiveWizzardData,check_sn_active_code } from '../active_lib';
+import { GatewayType,ActiveWizzardData,check_sn_active_code,set_sn_api_url } from '../active_lib';
 import {MdOutlinedTextField} from '@material/web/textfield/outlined-text-field.js';
 import {MdFilledButton} from '@material/web/button/filled-button.js';
 import Handlebars from 'handlebars';
@@ -29,6 +29,18 @@ class ConfigGatewayDlg extends HTMLElement {
         const chk_enable_bucky_forward = shadow.getElementById('chk_enable_bucky_forward') as BuckyCheckBox;
         //const chk_enable_port_forward = shadow.getElementById('chk_enable_port_forward') as BuckyCheckBox;
         var txt_bucky_sn_token = shadow.getElementById('txt_bucky_sn_token') as MdOutlinedTextField;
+        var txt_bucky_sn_url = shadow.getElementById('txt_bucky_sn_url') as MdOutlinedTextField;
+        if (txt_bucky_sn_url.value.length > 0) {
+            const url = new URL(txt_bucky_sn_url.value);
+            const host = url.host;  // 包含端口号
+            wizzard_data.sn_url = txt_bucky_sn_url.value;
+            wizzard_data.sn_host = host;
+        } else {
+            wizzard_data.sn_url = "http://web3.buckyos.io/kapi/sn";
+            wizzard_data.sn_host = "web3.buckyos.io";
+        }
+        set_sn_api_url(wizzard_data.sn_url);
+
         if (chk_enable_bucky_forward.checked) {
             if (txt_bucky_sn_token.error) {
                 return false;
@@ -40,8 +52,6 @@ class ConfigGatewayDlg extends HTMLElement {
             }
 
             wizzard_data.sn_active_code = txt_bucky_sn_token.value;
-            wizzard_data.sn_url = "http://web3.buckyos.io/kapi/sn";
-            wizzard_data.sn_host = "web3.buckyos.io";
             wizzard_data.gatewy_type = GatewayType.BuckyForward;
         } else {
             wizzard_data.gatewy_type = GatewayType.PortForward;

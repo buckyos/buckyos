@@ -11,7 +11,7 @@ use name_client::*;
 use log::*;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use sys_config::*;
-
+use url::Url;
 #[derive(Clone)]
 struct ActiveServer {
 }
@@ -33,7 +33,11 @@ impl ActiveServer {
         let device_public_key = req.params.get("device_public_key");
         let device_private_key = req.params.get("device_private_key");
         let support_container = req.params.get("support_container");
-        let sn_url = req.params.get("sn_url");
+        let sn_url_param = req.params.get("sn_url");
+        let mut sn_url:Option<String> = None;
+        if sn_url_param.is_some() {
+            sn_url = Some(sn_url_param.unwrap().as_str().unwrap().to_string());
+        }
         //let device_info = req.params.get("device_info");  
         if user_name.is_none() || zone_name.is_none() || gateway_type.is_none() || owner_public_key.is_none() || owner_private_key.is_none() || device_public_key.is_none() || device_private_key.is_none() {
             return Err(RPCErrors::ParseRequestError("Invalid params, user_name, zone_name, gateway_type, owner_public_key, owner_private_key, device_public_key or device_private_key is none".to_string()));
@@ -69,10 +73,6 @@ impl ActiveServer {
                 net_id = None;
             },
             "PortForward" => {
-                if zone_name.ends_with(".web3.buckyos.io") {
-                    need_sn = true;
-                    ddns_sn_url = Some("http://web3.buckyos.io/kapi/sn".to_string());
-                }
                 net_id = Some("wan".to_string());
             },
             _ => {
@@ -98,19 +98,12 @@ impl ActiveServer {
             .map_err(|_|RPCErrors::ReasonError("Failed to encode device config".to_string()))?;
         
         if sn_url.is_some() {
-            //register to sn 
-            let sn_url = sn_url.unwrap().as_str().unwrap();
-            if !sn_url.is_empty() {
-                if sn_url.starts_with("http://") || sn_url.starts_with("https://") {
-                    need_sn = true;
-                }
-            }
+            need_sn = true;
         }
         
-            
         if need_sn {
-            let sn_url = "http://web3.buckyos.io/kapi/sn";
-            info!("Register OOD to sn: {}",sn_url);
+            let sn_url = sn_url.unwrap();
+            info!("Register OOD1(zone-gateway) to sn: {}",sn_url);
             let rpc_token = ::kRPC::RPCSessionToken {
                 token_type : ::kRPC::RPCSessionTokenType::JWT,
                 nonce : None,
@@ -130,7 +123,7 @@ impl ActiveServer {
             let device_info_json = serde_json::to_string(&device_info).unwrap();
             let device_ip = device_info.ip.unwrap().to_string();
 
-            let sn_result = sn_register_device(sn_url, Some(user_rpc_token.to_string()), 
+            let sn_result = sn_register_device(sn_url.as_str(), Some(user_rpc_token), 
                 user_name, "ood1", &device_did.as_str(), &device_ip, device_info_json.as_str()).await;
             if sn_result.is_err() {
                 return Err(RPCErrors::ReasonError(format!("Failed to register device to sn: {}",sn_result.err().unwrap())));

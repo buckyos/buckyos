@@ -289,7 +289,7 @@ pub struct DeviceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip:Option<IpAddr>,//main_ip
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub net_id:Option<String>,// lan1 | wan
+    pub net_id:Option<String>,// lan1 | wan ，为None时表示为 lan0
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ddns_sn_url:Option<String>,
     pub auth_key : Jwk,

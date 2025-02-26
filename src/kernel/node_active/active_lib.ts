@@ -30,10 +30,14 @@ export type ActiveWizzardData = {
 
 }
 
+export let SN_API_URL:string = "https://web3.buckyos.io/kapi/sn";
 
+export function set_sn_api_url(url:string) {
+    SN_API_URL = url;
+}
 
 export async function register_sn_user(user_name:string,active_code:string,public_key:string,zone_config_jwt:string,user_domain:string|null) : Promise<boolean> {
-    let rpc_client = new buckyos.kRPCClient("https://web3.buckyos.io/kapi/sn");
+    let rpc_client = new buckyos.kRPCClient(SN_API_URL);
     let params:JsonValue = {
         user_name:user_name,
         active_code:active_code,
@@ -51,7 +55,7 @@ export async function register_sn_user(user_name:string,active_code:string,publi
     return false;
 }
 
-const SN_API_URL = "https://web3.buckyos.io/kapi/sn";
+
 
 export async function register_sn_main_ood (user_name:string,device_name:string,device_did:string,device_ip:string,device_info:string) : Promise<boolean> {
     let rpc_client = new buckyos.kRPCClient(SN_API_URL);

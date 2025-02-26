@@ -29,7 +29,7 @@
                 {{#if use_self_domain}}
                 <li>访问域名: <a href="http://{{self_domain}}">http://{{self_domain}}</a> </li>
                 {{else}}
-                <li>访问域名: <a href="http://{{sn_user_name}}.web3.buckyos.io">http://{{sn_user_name}}.web3.buckyos.io</a> </li>
+                <li>访问域名: <a href="http://{{sn_user_name}}.{{sn_host}}">http://{{sn_user_name}}.{{sn_host}}</a> </li>
                 {{/if}}
                 {{#if is_direct_connect}}
                 <li>访问链路:直接连接到您的Personal Server</li>

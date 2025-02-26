@@ -293,11 +293,27 @@ async fn load_node_config(node_host_name: &str,sys_config_client: &SystemConfigC
     Ok(node_config)
 }
 
-async fn check_and_update_sys_pkgs(pkg_list: &Vec<String>,sys_config_client: &SystemConfigClient) {
+async fn check_and_update_sys_pkgs(is_ood: bool,sys_config_client: &SystemConfigClient) {
+    let mut will_check_update_pkg_list = vec![
+        "cyfs-gateway".to_string(),
+        "app_loader".to_string(),
+        "node-active".to_string(),
+        "bucky-cli".to_string(),
+        "control_panel".to_string(),
+        "repo_service".to_string(),
+        "scheduler".to_string(),
+        "smb_service".to_string(),
+        "verify_hub".to_string(),
+    ];
+
+    if is_ood {
+        will_check_update_pkg_list.push("system_config".to_string());
+    }
+
     let env = PackageEnv::new(get_buckyos_system_etc_dir());
-    for pkg_id in pkg_list {
+    for pkg_id in will_check_update_pkg_list {
         let mut need_update = true;
-        let pkg_meta = env.get_pkg_meta(pkg_id);
+        let pkg_meta = env.get_pkg_meta(pkg_id.as_str());
         if pkg_meta.is_ok() {
             let pkg_meta = pkg_meta.unwrap();
             if pkg_meta.is_some() {
@@ -316,13 +332,6 @@ async fn check_and_update_sys_pkgs(pkg_list: &Vec<String>,sys_config_client: &Sy
     }    
 }
 
-async fn check_and_update_app_img(app_id: &str,sys_config_client: &SystemConfigClient) {
-    //call repo_service.is_pkg_latest(pkg_id,pkg_meta);
-    //if need update, call env.install_pkg_from_repo(pkg_id,local_repo_url);
-    //env安装新版本完成后，停止进程，等待自动重启。
-    // create ServicePkg
-    // call ServicePkg.stop()
-}
 
 async fn check_and_update_env_index_db() -> bool {
     false
@@ -382,7 +391,7 @@ async fn do_boot_schedule() -> std::result::Result<(),String> {
 }
 
 //if register OK then return sn's URL
-async fn update_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
+async fn report_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
     //try register ood's device_info to sn,
     // TODO: move this logic to cyfs-gateway service?
     let mut need_sn = false;
@@ -483,12 +492,24 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, devi
         //  ood: keep tunnel to other ood, keep tunnel to gateway
         //  gateway_config: port_forward for system_config service
         let params : Vec<String>;
+        let mut need_keep_tunnel_to_sn = false;
         if zone_config.sn.is_some() {
+            need_keep_tunnel_to_sn = true;
+            if device_doc.net_id.is_some() {
+                let net_id = device_doc.net_id.as_ref().unwrap();
+                if net_id == "wan" {
+                    need_keep_tunnel_to_sn = false;
+                }
+            }
+        }
+
+        if need_keep_tunnel_to_sn {
             let sn_url = zone_config.sn.as_ref().unwrap();
             params = vec!["--node_id".to_string(),node_id.to_string(),"--keep_tunnel".to_string(),sn_url.clone()];
         } else {
             params = vec!["--node_id".to_string(),node_id.to_string()];
         }
+
         let start_result = cyfs_gateway_service_pkg.start(Some(&params)).await.map_err(|err| {
             error!("start cyfs_gateway failed! {}", err);
             return String::from("start cyfs_gateway failed!");
@@ -507,12 +528,16 @@ fn get_node_daemon_version() -> u32 {
     return build_number;
 }
 
+async fn stop_all_system_services() {
+    unimplemented!()
+}
+
 async fn node_main(node_host_name: &str,
                    is_ood: bool,
                    sys_config_client: &SystemConfigClient,
                    device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
     //1. check and update env index db
-    let pkg_env_changed = check_and_update_env_index_db().await;
+    let mut system_need_upgrade = check_and_update_env_index_db().await;
     
     let node_daemon_version = get_node_daemon_version();
     if node_daemon_version < 99999999 {
@@ -520,12 +545,16 @@ async fn node_main(node_host_name: &str,
 
     }
 
-    //2. check_and_update system services;
-    let mut will_check_update_pkg_list = vec!["cyfs-gateway".to_string(),"app_loader".to_string()];
-    if is_ood {
-        will_check_update_pkg_list.push("system_config".to_string());
+    if system_need_upgrade {
+        //download all pkgs
+        check_and_update_sys_pkgs(is_ood,sys_config_client).await;
+        //stop all system services
+        warn!("system need upgrade, kill all system services and exit!");
+        stop_all_system_services().await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        //exit node_daemon
+        exit(0);
     }
-    check_and_update_sys_pkgs(&will_check_update_pkg_list,sys_config_client).await;
 
     //3. control pod instance to target state
     let node_config = load_node_config(node_host_name, sys_config_client).await
@@ -595,6 +624,7 @@ async fn node_daemon_main_loop(
     node_host_name:&str,
     sys_config_client: &SystemConfigClient,
     device_doc:&DeviceConfig,
+    device_session_token_jwt: &str,
     device_private_key: &EncodingKey,
     zone_config: &ZoneConfig,
     is_ood: bool
@@ -605,6 +635,7 @@ async fn node_daemon_main_loop(
 
     //TODO: check and upgrade self use repo_service
     //try regsiter device doc
+    report_ood_info_to_sn(&device_doc, device_session_token_jwt,&zone_config).await;
     register_device_doc(device_doc, sys_config_client).await;
     let mut node_gateway_config = None;
     loop {
@@ -614,6 +645,7 @@ async fn node_daemon_main_loop(
 
         loop_step += 1;
         info!("node daemon main loop step:{}", loop_step);
+        report_ood_info_to_sn(&device_doc, device_session_token_jwt,&zone_config).await;
         let now = buckyos_get_unix_timestamp();
         if now - last_register_time > 30 {
             update_device_info(&device_doc, sys_config_client).await;
@@ -812,7 +844,8 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let mut syc_cfg_client: SystemConfigClient;
     let boot_config: serde_json::Value;
     if is_ood {
-        update_ood_info_to_sn(&device_doc, &device_session_token_jwt.as_str(),&zone_config).await;
+        
+        
         keep_system_config_service(node_id.as_str(),&device_doc, &device_private_key,&zone_config,false).await.map_err(|err| {
             error!("start system_config_service failed! {}", err);
             return String::from("start system_config_service failed!");
@@ -869,12 +902,12 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     }
 
     //use boot config to init name-lib.. etc kernel libs.
-    let gateway_ip = resolve_ip("gateway").await;
-    info!("gateway ip: {:?}", gateway_ip);
+    //let gateway_ip = resolve_ip("gateway").await;
+    //info!("gateway ip: {:?}", gateway_ip);
 
     info!("{}@{} boot OK, enter node daemon main loop!", device_doc.name, node_identity.zone_name);
     node_daemon_main_loop(node_id,&device_doc.name.as_str(), &syc_cfg_client, 
-        &device_doc, &device_private_key, &zone_config, is_ood)
+        &device_doc, &device_session_token_jwt,&device_private_key, &zone_config, is_ood)
         .await
         .map_err(|err| {
             error!("node daemon main loop failed! {}", err);
