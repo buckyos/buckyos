@@ -1,5 +1,5 @@
 use std::net::IpAddr;
-use jsonwebtoken::DecodingKey;
+use jsonwebtoken::{jwk::Jwk, DecodingKey};
 use serde::{Deserialize, Serialize};
 use name_lib::*;
 use serde_json::json;
@@ -109,7 +109,7 @@ impl NameInfo {
             did_document:None,pk_x_list:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
     }
 
-     pub fn get_owner_pk(&self) -> Option<DecodingKey> {
+     pub fn get_owner_pk(&self) -> Option<Jwk> {
         if self.pk_x_list.is_some() {
             let pkx_list = self.pk_x_list.as_ref().unwrap();
             for pkx in pkx_list {
@@ -126,13 +126,9 @@ impl NameInfo {
                         return None;
                     }
                     let public_key_jwk : jsonwebtoken::jwk::Jwk = public_key_jwk.unwrap();
-                    let public_key = DecodingKey::from_jwk(&public_key_jwk);
-                    if public_key.is_err() {
-                        error!("parse public key failed! {}",public_key.err().unwrap());
-                        return None;
-                    }
-                    let public_key = public_key.unwrap();
-                    return Some(public_key);
+                    return Some(public_key_jwk);
+
+
                 }
             }
         }

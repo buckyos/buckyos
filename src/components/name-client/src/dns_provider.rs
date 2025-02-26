@@ -6,6 +6,7 @@ use std::str::FromStr;
 use hickory_resolver::{config::*, Resolver};
 use hickory_resolver::proto::rr::record_type;
 use hickory_resolver::TokioAsyncResolver;
+use jsonwebtoken::DecodingKey;
 
 use crate::{NsProvider, NameInfo, NameProof, RecordType};
 use name_lib::*;
@@ -179,12 +180,23 @@ impl NsProvider for DnsProvider {
                     if owner_public_key.is_none() {
                         return Err(NSError::Failed("Owner public key not found".to_string()));
                     }
-                    let owner_public_key = owner_public_key.unwrap();
-                    let zone_config = ZoneConfig::decode(&jwt_str, Some(&owner_public_key));
+                    let public_key_jwk = owner_public_key.unwrap();
+                    let public_key = DecodingKey::from_jwk(&public_key_jwk);
+                    if public_key.is_err() {
+                        error!("parse public key failed! {}",public_key.err().unwrap());
+                        return Err(NSError::Failed("parse public key failed! ".to_string()));
+                    }
+                    let public_key = public_key.unwrap();
+
+                    let mut zone_config = ZoneConfig::decode(&jwt_str, Some(&public_key));
                     if zone_config.is_err() {
                         return Err(NSError::Failed("parse zone config failed!".to_string()));
                     }
+                    let mut zone_config = zone_config.unwrap();
+                    zone_config.auth_key = Some(public_key_jwk);
                     info!("resolve & verify zone_config from {} TXT record OK.",name);
+                    let zone_config_value = serde_json::to_value(&zone_config).unwrap();
+                    name_info.did_document = Some(EncodedDocument::JsonLd(zone_config_value));
                 }
                 return Ok(name_info);
             },
