@@ -31,7 +31,7 @@ lazy_static!{
 pub struct SNServer {
     //ipaddress is the ip from update_op's ip_from
     all_device_info:Arc<Mutex<HashMap<String,(DeviceInfo,IpAddr)>>>,
-    all_user_zone_config:Arc<Mutex<HashMap<String,String>>>,
+    all_user_zone_config:Arc<Mutex<HashMap<String,(String,String)>>>,
     server_host:String,
     server_ip:IpAddr,
 }
@@ -183,6 +183,7 @@ impl SNServer {
                 error!("Failed to parse user public key: {:?}",e);
                 RPCErrors::ParseRequestError(e.to_string())
             })?;
+        
         let user_public_key = DecodingKey::from_jwk(&user_public_key)
             .map_err(|e|{
                 error!("Failed to decode user public key: {:?}",e);
@@ -329,22 +330,22 @@ impl SNServer {
         }
     }
 
-    
-    async fn get_user_zone_config(&self, username: &str) -> Option<String> {
+    //return (zone_config_jwt,owner_public_key)
+    async fn get_user_zone_config(&self, username: &str) -> Option<(String,String)> {
         let mut user_zone_config_map = self.all_user_zone_config.lock().await;
-        let zone_config = user_zone_config_map.get(username);
-        if zone_config.is_none() {
+        let zone_config_reuslt = user_zone_config_map.get(username);
+        if zone_config_reuslt.is_none() {
             let conn = sn_db::get_sn_db_conn().unwrap();
             let user_info = sn_db::get_user_info(&conn, username).unwrap();
             if user_info.is_some() {
                 let user_info = user_info.unwrap();
-                user_zone_config_map.insert(username.to_string(), user_info.1.clone());
-                return Some(user_info.1.clone());
+                user_zone_config_map.insert(username.to_string(), user_info.clone());
+                return Some(user_info);
             }
             warn!("zone config not found for [{}]",username);
             return None;
         } else {
-            return zone_config.cloned();
+            return zone_config_reuslt.cloned();
         }
     }
 
@@ -450,7 +451,10 @@ impl NsProvider for SNServer {
                 RecordType::TXT => {
                     let zone_config = self.get_user_zone_config(username).await;
                     if zone_config.is_some() {
-                        let result_name_info = NameInfo::from_zone_config_str(name, zone_config.unwrap().as_str());
+                        let zone_config = zone_config.unwrap();
+                        let pkx = get_x_from_jwk_string(zone_config.1.as_str())?;
+                        let result_name_info = NameInfo::from_zone_config_str(name, 
+                            zone_config.0.as_str(), pkx.as_str());
                         return Ok(result_name_info);
                     } else {
                         return Err(NSError::NotFound(name.to_string()));
@@ -481,7 +485,8 @@ impl NsProvider for SNServer {
             let (username,public_key,zone_config) = user_info.unwrap();
             match record_type {
                 RecordType::TXT => {
-                    let result_name_info = NameInfo::from_zone_config_str(name, zone_config.as_str());
+                    let pkx = get_x_from_jwk_string(public_key.as_str())?;
+                    let result_name_info = NameInfo::from_zone_config_str(name, zone_config.as_str(), pkx.as_str());
                     return Ok(result_name_info);
                 },
                 RecordType::A | RecordType::AAAA => {

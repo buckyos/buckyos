@@ -18,6 +18,7 @@ pub struct GatewayConfig {
     pub servers: HashMap<String, ServerConfig>,
     pub device_key_path: PathBuf,
     pub device_private_key: Option<[u8; 48]>,
+    pub device_did: Option<String>,
     //tunnel_builder_config : HashMap<String,TunnelBuilderConfig>,
 }
 
@@ -141,6 +142,9 @@ impl GatewayConfig {
             device_private_key = Some(ret);
             info!("Load device private key success!");
         }
+
+        let device_did = json_value.get("device_did").map(|v| v.as_str()).flatten();
+
 
         // register inner services
         if let Some(Some(inner_services)) = json_value.get("inner_services").map(|v| v.as_object())
@@ -271,6 +275,7 @@ impl GatewayConfig {
             servers: servers_cfg,
             device_key_path,
             device_private_key,
+            device_did: device_did.map(|s| s.to_string()),
         })
     }
 }

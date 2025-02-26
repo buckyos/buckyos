@@ -53,6 +53,14 @@ pub fn is_did(identifier: &str) -> bool {
     false
 }
 
+pub fn get_x_from_jwk_string(jwk_string: &str) -> NSResult<String> {
+    let jwk_json = serde_json::from_str::<serde_json::Value>(jwk_string).map_err(|_| NSError::Failed("Invalid jwk".to_string()))?;
+    let x = jwk_json.get("x")
+        .ok_or(NSError::Failed("Invalid jwk".to_string()))?;
+    let x_str = x.as_str().unwrap().to_string();
+    Ok(x_str)
+}
+
 pub fn decode_jwt_claim_without_verify(jwt: &str) -> NSResult<serde_json::Value> {
     let parts: Vec<&str> = jwt.split('.').collect();
     if parts.len() != 3 {

@@ -102,11 +102,14 @@ impl NameInfo {
             did_document:None,pk_x_list:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
     }
 
-    pub fn from_zone_config_str(name:&str,zone_config_str:&str) -> Self {
-        let txt_string = format!("DID={};",zone_config_str);
+    pub fn from_zone_config_str(name:&str,zone_config_jwt:&str,zone_config_pkx:&str) -> Self {
+        //let txt_string = format!("DID={};",zone_config_jwt);
         let ttl = 3600;
-        Self {name:name.to_string(),address:vec![],cname:None,txt:Some(txt_string),
-            did_document:None,pk_x_list:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
+        let pkx_string = format!("0:{};",zone_config_pkx);
+        let pk_x_list = vec![pkx_string];
+        Self {name:name.to_string(),address:vec![],cname:None,txt:None,
+            did_document:Some(EncodedDocument::from_str(zone_config_jwt.to_string()).unwrap()),
+            pk_x_list:Some(pk_x_list),proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
     }
 
      pub fn get_owner_pk(&self) -> Option<Jwk> {

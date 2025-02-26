@@ -155,8 +155,6 @@ pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],Stri
         if let Some(auth_key) = did.get_auth_key() {
             return Ok((auth_key,hostname.to_string()));
         }
-
-        return Err(NSError::NotFound("Auth key not found".to_string()));
     }
 
     let client = get_name_client();
@@ -166,32 +164,44 @@ pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],Stri
         return Err(NSError::InvalidState(msg));
     }
     let did_doc = client.unwrap().resolve_did(hostname,None).await?;
-    info!("did_doc: {:?}",did_doc);
-    //try conver did_doc to DeviceConfig
-    match did_doc {
-        EncodedDocument::JsonLd(value) => {
-            let device_config = serde_json::from_value::<DeviceConfig>(value);
-            if device_config.is_ok() {
-                let device_config = device_config.unwrap();
-                let auth_key = serde_json::to_value(&device_config.auth_key);
-                if auth_key.is_ok() {
-                    let auth_key = auth_key.unwrap();
-                    let x = auth_key.get("x");
-                    if x.is_some() {
-                        let x = x.unwrap();
-                        let x = x.as_str().unwrap();
-                        let did_id = format!("did:dev:{}",x);
-                        let auth_key = URL_SAFE_NO_PAD.decode(x).unwrap();
-                        return Ok((auth_key.try_into().unwrap(),did_id));
-                    }
-                }
+    //info!("did_doc: {:?}",did_doc);
+    // did_doc could be ZoneConfig or DeviceConfig
+    let zone_config = ZoneConfig::decode(&did_doc, None);
+    if zone_config.is_ok() {
+        let zone_config = zone_config.unwrap();
+        let auth_key = zone_config.auth_key;
+        if auth_key.is_some() {
+            let auth_key = auth_key.unwrap();
+            let auth_key = serde_json::to_value(&auth_key);
+            let auth_key = auth_key.unwrap();
+            let x = auth_key.get("x");
+            if x.is_some() {
+                let x = x.unwrap();
+                let x = x.as_str().unwrap();
+                //let did_id = format!("did:dev:{}",x);
+                let auth_key = URL_SAFE_NO_PAD.decode(x).unwrap();
+                return Ok((auth_key.try_into().unwrap(),hostname.to_string()));
             }
-            return Err(NSError::NotFound("Auth key not found".to_string()));
-        }
-        _ => {
-            return Err(NSError::NotFound("Invalid did document".to_string()));
         }
     }
+
+    let device_config = DeviceConfig::decode(&did_doc, None);
+    if device_config.is_ok() {
+        let device_config = device_config.unwrap();
+        let auth_key = serde_json::to_value(&device_config.auth_key);
+        if auth_key.is_ok() {
+            let auth_key = auth_key.unwrap();
+            let x = auth_key.get("x");
+            if x.is_some() {
+                let x = x.unwrap();
+                let x = x.as_str().unwrap();
+                let did_id = format!("did:dev:{}",x);
+                let auth_key = URL_SAFE_NO_PAD.decode(x).unwrap();
+                return Ok((auth_key.try_into().unwrap(),did_id));
+            }
+        }
+    }
+    return Err(NSError::NotFound("Invalid did document".to_string()));
 }
 
 

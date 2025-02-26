@@ -97,7 +97,12 @@ impl Gateway {
             pk_value
         };
 
-        let this_device_config = DeviceConfig::new("web3.buckyos.io", Some(pk));
+        let mut device_name = "web3.buckyos.io".to_string();
+        if let Some(device_did) = &self.config.device_did {
+            device_name = device_did.clone();
+        }
+
+        let this_device_config = DeviceConfig::new(device_name.as_str(), Some(pk));
         let set_result = self.device_config.set(this_device_config.clone());
         if set_result.is_err() {
             error!("device_config can only be set once");
