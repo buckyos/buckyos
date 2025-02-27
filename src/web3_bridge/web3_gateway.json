@@ -4,7 +4,9 @@
         "main_sn" : {
             "type" : "cyfs_sn",
             "host":"web3.buckyos.io",
-            "ip":"192.168.1.188"
+            "ip":"192.168.1.188",
+            "zone_config_jwt":"TODO",
+            "zone_config_pkx":"TODO"
         }
     },
     "servers":{

@@ -20,6 +20,8 @@ use crate::sn_db::{self, *};
 pub struct SNServerConfig {
     host:String,
     ip:String,
+    zone_config_jwt:String,
+    zone_config_pkx:String,
 }
 
 
@@ -55,11 +57,19 @@ impl SNServer {
         let mut server_ip:IpAddr = IpAddr::V4(Ipv4Addr::new(127,0,0,1));
         let mut zone_config = "".to_string();
         let mut zone_config_pkx = "".to_string();
-        let mut device_list = None;
+        let mut device_list: Option<Vec<String>> = None;
+        let current_device_config = CURRENT_DEVICE_CONFIG.get();
+        if current_device_config.is_some() {
+            let current_device_config = current_device_config.unwrap();
+            device_list = Some(vec![current_device_config.get_did().to_string()]);
+        } 
+
         if server_config.is_some() {
             let server_config = server_config.unwrap();
             server_host = server_config.host;
             server_ip = IpAddr::from_str(server_config.ip.as_str()).unwrap();
+            zone_config = server_config.zone_config_jwt;
+            zone_config_pkx = server_config.zone_config_pkx;
         } 
 
         SNServer {
