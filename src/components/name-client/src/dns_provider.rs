@@ -192,8 +192,14 @@ impl NsProvider for DnsProvider {
                     if zone_config.is_err() {
                         return Err(NSError::Failed("parse zone config failed!".to_string()));
                     }
+                    
                     let mut zone_config = zone_config.unwrap();
                     zone_config.auth_key = Some(public_key_jwk);
+                    let device_list = name_info.get_device_list();
+                    if device_list.is_some() {
+                        zone_config.device_list = device_list;
+                    }
+
                     info!("resolve & verify zone_config from {} TXT record OK.",name);
                     let zone_config_value = serde_json::to_value(&zone_config).unwrap();
                     name_info.did_document = Some(EncodedDocument::JsonLd(zone_config_value));

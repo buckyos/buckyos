@@ -34,6 +34,10 @@ pub struct SNServer {
     all_user_zone_config:Arc<Mutex<HashMap<String,(String,String)>>>,
     server_host:String,
     server_ip:IpAddr,
+
+    zone_config:String,
+    zone_config_pkx:String,
+    device_list:Option<Vec<String>>,//device_list is the list of device_did
 }
 
 impl SNServer {
@@ -49,6 +53,9 @@ impl SNServer {
 
         let mut server_host = "web3.buckyos.io".to_string();
         let mut server_ip:IpAddr = IpAddr::V4(Ipv4Addr::new(127,0,0,1));
+        let mut zone_config = "".to_string();
+        let mut zone_config_pkx = "".to_string();
+        let mut device_list = None;
         if server_config.is_some() {
             let server_config = server_config.unwrap();
             server_host = server_config.host;
@@ -60,6 +67,9 @@ impl SNServer {
             all_user_zone_config:Arc::new(Mutex::new(HashMap::new())),
             server_host:server_host,
             server_ip:server_ip,
+            zone_config:zone_config,
+            zone_config_pkx:zone_config_pkx,
+            device_list:device_list,
         }
     }
 
@@ -427,8 +437,22 @@ impl NsProvider for SNServer {
         let full_server_host = format!("{}.",self.server_host.as_str());
         if name == self.server_host || name == full_server_host {
             //返回当前服务器的地址
-            let result_name_info = NameInfo::from_address(name, self.server_ip);
-            return Ok(result_name_info);
+            match record_type {
+                RecordType::A => {
+                    let result_name_info = NameInfo::from_address(name, self.server_ip);
+                    return Ok(result_name_info);
+                },
+                RecordType::TXT => {
+                    //返回当前服务器的zoneconfig和auth_key
+                    let result_name_info = NameInfo::from_zone_config_str(name, self.zone_config.as_str(),
+                         self.zone_config_pkx.as_str(),
+                         &self.device_list);
+                    return Ok(result_name_info);
+                },
+                _ => {
+                    return Err(NSError::NotFound(format!("sn-server not support record type {}",record_type.to_string())));
+                }
+            }
         }
         //query A or AAAA record
         //端口映射方案: 如果用户存在 返回设备ood1的IP 
@@ -454,7 +478,7 @@ impl NsProvider for SNServer {
                         let zone_config = zone_config.unwrap();
                         let pkx = get_x_from_jwk_string(zone_config.1.as_str())?;
                         let result_name_info = NameInfo::from_zone_config_str(name, 
-                            zone_config.0.as_str(), pkx.as_str());
+                            zone_config.0.as_str(), pkx.as_str(),&None);
                         return Ok(result_name_info);
                     } else {
                         return Err(NSError::NotFound(name.to_string()));
@@ -486,7 +510,7 @@ impl NsProvider for SNServer {
             match record_type {
                 RecordType::TXT => {
                     let pkx = get_x_from_jwk_string(public_key.as_str())?;
-                    let result_name_info = NameInfo::from_zone_config_str(name, zone_config.as_str(), pkx.as_str());
+                    let result_name_info = NameInfo::from_zone_config_str(name, zone_config.as_str(), pkx.as_str(),&None);
                     return Ok(result_name_info);
                 },
                 RecordType::A | RecordType::AAAA => {

@@ -169,6 +169,19 @@ pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],Stri
     let zone_config = ZoneConfig::decode(&did_doc, None);
     if zone_config.is_ok() {
         let zone_config = zone_config.unwrap();
+        if zone_config.device_list.is_some() {
+            let device_list = zone_config.device_list.unwrap();
+            for device_did in device_list {
+                let device_did = DID::from_str(device_did.as_str());
+                if device_did.is_some() {
+                    let device_did = device_did.unwrap();
+                    if let Some(auth_key) = device_did.get_auth_key() {
+                        return Ok((auth_key,hostname.to_string()));
+                    }
+                }
+            }
+        }
+        
         let auth_key = zone_config.auth_key;
         if auth_key.is_some() {
             let auth_key = auth_key.unwrap();
@@ -181,23 +194,6 @@ pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],Stri
                 //let did_id = format!("did:dev:{}",x);
                 let auth_key = URL_SAFE_NO_PAD.decode(x).unwrap();
                 return Ok((auth_key.try_into().unwrap(),hostname.to_string()));
-            }
-        }
-    }
-
-    let device_config = DeviceConfig::decode(&did_doc, None);
-    if device_config.is_ok() {
-        let device_config = device_config.unwrap();
-        let auth_key = serde_json::to_value(&device_config.auth_key);
-        if auth_key.is_ok() {
-            let auth_key = auth_key.unwrap();
-            let x = auth_key.get("x");
-            if x.is_some() {
-                let x = x.unwrap();
-                let x = x.as_str().unwrap();
-                let did_id = format!("did:dev:{}",x);
-                let auth_key = URL_SAFE_NO_PAD.decode(x).unwrap();
-                return Ok((auth_key.try_into().unwrap(),did_id));
             }
         }
     }

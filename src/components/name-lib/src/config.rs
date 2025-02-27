@@ -34,6 +34,8 @@ pub struct ZoneConfig {
     pub owner_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_key : Option<Jwk>,//owner's public key
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_list: Option<Vec<String>>,//device did list
     
     //ood server endpoints,can be ["ood1","ood2@192.168.32.1","ood3#vlan1]
     pub oods: Vec<String>,
@@ -86,6 +88,7 @@ impl ZoneConfig {
             name: Some("waterflier.web3.buckyos.io".to_string()),
             owner_name: None,
             auth_key: Some(public_key_jwk),
+            device_list: None,
             oods: vec!["ood01".to_string()],
             gateway: None,
             sn: None,
