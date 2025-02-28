@@ -2,6 +2,7 @@
 extern crate core;
 mod package_cmd;
 mod util;
+mod sys_config;
 use clap::{Arg, Command};
 use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig};
 use package_cmd::*;
@@ -121,6 +122,20 @@ async fn main() -> std::result::Result<(), String> {
                         .help("local repo url")
                         .required(true),
                 ),
+        )
+        .subcommand(
+            Command::new("connect")
+                .about("connect system config as a client")
+                .arg(
+                    Arg::new("target_url")
+                        .long("target_url")
+                        .help("system config service url, default 'http://127.0.0.1:3200/kapi/system_config' ")
+                )
+                .arg(
+                    Arg::new("node_id")
+                        .long("node_id")
+                        .help("node_id in current machine, default 'node'")
+                )
         )
         // .arg(
         //     Arg::new("snapshot")
@@ -351,6 +366,19 @@ async fn main() -> std::result::Result<(), String> {
                     return Err("install package failed!".to_string());
                 }
             }
+        }
+        Some(("connect", matches)) => {
+            let target_url = matches.get_one::<String>("target_url");
+            let node_id = matches.get_one::<String>("node_id");
+            let url = match target_url {
+                Some(url) => url.to_string(),
+                None => String::from("http://127.0.0.1:3200/kapi/system_config"),
+            };
+            let node_id = match target_url {
+                Some(value) =>  value.to_string(),
+                None => String::from("node"),
+            };
+            sys_config::connect_into(&url, &node_id).await;
         }
         _ => {
             println!("unknown command!");

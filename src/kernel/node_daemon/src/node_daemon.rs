@@ -707,8 +707,8 @@ async fn node_daemon_main_loop(
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = matches.get_one::<String>("id");
     let enable_active = matches.get_flag("enable_active");
-    let defualt_node_id = "node".to_string();
-    let node_id = node_id.unwrap_or(&defualt_node_id);
+    let default_node_id = "node".to_string();
+    let node_id = node_id.unwrap_or(&default_node_id);
 
     info!("node_daemon start...");
     //load node identity config
