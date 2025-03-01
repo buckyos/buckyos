@@ -30,3 +30,8 @@ warp = "*"
 tar = "*"
 sha2 = "*"
 flate2 = "*"
+rusqlite = "*"
+ndn-lib = { path = "../ndn-lib" }
+
+[dev-dependencies]
+tempfile = "*"

@@ -64,14 +64,4 @@ mod test {
         //     Err(e) => println!("Error: {:?}", e),
         // }
     }
-    #[tokio::test]
-    async fn test_execute_service_pkg() {
-        // 初始化日志系统
-        let _ = env_logger::builder().is_test(true).try_init();
-
-        let pkg_id = "test2".to_string();
-        let env_path = PathBuf::from("d:\\temp\\");
-        let pkg = ServicePkg::new(pkg_id, env_path);
-        pkg.start(None).await.unwrap();
-    }
 }

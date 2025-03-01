@@ -18,7 +18,7 @@ pkg_name#>0.1.4<0.1.6, pkg_name#>0.1.4<=0.1.6, pkg_name#>=0.1.4<0.1.6, pkg_name#
 pub struct PackageId {
     pub name: String,
     pub version: Option<String>,
-    pub sha256: Option<String>,
+    pub objid: Option<String>,
 }
 
 impl FromStr for PackageId {
@@ -36,7 +36,7 @@ impl ToString for PackageId {
             result.push_str("#");
             result.push_str(version);
         }
-        if let Some(sha256) = &self.sha256 {
+        if let Some(sha256) = &self.objid {
             result.push_str("#");
             result.push_str(sha256);
         }
@@ -93,7 +93,7 @@ impl Parser {
         Ok(PackageId {
             name,
             version,
-            sha256,
+            objid: sha256,
         })
     }
 
@@ -164,7 +164,7 @@ mod tests {
         let pkg_id = "a#sha256:1234567890";
         let result = Parser::parse(pkg_id).unwrap();
         assert_eq!(&result.name, "a");
-        assert_eq!(result.sha256, Some("sha256:1234567890".to_string()));
+        assert_eq!(result.objid, Some("sha256:1234567890".to_string()));
 
         let pkg_id = "a#>0.1.0";
         let result = Parser::parse(pkg_id).unwrap();

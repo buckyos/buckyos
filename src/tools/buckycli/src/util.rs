@@ -1,7 +1,6 @@
 use buckyos_kit::get_buckyos_system_etc_dir;
 use jsonwebtoken::EncodingKey;
 use serde::Deserialize;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Deserialize, Debug)]

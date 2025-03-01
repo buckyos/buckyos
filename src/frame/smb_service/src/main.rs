@@ -5,9 +5,9 @@ use sysinfo::{ProcessesToUpdate, System};
 use std::fs::File;
 use std::sync::OnceLock;
 use fs2::FileExt;
-use buckyos_kit::{get_buckyos_root_dir, get_buckyos_service_data_dir};
+use buckyos_kit::{get_buckyos_root_dir};
 use sys_config::{SystemConfigClient, SystemConfigError};
-use crate::error::{into_smb_err, smb_err, SmbError, SmbErrorCode, SmbResult};
+use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
 #[cfg(target_os = "linux")]
 use crate::linux_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 #[cfg(target_os = "windows")]
@@ -43,7 +43,7 @@ struct UserInfo {
 }
 
 
-static proc_lock: OnceLock<File> = OnceLock::new();
+static PROC_LOCK: OnceLock<File> = OnceLock::new();
 fn check_process_exist(name: &str) -> bool {
     let lock_file = std::env::temp_dir().join(format!("{}.lock", name));
     let lock_file = match File::create(lock_file) {
@@ -57,7 +57,7 @@ fn check_process_exist(name: &str) -> bool {
     if lock_file.try_lock_exclusive().is_err() {
         true
     } else {
-        proc_lock.get_or_init(|| {
+        PROC_LOCK.get_or_init(|| {
            lock_file
         });
         false
@@ -130,7 +130,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
                 .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_smb_items failed"))?
         },
         Err(e) => {
-            if let SystemConfigError::KeyNotFound(path) = e {
+            if let SystemConfigError::KeyNotFound(_path) = e {
                 Vec::new()
             } else {
                 return Err(smb_err!(SmbErrorCode::Failed, "get latest_smb_items failed: {}", e));
@@ -143,7 +143,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
                 .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_users failed"))?
         },
         Err(e) => {
-            if let SystemConfigError::KeyNotFound(path) = e {
+            if let SystemConfigError::KeyNotFound(_path) = e {
                 Vec::new()
             } else {
                 return Err(smb_err!(SmbErrorCode::Failed, "get latest_smb_items failed: {}", e));
@@ -164,7 +164,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
                 info
             }
             Err(e) => {
-                if let SystemConfigError::KeyNotFound(path) = e {
+                if let SystemConfigError::KeyNotFound(_path) = e {
                     log::debug!("user {} samba_info not found", user);
                     continue;
                 } else {
@@ -180,7 +180,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
                 samba_info
             },
             Err(e) => {
-                if let SystemConfigError::KeyNotFound(path) = e {
+                if let SystemConfigError::KeyNotFound(_path) = e {
                     log::debug!("user {} samba_info not found", user);
                     continue;
                 } else {

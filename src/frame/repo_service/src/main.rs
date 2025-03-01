@@ -6,7 +6,7 @@ mod downloader;
 mod index_publisher;
 mod repo_server;
 mod source_manager;
-mod source_node;
+
 mod task_manager;
 mod zone_info_helper;
 use package_lib::PackageId;

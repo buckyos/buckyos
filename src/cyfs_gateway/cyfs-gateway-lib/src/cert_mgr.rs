@@ -1,7 +1,6 @@
 use rand::Rng;
 use tokio::fs;
 use anyhow::Result;
-use core::error;
 use std::collections::HashMap;
 use rustls::server::{ResolvesServerCert, ClientHello};
 use rustls::sign::CertifiedKey;
@@ -370,7 +369,7 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
             }
             Err(_) => {
                 // 生成随机邮箱并创建新账号
-                let random_str = rand::thread_rng().gen_range(0..1000000);
+                let random_str = rand::rng().random_range(0..1000000);
                 let email = format!("{}@buckyos.com", random_str);
                 info!("Generated random email address: {}", email);
                 

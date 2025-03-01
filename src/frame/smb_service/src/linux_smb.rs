@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::path::Path;
 use ini::Ini;
 use shlex::Shlex;

@@ -34,6 +34,10 @@ pub enum PkgError {
     IOError(#[from] io::Error),
     #[error("Json Error: {0}")]
     JsonError(#[from] serde_json::Error),
+    #[error("Sql Error: {0}")]
+    SqlError(String),
+    #[error("Access denied: {0}")]
+    AccessDeniedError(String),
 }
 
 pub type PkgResult<T> = std::result::Result<T, PkgError>;

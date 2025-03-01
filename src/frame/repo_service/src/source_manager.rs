@@ -11,7 +11,7 @@ use core::hash;
 use kRPC::kRPC;
 use log::*;
 use ndn_lib::{ChunkId, NamedDataMgr};
-use package_lib::PackageId;
+use package_lib::*;
 use serde::ser;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -35,7 +35,7 @@ enum RepoStatus {
 
 #[derive(Debug, Clone)]
 pub struct SourceManager {
-    source_list: Arc<RwLock<Vec<SourceNode>>>,
+    source_list: Arc<RwLock<Vec<MetaIndexDb>>>,
     status_flag: Arc<Mutex<RepoStatus>>,
 }
 
@@ -536,7 +536,7 @@ impl SourceManager {
         let version_desc = if let Some(version) = &package_id.version {
             version.clone()
         } else {
-            if let Some(sha256) = &package_id.sha256 {
+            if let Some(sha256) = &package_id.objid {
                 sha256.clone()
             } else {
                 "*".to_string()

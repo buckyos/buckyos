@@ -31,7 +31,7 @@ pub fn generate_activation_codes(conn: &Connection, count: usize) -> Result<Vec<
     let mut codes: Vec<String> = Vec::new();
     let mut stmt = conn.prepare("INSERT INTO activation_codes (code, used) VALUES (?1, 0)")?;
     for _ in 0..count {
-        let code: String = rand::thread_rng().gen_range(0..1000000).to_string();
+        let code: String = rand::rng().random_range(0..1000000).to_string();
         codes.push(code.clone());
         stmt.execute(params![code])?;
     }

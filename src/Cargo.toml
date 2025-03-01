@@ -11,8 +11,8 @@ members = [
     "./components/buckyos-kit",
     "./components/ndn-lib",
     "./components/debug-lib",
-    "./components/package-installer", 
-    "./components/debug-lib",
+    #"./components/package-installer", 
+    "./components/state-waiter",
 
     "./cyfs_gateway/cyfs-gateway-lib",
     "./cyfs_gateway/cyfs_gateway",
@@ -29,7 +29,7 @@ members = [
     "./kernel/node_daemon",
     "./kernel/scheduler",
     "./kernel/task_manager",                      
-    "./frame/repo_service",
+    #"./frame/repo_service",
     "./frame/smb_service",
 
     "./tools/buckycli", 

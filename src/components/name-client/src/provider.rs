@@ -1,5 +1,5 @@
 use std::net::IpAddr;
-use jsonwebtoken::{jwk::Jwk, DecodingKey};
+use jsonwebtoken::{jwk::Jwk};
 use serde::{Deserialize, Serialize};
 use name_lib::*;
 use serde_json::json;

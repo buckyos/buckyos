@@ -6,8 +6,8 @@ use tokio::sync::{Mutex, RwLock};
 use lazy_static::lazy_static;
 use warp::{Filter};
 use serde_json::{json, Value};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
-use sha2::{Digest, Sha256, Sha512};
+use base64::{engine::general_purpose::STANDARD,Engine as _};
+use sha2::{Digest, Sha256};
 
 use jsonwebtoken::{Validation, EncodingKey, DecodingKey};
 use name_lib::*;

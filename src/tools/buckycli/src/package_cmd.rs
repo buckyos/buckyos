@@ -1,4 +1,4 @@
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused)]
 use crate::util::*;
 use flate2::write::GzEncoder;
 use flate2::Compression;

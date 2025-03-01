@@ -1,3 +1,4 @@
+#![allow(unused_mut,unused,dead_code)]
 mod app;
 mod scheduler;
 mod service;

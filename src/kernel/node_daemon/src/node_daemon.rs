@@ -32,6 +32,8 @@ use crate::frame_service_mgr::*;
 use crate::app_mgr::*;
 use crate::kernel_mgr::*;
 use crate::active_server::*;
+use crate::service_pkg::*;
+
 use thiserror::Error;
 
 
@@ -313,13 +315,9 @@ async fn check_and_update_sys_pkgs(is_ood: bool,sys_config_client: &SystemConfig
     let env = PackageEnv::new(get_buckyos_system_etc_dir());
     for pkg_id in will_check_update_pkg_list {
         let mut need_update = true;
-        let pkg_meta = env.get_pkg_meta(pkg_id.as_str());
+        let pkg_meta = env.get_pkg_meta(pkg_id.as_str()).await;
         if pkg_meta.is_ok() {
-            let pkg_meta = pkg_meta.unwrap();
-            if pkg_meta.is_some() {
-                //检查当前pkg是否是最新的
-                //call repo_service.is_pkg_latest(pkg_id,pkg_meta);
-            } 
+            let (meta_obj_id,pkg_meta) = pkg_meta.unwrap();
         }
 
         if need_update {

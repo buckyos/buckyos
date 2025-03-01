@@ -9,11 +9,12 @@ use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use tokio::sync::RwLock;
-
-use crate::run_item::*;
 use buckyos_kit::*;
 use package_lib::*;
-use package_installer::*;
+use crate::run_item::*;
+use crate::service_pkg::*;
+
+//use package_installer::*;
 use sys_config::AppServiceInstanceConfig;
 
 
@@ -51,10 +52,10 @@ impl AppRunItem {
         ))
     }
 
-    fn set_env_var(&self) -> Result<()> {
+    async fn set_env_var(&self) -> Result<()> {
         let app_pkg_id = self.get_app_pkg_id()?;
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let app_pkg = env.load(app_pkg_id.as_str());
+        let app_pkg = env.load(app_pkg_id.as_str()).await;
         if app_pkg.is_err() {
             return Err(ControlRuntItemErrors::PkgNotExist(app_pkg_id));
         }
@@ -108,34 +109,30 @@ impl RunItemControl for AppRunItem {
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         let app_pkg_id = self.get_app_pkg_id()?;
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let pkg_meta = env.get_pkg_meta(app_pkg_id.as_str());
+        let pkg_meta = env.get_pkg_meta(app_pkg_id.as_str()).await;
         if pkg_meta.is_err() {
             return Err(ControlRuntItemErrors::PkgNotExist(app_pkg_id));
         }
-        let pkg_meta = pkg_meta.unwrap();
-        if pkg_meta.is_none() {
-            warn!("app pkg {} meta not exist,cann't deploy",app_pkg_id);
-            return Err(ControlRuntItemErrors::PkgNotExist(app_pkg_id));
-        }
-        let pkg_meta = pkg_meta.unwrap();
+        let (meta_obj_id,pkg_meta) = pkg_meta.unwrap();
+
         warn!("deploy app {}",app_pkg_id);
         let repo_url = "http://127.0.0.1:8080/repo";
         //TODO:由install流程管理去重和断点续传,这个去重通常是跨进程的
-        let deps = Installer::install(app_pkg_id.as_str(), &PathBuf::from(get_buckyos_system_bin_dir()), repo_url, None)
-            .await
-            .map_err(|e| {
-                error!("Failed to call install package, err:{:?}", e);
-                return ControlRuntItemErrors::ExecuteError(
-                    "deploy".to_string(),
-                    e.to_string(),
-                );
-            })?;
-        warn!("install app {} success, deps: {:?}",app_pkg_id,deps);
+        // let deps = Installer::install(app_pkg_id.as_str(), &PathBuf::from(get_buckyos_system_bin_dir()), repo_url, None)
+        //     .await
+        //     .map_err(|e| {
+        //         error!("Failed to call install package, err:{:?}", e);
+        //         return ControlRuntItemErrors::ExecuteError(
+        //             "deploy".to_string(),
+        //             e.to_string(),
+        //         );
+        //     })?;
+        warn!("install app {} success",app_pkg_id);
         Ok(())
     }
 
     async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
-        self.set_env_var()?;
+        self.set_env_var().await?;
         let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
 
         let result = self.app_loader
@@ -160,7 +157,7 @@ impl RunItemControl for AppRunItem {
 
     
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
-        self.set_env_var()?;
+        self.set_env_var().await?;
         let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
         
         let result = self.app_loader
@@ -185,12 +182,12 @@ impl RunItemControl for AppRunItem {
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
         let app_pkg_id = self.get_app_pkg_id()?;
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let app_pkg = env.load(app_pkg_id.as_str());
+        let app_pkg = env.load(app_pkg_id.as_str()).await;
         if app_pkg.is_err() {
             return Ok(ServiceState::NotExist);
         }
         
-        self.set_env_var()?;
+        self.set_env_var().await?;
         let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
 
         let result = self.app_loader.status(Some(&real_param)).await.map_err(|err| {

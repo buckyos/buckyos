@@ -12,7 +12,7 @@ chrono = "*"
 [dependencies]
 thiserror = "*"
 sysinfo = "*"
-serde = "*"
+serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 json_value_merge = "*"
 toml = "*"
@@ -25,7 +25,6 @@ ed25519-dalek = { version = "*", features = ["rand_core"] }
 pkcs8 = "*"
 #rand = ""
 base64 = "*"
-package-lib = { path = "../package-lib" }
 async-recursion = "*"
 lazy_static = "*"
 async-trait = "*"

@@ -11,7 +11,7 @@ package-lib = { path = "../package-lib" }
 serde_json = "1.0.116"
 serde = { version = "1.0", features = ["derive"] }
 ndn-lib = { path = "../ndn-lib" }
-repo_service = { path = "../../frame/repo_service" }
+#repo_service = { path = "../../frame/repo_service" }
 log = "*"
 tokio = { version = "*", features = ["full"] }
 jsonwebtoken = "9.3.0"

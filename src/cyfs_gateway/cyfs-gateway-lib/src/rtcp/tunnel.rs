@@ -484,7 +484,7 @@ impl RTcpTunnel {
         dest_host: Option<String>,
     ) -> Result<Box<dyn AsyncStream>, std::io::Error> {
         // First generate 32byte session_key
-        let random_bytes: [u8; 16] = rand::thread_rng().gen();
+        let random_bytes: [u8; 16] = rand::rng().random();
         let session_key = hex::encode(random_bytes);
         let real_key = format!("{}_{}", self.this_device.as_str(), session_key);
         let seq = self.next_seq();

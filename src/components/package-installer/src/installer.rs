@@ -5,7 +5,7 @@ use log::*;
 use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig};
 use ndn_lib::*;
 use package_lib::*;
-use repo_service::*;
+
 use serde::de;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -52,155 +52,116 @@ impl Installer {
         local_repo_url: &str,
         named_mgr_id: Option<&str>,
     ) -> Result<Vec<PackageId>, String> {
-        let env = PackageEnv::new(target.clone());
-        if let Ok(deps) = env.check_pkg_ready(pkg_id_str) {
-            info!(
-                "Package {} is already installed, deps:{:?}",
-                pkg_id_str, deps
-            );
-            return Ok(deps);
-        }
+        // let env = PackageEnv::new(target.clone());
+        // if let Ok(deps) = env.check_pkg_ready(pkg_id_str) {
+        //     info!(
+        //         "Package {} is already installed, deps:{:?}",
+        //         pkg_id_str, deps
+        //     );
+        //     return Ok(deps);
+        // }
 
-        let session_token = Self::gen_rpc_session_token()?;
-        let pkg_id = PackageId::from_str(pkg_id_str)
-            .map_err(|err| Self::log_error(format!("Parse package id failed: {}", err)))?;
+        // let session_token = Self::gen_rpc_session_token()?;
+        // let pkg_id = PackageId::from_str(pkg_id_str)
+        //     .map_err(|err| Self::log_error(format!("Parse package id failed: {}", err)))?;
 
-        let client = kRPC::kRPC::new(local_repo_url, Some(session_token));
-        let version = pkg_id
-            .sha256
-            .or(pkg_id.version)
-            .unwrap_or_else(|| "*".to_string());
+        // let client = kRPC::kRPC::new(local_repo_url, Some(session_token));
+        // let version = pkg_id
+        //     .objid
+        //     .or(pkg_id.version)
+        //     .unwrap_or_else(|| "*".to_string());
 
-        let result = client
-            .call(
-                "install_pkg",
-                json!({ "pkg_name": pkg_id.name, "version": version }),
-            )
-            .await
-            .map_err(|err| Self::log_error(format!("Call install_pkg failed: {}", err)))?;
+        // let result = client
+        //     .call(
+        //         "install_pkg",
+        //         json!({ "pkg_name": pkg_id.name, "version": version }),
+        //     )
+        //     .await
+        //     .map_err(|err| Self::log_error(format!("Call install_pkg failed: {}", err)))?;
 
-        let install_task_result: InstallRequestResult =
-            serde_json::from_value(result).map_err(|err| {
-                Self::log_error(format!(
-                    "Failed to deserialize install task result: {}",
-                    err
-                ))
-            })?;
+        // let install_task_result: InstallRequestResult =
+        //     serde_json::from_value(result).map_err(|err| {
+        //         Self::log_error(format!(
+        //             "Failed to deserialize install task result: {}",
+        //             err
+        //         ))
+        //     })?;
 
-        Self::poll_task(&client, install_task_result.task_id, &env, named_mgr_id).await
+        // Self::poll_task(&client, install_task_result.task_id, &env, named_mgr_id).await
+        unimplemented!()
     }
 
-    async fn poll_task(
-        client: &kRPC::kRPC,
-        task_id: String,
-        env: &PackageEnv,
-        named_mgr_id: Option<&str>,
-    ) -> Result<Vec<PackageId>, String> {
-        loop {
-            let result = client
-                .call("query_task", json!({ "task_id": task_id }))
-                .await
-                .map_err(|err| Self::log_error(format!("Call query_task failed: {}", err)))?;
+   
+    // pub async fn install_pkgs_from_repo(
+    //     package_id: &PackageId,
+    //     pkgs: &[PackageMeta],
+    //     env: &PackageEnv,
+    //     named_mgr_id: Option<&str>,
+    // ) -> Result<Vec<PackageId>, String> {
+    //     let mut deps = Vec::new();
+    //     for pkg in pkgs {
+    //         debug!("Installing package {:?}", pkg);
+    //         let chunk_id = pkg.chunk_id.clone();
+    //         if chunk_id.is_none() {
+    //             debug!("Package {} does not need to download", pkg.pkg_name);
+    //             continue;
+    //         }
+    //         let chunk_id = chunk_id.unwrap();
+    //         let dest_file_tmp = env
+    //             .get_cache_dir()
+    //             .join(format!("{}.tmp", PackageEnv::fix_path(&chunk_id)));
+    //         let dest_file = env.get_cache_dir().join(&PackageEnv::fix_path(&chunk_id));
 
-            let task: Task = serde_json::from_value(result)
-                .map_err(|err| Self::log_error(format!("Failed to deserialize task: {}", err)))?;
+    //         if !dest_file.exists()
+    //             || !Self::verify_file_chunk_id(&dest_file, &chunk_id)
+    //                 .await
+    //                 .is_ok()
+    //         {
+    //             debug!(
+    //                 "Downloading chunk {} to {}",
+    //                 chunk_id,
+    //                 dest_file_tmp.display()
+    //             );
+    //             Self::chunk_to_local_file(&chunk_id, named_mgr_id, &dest_file_tmp)
+    //                 .await
+    //                 .map_err(|e| e.to_string())?;
+    //             tokio::fs::rename(&dest_file_tmp, &dest_file)
+    //                 .await
+    //                 .map_err(|err| {
+    //                     Self::log_error(format!(
+    //                         "Rename {} to {} failed: {}",
+    //                         dest_file_tmp.display(),
+    //                         dest_file.display(),
+    //                         err
+    //                     ))
+    //                 })?;
+    //         }
 
-            match task {
-                Task::InstallTask {
-                    id,
-                    package_id,
-                    status,
-                    deps,
-                    ..
-                } => match status {
-                    TaskStatus::Finished => {
-                        info!("Task {} finished", id);
-                        return Self::install_pkgs_from_repo(&package_id, &deps, env, named_mgr_id)
-                            .await;
-                    }
-                    TaskStatus::Error(reason) => {
-                        return Err(Self::log_error(format!("Task {} failed: {}", id, reason)));
-                    }
-                    _ => info!("Task {} is {:?}", id, status),
-                },
-                _ => {
-                    return Err(Self::log_error(format!("Invalid task type: {:?}", task)));
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    }
+    //         let dest_dir = env
+    //             .get_install_dir()
+    //             .join(format!("{}#{}", pkg.pkg_name, pkg.version));
 
-    pub async fn install_pkgs_from_repo(
-        package_id: &PackageId,
-        pkgs: &[PackageMeta],
-        env: &PackageEnv,
-        named_mgr_id: Option<&str>,
-    ) -> Result<Vec<PackageId>, String> {
-        let mut deps = Vec::new();
-        for pkg in pkgs {
-            debug!("Installing package {:?}", pkg);
-            let chunk_id = pkg.chunk_id.clone();
-            if chunk_id.is_none() {
-                debug!("Package {} does not need to download", pkg.pkg_name);
-                continue;
-            }
-            let chunk_id = chunk_id.unwrap();
-            let dest_file_tmp = env
-                .get_cache_dir()
-                .join(format!("{}.tmp", PackageEnv::fix_path(&chunk_id)));
-            let dest_file = env.get_cache_dir().join(&PackageEnv::fix_path(&chunk_id));
+    //         Self::unpack(&dest_file, &dest_dir).map_err(|err| {
+    //             Self::log_error(format!("Unpack {} failed: {}", dest_file.display(), err))
+    //         })?;
 
-            if !dest_file.exists()
-                || !Self::verify_file_chunk_id(&dest_file, &chunk_id)
-                    .await
-                    .is_ok()
-            {
-                debug!(
-                    "Downloading chunk {} to {}",
-                    chunk_id,
-                    dest_file_tmp.display()
-                );
-                Self::chunk_to_local_file(&chunk_id, named_mgr_id, &dest_file_tmp)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                tokio::fs::rename(&dest_file_tmp, &dest_file)
-                    .await
-                    .map_err(|err| {
-                        Self::log_error(format!(
-                            "Rename {} to {} failed: {}",
-                            dest_file_tmp.display(),
-                            dest_file.display(),
-                            err
-                        ))
-                    })?;
-            }
+    //         let full_pkg_id = format!("{}#{}#{}", pkg.pkg_name, pkg.version, chunk_id);
+    //         let full_pkg_id = PackageId::from_str(&full_pkg_id)
+    //             .map_err(|err| Self::log_error(format!("Parse full package id failed: {}", err)))?;
 
-            let dest_dir = env
-                .get_install_dir()
-                .join(format!("{}#{}", pkg.pkg_name, pkg.version));
+    //         let dependencies = Self::extract_dependencies(&pkg.dependencies)?;
+    //         env.write_meta_file(&full_pkg_id, &dependencies, &pkg.hostname)
+    //             .map_err(|err| {
+    //                 Self::log_error(format!(
+    //                     "Write meta file for {:?} failed: {}",
+    //                     full_pkg_id, err
+    //                 ))
+    //             })?;
 
-            Self::unpack(&dest_file, &dest_dir).map_err(|err| {
-                Self::log_error(format!("Unpack {} failed: {}", dest_file.display(), err))
-            })?;
-
-            let full_pkg_id = format!("{}#{}#{}", pkg.pkg_name, pkg.version, chunk_id);
-            let full_pkg_id = PackageId::from_str(&full_pkg_id)
-                .map_err(|err| Self::log_error(format!("Parse full package id failed: {}", err)))?;
-
-            let dependencies = Self::extract_dependencies(&pkg.dependencies)?;
-            env.write_meta_file(&full_pkg_id, &dependencies, &pkg.hostname)
-                .map_err(|err| {
-                    Self::log_error(format!(
-                        "Write meta file for {:?} failed: {}",
-                        full_pkg_id, err
-                    ))
-                })?;
-
-            deps.push(full_pkg_id);
-        }
-        Ok(deps)
-    }
+    //         deps.push(full_pkg_id);
+    //     }
+    //     Ok(deps)
+    // }
 
     async fn verify_file_chunk_id(file: &PathBuf, chunk_id: &str) -> Result<(), String> {
         Ok(())
@@ -210,22 +171,22 @@ impl Installer {
         chunk_id: &str,
         chunk_mgr_id: Option<&str>,
         local_file: &PathBuf,
-    ) -> RepoResult<()> {
+    ) -> PkgResult<()> {
         let named_mgr =
             NamedDataMgr::get_named_data_mgr_by_id(None)
                 .await
-                .ok_or(RepoError::NotFound(format!(
+                .ok_or(PkgError::FileNotFoundError(format!(
                     "Chunk mgr {:?} not found",
                     chunk_mgr_id
                 )))?;
 
         let chunk_id = ChunkId::new(chunk_id)
-            .map_err(|e| RepoError::ParseError(chunk_id.to_string(), e.to_string()))?;
+            .map_err(|e| PkgError::ParseError(chunk_id.to_string(), e.to_string()))?;
         let named_mgr = named_mgr.lock().await;
         let (mut reader, size) = named_mgr
             .open_chunk_reader(&chunk_id, SeekFrom::Start(0), true)
             .await
-            .map_err(|e| RepoError::NdnError(format!("Open chunk reader error:{:?}", e)))?;
+            .map_err(|e| PkgError::NetworkError(format!("Open chunk reader error:{:?}", e)))?;
 
         let mut file = File::create(local_file).await?;
         let mut buf = vec![0u8; 1024];
@@ -234,7 +195,7 @@ impl Installer {
             let read_len = reader
                 .read(&mut buf)
                 .await
-                .map_err(|e| RepoError::NdnError(format!("Read chunk error:{:?}", e)))?;
+                .map_err(|e| PkgError::NetworkError(format!("Read chunk error:{:?}", e)))?;
             if read_len == 0 {
                 break;
             }

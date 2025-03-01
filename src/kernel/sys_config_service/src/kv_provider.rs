@@ -1,5 +1,5 @@
+#![allow(dead_code)]
 use std::collections::HashMap;
-
 use async_trait::async_trait;
 use thiserror::Error;
 use serde_json::Value;
