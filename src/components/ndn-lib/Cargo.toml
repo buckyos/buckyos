@@ -13,7 +13,7 @@ serde_json = "*"
 async-trait = "*"
 tokio = { version = "*", features = ["full"] }
 tokio-util = "*"
-reqwest = {version = "*", features = ["json", "rustls-tls"]}
+reqwest = {version = "*", features = ["json", "rustls-tls","stream"]}
 surf = "*"  
 tide = "*" 
 http-types = '*'

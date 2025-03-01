@@ -694,6 +694,83 @@ impl MetaIndexDb {
         
         Ok(result)
     }
+
+    //将另一个meta_index_db中的全部记录插入当前db
+    pub async fn merge_meta_index_db(&self, other_db_path: &str) -> PkgResult<()> {
+        let other_db = MetaIndexDb::new(PathBuf::from(other_db_path))?;
+        let mut conn = Self::create_connection(&self.db_path)?;
+        let mut other_conn = Self::create_connection(&PathBuf::from(other_db_path))?;
+        
+        // 开始事务
+        let tx = conn.transaction().map_err(|e| PkgError::SqlError(e.to_string()))?;
+        
+        // 1. 合并包元数据表
+        let mut pkg_metas = other_conn.prepare("SELECT metaobjid, pkg_meta, author, author_pk FROM pkg_metas")
+            .map_err(|e| PkgError::SqlError(e.to_string()))?;
+            
+        let pkg_meta_rows = pkg_metas.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?
+            ))
+        }).map_err(|e| PkgError::SqlError(e.to_string()))?;
+        
+        for meta_result in pkg_meta_rows {
+            let (metaobjid, pkg_meta, author, author_pk) = meta_result.map_err(|e| PkgError::SqlError(e.to_string()))?;
+            tx.execute(
+                "INSERT OR REPLACE INTO pkg_metas (metaobjid, pkg_meta, author, author_pk) VALUES (?, ?, ?, ?)",
+                params![metaobjid, pkg_meta, author, author_pk]
+            ).map_err(|e| PkgError::SqlError(e.to_string()))?;
+        }
+        
+        // 2. 合并包版本表
+        let mut pkg_versions = other_conn.prepare("SELECT pkg_name, version, metaobjid, tag FROM pkg_versions")
+            .map_err(|e| PkgError::SqlError(e.to_string()))?;
+            
+        let version_rows = pkg_versions.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?
+            ))
+        }).map_err(|e| PkgError::SqlError(e.to_string()))?;
+        
+        for version_result in version_rows {
+            let (pkg_name, version, metaobjid, tag) = version_result.map_err(|e| PkgError::SqlError(e.to_string()))?;
+            tx.execute(
+                "INSERT OR REPLACE INTO pkg_versions (pkg_name, version, metaobjid, tag) VALUES (?, ?, ?, ?)",
+                params![pkg_name, version, metaobjid, tag]
+            ).map_err(|e| PkgError::SqlError(e.to_string()))?;
+        }
+        
+        // 3. 合并作者信息表
+        let mut author_infos = other_conn.prepare("SELECT author_name, author_owner_config, author_zone_config FROM author_info")
+            .map_err(|e| PkgError::SqlError(e.to_string()))?;
+            
+        let author_rows = author_infos.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?
+            ))
+        }).map_err(|e| PkgError::SqlError(e.to_string()))?;
+        
+        for author_result in author_rows {
+            let (author_name, author_owner_config, author_zone_config) = author_result.map_err(|e| PkgError::SqlError(e.to_string()))?;
+            tx.execute(
+                "INSERT OR REPLACE INTO author_info (author_name, author_owner_config, author_zone_config) VALUES (?, ?, ?)",
+                params![author_name, author_owner_config, author_zone_config]
+            ).map_err(|e| PkgError::SqlError(e.to_string()))?;
+        }
+        
+        // 提交事务
+        tx.commit().map_err(|e| PkgError::SqlError(e.to_string()))?;
+        
+        Ok(())
+    }
 }
 
 #[cfg(test)]
