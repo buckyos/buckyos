@@ -127,7 +127,8 @@ impl RepoServer {
                 return Err(RPCErrors::ReasonError(format!("source {} not found", source)));
             }
             let source_url = source_url.unwrap();
-            let client = NdnClient::new(source_url,self.session_token.clone(),None);
+            info!("update meta-index-db:source {}, download url:{}", source, source_url);
+            //let client = NdnClient::new(source_url,self.session_token.clone(),None);
         }
 
         
