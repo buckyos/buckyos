@@ -221,7 +221,7 @@ impl PackageEnv {
         }
 
         let meta_db = self.get_meta_db().await?;
-        if let Some((meta_obj_id,pkg_meta)) = meta_db.get_pkg_meta(pkg_id,None,None)? {
+        if let Some((meta_obj_id,pkg_meta)) = meta_db.get_pkg_meta(pkg_id)? {
             let pkg_strict_dir = self.get_pkg_strict_dir(&meta_obj_id,&pkg_meta);
             if tokio_fs::metadata(&pkg_strict_dir).await.is_ok() {
                 return Ok((meta_obj_id,pkg_meta));
