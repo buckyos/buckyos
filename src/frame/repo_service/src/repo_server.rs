@@ -113,12 +113,8 @@ impl RepoServer {
     
     // 将source-meta-index更新到最新版本
     async fn handle_sync_from_remote_source(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        /*
-        1.先下载并验证远程版本到临时db
-        2.根据业务逻辑检查pkg-meta,下载必要的chunk
-        3.下载并验证chunk
-        4.全部成功后，将临时db覆盖当前的source-meta-index
-        */
+        
+        //1.先下载并验证远程版本到临时db
         let will_update_source_list = self.settng.remote_source.keys().cloned();
         for source in will_update_source_list {
             let source_url = self.settng.remote_source.get(&source);
@@ -131,6 +127,10 @@ impl RepoServer {
             //let client = NdnClient::new(source_url,self.session_token.clone(),None);
         }
 
+        // 2.根据业务逻辑检查pkg-meta,下载必要的chunk
+        // 3.下载并验证chunk
+
+        // 4.全部成功后，将临时db覆盖当前的source-meta-index
         
         
         unimplemented!();

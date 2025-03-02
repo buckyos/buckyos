@@ -35,3 +35,4 @@ cargo.lock
 pnpm-lock.yaml
 data/
 src/Cargo.lock
+src/frame/repo_service_old/

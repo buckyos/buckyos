@@ -134,7 +134,7 @@ use ndn_lib::*;
 
 use crate::error::*;
 use crate::meta::*;
-use crate::parser::*;
+use crate::package_id::*;
 use crate::meta_index_db::*;
 
 
@@ -253,7 +253,7 @@ impl PackageEnv {
     }
 
     async fn load_strictly(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
-        let pkg_id = Parser::parse(pkg_id_str)?;
+        let pkg_id = PackageId::parse(pkg_id_str)?;
         
         // 在严格模式下，先获取包的元数据以获得准确的物理目录
         let (meta_obj_id,pkg_meta) = self.get_pkg_meta(pkg_id_str).await?;
@@ -287,7 +287,7 @@ impl PackageEnv {
         for pkg_dir in pkg_dirs {
             if tokio_fs::metadata(&pkg_dir).await.is_ok() {
                 return Ok(MediaInfo {
-                    pkg_id: Parser::parse(pkg_id_str)?,
+                    pkg_id: PackageId::parse(pkg_id_str)?,
                     full_path: pkg_dir,
                     media_type: MediaType::Dir,
                 });
@@ -392,14 +392,14 @@ impl PackageEnv {
     }
 
     fn get_pkg_dir(&self, pkg_id: &str) -> PkgResult<Vec<PathBuf>> {
-        let pkg_id = Parser::parse(pkg_id)?;
+        let pkg_id = PackageId::parse(pkg_id)?;
         let pkg_name = pkg_id.name.clone();
         let mut pkg_dirs = Vec::new();
         
         if pkg_id.objid.is_some() {
             pkg_dirs.push(self.get_install_dir().join(".pkgs").join(pkg_name).join(pkg_id.objid.unwrap()));
         } else {
-            if pkg_id.version.is_some() {
+            if pkg_id.version_exp.is_some() {
                //TODO: 要考虑如何结合lock文件进行查找
                pkg_dirs.push(self.get_install_dir().join(pkg_name));
             } else {
@@ -511,6 +511,7 @@ mod tests {
         let meta = PackageMeta {
             pkg_name: pkg_name.to_string(),
             version: version.to_string(),
+            tag: Some("test".to_string()),
             category: Some("test".to_string()),
             author: "test".to_string(),
             chunk_id: Some("test_chunk".to_string()),
@@ -535,7 +536,7 @@ mod tests {
         // 测试严格模式加载
         let media_info = env.load_strictly("test-pkg#1.0.0").await.unwrap();
         assert_eq!(media_info.pkg_id.name, "test-pkg");
-        assert_eq!(media_info.pkg_id.version, Some("1.0.0".to_string()));
+        assert_eq!(media_info.pkg_id.version_exp.as_ref().unwrap().to_string(), "1.0.0".to_string());
         assert_eq!(media_info.full_path, pkg_dir);
         
         // 测试不存在的包
@@ -557,7 +558,7 @@ mod tests {
         // 测试精确版本匹配
         let media_info = env.try_load("test-pkg#1.0.0").await.unwrap();
         assert_eq!(media_info.pkg_id.name, "test-pkg");
-        assert_eq!(media_info.pkg_id.version, Some("1.0.0".to_string()));
+        assert_eq!(media_info.pkg_id.version_exp.as_ref().unwrap().to_string(), "1.0.0".to_string());
         
         // 测试不存在的包
         assert!(env.try_load("not-exist#1.0.0").await.is_err());
@@ -593,9 +594,9 @@ mod tests {
         create_test_package(&env, "test-pkg", "1.0.0").await;
         
         // 测试获取meta信息
-        let meta = env.get_pkg_meta("test-pkg#1.0.0").await.unwrap();
+        let (meta_obj_id,meta) = env.get_pkg_meta("test-pkg#1.0.0").await.unwrap();
         assert_eq!(meta.pkg_name, "test-pkg");
-        assert_eq!(meta.version, "1.0.0");
+        assert_eq!(meta.version, "1.0.0".to_string());
         assert_eq!(meta.category, Some("test".to_string()));
         
         // 测试不存在的包
@@ -610,7 +611,7 @@ mod tests {
         create_test_package(&env, "test-pkg", "1.0.0").await;
         
         // 测试包就绪检查
-        assert!(env.check_pkg_ready("test-pkg#1.0.0", false).await.unwrap());
+        assert!(env.check_pkg_ready("test-pkg#1.0.0", false).await.is_ok());
         
         // 测试不存在的包
         assert!(env.check_pkg_ready("not-exist#1.0.0", false).await.is_err());

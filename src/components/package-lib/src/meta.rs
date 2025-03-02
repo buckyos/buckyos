@@ -6,11 +6,17 @@ use std::collections::HashMap;
 pub struct PackageMeta {
     pub pkg_name: String,
     pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>, //pkg的分类,app,pkg,agent等
     pub author: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_id: Option<String>, //有些pkg不需要下载
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_url: Option<String>, //发布时的URL,可以不写
-    pub deps: HashMap<String, String>,     //key = pkg_name,value = version_expr,like ">1.0.0-alpha"
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub deps: HashMap<String, String>,     //key = pkg_name,value = version_req_str,like ">1.0.0-alpha"
     pub pub_time: i64,
 }
 
