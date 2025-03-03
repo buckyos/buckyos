@@ -172,7 +172,7 @@ async fn main() -> std::result::Result<(), String> {
         &node_config.owner_public_key,
     ) {
         Ok(device_doc_json) => device_doc_json,
-        Err(e) => {
+        Err(_e) => {
             println!("decode device doc from jwt failed!");
             return Err("decode device doc from jwt failed!".to_string());
         }
@@ -187,7 +187,7 @@ async fn main() -> std::result::Result<(), String> {
     };
 
     match matches.subcommand() {
-        Some(("create_token", matches)) => {
+        Some(("create_token", _matches)) => {
             let now = SystemTime::now();
             let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
             let timestamp = since_the_epoch.as_secs();
@@ -372,7 +372,7 @@ async fn main() -> std::result::Result<(), String> {
                 Some(url) => url.to_string(),
                 None => String::from("http://127.0.0.1:3200/kapi/system_config"),
             };
-            let node_id = match target_url {
+            let node_id = match node_id {
                 Some(value) =>  value.to_string(),
                 None => String::from("node"),
             };
