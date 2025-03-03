@@ -8,11 +8,11 @@ use cyfs_gateway_lib::{NamedDataMgrRouteConfig};
 use serde_json::Value;
 use crate::parse_range;
 
-//1) get objid and inner path
-//2) if enable, try use relative path to get objid and inner path
-//3) if inneer path is not null, use get_json_by_path to get Value
-//4) if Value is objid, return 
-//4) return : Value | Reader | Text Record
+//1. get objid and inner path
+//2. if enable, try use relative path to get objid and inner path
+//3. if inneer path is not null, use get_json_by_path to get Value
+//4. if Value is objid, return 
+//5. return : Value | Reader | Text Record
 
 
 enum GetObjResultBody {
@@ -44,7 +44,7 @@ impl GetObjResult {
     }
 }
 
-async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset:u64,obj_path:Option<String>,parent_obj_str:Option<String>)->Result<GetObjResult> {
+async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset:u64,inner_obj_path:Option<String>,parent_obj_str:Option<String>)->Result<GetObjResult> {
     let real_mgr = mgr.lock().await;
     if obj_id.is_chunk() {
         let chunk_id = ChunkId::from_obj_id(&obj_id);
@@ -57,7 +57,7 @@ async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,
         info!("ndn route -> chunk: {}, chunk_size: {}, offset: {}", obj_id.to_base32(), chunk_size, offset);
         return Ok(GetObjResult::new_chunk_result(obj_id.clone(),chunk_reader,chunk_size,parent_obj_str));
     } else {
-        let obj_body = real_mgr.get_object(&obj_id,obj_path).await?;
+        let obj_body = real_mgr.get_object(&obj_id,inner_obj_path).await?;
         if obj_body.is_string() {
             let obj_body_str = obj_body.as_str().unwrap();
             let p_obj_id = ObjId::new(&obj_body_str);
@@ -145,7 +145,7 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
 
     //let chunk_id_result;
     let mut obj_id:Option<ObjId> = None;
-    let mut obj_path:Option<String> = None;
+    let mut inner_obj_path:Option<String> = None;
     let path = req.uri().path();
     let _user_id = "guest";
     let _app_id = "unknown";
@@ -156,7 +156,7 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
         if obj_id_result.is_ok() {
             let (the_obj_id,the_obj_path) = obj_id_result.unwrap();
             obj_id = Some(the_obj_id);
-            obj_path = the_obj_path;
+            inner_obj_path = the_obj_path;
         }
     } else {
         //get chunkid by hostname
@@ -183,7 +183,7 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
     let obj_id = obj_id.unwrap();
     drop(named_mgr);
     
-    let get_result = get_obj_result(named_mgr2, &obj_id, start, obj_path,None).await?;
+    let get_result = get_obj_result(named_mgr2, &obj_id, start, inner_obj_path,None).await?;
     let response = build_response_by_obj_get_result(get_result, start, obj_id).await?;
     Ok(response)
 }

@@ -135,16 +135,19 @@ impl ChunkHasher {
         }
     }
 
-    pub async fn calc_from_reader<T: AsyncRead + Unpin>(&mut self, reader: &mut T) -> NdnResult<Vec<u8>> {
+    //return the hash result and the total read size
+    pub async fn calc_from_reader<T: AsyncRead + Unpin>(&mut self, reader: &mut T) -> NdnResult<(Vec<u8>,u64)> {
         //TODO: add other hash type support
         let mut hasher = Sha256::new();
         let mut buffer = vec![0u8; CACL_HASH_PIECE_SIZE as usize];
+        let mut total_read = 0;
         loop {
             let n = reader.read(&mut buffer).await
             .map_err(|e| {
                 warn!("ChunkHasher: read failed! {}", e.to_string());
                 NdnError::IoError(e.to_string())
             })?;
+            total_read += n as u64;
             if n < CACL_HASH_PIECE_SIZE as usize {
                 break;
             }
@@ -152,7 +155,7 @@ impl ChunkHasher {
             
         }
 
-        Ok(hasher.finalize().to_vec())
+        Ok((hasher.finalize().to_vec(),total_read))
     }
 
     pub fn calc_from_bytes(&mut self,bytes: &[u8]) -> Vec<u8> {
@@ -177,6 +180,8 @@ impl ChunkHasher {
         ChunkId::from_sha256_result(&hash_result)
     }
 }
+
+
 
 //TODO: this function require a seekable reader
 //quick hash is only for qcid

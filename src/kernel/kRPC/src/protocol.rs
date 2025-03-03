@@ -23,6 +23,18 @@ pub struct RPCRequest {
 }
 
 
+impl RPCRequest {
+    pub fn new(method:&str,params:Value) -> Self {
+        RPCRequest {
+            method: method.to_string(),
+            params: params,
+            seq:0,
+            token:None,
+            trace_id:None,
+        }
+    }
+}
+
 fn array_remove_none_value(array:&mut Vec<Value>) {
     let mut i = 0;
     while i < array.len() {

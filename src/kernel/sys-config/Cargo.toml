@@ -12,6 +12,8 @@ serde_json = "*"
 lazy_static = "*"
 thiserror = "*"
 rand = "*"
+async-trait = "*"
+chrono = "*"
 tokio = { version = "*", features = ["full"] }
 
 buckyos-kit = { path = "../../components/buckyos-kit" }

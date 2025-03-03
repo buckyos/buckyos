@@ -1,9 +1,9 @@
-mod database_manager;
+mod task_db;
 mod server;
 mod task;
 
 use buckyos_kit::init_logging;
-use database_manager::init_db;
+use task_db::init_db;
 use server::start_task_manager_service;
 
 #[tokio::main]

@@ -4,6 +4,7 @@ use log::*;
 use reqwest::Client;
 use std::io::SeekFrom;
 use std::ops::Range;
+use std::path::PathBuf;
 use tokio_util::io::StreamReader;
 use futures_util::StreamExt;
 use std::pin::Pin;
@@ -29,7 +30,7 @@ pub struct NdnGetChunkResult {
 use crate::{chunk, named_data_mgr, ChunkReader, ObjId, MAX_CHUNK_SIZE};
 use crate::{ChunkId,NdnResult,NamedDataMgr,NdnError,ChunkReadSeek,ChunkHasher};
 pub struct NdnClient {
-    default_chunk_mgr_id:Option<String>,
+    default_ndn_mgr_id:Option<String>,
     session_token:Option<String>,
     default_remote_url:Option<String>,
     enable_mutil_remote:bool,
@@ -48,9 +49,9 @@ pub enum ChunkWriterOpenMode {
 
 //ndn client的核心类似传统http的reqwest库，但增加了chunk的语义
 impl NdnClient {
-    pub fn new(default_remote_url:String,session_token:Option<String>,chunk_mgr_id:Option<String>)->Self {
+    pub fn new(default_remote_url:String,session_token:Option<String>,named_mgr_id:Option<String>)->Self {
         Self {
-            default_chunk_mgr_id:chunk_mgr_id,
+            default_ndn_mgr_id:named_mgr_id,
             session_token,
             default_remote_url:Some(default_remote_url),
             enable_mutil_remote:false,
@@ -76,10 +77,18 @@ impl NdnClient {
         }
     }
 
-    
+    //返回成功下载的chunk_id和chunk_size
+    pub async fn download_chunk_to_local(&self,chunk_url:&str,local_path:&PathBuf,no_verify:Option<bool>) -> NdnResult<(ChunkId,u64)> {
+        unimplemented!()
+    }
+
+    pub async fn get_obj_by_url(&self,url:&str,no_verify:Option<bool>) -> NdnResult<(ObjId,String)> {
+        unimplemented!()
+    }
+
 
     //helper function 1
-    pub async fn open_chunk_reader_by_url(&self,chunk_url:String,expect_chunk_id:Option<ChunkId>,range:Option<Range<u64>>)
+    pub async fn open_chunk_reader_by_url(&self,chunk_url:&str,expect_chunk_id:Option<ChunkId>,range:Option<Range<u64>>)
         ->NdnResult<(ChunkReader,CYFSHttpRespHeaders)> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -88,13 +97,13 @@ impl NdnClient {
         let res;
         if range.is_some() {
             let range = range.unwrap();
-            res = client.get(&chunk_url)
+            res = client.get(chunk_url)
                 .header("Range", format!("bytes={}-{}", range.start, range.end - 1))
                 .send()
                 .await
                 .map_err(|e| NdnError::GetFromRemoteError(format!("Request failed: {}", e)))?;
         } else {
-            res = client.get(&chunk_url)
+            res = client.get(chunk_url)
             .send()
             .await
             .map_err(|e| NdnError::GetFromRemoteError(format!("Request failed: {}", e)))?;
@@ -110,7 +119,7 @@ impl NdnClient {
         let mut chunk_id;
         let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
         if cyfs_resp_headers.obj_id.is_some() {
-            info!("remote return with cyfs-extension headers!:{:?}",cyfs_resp_headers);
+            debug!("remote return with cyfs-extension headers!:{:?}",cyfs_resp_headers);
             let obj_id = cyfs_resp_headers.obj_id.clone().unwrap();
             if obj_id.is_chunk() {
                 chunk_id = ChunkId::from_obj_id(&obj_id);
@@ -120,7 +129,7 @@ impl NdnClient {
                     obj_id.to_string())));
             }
         } else {
-            let get_obj_result = cyfs_get_obj_id_from_url(chunk_url.as_str());
+            let get_obj_result = cyfs_get_obj_id_from_url(chunk_url);
             if get_obj_result.is_ok() {
                 let (obj_id,obj_inner_path) = get_obj_result.unwrap();
                 if obj_id.is_chunk() {
@@ -305,7 +314,7 @@ impl NdnClient {
             },
             ChunkState::NotExist => {
                 //no progess info
-                let open_result = self.open_chunk_reader_by_url(chunk_url.clone(),Some(chunk_id.clone()),None).await;
+                let open_result = self.open_chunk_reader_by_url(chunk_url.as_str(),Some(chunk_id.clone()),None).await;
                 if open_result.is_err() {
                     warn!("pull_chunk: open chunk reader failed:{}",open_result.err().unwrap().to_string());
                     return Err(NdnError::NotFound(chunk_id.to_string()));
@@ -339,7 +348,7 @@ impl NdnClient {
                 if real_hash_state.is_some() {
                     download_range = Some(download_pos.._chunk_size);
                 }
-                let open_result = self.open_chunk_reader_by_url(chunk_url.clone(),Some(chunk_id.clone()),download_range).await;
+                let open_result = self.open_chunk_reader_by_url(chunk_url.as_str(),Some(chunk_id.clone()),download_range).await;
                 if open_result.is_err() {
                     warn!("pull_chunk: open chunk reader failed:{},url:{}",open_result.err().unwrap().to_string(),chunk_url);
                     return Err(NdnError::NotFound(chunk_id.to_string()));
@@ -533,6 +542,7 @@ mod tests {
         // let json_result = client.get_obj_by_url(&format!("http://{}/{}/{}", warp_addr, test_obj_id.to_base32(), json_path)).await;
         // assert!(json_result.is_ok(), "Failed to get JSON value by URL");
 
+        // http://remote_zone_id/ndn/repo/meta_index_db
         // // Step 4.4: Use the ndn-client's get_obj_by_url to get a typical file_obj.content
         // let file_content_result = client.get_obj_by_url(&format!("http://{}/file_obj.content", warp_addr)).await;
         // assert!(file_content_result.is_ok(), "Failed to get file object content");

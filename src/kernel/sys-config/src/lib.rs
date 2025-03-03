@@ -5,18 +5,22 @@ mod sn_client;
 mod app_list;
 mod node_list;
 mod gateway;
+mod task_mgr;
 
 pub use system_config::*;
 pub use sn_client::*;
 pub use app_list::*;
 pub use node_list::*;
 pub use gateway::*;
-
+pub use task_mgr::*;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use serde_json::Value;
 use lazy_static::lazy_static;
 use buckyos_kit::*;
+
+//本库以后可能改名叫buckyos-sdk, 
+// 通过syc_config_client与buckyos的各种服务交互，与传统OS的system_call类似
 
 
 //TODO:改成每个线程一个client?

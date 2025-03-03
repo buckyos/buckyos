@@ -2,7 +2,7 @@
 
 
 mod repo_server;
-
+mod pub_task_mgr;
 use crate::repo_server::*;
 use std::fs::File;
 use sys_config::{SystemConfigClient, SystemConfigError};

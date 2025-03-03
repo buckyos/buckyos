@@ -8,7 +8,7 @@ use tokio::{
     io::{self, AsyncRead,AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeek, AsyncSeekExt}, 
 };
 use log::*;
-use crate::{ChunkId, ChunkReadSeek, ChunkState, NamedDataStore, NdnError, NdnResult};
+use crate::{ChunkHasher, ChunkId, ChunkReadSeek, ChunkState, FileObject, NamedDataStore, NdnError, NdnResult};
 use memmap::Mmap;
 use std::{path::PathBuf, pin::Pin};
 use std::io::SeekFrom;
@@ -455,7 +455,7 @@ impl NamedDataMgr {
         Ok(obj_id)
     }
 
-    pub async fn get_object(&self, obj_id:&ObjId,obj_path:Option<String>)->NdnResult<serde_json::Value> {
+    pub async fn get_object(&self, obj_id:&ObjId,inner_obj_path:Option<String>)->NdnResult<serde_json::Value> {
         if obj_id.is_chunk() {
             return Err(NdnError::InvalidObjType(obj_id.to_string()));
         }
@@ -485,8 +485,8 @@ impl NamedDataMgr {
                     NdnError::DecodeError(e.to_string())
                 })?;
 
-            if obj_path.is_some() {
-                let obj_path = obj_path.unwrap();
+            if inner_obj_path.is_some() {
+                let obj_path = inner_obj_path.unwrap();
                 let obj_filed = get_by_json_path(&obj_body, &obj_path);
                 if obj_filed.is_some() {
                     return Ok(obj_filed.unwrap());
@@ -573,6 +573,20 @@ impl NamedDataMgr {
         Ok(false)
     }
 
+    pub async fn have_chunk(chunk_id:&ChunkId,mgr_id:Option<&str>)->bool {
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id).await;
+        if named_mgr.is_none() {
+            return false;
+        }
+        let named_mgr = named_mgr.unwrap();
+        let named_mgr = named_mgr.lock().await;
+        let is_exist = named_mgr.is_chunk_exist(chunk_id).await;
+        if is_exist.is_err() {
+            return false;
+        }
+        is_exist.unwrap()
+    }
+
     pub async fn query_chunk_state(&self, chunk_id: &ChunkId) -> NdnResult<(ChunkState,u64,String)> {
         for local_store in self.local_store_list.iter() {
             let (chunk_state,chunk_size,progress) = local_store.query_chunk_state(chunk_id).await?;
@@ -653,6 +667,66 @@ impl NamedDataMgr {
     }
 
 
+    //下面是一些helper函数
+    pub async fn pub_object(mgr_id:Option<&str>,will_pub_obj:serde_json::Value,ndn_path:&str,
+                            user_id:&str,app_id:&str)->NdnResult<()> {
+        unimplemented!()
+    }
+    
+    pub async fn sign_obj(mgr_id:Option<&str>,will_sign_obj_id:ObjId,obj_jwt:String,
+                          user_id:&str,app_id:&str)->NdnResult<()> {
+        unimplemented!()
+    }
+
+    //会写入两个ndn_path
+    pub async fn pub_local_file_as_fileobj(mgr_id:Option<&str>,local_file_path:&PathBuf,ndn_path:&str,ndn_content_path:&str,
+        fileobj_template:&mut FileObject,user_id:&str,app_id:&str)->NdnResult<()> {
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id).await;
+        if named_mgr.is_none() {
+            return Err(NdnError::NotFound(format!("named data mgr not found")));
+        }
+        let named_mgr = named_mgr.unwrap();
+        //TODO：优化，边算边传，支持断点续传
+        let mut file_reader =tokio::fs::File::open(local_file_path).await
+            .map_err(|e| {
+                error!("open local_file_path failed, err:{}", e);
+                NdnError::IoError(format!("open local_file_path failed, err:{}", e))
+            })?;
+        
+        let mut chunk_hasher = ChunkHasher::new(None).unwrap();
+        let (chunk_raw_id,chunk_size) = chunk_hasher.calc_from_reader(&mut file_reader).await.unwrap();
+        let chunk_id = ChunkId::from_sha256_result(&chunk_raw_id);
+        let named_mgr = named_mgr.lock().await;
+        let is_exist = named_mgr.is_chunk_exist(&chunk_id).await.unwrap();
+        if !is_exist {
+            let (mut chunk_writer, _) = named_mgr.open_chunk_writer(&chunk_id, chunk_size, 0).await?;
+            file_reader.seek(std::io::SeekFrom::Start(0)).await.unwrap();
+            tokio::io::copy(&mut file_reader, &mut chunk_writer).await
+                .map_err(|e| {
+                    error!("copy local_file {:?} to named-mgr failed, err:{}", local_file_path, e);
+                    NdnError::IoError(format!("copy local_file to named-mgr failed, err:{}", e))
+                })?;
+                
+            named_mgr.complete_chunk_writer(&chunk_id).await?;
+        }
+
+        fileobj_template.content = chunk_id.to_string();
+        fileobj_template.size = chunk_size;
+        let (file_obj_id,file_obj_str) = fileobj_template.gen_obj_id();
+        named_mgr.put_object(&file_obj_id, file_obj_str.as_str()).await?;
+        named_mgr.set_file(ndn_path.to_string(), &file_obj_id, app_id, user_id).await?;
+
+        let chunk_obj_id = chunk_id.to_obj_id();
+        named_mgr.set_file(ndn_content_path.to_string(), &chunk_obj_id, app_id, user_id).await?;
+        Ok(())
+    }
+
+    
+    pub async fn pub_local_file_as_chunk(mgr_id:Option<&str>,local_file_path:String,ndn_path:&str,
+                                            user_id:&str,app_id:&str)->NdnResult<()> {
+        unimplemented!()
+    }
+    
 }
 
 

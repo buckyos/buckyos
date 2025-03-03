@@ -394,6 +394,51 @@ impl MetaIndexDb {
         Ok(())
     }
 
+    pub fn add_pkg_meta_batch(&self, pkg_meta_map: &HashMap<String,PackageMetaNode>) -> PkgResult<()> {
+        let mut conn: Connection = Self::create_connection(&self.db_path)?;
+        // 开始事务
+        let tx = conn.transaction().map_err(|e| PkgError::SqlError(e.to_string()))?;
+        
+        let current_time = chrono::Utc::now().timestamp();
+        
+        for (metaobjid, meta_node) in pkg_meta_map {
+            // 插入包元数据
+            tx.execute(
+                "INSERT OR REPLACE INTO pkg_metas (metaobjid, pkg_meta, author, author_pk, update_time) VALUES (?, ?, ?, ?, ?)",
+                params![metaobjid, meta_node.meta_jwt, meta_node.author, meta_node.author_pk, current_time],
+            ).map_err(|e| PkgError::SqlError(e.to_string()))?;
+
+            // 设置包版本
+            let version_int = VersionExp::version_to_int(&meta_node.version)?;
+            
+            // 检查记录是否已存在
+            let exists = tx.query_row(
+                "SELECT 1 FROM pkg_versions WHERE pkg_name = ? AND author = ? AND version = ?",
+                params![meta_node.pkg_name, meta_node.author, meta_node.version],
+                |_| Ok(true)
+            ).optional().map_err(|e| PkgError::SqlError(e.to_string()))?.is_some();
+            
+            if exists {
+                // 更新现有记录
+                tx.execute(
+                    "UPDATE pkg_versions SET metaobjid = ?, tag = ?, update_time = ? WHERE pkg_name = ? AND author = ? AND version = ?",
+                    params![metaobjid, meta_node.tag, current_time, meta_node.pkg_name, meta_node.author, meta_node.version],
+                ).map_err(|e| PkgError::SqlError(e.to_string()))?;
+            } else {
+                // 插入新记录
+                tx.execute(
+                    "INSERT INTO pkg_versions (pkg_name, author, version, version_int, metaobjid, tag, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    params![meta_node.pkg_name, meta_node.author, meta_node.version, version_int, metaobjid, meta_node.tag, current_time],
+                ).map_err(|e| PkgError::SqlError(e.to_string()))?;
+            }
+        }
+        
+        // 提交事务
+        tx.commit().map_err(|e| PkgError::SqlError(e.to_string()))?;
+        
+        Ok(())
+    }
+
     /// 设置包版本的metaobjid
     pub fn set_pkg_version(&self, pkgname: &str, author: &str, version: &str, metaobjid: &str, tag: Option<&str>) -> PkgResult<()> {
         let conn = Self::create_connection(&self.db_path)?;
@@ -551,6 +596,25 @@ struct MetaIndexDbList{
 impl MetaIndexDbList{
     pub fn new(dbs: Vec<PathBuf>) -> PkgResult<Self> {
         Ok(Self { dbs })
+    }
+
+    pub fn get_pkg_meta(&self, pkg_id: &str) -> PkgResult<Option<(String, PackageMeta)>> {
+        for db_path in &self.dbs {
+            let db = MetaIndexDb::new(db_path.clone());
+            if db.is_err() {
+                continue;
+            }
+            let db = db.unwrap();   
+            let pkg_meta = db.get_pkg_meta(pkg_id);
+            if pkg_meta.is_err() {
+                continue;
+            }
+            let pkg_meta = pkg_meta.unwrap();
+            if pkg_meta.is_some() {
+                return Ok(pkg_meta);
+            }       
+        }
+        Ok(None)
     }
 
     /// 按顺序查询所有数据库，找到第一个匹配的作者信息

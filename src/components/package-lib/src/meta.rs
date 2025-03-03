@@ -19,3 +19,11 @@ pub struct PackageMeta {
     pub pub_time: i64,
 }
 
+pub struct PackageMetaNode {
+    pub meta_jwt:String,
+    pub pkg_name:String,
+    pub version:String,
+    pub tag:Option<String>,
+    pub author:String,
+    pub author_pk:String,
+}
