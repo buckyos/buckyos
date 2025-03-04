@@ -28,4 +28,4 @@ name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
 rbac = { path = "../rbac" }
 kRPC ={ path = "../kRPC" }
-sys-config = { path = "../sys-config" }
+buckyos-api = { path = "../buckyos-api" }

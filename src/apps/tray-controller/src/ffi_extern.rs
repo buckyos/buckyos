@@ -64,7 +64,7 @@ struct NodeInfomationObj {
     node_id: String,
     home_page_url: String,
     node_host_name: String,
-    sys_cfg_client: sys_config::SystemConfigClient,
+    sys_cfg_client: buckyos_api::SystemConfigClient,
 }
 
 #[repr(C)]
@@ -326,7 +326,7 @@ struct NodeConfig {
 
 async fn load_node_config(
     node_host_name: &str,
-    sys_config_client: &sys_config::SystemConfigClient,
+    buckyos_api_client: &buckyos_api::SystemConfigClient,
 ) -> Result<NodeConfig, String> {
     let json_config_path = format!("{}_node_config.json", node_host_name);
     let json_config = std::fs::read_to_string(json_config_path);
@@ -346,7 +346,7 @@ async fn load_node_config(
 
     let node_key = format!("nodes/{}/config", node_host_name);
     let (node_cfg_result, rversion) =
-        sys_config_client
+        buckyos_api_client
             .get(node_key.as_str())
             .await
             .map_err(|error| {
@@ -364,12 +364,12 @@ async fn load_node_config(
 
 async fn set_node_config(
     node_host_name: &str,
-    sys_config_client: &sys_config::SystemConfigClient,
+    buckyos_api_client: &buckyos_api::SystemConfigClient,
     json_path: &str,
     value: &str,
 ) -> Result<(), String> {
     let node_key = format!("nodes/{}/config", node_host_name);
-    let _ = sys_config_client
+    let _ = buckyos_api_client
         .set_by_json_path(node_key.as_str(), json_path, value)
         .await
         .map_err(|error| {
@@ -382,9 +382,9 @@ async fn set_node_config(
 
 async fn list_application_rust(
     node_host_name: &str,
-    sys_config_client: &sys_config::SystemConfigClient,
+    buckyos_api_client: &buckyos_api::SystemConfigClient,
 ) -> Result<Vec<ApplicationInfoRust>, String> {
-    let node_config = load_node_config(node_host_name, sys_config_client)
+    let node_config = load_node_config(node_host_name, buckyos_api_client)
         .await
         .map_err(|err| {
             log::error!("load node config failed! {}", err);
@@ -690,7 +690,7 @@ async fn select_node() -> Result<Option<NodeInfomationObj>, String> {
             })?;
 
         let sys_cfg_client = if is_ood {
-            sys_config::SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()))
+            buckyos_api::SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()))
         } else {
             let this_device = name_lib::DeviceInfo::from_device_doc(&device_doc);
             let system_config_url =
@@ -700,7 +700,7 @@ async fn select_node() -> Result<Option<NodeInfomationObj>, String> {
                         log::error!("get system_config_url failed! {}", err);
                         String::from("get system_config_url failed!")
                     })?;
-            sys_config::SystemConfigClient::new(
+            buckyos_api::SystemConfigClient::new(
                 Some(system_config_url.as_str()),
                 Some(device_session_token_jwt.as_str()),
             )

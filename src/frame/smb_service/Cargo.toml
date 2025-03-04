@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 buckyos-kit = { path = "../../components/buckyos-kit" }
-sys-config = { path = "../../kernel/sys-config" }
+buckyos-api = { path = "../../kernel/buckyos-api" }
 rust-ini = "0.21.1"
 tokio = { version = "1.42.0", features = ["full"] }
 sfo-result = { version = "0.2.4", features = ["backtrace"] }

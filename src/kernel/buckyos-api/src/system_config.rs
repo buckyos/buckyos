@@ -58,7 +58,7 @@ impl SystemConfigClient {
 
     pub async fn get(&self, key: &str) -> SytemConfigResult<(String,u64)> {
         let client = self.get_krpc_client()?;
-        let result = client.call("sys_config_get", json!({"key": key}))
+        let result = client.call("buckyos_api_get", json!({"key": key}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
@@ -80,7 +80,7 @@ impl SystemConfigClient {
         }
 
         let client = self.get_krpc_client()?;
-        let result = client.call("sys_config_set", json!({"key": key, "value": value}))
+        let result = client.call("buckyos_api_set", json!({"key": key, "value": value}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
@@ -89,14 +89,14 @@ impl SystemConfigClient {
 
     pub async fn set_by_json_path(&self,key:&str,json_path:&str,value:&str) -> SytemConfigResult<u64> {
         let client = self.get_krpc_client()?;
-        client.call("sys_config_set_by_json_path", json!({"key": key, "json_path": json_path, "value": value})).await
+        client.call("buckyos_api_set_by_json_path", json!({"key": key, "json_path": json_path, "value": value})).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
         Ok(0)
     }
 
     pub async fn create(&self,key:&str,value:&str) -> SytemConfigResult<u64> {
         let client = self.get_krpc_client()?;
-        let result = client.call("sys_config_create", json!({"key": key, "value": value}))
+        let result = client.call("buckyos_api_create", json!({"key": key, "value": value}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
@@ -105,7 +105,7 @@ impl SystemConfigClient {
 
     pub async fn delete(&self,key:&str) -> SytemConfigResult<u64> {
         let client = self.get_krpc_client()?;
-        let result = client.call("sys_config_delete", json!({"key": key}))
+        let result = client.call("buckyos_api_delete", json!({"key": key}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
         Ok(0)
@@ -113,7 +113,7 @@ impl SystemConfigClient {
 
     pub async fn append(&self,key:&str,value:&str) -> SytemConfigResult<u64> {
         let client = self.get_krpc_client()?;
-        client.call("sys_config_append", json!({"key": key, "append_value": value})).await
+        client.call("buckyos_api_append", json!({"key": key, "append_value": value})).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
         Ok(0)
     }
@@ -121,7 +121,7 @@ impl SystemConfigClient {
     //list direct children
     pub async fn list(&self,key:&str) -> SytemConfigResult<Vec<String>> {
         let client = self.get_krpc_client()?;
-        client.call("sys_config_list", json!({"key": key})).await
+        client.call("buckyos_api_list", json!({"key": key})).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))
             .map(|result| {
                 let mut list = Vec::new();
@@ -174,7 +174,7 @@ impl SystemConfigClient {
         }
 
         let client = self.get_krpc_client()?;
-        client.call("sys_config_exec_tx", Value::Object(req_params)).await
+        client.call("buckyos_api_exec_tx", Value::Object(req_params)).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
         Ok(0)
     }
@@ -199,10 +199,10 @@ impl SystemConfigClient {
         })?;
 
         let client = self.get_krpc_client()?;
-        client.call("sys_config_create",json!({"key":format!("users/{}/apps/{}/config",user_id,app_id),"value":config_string})).await
+        client.call("buckyos_api_create",json!({"key":format!("users/{}/apps/{}/config",user_id,app_id),"value":config_string})).await
             .map_err(|error: ::kRPC::RPCErrors| SystemConfigError::ReasonError(error.to_string()))?;
         //2. update rbac
-        client.call("sys_config_append",json!({"key":"system/rbac/policy","append_value":format!("\ng, {}, app",app_id)})).await
+        client.call("buckyos_api_append",json!({"key":"system/rbac/policy","append_value":format!("\ng, {}, app",app_id)})).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
         //3. update gateway shortcuts
@@ -214,7 +214,7 @@ impl SystemConfigClient {
                 "user_id":user_id,
                 "app_id":app_id
             });
-            client.call("sys_config_set_by_json_path",json!({"key":"services/gateway/settings","json_path":short_json_path,"value":short_json_value})).await
+            client.call("buckyos_api_set_by_json_path",json!({"key":"services/gateway/settings","json_path":short_json_path,"value":short_json_value})).await
                 .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
             info!("set shortcut {} for user {}'s app {} success!",short_name,user_id,app_id);

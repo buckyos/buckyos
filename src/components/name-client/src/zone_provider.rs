@@ -16,7 +16,7 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use serde_json::{Value,json};
-use sys_config::*;
+use buckyos_api::*;
 use ::kRPC::*;
 
 use crate::{DeviceInfo, EncodedDocument, NSError, NsProvider, NSResult, NameInfo, CURRENT_ZONE_CONFIG, RecordType};
@@ -204,7 +204,7 @@ impl ZoneProvider {
     }
 
     async fn do_system_config_client_query(&self,client:&SystemConfigClient,name:&str) -> NSResult<NameInfo> {
-        let device_info_path = sys_config_get_device_path(name) + "/info";
+        let device_info_path = buckyos_api_get_device_path(name) + "/info";
         let get_result = client.get(device_info_path.as_str()).await;
         if get_result.is_ok() {
             let (device_info_json,_) = get_result.unwrap();

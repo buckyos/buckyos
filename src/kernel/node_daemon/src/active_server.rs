@@ -10,7 +10,7 @@ use name_lib::*;
 use name_client::*;
 use log::*;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
-use sys_config::*;
+use buckyos_api::*;
 use url::Url;
 #[derive(Clone)]
 struct ActiveServer {

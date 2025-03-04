@@ -6,7 +6,7 @@ use std::fs::File;
 use std::sync::OnceLock;
 use fs2::FileExt;
 use buckyos_kit::{get_buckyos_root_dir};
-use sys_config::{SystemConfigClient, SystemConfigError};
+use buckyos_api::{SystemConfigClient, SystemConfigError};
 use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
 #[cfg(target_os = "linux")]
 use crate::linux_smb::{update_samba_conf, stop_smb_service, check_samba_status};

@@ -14,7 +14,7 @@ use ::kRPC::*;
 use name_lib::{DeviceConfig, ZoneConfig, CURRENT_ZONE_CONFIG};
 use package_lib::*;
 use buckyos_kit::buckyos_get_unix_timestamp;
-use sys_config::*;
+use buckyos_api::*;
 use tokio::io::AsyncSeekExt;
 use name_lib::*;
 

@@ -34,6 +34,6 @@ cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
 cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
 kRPC ={ path = "../../kernel/kRPC" }
-sys-config = { path = "../../kernel/sys-config" }
+buckyos-api = { path = "../../kernel/buckyos-api" }
 
 

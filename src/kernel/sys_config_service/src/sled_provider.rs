@@ -13,7 +13,7 @@ pub struct SledStore {
 impl SledStore {
     pub fn new() -> std::result::Result<Self, Box<dyn std::error::Error>> {
         let root_path  = get_buckyos_root_dir();
-        let path = root_path.join("data").join("sys_config");
+        let path = root_path.join("data").join("buckyos_api");
 
         let db = sled::open(path)?;
         Ok(SledStore { db: Arc::new(db) })

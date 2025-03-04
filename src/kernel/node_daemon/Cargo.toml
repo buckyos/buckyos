@@ -32,7 +32,7 @@ name-client = { path = "../../components/name-client" }
 package-lib = { path = "../../components/package-lib" }
 #package-installer = { path = "../../components/package-installer" }
 kRPC = { path = "../kRPC" }
-sys-config = { path = "../sys-config" }
+buckyos-api = { path = "../buckyos-api" }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"

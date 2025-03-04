@@ -1,6 +1,6 @@
 use jsonwebtoken::EncodingKey;
 use name_lib::{DeviceConfig};
-use sys_config::{SystemConfigClient};
+use buckyos_api::{SystemConfigClient};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use crate::util::{get_device_token_jwt, get_device_doc, load_device_private_key};
@@ -30,7 +30,7 @@ pub async fn connect_into(target_url:&str, node_id:&str) {
     let mut rl = DefaultEditor::new().unwrap();
     loop {
         // 读取用户输入
-        let readline = rl.readline("sys_config> ");
+        let readline = rl.readline("buckyos_api> ");
         match readline {
             Ok(line) => {
                 let _ = rl.add_history_entry(line.as_str());

@@ -23,7 +23,7 @@ members = [
 
     "./kernel/kRPC",
     "./kernel/rbac",
-    "./kernel/sys-config",
+    "./kernel/buckyos-api",
     "./kernel/sys_config_service",
     "./kernel/verify_hub",
     "./kernel/node_daemon",

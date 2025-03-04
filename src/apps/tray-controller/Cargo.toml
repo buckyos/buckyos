@@ -19,7 +19,7 @@ buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
 name-client = {path = "../../components/name-client"}
 package-lib = {path = "../../components/package-lib"}
-sys-config = { path = "../../kernel/sys-config" }
+buckyos-api = { path = "../../kernel/buckyos-api" }
 kRPC = { path = "../../kernel/kRPC" }
 fs2 = "*"
 

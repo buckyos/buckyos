@@ -25,4 +25,4 @@ buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
 
 kRPC ={ path = "../kRPC" }
-sys-config = { path = "../sys-config" }
+buckyos-api = { path = "../buckyos-api" }

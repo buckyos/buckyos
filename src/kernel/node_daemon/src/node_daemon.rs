@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use simplelog::*;
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
 use lazy_static::lazy_static;
-use sys_config::*;
+use buckyos_api::*;
 use toml;
 use serde_json::{from_value, json, Value};
 use name_lib::*;
@@ -219,9 +219,9 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneC
     return Ok(zone_config);
 }
 
-async fn load_app_info(app_id: &str,username: &str,sys_config_client: &SystemConfigClient) -> Result<AppDoc> {
+async fn load_app_info(app_id: &str,username: &str,buckyos_api_client: &SystemConfigClient) -> Result<AppDoc> {
     let app_key = format!("users/{}/apps/{}/config", username,app_id);
-    let (app_cfg_result,rversion) = sys_config_client.get(app_key.as_str()).await
+    let (app_cfg_result,rversion) = buckyos_api_client.get(app_key.as_str()).await
         .map_err(|error| {
             let err_str = format!("get app config failed from system_config! {}", error);
             warn!("{}",err_str.as_str());
@@ -237,7 +237,7 @@ async fn load_app_info(app_id: &str,username: &str,sys_config_client: &SystemCon
     return Err(NodeDaemonErrors::SystemConfigError(err_str));
 }
 
-async fn load_node_gateway_config(node_host_name: &str,sys_config_client: &SystemConfigClient) -> Result<Value> {
+async fn load_node_gateway_config(node_host_name: &str,buckyos_api_client: &SystemConfigClient) -> Result<Value> {
     let json_config_path = format!("{}_node_gateway.json", node_host_name);
     let json_config = std::fs::read_to_string(json_config_path);
     if json_config.is_ok() {
@@ -252,7 +252,7 @@ async fn load_node_gateway_config(node_host_name: &str,sys_config_client: &Syste
     }
 
     let node_key = format!("nodes/{}/gateway_config", node_host_name);
-    let (node_cfg_result,rversion) = sys_config_client.get(node_key.as_str()).await
+    let (node_cfg_result,rversion) = buckyos_api_client.get(node_key.as_str()).await
         .map_err(|error| {
             error!("get node gateway_config failed from system_config_service! {}", error);
             return NodeDaemonErrors::SystemConfigError("get node gateway_config failed from system_config_service!".to_string());
@@ -266,7 +266,7 @@ async fn load_node_gateway_config(node_host_name: &str,sys_config_client: &Syste
     Ok(gateway_config)
 }
 
-async fn load_node_config(node_host_name: &str,sys_config_client: &SystemConfigClient) -> Result<NodeConfig> {
+async fn load_node_config(node_host_name: &str,buckyos_api_client: &SystemConfigClient) -> Result<NodeConfig> {
     let json_config_path = format!("{}_node_config.json", node_host_name);
     let json_config = std::fs::read_to_string(json_config_path);
     if json_config.is_ok() {
@@ -281,7 +281,7 @@ async fn load_node_config(node_host_name: &str,sys_config_client: &SystemConfigC
     }
 
     let node_key = format!("nodes/{}/config", node_host_name);
-    let (node_cfg_result,rversion) = sys_config_client.get(node_key.as_str()).await
+    let (node_cfg_result,rversion) = buckyos_api_client.get(node_key.as_str()).await
         .map_err(|error| {
             error!("get node config failed from etcd! {}", error);
             return NodeDaemonErrors::SystemConfigError("get node config failed from system_config_service!".to_string());
@@ -295,7 +295,7 @@ async fn load_node_config(node_host_name: &str,sys_config_client: &SystemConfigC
     Ok(node_config)
 }
 
-async fn check_and_update_sys_pkgs(is_ood: bool,sys_config_client: &SystemConfigClient) {
+async fn check_and_update_sys_pkgs(is_ood: bool,buckyos_api_client: &SystemConfigClient) {
     let mut will_check_update_pkg_list = vec![
         "cyfs-gateway".to_string(),
         "app_loader".to_string(),
@@ -335,7 +335,7 @@ async fn check_and_update_env_index_db() -> bool {
     false
 }
 
-async fn update_device_info(device_doc: &DeviceConfig,sys_config_client: &SystemConfigClient) {
+async fn update_device_info(device_doc: &DeviceConfig,buckyos_api_client: &SystemConfigClient) {
     let mut device_info = DeviceInfo::from_device_doc(device_doc);
     let fill_result = device_info.auto_fill_by_system_info().await;
     if fill_result.is_err() {
@@ -344,8 +344,8 @@ async fn update_device_info(device_doc: &DeviceConfig,sys_config_client: &System
     }
     let device_info_str = serde_json::to_string(&device_info).unwrap();
 
-    let device_key = format!("{}/info",sys_config_get_device_path(device_doc.name.as_str()));
-    let put_result = sys_config_client.set(device_key.as_str(),device_info_str.as_str()).await;
+    let device_key = format!("{}/info",buckyos_api_get_device_path(device_doc.name.as_str()));
+    let put_result = buckyos_api_client.set(device_key.as_str(),device_info_str.as_str()).await;
     if put_result.is_err() {
         error!("update device info to system_config failed! {}", put_result.err().unwrap());
     } else {
@@ -353,11 +353,11 @@ async fn update_device_info(device_doc: &DeviceConfig,sys_config_client: &System
     }
 }
 
-async fn register_device_doc(device_doc:&DeviceConfig,sys_config_client: &SystemConfigClient) {
-    let device_key = sys_config_get_device_path(device_doc.name.as_str());
+async fn register_device_doc(device_doc:&DeviceConfig,buckyos_api_client: &SystemConfigClient) {
+    let device_key = buckyos_api_get_device_path(device_doc.name.as_str());
     let device_doc_str = serde_json::to_string(&device_doc).unwrap();
-    let device_key = format!("{}/doc",sys_config_get_device_path(device_doc.name.as_str()));
-    let put_result = sys_config_client.create(device_key.as_str(),device_doc_str.as_str()).await;
+    let device_key = format!("{}/doc",buckyos_api_get_device_path(device_doc.name.as_str()));
+    let put_result = buckyos_api_client.create(device_key.as_str(),device_doc_str.as_str()).await;
     if put_result.is_err() {
         error!("register device doc to system_config failed! {}", put_result.err().unwrap());
     } else {
@@ -432,20 +432,20 @@ async fn report_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str
 }
 
 async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig,is_restart:bool) -> std::result::Result<(),String> {
-    let mut sys_config_service_pkg = ServicePkg::new("system_config".to_string(),get_buckyos_system_bin_dir());
-    if !sys_config_service_pkg.try_load(false).await {
+    let mut buckyos_api_service_pkg = ServicePkg::new("system_config".to_string(),get_buckyos_system_bin_dir());
+    if !buckyos_api_service_pkg.try_load(false).await {
         error!("load system_config_service pkg failed!");
         return Err(String::from("load system_config_service failed!"));
     }
     //If this node is ood: try run / recover  system_config_service
     //  init system_config client, if kv://boot is not exist, create it and register new ood.
-    let mut running_state = sys_config_service_pkg.status(None).await.map_err(|err| {
+    let mut running_state = buckyos_api_service_pkg.status(None).await.map_err(|err| {
         error!("check system_config_service running failed! {}", err);
         return String::from("check system_config_service running failed!");
     })?;
 
     if is_restart {
-        sys_config_service_pkg.stop(None).await.map_err(|err| {
+        buckyos_api_service_pkg.stop(None).await.map_err(|err| {
             error!("stop system_config_service failed! {}", err);
             return String::from("stop system_config_service failed!");
         })?;
@@ -455,7 +455,7 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
 
     if running_state == ServiceState::Stopped {
         warn!("check system_config_service is stopped,try to start system_config_service");
-        let start_result = sys_config_service_pkg.start(None).await.map_err(|err| {
+        let start_result = buckyos_api_service_pkg.start(None).await.map_err(|err| {
             error!("start system_config_service failed! {}", err);
             return String::from("start system_config_service failed!");
         })?;
@@ -532,7 +532,7 @@ async fn stop_all_system_services() {
 
 async fn node_main(node_host_name: &str,
                    is_ood: bool,
-                   sys_config_client: &SystemConfigClient,
+                   buckyos_api_client: &SystemConfigClient,
                    device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
     //1. check and update env index db
     let mut system_need_upgrade = check_and_update_env_index_db().await;
@@ -545,7 +545,7 @@ async fn node_main(node_host_name: &str,
 
     if system_need_upgrade {
         //download all pkgs
-        check_and_update_sys_pkgs(is_ood,sys_config_client).await;
+        check_and_update_sys_pkgs(is_ood,buckyos_api_client).await;
         //stop all system services
         warn!("system need upgrade, kill all system services and exit!");
         stop_all_system_services().await;
@@ -555,7 +555,7 @@ async fn node_main(node_host_name: &str,
     }
 
     //3. control pod instance to target state
-    let node_config = load_node_config(node_host_name, sys_config_client).await
+    let node_config = load_node_config(node_host_name, buckyos_api_client).await
         .map_err(|err| {
             error!("load node config failed! {}", err);
             return NodeDaemonErrors::SystemConfigError("cann't load node config!".to_string());
@@ -620,7 +620,7 @@ async fn node_main(node_host_name: &str,
 async fn node_daemon_main_loop(
     node_id:&str,
     node_host_name:&str,
-    sys_config_client: &SystemConfigClient,
+    buckyos_api_client: &SystemConfigClient,
     device_doc:&DeviceConfig,
     device_session_token_jwt: &str,
     device_private_key: &EncodingKey,
@@ -634,7 +634,7 @@ async fn node_daemon_main_loop(
     //TODO: check and upgrade self use repo_service
     //try regsiter device doc
     report_ood_info_to_sn(&device_doc, device_session_token_jwt,&zone_config).await;
-    register_device_doc(device_doc, sys_config_client).await;
+    register_device_doc(device_doc, buckyos_api_client).await;
     let mut node_gateway_config = None;
     loop {
         if !is_running {
@@ -646,7 +646,7 @@ async fn node_daemon_main_loop(
         report_ood_info_to_sn(&device_doc, device_session_token_jwt,&zone_config).await;
         let now = buckyos_get_unix_timestamp();
         if now - last_register_time > 30 {
-            update_device_info(&device_doc, sys_config_client).await;
+            update_device_info(&device_doc, buckyos_api_client).await;
             last_register_time = now;
         }
 
@@ -657,14 +657,14 @@ async fn node_daemon_main_loop(
             })?;
         }
 
-        let main_result = node_main(node_host_name,is_ood, sys_config_client, device_doc, device_private_key).await;
+        let main_result = node_main(node_host_name,is_ood, buckyos_api_client, device_doc, device_private_key).await;
         
         if main_result.is_err() {
             error!("node_main failed! {}", main_result.err().unwrap());
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         } else {
             is_running = main_result.unwrap();
-            let new_node_gateway_config = load_node_gateway_config(node_host_name, sys_config_client).await;
+            let new_node_gateway_config = load_node_gateway_config(node_host_name, buckyos_api_client).await;
             if new_node_gateway_config.is_ok() {
                 let mut need_restart = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
@@ -853,7 +853,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         syc_cfg_client = SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()));
         let boot_config_result = syc_cfg_client.get("boot/config").await;
         match boot_config_result {
-            sys_config::SytemConfigResult::Err(SystemConfigError::KeyNotFound(_)) => {
+            buckyos_api::SytemConfigResult::Err(SystemConfigError::KeyNotFound(_)) => {
                 warn!("boot config is not exist, try first scheduler to generate it!");
                 //TODO: check and upgrade self
 
@@ -866,7 +866,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                 info!("Init boot config OK, wat 2 secs.");
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             },
-            sys_config::SytemConfigResult::Ok(r) => {
+            buckyos_api::SytemConfigResult::Ok(r) => {
                 boot_config = serde_json::from_str(r.0.as_str()).map_err(|err| {
                     error!("parse boot config failed! {}", err);
                     return String::from("parse boot config failed!");

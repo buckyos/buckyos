@@ -15,7 +15,7 @@ use crate::run_item::*;
 use crate::service_pkg::*;
 
 //use package_installer::*;
-use sys_config::AppServiceInstanceConfig;
+use buckyos_api::AppServiceInstanceConfig;
 
 
 pub struct AppRunItem {

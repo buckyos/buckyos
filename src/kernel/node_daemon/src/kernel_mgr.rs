@@ -12,7 +12,7 @@ use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use tokio::sync::RwLock;
-use sys_config::*;
+use buckyos_api::*;
 use crate::service_pkg::*;
 //use package_installer::*;
 

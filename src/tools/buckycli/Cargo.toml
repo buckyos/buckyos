@@ -19,7 +19,7 @@ kRPC = { path = "../../kernel/kRPC"}
 buckyos-kit = { path = "../../components/buckyos-kit"}
 name-lib = { path = "../../components/name-lib"}
 ndn-lib = { path = "../../components/ndn-lib"}
-sys-config = { path = "../../kernel/sys-config"}
+buckyos-api = { path = "../../kernel/buckyos-api"}
 package-installer = { path = "../../components/package-installer"}
 jsonwebtoken = "9.3.0"
 ed25519-dalek = { version = "*", features = ["pkcs8", "pem"] } 

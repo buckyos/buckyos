@@ -25,24 +25,24 @@ use buckyos_kit::*;
 
 //TODO:改成每个线程一个client?
 lazy_static!{
-    static ref SYS_CONFIG: Arc<Mutex<SystemConfigClient>> = {
+    static ref buckyos_api: Arc<Mutex<SystemConfigClient>> = {
         print!("init SystemConfigClient");
         Arc::new(Mutex::new(SystemConfigClient::new(None,None)))
     };
 }
 
-pub fn sys_config_get_device_path(device_id: &str) -> String {
+pub fn buckyos_api_get_device_path(device_id: &str) -> String {
     format!("devices/{}", device_id)
 }
 
 
-pub async fn sys_config_get(key: &str) -> SytemConfigResult<(String, u64)> {
-    let mut client = SYS_CONFIG.lock().unwrap(); 
+pub async fn buckyos_api_get(key: &str) -> SytemConfigResult<(String, u64)> {
+    let mut client = buckyos_api.lock().unwrap(); 
     client.get(key).await
 }
 
-pub async fn sys_config_set(key: &str, value: &str) -> SytemConfigResult<u64> {
-    let mut client = SYS_CONFIG.lock().unwrap();
+pub async fn buckyos_api_set(key: &str, value: &str) -> SytemConfigResult<u64> {
+    let mut client = buckyos_api.lock().unwrap();
     client.set(key, value).await
 }
 

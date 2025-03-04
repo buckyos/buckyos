@@ -13,7 +13,7 @@ use serde_json::Value;
 use name_lib::*;
 use name_client::*;
 use buckyos_kit::*;
-use sys_config::*;
+use buckyos_api::*;
 use scheduler::*;
 use service::*;
 use app::*;

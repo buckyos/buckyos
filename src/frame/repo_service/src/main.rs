@@ -5,7 +5,7 @@ mod repo_server;
 mod pub_task_mgr;
 use crate::repo_server::*;
 use std::fs::File;
-use sys_config::{SystemConfigClient, SystemConfigError};
+use buckyos_api::{SystemConfigClient, SystemConfigError};
 
 use log::*;
 use serde_json::*;
@@ -27,8 +27,8 @@ async fn service_main() -> Result<()> {
     })?;
     //TODO: 到verify-hub login获得更统一的session_token?
 
-    let sys_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
-    let (repo_service_settings, _) = sys_config_client.get("services/repo_service/settings").await
+    let buckyos_api_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
+    let (repo_service_settings, _) = buckyos_api_client.get("services/repo_service/settings").await
       .map_err(|e| {
         error!("repo service settings not found! err:{}", e);
         anyhow::anyhow!("repo service settings not found! err:{}", e)
