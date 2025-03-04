@@ -47,7 +47,7 @@ pub async fn sys_config_set(key: &str, value: &str) -> SytemConfigResult<u64> {
 }
 
 //if http_only is false, return the url with tunnel protocol
-pub fn get_zone_service_url(http_only: bool) -> String {
+pub fn get_zone_service_url(service_name: &str,http_only: bool) -> String {
     unimplemented!()
 }
 

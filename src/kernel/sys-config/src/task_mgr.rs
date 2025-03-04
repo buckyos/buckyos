@@ -166,7 +166,7 @@ impl TaskManager {
         }
     }
 
-    pub async fn update_task_progress(&self, id: i32, completed_items: i32, total_items: i32) -> Result<(), String> {
+    pub async fn update_task_progress(&self, id: i32, completed_items: u64, total_items: u64) -> Result<(), String> {
         let progress = if total_items > 0 {
             (completed_items as f32 / total_items as f32) * 100.0
         } else {

@@ -11,3 +11,16 @@
 合并 `发布完成等待审核 ` 发布任务里包含的pkg_list到local-wait-meta
  
 */
+
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PubTaskData {
+    //pkg_name -> pkg_meta_jwt
+    pub pkg_list: HashMap<String,String>,
+    pub author_name: String,
+    pub author_pk: jsonwebtoken::jwk::Jwk,
+    pub author_repo_url: String,
+}

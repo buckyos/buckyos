@@ -15,6 +15,8 @@ pub struct PackageMeta {
     pub chunk_id: Option<String>, //有些pkg不需要下载
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_url: Option<String>, //发布时的URL,可以不写
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_size: Option<u64>, //有些pkg不需要下载
     pub deps: HashMap<String, String>,     //key = pkg_name,value = version_req_str,like ">1.0.0-alpha"
     pub pub_time: i64,
 }

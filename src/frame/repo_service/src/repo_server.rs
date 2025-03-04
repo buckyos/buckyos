@@ -3,8 +3,9 @@ use log::*;
 use ndn_lib::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::{env, hash::Hash};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::result::Result;
@@ -16,6 +17,8 @@ use buckyos_kit::buckyos_get_unix_timestamp;
 use sys_config::*;
 use tokio::io::AsyncSeekExt;
 use name_lib::*;
+
+use crate::pub_task_mgr::*;
 struct ReqHelper;
 
 impl ReqHelper {
@@ -69,6 +72,11 @@ source-mgr
 如果打开了开发者模式，则有：
     local-pub meta-index-db (read-only)
     local-wait-pub meta-index-db
+
+流程的核心理念与git类似
+
+发布pkg: 先commit到当前repo.然后再Merge到remote-repo，merge流程允许手工介入
+获得更新: git pull后，根据当前已经安装的app列表下载chunk,全部成功后再切换当前repo的版本
 */
 
 
@@ -363,18 +371,182 @@ impl RepoServer {
         1. 验证身份是合法的
         2. 在pub_pkg_db库里创建发布任务，写入pkg_list，初始状态为已经收到
         2. 检查pkg_list的各种deps已经存在了,失败在发布任务中写入错误信息
-        3. 尝试下载chunkid到本地，失败在发布任务中写入错误信息，下载成功的chunk会关联到正确的path,防止被删除
-        4. 所有的chunk都准备好了，本次发布成功（业务逻辑也可以加入审核流程，手工将发布任务的状态设置为成功）
+       
         */
-        unimplemented!();
+        let user_id = ReqHelper::get_user_id(&req)?;
+        let task_name = ReqHelper::get_str_param_from_req(&req, "task_name")?;
+        let real_task_name = format!("pub_pkg_to_source_{}_{}",user_id,task_name);
+        let rpc_client = kRPC::new(get_zone_service_url("task_manager",false).as_str(),self.session_token.clone());
+        let task_mgr = TaskManager::new(Arc::new(rpc_client));
+
+        let task_data = req.params.get("task_data");
+        if task_data.is_none() {
+            return Err(RPCErrors::ReasonError("task_data is none".to_string()));
+        }
+        let task_data = task_data.unwrap();
+
+        let pub_task_data:PubTaskData = serde_json::from_value(task_data.clone()).map_err(|e| {
+            error!("parse task_data failed, err:{}", e);
+            RPCErrors::ReasonError(format!("parse task_data failed, err:{}", e))
+        })?;
+
+        let task_id = task_mgr.create_task(&real_task_name, "pub_pkg_to_source", "repo_service", Some(task_data.clone())).await.map_err(|e| {
+            error!("create task failed, err:{}", e);
+            RPCErrors::ReasonError(format!("create task failed, err:{}", e))
+        })?;
+
+        let ndn_client = NdnClient::new(pub_task_data.author_repo_url.clone(),self.session_token.clone(),None);
+        let author_pk = pub_task_data.author_pk.clone();
+        //TODO verify author_pk
+        // 需要检查和一金认证的author_info是否匹配
+
+        //chunk_id -> (chunk_url,chunk_size)
+        let mut total_size = 0;
+        let mut will_download_chunk_list:HashMap<String,(String,u64)> = HashMap::new();
+        for (meta_obj_id,pkg_meta_jwt) in pub_task_data.pkg_list.iter() {
+            let meta_obj_id = ObjId::new(meta_obj_id.as_str()).map_err(|e| {
+                error!("parse meta_obj_id failed, err:{}", e);
+                RPCErrors::ReasonError(format!("parse meta_obj_id failed, err:{}", e))
+            })?;
+            let verify_result = verify_named_object_from_jwt(&meta_obj_id,pkg_meta_jwt);
+            if verify_result.is_err() {
+                error!("verify pkg_meta_jwt failed, err:{}", verify_result.err().unwrap());
+                continue;
+            }
+            let pkg_meta_json = decode_json_from_jwt_with_default_pk(pkg_meta_jwt,&author_pk).map_err(|e| {
+                error!("decode pkg_meta_jwt failed, err:{}", e);
+                RPCErrors::ReasonError(format!("decode pkg_meta_jwt failed, err:{}", e))
+            })?;
+            let pkg_meta:PackageMeta = serde_json::from_value(pkg_meta_json).map_err(|e| {
+                error!("parse pkg_meta_jwt failed, err:{}", e);
+                RPCErrors::ReasonError(format!("parse pkg_meta_jwt failed, err:{}", e))
+            })?;
+            // TODO:检查pkg_list的各种deps已经存在了,失败在发布任务中写入错误信息
+        
+            //3. 尝试下载chunkid到本地，失败在发布任务中写入错误信息，下载成功的chunk会关联到正确的path,防止被删除
+            //4. 所有的chunk都准备好了，本次发布成功（业务逻辑也可以加入审核流程，手工将发布任务的状态设置为成功）
+            if pkg_meta.chunk_id.is_some() {
+                let chunk_size = pkg_meta.chunk_size.clone().unwrap_or(0);
+                if chunk_size == 0 {
+                    error!("chunk_size is 0");
+                    continue;
+                }
+                total_size += chunk_size;
+                let chunk_url = pkg_meta.chunk_url.clone().unwrap_or("".to_string());
+                will_download_chunk_list.insert(pkg_meta.chunk_id.as_ref().unwrap().clone(),(chunk_url,chunk_size));
+            }
+        }
+
+        info!("veify pub pkg_list ok, will download {} chunks, total size:{}", will_download_chunk_list.len(), total_size);
+        task_mgr.update_task_status(task_id, TaskStatus::Running).await.map_err(|e| {
+            error!("update task status failed, err:{}", e);
+            RPCErrors::ReasonError(format!("update task status failed, err:{}", e))
+        })?;
+        task_mgr.update_task_progress(task_id, 0,  total_size).await.map_err(|e| {
+            error!("update task progress failed, err:{}", e);
+            RPCErrors::ReasonError(format!("update task progress failed, err:{}", e))
+        })?;
+
+        let mut completed_size = 0;
+        for (chunk_id, (chunk_url, chunk_size)) in will_download_chunk_list.iter() {
+            let chunk_id = ChunkId::new(chunk_id.as_str()).map_err(|e| {
+                error!("parse chunk_id failed, err:{}", e);
+                RPCErrors::ReasonError(format!("parse chunk_id failed, err:{}", e))
+            })?;
+            let pull_chunk_result = ndn_client.pull_chunk(chunk_id.clone(),Some("pub")).await;
+            if pull_chunk_result.is_err() {
+                error!("pull chunk:{} failed, err:{}", chunk_id.to_string(), pull_chunk_result.err().unwrap());
+                continue;
+            }
+            completed_size += chunk_size;
+            task_mgr.update_task_progress(task_id, completed_size,  total_size).await.map_err(|e| {
+                error!("update task progress failed, err:{}", e);
+                RPCErrors::ReasonError(format!("update task progress failed, err:{}", e))
+            })?;
+        }
+        
+        task_mgr.update_task_status(task_id, TaskStatus::WaitingForApproval).await.map_err(|e| {
+            error!("update task status failed, err:{}", e);
+            RPCErrors::ReasonError(format!("update task status failed, err:{}", e))
+        })?;
+
+        return Ok(RPCResponse::new(RPCResult::Success(json!({
+            "task_id": task_id,
+        })), req.seq));
     }
 
     async fn handle_merge_wait_pub_to_source_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         /*
         合并 `未合并但准备好的` 发布任务里包含的pkg_list到local-wait-meta
-        注意merge完后，也要调用pub_index_db发布
+        注意merge完后，还要调用pub_index_db发布
         */
-        unimplemented!();
+        let rpc_client = kRPC::new(get_zone_service_url("task_manager",false).as_str(),self.session_token.clone());
+        let task_mgr = TaskManager::new(Arc::new(rpc_client));
+
+        let filter = TaskFilter {
+            app_name: Some("repo_service".to_string()),
+            task_type: Some("pub_pkg_to_source".to_string()),
+            status: Some(TaskStatus::WaitingForApproval),
+        };
+        let tasks = task_mgr.list_tasks(Some(filter)).await.map_err(|e| {
+            error!("list tasks failed, err:{}", e);
+            RPCErrors::ReasonError(format!("list tasks failed, err:{}", e))
+        })?;
+
+        let wait_meta_db_path = self.get_meta_index_db_path("local_wait_pub");
+        let wait_meta_db = MetaIndexDb::new(wait_meta_db_path).map_err(|e| {
+            error!("new wait-meta-db failed, err:{}", e);
+            RPCErrors::ReasonError(format!("new wait-meta-db failed, err:{}", e))
+        })?;
+
+        for task in tasks.iter() {
+            let task_data = task.data.as_ref().unwrap();
+            let pub_task_data:PubTaskData = serde_json::from_str(task_data.as_str()).map_err(|e| {
+                error!("parse task_data failed, err:{}", e);
+                RPCErrors::ReasonError(format!("parse task_data failed, err:{}", e))
+            })?;
+
+            let mut pkg_meta_map:HashMap<String,PackageMetaNode> = HashMap::new();
+
+            for (meta_obj_id,pkg_meta_jwt) in pub_task_data.pkg_list.iter() {
+                let pkg_meta = decode_jwt_claim_without_verify(pkg_meta_jwt).map_err(|e| {
+                    error!("decode pkg_meta_jwt failed, err:{}", e);
+                    RPCErrors::ReasonError(format!("decode pkg_meta_jwt failed, err:{}", e))
+                })?;
+
+                let pkg_meta:PackageMeta = serde_json::from_value(pkg_meta.clone()).map_err(|e| {
+                    error!("parse pkg_meta_jwt failed, err:{}", e);
+                    RPCErrors::ReasonError(format!("parse pkg_meta_jwt failed, err:{}", e))
+                })?;
+
+                let package_meta_node = PackageMetaNode {
+                    meta_jwt:pkg_meta_jwt.clone(),
+                    pkg_name:pkg_meta.pkg_name.clone(),
+                    version:pkg_meta.version.clone(),
+                    tag:pkg_meta.tag.clone(),
+                    author:pkg_meta.author.clone(),
+                    author_pk: serde_json::to_string(&pub_task_data.author_pk).map_err(|e| {
+                        error!("serialize author_pk failed, err:{}", e);
+                        RPCErrors::ReasonError(format!("serialize author_pk failed, err:{}", e))
+                    })?,
+                };
+                pkg_meta_map.insert(meta_obj_id.to_string(),package_meta_node);
+            }
+
+            wait_meta_db.add_pkg_meta_batch(&pkg_meta_map).map_err(|e| {
+                error!("add pkg_meta_batch failed, err:{}", e);
+                RPCErrors::ReasonError(format!("add pkg_meta_batch failed, err:{}", e))
+            })?;
+
+            task_mgr.update_task_status(task.id, TaskStatus::Completed).await.map_err(|e| {
+                error!("update task status failed, err:{}", e);
+                RPCErrors::ReasonError(format!("update task status failed, err:{}", e))
+            })?;
+        }
+
+        Ok(RPCResponse::new(RPCResult::Success(json!({
+            "success": true,
+        })), req.seq))
     }
 
     // 查询index-meta
