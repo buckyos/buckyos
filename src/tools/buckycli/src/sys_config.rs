@@ -1,50 +1,19 @@
-use std::time::{SystemTime, UNIX_EPOCH};
 use jsonwebtoken::EncodingKey;
-use serde::Deserialize;
-use buckyos_kit::get_buckyos_system_etc_dir;
-use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig};
+use name_lib::{DeviceConfig};
 use sys_config::{SystemConfigClient};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use crate::util::{get_device_token_jwt, get_device_doc, load_device_private_key};
 
-#[derive(Deserialize, Debug)]
-struct NodeIdentityConfig {
-    zone_name: String,// $name.buckyos.org or did:ens:$name
-    owner_public_key: jsonwebtoken::jwk::Jwk, //owner is zone_owner
-    owner_name:String,//owner's name
-    device_doc_jwt:String,//device document,jwt string,siged by owner
-    zone_nonce:String,// random string, is default password of some service
-    //device_private_key: ,storage in partical file
-}
 
 pub async fn connect_into(target_url:&str, node_id:&str) {
-    // println!("connect to system config service");
-    let file_path = get_buckyos_system_etc_dir().join(format!("{}_identity.toml", node_id));
-    let contents = std::fs::read_to_string(file_path.clone()).unwrap();
-    let node_identity: NodeIdentityConfig = toml::from_str(&contents).unwrap();
-    let device_doc_json = decode_json_from_jwt_with_default_pk(&node_identity.device_doc_jwt, &node_identity.owner_public_key).unwrap();
-    let device_doc : DeviceConfig = serde_json::from_value(device_doc_json).unwrap();
+    // 读取node配置和密钥信息
+    let device_doc: DeviceConfig = get_device_doc(node_id).unwrap();
+    let device_private_key: EncodingKey = load_device_private_key(node_id).unwrap();
+    // 生成对应jwt
+    let device_session_token_jwt = get_device_token_jwt(&device_private_key, &device_doc).unwrap();
 
-    let now = SystemTime::now();
-    let since_the_epoch = now.duration_since(UNIX_EPOCH)
-        .expect("Time went backwards");
-    let timestamp = since_the_epoch.as_secs();
-
-    let private_key_path = get_buckyos_system_etc_dir().join(format!("{}_private_key.pem",node_id));
-    let private_key = std::fs::read_to_string(private_key_path.clone()).unwrap();
-    let device_private_key: EncodingKey = EncodingKey::from_ed_pem(private_key.as_bytes()).unwrap();
-
-    // TODO improve
-    let device_session_token = kRPC::RPCSessionToken {
-        token_type : kRPC::RPCSessionTokenType::JWT,
-        nonce : None,
-        userid : Some(device_doc.name.clone()),
-        appid:Some("kernel".to_string()),
-        exp:Some(timestamp + 3600*24*7),
-        iss:Some(device_doc.name.clone()),
-        token:None,
-    };
-    let device_session_token_jwt = device_session_token.generate_jwt(Some(device_doc.did.clone()),&device_private_key).unwrap();
+    // init client
     let syc_cfg_client: SystemConfigClient = SystemConfigClient::new(Some(target_url), Some(device_session_token_jwt.as_str()));
     // handle error
 

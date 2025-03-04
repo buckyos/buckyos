@@ -7,6 +7,7 @@ use clap::{Arg, Command};
 use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig};
 use package_cmd::*;
 use std::time::{SystemTime, UNIX_EPOCH};
+use jsonwebtoken::EncodingKey;
 use util::*;
 
 const CONFIG_FILE: &str = "~/.buckycli/config";
@@ -188,25 +189,7 @@ async fn main() -> std::result::Result<(), String> {
 
     match matches.subcommand() {
         Some(("create_token", _matches)) => {
-            let now = SystemTime::now();
-            let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
-            let timestamp = since_the_epoch.as_secs();
-            let device_session_token = kRPC::RPCSessionToken {
-                token_type: kRPC::RPCSessionTokenType::JWT,
-                nonce: None,
-                userid: Some(device_doc.name.clone()),
-                appid: Some("kernel".to_string()),
-                exp: Some(timestamp + 3600 * 24 * 7),
-                iss: Some(device_doc.name.clone()),
-                token: None,
-            };
-
-            let device_session_token_jwt = device_session_token
-                .generate_jwt(Some(device_doc.did.clone()), &device_private_key)
-                .map_err(|err| {
-                    println!("generate device session token failed! {}", err);
-                    return String::from("generate device session token failed!");
-                })?;
+            let device_session_token_jwt = get_device_token_jwt(&device_private_key, &device_doc)?;
             println!("{}", device_session_token_jwt)
         }
         Some(("version", _)) => {
@@ -220,25 +203,8 @@ async fn main() -> std::result::Result<(), String> {
             );
         }
         Some(("pub_pkg", matches)) => {
-            let now = SystemTime::now();
-            let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
-            let timestamp = since_the_epoch.as_secs();
-            let device_session_token = kRPC::RPCSessionToken {
-                token_type: kRPC::RPCSessionTokenType::JWT,
-                nonce: None,
-                userid: Some(device_doc.name.clone()),
-                appid: Some("kernel".to_string()),
-                exp: Some(timestamp + 3600 * 24 * 7),
-                iss: Some(device_doc.name.clone()),
-                token: None,
-            };
+            let device_session_token_jwt = get_device_token_jwt(&device_private_key, &device_doc)?;
 
-            let device_session_token_jwt = device_session_token
-                .generate_jwt(Some(device_doc.did.clone()), &device_private_key)
-                .map_err(|err| {
-                    println!("generate device session token failed! {}", err);
-                    return String::from("generate device session token failed!");
-                })?;
             //从args中取出参数
             let pkg_path = matches.get_one::<String>("pkg_path").unwrap();
             let pem_file = matches.get_one::<String>("pem").unwrap();
@@ -262,25 +228,8 @@ async fn main() -> std::result::Result<(), String> {
             }
         }
         Some(("pub_app", matches)) => {
-            let now = SystemTime::now();
-            let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
-            let timestamp = since_the_epoch.as_secs();
-            let device_session_token = kRPC::RPCSessionToken {
-                token_type: kRPC::RPCSessionTokenType::JWT,
-                nonce: None,
-                userid: Some(device_doc.name.clone()),
-                appid: Some("kernel".to_string()),
-                exp: Some(timestamp + 3600 * 24 * 7),
-                iss: Some(device_doc.name.clone()),
-                token: None,
-            };
+            let device_session_token_jwt = get_device_token_jwt(&device_private_key, &device_doc)?;
 
-            let device_session_token_jwt = device_session_token
-                .generate_jwt(Some(device_doc.did.clone()), &device_private_key)
-                .map_err(|err| {
-                    println!("generate device session token failed! {}", err);
-                    return String::from("generate device session token failed!");
-                })?;
             //从args中取出参数
             let app_path = matches.get_one::<String>("app_path").unwrap();
             let pem_file = matches.get_one::<String>("pem").unwrap();
@@ -304,25 +253,8 @@ async fn main() -> std::result::Result<(), String> {
             }
         }
         Some(("pub_index", matches)) => {
-            let now = SystemTime::now();
-            let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
-            let timestamp = since_the_epoch.as_secs();
-            let device_session_token = kRPC::RPCSessionToken {
-                token_type: kRPC::RPCSessionTokenType::JWT,
-                nonce: None,
-                userid: Some(device_doc.name.clone()),
-                appid: Some("kernel".to_string()),
-                exp: Some(timestamp + 3600 * 24 * 7),
-                iss: Some(device_doc.name.clone()),
-                token: None,
-            };
+            let device_session_token_jwt = get_device_token_jwt(&device_private_key, &device_doc)?;
 
-            let device_session_token_jwt = device_session_token
-                .generate_jwt(Some(device_doc.did.clone()), &device_private_key)
-                .map_err(|err| {
-                    println!("generate device session token failed! {}", err);
-                    return String::from("generate device session token failed!");
-                })?;
             //从args中取出参数
             let pem_file = matches.get_one::<String>("pem").unwrap();
             let version = matches.get_one::<String>("version").unwrap();
@@ -366,14 +298,12 @@ async fn main() -> std::result::Result<(), String> {
             }
         }
         Some(("connect", matches)) => {
-            let target_url = matches.get_one::<String>("target_url");
-            let node_id = matches.get_one::<String>("node_id");
-            let url = match target_url {
-                Some(url) => url.to_string(),
+            let url = match matches.get_one::<String>("target_url") {
+                Some(arg) => arg.to_string(),
                 None => String::from("http://127.0.0.1:3200/kapi/system_config"),
             };
-            let node_id = match node_id {
-                Some(value) =>  value.to_string(),
+            let node_id = match matches.get_one::<String>("node_id") {
+                Some(arg) =>  arg.to_string(),
                 None => String::from("node"),
             };
             sys_config::connect_into(&url, &node_id).await;
@@ -388,3 +318,4 @@ async fn main() -> std::result::Result<(), String> {
 
     Ok(())
 }
+
