@@ -66,11 +66,11 @@ async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
 
 async fn do_boot_scheduler() -> Result<()> {
     let mut init_list : HashMap<String,String> = HashMap::new();
-    let zone_config_str = std::env::var("BUCKY_ZONE_CONFIG");
+    let zone_config_str = std::env::var("BUCKYOS_ZONE_CONFIG");
 
     if zone_config_str.is_err() {
-        warn!("BUCKY_ZONE_CONFIG is not set, use default zone config");
-        return Err(anyhow::anyhow!("BUCKY_ZONE_CONFIG is not set"));
+        warn!("BUCKYOS_ZONE_CONFIG is not set, use default zone config");
+        return Err(anyhow::anyhow!("BUCKYOS_ZONE_CONFIG is not set"));
     }
 
     info!("zone_config_str:{}",zone_config_str.as_ref().unwrap());

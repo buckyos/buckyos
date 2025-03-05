@@ -44,10 +44,10 @@ if __name__ == "__main__":
     app_token = os.getenv(f"{full_appid}_token")
     app_instance_config_str = os.getenv("app_instance_config")
     media_info_str = os.getenv("app_media_info")
-    zone_config_str = os.getenv(f"BUCKY_ZONE_CONFIG")
+    zone_config_str = os.getenv(f"BUCKYOS_ZONE_CONFIG")
     zone_config = None
     zone_docker_repo_base_url = None
-    device_doc_str = os.getenv(f"BUCKY_THIS_DEVICE")
+    device_doc_str = os.getenv(f"BUCKYOS_THIS_DEVICE")
     device_doc = None
 
 

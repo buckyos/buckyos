@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::result::Result;
 use std::str::FromStr;
 use ::kRPC::*;
-use name_lib::{DeviceConfig, ZoneConfig, CURRENT_ZONE_CONFIG};
+use name_lib::{DeviceConfig, ZoneConfig};
 use package_lib::*;
 use buckyos_kit::buckyos_get_unix_timestamp;
 use buckyos_api::*;
@@ -100,14 +100,13 @@ impl Default for RepoServerSetting {
 #[derive(Debug,Clone)]
 pub struct RepoServer {
     settng: RepoServerSetting,
-    session_token : Option<String>,
+    //session_token : Option<String>,
 }
 
 impl RepoServer {
-    pub async fn new(config: RepoServerSetting,session_token: Option<String>) -> PkgResult<Self> {
+    pub async fn new(config: RepoServerSetting) -> PkgResult<Self> {
         Ok(RepoServer { 
-            settng:config,
-            session_token:session_token,
+            settng:config
         })
     }
 
@@ -168,7 +167,9 @@ impl RepoServer {
             info!("update meta-index-db:source {}, download url:{}", source, source_url);
             let new_meta_index_db_path = self.get_meta_index_db_path(&source);
 
-            let ndn_client = NdnClient::new(source_url.clone(),self.session_token.clone(),None);
+            let runtime = get_buckyos_api_runtime().await?;
+            let session_token = runtime.get_session_token().await;
+            let ndn_client = NdnClient::new(source_url.clone(),Some(session_token),None);
             ndn_client.download_chunk_to_local(source_url.as_str(),&new_meta_index_db_path, None).await.map_err(|e| {
                 error!("download remote meta-index-db by {} failed, err:{}", source_url, e);
                 RPCErrors::ReasonError(format!("download remote meta-index-db by {} failed, err:{}", source_url, e))
@@ -376,8 +377,8 @@ impl RepoServer {
         let user_id = ReqHelper::get_user_id(&req)?;
         let task_name = ReqHelper::get_str_param_from_req(&req, "task_name")?;
         let real_task_name = format!("pub_pkg_to_source_{}_{}",user_id,task_name);
-        let rpc_client = kRPC::new(get_zone_service_url("task_manager",false).as_str(),self.session_token.clone());
-        let task_mgr = TaskManager::new(Arc::new(rpc_client));
+        let runtime = get_buckyos_api_runtime().await?;
+        let task_mgr = runtime.get_task_mgr_client().await?;
 
         let task_data = req.params.get("task_data");
         if task_data.is_none() {
@@ -395,7 +396,8 @@ impl RepoServer {
             RPCErrors::ReasonError(format!("create task failed, err:{}", e))
         })?;
 
-        let ndn_client = NdnClient::new(pub_task_data.author_repo_url.clone(),self.session_token.clone(),None);
+        let session_token = runtime.get_session_token().await;
+        let ndn_client = NdnClient::new(pub_task_data.author_repo_url.clone(),Some(session_token),None);
         let author_pk = pub_task_data.author_pk.clone();
         //TODO verify author_pk
         // 需要检查和一金认证的author_info是否匹配
@@ -480,8 +482,8 @@ impl RepoServer {
         合并 `未合并但准备好的` 发布任务里包含的pkg_list到local-wait-meta
         注意merge完后，还要调用pub_index_db发布
         */
-        let rpc_client = kRPC::new(get_zone_service_url("task_manager",false).as_str(),self.session_token.clone());
-        let task_mgr = TaskManager::new(Arc::new(rpc_client));
+        let runtime = get_buckyos_api_runtime().await?;
+        let task_mgr = runtime.get_task_mgr_client().await?;
 
         let filter = TaskFilter {
             app_name: Some("repo_service".to_string()),

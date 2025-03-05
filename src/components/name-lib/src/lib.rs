@@ -17,9 +17,8 @@ use tokio::sync::Mutex;
 use once_cell::sync::OnceCell;
 
 
-pub static CURRENT_ZONE_CONFIG: OnceCell<ZoneConfig> = OnceCell::new();
-pub static CURRENT_DEVICE_CONFIG: OnceCell<DeviceConfig> = OnceCell::new();
 
+pub static CURRENT_DEVICE_CONFIG: OnceCell<DeviceConfig> = OnceCell::new();
 
 #[cfg(test)]
 mod tests {

@@ -137,7 +137,7 @@ def start_app_with_docker():
 
 
     # 构造docker命令
-    docker_command = f"docker run --rm {port_cmd} --name {container_id} -e BUCKY_ZONE_CONFIG -e {full_appid}_token -d "
+    docker_command = f"docker run --rm {port_cmd} --name {container_id} -e BUCKYOS_ZONE_CONFIG -e {full_appid}_token -d "
 
     if volume_mapping:
         docker_command += volume_mapping
@@ -169,10 +169,10 @@ def start_app():
     app_token = os.getenv(f"{full_appid}_token")
     app_instance_config_str = os.getenv("app_instance_config")
     media_info_str = os.getenv("app_media_info")
-    zone_config_str = os.getenv(f"BUCKY_ZONE_CONFIG")
+    zone_config_str = os.getenv(f"BUCKYOS_ZONE_CONFIG")
     zone_config = None
     zone_docker_repo_base_url = None
-    device_doc_str = os.getenv(f"BUCKY_THIS_DEVICE")
+    device_doc_str = os.getenv(f"BUCKYOS_THIS_DEVICE")
     device_doc = None
 
     if zone_config_str:

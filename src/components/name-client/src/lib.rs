@@ -4,7 +4,6 @@ mod provider;
 mod name_client;
 mod name_query;
 mod dns_provider;
-mod zone_provider;
 mod utility;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -12,7 +11,6 @@ pub use provider::*;
 pub use name_client::*;
 pub use name_query::*;
 pub use dns_provider::*;
-pub use zone_provider::*;
 pub use utility::*;
 
 use cfg_if::cfg_if;
@@ -35,7 +33,7 @@ extern crate log;
 pub static GLOBAL_BOOT_NAME_CLIENT: OnceCell<NameClient> = OnceCell::new();
 pub static GLOBAL_NAME_CLIENT: OnceCell<NameClient> = OnceCell::new();
 
-pub static CURRENT_APP_SESSION_TOKEN: OnceCell<String> = OnceCell::new();
+
 
 pub async fn resolve_ip(name: &str) -> NSResult<IpAddr> {
     let name_info = resolve(name,None).await?;
@@ -46,61 +44,6 @@ pub async fn resolve_ip(name: &str) -> NSResult<IpAddr> {
     Ok(result_ip)
 }
 
-pub fn init_global_buckyos_value_by_env(app_name: &str) {
-    let zone_config_str = env::var("BUCKY_ZONE_CONFIG");
-    if zone_config_str.is_err() {
-        warn!("BUCKY_ZONE_CONFIG not set");
-        return;
-    }
-    let zone_config_str = zone_config_str.unwrap();
-    info!("zone_config_str:{}",zone_config_str);    
-    let zone_config = serde_json::from_str(zone_config_str.as_str());
-    if zone_config.is_err() {
-        warn!("zone_config_str format error");
-        return;
-    }
-    let zone_config = zone_config.unwrap();
-    let set_result = CURRENT_ZONE_CONFIG.set(zone_config);
-    if set_result.is_err() {
-        warn!("Failed to set GLOBAL_ZONE_CONFIG");
-        return;
-    }
-
-    let device_doc = env::var("BUCKY_THIS_DEVICE");
-    if device_doc.is_err() {
-        warn!("BUCKY_DEVICE_DOC not set");
-        return;
-    }
-    let device_doc = device_doc.unwrap();
-    info!("device_doc:{}",device_doc);
-    let device_config= serde_json::from_str(device_doc.as_str());
-    if device_config.is_err() {
-        warn!("device_doc format error");
-        return;
-    }
-    let device_config:DeviceConfig = device_config.unwrap();
-    let set_result = CURRENT_DEVICE_CONFIG.set(device_config);
-    if set_result.is_err() {
-        warn!("Failed to set CURRENT_DEVICE_CONFIG");
-        return;
-    }
-
-    let session_token_key = format!("{}_SESSION_TOKEN",app_name);
-    let session_token = env::var(session_token_key.as_str());
-    if session_token.is_err() {
-        warn!("{} not set",session_token_key);
-        return;
-    }
-    let session_token = session_token.unwrap();
-    let set_result = CURRENT_APP_SESSION_TOKEN.set(session_token);
-    if set_result.is_err() {
-        warn!("Failed to set GLOBAL_APP_SESSION_TOKEN");
-        return;
-    }
-
-    
-    
-}
 
 pub async fn init_default_name_client() -> NSResult<()> {
     let client = NameClient::new(NameClientConfig::default());
@@ -111,15 +54,6 @@ pub async fn init_default_name_client() -> NSResult<()> {
     Ok(())
 }
 
-pub async fn enable_zone_provider(this_device: Option<&DeviceInfo>,session_token: Option<&String>,is_gateway:bool) -> NSResult<()> {
-    let mut client = NameClient::new(NameClientConfig::default());
-    client.enable_zone_provider(this_device,session_token,is_gateway);
-    let set_result = GLOBAL_NAME_CLIENT.set(client);
-    if set_result.is_err() {
-        return Err(NSError::Failed("Failed to set GLOBAL_NAME_CLIENT".to_string()));
-    }
-    Ok(())
-}
 
 fn get_name_client() -> Option<&'static NameClient> {
     let client = GLOBAL_NAME_CLIENT.get();

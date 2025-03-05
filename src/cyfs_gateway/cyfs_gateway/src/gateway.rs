@@ -68,18 +68,18 @@ impl Gateway {
     }
 
     async fn init_with_buckyos(&self) {
-        init_global_buckyos_value_by_env("GATEWAY");
-        let this_device = CURRENT_DEVICE_CONFIG.get();
-        let this_device = this_device.unwrap();
+        // init_global_buckyos_value_by_env("GATEWAY");
+        // let this_device = CURRENT_DEVICE_CONFIG.get();
+        // let this_device = this_device.unwrap();
 
-        let set_result = self.device_config.set(this_device.clone());
-        if set_result.is_err() {
-            error!("device_config can only be set once");
-        }
+        // let set_result = self.device_config.set(this_device.clone());
+        // if set_result.is_err() {
+        //     error!("device_config can only be set once");
+        // }
 
-        let this_device_info = DeviceInfo::from_device_doc(this_device);
-        let session_token = CURRENT_APP_SESSION_TOKEN.get();
-        let _ = enable_zone_provider(Some(&this_device_info), session_token, true).await;
+        // let this_device_info = DeviceInfo::from_device_doc(this_device);
+        // let session_token = CURRENT_APP_SESSION_TOKEN.get();
+        // let _ = enable_zone_provider(Some(&this_device_info), session_token, true).await;
     }
 
     async fn init_without_buckyos(&self) {

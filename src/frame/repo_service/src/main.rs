@@ -5,7 +5,7 @@ mod repo_server;
 mod pub_task_mgr;
 use crate::repo_server::*;
 use std::fs::File;
-use buckyos_api::{SystemConfigClient, SystemConfigError};
+use buckyos_api::*;
 
 use log::*;
 use serde_json::*;
@@ -19,26 +19,22 @@ use anyhow::Result;
 
 async fn service_main() -> Result<()> {
     init_logging("repo_service");
+    init_buckyos_api_runtime("REPO_SERVICE",BuckyOSRuntimeType::FrameService).await?;
+    let mut runtime = get_buckyos_api_runtime().await?;
+    runtime.login(None,None).await?;
 
-    init_global_buckyos_value_by_env("REPO_SERVICE");
-    let rpc_session_token = std::env::var("REPO_SERVICE_SESSION_TOKEN").map_err(|e| {
-      error!("repo service session token not found! err:{}", e);
-      anyhow::anyhow!("repo service session token not found! err:{}", e)
-    })?;
     //TODO: 到verify-hub login获得更统一的session_token?
-
-    let buckyos_api_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
-    let (repo_service_settings, _) = buckyos_api_client.get("services/repo_service/settings").await
+    let repo_service_settings = runtime.get_my_settings().await
       .map_err(|e| {
         error!("repo service settings not found! err:{}", e);
         anyhow::anyhow!("repo service settings not found! err:{}", e)
       })?;
-    let repo_service_settings: RepoServerSetting = serde_json::from_str(repo_service_settings.as_str()).map_err(|e| {
+    let repo_service_settings: RepoServerSetting = serde_json::from_value(repo_service_settings).map_err(|e| {
       error!("repo service settings parse error! err:{}", e);
       anyhow::anyhow!("repo service settings parse error! err:{}", e)
     })?;
 
-    let repo_server = RepoServer::new(repo_service_settings,Some(rpc_session_token)).await
+    let repo_server = RepoServer::new(repo_service_settings).await
       .map_err(|e| {
         error!("repo service init error! err:{}", e);
         anyhow::anyhow!("repo service init error! err:{}", e)
@@ -47,8 +43,8 @@ async fn service_main() -> Result<()> {
       error!("repo service init error! err:{}", e);
       anyhow::anyhow!("repo service init error! err:{}", e)
     })?;
-    register_inner_service_builder("repo_server", move || Box::new(repo_server.clone())).await;
 
+    register_inner_service_builder("repo_server", move || Box::new(repo_server.clone())).await;
     //let repo_server_dir = get_buckyos_system_bin_dir().join("repo");
     let repo_server_config = json!({
       "http_port":4000,//TODO：服务的端口分配和管理

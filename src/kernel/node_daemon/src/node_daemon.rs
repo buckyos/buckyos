@@ -9,6 +9,8 @@ use package_lib::PackageEnv;
 use time::macros::format_description;
 use std::{collections::HashMap, fs::File};
 use std::path::{Path, PathBuf};
+use name_lib::*;
+use buckyos_api::*;
 // use tokio::*;
 
 use buckyos_kit::{*};
@@ -335,7 +337,7 @@ async fn check_and_update_env_index_db() -> bool {
     false
 }
 
-async fn update_device_info(device_doc: &DeviceConfig,buckyos_api_client: &SystemConfigClient) {
+async fn update_device_info(device_doc: &DeviceConfig,syste_config_client: &SystemConfigClient) {
     let mut device_info = DeviceInfo::from_device_doc(device_doc);
     let fill_result = device_info.auto_fill_by_system_info().await;
     if fill_result.is_err() {
@@ -344,8 +346,8 @@ async fn update_device_info(device_doc: &DeviceConfig,buckyos_api_client: &Syste
     }
     let device_info_str = serde_json::to_string(&device_info).unwrap();
 
-    let device_key = format!("{}/info",buckyos_api_get_device_path(device_doc.name.as_str()));
-    let put_result = buckyos_api_client.set(device_key.as_str(),device_info_str.as_str()).await;
+    let device_key = format!("/devices/{}/info", device_doc.name.as_str());
+    let put_result = syste_config_client.set(device_key.as_str(),device_info_str.as_str()).await;
     if put_result.is_err() {
         error!("update device info to system_config failed! {}", put_result.err().unwrap());
     } else {
@@ -353,11 +355,10 @@ async fn update_device_info(device_doc: &DeviceConfig,buckyos_api_client: &Syste
     }
 }
 
-async fn register_device_doc(device_doc:&DeviceConfig,buckyos_api_client: &SystemConfigClient) {
-    let device_key = buckyos_api_get_device_path(device_doc.name.as_str());
+async fn register_device_doc(device_doc:&DeviceConfig,syste_config_client: &SystemConfigClient) {
+    let device_key = format!("/devices/{}/doc", device_doc.name.as_str());
     let device_doc_str = serde_json::to_string(&device_doc).unwrap();
-    let device_key = format!("{}/doc",buckyos_api_get_device_path(device_doc.name.as_str()));
-    let put_result = buckyos_api_client.create(device_key.as_str(),device_doc_str.as_str()).await;
+    let put_result = syste_config_client.create(device_key.as_str(),device_doc_str.as_str()).await;
     if put_result.is_err() {
         error!("register device doc to system_config failed! {}", put_result.err().unwrap());
     } else {
@@ -788,21 +789,21 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     }
 
     let is_ood = zone_config.oods.contains(&device_doc.name);
-    name_lib::CURRENT_ZONE_CONFIG.set(zone_config).unwrap();
+    CURRENT_ZONE_CONFIG.set(zone_config).unwrap();
     if is_ood {
         info!("Booting OOD {} ...",node_host_name);
     } else {
         info!("Booting Node {} ...",node_host_name);
     }
 
-    let zone_config = name_lib::CURRENT_ZONE_CONFIG.get().unwrap();
+    let zone_config = CURRENT_ZONE_CONFIG.get().unwrap();
     std::env::set_var("BUCKY_ZONE_OWNER", serde_json::to_string(&node_identity.owner_public_key).unwrap());
-    std::env::set_var("BUCKY_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
-    std::env::set_var("BUCKY_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
+    std::env::set_var("BUCKYOS_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
+    std::env::set_var("BUCKYOS_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
 
     info!("set var BUCKY_ZONE_OWNER to {}", env::var("BUCKY_ZONE_OWNER").unwrap());
-    info!("set var BUCKY_ZONE_CONFIG to {}", env::var("BUCKY_ZONE_CONFIG").unwrap());
-    info!("set var BUCKY_THIS_DEVICE to {}", env::var("BUCKY_THIS_DEVICE").unwrap());
+    info!("set var BUCKYOS_ZONE_CONFIG to {}", env::var("BUCKYOS_ZONE_CONFIG").unwrap());
+    info!("set var BUCKYOS_THIS_DEVICE to {}", env::var("BUCKYOS_THIS_DEVICE").unwrap());
 
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH)
@@ -825,11 +826,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             return String::from("generate device session token failed!");})?;
 
     let device_info = DeviceInfo::from_device_doc(&device_doc);
-    enable_zone_provider(Some(&device_info),Some(&device_session_token_jwt),false).await.map_err(|err| {
-        error!("enable zone provider failed! {}", err);
-        return String::from("enable zone provider failed!");
-    })?;
-
+    enable_zone_provider(Some(&device_info),Some(&device_session_token_jwt),false);
     //init kernel_service:cyfs-gateway service
     std::env::set_var("GATEWAY_SESSIONT_TOKEN",device_session_token_jwt.clone());
     info!("set var GATEWAY_SESSIONT_TOKEN to {}", device_session_token_jwt);
@@ -882,10 +879,8 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     } else {
         //this node is not ood: try connect to system_config_service
         let this_device = DeviceInfo::from_device_doc(&device_doc);
-        let system_config_url = get_system_config_service_url(Some(&this_device),&zone_config,false).await.map_err(|err| {
-            error!("get system_config_url failed! {}", err);
-            return String::from("get system_config_url failed!");
-        })?;
+        let runtime = get_buckyos_api_runtime().await.unwrap();
+        let system_config_url = runtime.get_zone_service_url("system_config",false).unwrap();
         loop {
             syc_cfg_client = SystemConfigClient::new(Some(system_config_url.as_str()), Some(device_session_token_jwt.as_str()));
             let boot_config_result = syc_cfg_client.get("boot").await;

@@ -68,12 +68,12 @@ pub struct TaskFilter {
     pub status: Option<TaskStatus>,
 }
 
-pub struct TaskManager {
-    rpc_client: Arc<kRPC>,
+pub struct TaskManagerClient {
+    rpc_client: kRPC,
 }
 
-impl TaskManager {
-    pub fn new(rpc_client: Arc<kRPC>) -> Self {
+impl TaskManagerClient {
+    pub fn new(rpc_client: kRPC) -> Self {
         Self { rpc_client }
     }
 

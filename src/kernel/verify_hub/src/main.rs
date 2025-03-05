@@ -108,6 +108,7 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
     //kid : {owner}
     //kid : #device_id
 
+
     if kid.is_none() {
         //return verify_hub's public key
         return load_trustkey_from_cache("{verify_hub}").await.ok_or(RPCErrors::ReasonError("Verify hub public key not found".to_string()));
@@ -131,13 +132,13 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
         let _zone_config = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().zone_config.clone();
         let token_from_device = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap().token_from_device.clone();
         let system_config_client = SystemConfigClient::new(None,Some(token_from_device.as_str()));
-        let device_doc_path = format!("{}/doc",buckyos_api_get_device_path(kid));
-        let get_result = system_config_client.get(device_doc_path.as_str()).await;
-        if get_result.is_err() {
-            return Err(RPCErrors::ReasonError("Trust key  not found".to_string()));
+        let control_panel_client = ControlPanelClient::new(system_config_client);
+        let device_config = control_panel_client.get_device_config(kid).await;
+        if device_config.is_err() {
+            warn!("load device {} config from system config service failed",kid);
+            return Err(RPCErrors::ReasonError("Device config not found".to_string()));
         }
-        let (device_config,_version) = get_result.unwrap();
-        let device_config:DeviceConfig= serde_json::from_str(&device_config).map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let device_config = device_config.unwrap();
         result_key = device_config.get_auth_key().ok_or(RPCErrors::ReasonError("Device public key not found".to_string()))?;
     }
 
@@ -459,9 +460,9 @@ async fn process_request(method:String,param:Value,req_seq:u64) -> ::kRPC::Resul
 
 async fn init_service_config() -> Result<()> {
     //load zone config form env
-    let zone_config_str = env::var("BUCKY_ZONE_CONFIG").map_err(|error| RPCErrors::ReasonError(error.to_string()));
+    let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG").map_err(|error| RPCErrors::ReasonError(error.to_string()));
     if zone_config_str.is_err() {
-        warn!("BUCKY_ZONE_CONFIG not set,use default zone config for test!");
+        warn!("BUCKYOS_ZONE_CONFIG not set,use default zone config for test!");
         return Ok(());
     }
     let zone_config_str = zone_config_str.unwrap();

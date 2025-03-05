@@ -403,28 +403,28 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
         }
         info!("ready to handle request : {}",method.as_str());
         match method.as_str() {
-            "buckyos_api_create"=>{
+            "sys_config_create"=>{
                 return handle_create(param,&rpc_session_token).await;
             },
-            "buckyos_api_get" => {
+            "sys_config_get" => {
                 return handle_get(param,&rpc_session_token).await;
             },
-            "buckyos_api_set" => {
+            "sys_config_set" => {
                 return handle_set(param,&rpc_session_token).await;
             },
-            "buckyos_api_set_by_json_path" => {
+            "sys_config_set_by_json_path" => {
                 return handle_set_by_json_path(param,&rpc_session_token).await;
             },
-            "buckyos_api_exec_tx" => {
+            "sys_config_exec_tx" => {
                 return handle_exec_tx(param,&rpc_session_token).await;
             },
-            "buckyos_api_delete" => {
+            "sys_config_delete" => {
                 return handle_delete(param,&rpc_session_token).await;
             },
-            "buckyos_api_append" => {
+            "sys_config_append" => {
                 return handle_append(param,&rpc_session_token).await;
             },
-            "buckyos_api_list" => {
+            "sys_config_list" => {
                 return handle_list(param,&rpc_session_token).await;
             },
             "dump_configs_for_scheduler" => {
@@ -501,12 +501,12 @@ async fn init_by_boot_config()->Result<()> {
         info!("load rbac model and policy defaut setting successfully!");
     }
 
-    //let zone_config_str = std::env::var("BUCKY_ZONE_CONFIG");
+    //let zone_config_str = std::env::var("BUCKYOS_ZONE_CONFIG");
     //if zone_config_str.is_ok() {
     //    let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str.unwrap()).unwrap();
     //}
 
-    let device_doc_str = std::env::var("BUCKY_THIS_DEVICE");
+    let device_doc_str = std::env::var("BUCKYOS_THIS_DEVICE");
     if device_doc_str.is_ok() {
         let device_doc_str = device_doc_str.unwrap();
         let device_doc:DeviceConfig = serde_json::from_str(&device_doc_str).unwrap();
@@ -520,7 +520,7 @@ async fn init_by_boot_config()->Result<()> {
             info!("Insert device did:[{}] - key:[{}] to trust keys",device_doc.did,device_key_str);
         }
     } else {
-        error!("Missing BUCKY_THIS_DEVICE");
+        error!("Missing BUCKYOS_THIS_DEVICE");
     }
     let zone_owner_str = std::env::var("BUCKY_ZONE_OWNER");
     if zone_owner_str.is_ok() {
