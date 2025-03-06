@@ -19,11 +19,13 @@ use anyhow::Result;
 
 async fn service_main() -> Result<()> {
     init_logging("repo_service");
-    init_buckyos_api_runtime("REPO_SERVICE",BuckyOSRuntimeType::FrameService).await?;
+    init_buckyos_api_runtime("repo_service",None,BuckyOSRuntimeType::FrameService).await?;
     let mut runtime = get_buckyos_api_runtime().await?;
-    runtime.login(None,None).await?;
-
-    //TODO: 到verify-hub login获得更统一的session_token?
+    let login_result = runtime.login(None,None).await;
+    if  login_result.is_err() {
+        error!("repo service login to system failed! err:{:?}", login_result);
+        return Err(anyhow::anyhow!("repo service login to system failed! err:{:?}", login_result));
+    }
     let repo_service_settings = runtime.get_my_settings().await
       .map_err(|e| {
         error!("repo service settings not found! err:{}", e);

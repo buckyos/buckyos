@@ -2,6 +2,7 @@
 use std::sync::Arc;
 use name_lib::DeviceConfig;
 use name_lib::DeviceInfo;
+use name_lib::ZoneConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use serde_json::Value;
@@ -233,10 +234,30 @@ impl ControlPanelClient {
         Self { system_config_client }
     }
 
-    pub async fn get_device_info(&self,device_id:&str) -> Result<DeviceInfo> {
-        unimplemented!()
+    pub async fn load_zone_config(&self) -> Result<ZoneConfig> {
+        let zone_config_path = "/boot/zone_config";
+        let zone_config_result = self.system_config_client.get(zone_config_path).await;
+        if zone_config_result.is_err() {
+            return Err(RPCErrors::ReasonError("Zone config not found".to_string()));
+        }
+        let (zone_config_str,_version) = zone_config_result.unwrap();
+        let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        Ok(zone_config)
     }
 
+    pub async fn get_device_info(&self,device_id:&str) -> Result<DeviceInfo> {
+        let device_info_path = format!("/devices/{}/info",device_id);
+        let get_result = self.system_config_client.get(device_info_path.as_str()).await;
+        if get_result.is_err() {
+            return Err(RPCErrors::ReasonError("Device info not found".to_string()));
+        }
+        let (device_info,_version) = get_result.unwrap();
+        let device_info:DeviceInfo= serde_json::from_str(&device_info)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        Ok(device_info)
+    }
+    
     pub async fn get_device_config(&self,device_id:&str) -> Result<DeviceConfig> {
         let device_doc_path = format!("/devices/{}/doc",device_id);
         let get_result = self.system_config_client.get(device_doc_path.as_str()).await;
@@ -244,7 +265,8 @@ impl ControlPanelClient {
             return Err(RPCErrors::ReasonError("Trust key  not found".to_string()));
         }
         let (device_config,_version) = get_result.unwrap();
-        let device_config:DeviceConfig= serde_json::from_str(&device_config).map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let device_config:DeviceConfig= serde_json::from_str(&device_config)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(device_config)
     }
 

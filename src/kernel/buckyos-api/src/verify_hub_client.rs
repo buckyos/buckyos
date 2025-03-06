@@ -10,7 +10,7 @@ impl VerifyHubClient {
         Self { krpc_client }
     }
 
-    pub async fn login(&self, login_params: Option<Value>, login_config: Option<Value>) -> Result<RPCSessionToken> {
+    pub async fn login_by_jwt(&self, login_params: Option<Value>, login_config: Option<Value>) -> Result<RPCSessionToken> {
         unimplemented!()
     }
 }

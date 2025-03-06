@@ -5,7 +5,7 @@ use core::error;
 use crate::provider::RecordType;
 use crate::dns_provider::{DnsProvider};
 use crate::name_query::NameQuery;
-use crate::NameInfo;
+use crate::{NameInfo, NsProvider};
 use buckyos_kit::get_buckyos_system_etc_dir;
 use name_lib::*;
 
@@ -33,6 +33,7 @@ impl Default for NameClientConfig {
         }
     }
 }
+
 pub struct NameClient {
     name_query: NameQuery,
     config: NameClientConfig,
@@ -55,7 +56,9 @@ impl NameClient {
         }
     }
 
-
+    pub async fn add_provider(&self, provider: Box<dyn NsProvider>) {
+        self.name_query.add_provider(provider).await;
+    } 
 
     pub fn add_did_cache(&self, did: &str, doc: EncodedDocument) -> NSResult<()> {
         self.doc_cache.insert(did.to_string(), doc);

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use super::config_loader::GatewayConfig;
 use super::dispatcher::ServiceDispatcher;
 use cyfs_dns::start_cyfs_dns_server;
@@ -9,10 +11,11 @@ use cyfs_warp::start_cyfs_warp_server;
 use cyfs_warp::CyfsWarpServer;
 use name_client::*;
 use name_lib::*;
+use buckyos_kit::*;
 use once_cell::sync::OnceCell;
 use tokio::sync::Mutex;
 use url::Url;
-
+use anyhow::Result;
 pub struct GatewayParams {
     pub disable_buckyos: bool,
     pub keep_tunnel: Vec<String>,
@@ -22,12 +25,13 @@ pub struct Gateway {
     config: GatewayConfig,
     tunnel_manager: OnceCell<TunnelManager>,
 
-    device_config: OnceCell<DeviceConfig>,
 
     // servers
     warp_servers: Mutex<Vec<CyfsWarpServer>>,
     dns_servers: Mutex<Vec<DNSServer>>,
     socks_servers: Mutex<Vec<Socks5Proxy>>,
+    device_config: OnceCell<DeviceConfig>,
+    device_private_key: OnceCell<[u8; 48]>,
 }
 
 impl Gateway {
@@ -39,6 +43,7 @@ impl Gateway {
             warp_servers: Mutex::new(Vec::new()),
             dns_servers: Mutex::new(Vec::new()),
             socks_servers: Mutex::new(Vec::new()),
+            device_private_key: OnceCell::new(),
         }
     }
 
@@ -47,12 +52,8 @@ impl Gateway {
     }
 
     pub async fn start(&self, params: GatewayParams) {
-        if params.disable_buckyos {
-            self.init_without_buckyos().await;
-        } else {
-            self.init_with_buckyos().await;
-        }
-
+        self.init_device_keypair().await;
+        init_default_name_client().await.unwrap();
         // Init tunnel manager
         self.init_tunnel_manager().await;
 
@@ -67,58 +68,66 @@ impl Gateway {
         self.start_dispatcher().await;
     }
 
-    async fn init_with_buckyos(&self) {
-        // init_global_buckyos_value_by_env("GATEWAY");
-        // let this_device = CURRENT_DEVICE_CONFIG.get();
-        // let this_device = this_device.unwrap();
-
-        // let set_result = self.device_config.set(this_device.clone());
-        // if set_result.is_err() {
-        //     error!("device_config can only be set once");
-        // }
-
-        // let this_device_info = DeviceInfo::from_device_doc(this_device);
-        // let session_token = CURRENT_APP_SESSION_TOKEN.get();
-        // let _ = enable_zone_provider(Some(&this_device_info), session_token, true).await;
-    }
-
-    async fn init_without_buckyos(&self) {
-        info!("TODO:disable buckyos,set device config for test");
-        init_default_name_client().await.unwrap();
-
-        let pk = if let Some(sk) = &self.config.device_private_key {
-            let pk_value = encode_ed25519_pkcs8_sk_to_pk(sk);
-            info!("Will use device pk: {}", pk_value);
-            pk_value
+    async fn init_device_keypair(&self) -> Result<()> {
+        //get device private key from config
+        // if not set,try load from default path
+        let device_private_key_path;
+        if self.config.device_key_path.is_file() {
+            device_private_key_path = self.config.device_key_path.clone();
         } else {
-            // TODO use default pk or set it to none?
-            let pk_value = "8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no".to_string();
-            info!("Will use default device pk: {}", pk_value);
-            pk_value
-        };
-
-        let mut device_name = "web3.buckyos.io".to_string();
-        if let Some(device_did) = &self.config.device_did {
-            device_name = device_did.clone();
+            device_private_key_path = get_buckyos_system_etc_dir().join("node_private_key.pem");
         }
 
-        let this_device_config = DeviceConfig::new(device_name.as_str(), Some(pk));
-        let set_result = self.device_config.set(this_device_config.clone());
+        let device_private_key = load_pem_private_key(&device_private_key_path)
+            .map_err(|e| {
+                error!("load device_private_key failed: {}", e);
+                anyhow::anyhow!("load device_private_key failed: {}", e)
+            })?;
+        let set_result = self.device_private_key.set(device_private_key);
         if set_result.is_err() {
-            error!("device_config can only be set once");
+            error!("device_private_key can only be set once");
+        }
+        info!("cyfs-gatway load device private key from {} success", device_private_key_path.display());
+        let public_key = encode_ed25519_pkcs8_sk_to_pk(&device_private_key);
+        let mut will_use_current_device_from_env = false;
+        if try_load_current_device_config_from_env().is_ok() {
+            let device_config = CURRENT_DEVICE_CONFIG.get().unwrap();
+            let x_of_auth_key = get_x_from_jwk(&device_config.auth_key);
+            if x_of_auth_key.is_ok() {
+                let x_of_auth_key = x_of_auth_key.unwrap();
+                if x_of_auth_key == public_key {
+                    will_use_current_device_from_env = true;
+                    info!("cyfs-gatway use current device from env,device_did:{}",device_config.did.as_str());
+                }
+            }
         }
 
-        // Also set it to global for now..
-        let set_result = CURRENT_DEVICE_CONFIG.set(this_device_config);
-        if set_result.is_err() {
-            error!("Failed to set CURRENT_DEVICE_CONFIG");
+        if !will_use_current_device_from_env {   
+            if self.config.device_name.is_none() {
+                error!("cann't load device config, device_name not set");
+                return Err(anyhow::anyhow!("device_name not set"));
+            }
+
+            let this_device_config = DeviceConfig::new(self.config.device_name.as_ref().unwrap(), Some(public_key));
+            let set_result = self.device_config.set(this_device_config.clone());
+            if set_result.is_err() {
+                error!("device_config can only be set once");
+            }
+
+            // Also set it to global for now..
+            let set_result = CURRENT_DEVICE_CONFIG.set(this_device_config);
+                if set_result.is_err() {
+                    error!("Failed to set CURRENT_DEVICE_CONFIG");
+            }
         }
+
+        Ok(())
     }
 
     async fn init_tunnel_manager(&self) {
         let gateway_device = GatewayDevice {
             config: self.device_config.get().unwrap().clone(),
-            private_key: self.config.device_private_key.clone().unwrap(),
+            private_key: self.device_private_key.get().unwrap().clone(),
         };
         let gateway_device = GatewayDeviceRef::new(gateway_device);
         let tunnel_manager = TunnelManager::new(gateway_device.clone());

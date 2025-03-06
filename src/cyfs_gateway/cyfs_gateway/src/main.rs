@@ -134,22 +134,10 @@ fn main() {
                 .num_args(1..),
         )
         .arg(
-            Arg::new("disable-buckyos")
-                .long("disable-buckyos")
-                .help("disable init buckyos system services")
-                .action(ArgAction::SetTrue),
-        )
-        .arg(
             Arg::new("debug")
                 .long("debug")
                 .help("enable debug mode")
                 .action(ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("buckyos_root")
-                .long("buckyos-root")
-                .help("Change buckyos root dir, same as BUCKYOS_ROOT env var")
-                .required(false),
         )
         .arg(
             Arg::new("new_key_pair")
@@ -161,9 +149,6 @@ fn main() {
         .get_matches();
 
     // set buckyos root dir
-    if let Some(buckyos_root) = matches.get_one::<String>("buckyos_root") {
-        std::env::set_var("BUCKYOS_ROOT", buckyos_root);
-    }
 
     if matches.get_flag("new_key_pair") {
         generate_ed25519_key_pair_to_local();

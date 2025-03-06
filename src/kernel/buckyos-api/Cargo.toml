@@ -19,5 +19,6 @@ tokio = { version = "*", features = ["full"] }
 
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
+name-client = { path = "../../components/name-client" }
 kRPC ={ path = "../kRPC" }
 

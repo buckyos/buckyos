@@ -826,7 +826,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             return String::from("generate device session token failed!");})?;
 
     let device_info = DeviceInfo::from_device_doc(&device_doc);
-    enable_zone_provider(Some(&device_info),Some(&device_session_token_jwt),false);
+    //enable_zone_provider(Some(&device_info),Some(&device_session_token_jwt),false);
     //init kernel_service:cyfs-gateway service
     std::env::set_var("GATEWAY_SESSIONT_TOKEN",device_session_token_jwt.clone());
     info!("set var GATEWAY_SESSIONT_TOKEN to {}", device_session_token_jwt);

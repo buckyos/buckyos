@@ -10,24 +10,25 @@
 #![allow(unused)]
 
 use log::*;
-use name_lib::ZoneConfig;
+use name_lib::*;
+use name_client::*;
+
 use std::net::{IpAddr, Ipv6Addr,SocketAddr,ToSocketAddrs};
 use std::str::FromStr;
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use serde_json::{Value,json};
-use buckyos_api::*;
+use crate::*;
 use ::kRPC::*;
 
-use crate::{DeviceInfo, EncodedDocument, NSError, NsProvider, NSResult, NameInfo, CURRENT_ZONE_CONFIG, RecordType};
 
 
-pub fn is_unicast_link_local_stable(ipv6: &Ipv6Addr) -> bool {
+fn is_unicast_link_local_stable(ipv6: &Ipv6Addr) -> bool {
     ipv6.segments()[0] == 0xfe80
 }
 
 //ipv4 first host resolve
-pub fn resolve_hostname(hostname: &str) -> Option<std::net::IpAddr> {
+fn resolve_hostname(hostname: &str) -> Option<std::net::IpAddr> {
     let addrs = (hostname, 0).to_socket_addrs().ok()?;
     let mut ipv6_addr :Option<IpAddr> = None;
     for addr in addrs {
@@ -62,7 +63,7 @@ pub fn resolve_hostname(hostname: &str) -> Option<std::net::IpAddr> {
 
 
 //ipv4 first local host resolve
-pub fn resolve_lan_hostname(hostname: &str) -> Option<std::net::IpAddr> {
+fn resolve_lan_hostname(hostname: &str) -> Option<std::net::IpAddr> {
     let addrs = (hostname, 0).to_socket_addrs().ok()?;
     let mut private_ipv6_addr :Option<IpAddr> = None;
     for addr in addrs {
@@ -97,7 +98,7 @@ pub fn resolve_lan_hostname(hostname: &str) -> Option<std::net::IpAddr> {
     return None;
 }
 
-pub async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfig) -> NSResult<IpAddr> {
+async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfig) -> NSResult<IpAddr> {
     if ood_info.ip.is_some() {
         return Ok(ood_info.ip.unwrap().clone());
     }
@@ -137,6 +138,7 @@ pub async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfi
 }
 
 
+//TODO: 需要更系统性的思考如何得到 各种service的URL
 pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_config:&ZoneConfig,is_gateway:bool) -> NSResult<String> {
     if this_device.is_none() {
         return Ok(String::from("http://127.0.0.1:3200/kapi/system_config"));
@@ -187,48 +189,40 @@ pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_
 
 
 pub struct ZoneProvider {
-    client : OnceCell<SystemConfigClient>,
-    session_token: Option<String>,
-    this_device: Option<DeviceInfo>,
     is_gateway:bool,
 }
 
 impl ZoneProvider {
-    pub fn new(this_device: Option<&DeviceInfo>,session_token: Option<&String>,is_gateway:bool) -> Self {
+    pub fn new(is_gateway:bool) -> Self {
         Self { 
-            client:OnceCell::new(),
-            session_token:session_token.map(|s|s.clone()),
-            this_device:this_device.map(|d|d.clone()),
             is_gateway,
         }
     }
 
-    async fn do_system_config_client_query(&self,client:&SystemConfigClient,name:&str) -> NSResult<NameInfo> {
-        let device_info_path = buckyos_api_get_device_path(name) + "/info";
-        let get_result = client.get(device_info_path.as_str()).await;
-        if get_result.is_ok() {
-            let (device_info_json,_) = get_result.unwrap();
-            let device_info_value : Value = serde_json::from_str(device_info_json.as_str()).map_err(|e|{
-                warn!("ZoneProvider parse device info for {} failed: {}",name,e);
-                NSError::NotFound(format!("parse device info for {} failed: {}",name,e))
+    async fn do_system_config_client_query(&self,name:&str) -> NSResult<NameInfo> {
+        let runtime = get_buckyos_api_runtime().await
+            .map_err(|e|{
+                warn!("ZoneProvider get buckyos api runtime failed: {}",e);
+                NSError::NotFound(format!("get buckyos api runtime failed: {}",e))
             })?;
-            let ip = device_info_value.get("ip");
-            if ip.is_some() {
-                let ip = ip.unwrap();
-                let ip_str = ip.as_str();
-                if ip_str.is_none() {
-                    return Err(NSError::NotFound(format!("ip for {} not found",name)));
-                }
 
-                let ip_str = ip_str.unwrap();
-                let ip_addr = IpAddr::from_str(ip_str).map_err(|e|{
-                    warn!("ZoneProvider resolve ip for {} failed: {}",name,e);
-                    NSError::NotFound(format!("resolve ip for {} failed: {}",name,e))
-                })?;
+        let control_panel_client = runtime.get_control_panel_client().await
+            .map_err(|e|{
+                warn!("ZoneProvider get control panel client failed: {}",e);
+                NSError::NotFound(format!("get control panel client failed: {}",e))
+            })?;
+        
+        let device_info = control_panel_client.get_device_info(name).await
+            .map_err(|e|{
+                warn!("ZoneProvider get device info failed: {}",e);
+                NSError::NotFound(format!("get device info failed: {}",e))
+            })?;
 
-                return Ok(NameInfo::from_address(name,ip_addr));
-            }
+        let ip = device_info.ip;
+        if ip.is_some() {
+            return Ok(NameInfo::from_address(name,ip.unwrap()));
         }
+
         return Err(NSError::NotFound(format!("device info for {} not found",name)))
     }
 
@@ -253,53 +247,29 @@ impl NsProvider for ZoneProvider {
             return Err(NSError::NotFound(format!("only support device name resolve now, {} is not a device name",name)));
         }
 
-        let client = self.client.get();
-        if client.is_some() {
-            info!("ZoneProvider try resolve ip by system config service for {} ...",name);
-            let client = client.unwrap();
-            let name_info = self.do_system_config_client_query(&client,name).await;
-            if name_info.is_ok() {
-                info!("ZoneProvider resolve ip by system config service for {} success",name);
-                return name_info;
-            }
-        } else {
-            let zone_config = CURRENT_ZONE_CONFIG.get();
-            if zone_config.is_none() {
-                warn!("ZoneProvider cann't resolve ip for {},zone config not found",name);
-                return Err(NSError::NotFound("zone config not found".to_string()));
-            }
-            let zone_config = zone_config.unwrap();
-            let this_device = self.this_device.as_ref();
-            let system_config_url = get_system_config_service_url(this_device, &zone_config,self.is_gateway).await;
-            if system_config_url.is_ok() {
-                let system_config_url = system_config_url.unwrap();
-                info!("ZoneProvider try connect to system config service {} for resolve ip for {} ...",system_config_url.as_str(),name);
-                let client = SystemConfigClient::new(Some(system_config_url.as_str()),self.session_token.as_deref());
-                let name_info = self.do_system_config_client_query(&client, name).await;
-                if name_info.is_ok() {
-                    info!("ZoneProvider first resolve ip by system config service for {} success",name);
-                    let set_result = self.client.set(client);
-                    if set_result.is_err() {
-                        warn!("ZoneProvider set system config client failed");
-                    }
-                    return name_info;
-                } else {
-                    warn!("ZoneProvider first resolve ip by system config service for {} failed",name);
-                }
-            }
-
-            //if target device is ood, try resolve ip by ood info in zone config
-            info!("ZoneProvider try resolve ip by ood info in zone config for {} ...",name);
-            let ood_string = zone_config.get_ood_string(name);
-            if ood_string.is_some() {
-                let ood_info = DeviceInfo::new(ood_string.unwrap().as_str(),None);
-                let ip = resolve_ood_ip_by_info(&ood_info,&zone_config).await;
-                if ip.is_ok() {
-                    return Ok(NameInfo::from_address(name,ip.unwrap()));
-                }
-            } 
+        let name_info = self.do_system_config_client_query(name).await;
+        if name_info.is_ok() {
+            info!("ZoneProvider resolve ip by system config service for {} success",name);
+            return name_info;
         }
 
+
+        //if target device is ood, try resolve ip by ood info in zone config
+        info!("ZoneProvider try resolve ip by ood info in zone config for {} ...",name);
+        let zone_config = CURRENT_ZONE_CONFIG.get();
+        if zone_config.is_none() {
+            return Err(NSError::NotFound("zone config not found".to_string()));
+        }
+        let zone_config = zone_config.unwrap();
+        let ood_string = zone_config.get_ood_string(name);
+        if ood_string.is_some() {
+            let ood_info = DeviceInfo::new(ood_string.unwrap().as_str(),None);
+            let ip = resolve_ood_ip_by_info(&ood_info,&zone_config).await;
+            if ip.is_ok() {
+                return Ok(NameInfo::from_address(name,ip.unwrap()));
+            }
+        } 
+        
         Err(NSError::NotFound(format!("cann't resolve ip for {}",name)))
     }
 

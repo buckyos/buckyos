@@ -232,9 +232,8 @@ impl RepoServer {
         if pkg_list.is_none() {
             return Err(RPCErrors::ReasonError("pkg_list is none".to_string()));
         }
-        
-        let owner_pk = CURRENT_ZONE_CONFIG.get().unwrap().auth_key.as_ref().unwrap().clone();
         let pkg_list = pkg_list.unwrap();
+        let owner_pk = CURRENT_ZONE_CONFIG.get().unwrap().auth_key.as_ref().unwrap().clone();
         let pkg_meta_jwt_map:HashMap<String,String> = serde_json::from_value(pkg_list.clone()).map_err(|e| {
             error!("parse pkg_list failed, err:{}", e);
             RPCErrors::ReasonError(format!("parse pkg_list failed, err:{}", e))

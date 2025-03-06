@@ -20,6 +20,7 @@ env_logger = "*"
 bytes = "*"
 dirs = "*"
 once_cell = "*"
+anyhow = "*"
 
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 buckyos-kit = { path = "../../components/buckyos-kit" }

@@ -34,6 +34,8 @@ pub enum RPCErrors {
     UserNotFound(String),
     #[error("Key not exist")]
     KeyNotExist,
+    #[error("Service not valid: {0}")]
+    ServiceNotValid(String),
 }
 pub type Result<T> = std::result::Result<T, RPCErrors>;
 pub struct kRPC {

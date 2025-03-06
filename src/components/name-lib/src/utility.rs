@@ -53,6 +53,14 @@ pub fn is_did(identifier: &str) -> bool {
     false
 }
 
+pub fn get_x_from_jwk(jwk: &jsonwebtoken::jwk::Jwk) -> NSResult<String> {
+    let jwk_json = serde_json::to_value(jwk).map_err(|_| NSError::Failed("Invalid jwk".to_string()))?;
+    let x = jwk_json.get("x")
+        .ok_or(NSError::Failed("Invalid jwk".to_string()))?;
+    let x_str = x.as_str().unwrap().to_string();
+    Ok(x_str)
+}
+
 pub fn get_x_from_jwk_string(jwk_string: &str) -> NSResult<String> {
     let jwk_json = serde_json::from_str::<serde_json::Value>(jwk_string).map_err(|_| NSError::Failed("Invalid jwk".to_string()))?;
     let x = jwk_json.get("x")
@@ -252,8 +260,8 @@ pub fn generate_x25519_key_pair() -> (PublicKey, StaticSecret) {
     (x25519_public_key, x25519_private_key)
 }
 
-pub fn get_device_did_from_ed25519_jwk_str(public_key: &str) -> NSResult<String> {
-    let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_str(public_key)
+pub fn get_device_did_from_ed25519_jwk_str(jwk_public_key: &str) -> NSResult<String> {
+    let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_str(jwk_public_key)
         .map_err(|_| NSError::Failed("Invalid public key".to_string()))?;
     let jwk_value = serde_json::to_value(jwk)
         .map_err(|_| NSError::Failed("Invalid public key".to_string()))?;

@@ -17,8 +17,10 @@ pub struct GatewayConfig {
     pub dispatcher: HashMap<Url, DispatcherConfig>,
     pub servers: HashMap<String, ServerConfig>,
     pub device_key_path: PathBuf,
-    pub device_private_key: Option<[u8; 48]>,
-    pub device_did: Option<String>,
+    pub device_name: Option<String>,
+    
+    //pub device_private_key: Option<[u8; 48]>,
+    //pub device_did: Option<String>,
     //tunnel_builder_config : HashMap<String,TunnelBuilderConfig>,
 }
 
@@ -128,7 +130,6 @@ impl GatewayConfig {
 
     pub async fn load_from_json_value(json_value: serde_json::Value) -> Result<Self, String> {
         let mut device_key_path = PathBuf::new();
-        let mut device_private_key = None;
         if let Some(Some(path)) = json_value.get("device_key_path").map(|p| p.as_str()) {
             device_key_path =
                 adjust_path(path).map_err(|e| format!("adjust path failed! {}", e))?;
@@ -137,15 +138,9 @@ impl GatewayConfig {
                 path,
                 device_key_path.display()
             );
-            let ret = load_pem_private_key(&device_key_path)
-                .map_err(|e| format!("load device private key failed! {}", e))?;
-            device_private_key = Some(ret);
-            info!("Load device private key success!");
         }
 
-        let device_did = json_value.get("device_did").map(|v| v.as_str()).flatten();
-
-
+        let device_name:Option<String> = json_value.get("  ").map(|v| v.as_str()).flatten().map(|s| s.to_string());
         // register inner services
         if let Some(Some(inner_services)) = json_value.get("inner_services").map(|v| v.as_object())
         {
@@ -274,8 +269,8 @@ impl GatewayConfig {
             dispatcher,
             servers: servers_cfg,
             device_key_path,
-            device_private_key,
-            device_did: device_did.map(|s| s.to_string()),
+            device_name:device_name
+
         })
     }
 }
