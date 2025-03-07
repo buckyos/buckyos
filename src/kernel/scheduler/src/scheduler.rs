@@ -279,9 +279,7 @@ impl PodScheduler {
 
 
     pub fn schedule(&mut self)->Result<Vec<SchedulerAction>> {
-        if self.nodes.is_empty() {
-            return Err(anyhow::anyhow!("No nodes found"));
-        }   
+ 
 
         let mut actions = Vec::new();
         info!("-------------NODE--------------");
@@ -293,6 +291,10 @@ impl PodScheduler {
             info!("- {}:{:?}",pod_id,pod);
         }
 
+        if self.nodes.is_empty() {
+            return Err(anyhow::anyhow!("No nodes found"));
+        }  
+        
         // Step0. 检查schedule发起的OP task的进展情况.决定是否要进入常规调度流程
         //TODO:
 

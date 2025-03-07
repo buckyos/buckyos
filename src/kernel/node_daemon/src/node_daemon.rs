@@ -346,7 +346,7 @@ async fn update_device_info(device_doc: &DeviceConfig,syste_config_client: &Syst
     }
     let device_info_str = serde_json::to_string(&device_info).unwrap();
 
-    let device_key = format!("/devices/{}/info", device_doc.name.as_str());
+    let device_key = format!("devices/{}/info", device_doc.name.as_str());
     let put_result = syste_config_client.set(device_key.as_str(),device_info_str.as_str()).await;
     if put_result.is_err() {
         error!("update device info to system_config failed! {}", put_result.err().unwrap());
@@ -356,7 +356,7 @@ async fn update_device_info(device_doc: &DeviceConfig,syste_config_client: &Syst
 }
 
 async fn register_device_doc(device_doc:&DeviceConfig,syste_config_client: &SystemConfigClient) {
-    let device_key = format!("/devices/{}/doc", device_doc.name.as_str());
+    let device_key = format!("devices/{}/doc", device_doc.name.as_str());
     let device_doc_str = serde_json::to_string(&device_doc).unwrap();
     let put_result = syste_config_client.create(device_key.as_str(),device_doc_str.as_str()).await;
     if put_result.is_err() {
@@ -635,7 +635,7 @@ async fn node_daemon_main_loop(
     //TODO: check and upgrade self use repo_service
     //try regsiter device doc
     report_ood_info_to_sn(&device_doc, device_session_token_jwt,&zone_config).await;
-    register_device_doc(device_doc, buckyos_api_client).await;
+
     let mut node_gateway_config = None;
     loop {
         if !is_running {
@@ -733,6 +733,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         error!("init default name client failed! {}", err);
         return String::from("init default name client failed!");
     })?;
+    info!("init default name client OK!");
 
     //verify device_doc by owner_public_key
     {
@@ -839,15 +840,14 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let mut syc_cfg_client: SystemConfigClient;
     let boot_config: serde_json::Value;
     if is_ood {
-        
-        
         keep_system_config_service(node_id.as_str(),&device_doc, &device_private_key,&zone_config,false).await.map_err(|err| {
             error!("start system_config_service failed! {}", err);
             return String::from("start system_config_service failed!");
         })?;
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-      
         syc_cfg_client = SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()));
+        update_device_info(&device_doc, &syc_cfg_client).await;
+        //register_device_doc(&device_doc, &syc_cfg_client).await;
         let boot_config_result = syc_cfg_client.get("boot/config").await;
         match boot_config_result {
             buckyos_api::SytemConfigResult::Err(SystemConfigError::KeyNotFound(_)) => {
@@ -880,9 +880,9 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         //this node is not ood: try connect to system_config_service
         let this_device = DeviceInfo::from_device_doc(&device_doc);
         let runtime = get_buckyos_api_runtime().await.unwrap();
-        let system_config_url = runtime.get_zone_service_url("system_config",false).unwrap();
+        syc_cfg_client = runtime.get_system_config_client().await.unwrap();
         loop {
-            syc_cfg_client = SystemConfigClient::new(Some(system_config_url.as_str()), Some(device_session_token_jwt.as_str()));
+            //syc_cfg_client = SystemConfigClient::new(Some(system_config_url.as_str()), Some(device_session_token_jwt.as_str()));
             let boot_config_result = syc_cfg_client.get("boot").await;
             if boot_config_result.is_ok() {
                 info!("Connect to system_config_service and load boot config OK! boot config: {:?}", boot_config_result.unwrap().0.as_str());
@@ -891,9 +891,9 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                 warn!("Connect to system_config_service failed! {}", boot_config_result.err().unwrap());
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
-        }
+        } 
     }
-
+    register_device_doc(&device_doc, &syc_cfg_client).await;
     //use boot config to init name-lib.. etc kernel libs.
     //let gateway_ip = resolve_ip("gateway").await;
     //info!("gateway ip: {:?}", gateway_ip);

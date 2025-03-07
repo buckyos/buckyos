@@ -55,6 +55,7 @@ pub async fn create_ns_provider(
             let dns_provider = DnsProvider::new(None);
             Ok(Box::new(dns_provider))
         }
+        
         DNSProviderType::SN => {
             let sn_server_id = provider_config.config.get("server_id");
             if sn_server_id.is_none() {

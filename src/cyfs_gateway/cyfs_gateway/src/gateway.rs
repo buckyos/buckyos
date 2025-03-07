@@ -17,7 +17,6 @@ use tokio::sync::Mutex;
 use url::Url;
 use anyhow::Result;
 pub struct GatewayParams {
-    pub disable_buckyos: bool,
     pub keep_tunnel: Vec<String>,
 }
 
@@ -53,14 +52,16 @@ impl Gateway {
 
     pub async fn start(&self, params: GatewayParams) {
         self.init_device_keypair().await;
-        init_default_name_client().await.unwrap();
+        if init_default_name_client().await.is_err() {
+            error!("init default name client failed");
+            return;
+        }
         // Init tunnel manager
         self.init_tunnel_manager().await;
 
         if !params.keep_tunnel.is_empty() {
             self.keep_tunnels(params.keep_tunnel).await;
         }
-
         // Start servers
         self.start_servers().await;
 
@@ -97,7 +98,11 @@ impl Gateway {
                 let x_of_auth_key = x_of_auth_key.unwrap();
                 if x_of_auth_key == public_key {
                     will_use_current_device_from_env = true;
-                    info!("cyfs-gatway use current device from env,device_did:{}",device_config.did.as_str());
+                    let set_result = self.device_config.set(device_config.clone());
+                    if set_result.is_err() {
+                        error!("device_config can only be set once");
+                    }
+                    info!("cyfs-gatway use current device from env,device_did:{},device_name:{}",device_config.did.as_str(),device_config.name.as_str());
                 }
             }
         }

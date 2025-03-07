@@ -57,8 +57,8 @@ pub struct Task {
     pub completed_items: i32,  // 已完成项目数
     pub error_message: Option<String>, // 错误信息（如果有）
     pub data: Option<String>,  // 任务相关的JSON数据，可存储任何任务特定信息
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

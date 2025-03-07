@@ -29,7 +29,7 @@ use name_lib::*;
 
 #[macro_use]
 extern crate log;
-
+//TODO 首次初始化的BOOT NAME CLIENT 可以为系统的名字解析提供一个保底
 pub static GLOBAL_BOOT_NAME_CLIENT: OnceCell<NameClient> = OnceCell::new();
 pub static GLOBAL_NAME_CLIENT: OnceCell<NameClient> = OnceCell::new();
 
@@ -47,7 +47,8 @@ pub async fn resolve_ip(name: &str) -> NSResult<IpAddr> {
 
 pub async fn init_default_name_client() -> NSResult<()> {
     let client = NameClient::new(NameClientConfig::default());
-    let set_result = GLOBAL_BOOT_NAME_CLIENT.set(client);
+    client.add_provider(Box::new(DnsProvider::new(None))).await;
+    let set_result = GLOBAL_NAME_CLIENT.set(client);
     if set_result.is_err() {
         return Err(NSError::Failed("Failed to set GLOBAL_BOOT_NAME_CLIENT".to_string()));
     }
@@ -57,24 +58,13 @@ pub async fn init_default_name_client() -> NSResult<()> {
 
 fn get_name_client() -> Option<&'static NameClient> {
     let client = GLOBAL_NAME_CLIENT.get();
-    if client.is_none() {
-        let client = GLOBAL_BOOT_NAME_CLIENT.get();
-        if client.is_none() {
-            return None;
-        }
-        return client;
-    }
     return client;
 }
 
 pub async fn resolve(name: &str, record_type: Option<RecordType>) -> NSResult<NameInfo> {
     let client = get_name_client();
     if client.is_none() {
-        let client = GLOBAL_BOOT_NAME_CLIENT.get();
-        if client.is_none() {
-            error!("Name client not init yet");
-            return Err(NSError::NotFound("Name client not init".to_string()));
-        }
+        return Err(NSError::NotFound("Name client not init yet".to_string()));
     }
     let client = client.unwrap();
     client.resolve(name, record_type).await

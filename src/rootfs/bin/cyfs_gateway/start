@@ -17,7 +17,8 @@ args = parser.parse_args()
 node_id = args.node_id
 keep_tunnel = args.keep_tunnel
 config_file = f"{current_dir}/../../etc/node_gateway.json"
-#print(f"Gateway config_file: {config_file}")
+config_file = os.path.abspath(config_file)
+print(f"Gateway config_file: {config_file}")
 run_cmd = f"{current_dir}/cyfs_gateway --config_file {config_file}"
 if keep_tunnel is not None:
     run_cmd += f" --keep_tunnel {keep_tunnel}"

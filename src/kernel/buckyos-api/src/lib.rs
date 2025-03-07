@@ -97,8 +97,8 @@ pub fn init_global_buckyos_value_by_env(app_id: &str) -> Result<()> {
         warn!("Failed to set CURRENT_DEVICE_CONFIG");
         return Err(RPCErrors::ReasonError("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
     }
-
-    let session_token_key = format!("{}_SESSION_TOKEN",app_id);
+    let upper_appid = app_id.to_uppercase();
+    let session_token_key = format!("{}_SESSION_TOKEN",upper_appid);
     let session_token = env::var(session_token_key.as_str());
     if session_token.is_err() {
         warn!("{} not set",session_token_key);
@@ -132,13 +132,14 @@ pub async fn init_buckyos_api_runtime(appid:&str,owner_user_id:Option<String>,ru
     }
 
     init_global_buckyos_value_by_env(appid)?;
+    let zone_config = CURRENT_ZONE_CONFIG.get().unwrap();
     let runtime = BuckyOSRuntime {
         appid: appid.to_string(),
         owner_user_id,
         runtime_type,
         session_token: Arc::new(RwLock::new(INIT_APP_SESSION_TOKEN.get().unwrap().clone())),
         buckyos_root_dir: get_buckyos_root_dir(),
-        zone_config: None,
+        zone_config: Some(zone_config.clone()),
     };
     CURRENT_BUCKYOS_RUNTIME.set(runtime);
     Ok(())
@@ -170,8 +171,8 @@ impl BuckyOSRuntime {
        
         let control_panel_client = self.get_control_panel_client().await?;
         let zone_config = control_panel_client.load_zone_config().await?;
-        self.zone_config = Some(zone_config);
-        CURRENT_ZONE_CONFIG.set(self.zone_config.clone().unwrap());
+        //self.zone_config = Some(zone_config);
+        //CURRENT_ZONE_CONFIG.set(self.zone_config.clone().unwrap());
 
         Ok(real_session_token)
     }

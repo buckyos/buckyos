@@ -140,7 +140,7 @@ impl GatewayConfig {
             );
         }
 
-        let device_name:Option<String> = json_value.get("  ").map(|v| v.as_str()).flatten().map(|s| s.to_string());
+        let device_name:Option<String> = json_value.get("device_name").map(|v| v.as_str()).flatten().map(|s| s.to_string());
         // register inner services
         if let Some(Some(inner_services)) = json_value.get("inner_services").map(|v| v.as_object())
         {
@@ -264,7 +264,7 @@ impl GatewayConfig {
         } else {
             HashMap::new()
         };
-        
+        info!("load gateway config OK!");
         Ok(Self {
             dispatcher,
             servers: servers_cfg,

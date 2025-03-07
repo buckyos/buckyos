@@ -234,20 +234,20 @@ impl ControlPanelClient {
         Self { system_config_client }
     }
 
-    pub async fn load_zone_config(&self) -> Result<ZoneConfig> {
-        let zone_config_path = "/boot/zone_config";
+    pub async fn load_zone_config(&self) -> Result<String> {
+        let zone_config_path = "boot/config";
         let zone_config_result = self.system_config_client.get(zone_config_path).await;
         if zone_config_result.is_err() {
-            return Err(RPCErrors::ReasonError("Zone config not found".to_string()));
+            return Err(RPCErrors::ReasonError("boot config(Zone config) not found".to_string()));
         }
         let (zone_config_str,_version) = zone_config_result.unwrap();
-        let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str)
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        Ok(zone_config)
+        //let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str)
+        //    .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        Ok(zone_config_str)
     }
 
     pub async fn get_device_info(&self,device_id:&str) -> Result<DeviceInfo> {
-        let device_info_path = format!("/devices/{}/info",device_id);
+        let device_info_path = format!("devices/{}/info",device_id);
         let get_result = self.system_config_client.get(device_info_path.as_str()).await;
         if get_result.is_err() {
             return Err(RPCErrors::ReasonError("Device info not found".to_string()));
@@ -259,7 +259,7 @@ impl ControlPanelClient {
     }
     
     pub async fn get_device_config(&self,device_id:&str) -> Result<DeviceConfig> {
-        let device_doc_path = format!("/devices/{}/doc",device_id);
+        let device_doc_path = format!("devices/{}/doc",device_id);
         let get_result = self.system_config_client.get(device_doc_path.as_str()).await;
         if get_result.is_err() {
             return Err(RPCErrors::ReasonError("Trust key  not found".to_string()));

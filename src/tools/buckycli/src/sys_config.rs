@@ -30,7 +30,7 @@ pub async fn connect_into(target_url:&str, node_id:&str) {
     let mut rl = DefaultEditor::new().unwrap();
     loop {
         // 读取用户输入
-        let readline = rl.readline("buckyos_api> ");
+        let readline = rl.readline("sys_config> ");
         match readline {
             Ok(line) => {
                 let _ = rl.add_history_entry(line.as_str());

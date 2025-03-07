@@ -59,6 +59,7 @@ impl ServicePkg {
             let new_media_info = self
                 .pkg_env
                 .load(&self.pkg_id).await;
+            
             if new_media_info.is_ok() {
                 info!("load pkg {} success", self.pkg_id);
                 let new_media_info = new_media_info.unwrap();

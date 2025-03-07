@@ -101,7 +101,11 @@ async fn do_boot_scheduler() -> Result<()> {
     }
 
     info!("do first schedule!");
-    schedule_loop(true).await?;
+    let boot_result = schedule_loop(true).await;
+    if boot_result.is_err() {
+        error!("schedule_loop failed: {:?}", boot_result.err().unwrap());
+        return Err(anyhow::anyhow!("schedule_loop failed"));
+    }
 
     info!("boot scheduler success");
     return Ok(());
@@ -336,10 +340,9 @@ fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> R
 
 
         //add pod_instance
-        if key.starts_with("nodes/") && key.ends_with("/config") {
-            let node_id = key.split('/').nth(1).unwrap();
-  
-        }
+        //if key.starts_with("nodes/") && key.ends_with("/config") {
+        //    let node_id = key.split('/').nth(1).unwrap();
+        //}
     }
 
 

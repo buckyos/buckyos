@@ -44,7 +44,7 @@ pub struct NameClient {
 impl NameClient {
     pub fn new(config: NameClientConfig) -> Self {
         let mut name_query = NameQuery::new();
-        name_query.add_provider(Box::new(DnsProvider::new(None)));
+        //name_query.add_provider(Box::new(DnsProvider::new(None)));
         //name_query.add_provider(Box::new(ZoneProvider::new()));
         let cache_size = config.cache_size;
 

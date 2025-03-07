@@ -5,7 +5,7 @@
 "users/root/settings" = '{"type":"root","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 "users/{{user_name}}/settings" = '{"type":"admin","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 # devices,set & update by register_device_doc@node_daemon
-#"devices/ood1/doc" = ""
+"devices/ood1/doc" = "eyJhbGciOiJFZERTQSJ9.eyJkaWQiOiJkaWQ6ZGV2Omd1YlZJc3p3LXVfZDVQVlRoLW9jOENLQWhNOUMtbmU1R195VUs1QkRhWGMiLCJuYW1lIjoib29kMSIsImRldmljZV90eXBlIjoib29kIiwiYXV0aF9rZXkiOnsia3R5IjoiT0tQIiwiY3J2IjoiRWQyNTUxOSIsIngiOiJndWJWSXN6dy11X2Q1UFZUaC1vYzhDS0FoTTlDLW5lNUdfeVVLNUJEYVhjIn0sImlzcyI6Imx6YyIsImV4cCI6MjA1MjE5MjM2NSwiaWF0IjoxNzM2ODMyMzY1fQ.yOUIeaG9uHsj_36Dsb8waehmFpeRpe3MRUab9wKPivg_fvqr4MLW36T49p8Iq14QebVIRRegfvBs__eJqqOKBA"
 # devices,set & update by update_device_info@node_daemon
 #"devices/ood1/info" = "{}"
 
@@ -77,7 +77,6 @@
 
 "services/gateway/base_config" = """
 {
-    "device_key_path":"{{BUCKYOS_ROOT}}/etc/node_private_key.pem",
     "servers":{
         "main_http_server":{
             "type":"cyfs-warp",
@@ -145,11 +144,11 @@
 """
 
 
-"services/repo/settings" = """
+"services/repo_service/settings" = """
 {
     "source_list":[
         {
-            "hostname":"test.buckyos.io",
+            "hostname":"repo.buckyos.io",
             "chunk_id":"",
             "jwt":"",
             "version":""
@@ -212,7 +211,7 @@
 
 
 # node config
-"nodes/ood1/config" = """
+"nodes/ood1/config" = """ 
 {
     "state:":"Ready",
     "is_running":true,
@@ -230,7 +229,6 @@
 
 "nodes/ood1/gateway_config" = """
 {
-    "device_key_path":"{{BUCKYOS_ROOT}}/etc/node_private_key.pem",
     "servers":{
         "main_http_server":{
             "type":"cyfs-warp",
@@ -401,12 +399,14 @@ g, sys-test, app
 
 "boot/config" = """
 {
-    "did":"did:ens:{{user_name}}",
-    "oods":["ood1"],
-    "verify_hub_info":{
-        "port":3300,
-        "node_name":"ood1",
-        "public_key":{{verify_hub_public_key}}
-    }
+    "did": "did:bns:{{user_name}}",
+    "name": "{{zone_name}}",
+    "owner_name": "did:bns:{{user_name}}",
+
+    "device_list": [],
+    "oods": [
+        "ood1"
+    ],
+    "exp": 2052190594
 }
 """

@@ -202,9 +202,20 @@ enum InstallStatus {
 
 impl PackageEnv {
     pub fn new(work_dir: PathBuf) -> Self {
+        let config_path = work_dir.join("pkg.cfg.json");
+        let mut env_config = PackageEnvConfig::default();
+        if config_path.exists() {
+            let config = std::fs::read_to_string(config_path);
+            if config.is_ok() {
+                let config_result = serde_json::from_str(&config.unwrap());
+                if  config_result.is_ok() {
+                    env_config = config_result.unwrap();
+                }
+            }
+        }
         Self {
             work_dir,
-            config: PackageEnvConfig::default(),
+            config: env_config,
             lock_db: Arc::new(TokioMutex::new(None)),
             install_tasks: Arc::new(TokioMutex::new(HashMap::new())),
             task_notifiers: Arc::new(TokioMutex::new(HashMap::new())),
@@ -246,7 +257,7 @@ impl PackageEnv {
                         "env not found in strict mode".to_owned(),
                     ))
                 }
-                
+                info!("dev mode pkg_env : try load pkg: {}", pkg_id_str);
                 self.try_load(pkg_id_str).await
             }
         }
@@ -403,7 +414,7 @@ impl PackageEnv {
                //TODO: 要考虑如何结合lock文件进行查找
                pkg_dirs.push(self.get_install_dir().join(pkg_name));
             } else {
-                pkg_dirs.push(self.get_install_dir().join(pkg_name));
+                pkg_dirs.push(self.work_dir.join(pkg_name));
             }
         }
         Ok(pkg_dirs)

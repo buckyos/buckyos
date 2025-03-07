@@ -448,7 +448,7 @@ fn init_log_config() {
         .set_time_format_custom(format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"))
         .build();
 
-    let log_path = get_buckyos_root_dir().join("logs").join("buckyos_api_service.log");
+    let log_path = get_buckyos_root_dir().join("logs").join("system_config_service.log");
     // 初始化日志器
     CombinedLogger::init(vec![
         // 将日志输出到标准输出，例如终端
@@ -677,37 +677,37 @@ mod test {
         let client = kRPC::new("http://127.0.0.1:3200/kapi/system_config",Some(jwt));
         //test create
         println!("test create");
-        client.call("buckyos_api_create", json!( {"key":"users/alice/test_key","value":"test_value_create"})).await.unwrap();
+        client.call("sys_config_create", json!( {"key":"users/alice/test_key","value":"test_value_create"})).await.unwrap();
         //test set
         println!("test set");
-        let _ = client.call("buckyos_api_set", json!( {"key":"users/alice/test_key","value":"test_value"})).await.unwrap();
+        let _ = client.call("sys_config_set", json!( {"key":"users/alice/test_key","value":"test_value"})).await.unwrap();
       
         //test no permission set
         println!("test no permission set");
-        let result = client.call("buckyos_api_set", json!( {"key":"users/bob/test_key","value":"test_value"})).await;
+        let result = client.call("sys_config_set", json!( {"key":"users/bob/test_key","value":"test_value"})).await;
         assert!(result.is_err());
         //test already exist create
         println!("test already exist create");
-        let result = client.call("buckyos_api_create", json!( {"key":"users/alice/test_key","value":"test_value_create"})).await;
+        let result = client.call("sys_config_create", json!( {"key":"users/alice/test_key","value":"test_value_create"})).await;
         assert!(result.is_err());
         //test delete
         println!("test delete");
-        client.call("buckyos_api_delete", json!( {"key":"users/alice/test_key"})).await.unwrap();
+        client.call("sys_config_delete", json!( {"key":"users/alice/test_key"})).await.unwrap();
         //test delete not exist
         println!("test delete not exist");
-        let result = client.call("buckyos_api_delete", json!( {"key":"users/alice/test_key"})).await;
+        let result = client.call("sys_config_delete", json!( {"key":"users/alice/test_key"})).await;
         assert!(result.is_err());
 
         //test set by json path
         println!("test set by json path");
-        client.call("buckyos_api_create", json!( {"key":"users/alice/test_json_key","value":"{\"field\":\"old_value\"}"})).await.unwrap();
-        client.call("buckyos_api_set_by_json_path", json!( {"key":"users/alice/test_json_key","json_path":"/field","value":"\"new_value\""})).await.unwrap();
-        let result = client.call("buckyos_api_get", json!( {"key":"users/alice/test_json_key"})).await.unwrap();
+        client.call("sys_config_create", json!( {"key":"users/alice/test_json_key","value":"{\"field\":\"old_value\"}"})).await.unwrap();
+        client.call("sys_config_set_by_json_path", json!( {"key":"users/alice/test_json_key","json_path":"/field","value":"\"new_value\""})).await.unwrap();
+        let result = client.call("sys_config_get", json!( {"key":"users/alice/test_json_key"})).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "{\"field\":\"new_value\"}");
         //test token expired
         sleep(Duration::from_millis(8000)).await;
         println!("test token expired");
-        let result = client.call("buckyos_api_set", json!( {"key":"users/alice/test_key","value":"test_value"})).await;
+        let result = client.call("sys_config_set", json!( {"key":"users/alice/test_key","value":"test_value"})).await;
         assert!(result.is_err());
 
         drop(server);
@@ -772,14 +772,14 @@ mod test {
         });
 
         // Execute transaction
-        let result = client.call("buckyos_api_exec_tx", tx_request).await;
+        let result = client.call("sys_config_exec_tx", tx_request).await;
         assert!(result.is_ok(), "Transaction should succeed");
 
         // Verify the results
-        let get_key1 = client.call("buckyos_api_get", json!({"key": "users/alice/key1"})).await;
+        let get_key1 = client.call("sys_config_get", json!({"key": "users/alice/key1"})).await;
         assert_eq!(get_key1.unwrap().as_str().unwrap(), "value1", "Key1 should have correct value");
 
-        let get_key2 = client.call("buckyos_api_get", json!({"key": "users/alice/key2"})).await;
+        let get_key2 = client.call("sys_config_get", json!({"key": "users/alice/key2"})).await;
         assert_eq!(get_key2.unwrap().as_str().unwrap(), "value2", "Key2 should have correct value");
 
         // Test transaction rollback
@@ -797,16 +797,16 @@ mod test {
             }
         });
 
-        let result = client.call("buckyos_api_exec_tx", invalid_tx).await;
+        let result = client.call("sys_config_exec_tx", invalid_tx).await;
         assert!(result.is_err(), "Transaction should fail due to permissions");
 
         // Verify that no changes were made
-        let get_key3 = client.call("buckyos_api_get", json!({"key": "users/alice/key3"})).await;
+        let get_key3 = client.call("sys_config_get", json!({"key": "users/alice/key3"})).await;
         assert!(get_key3.unwrap().is_null(), "Key3 should not exist after failed transaction");
 
         // Cleanup
-        client.call("buckyos_api_delete", json!({"key": "users/alice/key1"})).await.unwrap();
-        client.call("buckyos_api_delete", json!({"key": "users/alice/key2"})).await.unwrap();
+        client.call("sys_config_delete", json!({"key": "users/alice/key1"})).await.unwrap();
+        client.call("sys_config_delete", json!({"key": "users/alice/key2"})).await.unwrap();
         //client.call("buckyos_api_delete", json!({"key": "users/alice/json_key"})).await.unwrap();
 
         drop(server);

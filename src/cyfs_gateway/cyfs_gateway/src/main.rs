@@ -52,7 +52,6 @@ async fn service_main(config: &str, matches: &clap::ArgMatches) -> Result<()> {
 
     // Extract necessary params from command line
     let params = GatewayParams {
-        disable_buckyos: matches.get_flag("disable-buckyos"),
         keep_tunnel: matches
             .get_many::<String>("keep_tunnel")
             .unwrap_or_default()

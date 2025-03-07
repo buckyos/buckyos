@@ -9,6 +9,7 @@ mod serde_helper;
 mod config;
 mod channel;
 mod event;
+mod provider;
 
 #[macro_use]
 extern crate log;
@@ -24,7 +25,7 @@ pub use serde_helper::*;
 pub use config::*;
 pub use channel::*;
 pub use event::*;
-
+pub use provider::*;
 #[cfg(test)]
 mod test {
     use std::path::PathBuf;
