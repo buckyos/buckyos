@@ -590,45 +590,6 @@ impl MetaIndexDb {
 }
 
 
-struct MetaIndexDbList{
-    dbs: Vec<PathBuf>
-}
-
-impl MetaIndexDbList{
-    pub fn new(dbs: Vec<PathBuf>) -> PkgResult<Self> {
-        Ok(Self { dbs })
-    }
-
-    pub fn get_pkg_meta(&self, pkg_id: &str) -> PkgResult<Option<(String, PackageMeta)>> {
-        for db_path in &self.dbs {
-            let db = MetaIndexDb::new(db_path.clone(),true);
-            if db.is_err() {
-                continue;
-            }
-            let db = db.unwrap();   
-            let pkg_meta = db.get_pkg_meta(pkg_id);
-            if pkg_meta.is_err() {
-                continue;
-            }
-            let pkg_meta = pkg_meta.unwrap();
-            if pkg_meta.is_some() {
-                return Ok(pkg_meta);
-            }       
-        }
-        Ok(None)
-    }
-
-    /// 按顺序查询所有数据库，找到第一个匹配的作者信息
-    pub fn get_author_info(&self, author_name: &str) -> PkgResult<Option<(String, Option<String>, Option<String>)>> {
-        for db_path in &self.dbs {
-            let db = MetaIndexDb::new(db_path.clone(),true).unwrap();
-            if let Some(result) = db.get_author_info(author_name)? {
-                return Ok(Some(result));
-            }
-        }
-        Ok(None)
-    }
-}
 
 #[cfg(test)]
 mod tests {

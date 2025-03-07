@@ -259,6 +259,12 @@ impl BuckyOSRuntime {
         }
     }
 
+    // 获得与物理逻辑磁盘绑定的本地存储目录，存储的可靠性和特性由物理磁盘决定
+    //目录原理上是  disk_id/service_instance_id/
+    pub fn get_lcoal_storage_folder(&self,disk_id: &str) -> PathBuf {
+        unimplemented!()
+    }
+
     fn get_my_settings_path(&self) -> String {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
@@ -272,6 +278,8 @@ impl BuckyOSRuntime {
             }
         }
     }
+
+
 
     pub async fn get_my_settings(&self) -> Result<serde_json::Value> {
         let system_config_client = self.get_system_config_client().await?;

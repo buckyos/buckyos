@@ -18,7 +18,7 @@ use buckyos_api::*;
 use tokio::io::AsyncSeekExt;
 use name_lib::*;
 
-use crate::pub_task_mgr::*;
+use crate::pkg_task_data::*;
 struct ReqHelper;
 
 impl ReqHelper {
@@ -65,9 +65,10 @@ struct WillDownloadPkgInfo {
 /*
 repo-server持有的几个meta-index-db
 
-source-mgr 
-    source_name meta-index-db1 (zone内read-only)
+source-mgr (优先级从高到低)，
+    source_name meta-index-db1 (zone内read-only)，或则叫default index-db
     source_name meta-index-db2 (zone内read-only)
+    是否应该同步成一个meta-index-db? 按优先级先下载meta-indes-db2,然后下载meta-index-db1后合并到meta-index-db2中（会覆盖相同的版本）
 
 如果打开了开发者模式，则有：
     pub meta-index-db (zone内，zone外read-only)
@@ -76,11 +77,23 @@ source-mgr
         zone外写:handle_pub_pkg_to_source
         发布：handle_pub_index，发布完成后local-wait-pub会合并到pub meta-index-db，然后清空
 
-流程的核心理念与git类似
 
+每个node上，默认的pkg-env配置：
+    机器级别的root_env (/opt/buckyos/data/repo_services/root/meta-index.db),会更新 default index-db，这个不会实际安装pkg,只是提供index-db
+    工作目录的pkg-env,会更新pub meta-index-db ，并继承default index-db,会实际安装pkg
+
+在但OOD模式下
+    root_env的default index-db与repo的default index-db是共同的
+        
+
+流程的核心理念与git类似
 发布pkg到repo: 先commit到当前repo.然后再Merge到remote-repo，merge流程允许手工介入
 repo 获得更新: git pull后，根据当前已经安装的app列表下载chunk,全部成功后再切换当前repo的版本
 env更新：更新env的index-db到zone内的默认index-db 
+
+install_pkg: 
+    会讲
+
 */
 
 
@@ -114,30 +127,6 @@ impl RepoServer {
             settng:config
         })
     }
-
-
-    // async fn handle_install_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-    //     let pkg_name = ReqHelper::get_str_param_from_req(&req, "pkg_name")?;
-    //     //获取version参数，如果未传入，则默认为*
-    //     let pkg_version = req
-    //         .params
-    //         .get("version")
-    //         .and_then(|version| version.as_str())
-    //         .unwrap_or("*");
-    //     let pkg_id = format!("{}#{}", pkg_name, pkg_version);
-    //     let pkg_id: PackageId = PackageId::from_str(pkg_id.as_str()).map_err(|e| {
-    //         RPCErrors::ParseRequestError(format!("Failed to parse package id, err:{}", e))
-    //     })?;
-    //     match self.source_mgr.install_pkg(pkg_id).await {
-    //         Ok(task_id) => Ok(RPCResponse::new(
-    //             RPCResult::Success(json!({
-    //                 "task_id": task_id,
-    //             })),
-    //             req.seq,
-    //         )),
-    //         Err(e) => Err(RPCErrors::ReasonError(e.to_string())),
-    //     }
-    // }
     
     //成功返回需要下载的chunkid列表
     async fn get_need_chunk_in_remote_index_db(&self,new_meta_index_db_path: &PathBuf) -> Result<HashMap<String,WillDownloadPkgInfo>, RPCErrors> {
@@ -263,6 +252,116 @@ impl RepoServer {
         })?;
 
         Ok(())
+    }
+
+
+    async fn handle_install_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let pkg_list = req.params.get("pkg_list");
+        let install_task_name = ReqHelper::get_str_param_from_req(&req,"task_name")?;
+        let session_token = ReqHelper::get_session_token(&req)?;
+        if pkg_list.is_none() {
+            return Err(RPCErrors::ReasonError("pkg_list is none".to_string()));
+        }
+        let pkg_list = pkg_list.unwrap();
+        //pkg_list: {"pkg_id":"chunkid"}
+        let pkg_list : HashMap<String,String> = serde_json::from_value(pkg_list.clone()).map_err(|e| {
+            error!("parse pkg_list failed, err:{}", e);
+            RPCErrors::ReasonError(format!("parse pkg_list failed, err:{}", e))
+        })?;
+
+        let root_meta_db = self.get_source_meta_index_db_path("root");
+        let root_meta_db = MetaIndexDb::new(root_meta_db,true).map_err(|e| {
+            error!("open root meta-index-db failed, err:{}", e);
+            RPCErrors::ReasonError(format!("open root meta-index-db failed, err:{}", e))
+        })?;
+
+        let source_url = self.settng.remote_source.get("root");
+        if source_url.is_none() {
+            error!("handle_install_pkg error:root source not found");
+            return Err(RPCErrors::ReasonError("root source not found".to_string()));
+        }
+        let source_url = source_url.unwrap();
+
+        let mut total_size = 0;
+        for (pkg_id,will_install_chunk_id) in pkg_list.iter() {
+            let pkg_meta = root_meta_db.get_pkg_meta(pkg_id.as_str());
+            if pkg_meta.is_err() {
+                error!("get pkg_meta failed from zone meta-index-db, err:{}", pkg_meta.err().unwrap());
+                return Err(RPCErrors::ReasonError("get pkg_meta failed".to_string()));
+            }
+            let pkg_meta = pkg_meta.unwrap();
+            if pkg_meta.is_none() {
+                error!("pkg_meta not found, pkg_id:{}", pkg_id);
+                return Err(RPCErrors::ReasonError(format!("pkg_meta not found, pkg_id:{}", pkg_id)));
+            }
+            let (pkg_meta_obj_id,pkg_meta) = pkg_meta.unwrap();
+            if pkg_meta.chunk_id.is_none() {
+                error!("pkg_meta not found, pkg_id:{}", pkg_id);
+                return Err(RPCErrors::ReasonError(format!("pkg_meta not found, pkg_id:{}", pkg_id)));
+            }
+            let chunk_id = pkg_meta.chunk_id.unwrap();
+            total_size += pkg_meta.chunk_size.unwrap();
+            if chunk_id.as_str() != will_install_chunk_id {
+                error!("chunk_id not match, pkg_id:{}", pkg_id);
+                return Err(RPCErrors::ReasonError(format!("chunk_id not match, pkg_id:{}", pkg_id)));
+            }
+        }
+        info!("will install pkg_list, total size:{}", total_size);
+        //let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some("default")).await.unwrap();
+
+        let runtime = get_buckyos_api_runtime()?;
+        let task_mgr_client = runtime.get_task_mgr_client().await?;
+        let install_pkg_task_data = InstallPkgTaskData {
+            pkg_list: pkg_list.clone(),
+        };
+        let install_pkg_task_data = serde_json::to_value(&install_pkg_task_data).unwrap();
+        //todo user_id,app_name应该是来自req的app_name
+        let task_id = task_mgr_client.create_task(install_task_name.as_str(),
+        "install_pkg",
+        "repo_service",
+        Some(install_pkg_task_data)).await.map_err(|e| {
+            error!("create install_pkg task failed, err:{}", e);
+            RPCErrors::ReasonError(format!("create install_pkg task failed, err:{}", e))
+        })?;
+
+        
+        let ndn_client = NdnClient::new(source_url.clone(),None,None);
+        let mut completed_size = 0;
+        tokio::spawn(async move {
+            for (pkg_id,will_install_chunk_id) in pkg_list.iter() {
+                //let named_mgr = named_mgr.lock().await;
+                let chunk_id = ChunkId::new(will_install_chunk_id.as_str()).unwrap();
+                //TODO chunk_url? 
+                let pull_result = ndn_client.pull_chunk(chunk_id.clone(),Some("default")).await;
+    
+                if pull_result.is_ok() {
+                    let chunk_size = pull_result.unwrap();
+                    completed_size += chunk_size;
+                    info!("install pkg task pull chunk {} success, completed_size:{}", chunk_id.to_string(), completed_size);
+                    task_mgr_client.update_task_progress(task_id,completed_size,total_size).await.map_err(|e| {
+                        error!("update task progress failed, err:{}", e);
+                        return;
+                    });
+                } else {
+                    let err_string = pull_result.err().unwrap().to_string();
+                    error!("pull chunk failed, err:{}", err_string.as_str());
+                    task_mgr_client.update_task_error(task_id,err_string.as_str()).await.map_err(|e| {
+                        error!("update task error failed, err:{}", e);
+                        return;
+                    });
+                    return;
+                }
+            }
+            info!("install pkg task completed, task_id:{}", task_id);
+            task_mgr_client.update_task_status(task_id,TaskStatus::Completed).await.map_err(|e| {
+                error!("update task success failed, err:{}", e);
+                return;
+            });
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(json!({
+            "task_id": task_id,
+        })), req.seq))
     }
     // 将source-meta-index更新到最新版本
     async fn handle_sync_from_remote_source(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -496,7 +595,7 @@ impl RepoServer {
         }
         let task_data = task_data.unwrap();
 
-        let pub_task_data:PubTaskData = serde_json::from_value(task_data.clone()).map_err(|e| {
+        let pub_task_data:PubPkgTaskData = serde_json::from_value(task_data.clone()).map_err(|e| {
             error!("parse task_data failed, err:{}", e);
             RPCErrors::ReasonError(format!("parse task_data failed, err:{}", e))
         })?;
@@ -586,7 +685,7 @@ impl RepoServer {
         })), req.seq));
     }
 
-    async fn handle_merge_wait_pub_to_source_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+    async fn handle_merge_wait_pub(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         /*
         合并 `未合并但准备好的` 发布任务里包含的pkg_list到local-wait-meta
         注意merge完后，还要调用pub_index_db发布
@@ -612,7 +711,7 @@ impl RepoServer {
 
         for task in tasks.iter() {
             let task_data = task.data.as_ref().unwrap();
-            let pub_task_data:PubTaskData = serde_json::from_str(task_data.as_str()).map_err(|e| {
+            let pub_task_data:PubPkgTaskData = serde_json::from_str(task_data.as_str()).map_err(|e| {
                 error!("parse task_data failed, err:{}", e);
                 RPCErrors::ReasonError(format!("parse task_data failed, err:{}", e))
             })?;
@@ -731,12 +830,11 @@ impl kRPCHandler for RepoServer {
     ) -> Result<RPCResponse, RPCErrors> {
         match req.method.as_str() {
             //"query_all_latest_pkg" => self.handle_query_all_latest_pkg(req).await,
-            //"install_pkg" => self.handle_install_pkg(req).await,
-            //"update_index" => self.handle_update_index(req).await,
+            "install_pkg" => self.handle_install_pkg(req).await,
             "pub_pkg" => self.handle_pub_pkg(req).await,
             "pub_index" => self.handle_pub_index(req).await,
             "pub_pkg_to_source" => self.handle_pub_pkg_to_source(req).await,
-            "merge_wait_pub_to_source_pkg" => self.handle_merge_wait_pub_to_source_pkg(req).await,
+            "merge_wait_pub" => self.handle_merge_wait_pub(req).await,
             "sync_from_remote_source" => self.handle_sync_from_remote_source(req).await,
             //"query_index_meta" => self.handle_query_index_meta(req).await,
             //"query_task" => self.handle_query_task(req).await,

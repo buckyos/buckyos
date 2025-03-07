@@ -2,7 +2,7 @@
 
 
 mod repo_server;
-mod pub_task_mgr;
+mod pkg_task_data;
 use crate::repo_server::*;
 use std::fs::File;
 use buckyos_api::*;

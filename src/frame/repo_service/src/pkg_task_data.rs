@@ -17,10 +17,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PubTaskData {
+pub struct PubPkgTaskData {
     //pkg_name -> pkg_meta_jwt
     pub pkg_list: HashMap<String,String>,
     pub author_name: String,
     pub author_pk: jsonwebtoken::jwk::Jwk,
     pub author_repo_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallPkgTaskData {
+    //pkg_id -> will_install_chunk_id
+    pub pkg_list: HashMap<String,String>,
+
 }

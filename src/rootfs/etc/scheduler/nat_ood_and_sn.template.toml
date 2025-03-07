@@ -146,11 +146,11 @@
 }
 """
 
-
+# root 源必须设置
 "services/repo_service/settings" = """
 {
     "remote_source": {
-        "buckyos_repo":"https://buckyos.io/ndn/repo/meta_index.db"
+        "root":"https://buckyos.io/ndn/repo/meta_index.db"
     },
     "enable_dev_mode": true
 }
