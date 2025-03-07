@@ -271,14 +271,16 @@ impl ControlPanelClient {
     }
 
     //TODO: help app installer dev easy to generate right app-index
-    pub async fn install_app_service(&self,user_id:&str,app_config:&AppConfig,shortcut:Option<String>) -> SytemConfigResult<u64> {
+    pub async fn install_app_service(&self,user_id:&str,app_config:&AppConfig,shortcut:Option<String>) -> Result<u64> {
         // TODO: if you want install a web-client-app, use another function
         //1. create users/{user_id}/apps/{appid}/config
         let app_id = app_config.app_id.as_str();
         let app_config_str = serde_json::to_string(app_config).unwrap();
-        self.system_config_client.create(format!("users/{}/apps/{}/config",user_id,app_id).as_str(),app_config_str.as_str()).await?;
+        self.system_config_client.create(format!("users/{}/apps/{}/config",user_id,app_id).as_str(),app_config_str.as_str()).await
+            .map_err(|e| RPCErrors::ReasonError(format!("install app service failed, err:{}", e)))?;
         //2. update rbac
-        self.system_config_client.append("system/rbac/policy",format!("\ng, {}, app",app_id).as_str()).await?;
+        self.system_config_client.append("system/rbac/policy",format!("\ng, {}, app",app_id).as_str()).await
+            .map_err(|e| RPCErrors::ReasonError(format!("install app service failed, err:{}", e)))?;
         //3. update gateway shortcuts
         if shortcut.is_some() {
             let short_name = shortcut.unwrap();
@@ -291,7 +293,8 @@ impl ControlPanelClient {
             let short_json_value_str = serde_json::to_string(&short_json_value).unwrap();
 
             self.system_config_client.set_by_json_path("services/gateway/settings",
-                short_json_path.as_str(),short_json_value_str.as_str()).await?;
+                short_json_path.as_str(),short_json_value_str.as_str()).await
+                .map_err(|e| RPCErrors::ReasonError(format!("install app service failed, err:{}", e)))?;
 
             info!("set shortcut {} for user {}'s app {} success!",short_name,user_id,app_id);
         }
@@ -300,16 +303,54 @@ impl ControlPanelClient {
         Ok(0)
     }
 
-    pub async fn get_valid_app_index(&self,user_id:&str) -> SytemConfigResult<u64> {
+    pub async fn get_user_list(&self) -> Result<Vec<String>> {
+        let user_list = self.system_config_client.list("users").await;
+        if user_list.is_err() {
+            return Err(RPCErrors::ReasonError("user list not found".to_string()));
+        }
+        Ok(user_list.unwrap())
+    }
+
+    pub async fn get_app_list(&self) -> Result<Vec<AppConfig>> {
+        let user_list = self.get_user_list().await;
+        if user_list.is_err() {
+            return Err(RPCErrors::ReasonError("user list not found".to_string()));
+        }
+        let user_list = user_list.unwrap();
+        let mut result_app_list = Vec::new();
+        for user_id in user_list {
+            let app_list = self.system_config_client.list(format!("users/{}/apps",user_id).as_str()).await;
+            if app_list.is_err() {
+                return Err(RPCErrors::ReasonError("app list not found".to_string()));
+            }
+            for app_id in app_list.unwrap() {
+                let app_config = self.system_config_client.get(format!("users/{}/apps/{}/config",user_id,app_id).as_str()).await;
+                if app_config.is_err() {
+                    return Err(RPCErrors::ReasonError("app config not found".to_string()));
+                }
+                let (app_config_str,_version) = app_config.unwrap();
+                let app_config:AppConfig = serde_json::from_str(&app_config_str)
+                    .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+                result_app_list.push(app_config);
+            }
+        }
+        Ok(result_app_list)
+    }
+
+    pub async fn get_services_list(&self) -> Result<Vec<KernelServiceConfig>> {
+        Ok(vec![])
+    }
+
+    pub async fn get_valid_app_index(&self,user_id:&str) -> Result<u64> {
         unimplemented!();
     }
 
-    pub async fn remove_app(&self,appid:&str) -> SytemConfigResult<u64> {
+    pub async fn remove_app(&self,appid:&str) -> Result<u64> {
         unimplemented!();
     }
 
 
-    pub async fn disable_app(&self,appid:&str) -> SytemConfigResult<u64> {
+    pub async fn disable_app(&self,appid:&str) -> Result<u64> {
         unimplemented!();
     }
 }

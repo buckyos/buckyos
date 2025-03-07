@@ -8,7 +8,7 @@ use tokio::{
     io::{self, AsyncRead,AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeek, AsyncSeekExt}, 
 };
 use log::*;
-use crate::{ChunkHasher, ChunkId, ChunkReadSeek, ChunkState, FileObject, NamedDataStore, NdnError, NdnResult};
+use crate::{build_named_object_by_json, ChunkHasher, ChunkId, ChunkReadSeek, ChunkState, FileObject, NamedDataStore, NdnError, NdnResult};
 use memmap::Mmap;
 use std::{path::PathBuf, pin::Pin};
 use std::io::SeekFrom;
@@ -668,14 +668,30 @@ impl NamedDataMgr {
 
 
     //下面是一些helper函数
-    pub async fn pub_object(mgr_id:Option<&str>,will_pub_obj:serde_json::Value,ndn_path:&str,
+    pub async fn pub_object(mgr_id:Option<&str>,will_pub_obj:serde_json::Value,obj_type:&str,ndn_path:&str,
                             user_id:&str,app_id:&str)->NdnResult<()> {
-        unimplemented!()
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id).await;
+        if named_mgr.is_none() {
+            return Err(NdnError::NotFound(format!("named data mgr not found")));
+        }
+        let named_mgr = named_mgr.unwrap();
+        let (obj_id,obj_str) = build_named_object_by_json(obj_type,&will_pub_obj);
+        let mut named_mgr = named_mgr.lock().await;
+        named_mgr.put_object(&obj_id, &obj_str).await?;
+        named_mgr.set_file(ndn_path.to_string(), &obj_id, app_id, user_id).await?;
+        Ok(())
     }
     
     pub async fn sign_obj(mgr_id:Option<&str>,will_sign_obj_id:ObjId,obj_jwt:String,
                           user_id:&str,app_id:&str)->NdnResult<()> {
-        unimplemented!()
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id).await;
+        if named_mgr.is_none() {
+            return Err(NdnError::NotFound(format!("named data mgr not found")));
+        }
+        let named_mgr = named_mgr.unwrap();
+        let mut named_mgr = named_mgr.lock().await;
+        named_mgr.put_object(&will_sign_obj_id, &obj_jwt).await?;
+        Ok(())
     }
 
     //会写入两个ndn_path

@@ -391,7 +391,7 @@ impl PackageEnv {
         } else {
             meta_db_path = self.work_dir.join(".pkgs/meta_index.db")
         }
-        let meta_db = MetaIndexDb::new(meta_db_path)?;
+        let meta_db = MetaIndexDb::new(meta_db_path,true)?;
         Ok(meta_db)
     }
 
@@ -467,6 +467,7 @@ impl PackageEnv {
         Ok(())
     }
 
+    
     pub async fn try_update_index_db(&self, new_index_db: &Path) -> PkgResult<()> {
         if self.config.ready_only {
             return Err(PkgError::AccessDeniedError(
@@ -526,6 +527,7 @@ mod tests {
             category: Some("test".to_string()),
             author: "test".to_string(),
             chunk_id: Some("test_chunk".to_string()),
+            chunk_size: Some(100),
             chunk_url: Some("http://test.com".to_string()),
             deps: HashMap::new(),
             pub_time: 0,

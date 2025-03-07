@@ -65,18 +65,22 @@ struct WillDownloadPkgInfo {
 /*
 repo-server持有的几个meta-index-db
 
-source-mgr
-    source_name meta-index-db1 (read-only)
-    source_name meta-index-db2 (read-ony)
+source-mgr 
+    source_name meta-index-db1 (zone内read-only)
+    source_name meta-index-db2 (zone内read-only)
 
 如果打开了开发者模式，则有：
-    local-pub meta-index-db (read-only)
-    local-wait-pub meta-index-db can write
+    pub meta-index-db (zone内，zone外read-only)
+    local-wait-pub meta-index-db (zone内，zone外可写)
+        zone内写:handle_pub_pkg
+        zone外写:handle_pub_pkg_to_source
+        发布：handle_pub_index，发布完成后local-wait-pub会合并到pub meta-index-db，然后清空
 
 流程的核心理念与git类似
 
-发布pkg: 先commit到当前repo.然后再Merge到remote-repo，merge流程允许手工介入
-获得更新: git pull后，根据当前已经安装的app列表下载chunk,全部成功后再切换当前repo的版本
+发布pkg到repo: 先commit到当前repo.然后再Merge到remote-repo，merge流程允许手工介入
+repo 获得更新: git pull后，根据当前已经安装的app列表下载chunk,全部成功后再切换当前repo的版本
+env更新：更新env的index-db到zone内的默认index-db 
 */
 
 
@@ -100,6 +104,7 @@ impl Default for RepoServerSetting {
 #[derive(Debug,Clone)]
 pub struct RepoServer {
     settng: RepoServerSetting,
+    
     //session_token : Option<String>,
 }
 
@@ -135,16 +140,97 @@ impl RepoServer {
     // }
     
     //成功返回需要下载的chunkid列表
-    async fn check_new_remote_index(&self,new_meta_index_db_path: &PathBuf) -> Result<HashMap<String,WillDownloadPkgInfo>, RPCErrors> {
-        unimplemented!();
+    async fn get_need_chunk_in_remote_index_db(&self,new_meta_index_db_path: &PathBuf) -> Result<HashMap<String,WillDownloadPkgInfo>, RPCErrors> {
+        let meta_index_db = MetaIndexDb::new(new_meta_index_db_path.clone(),true).map_err(|e| {
+            error!("open new meta-index-db {} failed, err:{}", new_meta_index_db_path.to_string_lossy(), e);
+            RPCErrors::ReasonError(format!("open new meta-index-db failed, err:{}", e))
+        })?;
+
+        let runtime = get_buckyos_api_runtime()?;
+        let control_panel_client = runtime.get_control_panel_client().await?;
+        let mut chunk_list:HashMap<String,WillDownloadPkgInfo> = HashMap::new();
+        let app_list = control_panel_client.get_app_list().await?;
+        let services_list = control_panel_client.get_services_list().await?;
+
+        for app in app_list.iter() {
+            for sub_pkg in app.app_doc.pkg_list.values() {
+                let pkg_id_str = sub_pkg.pkg_id.clone();
+                let pkg_meta = meta_index_db.get_pkg_meta(&pkg_id_str)
+                    .map_err(|e| {
+                        error!("get {}'s pkg_meta failed, err:{}", pkg_id_str, e);
+                        RPCErrors::ReasonError(format!("get pkg_meta failed, err:{}", e))
+                    })?;
+                if pkg_meta.is_none() {
+                    error!("{}'s pkg_meta not found", pkg_id_str);
+                    return Err(RPCErrors::ReasonError(format!("{}'s pkg_meta not found", pkg_id_str)));
+                }
+                let (pkg_meta_obj_id,pkg_meta) = pkg_meta.unwrap();
+                if pkg_meta.chunk_id.is_some() {
+                    chunk_list.insert(pkg_meta.chunk_id.clone().unwrap(),WillDownloadPkgInfo {
+                        pkg_name:pkg_meta.pkg_name.clone(),
+                        pkg_version:pkg_meta.version.clone(),
+                        chunk_id:pkg_meta.chunk_id.clone().unwrap(),
+                        chunk_size:pkg_meta.chunk_size.clone().unwrap(),
+                    });
+                }
+            }
+        }
+        
+        return Ok(chunk_list);
     }
 
-    fn get_meta_index_db_path(&self,source: &str) -> PathBuf {
+    fn get_source_meta_index_db_path(&self,source: &str) -> PathBuf {
         let runtime = get_buckyos_api_runtime().unwrap();
         let path = runtime.get_my_data_folder().join(source).join("meta_index.db");
         return path;
     }
-    //
+
+    fn get_my_pub_meta_index_db_path(&self) -> PathBuf {
+        let runtime = get_buckyos_api_runtime().unwrap();
+        let path = runtime.get_my_data_folder().join("pub_meta_index.db");
+        return path;
+    }
+
+    fn get_my_wait_pub_meta_index_db_path(&self) -> PathBuf {
+        let runtime = get_buckyos_api_runtime().unwrap();
+        let path = runtime.get_my_data_folder().join("wait_pub_meta_index.db");
+        return path;
+    }
+
+    async fn try_create_wait_pub_meta_index_db(&self) -> Result<(),RPCErrors> {
+        let wait_pub_meta_index_db_path = self.get_my_wait_pub_meta_index_db_path();
+        
+        // 检查文件是否存在
+        if !wait_pub_meta_index_db_path.exists() {
+            info!("Wait pub meta index db not exists, creating it by copying from pub meta index db");
+            
+            let pub_meta_index_db_path = self.get_my_pub_meta_index_db_path();
+            
+            // 检查源文件是否存在
+            if pub_meta_index_db_path.exists() {
+                // 确保目标目录存在
+                if let Some(parent_dir) = wait_pub_meta_index_db_path.parent() {
+                    if !parent_dir.exists() {
+                        tokio::fs::create_dir_all(parent_dir).await.map_err(|e| {
+                            error!("Failed to create directory for wait pub meta index db: {}", e);
+                            RPCErrors::ReasonError(format!("Failed to create directory: {}", e))
+                        })?;
+                    }
+                }
+                
+                // 复制文件
+                tokio::fs::copy(&pub_meta_index_db_path, &wait_pub_meta_index_db_path).await.map_err(|e| {
+                    error!("Failed to copy pub meta index db to wait pub meta index db: {}", e);
+                    RPCErrors::ReasonError(format!("Failed to copy file: {}", e))
+                })?;
+                
+                info!("Successfully created wait pub meta index db by copying from pub meta index db");
+            } 
+        }
+        Ok(())
+    }
+    
+    
     async fn replace_file(target_file_path:&PathBuf,file_path:&PathBuf) -> Result<(),RPCErrors> {
         // 原子地替换文件，类似于 move 操作
         let target_dir = target_file_path.parent().ok_or_else(|| {
@@ -185,7 +271,7 @@ impl RepoServer {
        
         for (source,source_url) in self.settng.remote_source.iter() {
             info!("update meta-index-db:source {}, download url:{}", source, source_url);
-            let new_meta_index_db_path = self.get_meta_index_db_path(&source).with_extension("download");
+            let new_meta_index_db_path = self.get_source_meta_index_db_path(&source).with_extension("download");
 
             let runtime = get_buckyos_api_runtime()?;
             let session_token = runtime.get_session_token().await;
@@ -195,7 +281,7 @@ impl RepoServer {
                 RPCErrors::ReasonError(format!("download remote meta-index-db by {} failed, err:{}", source_url, e))
             })?;
 
-            let need_check_chunk_list = self.check_new_remote_index(&new_meta_index_db_path).await;
+            let need_check_chunk_list = self.get_need_chunk_in_remote_index_db(&new_meta_index_db_path).await;
             if need_check_chunk_list.is_err() {
                 error!("check_new_remote_index failed, source:{}", source);
                 continue;
@@ -218,7 +304,7 @@ impl RepoServer {
                 }
                 let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some("default")).await.unwrap();
                 let named_mgr = named_mgr.lock().await;
-                
+                //下面的操作并不会让旧版本失效，后续需要通过一个完整的重建 /repo/install_pkg的操作来释放
                 named_mgr.set_file(format!("/repo/install_pkg/{}/{}/chunk",will_download_pkg_info.pkg_name,will_download_pkg_info.pkg_version),&chunk_id.to_obj_id(),
                 "repo_service","root").await.map_err(|e| {
                     error!("set file failed, err:{}", e);
@@ -226,7 +312,7 @@ impl RepoServer {
                 })?;
             }
 
-            let current_meta_index_db_path = self.get_meta_index_db_path(&source);
+            let current_meta_index_db_path = self.get_source_meta_index_db_path(&source);
             RepoServer::replace_file(&current_meta_index_db_path,&new_meta_index_db_path).await?;
 
         }
@@ -291,6 +377,8 @@ impl RepoServer {
                 }
                 let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some("pub")).await.unwrap();
                 let named_mgr = named_mgr.lock().await;
+
+                //这个路径保存的是自己发布的pkg
                 named_mgr.set_file(format!("/repo/pkg/{}/{}/chunk",pkg_meta.pkg_name,pkg_meta.version),
                 &chunk_id.to_obj_id(),"repo_service",user_id.as_str())
                 .await.map_err(|e| {
@@ -312,9 +400,10 @@ impl RepoServer {
             };
             pkg_meta_map.insert(meta_obj_id.to_string(),package_meta_node);
         }
-
-        let wait_meta_db_path = self.get_meta_index_db_path("local_wait_pub");
-        let wait_meta_db = MetaIndexDb::new(wait_meta_db_path).map_err(|e| {
+        info!("pkg_list check success, will pub pkg_list to local-wait-pub-meta-index-db");
+        self.try_create_wait_pub_meta_index_db().await?;
+        let wait_meta_db_path = self.get_my_wait_pub_meta_index_db_path();
+        let wait_meta_db = MetaIndexDb::new(wait_meta_db_path,false).map_err(|e| {
             error!("new wait-meta-db failed, err:{}", e);
             RPCErrors::ReasonError(format!("new wait-meta-db failed, err:{}", e))
         })?;
@@ -335,8 +424,8 @@ impl RepoServer {
         if !self.settng.enable_dev_mode {
             return Err(RPCErrors::ReasonError("repo_server dev mode is not enabled".to_string()));
         }
-        let wait_meta_db_path = self.get_meta_index_db_path("local_wait_pub");
-        let local_meta_db_path = self.get_meta_index_db_path("local_pub");
+        let wait_meta_db_path = self.get_my_wait_pub_meta_index_db_path();
+        let pub_meta_db_path = self.get_my_pub_meta_index_db_path();
 
         let mut file_object = FileObject::new("meta_index.db".to_string(),0,String::new());
         NamedDataMgr::pub_local_file_as_fileobj(Some("pub"),&wait_meta_db_path,
@@ -346,8 +435,9 @@ impl RepoServer {
             RPCErrors::ReasonError(format!("pub_index failed, err:{}", e))
         })?;
 
-        //对处于NDN中的已发布文件(给外部下载)和本地文件(本地访问) 进行了隔离,未来可以考虑共用
-        RepoServer::replace_file(&local_meta_db_path,&wait_meta_db_path).await?;
+        //对处于NDN中的已发布文件(给外部下载)和本地文件(本地访问) 进行了隔离,未来可以考虑共用,
+        //如何保障本地替换和ndn发布文件替换的事务性?
+        RepoServer::replace_file(&pub_meta_db_path,&wait_meta_db_path).await?;
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "success": true,
         })), req.seq))
@@ -418,8 +508,7 @@ impl RepoServer {
         let session_token = runtime.get_session_token().await;
         let ndn_client = NdnClient::new(pub_task_data.author_repo_url.clone(),Some(session_token),None);
         let author_pk = pub_task_data.author_pk.clone();
-        //TODO verify author_pk
-        // 需要检查和一金认证的author_info是否匹配
+        //TODO verify author_pk, 源服务应该由类似SN的账号体系
 
         //chunk_id -> (chunk_url,chunk_size)
         let mut total_size = 0;
@@ -514,8 +603,8 @@ impl RepoServer {
             RPCErrors::ReasonError(format!("list tasks failed, err:{}", e))
         })?;
 
-        let wait_meta_db_path = self.get_meta_index_db_path("local_wait_pub");
-        let wait_meta_db = MetaIndexDb::new(wait_meta_db_path).map_err(|e| {
+        let wait_meta_db_path = self.get_source_meta_index_db_path("local_wait_pub");
+        let wait_meta_db = MetaIndexDb::new(wait_meta_db_path,false).map_err(|e| {
             error!("new wait-meta-db failed, err:{}", e);
             RPCErrors::ReasonError(format!("new wait-meta-db failed, err:{}", e))
         })?;

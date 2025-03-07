@@ -42,7 +42,7 @@ pub struct MetaIndexDb {
 }
 
 impl MetaIndexDb {
-    pub fn new(db_path: PathBuf) -> PkgResult<Self> {
+    pub fn new(db_path: PathBuf,ready_only:bool) -> PkgResult<Self> {
         // 初始化时可以检查数据库文件是否可访问，并创建必要的表和索引
         let conn = Self::create_connection(&db_path)?;
         
@@ -122,6 +122,7 @@ impl MetaIndexDb {
 
 
     // 关键函数，根据pkg_id获取最新版本
+    //return metaobjid,pkg_meta
     pub fn get_pkg_meta(&self, pkg_id: &str) -> PkgResult<Option<(String, PackageMeta)>> {
         let package_id = PackageId::parse(pkg_id)?;
         //let conn = Self::create_connection(&self.db_path)?;
@@ -512,7 +513,7 @@ impl MetaIndexDb {
 
     //将另一个meta_index_db中的全部记录插入当前db
     pub async fn merge_meta_index_db(&self, other_db_path: &str) -> PkgResult<()> {
-        let other_db = MetaIndexDb::new(PathBuf::from(other_db_path))?;
+        let other_db = MetaIndexDb::new(PathBuf::from(other_db_path),true)?;
         let mut conn = Self::create_connection(&self.db_path)?;
         let mut other_conn = Self::create_connection(&PathBuf::from(other_db_path))?;
         
@@ -600,7 +601,7 @@ impl MetaIndexDbList{
 
     pub fn get_pkg_meta(&self, pkg_id: &str) -> PkgResult<Option<(String, PackageMeta)>> {
         for db_path in &self.dbs {
-            let db = MetaIndexDb::new(db_path.clone());
+            let db = MetaIndexDb::new(db_path.clone(),true);
             if db.is_err() {
                 continue;
             }
@@ -620,7 +621,7 @@ impl MetaIndexDbList{
     /// 按顺序查询所有数据库，找到第一个匹配的作者信息
     pub fn get_author_info(&self, author_name: &str) -> PkgResult<Option<(String, Option<String>, Option<String>)>> {
         for db_path in &self.dbs {
-            let db = MetaIndexDb::new(db_path.clone())?;
+            let db = MetaIndexDb::new(db_path.clone(),true).unwrap();
             if let Some(result) = db.get_author_info(author_name)? {
                 return Ok(Some(result));
             }
@@ -641,7 +642,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test_meta.db");
         
-        let meta_db = MetaIndexDb::new(db_path)?;
+        let meta_db = MetaIndexDb::new(db_path,false)?;
         let test_pkg_meta = PackageMeta {
             pkg_name: "test-pkg".to_string(),
             version: "1.0.1".to_string(),
@@ -649,6 +650,7 @@ mod tests {
             tag: Some("stable".to_string()),
             category: Some("app".to_string()),
             chunk_id: Some("chunk1".to_string()),
+            chunk_size: Some(100),
             chunk_url: Some("http://test.com/chunk1".to_string()),
             deps: HashMap::new(),
             pub_time: Utc::now().timestamp(),
@@ -699,7 +701,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test_versions.db");
         
-        let meta_db = MetaIndexDb::new(db_path)?;
+        let meta_db = MetaIndexDb::new(db_path,false)?;
         let mut test_pkg_meta1 = PackageMeta {
             pkg_name: "test-pkg".to_string(),
             version: "1.0.0".to_string(),
@@ -707,6 +709,7 @@ mod tests {
             tag: Some("stable".to_string()),
             category: Some("app".to_string()),
             chunk_id: Some("chunk1".to_string()),
+            chunk_size: Some(100),
             chunk_url: Some("http://test.com/chunk1".to_string()),
             deps: HashMap::new(),
             pub_time: Utc::now().timestamp(),
