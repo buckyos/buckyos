@@ -147,10 +147,23 @@ pub struct PackageEnvConfig {
     pub parent: Option<String>, //parent package env work_dir
     pub ready_only: bool,
     pub named_mgr_name: Option<String>, //如果指定了，则使用named_mgr_name作为命名空间
+    pub prefix: Option<String>, //如果指定了，那么加载无 .符号的pkg_name时，会自动补上prefix
 }
 
 impl Default for PackageEnvConfig {
     fn default() -> Self {
+        //得到操作系统类型
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let os_type = "nightly-linux-x86_64";
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let os_type = "nightly-linux-aarch64";
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let os_type = "nightly-windows-x86_64";
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        let os_type = "nightly-apple-x86_64";
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let os_type = "nightly-apple-aarch64";
+
         Self {
             enable_link: true,
             enable_strict_mode: false, //默认是非严格的开发模式
@@ -158,6 +171,7 @@ impl Default for PackageEnvConfig {
             parent: None,   
             ready_only: false,
             named_mgr_name: None,
+            prefix: Some(os_type.to_string()),
         }
     }
 }
@@ -265,9 +279,14 @@ impl PackageEnv {
 
     async fn load_strictly(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
         let pkg_id = PackageId::parse(pkg_id_str)?;
-        
+        let mut real_pkg_id = pkg_id_str.to_string();
+        if pkg_id.name.find(".").is_none() {
+            if let Some(prefix) = &self.config.prefix {
+                real_pkg_id = format!("{}.{}", prefix, pkg_id_str);
+            }
+        }
         // 在严格模式下，先获取包的元数据以获得准确的物理目录
-        let (meta_obj_id,pkg_meta) = self.get_pkg_meta(pkg_id_str).await?;
+        let (meta_obj_id,pkg_meta) = self.get_pkg_meta(&real_pkg_id).await?;
         
         // 使用元数据中的信息构建准确的物理路径
         let pkg_strict_dir = self.get_pkg_strict_dir(&meta_obj_id,&pkg_meta);

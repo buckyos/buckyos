@@ -153,6 +153,7 @@ impl RepoServer {
         let services_list = control_panel_client.get_services_list().await?;
 
         for app in app_list.iter() {
+            //TODO 用deps机制会更通用一些？
             for sub_pkg in app.app_doc.pkg_list.values() {
                 let pkg_id_str = sub_pkg.pkg_id.clone();
                 let pkg_meta = meta_index_db.get_pkg_meta(&pkg_id_str)
