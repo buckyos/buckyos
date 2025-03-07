@@ -67,11 +67,11 @@ repo-server持有的几个meta-index-db
 
 source-mgr
     source_name meta-index-db1 (read-only)
-    source_nmeta-index-db2 (read-ony)
+    source_name meta-index-db2 (read-ony)
 
 如果打开了开发者模式，则有：
     local-pub meta-index-db (read-only)
-    local-wait-pub meta-index-db
+    local-wait-pub meta-index-db can write
 
 流程的核心理念与git类似
 
@@ -110,9 +110,6 @@ impl RepoServer {
         })
     }
 
-    pub async fn init(&self) -> PkgResult<()> {
-        Ok(())
-    }
 
     // async fn handle_install_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
     //     let pkg_name = ReqHelper::get_str_param_from_req(&req, "pkg_name")?;
@@ -143,31 +140,54 @@ impl RepoServer {
     }
 
     fn get_meta_index_db_path(&self,source: &str) -> PathBuf {
-        let path = format!("{}/.repo/source-meta-index-db/{}", env::var("HOME").unwrap(), source);
-        PathBuf::from(path)
+        let runtime = get_buckyos_api_runtime().unwrap();
+        let path = runtime.get_my_data_folder().join(source).join("meta_index.db");
+        return path;
     }
     //
     async fn replace_file(target_file_path:&PathBuf,file_path:&PathBuf) -> Result<(),RPCErrors> {
-        unimplemented!();
+        // 原子地替换文件，类似于 move 操作
+        let target_dir = target_file_path.parent().ok_or_else(|| {
+            error!("Cannot get target file's parent directory");
+            RPCErrors::ReasonError("Cannot get target file's parent directory".to_string())
+        })?;
 
+        // 确保目标目录存在
+        if !target_dir.exists() {
+            tokio::fs::create_dir_all(target_dir).await.map_err(|e| {
+                error!("Failed to create target directory, err: {}", e);
+                RPCErrors::ReasonError(format!("Failed to create target directory, err: {}", e))
+            })?;
+        }
+
+        // 在类 Unix 系统上，rename 操作是原子的
+        // 在 Windows 上，如果目标文件已存在，rename 会失败，所以需要先删除目标文件
+        if target_file_path.exists() {
+            tokio::fs::remove_file(target_file_path).await.map_err(|e| {
+                error!("Failed to remove target file, err: {}", e);
+                RPCErrors::ReasonError(format!("Failed to remove target file, err: {}", e))
+            })?;
+        }
+
+        // 执行重命名操作（相当于 move）
+        tokio::fs::rename(file_path, target_file_path).await.map_err(|e| {
+            error!("Failed to replace file, err: {}", e);
+            RPCErrors::ReasonError(format!("Failed to replace file, err: {}", e))
+        })?;
+
+        Ok(())
     }
     // 将source-meta-index更新到最新版本
     async fn handle_sync_from_remote_source(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         //尝试拿到sync操作的锁，拿不到则说明已经在处理了
         //1.先下载并验证远程版本到临时db
-        let will_update_source_list = self.settng.remote_source.keys().cloned();
+        //let will_update_source_list = self.settng.remote_source.keys().cloned();
        
-        for source in will_update_source_list {
-            let source_url = self.settng.remote_source.get(&source);
-            if source_url.is_none() {
-                error!("source {} download url not found", source);
-                return Err(RPCErrors::ReasonError(format!("source {} not found", source)));
-            }
-            let source_url = source_url.unwrap();
+        for (source,source_url) in self.settng.remote_source.iter() {
             info!("update meta-index-db:source {}, download url:{}", source, source_url);
-            let new_meta_index_db_path = self.get_meta_index_db_path(&source);
+            let new_meta_index_db_path = self.get_meta_index_db_path(&source).with_extension("download");
 
-            let runtime = get_buckyos_api_runtime().await?;
+            let runtime = get_buckyos_api_runtime()?;
             let session_token = runtime.get_session_token().await;
             let ndn_client = NdnClient::new(source_url.clone(),Some(session_token),None);
             ndn_client.download_chunk_to_local(source_url.as_str(),&new_meta_index_db_path, None).await.map_err(|e| {
@@ -376,7 +396,7 @@ impl RepoServer {
         let user_id = ReqHelper::get_user_id(&req)?;
         let task_name = ReqHelper::get_str_param_from_req(&req, "task_name")?;
         let real_task_name = format!("pub_pkg_to_source_{}_{}",user_id,task_name);
-        let runtime = get_buckyos_api_runtime().await?;
+        let runtime = get_buckyos_api_runtime()?;
         let task_mgr = runtime.get_task_mgr_client().await?;
 
         let task_data = req.params.get("task_data");
@@ -481,7 +501,7 @@ impl RepoServer {
         合并 `未合并但准备好的` 发布任务里包含的pkg_list到local-wait-meta
         注意merge完后，还要调用pub_index_db发布
         */
-        let runtime = get_buckyos_api_runtime().await?;
+        let runtime = get_buckyos_api_runtime()?;
         let task_mgr = runtime.get_task_mgr_client().await?;
 
         let filter = TaskFilter {

@@ -20,7 +20,7 @@ use anyhow::Result;
 async fn service_main() -> Result<()> {
     init_logging("repo_service");
     init_buckyos_api_runtime("repo_service",None,BuckyOSRuntimeType::FrameService).await?;
-    let mut runtime = get_buckyos_api_runtime().await?;
+    let mut runtime = get_buckyos_api_runtime()?;
     let login_result = runtime.login(None,None).await;
     if  login_result.is_err() {
         error!("repo service login to system failed! err:{:?}", login_result);
@@ -41,10 +41,7 @@ async fn service_main() -> Result<()> {
         error!("repo service init error! err:{}", e);
         anyhow::anyhow!("repo service init error! err:{}", e)
       })?;
-    repo_server.init().await.map_err(|e| {
-      error!("repo service init error! err:{}", e);
-      anyhow::anyhow!("repo service init error! err:{}", e)
-    })?;
+
 
     register_inner_service_builder("repo_server", move || Box::new(repo_server.clone())).await;
     //let repo_server_dir = get_buckyos_system_bin_dir().join("repo");

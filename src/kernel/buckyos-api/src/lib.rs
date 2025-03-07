@@ -145,7 +145,7 @@ pub async fn init_buckyos_api_runtime(appid:&str,owner_user_id:Option<String>,ru
     Ok(())
 }
 
-pub async fn get_buckyos_api_runtime() -> Result<BuckyOSRuntime> {
+pub fn get_buckyos_api_runtime() -> Result<BuckyOSRuntime> {
     let runtime = CURRENT_BUCKYOS_RUNTIME.get().unwrap();
     Ok(runtime.clone())
 }

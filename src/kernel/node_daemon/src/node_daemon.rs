@@ -879,7 +879,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     } else {
         //this node is not ood: try connect to system_config_service
         let this_device = DeviceInfo::from_device_doc(&device_doc);
-        let runtime = get_buckyos_api_runtime().await.unwrap();
+        let runtime = get_buckyos_api_runtime().unwrap();
         syc_cfg_client = runtime.get_system_config_client().await.unwrap();
         loop {
             //syc_cfg_client = SystemConfigClient::new(Some(system_config_url.as_str()), Some(device_session_token_jwt.as_str()));

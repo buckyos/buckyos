@@ -146,14 +146,10 @@
 
 "services/repo_service/settings" = """
 {
-    "source_list":[
-        {
-            "hostname":"repo.buckyos.io",
-            "chunk_id":"",
-            "jwt":"",
-            "version":""
-        }
-    ]
+    "remote_source": {
+        "buckyos_repo":"https://buckyos.io/ndn/repo/meta_index.db"
+    },
+    "enable_dev_mode": true
 }
 """
 

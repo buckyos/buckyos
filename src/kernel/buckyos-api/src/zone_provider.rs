@@ -200,7 +200,7 @@ impl ZoneProvider {
     }
 
     async fn do_system_config_client_query(&self,name:&str) -> NSResult<NameInfo> {
-        let runtime = get_buckyos_api_runtime().await
+        let runtime = get_buckyos_api_runtime()
             .map_err(|e|{
                 warn!("ZoneProvider get buckyos api runtime failed: {}",e);
                 NSError::NotFound(format!("get buckyos api runtime failed: {}",e))
