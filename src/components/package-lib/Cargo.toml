@@ -27,10 +27,11 @@ async-trait = "*"
 tempfile = "*"
 time = "*"
 warp = "*"
-tar = "*"
 sha2 = "*"
-flate2 = "*"
 rusqlite = "*"
+async-fd-lock = "*"
+async-compression = { version = "0.4", features = ["tokio", "gzip"] }
+tokio-tar = "*"
 ndn-lib = { path = "../ndn-lib" }
 
 [dev-dependencies]

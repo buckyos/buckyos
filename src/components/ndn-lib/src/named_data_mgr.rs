@@ -530,7 +530,7 @@ impl NamedDataMgr {
             warn!("create_file: create path failed! {}", e.to_string());
             e
         })?;
-        info!("create path:{} ==> {}", path, obj_id.to_string());
+        info!("create ndn path:{} ==> {}", path, obj_id.to_string());
         Ok(())
     }
 
@@ -539,7 +539,7 @@ impl NamedDataMgr {
             warn!("update_file: update path failed! {}", e.to_string());
             e
         })?;
-        info!("update path:{} ==> {}", path, new_obj_id.to_string());
+        info!("update ndn path:{} ==> {}", path, new_obj_id.to_string());
         Ok(())
     }
 
@@ -548,7 +548,7 @@ impl NamedDataMgr {
             warn!("remove_file: remove path failed! {}", e.to_string());
             e
         })?;
-        info!("remove path:{}", path);
+        info!("remove ndn path:{}", path);
         Ok(())
 
         //TODO: 这里不立刻删除chunk,而是等统一的GC来删除
@@ -559,7 +559,7 @@ impl NamedDataMgr {
             warn!("remove_dir: remove dir path failed! {}", e.to_string());
             e
         })?;
-        info!("remove dir path:{}", path);
+        info!("remove ndn dir path:{}", path);
         Ok(())
     }
 

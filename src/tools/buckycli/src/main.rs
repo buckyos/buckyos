@@ -6,8 +6,6 @@ mod sys_config;
 use clap::{Arg, Command};
 use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig};
 use package_cmd::*;
-use std::time::{SystemTime, UNIX_EPOCH};
-use jsonwebtoken::EncodingKey;
 use util::*;
 
 const CONFIG_FILE: &str = "~/.buckycli/config";

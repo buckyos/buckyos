@@ -123,13 +123,22 @@ def env.try_update_index_db(new_index_db):
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::fs;
+use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use tokio::fs as tokio_fs;
 use tokio::sync::{Mutex as TokioMutex, oneshot};
 use async_trait::async_trait;
 use log::*;
 
+//use std::fs::File;
+//use std::io;
+use tokio::io::AsyncReadExt;
+use tokio::fs::File;
+use async_compression::tokio::bufread::GzipDecoder;
+use tokio::io::BufReader;
+use tokio_tar::Archive;
+use async_fd_lock::{LockRead, LockWrite};
+use async_fd_lock::RwLockWriteGuard;
 use ndn_lib::*;
 
 use crate::error::*;
@@ -144,7 +153,7 @@ pub struct PackageEnvConfig {
     pub enable_link: bool,
     pub enable_strict_mode: bool,
     pub index_db_path: Option<String>,
-    pub parent: Option<String>, //parent package env work_dir
+    pub parent: Option<PathBuf>, //parent package env work_dir
     pub ready_only: bool,
     pub named_mgr_name: Option<String>, //如果指定了，则使用named_mgr_name作为命名空间
     pub prefix: Option<String>, //如果指定了，那么加载无 .符号的pkg_name时，会自动补上prefix
@@ -236,7 +245,7 @@ impl PackageEnv {
         }
     }
 
-    // 获取pkg的meta信息
+    // 基于env获得pkg的meta信息
     pub async fn get_pkg_meta(&self, pkg_id: &str) -> PkgResult<(String,PackageMeta)> {
         // 先检查lock db
         if let Some(lock_db) = self.lock_db.lock().await.as_ref() {
@@ -247,34 +256,246 @@ impl PackageEnv {
 
         let meta_db = self.get_meta_db().await?;
         if let Some((meta_obj_id,pkg_meta)) = meta_db.get_pkg_meta(pkg_id)? {
-            let pkg_strict_dir = self.get_pkg_strict_dir(&meta_obj_id,&pkg_meta);
-            if tokio_fs::metadata(&pkg_strict_dir).await.is_ok() {
-                return Ok((meta_obj_id,pkg_meta));
-            }
+             return Ok((meta_obj_id,pkg_meta));
         }
 
-        //非严格模式下，用try_load加载后，返回目录下的meta_info
-
+        if self.config.parent.is_some() {
+            let parent_env = PackageEnv::new(self.config.parent.as_ref().unwrap().clone());
+            let (meta_obj_id,pkg_meta) = Box::pin(parent_env.get_pkg_meta(pkg_id)).await?;
+            return Ok((meta_obj_id,pkg_meta));
+        }
+        
         Err(PkgError::LoadError(
             pkg_id.to_owned(),
             "Package metadata not found".to_owned(),
         ))
     }
 
+    //加载pkg,加载成功说明pkg已经安装
     pub async fn load(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
         match self.load_strictly(pkg_id_str).await {
             Ok(media_info) => Ok(media_info),
             Err(_) => {
                 if self.config.enable_strict_mode {
-                    return Err(PkgError::LoadError(
-                        pkg_id_str.to_owned(),
-                        "env not found in strict mode".to_owned(),
-                    ))
+                    if let Some(parent_path) = &self.config.parent {
+                        let parent_env = PackageEnv::new(parent_path.clone());
+                        // 使用 Box::pin 来处理递归的异步调用
+                        let future = Box::pin(parent_env.load(pkg_id_str));
+                        if let Ok(media_info) = future.await {
+                            return Ok(media_info);
+                        }
+                    }
+                } else {
+                    info!("dev mode pkg_env : try load pkg: {}", pkg_id_str);
+                    let media_info = self.try_load(pkg_id_str).await;
+                    if media_info.is_ok() {
+                        return Ok(media_info.unwrap());
+                    }
+                    if let Some(parent_path) = &self.config.parent {
+                        let parent_env = PackageEnv::new(parent_path.clone());
+                        // 使用 Box::pin 来处理递归的异步调用
+                        let future = Box::pin(parent_env.load(pkg_id_str));
+                        if let Ok(media_info) = future.await {
+                            return Ok(media_info);
+                        }
+                    }
                 }
-                info!("dev mode pkg_env : try load pkg: {}", pkg_id_str);
-                self.try_load(pkg_id_str).await
+                Err(PkgError::LoadError(
+                    pkg_id_str.to_owned(),
+                    "Package metadata not found".to_owned(),
+                ))
             }
         }
+    }
+
+    //检查pkg的依赖是否都已经在本机就绪，注意本操作并不会修改env
+    pub async fn check_pkg_ready(meta_index_db: PathBuf, pkg_id: &str, named_mgr_id: Option<&str>, need_check_deps: bool) -> PkgResult<()> {
+        let meta_db = MetaIndexDb::new(meta_index_db.clone(),true)?;
+        let meta_info = meta_db.get_pkg_meta(pkg_id)?;
+        if meta_info.is_none() {
+            return Err(PkgError::LoadError(
+                pkg_id.to_owned(),
+                "Package metadata not found".to_owned(),
+            ));
+        }
+
+        let (meta_obj_id,pkg_meta) = meta_info.unwrap();
+        // 检查chunk是否存在
+        if let Some(chunk_id) = pkg_meta.chunk_id {
+            // TODO: 实现chunk存在性检查
+            let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(named_mgr_id).await;
+            if named_mgr.is_none() {
+                return Err(PkgError::FileNotFoundError(
+                    "Named data mgr not found".to_owned(),
+                ));
+            }
+            let named_mgr = named_mgr.unwrap();
+            let named_mgr = named_mgr.lock().await;
+            let chunk_id = ChunkId::new(&chunk_id)
+                .map_err(|e| PkgError::ParseError(
+                    pkg_id.to_owned(),
+                    format!("Invalid chunk id: {}", e),
+                ))?;
+
+            let is_chunk_exist = named_mgr.is_chunk_exist(&chunk_id).await
+                .map_err(|e| PkgError::ParseError(
+                    pkg_id.to_owned(),
+                    format!("Chunk not found: {}", e),
+                ))?;
+
+            if !is_chunk_exist {
+                return Err(PkgError::InstallError(
+                    pkg_id.to_owned(),
+                    "Chunk not found".to_owned(),
+                ));
+            }
+        }
+
+        if need_check_deps {
+            for (dep_name, dep_version) in pkg_meta.deps.iter() {
+                let dep_id = format!("{}#{}", dep_name, dep_version);
+                let check_future = Box::pin(PackageEnv::check_pkg_ready(meta_index_db.clone(), &dep_id, named_mgr_id, true));
+                let _ = check_future.await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    //尝试更新env的meta-index-db,这是个写入操作，更新后之前的load操作可能会失败，需要再执行一次install_pkg才能加载
+    pub async fn try_update_index_db(&self, new_index_db: &Path) -> PkgResult<()> {
+        if self.config.ready_only {
+            return Err(PkgError::AccessDeniedError(
+                "Cannot update index db in read-only mode".to_owned(),
+            ));
+        }
+
+        // 获取文件锁
+        let _lock = self.acquire_lock().await?;
+
+        let mut index_db_path;
+        if let Some(index_db_path_str) = &self.config.index_db_path {
+            index_db_path = PathBuf::from(index_db_path_str);
+        } else {
+            index_db_path = self.work_dir.join(".pkgs/meta_index.db");
+        }
+        
+        let backup_path = index_db_path.with_extension("old");
+        if tokio_fs::metadata(&backup_path).await.is_ok() {
+            tokio_fs::remove_file(&backup_path).await?;
+            info!("delete backup index db: {:?}", backup_path);
+        }
+
+        if tokio_fs::metadata(&index_db_path).await.is_ok() {
+            let backup_path = index_db_path.with_extension("old");
+            tokio_fs::rename(&index_db_path, &backup_path).await?;
+        }
+
+        // 移动新数据库
+        tokio_fs::copy(new_index_db, &index_db_path).await?;
+
+        Ok(())
+    }
+
+    //安装pkg，安装成功后该pkg可以加载成功,返回安装成功的pkg的meta_obj_id
+    //安装操作会锁定env，直到安装完成（不会出现两个安装操作同时进行）
+    //安装过程会根据env是否支持符号链接，尝试建立有好的符号链接
+    pub async fn install_pkg(&self, pkg_id: &str, install_deps: bool) -> PkgResult<String> {
+        if self.config.ready_only {
+            return Err(PkgError::InstallError(
+                pkg_id.to_owned(),
+                "Cannot install in read-only mode".to_owned(),
+            ));
+        }
+
+        if install_deps {
+            return Err(PkgError::InstallError(
+                pkg_id.to_owned(),
+                "Install deps is not supported at this version".to_owned(),
+            ));
+        }
+
+        // 获取文件锁
+        let _filelock = self.acquire_lock().await?;
+        //先将必要的chunk下载到named_mgr中,对于单OOD系统，这些chunk可能都已经准备好了
+        let (meta_obj_id,pkg_meta) = self.get_pkg_meta(pkg_id).await?;
+
+        //检查chunk是否存在
+        if let Some(ref chunk_id_str) = pkg_meta.chunk_id {
+            let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.config.named_mgr_name.as_deref()).await;
+            if named_mgr.is_none() {
+                return Err(PkgError::FileNotFoundError(
+                    "Named data mgr not found".to_owned(),
+                ));
+            }
+            let named_mgr = named_mgr.unwrap();
+            let named_mgr = named_mgr.lock().await;
+            let chunk_id = ChunkId::new(&chunk_id_str)
+                .map_err(|e| PkgError::ParseError(
+                    pkg_id.to_owned(),
+                    format!("Invalid chunk id: {}", e),
+                ))?;
+            if !named_mgr.is_chunk_exist(&chunk_id).await.unwrap() {
+                info!("{}'s chunk {} not found, downloading...", pkg_id, chunk_id_str);
+                let zone_repo_url = "http://127.0.0.1:8080/repo";
+                let ndn_client = NdnClient::new(zone_repo_url.to_string(),None,self.config.named_mgr_name.clone());
+                let chunk_size = ndn_client.pull_chunk(chunk_id.clone(),None).await
+                    .map_err(|e| PkgError::DownloadError(
+                        pkg_id.to_owned(),
+                        format!("Failed to download chunk: {}", e),
+                    ))?;
+                info!("chunk {} downloaded, size: {}", chunk_id_str, chunk_size);
+
+            }
+
+            let (chunk_reader,chunk_size) = named_mgr.open_chunk_reader(&chunk_id,SeekFrom::Start(0),false).await
+                .map_err(|e| PkgError::LoadError(
+                    pkg_id.to_owned(),
+                    format!("Failed to open chunk reader: {}", e),
+                ))?;
+
+            self.extract_pkg_from_chunk(&pkg_meta,meta_obj_id.as_str(),chunk_reader).await?;
+            info!("{} extract chunk to pkg_env OK.", pkg_id);
+        }
+
+        Ok(meta_obj_id)   
+    }
+
+    async fn extract_pkg_from_chunk(&self, pkg_meta: &PackageMeta,meta_obj_id: &str,chunk_reader: ChunkReader) -> PkgResult<()> {
+        //将chunk (这是一个tar.gz文件)解压安装到真实目录 .pkgs/pkg_nameA/$meta_obj_id
+        //注意处理前缀: 如果包名与当前env前缀相同，那么符号链接里只包含无前缀部分
+        //建立符号链接 ./pkg_nameA#version -> .pkgs/pkg_nameA/$meta_obj_id
+        //如果是最新版本，建立符号链接 ./pkg_nameA -> .pkgs/pkg_nameA/$meta_obj_id
+    
+
+        // Decompress the tar.gz file
+        let buf_reader = BufReader::new(chunk_reader);
+        // 创建异步 GZip 解压器
+        let gz_decoder = GzipDecoder::new(buf_reader);
+        // 创建异步 tar 解压器
+        let mut archive = Archive::new(gz_decoder);
+        let target_dir = format!(".pkgs/{}/{}", pkg_meta.pkg_name, meta_obj_id);
+        tokio::fs::create_dir_all(&target_dir).await?;
+        // 解压文件到目标目录
+        archive.unpack(&target_dir).await?;
+
+        // Create symbolic links
+        if self.config.enable_link {
+            let symlink_path = format!("./{}#{}", pkg_meta.pkg_name, pkg_meta.version);
+            if tokio::fs::symlink_metadata(&symlink_path).await.is_err() {
+                tokio::fs::symlink(&target_dir, &symlink_path).await?;
+            }
+        
+            // If this is the latest version, create a symbolic link without the version
+            // if self.is_latest_version(&pkg_meta.pkg_name, &pkg_meta.version).await? {
+            //     let latest_symlink_path = format!("./{}", pkg_meta.pkg_name);
+            //     if tokio::fs::symlink_metadata(&latest_symlink_path).await.is_err() {
+            //         tokio::fs::symlink(&target_dir, &latest_symlink_path).await?;
+            //     }
+            // }
+        }
+
+        Ok(())
     }
 
     async fn load_strictly(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
@@ -312,6 +533,7 @@ impl PackageEnv {
         ))
     }
 
+
     async fn try_load(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
         let pkg_dirs = self.get_pkg_dir(pkg_id_str)?;
         for pkg_dir in pkg_dirs {
@@ -328,76 +550,7 @@ impl PackageEnv {
             "Package not found".to_owned(),
         ))
     }
-    //是否有必要将install_pkg移动到另一个实现中，env中只包含支持install的基础设施
-    pub async fn install_pkg(&self, pkg_id: &str, install_deps: bool) -> PkgResult<String> {
-        if self.config.ready_only {
-            return Err(PkgError::InstallError(
-                pkg_id.to_owned(),
-                "Cannot install in read-only mode".to_owned(),
-            ));
-        }
 
-        let mut tasks = self.install_tasks.lock().await;
-        let task_id = pkg_id.to_owned();
-
-        if tasks.contains_key(&task_id) {
-            return Ok(task_id);
-        }
-
-        let (meta_obj_id,pkg_meta) = self.get_pkg_meta(pkg_id).await?;
-        let mut task = InstallTask {
-            pkg_id: pkg_id.to_owned(),
-            status: InstallStatus::Pending,
-            sub_tasks: Vec::new(),
-        };
-
-        if install_deps {
-            for (dep_name, dep_version) in pkg_meta.deps.iter() {
-                let dep_id = format!("{}#{}", dep_name, dep_version);
-                task.sub_tasks.push(dep_id);
-            }
-        }
-
-        // 创建通知通道
-        let (tx, rx) = oneshot::channel();
-        self.task_notifiers.lock().await.insert(task_id.clone(), rx);
-
-        tasks.insert(task_id.clone(), task);
-        drop(tasks);  // 提前释放锁
-
-        // 启动安装工作线程
-        let install_tasks = self.install_tasks.clone();
-        let task_id_clone = task_id.clone();
-        
-        tokio::spawn(async move {
-            let mut tasks = install_tasks.lock().await;
-            if let Some(task) = tasks.get_mut(&task_id_clone) {
-                task.status = InstallStatus::Downloading;
-                
-                // TODO: 实现下载和安装逻辑
-                // 1. 下载chunk
-                // 2. 解压到目标目录
-                // 3. 创建符号链接
-                
-                task.status = InstallStatus::Completed;
-                
-                // 通知任务完成
-                let _ = tx.send(());
-            }
-        });
-
-        Ok(task_id)
-    }
-
-    pub async fn wait_task(&self, task_id: &str) -> PkgResult<()> {
-        if let Some(rx) = self.task_notifiers.lock().await.remove(task_id) {
-            rx.await.map_err(|e| PkgError::InstallError(
-                task_id.to_owned(),
-                format!("Wait task error: {}", e),
-            ))?;
-        }
-        Ok(())
-    }
 
     fn get_install_dir(&self) -> PathBuf {
         self.work_dir.join(".pkgs")
@@ -439,83 +592,28 @@ impl PackageEnv {
         Ok(pkg_dirs)
     }
 
-    
-
-    pub async fn check_pkg_ready(&self, pkg_id: &str, need_check_deps: bool) -> PkgResult<()> {
-        let (meta_obj_id,pkg_meta) = self.get_pkg_meta(pkg_id).await?;
-        
-        // 检查chunk是否存在
-        if let Some(chunk_id) = pkg_meta.chunk_id {
-            // TODO: 实现chunk存在性检查
-            let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.config.named_mgr_name.as_deref()).await;
-            if named_mgr.is_none() {
-                return Err(PkgError::FileNotFoundError(
-                    "Named data mgr not found".to_owned(),
-                ));
-            }
-            let named_mgr = named_mgr.unwrap();
-            let named_mgr = named_mgr.lock().await;
-            let chunk_id = ChunkId::new(&chunk_id)
-                .map_err(|e| PkgError::ParseError(
-                    pkg_id.to_owned(),
-                    format!("Invalid chunk id: {}", e),
-                ))?;
-
-            let is_chunk_exist = named_mgr.is_chunk_exist(&chunk_id).await
-                .map_err(|e| PkgError::ParseError(
-                    pkg_id.to_owned(),
-                    format!("Chunk not found: {}", e),
-                ))?;
-
-            if !is_chunk_exist {
-                return Err(PkgError::InstallError(
-                    pkg_id.to_owned(),
-                    "Chunk not found".to_owned(),
-                ));
-            }
-        }
-
-        if need_check_deps {
-            for (dep_name, dep_version) in pkg_meta.deps.iter() {
-                let dep_id = format!("{}#{}", dep_name, dep_version);
-                let check_future = Box::pin(self.check_pkg_ready(&dep_id, true));
-                let _ = check_future.await?;
-            }
-        }
-
-        Ok(())
-    }
 
     
-    pub async fn try_update_index_db(&self, new_index_db: &Path) -> PkgResult<()> {
-        if self.config.ready_only {
-            return Err(PkgError::AccessDeniedError(
-                "Cannot update index db in read-only mode".to_owned(),
-            ));
-        }
-
-        let mut index_db_path;
-        if let Some(index_db_path_str) = &self.config.index_db_path {
-            index_db_path = PathBuf::from(index_db_path_str);
-        } else {
-            index_db_path = self.work_dir.join(".pkgs/meta_index.db");
-        }
+    // 添加一个新的私有方法来管理锁文件
+    async fn acquire_lock(&self) -> PkgResult<RwLockWriteGuard<File>> {
+        let lock_path = self.work_dir.join(".pkgs/env.lock");
         
-        let backup_path = index_db_path.with_extension("old");
-        if tokio_fs::metadata(&backup_path).await.is_ok() {
-            tokio_fs::remove_file(&backup_path).await?;
-            info!("delete backup index db: {:?}", backup_path);
+        // 确保.pkgs目录存在
+        if let Err(e) = tokio_fs::create_dir_all(self.work_dir.join(".pkgs")).await {
+            return Err(PkgError::LockError(format!("Failed to create lock directory: {}", e)));
         }
 
-        if tokio_fs::metadata(&index_db_path).await.is_ok() {
-            let backup_path = index_db_path.with_extension("old");
-            tokio_fs::rename(&index_db_path, &backup_path).await?;
-        }
-
-        // 移动新数据库
-        tokio_fs::copy(new_index_db, &index_db_path).await?;
-
-        Ok(())
+        // 以读写模式打开或创建锁文件
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path).await
+            .map_err(|e| PkgError::LockError(format!("Failed to open lock file: {}", e)))?;
+        
+        let lock = file.lock_write().await
+            .map_err(|e| PkgError::LockError(format!("Failed to open lock file: {:?}", lock_path)))?;
+        Ok(lock)
     }
 }
 

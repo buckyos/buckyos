@@ -3,6 +3,7 @@ use log::*;
 use ndn_lib::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use core::error;
 use std::sync::Arc;
 use std::{env, hash::Hash};
 use std::collections::{HashMap, HashSet};
@@ -135,34 +136,28 @@ impl RepoServer {
             RPCErrors::ReasonError(format!("open new meta-index-db failed, err:{}", e))
         })?;
 
-        let runtime = get_buckyos_api_runtime()?;
-        let control_panel_client = runtime.get_control_panel_client().await?;
+        let pin_pkg_list = self.get_pin_pkg_list().await?;
         let mut chunk_list:HashMap<String,WillDownloadPkgInfo> = HashMap::new();
-        let app_list = control_panel_client.get_app_list().await?;
-        let services_list = control_panel_client.get_services_list().await?;
-
-        for app in app_list.iter() {
-            //TODO 用deps机制会更通用一些？
-            for sub_pkg in app.app_doc.pkg_list.values() {
-                let pkg_id_str = sub_pkg.pkg_id.clone();
-                let pkg_meta = meta_index_db.get_pkg_meta(&pkg_id_str)
-                    .map_err(|e| {
-                        error!("get {}'s pkg_meta failed, err:{}", pkg_id_str, e);
-                        RPCErrors::ReasonError(format!("get pkg_meta failed, err:{}", e))
-                    })?;
-                if pkg_meta.is_none() {
-                    error!("{}'s pkg_meta not found", pkg_id_str);
-                    return Err(RPCErrors::ReasonError(format!("{}'s pkg_meta not found", pkg_id_str)));
-                }
-                let (pkg_meta_obj_id,pkg_meta) = pkg_meta.unwrap();
-                if pkg_meta.chunk_id.is_some() {
-                    chunk_list.insert(pkg_meta.chunk_id.clone().unwrap(),WillDownloadPkgInfo {
-                        pkg_name:pkg_meta.pkg_name.clone(),
-                        pkg_version:pkg_meta.version.clone(),
-                        chunk_id:pkg_meta.chunk_id.clone().unwrap(),
-                        chunk_size:pkg_meta.chunk_size.clone().unwrap(),
-                    });
-                }
+        for (pkg_id,_chunk_id) in pin_pkg_list.iter() {
+            let pkg_meta = meta_index_db.get_pkg_meta(pkg_id.as_str());
+            if pkg_meta.is_err() {
+                let err_string = pkg_meta.err().unwrap().to_string();
+                error!("get pkg_meta failed from zone meta-index-db, err:{}", err_string.as_str());
+                return Err(RPCErrors::ReasonError(format!("get pkg_meta failed from zone meta-index-db, err:{}", err_string.as_str())));
+            }
+            let pkg_meta = pkg_meta.unwrap();
+            if pkg_meta.is_none() {
+                error!("pkg_meta not found, pkg_id:{}", pkg_id);
+                return Err(RPCErrors::ReasonError(format!("pkg_meta not found, pkg_id:{}", pkg_id)));
+            }
+            let (pkg_meta_obj_id,pkg_meta) = pkg_meta.unwrap();
+            if pkg_meta.chunk_id.is_some() {
+                chunk_list.insert(pkg_meta.chunk_id.clone().unwrap(),WillDownloadPkgInfo {
+                    pkg_name:pkg_meta.pkg_name.clone(),
+                    pkg_version:pkg_meta.version.clone(),
+                    chunk_id:pkg_meta.chunk_id.clone().unwrap(),
+                    chunk_size:pkg_meta.chunk_size.clone().unwrap(),
+                });
             }
         }
         
@@ -254,6 +249,69 @@ impl RepoServer {
         Ok(())
     }
 
+    async fn pin_pkg_list(&self,pkg_list: &HashMap<String,String>) -> Result<(),RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let sys_config_client = runtime.get_system_config_client().await?;
+        let sys_config_path = runtime.get_my_sys_config_path("pkg_list");
+        let mut current_pkg_list:HashMap<String,String> = HashMap::new();
+        let current_pkg_list_str = sys_config_client.get(&sys_config_path).await;
+        if current_pkg_list_str.is_ok() {
+            let (current_pkg_list_str,_version) = current_pkg_list_str.unwrap();
+            current_pkg_list = serde_json::from_str(&current_pkg_list_str).map_err(|e| {
+                error!("Failed to parse current pkg list, err: {}", e);
+                RPCErrors::ReasonError(format!("Failed to parse current pkg list, err: {}", e))
+            })?;
+        }
+
+        for (pkg_id,chunk_id) in pkg_list.iter() {
+            current_pkg_list.insert(pkg_id.clone(),chunk_id.clone());
+        }
+
+        let current_pkg_list_str = serde_json::to_string(&current_pkg_list).map_err(|e| {
+            error!("Failed to serialize current pkg list, err: {}", e);
+            RPCErrors::ReasonError(format!("Failed to serialize current pkg list, err: {}", e))
+        })?;
+        sys_config_client.set(&sys_config_path,&current_pkg_list_str).await
+        .map_err(|e| {
+            error!("set sys_config failed, err:{}", e);
+            RPCErrors::ReasonError(format!("set sys_config failed, err:{}", e))
+        })?;
+        //let pkg_list_path = sys_config_client.get_pkg_list_path().await?;
+
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some("default")).await.unwrap();
+        let named_mgr = named_mgr.lock().await;
+        for (pkg_id,chunk_id) in pkg_list.iter() {
+            let chunk_obj_id = ObjId::new(chunk_id.as_str()).map_err(|e| {
+                error!("parse chunk_id failed, err:{}", e);
+                RPCErrors::ReasonError(format!("parse chunk_id failed, err:{}", e))
+            })?;
+            named_mgr.set_file(format!("/repo/install_pkg/{}/{}",pkg_id,chunk_id),&chunk_obj_id,
+            "repo_service","root").await
+            .map_err(|e| {
+                error!("set NDN file failed, err:{}", e);
+                RPCErrors::ReasonError(format!("set NDN file failed, err:{}", e))
+            })?;
+        }
+        Ok(())
+    }
+
+    async fn get_pin_pkg_list(&self) -> Result<HashMap<String,String>,RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let sys_config_client = runtime.get_system_config_client().await?;
+        let sys_config_path = runtime.get_my_sys_config_path("pkg_list");
+        let current_pkg_list_str = sys_config_client.get(&sys_config_path).await;
+        if current_pkg_list_str.is_err() {
+            error!("get pin pkg list failed, err:{}", current_pkg_list_str.err().unwrap());
+            return Err(RPCErrors::ReasonError("get pin pkg list failed".to_string()));
+        }
+        let (current_pkg_list_str,_version) = current_pkg_list_str.unwrap();
+        let current_pkg_list = serde_json::from_str(&current_pkg_list_str).map_err(|e| {
+            error!("Failed to parse current pkg list, err: {}", e);
+            RPCErrors::ReasonError(format!("Failed to parse current pkg list, err: {}", e))
+        })?;
+
+        return Ok(current_pkg_list);
+    }
 
     async fn handle_install_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let pkg_list = req.params.get("pkg_list");
@@ -324,7 +382,17 @@ impl RepoServer {
             RPCErrors::ReasonError(format!("create install_pkg task failed, err:{}", e))
         })?;
 
-        
+        //save pkg_list to repo's pin pkg list
+        let pin_result = self.pin_pkg_list(&pkg_list).await;
+        if pin_result.is_err() {
+            let err_string = pin_result.err().unwrap().to_string();
+            error!("pin pkg_list failed, err:{}", err_string.as_str());
+            task_mgr_client.update_task_error(task_id,err_string.as_str()).await.map_err(|e| {
+                error!("update task error failed, err:{}", e);
+                return;
+            });
+        }
+
         let ndn_client = NdnClient::new(source_url.clone(),None,None);
         let mut completed_size = 0;
         tokio::spawn(async move {
@@ -352,6 +420,7 @@ impl RepoServer {
                     return;
                 }
             }
+
             info!("install pkg task completed, task_id:{}", task_id);
             task_mgr_client.update_task_status(task_id,TaskStatus::Completed).await.map_err(|e| {
                 error!("update task success failed, err:{}", e);

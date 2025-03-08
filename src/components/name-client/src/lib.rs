@@ -23,7 +23,7 @@ cfg_if! {
 
 
 use log::*;
-use std::{env, net::IpAddr};
+use std::net::IpAddr;
 use once_cell::sync::OnceCell;
 use name_lib::*;
 

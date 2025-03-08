@@ -327,6 +327,20 @@ impl BuckyOSRuntime {
             })?;
         Ok(())
     }
+    
+    pub fn get_my_sys_config_path(&self,config_name: &str) -> String {
+        match self.runtime_type {
+            BuckyOSRuntimeType::AppClient => {
+                format!("users/{}/apps/{}/{}",self.owner_user_id.as_ref().unwrap(),self.appid.as_str(),config_name)
+            }
+            BuckyOSRuntimeType::AppService => {
+                format!("users/{}/apps/{}/{}",self.owner_user_id.as_ref().unwrap(),self.appid.as_str(),config_name)
+            }
+            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
+                format!("services/{}/{}",self.appid.as_str(),config_name)
+            }
+        }
+    }
 
     pub async fn get_system_config_client(&self) -> Result<SystemConfigClient> {
         let url = self.get_zone_service_url("system_config",true)?;

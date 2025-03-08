@@ -51,7 +51,12 @@ impl Gateway {
     }
 
     pub async fn start(&self, params: GatewayParams) {
-        self.init_device_keypair().await;
+        let init_result = self.init_device_keypair().await;
+        if init_result.is_err() {
+            error!("init device keypair failed, err:{}", init_result.err().unwrap());
+            return;
+        }
+        
         if init_default_name_client().await.is_err() {
             error!("init default name client failed");
             return;

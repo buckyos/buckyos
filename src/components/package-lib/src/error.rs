@@ -38,6 +38,8 @@ pub enum PkgError {
     SqlError(String),
     #[error("Access denied: {0}")]
     AccessDeniedError(String),
+    #[error("Lock Error: {0}")]
+    LockError(String),
 }
 
 pub type PkgResult<T> = std::result::Result<T, PkgError>;
