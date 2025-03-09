@@ -4,7 +4,10 @@ import sys
 import subprocess
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-
+temp_dir = tempfile.gettempdir()
+project_name = "buckyos"
+target_dir = os.path.join(temp_dir, "rust_build", project_name)
+print(f"Target directory: {target_dir}")
 def check_musl_gcc():
     """检查 musl-gcc 是否存在"""
     if shutil.which('musl-gcc') is None:
@@ -16,7 +19,7 @@ def clean(target_dir):
     subprocess.run(["cargo", "clean", "--target-dir", target_dir], check=True, cwd=src_dir)
 
 def build_rust(target_dir, target):
-    print("Building Rust code")
+    print(f"Building Rust code,target_dir is {target_dir},target is {target}")
     env = os.environ.copy()
     env["OPENSSL_STATIC"] = "1"
     env["RUSTFLAGS"] = "-C target-feature=+crt-static --cfg tokio_unstable"
@@ -33,9 +36,7 @@ if __name__ == "__main__":
     if len(args) > 0:
         # check musl-gcc exist
         check_musl_gcc()
-        temp_dir = tempfile.gettempdir()
-        project_name = "buckyos"
-        target_dir = os.path.join(temp_dir, "rust_build", project_name)
+
         os.makedirs(target_dir, exist_ok=True)
         if args[0] == "clean":
             clean(target_dir)
