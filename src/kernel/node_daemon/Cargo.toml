@@ -30,6 +30,7 @@ buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
 package-lib = { path = "../../components/package-lib" }
+ndn-lib = { path = "../../components/ndn-lib" }
 #package-installer = { path = "../../components/package-installer" }
 kRPC = { path = "../kRPC" }
 buckyos-api = { path = "../buckyos-api" }

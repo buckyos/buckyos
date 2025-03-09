@@ -3,7 +3,7 @@ use base58::{ToBase58, FromBase58};
 use sha2::{Sha256, Digest};
 use crypto_common::hazmat::{SerializedState, SerializableState};
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite};
-use std::{future::Future, io::SeekFrom, ops::Range, pin::Pin};
+use std::{future::Future, io::SeekFrom, ops::Range, path::PathBuf, pin::Pin};
 use serde_json::{json, Value};
 use hex;
 use log::*;
@@ -178,6 +178,25 @@ impl ChunkHasher {
     pub fn finalize_chunk_id(self) -> ChunkId {
         let hash_result = self.finalize();
         ChunkId::from_sha256_result(&hash_result)
+    }
+
+    pub async fn verify_local_file_is_chunk(&self,file_path: &PathBuf,chunk_id: &ChunkId) -> NdnResult<bool> {
+        let mut file = tokio::fs::File::open(file_path).await
+            .map_err(|e| NdnError::IoError(e.to_string()))?;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0u8; CACL_HASH_PIECE_SIZE as usize];
+        let mut total_read = 0;
+        loop {
+            let n = file.read(&mut buffer).await
+                .map_err(|e| NdnError::IoError(e.to_string()))?;
+            total_read += n as u64;
+            if n < CACL_HASH_PIECE_SIZE as usize {
+                break;
+            }
+            hasher.update(&buffer[..n]);
+        }
+        let hash_result = hasher.finalize();
+        Ok(hash_result.as_slice() == chunk_id.hash_result.as_slice())
     }
 }
 

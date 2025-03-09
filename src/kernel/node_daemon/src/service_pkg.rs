@@ -22,7 +22,7 @@ type Result<T> = std::result::Result<T, ServiceControlError>;
 
 pub struct ServicePkg {
     pub pkg_id: String,
-    pub pkg_env: PackageEnv,
+    pub pkg_env_path: PathBuf,
     pub current_dir: Option<PathBuf>,
     pub env_vars: HashMap<String, String>,
     pub media_info: Mutex<Option<MediaInfo>>,
@@ -33,7 +33,7 @@ impl Default for ServicePkg {
     fn default() -> Self {
         Self {
             pkg_id: "".to_string(),
-            pkg_env: PackageEnv::new(PathBuf::from("")),
+            pkg_env_path: PathBuf::from(""),
             current_dir: None,
             env_vars: HashMap::new(),
             media_info: Mutex::new(None),
@@ -44,22 +44,18 @@ impl ServicePkg {
     pub fn new(pkg_id: String, env_path: PathBuf) -> Self {
         Self {
             pkg_id,
-            pkg_env: PackageEnv::new(env_path),
+            pkg_env_path: env_path,
             current_dir: None,
             env_vars: HashMap::new(),
             media_info: Mutex::new(None),
         }
     }
 
-    pub async fn try_load(&self,index_db_only: bool) -> bool {
+    pub async fn try_load(&self) -> bool {
         let mut media_info = self.media_info.lock().await;
         if media_info.is_none() {
-            //todo: use index_db_only to load media_info
-            //todo: 是否需要在接口上进行区分？ 还是只需要兼容无index_db的开发模式就好？即在生产环境一定会有index_db
-            let new_media_info = self
-                .pkg_env
-                .load(&self.pkg_id).await;
-            
+            let pkg_env = PackageEnv::new(self.pkg_env_path.clone()); 
+            let new_media_info = pkg_env.load(&self.pkg_id).await;
             if new_media_info.is_ok() {
                 info!("load pkg {} success", self.pkg_id);
                 let new_media_info = new_media_info.unwrap();
@@ -115,23 +111,27 @@ impl ServicePkg {
     }
 
     pub async fn start(&self, params: Option<&Vec<String>>) -> Result<i32> {
-        self.try_load(false).await;
+        self.try_load().await;
         let result = self.execute_operation( "start", params).await?;
         Ok(result)
     }
 
     pub async fn stop(&self, params: Option<&Vec<String>>) -> Result<i32> {
-        self.try_load(false).await;
+        self.try_load().await;
         let result = self.execute_operation("stop", params).await?;
         Ok(result)
     }
 
     pub async fn status(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
-        self.try_load(true).await;
-        if self.media_info.lock().await.is_none() {
+        let pkg_env = PackageEnv::new(self.pkg_env_path.clone()); 
+        let media_info = pkg_env.load(&self.pkg_id).await;
+        if media_info.is_err() {
             info!("pkg {} not exist", self.pkg_id);
             return Ok(ServiceState::NotExist);
         }
+        let media_info = media_info.unwrap();
+        let mut media_info_lock = self.media_info.lock().await;
+        *media_info_lock = Some(media_info);
         let result = self.execute_operation("status", params).await?;
         match result {
             0 => Ok(ServiceState::Started),

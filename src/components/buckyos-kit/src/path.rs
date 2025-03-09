@@ -31,6 +31,14 @@ pub fn get_buckyos_service_data_dir(service_name: &str) -> PathBuf {
     get_buckyos_root_dir().join("data").join(service_name)
 }
 
+pub fn get_buckyos_service_local_data_dir(service_name: &str,disk_id: Option<&str>) -> PathBuf {
+    if disk_id.is_some() {
+        get_buckyos_root_dir().join("local").join(disk_id.unwrap()).join(service_name)
+    } else {
+        get_buckyos_root_dir().join("local").join(service_name)
+    }
+}
+
 pub fn adjust_path(old_path: &str) -> std::io::Result<PathBuf> {
     let new_path= old_path.replace("{BUCKYOS_ROOT}", &get_buckyos_root_dir().to_string_lossy());
     // can adjust other Placeholders

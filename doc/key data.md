@@ -53,6 +53,7 @@ kv://boot/config 系统的引导配置,该配置是所有人可读的
 
 dfs://sys/data 系统的一些关键数据,一般是内核服务会读取和保存在此,会映射到/opt/buckyos/data/sys/
 
+fs://BUCKY_ROOT/local/$service_name 不会保存在DFS上，一定保存在本地磁盘的的数据。 这些数据相对local cache来说，不会被删除
 
 ## 服务相关
 kv://services/$servic_id/config 服务的运行状态,一般由调度器读写

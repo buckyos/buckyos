@@ -54,28 +54,15 @@ impl RunItemControl for KernelServiceRunItem {
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         //这个逻辑是不区分新装和升级的
         let pkg_env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let pkg_id = self.pkg_id.clone();
-        let pkg_meta = pkg_env.get_pkg_meta(pkg_id.as_str()).await
+        pkg_env.install_pkg(&self.pkg_id, false).await
             .map_err(|e| {
-                error!("get pkg meta for {} failed! {}", pkg_id, e);
+                error!("KernelServiceRunItem install pkg {} failed! {}", self.pkg_id, e);
                 return ControlRuntItemErrors::ExecuteError(
                     "deploy".to_string(),
                     e.to_string(),
                 );
             })?;
 
-        warn!("deploy kernel service {}",self.pkg_id);
-        let repo_url = "http://127.0.0.1:8080/repo";
-        //TODO:由install流程管理去重和断点续传,这个去重通常是跨进程的
-        // let deps = Installer::install(&self.pkg_id, &PathBuf::from(get_buckyos_system_bin_dir()), repo_url, None)
-        //     .await
-        //     .map_err(|e| {
-        //         error!("Failed to call install package, err:{:?}", e);
-        //         return ControlRuntItemErrors::ExecuteError(
-        //             "deploy".to_string(),
-        //             e.to_string(),
-        //         );
-        //     })?;
         warn!("install kernel service {} success",self.pkg_id);
         Ok(())
         

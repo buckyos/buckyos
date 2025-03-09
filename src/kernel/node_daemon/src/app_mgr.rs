@@ -109,25 +109,16 @@ impl RunItemControl for AppRunItem {
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         let app_pkg_id = self.get_app_pkg_id()?;
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let pkg_meta = env.get_pkg_meta(app_pkg_id.as_str()).await;
-        if pkg_meta.is_err() {
-            return Err(ControlRuntItemErrors::PkgNotExist(app_pkg_id));
-        }
-        let (meta_obj_id,pkg_meta) = pkg_meta.unwrap();
+        env.install_pkg(&app_pkg_id, false).await
+            .map_err(|e| {
+                error!("AppRunItem install pkg {} failed! {}", self.app_id, e);
+                return ControlRuntItemErrors::ExecuteError(
+                    "deploy".to_string(),
+                    e.to_string(),
+                );
+            })?;
 
-        warn!("deploy app {}",app_pkg_id);
-        let repo_url = "http://127.0.0.1:8080/repo";
-        //TODO:由install流程管理去重和断点续传,这个去重通常是跨进程的
-        // let deps = Installer::install(app_pkg_id.as_str(), &PathBuf::from(get_buckyos_system_bin_dir()), repo_url, None)
-        //     .await
-        //     .map_err(|e| {
-        //         error!("Failed to call install package, err:{:?}", e);
-        //         return ControlRuntItemErrors::ExecuteError(
-        //             "deploy".to_string(),
-        //             e.to_string(),
-        //         );
-        //     })?;
-        warn!("install app {} success",app_pkg_id);
+        warn!("install app pkg {} success",app_pkg_id);
         Ok(())
     }
 

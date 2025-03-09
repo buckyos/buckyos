@@ -30,6 +30,7 @@ pub struct SystemConfigClient {
     session_token: Option<String>,
 }
 
+
 impl SystemConfigClient {
     pub fn new(service_url:Option<&str>,session_token:Option<&str>) -> Self {
         let real_session_token : Option<String>;
@@ -46,6 +47,10 @@ impl SystemConfigClient {
             client:OnceCell::new_with(Some(client)),
             session_token: real_session_token,
         }
+    }
+
+    pub fn get_session_token(&self) -> Option<String> {
+        self.session_token.clone()
     }
 
     fn get_krpc_client(&self) -> SytemConfigResult<Arc<kRPC>> {

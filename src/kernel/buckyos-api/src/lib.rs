@@ -265,6 +265,10 @@ impl BuckyOSRuntime {
         unimplemented!()
     }
 
+    pub fn get_root_pkg_env_path() -> PathBuf {
+        get_buckyos_service_local_data_dir("node_daemon",None).join("root_pkg_env")
+    }
+
     fn get_my_settings_path(&self) -> String {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {

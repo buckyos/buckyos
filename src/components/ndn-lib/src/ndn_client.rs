@@ -12,7 +12,7 @@ use tokio::io::{BufReader,BufWriter};
 use std::collections::HashMap;
 use futures::Future;
 
-use crate::{copy_chunk, cyfs_get_obj_id_from_url, get_cyfs_resp_headers, CYFSHttpRespHeaders, ChunkState};
+use crate::{copy_chunk, cyfs_get_obj_id_from_url, get_cyfs_resp_headers, CYFSHttpRespHeaders, ChunkState, FileObject};
 
 
 pub enum ChunkWorkState {
@@ -77,12 +77,30 @@ impl NdnClient {
         }
     }
 
-    //返回成功下载的chunk_id和chunk_size
+    //返回成功下载的chunk_id和chunk_size,下载成功后named mgr种chunk存在于cache中
     pub async fn download_chunk_to_local(&self,chunk_url:&str,local_path:&PathBuf,no_verify:Option<bool>) -> NdnResult<(ChunkId,u64)> {
+        //
+        unimplemented!()
+    }
+
+    //返回下载成功的FileObj和obj_id，下载成功后named mgr中chunk存在于cache中
+    pub async fn download_fileobj_to_local(&self,fileobj_url:&str,local_path:&PathBuf,no_verify:Option<bool>) -> NdnResult<(ObjId,FileObject)> {
         unimplemented!()
     }
 
     pub async fn get_obj_by_url(&self,url:&str,no_verify:Option<bool>) -> NdnResult<(ObjId,String)> {
+        unimplemented!()
+    }
+
+    pub async fn verify_url_is_same_as_local_file(&self,url:&str,local_path:&PathBuf) -> NdnResult<bool> {
+        // let ndn_client = NdnClient::new(url.to_string(), Some(session_token.to_string()),None);
+        // let (obj_id,file_obj_str) = ndn_client.get_obj_by_url(url,None).await
+        //     .map_err(|err| {
+        //         error!("get zone repo index db failed! {}", err);
+        //         return String::from("get zone repo index db failed!");
+        //     })?;
+
+
         unimplemented!()
     }
 

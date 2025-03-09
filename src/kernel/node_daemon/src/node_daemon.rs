@@ -4,30 +4,27 @@ use std::process::exit;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use clap::{Arg, ArgMatches, Command};
-use package_lib::PackageEnv;
 use time::macros::format_description;
 use std::{collections::HashMap, fs::File};
 use std::path::{Path, PathBuf};
-use name_lib::*;
-use buckyos_api::*;
-// use tokio::*;
-
-use buckyos_kit::{*};
+use lazy_static::lazy_static;
 
 use futures::prelude::*;
-use jsonwebtoken::jwk::Jwk;
+use simplelog::*;
 use log::*;
 use serde::{Deserialize, Serialize};
-
-use simplelog::*;
-use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
-use lazy_static::lazy_static;
-use buckyos_api::*;
-use toml;
 use serde_json::{from_value, json, Value};
-use name_lib::*;
+use toml;
+use clap::{Arg, ArgMatches, Command};
+
+use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
+use jsonwebtoken::jwk::Jwk;
+use buckyos_api::*;
+use ndn_lib::*;
 use name_client::*;
+use name_lib::*;
+use buckyos_kit::*;
+use package_lib::*;
 
 use crate::run_item::*;
 use crate::frame_service_mgr::*;
@@ -37,8 +34,6 @@ use crate::active_server::*;
 use crate::service_pkg::*;
 
 use thiserror::Error;
-
-
 
 #[derive(Error, Debug)]
 enum NodeDaemonErrors {
@@ -297,6 +292,74 @@ async fn load_node_config(node_host_name: &str,buckyos_api_client: &SystemConfig
     Ok(node_config)
 }
 
+
+//node_daemon的系统升级流程有2种 （所有的升级都是非强制的）
+//1. 在首次使用时，尝试升级到最新版本，比较适合一些硬件用户，在恢复出厂设置后，依旧可以在使用前将系统升级到最新版本，减少后续版本迁移的负担
+//2. 常规升级，repo-server先从源获得新版本的index-db和已安装Pkg的chunk,然后任意node上的node_daemon都会触发升级
+//    注意升级是zone级别的，这意味着用户对升级和系统的版本控制只会通过repo-server的settings来控制
+//    在非开发模式下，各个node上的软件版本需无条件保持与repo-server的设置一致。
+async fn do_boot_upgreade() -> std::result::Result<(), String>  {
+    //TODO: 
+    Ok(())
+}
+
+
+async fn check_and_update_system_pkgs(pkg_list: Vec<String>,session_token: Option<String>) -> std::result::Result<bool, String>  {
+    for pkg_id in pkg_list {
+        let pkg_env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let media_info = pkg_env.load(&pkg_id).await;
+        if media_info.is_err() {
+            info!("check_and_update_system_pkgs: pkg {} not exist, deploy it", pkg_id);
+            let result = pkg_env.install_pkg(&pkg_id, false).await;
+            if result.is_err() {
+                error!("check_and_update_system_pkgs: deploy pkg {} failed! {}", pkg_id, result.err().unwrap());
+            }
+            info!("check_and_update_system_pkgs: deploy pkg {} success", pkg_id);
+        }
+    }
+    Ok(true)
+}
+
+async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> std::result::Result<bool, String>  {
+    let zone_repo_index_db_url = "http://127.0.0.1:8080/repo/meta_index.db";
+    let root_env_path = BuckyOSRuntime::get_root_pkg_env_path();
+    let meta_db_file_patgh = root_env_path.join(".pkgs").join("meta_index.db");
+    let ndn_client = NdnClient::new("http://127.0.0.1:8080/".to_string(), session_token,None);
+    let is_same = ndn_client.verify_url_is_same_as_local_file(zone_repo_index_db_url,&meta_db_file_patgh).await
+        .map_err(|err| {
+            error!("verify remote index db  to root pkg env's meta-Index db failed! {}", err);
+            return String::from("verify remote index db  to root pkg env's meta-Index db failed!");
+        })?;
+
+    if is_same {
+        info!("remote index db is same as local index db, no need to update!");
+        return Ok(false);
+    }
+
+    info!("remote index db is not same as local index db, start update node's root_pkg_env.meta_index.db");
+    let download_path = root_env_path.join(".pkgs").join("meta_index.downloading");
+    ndn_client.download_fileobj_to_local(zone_repo_index_db_url, &download_path, None).await
+        .map_err(|err| {
+            error!("download remote index db to root pkg env's meta-Index db failed! {}", err);
+            return String::from("download remote index db to root pkg env's meta-Index db failed!");
+        })?;
+    info!("download new meta-index.db success,update root env's meta-index.db..");
+    let mut root_env = PackageEnv::new(root_env_path);
+    root_env.try_update_index_db(&download_path).await
+        .map_err(|err| {
+            error!("update root pkg env's meta-Index db failed! {}", err);
+            return String::from("update root pkg env's meta-Index db failed!");
+        })?;
+    
+    info!("update root pkg env's meta-index.db OK");
+    let remove_result = std::fs::remove_file(download_path);
+    if remove_result.is_err() {
+        warn!("remove meta_index.downloading error!");
+    }
+
+    Ok(true)
+}
+
 async fn check_and_update_sys_pkgs(is_ood: bool,buckyos_api_client: &SystemConfigClient) {
     let mut will_check_update_pkg_list = vec![
         "cyfs-gateway".to_string(),
@@ -332,11 +395,6 @@ async fn check_and_update_sys_pkgs(is_ood: bool,buckyos_api_client: &SystemConfi
     }    
 }
 
-
-async fn check_and_update_env_index_db() -> bool {
-    false
-}
-
 async fn update_device_info(device_doc: &DeviceConfig,syste_config_client: &SystemConfigClient) {
     let mut device_info = DeviceInfo::from_device_doc(device_doc);
     let fill_result = device_info.auto_fill_by_system_info().await;
@@ -366,28 +424,7 @@ async fn register_device_doc(device_doc:&DeviceConfig,syste_config_client: &Syst
     }
 }
 
-async fn do_boot_schedule() -> std::result::Result<(),String> {
-    let mut scheduler_pkg = ServicePkg::new("scheduler".to_string(),get_buckyos_system_bin_dir());
-    if !scheduler_pkg.try_load(false).await {
-        error!("load scheduler pkg failed!");
-        return Err(String::from("load scheduler pkg failed!"));
-    }
 
-    let params = vec!["--boot".to_string()];
-    let start_result = scheduler_pkg.start(Some(&params)).await.map_err(|err| {
-        error!("start scheduler pkg failed! {}", err);
-        return String::from("start scheduler pkg failed!");
-    })?;
-
-    if start_result == 0 {
-        info!("boot run scheduler pkg success!");
-        Ok(())
-    } else {
-        error!("boot run run scheduler pkg failed!");
-        Err(String::from("run scheduler pkg failed!"))
-    }
-
-}
 
 //if register OK then return sn's URL
 async fn report_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
@@ -432,21 +469,51 @@ async fn report_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str
     Ok(sn_url)
 }
 
-async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig,is_restart:bool) -> std::result::Result<(),String> {
-    let mut buckyos_api_service_pkg = ServicePkg::new("system_config".to_string(),get_buckyos_system_bin_dir());
-    if !buckyos_api_service_pkg.try_load(false).await {
-        error!("load system_config_service pkg failed!");
-        return Err(String::from("load system_config_service failed!"));
+async fn do_boot_schedule() -> std::result::Result<(),String> {
+    let mut scheduler_pkg = ServicePkg::new("scheduler".to_string(),get_buckyos_system_bin_dir());
+    if !scheduler_pkg.try_load().await {
+        error!("load scheduler pkg failed!");
+        return Err(String::from("load scheduler pkg failed!"));
     }
-    //If this node is ood: try run / recover  system_config_service
-    //  init system_config client, if kv://boot is not exist, create it and register new ood.
-    let mut running_state = buckyos_api_service_pkg.status(None).await.map_err(|err| {
+
+    let params = vec!["--boot".to_string()];
+    let start_result = scheduler_pkg.start(Some(&params)).await.map_err(|err| {
+        error!("start scheduler pkg failed! {}", err);
+        return String::from("start scheduler pkg failed!");
+    })?;
+
+    if start_result == 0 {
+        info!("boot run scheduler pkg success!");
+        Ok(())
+    } else {
+        error!("boot run run scheduler pkg failed!");
+        Err(String::from("run scheduler pkg failed!"))
+    }
+
+}
+
+async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig,is_restart:bool) -> std::result::Result<(),String> {
+    let mut system_config_service_pkg = ServicePkg::new("system_config".to_string(),get_buckyos_system_bin_dir());
+
+    if !system_config_service_pkg.try_load().await {
+        error!("load system_config_service pkg failed!");
+        let env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let result = env.install_pkg("system_config", false).await;
+        if result.is_err() {
+            error!("install system_config_service pkg failed! {}", result.err().unwrap());
+            return Err(String::from("install system_config_service pkg failed!"));
+        } else {
+            info!("install system_config_service pkg success");
+        }
+    } 
+
+    let mut running_state = system_config_service_pkg.status(None).await.map_err(|err| {
         error!("check system_config_service running failed! {}", err);
         return String::from("check system_config_service running failed!");
     })?;
 
     if is_restart {
-        buckyos_api_service_pkg.stop(None).await.map_err(|err| {
+        system_config_service_pkg.stop(None).await.map_err(|err| {
             error!("stop system_config_service failed! {}", err);
             return String::from("stop system_config_service failed!");
         })?;
@@ -456,7 +523,7 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
 
     if running_state == ServiceState::Stopped {
         warn!("check system_config_service is stopped,try to start system_config_service");
-        let start_result = buckyos_api_service_pkg.start(None).await.map_err(|err| {
+        let start_result = system_config_service_pkg.start(None).await.map_err(|err| {
             error!("start system_config_service failed! {}", err);
             return String::from("start system_config_service failed!");
         })?;
@@ -467,9 +534,15 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
 
 async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig,is_restart:bool) -> std::result::Result<(),String> {
     let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs_gateway".to_string(),get_buckyos_system_bin_dir());
-    if !cyfs_gateway_service_pkg.try_load(false).await {
-        error!("load cyfs_gateway service pkg failed!");
-        return Err(String::from("load cyfs_gateway service pkg failed!"));
+    if !cyfs_gateway_service_pkg.try_load().await {
+        let env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let result = env.install_pkg("cyfs_gateway", false).await;
+        if result.is_err() {
+            error!("install cyfs_gateway service pkg failed! {}", result.err().unwrap());
+            return Err(String::from("install cyfs_gateway service pkg failed!"));
+        } else {
+            info!("install cyfs_gateway service pkg success");
+        }
     }
 
     let mut running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
@@ -527,34 +600,38 @@ fn get_node_daemon_version() -> u32 {
     return build_number;
 }
 
-async fn stop_all_system_services() {
-    unimplemented!()
+async fn stop_all_system_services() -> std::result::Result<(), String> {
+    Ok(())
 }
 
 async fn node_main(node_host_name: &str,
                    is_ood: bool,
                    buckyos_api_client: &SystemConfigClient,
                    device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
-    //1. check and update env index db
-    let mut system_need_upgrade = check_and_update_env_index_db().await;
+    let need_check_update:bool;
+    let root_env_need_upgrade = check_and_update_root_pkg_index_db(buckyos_api_client.get_session_token()).await;
+    if root_env_need_upgrade.is_err() {
+        error!("check and update root pkg index db failed! {}", root_env_need_upgrade.err().unwrap());
+        need_check_update = false 
+    } else {
+        need_check_update = root_env_need_upgrade.unwrap();
+    }
     
+
     let node_daemon_version = get_node_daemon_version();
     if node_daemon_version < 99999999 {
         //TODO:check and update node_daemon
 
     }
-
-    if system_need_upgrade {
-        //download all pkgs
-        check_and_update_sys_pkgs(is_ood,buckyos_api_client).await;
-        //stop all system services
-        warn!("system need upgrade, kill all system services and exit!");
-        stop_all_system_services().await;
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        //exit node_daemon
-        exit(0);
-    }
-
+    //2.check and upgrade some system pkgs not in app_stream or kernel_stream
+    let system_pkgs = vec![
+        "app_loader".to_string(),
+        "node_active".to_string(),
+        "bucky-cli".to_string(),
+        "control_panel".to_string(),
+    ];
+    check_and_update_system_pkgs(system_pkgs,buckyos_api_client.get_session_token()).await;
+    
     //3. control pod instance to target state
     let node_config = load_node_config(node_host_name, buckyos_api_client).await
         .map_err(|err| {
@@ -583,6 +660,7 @@ async fn node_main(node_host_name: &str,
                 return NodeDaemonErrors::SystemConfigError(kernel_service_name.clone());
             });
     });
+
     // TODO: frame_services is "services run in docker container",not support now
     // let service_stream = stream::iter(node_config.frame_services);
     // service_stream.for_each_concurrent(1, |(service_name, service_cfg)| async move {
@@ -851,16 +929,21 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         let boot_config_result = syc_cfg_client.get("boot/config").await;
         match boot_config_result {
             buckyos_api::SytemConfigResult::Err(SystemConfigError::KeyNotFound(_)) => {
-                warn!("boot config is not exist, try first scheduler to generate it!");
-                //TODO: check and upgrade self
+                warn!("BuckyOS is started for the first time, enter the BOOT_INIT process...");
+                warn!("Check and upgrade BuckyOS to latest version...");
+                //repo-server is not running, so we need to check and upgrade system by SN.
+                //Here is the only chance to upgrade system to latest version use SN.
+                do_boot_upgreade().await?;
 
+                warn!("Do boot schedule to generate all system configs...");
                 std::env::set_var("SCHEDULER_SESSION_TOKEN", device_session_token_jwt.clone());
-                info!("set var SCHEDULER_SESSION_TOKEN {}", device_session_token_jwt);
+                debug!("set var SCHEDULER_SESSION_TOKEN {}", device_session_token_jwt);
                 do_boot_schedule().await.map_err(|err| {
                     error!("do boot scheduler failed! {}", err);
                     return String::from("do boot scheduler failed!");
                 })?;
-                info!("Init boot config OK, wat 2 secs.");
+                warn!("Restart all first-time-run services ...");
+                warn!("BuckyOS BOOT_INIT OK, enter system after 2 secs.");
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             },
             buckyos_api::SytemConfigResult::Ok(r) => {
@@ -868,7 +951,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                     error!("parse boot config failed! {}", err);
                     return String::from("parse boot config failed!");
                 })?;
-                info!("OOD device load boot config OK, {}", boot_config);
+                info!("Load boot config OK, {}", boot_config);
             },
             _ => {
                 error!("get boot config failed! {}", boot_config_result.err().unwrap());
