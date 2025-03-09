@@ -445,7 +445,7 @@ impl RepoServer {
             let runtime = get_buckyos_api_runtime()?;
             let session_token = runtime.get_session_token().await;
             let ndn_client = NdnClient::new(source_url.clone(),Some(session_token),None);
-            ndn_client.download_chunk_to_local(source_url.as_str(),&new_meta_index_db_path, None).await.map_err(|e| {
+            ndn_client.download_fileobj_to_local(source_url.as_str(),&new_meta_index_db_path, None).await.map_err(|e| {
                 error!("download remote meta-index-db by {} failed, err:{}", source_url, e);
                 RPCErrors::ReasonError(format!("download remote meta-index-db by {} failed, err:{}", source_url, e))
             })?;

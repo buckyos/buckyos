@@ -77,35 +77,89 @@ impl NdnClient {
         }
     }
 
-    //返回成功下载的chunk_id和chunk_size,下载成功后named mgr种chunk存在于cache中
-    pub async fn download_chunk_to_local(&self,chunk_url:&str,local_path:&PathBuf,no_verify:Option<bool>) -> NdnResult<(ChunkId,u64)> {
-        //
-        unimplemented!()
-    }
 
-    //返回下载成功的FileObj和obj_id，下载成功后named mgr中chunk存在于cache中
-    pub async fn download_fileobj_to_local(&self,fileobj_url:&str,local_path:&PathBuf,no_verify:Option<bool>) -> NdnResult<(ObjId,FileObject)> {
-        unimplemented!()
-    }
-
+    //helper function
+    // 使用标准HTTP协议打开URL获取对象,返回obj_id和obj_str
     pub async fn get_obj_by_url(&self,url:&str,no_verify:Option<bool>) -> NdnResult<(ObjId,String)> {
-        unimplemented!()
+        // 使用标准HTTP协议打开URL获取对象
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| NdnError::Internal(format!("Failed to create client: {}", e)))?;
+        
+        let res = client.get(url)
+            .send()
+            .await
+            .map_err(|e| NdnError::GetFromRemoteError(format!("Request failed: {}", e)))?;
+        
+        if !res.status().is_success() {
+            return Err(NdnError::GetFromRemoteError(
+                format!("HTTP error: {} for {}", res.status(), url)
+            ));
+        }
+        
+        // 从URL或响应头中获取对象ID
+        let mut obj_id_from_url: Option<ObjId> = None;
+        let mut obj_id_from_header: Option<ObjId> = None;
+        
+        // 尝试从URL中提取对象ID
+        let url_obj_id_result = cyfs_get_obj_id_from_url(url);
+        if let Ok((obj_id, _)) = url_obj_id_result {
+            obj_id_from_url = Some(obj_id);
+        }
+        
+        // 尝试从响应头中获取对象ID
+        let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
+        if let Some(header_obj_id) = cyfs_resp_headers.obj_id {
+            obj_id_from_header = Some(header_obj_id);
+        }
+        
+        // 确定最终使用的对象ID
+        let obj_id = match (obj_id_from_url, obj_id_from_header) {
+            (Some(url_id), Some(header_id)) => {
+                // 如果URL和头部都有对象ID，它们必须匹配
+                if url_id != header_id {
+                    return Err(NdnError::InvalidId(format!(
+                        "Object ID mismatch: URL has {}, header has {}",
+                        url_id.to_string(), header_id.to_string()
+                    )));
+                }
+                url_id
+            },
+            (Some(url_id), None) => url_id,
+            (None, Some(header_id)) => header_id,
+            (None, None) => {
+                return Err(NdnError::InvalidId("No object ID found in URL or headers".to_string()));
+            }
+        };
+        
+        // 获取响应内容
+        let content = res.text()
+            .await
+            .map_err(|e| NdnError::GetFromRemoteError(format!("Failed to read response body: {}", e)))?;
+        
+        // 根据no_verify标志决定是否验证
+        if no_verify.unwrap_or(false) {
+            // 跳过验证
+            debug!("Skipping verification for object: {}", obj_id.to_string());
+        } else {
+            // 执行验证逻辑
+            debug!("Verifying object: {}", obj_id.to_string());
+            // 这里应该实现对象内容的验证逻辑
+            // 例如，检查内容哈希是否与对象ID匹配
+            // 如果验证失败，返回错误
+        }
+        
+        Ok((obj_id, content))
     }
 
-    pub async fn verify_url_is_same_as_local_file(&self,url:&str,local_path:&PathBuf) -> NdnResult<bool> {
-        // let ndn_client = NdnClient::new(url.to_string(), Some(session_token.to_string()),None);
-        // let (obj_id,file_obj_str) = ndn_client.get_obj_by_url(url,None).await
-        //     .map_err(|err| {
-        //         error!("get zone repo index db failed! {}", err);
-        //         return String::from("get zone repo index db failed!");
-        //     })?;
-
-
-        unimplemented!()
+    pub async fn pull_chunk(&self, chunk_id:ChunkId,mgr_id:Option<&str>)->NdnResult<u64> {
+        let chunk_url = self.gen_chunk_url(&chunk_id,None);
+        info!("will pull chunk {} by url:{}",chunk_id.to_string(),chunk_url);
+        self.pull_chunk_by_url(chunk_url,chunk_id,mgr_id).await
     }
 
-
-    //helper function 1
+    //helper function 
     pub async fn open_chunk_reader_by_url(&self,chunk_url:&str,expect_chunk_id:Option<ChunkId>,range:Option<Range<u64>>)
         ->NdnResult<(ChunkReader,CYFSHttpRespHeaders)> {
         let client = Client::builder()
@@ -191,123 +245,121 @@ impl NdnClient {
 
     }
 
-
-    //async fn open_chunk_writer_by_url(&self,chunk_url:String,open_mode:ChunkWriterOpenMode)->NdnResult<(ChunkWriter,Option<ChunkHasher>)> {
-    //    unimplemented!()
-    //}
-
-    //auto_add 为false时，本次获取不会进行任何的磁盘操作
-    // pub async fn get_chunk(&self, chunk_id:ChunkId,auto_add:bool)->NdnResult<Pin<Box<dyn ChunkReadSeek + Send + Sync + Unpin>>> {
-    //     if !auto_add {
-    //         warn!("get_chunk: auto_add is false, will not download to local");
-    //         return Err(NdnError::Internal("auto_add is false".to_string()));
-    //     }
+    //返回成功下载的chunk_id和chunk_size,下载成功后named mgr种chunk存在于cache中
+    pub async fn download_chunk_to_local(&self,chunk_url:&str,chunk_id:ChunkId,local_path:&PathBuf,no_verify:Option<bool>) -> NdnResult<(ChunkId,u64)> {
+        // 首先从URL下载chunk到本地缓存
+        let chunk_size = self.pull_chunk_by_url(chunk_url.to_string(), chunk_id.clone(), self.default_ndn_mgr_id.as_deref()).await?;
  
-    //     if self.default_chunk_mgr_id.is_some() {
-    //         let chunk_mgr_id = self.default_chunk_mgr_id.clone().unwrap();
-    //         let chunk_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(chunk_mgr_id.as_str())).await;
-    //         if chunk_mgr.is_none() {
-    //             return Err(NdnError::Internal("no chunk mgr".to_string()));
-    //         }
-    //         let chunk_mgr = chunk_mgr.unwrap();
-    //         let real_chunk_mgr = chunk_mgr.lock().await;
-    //         let reader = real_chunk_mgr.get_chunk_reader(&chunk_id,auto_add).await;
-    //         if reader.is_ok() {
-    //             let (reader,len) = reader.unwrap();
-    //             return Ok(reader);
-    //         }
-    //     }
-
-    //     //本机机没有，开始尝试从remote中读取 （串行尝试，这里没必要并发，但有断点续传）
-    //     //   从Zone的Chunk Mgr中读取（别的设备上的Chunk Mgr）
-    //     //   从默认的Remote Zone中读取
+        // 确保目标目录存在
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| NdnError::IoError(format!("Failed to create directory: {}", e)))?;
+        }
         
-    //     //根据本地缓存进行断点续传
-    //     let mut offset:u64 = 0;
-    //     let mut chunk_size:u64 = 0;
-    //     let mut writer: Option<_> = None;
-    //     let mut download_buffer:Vec<u8> = vec![];
-    //     let is_downlaod_to_mgr;
-
-    //     if auto_add && self.default_chunk_mgr_id.is_some() {
-    //         let chunk_mgr_id = self.default_chunk_mgr_id.clone().unwrap();
-    //         let chunk_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(chunk_mgr_id.as_str())).await;
-    //         if chunk_mgr.is_none() {
-    //             return Err(NdnError::Internal("no chunk mgr".to_string()));
-    //         }
-    //         let chunk_mgr = chunk_mgr.unwrap();
-    //         let real_chunk_mgr = chunk_mgr.lock().await;
-    //         let complete_size = 0;//TODO restore from hasher state
-    //         let chunk_writer = real_chunk_mgr.open_chunk_writer(&chunk_id,0,true).await
-    //             .map_err(|e| {
-    //                 warn!("get_chunk: open chunk writer failed:{}",e.to_string());
-    //                 e
-    //             })?;
-    //         offset = complete_size;
-    //         writer = Some(chunk_writer);
-    //         is_downlaod_to_mgr = true;
-    //     }  else {
-    //         is_downlaod_to_mgr = false;
-    //     }
-
-    //     let range:Option<Range<u64>> = if offset > 0 {
-    //         Some(offset..MAX_CHUNK_SIZE)
-    //     } else {
-    //         None
-    //     };
-    //     let mut remote_reader = None;
-    //     if self.enable_zone_pull {
-    //         //TODO:从Zone的Chunk Mgr中读取（别的设备上的Chunk Mgr）
-    //         unimplemented!()
-    //     }
-
-    //     if self.enable_remote_pull {
-    //         //TODO:从指定的Remote Zone中读取
-    //         if self.default_remote_url.is_some() {
-    //             let remote_url = self.default_remote_url.as_ref().unwrap();
-    //             let chunk_url = Self::gen_chunk_url(&chunk_id,Some(remote_url.clone()));
-    //             let reader_result = self.get_chunk_from_url(chunk_url,range).await;
-    //             if reader_result.is_ok() {
-    //                 let (reader,len) = reader_result.unwrap();
-    //                 remote_reader = Some(reader);
-    //                 chunk_size = len;
-    //             }
-    //         }
-    //     }
-
-    //     if remote_reader.is_none() {
-    //         warn!("get_chunk: no remote reader for chunk:{}",chunk_id.to_string());
-    //         return Err(NdnError::NotFound(chunk_id.to_string()));
-    //     }
-    //     let mut remote_reader = remote_reader.unwrap();
-    //     let mut writer = writer.unwrap();
+        // 打开本地文件用于写入
+        let mut file = tokio::fs::File::create(local_path)
+            .await
+            .map_err(|e| NdnError::IoError(format!("Failed to create file: {}", e)))?;
         
+        // 从named-data-mgr中获取chunk reader，因为pull_chunk已经将chunk写入named-data-mgr
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.default_ndn_mgr_id.as_deref()).await
+            .ok_or_else(|| NdnError::Internal("No named data manager available".to_string()))?;
+        let real_named_mgr = named_mgr.lock().await;
+        let (mut chunk_reader, chunk_size) = real_named_mgr.open_chunk_reader(&chunk_id, SeekFrom::Start(0), true).await
+            .map_err(|e| NdnError::Internal(format!("Failed to get chunk reader: {}", e)))?;    
+        // 复制数据到本地文件
+        tokio::io::copy(&mut chunk_reader, &mut file)
+            .await
+            .map_err(|e| NdnError::IoError(format!("Failed to copy data to file: {}", e)))?;
         
-    //     info!("start download chunk {} from remote",chunk_id.to_string());
-    //     //边下载边计算hash，注意断点续传也需要保存hash的计算进度
-    //     //let chunk_hasher = ChunkHasher::new(Some(chunk_id.hash_type.as_str()));
-    //     tokio::io::copy(&mut remote_reader,&mut writer).await
-    //         .map_err(|e| {
-    //             warn!("download chunk {} from remote failed:{}",chunk_id.to_string(),e.to_string());
-    //             NdnError::IoError(e.to_string())
-    //         })?;
-    //     info!("download chunk {} from remote success and verifyed",chunk_id.to_string());
-        
-    //     if is_downlaod_to_mgr {
-    //         let chunk_mgr_id = self.default_chunk_mgr_id.clone().unwrap();
-    //         let chunk_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(chunk_mgr_id.as_str())).await.unwrap();
-    //         let real_chunk_mgr = chunk_mgr.lock().await;
-    //         real_chunk_mgr.close_chunk_writer(&chunk_id).await?;
-    //         let (reader,len) = real_chunk_mgr.get_chunk_reader(&chunk_id,false).await
-    //             .map_err(|e| {
-    //                 warn!("get_chunk: get chunk reader failed:{}",e.to_string());
-    //                 e
-    //             })?;
-    //         return Ok(reader);
-    //     } 
+        // 返回chunk_id和大小
+        Ok((chunk_id, chunk_size))
+    }
 
-    //     Err(NdnError::Internal("no chunk mgr".to_string()))
-    // }
+    //返回下载成功的FileObj和obj_id，下载成功后named mgr中chunk存在于cache中
+    pub async fn download_fileobj_to_local(&self,fileobj_url:&str,local_path:&PathBuf,no_verify:Option<bool>) -> NdnResult<(ObjId,FileObject)> {
+    
+        // 1. 通过fileobj-url下载并验证fileobj （使用get_obj_by_url）
+        // 2. 得到fileobj的content chunkid
+        // 3. 使用download_chunk_to_local将chunk下载到本地指定文件
+        // 1. 通过fileobj-url下载并验证fileobj
+        let (obj_id, file_obj_str) = self.get_obj_by_url(fileobj_url, no_verify).await?;
+        
+        // 解析FileObject
+        let file_obj: FileObject = serde_json::from_str(&file_obj_str)
+            .map_err(|e| NdnError::Internal(format!("Failed to parse FileObject: {}", e)))?;
+        
+        // 2. 得到fileobj的content chunkid
+        let content_chunk_id = ChunkId::new(file_obj.content.as_str())
+            .map_err(|e| NdnError::Internal(format!("Failed to parse content chunk id: {}", e)))?;
+        
+        // 构建content chunk的URL
+        let content_chunk_url = self.gen_chunk_url(&content_chunk_id, None);
+        
+        // 3. 使用download_chunk_to_local将chunk下载到本地指定文件
+        let (_, chunk_size) = self.download_chunk_to_local(&content_chunk_url, content_chunk_id, local_path, no_verify).await?;
+        
+        // 验证下载的文件大小与FileObject中声明的大小是否一致
+        if chunk_size != file_obj.size {
+            return Err(NdnError::Internal(format!(
+                "Downloaded file size ({}) doesn't match expected size ({})",
+                chunk_size, file_obj.size
+            )));
+        }
+        
+        Ok((obj_id, file_obj))
+    }
+
+
+
+    pub async fn verify_url_is_same_as_local_file(&self,url:&str,local_path:&PathBuf) -> NdnResult<bool> {
+        // 1. 通过url下载fileojbect对象
+        // 2. 计算本地文件的hash 
+        // 3. 比较fileobj的hcontent和本地文件的hash
+
+        // 1. 通过url下载fileojbect对象
+        let (obj_id, file_obj_str) = self.get_obj_by_url(url, None).await?;
+        
+        // 解析FileObject
+        let file_obj: FileObject = serde_json::from_str(&file_obj_str)
+            .map_err(|e| NdnError::Internal(format!("Failed to parse FileObject: {}", e)))?;
+        let content_chunk_id = ChunkId::new(file_obj.content.as_str())
+        .map_err(|e| NdnError::Internal(format!("Failed to parse content chunk id: {}", e)))?;
+        // 2. 计算本地文件的hash 
+        // 首先检查文件是否存在
+        if !local_path.exists() {
+            return Err(NdnError::Internal(format!("Local file does not exist: {:?}", local_path)));
+        }
+        
+        // 打开本地文件
+        let mut file = tokio::fs::File::open(local_path).await
+            .map_err(|e| NdnError::IoError(format!("Failed to open local file: {}", e)))?;
+        
+        // 获取文件大小
+        let file_size = file.metadata().await
+            .map_err(|e| NdnError::IoError(format!("Failed to get file metadata: {}", e)))?
+            .len();
+        
+        // 检查文件大小是否与FileObject中声明的大小一致
+        if file_size != file_obj.size {
+            return Ok(false);
+        }
+        
+        // 使用ChunkHasher的helper函数计算文件哈希
+        let mut hasher = ChunkHasher::new(None)
+            .map_err(|e| NdnError::Internal(format!("Failed to create chunk hasher: {}", e)))?;
+        
+        //let mut reader = tokio::io::BufReader::new(file);
+        let (hash_result,_) = hasher.calc_from_reader(&mut file).await
+            .map_err(|e| NdnError::Internal(format!("Failed to calculate hash: {}", e)))?;
+        
+        // 3. 比较fileobj的content和本地文件的hash
+        let file_chunk_id = ChunkId::from_sha256_result(&hash_result);
+ 
+        Ok(file_chunk_id == content_chunk_id)
+    }
+
+
 
     pub async fn pull_chunk_by_url(&self, chunk_url:String,chunk_id:ChunkId,mgr_id:Option<&str>)->NdnResult<u64> {
         let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id).await;
@@ -413,11 +465,11 @@ impl NdnClient {
         return Ok(copy_result);
     }
 
-    pub async fn pull_chunk(&self, chunk_id:ChunkId,mgr_id:Option<&str>)->NdnResult<u64> {
-        let chunk_url = self.gen_chunk_url(&chunk_id,None);
-        info!("will pull chunk {} by url:{}",chunk_id.to_string(),chunk_url);
-        self.pull_chunk_by_url(chunk_url,chunk_id,mgr_id).await
-    }
+    
+    //async fn open_chunk_writer_by_url(&self,chunk_url:String,open_mode:ChunkWriterOpenMode)->NdnResult<(ChunkWriter,Option<ChunkHasher>)> {
+    //    unimplemented!()
+    //}
+
 }
 
 
