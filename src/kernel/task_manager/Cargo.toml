@@ -21,3 +21,6 @@ cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
 kRPC = { path = "../../kernel/kRPC" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
 cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
+
+[dev-dependencies]
+tempfile = "*"

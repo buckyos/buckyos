@@ -526,3 +526,480 @@ pub async fn start_task_manager_service() {
     info!("start node task manager service...");
     let _ = start_cyfs_warp_server(active_server_config).await;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::{Task, TaskStatus};
+    use crate::task_db::{init_db, TaskDb};
+    use ::kRPC::*;
+    use serde_json::json;
+    use std::net::IpAddr;
+    use std::str::FromStr;
+    use tempfile::tempdir;
+    use tokio::sync::Mutex;
+
+    // 辅助函数：创建测试请求
+    fn create_rpc_request(method: &str, params: Value) -> RPCRequest {
+        RPCRequest {
+            method: method.to_string(),
+            params,
+            seq: 1,
+            token: Some("".to_string()),
+            trace_id: Some("".to_string()),
+        }
+    }
+
+    // 辅助函数：设置测试环境
+    async fn setup_test_environment() -> (TaskManagerServer, tempfile::TempDir) {
+        // 创建临时目录和数据库
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db_path_str = db_path.to_str().unwrap();
+        
+        // 初始化数据库
+        let mut db = TaskDb::new();
+        db.connect(db_path_str).unwrap();
+        db.init_db().await.unwrap();
+        
+        // 替换全局DB_MANAGER以便测试
+        *crate::task_db::DB_MANAGER.lock().await = db;
+        
+        // 创建服务器实例
+        let server = TaskManagerServer::new();
+        
+        (server, temp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_create_and_get_task() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+        
+        // 创建任务
+        let create_params = json!({
+            "name": "test_task",
+            "title": "Test Task",
+            "task_type": "test_type",
+            "app_name": "test_app",
+            "data": {"key": "value"}
+        });
+        
+        let create_req = create_rpc_request("create_task", create_params);
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        
+        // 验证创建成功
+        if let RPCResult::Success(result) = create_resp.result {
+            assert_eq!(result["code"], "0");
+            let task_id = result["task_id"].as_i64().unwrap() as i32;
+            assert!(task_id > 0);
+            
+            // 获取任务
+            let get_params = json!({
+                "id": task_id
+            });
+            
+            let get_req = create_rpc_request("get_task", get_params);
+            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
+            
+            // 验证获取成功
+            if let RPCResult::Success(result) = get_resp.result {
+                assert_eq!(result["code"], "0");
+                assert_eq!(result["task"]["name"], "test_task");
+                assert_eq!(result["task"]["title"], "Test Task");
+                assert_eq!(result["task"]["task_type"], "test_type");
+                assert_eq!(result["task"]["app_name"], "test_app");
+            } else {
+                panic!("Failed to get task");
+            }
+        } else {
+            panic!("Failed to create task");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_tasks() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+        
+        // 创建多个任务
+        for i in 1..4 {
+            let create_params = json!({
+                "name": format!("test_task_{}", i),
+                "title": format!("Test Task {}", i),
+                "task_type": "test_type",
+                "app_name": "test_app",
+            });
+            
+            let create_req = create_rpc_request("create_task", create_params);
+            let _ = server.handle_rpc_call(create_req, ip).await.unwrap();
+        }
+        
+        // 列出所有任务
+        let list_req = create_rpc_request("list_tasks", json!({}));
+        let list_resp = server.handle_rpc_call(list_req, ip).await.unwrap();
+        
+        // 验证列表
+        if let RPCResult::Success(result) = list_resp.result {
+            assert_eq!(result["code"], "0");
+            let tasks = result["tasks"].as_array().unwrap();
+            assert_eq!(tasks.len(), 3);
+        } else {
+            panic!("Failed to list tasks");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_tasks_by_app() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+        
+        // 创建不同app的任务
+        let create_params1 = json!({
+            "name": "app1_task",
+            "title": "App1 Task",
+            "task_type": "test_type",
+            "app_name": "app1",
+        });
+        
+        let create_params2 = json!({
+            "name": "app2_task",
+            "title": "App2 Task",
+            "task_type": "test_type",
+            "app_name": "app2",
+        });
+        
+        let create_req1 = create_rpc_request("create_task", create_params1);
+        let create_req2 = create_rpc_request("create_task", create_params2);
+        let _ = server.handle_rpc_call(create_req1, ip).await.unwrap();
+        let _ = server.handle_rpc_call(create_req2, ip).await.unwrap();
+        
+        // 按app筛选
+        let list_params = json!({
+            "app_name": "app1"
+        });
+        
+        let list_req = create_rpc_request("list_tasks", list_params);
+        let list_resp = server.handle_rpc_call(list_req, ip).await.unwrap();
+        
+        // 验证筛选结果
+        if let RPCResult::Success(result) = list_resp.result {
+            assert_eq!(result["code"], "0");
+            let tasks = result["tasks"].as_array().unwrap();
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0]["app_name"], "app1");
+        } else {
+            panic!("Failed to list tasks by app");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_task_status() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+        
+        // 创建任务
+        let create_params = json!({
+            "name": "status_test",
+            "title": "Status Test",
+            "task_type": "test_type",
+            "app_name": "test_app",
+        });
+        
+        let create_req = create_rpc_request("create_task", create_params);
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        
+        let task_id = if let RPCResult::Success(result) = create_resp.result {
+            result["task_id"].as_i64().unwrap() as i32
+        } else {
+            panic!("Failed to create task");
+        };
+        
+        // 更新状态
+        let update_params = json!({
+            "id": task_id,
+            "status": "Running"
+        });
+        
+        let update_req = create_rpc_request("update_task_status", update_params);
+        let update_resp = server.handle_rpc_call(update_req, ip).await.unwrap();
+        
+        // 验证更新成功
+        if let RPCResult::Success(result) = update_resp.result {
+            assert_eq!(result["code"], "0");
+            
+            // 获取任务验证状态
+            let get_params = json!({
+                "id": task_id
+            });
+            
+            let get_req = create_rpc_request("get_task", get_params);
+            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
+            
+            if let RPCResult::Success(result) = get_resp.result {
+                assert_eq!(result["task"]["status"], "Running");
+            } else {
+                panic!("Failed to get task after status update");
+            }
+        } else {
+            panic!("Failed to update task status");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_task_progress() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+        
+        // 创建任务
+        let create_params = json!({
+            "name": "progress_test",
+            "title": "Progress Test",
+            "task_type": "test_type",
+            "app_name": "test_app",
+        });
+        
+        let create_req = create_rpc_request("create_task", create_params);
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        
+        let task_id = if let RPCResult::Success(result) = create_resp.result {
+            result["task_id"].as_i64().unwrap() as i32
+        } else {
+            panic!("Failed to create task");
+        };
+        
+        // 更新进度
+        let update_params = json!({
+            "id": task_id,
+            "completed_items": 5,
+            "total_items": 10
+        });
+        
+        let update_req = create_rpc_request("update_task_progress", update_params);
+        let update_resp = server.handle_rpc_call(update_req, ip).await.unwrap();
+        
+        // 验证更新成功
+        if let RPCResult::Success(result) = update_resp.result {
+            assert_eq!(result["code"], "0");
+            
+            // 获取任务验证进度
+            let get_params = json!({
+                "id": task_id
+            });
+            
+            let get_req = create_rpc_request("get_task", get_params);
+            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
+            
+            if let RPCResult::Success(result) = get_resp.result {
+                assert_eq!(result["task"]["completed_items"], 5);
+                assert_eq!(result["task"]["total_items"], 10);
+                assert_eq!(result["task"]["progress"], 50.0);
+            } else {
+                panic!("Failed to get task after progress update");
+            }
+        } else {
+            panic!("Failed to update task progress");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_task_error() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+        
+        // 创建任务
+        let create_params = json!({
+            "name": "error_test",
+            "title": "Error Test",
+            "task_type": "test_type",
+            "app_name": "test_app",
+        });
+        
+        let create_req = create_rpc_request("create_task", create_params);
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        
+        let task_id = if let RPCResult::Success(result) = create_resp.result {
+            result["task_id"].as_i64().unwrap() as i32
+        } else {
+            panic!("Failed to create task");
+        };
+        
+        // 更新错误信息
+        let update_params = json!({
+            "id": task_id,
+            "error_message": "Test error occurred"
+        });
+        
+        let update_req = create_rpc_request("update_task_error", update_params);
+        let update_resp = server.handle_rpc_call(update_req, ip).await.unwrap();
+        
+        // 验证更新成功
+        if let RPCResult::Success(result) = update_resp.result {
+            assert_eq!(result["code"], "0");
+            
+            // 获取任务验证错误信息
+            let get_params = json!({
+                "id": task_id
+            });
+            
+            let get_req = create_rpc_request("get_task", get_params);
+            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
+            
+            if let RPCResult::Success(result) = get_resp.result {
+                assert_eq!(result["task"]["error_message"], "Test error occurred");
+                assert_eq!(result["task"]["status"], "Failed");
+            } else {
+                panic!("Failed to get task after error update");
+            }
+        } else {
+            panic!("Failed to update task error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_task_data() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+        
+        // 创建任务
+        let create_params = json!({
+            "name": "data_test",
+            "title": "Data Test",
+            "task_type": "test_type",
+            "app_name": "test_app",
+        });
+        
+        let create_req = create_rpc_request("create_task", create_params);
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        
+        let task_id = if let RPCResult::Success(result) = create_resp.result {
+            result["task_id"].as_i64().unwrap() as i32
+        } else {
+            panic!("Failed to create task");
+        };
+        
+        // 更新数据
+        let update_params = json!({
+            "id": task_id,
+            "data": {"updated": true, "value": "new data"}
+        });
+        
+        let update_req = create_rpc_request("update_task_data", update_params);
+        let update_resp = server.handle_rpc_call(update_req, ip).await.unwrap();
+        
+        // 验证更新成功
+        if let RPCResult::Success(result) = update_resp.result {
+            assert_eq!(result["code"], "0");
+            
+            // 获取任务验证数据
+            let get_params = json!({
+                "id": task_id
+            });
+            
+            let get_req = create_rpc_request("get_task", get_params);
+            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
+            
+            if let RPCResult::Success(result) = get_resp.result {
+                // 解析数据字段
+                let data_str = result["task"]["data"].as_str().unwrap();
+                let data: Value = serde_json::from_str(data_str).unwrap();
+                assert_eq!(data["updated"], true);
+                assert_eq!(data["value"], "new data");
+            } else {
+                panic!("Failed to get task after data update");
+            }
+        } else {
+            panic!("Failed to update task data");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_delete_task() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+        
+        // 创建任务
+        let create_params = json!({
+            "name": "delete_test",
+            "title": "Delete Test",
+            "task_type": "test_type",
+            "app_name": "test_app",
+        });
+        
+        let create_req = create_rpc_request("create_task", create_params);
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        
+        let task_id = if let RPCResult::Success(result) = create_resp.result {
+            result["task_id"].as_i64().unwrap() as i32
+        } else {
+            panic!("Failed to create task");
+        };
+        
+        // 删除任务
+        let delete_params = json!({
+            "id": task_id
+        });
+        
+        let delete_req = create_rpc_request("delete_task", delete_params);
+        let delete_resp = server.handle_rpc_call(delete_req, ip).await.unwrap();
+        
+        // 验证删除成功
+        if let RPCResult::Success(result) = delete_resp.result {
+            assert_eq!(result["code"], "0");
+            
+            // 尝试获取已删除的任务
+            let get_params = json!({
+                "id": task_id
+            });
+            
+            let get_req = create_rpc_request("get_task", get_params);
+            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
+            
+            if let RPCResult::Success(result) = get_resp.result {
+                assert_eq!(result["code"], "1"); // 应该返回错误代码
+            } else {
+                panic!("Unexpected error response when getting deleted task");
+            }
+        } else {
+            panic!("Failed to delete task");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_invalid_method() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+        
+        // 调用不存在的方法
+        let req = create_rpc_request("invalid_method", json!({}));
+        let result = server.handle_rpc_call(req, ip).await;
+        
+        // 验证返回了未知方法错误
+        assert!(matches!(result, Err(RPCErrors::UnknownMethod(_))));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_params() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+        
+        // 缺少必要参数
+        let create_params = json!({
+            // 缺少name字段
+            "title": "Invalid Test",
+            "task_type": "test_type",
+            "app_name": "test_app",
+        });
+        
+        let create_req = create_rpc_request("create_task", create_params);
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        
+        // 验证返回了参数错误
+        if let RPCResult::Success(result) = create_resp.result {
+            assert_eq!(result["code"], "1"); // 错误代码
+            assert!(result["msg"].as_str().unwrap().contains("name"));
+        } else {
+            panic!("Unexpected error response for invalid params");
+        }
+    }
+}

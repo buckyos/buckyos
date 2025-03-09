@@ -402,3 +402,245 @@ pub async fn init_db(db_path: &str) {
 lazy_static::lazy_static! {
     pub static ref DB_MANAGER: Mutex<TaskDb> = Mutex::new(TaskDb::new());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::fs;
+    use tempfile::tempdir;
+
+    // 创建测试任务的辅助函数
+    fn create_test_task(name: &str) -> Task {
+        Task {
+            id: 0,
+            name: name.to_string(),
+            title: format!("Test Task {}", name),
+            task_type: "test_type".to_string(),
+            app_name: "test_app".to_string(),
+            status: TaskStatus::Pending,
+            progress: 0.0,
+            total_items: 10,
+            completed_items: 0,
+            error_message: None,
+            data: Some("{}".to_string()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    // 设置测试数据库的辅助函数
+    async fn setup_test_db() -> (TaskDb, tempfile::TempDir) {
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db_path_str = db_path.to_str().unwrap();
+        
+        let mut db = TaskDb::new();
+        db.connect(db_path_str).unwrap();
+        db.init_db().await.unwrap();
+        
+        (db, temp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_connect_and_init() {
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db_path_str = db_path.to_str().unwrap();
+        
+        let mut db = TaskDb::new();
+        assert!(db.connect(db_path_str).is_ok());
+        assert!(db.init_db().await.is_ok());
+        
+        // 验证数据库文件已创建
+        assert!(db_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_create_and_get_task() {
+        let (db, _temp_dir) = setup_test_db().await;
+        
+        let task = create_test_task("task1");
+        let id = db.create_task(&task).await.unwrap();
+        
+        // 验证ID是否大于0
+        assert!(id > 0);
+
+        let task_1_again = create_test_task("task1");
+        let id2 = db.create_task(&task_1_again).await;
+        assert!(id2.is_err());
+        
+        // 获取并验证任务
+        let retrieved_task = db.get_task(id).await.unwrap().unwrap();
+        assert_eq!(retrieved_task.id, id);
+        assert_eq!(retrieved_task.name, "task1");
+        assert_eq!(retrieved_task.title, "Test Task task1");
+        assert_eq!(retrieved_task.status, TaskStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn test_list_tasks() {
+        let (db, _temp_dir) = setup_test_db().await;
+        
+        // 创建多个任务
+        let task1 = create_test_task("task1");
+        let task2 = create_test_task("task2");
+        let task3 = create_test_task("task3");
+        
+        db.create_task(&task1).await.unwrap();
+        db.create_task(&task2).await.unwrap();
+        db.create_task(&task3).await.unwrap();
+        
+        // 列出所有任务
+        let tasks = db.list_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_list_tasks_by_app() {
+        let (db, _temp_dir) = setup_test_db().await;
+        
+        // 创建不同app的任务
+        let mut task1 = create_test_task("task1");
+        let mut task2 = create_test_task("task2");
+        task1.app_name = "app1".to_string();
+        task2.app_name = "app2".to_string();
+        
+        db.create_task(&task1).await.unwrap();
+        db.create_task(&task2).await.unwrap();
+        
+        // 按app筛选
+        let app1_tasks = db.list_tasks_by_app("app1").await.unwrap();
+        let app2_tasks = db.list_tasks_by_app("app2").await.unwrap();
+        
+        assert_eq!(app1_tasks.len(), 1);
+        assert_eq!(app2_tasks.len(), 1);
+        assert_eq!(app1_tasks[0].name, "task1");
+        assert_eq!(app2_tasks[0].name, "task2");
+    }
+
+    #[tokio::test]
+    async fn test_list_tasks_by_type() {
+        let (db, _temp_dir) = setup_test_db().await;
+        
+        // 创建不同类型的任务
+        let mut task1 = create_test_task("task1");
+        let mut task2 = create_test_task("task2");
+        task1.task_type = "type1".to_string();
+        task2.task_type = "type2".to_string();
+        
+        db.create_task(&task1).await.unwrap();
+        db.create_task(&task2).await.unwrap();
+        
+        // 按类型筛选
+        let type1_tasks = db.list_tasks_by_type("type1").await.unwrap();
+        let type2_tasks = db.list_tasks_by_type("type2").await.unwrap();
+        
+        assert_eq!(type1_tasks.len(), 1);
+        assert_eq!(type2_tasks.len(), 1);
+        assert_eq!(type1_tasks[0].name, "task1");
+        assert_eq!(type2_tasks[0].name, "task2");
+    }
+
+    #[tokio::test]
+    async fn test_list_tasks_by_status() {
+        let (db, _temp_dir) = setup_test_db().await;
+        
+        // 创建不同状态的任务
+        let mut task1 = create_test_task("task1");
+        let mut task2 = create_test_task("task2");
+        task1.status = TaskStatus::Running;
+        task2.status = TaskStatus::Completed;
+        
+        db.create_task(&task1).await.unwrap();
+        db.create_task(&task2).await.unwrap();
+        
+        // 按状态筛选
+        let running_tasks = db.list_tasks_by_status(TaskStatus::Running).await.unwrap();
+        let completed_tasks = db.list_tasks_by_status(TaskStatus::Completed).await.unwrap();
+        
+        assert_eq!(running_tasks.len(), 1);
+        assert_eq!(completed_tasks.len(), 1);
+        assert_eq!(running_tasks[0].name, "task1");
+        assert_eq!(completed_tasks[0].name, "task2");
+    }
+
+    #[tokio::test]
+    async fn test_update_task_status() {
+        let (db, _temp_dir) = setup_test_db().await;
+        
+        let task = create_test_task("status_test");
+        let id = db.create_task(&task).await.unwrap();
+        
+        // 更新状态
+        db.update_task_status(id, TaskStatus::Running).await.unwrap();
+        
+        // 验证状态已更新
+        let updated_task = db.get_task(id).await.unwrap().unwrap();
+        assert_eq!(updated_task.status, TaskStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn test_update_task_progress() {
+        let (db, _temp_dir) = setup_test_db().await;
+        
+        let task = create_test_task("progress_test");
+        let id = db.create_task(&task).await.unwrap();
+        
+        // 更新进度
+        db.update_task_progress(id, 0.5, 5, 10).await.unwrap();
+        
+        // 验证进度已更新
+        let updated_task = db.get_task(id).await.unwrap().unwrap();
+        assert_eq!(updated_task.progress, 0.5);
+        assert_eq!(updated_task.completed_items, 5);
+        assert_eq!(updated_task.total_items, 10);
+    }
+
+    #[tokio::test]
+    async fn test_update_task_error() {
+        let (db, _temp_dir) = setup_test_db().await;
+        
+        let task = create_test_task("error_test");
+        let id = db.create_task(&task).await.unwrap();
+        
+        // 更新错误信息
+        db.update_task_error(id, "Test error message").await.unwrap();
+        
+        // 验证错误信息已更新
+        let updated_task = db.get_task(id).await.unwrap().unwrap();
+        assert_eq!(updated_task.status, TaskStatus::Failed);
+        assert_eq!(updated_task.error_message, Some("Test error message".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_task_data() {
+        let (db, _temp_dir) = setup_test_db().await;
+        
+        let task = create_test_task("data_test");
+        let id = db.create_task(&task).await.unwrap();
+        
+        // 更新数据
+        let new_data = r#"{"key": "value"}"#;
+        db.update_task_data(id, new_data).await.unwrap();
+        
+        // 验证数据已更新
+        let updated_task = db.get_task(id).await.unwrap().unwrap();
+        assert_eq!(updated_task.data, Some(new_data.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_delete_task() {
+        let (db, _temp_dir) = setup_test_db().await;
+        
+        let task = create_test_task("delete_test");
+        let id = db.create_task(&task).await.unwrap();
+        
+        // 删除任务
+        db.delete_task(id).await.unwrap();
+        
+        // 验证任务已删除
+        let result = db.get_task(id).await.unwrap();
+        assert!(result.is_none());
+    }
+}
