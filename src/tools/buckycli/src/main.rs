@@ -296,14 +296,15 @@ async fn main() -> std::result::Result<(), String> {
             }
         }
         Some(("connect", matches)) => {
-            let url = match matches.get_one::<String>("target_url") {
-                Some(arg) => arg.to_string(),
-                None => String::from("http://127.0.0.1:3200/kapi/system_config"),
-            };
-            let node_id = match matches.get_one::<String>("node_id") {
-                Some(arg) =>  arg.to_string(),
-                None => String::from("node"),
-            };
+            // 连接server的默认参数
+            let url = matches
+                .get_one::<String>("target_url")
+                .map_or(String::from("http://127.0.0.1:3200/kapi/system_config"), |arg| arg.to_string());
+            let node_id = matches
+                .get_one::<String>("node_id")
+                .map_or(String::from("node"), |arg| arg.to_string());
+
+            //
             sys_config::connect_into(&url, &node_id).await;
         }
         _ => {
