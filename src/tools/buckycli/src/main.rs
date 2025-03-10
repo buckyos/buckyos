@@ -11,7 +11,7 @@ use util::*;
 const CONFIG_FILE: &str = "~/.buckycli/config";
 
 #[tokio::main]
-async fn main() -> std::result::Result<(), String> {
+async fn main() -> Result<(), String> {
     env_logger::init();
 
     let matches = Command::new("buckyos control tool")
@@ -134,18 +134,6 @@ async fn main() -> std::result::Result<(), String> {
                         .help("node_id in current machine, default 'node'")
                 )
         )
-        // .arg(
-        //     Arg::new("snapshot")
-        //         .short('s')
-        //         .long("snapshot")
-        //         .help("Takes a snapshot of the etcd server"),
-        // )
-        // .arg(
-        //     Arg::new("save")
-        //         .short('f')
-        //         .long("file")
-        //         .help("Specifies the file path to save the snapshot"),
-        // )
         .get_matches();
 
     let default_node_id = "node".to_string();
