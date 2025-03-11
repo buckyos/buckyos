@@ -8,7 +8,7 @@ use tokio::{
     io::{self, AsyncRead,AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeek, AsyncSeekExt}, 
 };
 use log::*;
-use crate::{build_named_object_by_json, ChunkHasher, ChunkId, ChunkReadSeek, ChunkState, FileObject, NamedDataStore, NdnError, NdnResult};
+use crate::{build_named_object_by_json, ChunkHasher, ChunkId, ChunkReadSeek, ChunkState, FileObject, NamedDataStore, NdnError, NdnResult, PathObject};
 use memmap::Mmap;
 use std::{path::PathBuf, pin::Pin};
 use std::io::SeekFrom;
@@ -448,6 +448,14 @@ impl NamedDataMgr {
 
     fn get_cache_mmap_path(&self, chunk_id:&ChunkId)->Option<String> {
         None
+    }
+
+    pub fn get_cache_path_obj(&self, url:&str)->Option<PathObject> {
+        None
+    }
+
+    pub fn update_cache_path_obj(&self, url:&str,path_obj:PathObject)->NdnResult<()> {
+        Ok(())
     }
 
     pub async fn get_obj_id_by_path(&self, path:String)->NdnResult<ObjId> {

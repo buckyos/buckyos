@@ -7,6 +7,7 @@ mod dns_provider;
 mod utility;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use jsonwebtoken::DecodingKey;
 pub use provider::*;
 pub use name_client::*;
 pub use name_query::*;
@@ -70,6 +71,38 @@ pub async fn resolve(name: &str, record_type: Option<RecordType>) -> NSResult<Na
     client.resolve(name, record_type).await
 }
 
+pub async fn resolve_auth_key(hostname: &str) -> NSResult<DecodingKey> {
+    //return #auth-key
+    //let did = DID::from_host_name(hostname);
+    // if did.is_some(){
+    //     let did = did.unwrap();
+    //     if let Some(auth_key) = did.get_auth_key() {
+    //         return Ok((auth_key,hostname.to_string()));
+    //     }
+    // }
+
+    let client = get_name_client();
+    if client.is_none() {
+        let msg = "Name client not init yet".to_string();
+        error!("{}",msg);
+        return Err(NSError::InvalidState(msg));
+    }
+    let did_doc = client.unwrap().resolve_did(hostname,None).await?;
+    //info!("did_doc: {:?}",did_doc);
+    // did_doc could be ZoneConfig or DeviceConfig
+    let zone_config = ZoneConfig::decode(&did_doc, None);
+    if zone_config.is_ok() {
+        let zone_config = zone_config.unwrap();
+        let auth_key = zone_config.auth_key; 
+        if auth_key.is_some() {
+            let auth_key = auth_key.unwrap();
+            let auth_key = DecodingKey::from_jwk(&auth_key)
+                .map_err(|e|NSError::InvalidState(format!("Failed to decode auth key:{}",e.to_string())))?;
+            return Ok(auth_key);
+        }
+    }
+    return Err(NSError::NotFound("Invalid did document".to_string()));
+}
 
 pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],String)> {
     //return #auth-key

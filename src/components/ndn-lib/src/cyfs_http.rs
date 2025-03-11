@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use reqwest::header::HeaderMap;
 use url::Url;
-use crate::{ObjId, NdnResult, NdnError};
+use crate::{ObjId, NdnResult, NdnError, PathObject};
 
 enum CYFSUrlMode {
     PathMode,//objid at url path
@@ -12,8 +12,11 @@ enum CYFSUrlMode {
 #[derive(Debug,Clone)]
 pub struct CYFSHttpRespHeaders {
     pub obj_id:Option<ObjId>,//cyfs-obj-id
-    pub chunk_size:Option<u64>,//cyfs-data-size
-    pub obj_path:Option<String>,//cyfs-obj-path
+    pub obj_size:Option<u64>,//cyfs-obj-size
+    pub path_obj:Option<String>,//cyfs-path-obj
+
+    pub root_obj_id:Option<ObjId>,//cyfs-root-obj-id
+    pub mtree_path:String,//cyfs-mtree-path
     pub embed_objs:Option<HashMap<ObjId,String>>,//cyfs-$objid : $obj_json_str
 }
 
@@ -74,8 +77,10 @@ pub fn get_cyfs_resp_headers(headers:&HeaderMap)->NdnResult<CYFSHttpRespHeaders>
 
     return Ok(CYFSHttpRespHeaders {
         obj_id:real_obj_id,
-        chunk_size:real_chunk_size,
-        obj_path:real_obj_path,
+        obj_size:real_chunk_size,
+        path_obj:real_obj_path,
+        root_obj_id:None,
+        mtree_path:String::new(),
         embed_objs:None,
     });
 }

@@ -35,6 +35,12 @@ impl FileObject {
     }
 }
 
+#[derive(Serialize,Deserialize,Clone,Eq,PartialEq)]
+pub struct PathObject {
+    pub path:String,
+    pub update_time:u64,
+}
+
 #[cfg(test)]
 mod tests {
     use crate::build_named_object_by_json;

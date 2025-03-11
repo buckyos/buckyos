@@ -325,7 +325,7 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
     let root_env_path = BuckyOSRuntime::get_root_pkg_env_path();
     let meta_db_file_patgh = root_env_path.join(".pkgs").join("meta_index.db");
     let ndn_client = NdnClient::new("http://127.0.0.1:8080/".to_string(), session_token,None);
-    let is_same = ndn_client.verify_url_is_same_as_local_file(zone_repo_index_db_url,&meta_db_file_patgh).await
+    let is_same = ndn_client.verify_remote_is_same_as_local_file(zone_repo_index_db_url,&meta_db_file_patgh).await
         .map_err(|err| {
             error!("verify remote index db  to root pkg env's meta-Index db failed! {}", err);
             return String::from("verify remote index db  to root pkg env's meta-Index db failed!");
