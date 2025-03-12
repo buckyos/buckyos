@@ -13,7 +13,8 @@ enum CYFSUrlMode {
 pub struct CYFSHttpRespHeaders {
     pub obj_id:Option<ObjId>,//cyfs-obj-id
     pub obj_size:Option<u64>,//cyfs-obj-size
-    pub path_obj:Option<String>,//cyfs-path-obj
+    //if use R-Path http mode ,need this
+    pub path_obj:Option<String>,//cyfs-path-obj jwt
 
     pub root_obj_id:Option<ObjId>,//cyfs-root-obj-id
     pub mtree_path:String,//cyfs-mtree-path
@@ -57,7 +58,7 @@ pub fn get_cyfs_resp_headers(headers:&HeaderMap)->NdnResult<CYFSHttpRespHeaders>
     }
 
     let mut real_chunk_size = None;
-    let chunk_size = headers.get("cyfs-data-size");
+    let chunk_size = headers.get("cyfs-obj-size");
     if chunk_size.is_some() {
         let chunk_size = chunk_size.unwrap().to_str().unwrap();
         let chunk_size = chunk_size.parse::<u64>().map_err(|e| {
@@ -66,11 +67,18 @@ pub fn get_cyfs_resp_headers(headers:&HeaderMap)->NdnResult<CYFSHttpRespHeaders>
         real_chunk_size = Some(chunk_size);
     }
 
-    let mut real_obj_path = None;
-    let obj_path = headers.get("cyfs-obj-path");
-    if obj_path.is_some() {
-        let obj_path = obj_path.unwrap().to_str().unwrap();
-        real_obj_path = Some(obj_path.to_string());
+    let mut cyfs_root_obj_id = None;
+    let root_obj_id = headers.get("cyfs-root-obj-id");
+    if root_obj_id.is_some() {
+        let root_obj_id = root_obj_id.unwrap().to_str().unwrap();
+        cyfs_root_obj_id = Some(ObjId::new(root_obj_id)?);
+    }
+
+    let mut real_path_obj_jwt = None;
+    let path_obj_jwt = headers.get("cyfs-path-obj ");
+    if path_obj_jwt.is_some() {
+        let path_obj_jwt = path_obj_jwt.unwrap().to_str().unwrap();
+        real_path_obj_jwt = Some(path_obj_jwt.to_string());
     }
 
     //TODO: get embed objs
@@ -78,8 +86,8 @@ pub fn get_cyfs_resp_headers(headers:&HeaderMap)->NdnResult<CYFSHttpRespHeaders>
     return Ok(CYFSHttpRespHeaders {
         obj_id:real_obj_id,
         obj_size:real_chunk_size,
-        path_obj:real_obj_path,
-        root_obj_id:None,
+        path_obj:real_path_obj_jwt,
+        root_obj_id:cyfs_root_obj_id,
         mtree_path:String::new(),
         embed_objs:None,
     });

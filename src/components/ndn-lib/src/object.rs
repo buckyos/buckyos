@@ -78,6 +78,14 @@ impl ObjId {
         }
     }
 
+    pub fn is_big_container(&self)->bool {
+        match self.obj_type.as_str() {
+            OBJ_TYPE_MTREE => true,
+            OBJ_TYPE_OBJMAPT => true,
+            _ => false,
+        }
+    }
+
     pub fn to_string(&self)->String {
         let hex_str = hex::encode(self.obj_hash.clone());
         format!("{}:{}",self.obj_type,hex_str)

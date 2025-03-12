@@ -1,3 +1,4 @@
+use buckyos_kit::get_by_json_path;
 use log::*;
 use anyhow::Result;
 use hyper::{Request,Response,Body,StatusCode};
@@ -7,6 +8,7 @@ use ndn_lib::*;
 use cyfs_gateway_lib::{NamedDataMgrRouteConfig};
 use serde_json::Value;
 use crate::parse_range;
+use rand::RngCore;
 
 //1. get objid and inner path
 //2. if enable, try use relative path to get objid and inner path
@@ -16,7 +18,7 @@ use crate::parse_range;
 
 
 enum GetObjResultBody {
-    Value(Value), //value, embeded obj_string
+    NamedObj(Value), //value, embeded obj_string
     Reader(ChunkReader,u64),//reader, chunk_size, embeded obj_string
     TextRecord(String),//text_record, verify_obj path  
 }
@@ -24,27 +26,30 @@ enum GetObjResultBody {
 struct GetObjResult {
     pub real_obj_id:ObjId,
     pub real_body:GetObjResultBody,
-    pub parent_obj_body_str:Option<String>,
 }
+
+
 
 impl GetObjResult {
-    pub fn new_chunk_result(real_obj_id:ObjId,real_body:ChunkReader,chunk_size:u64,parent_obj_body_str:Option<String>)->Self {
+    pub fn new_chunk_result(real_obj_id:ObjId,real_body:ChunkReader,chunk_size:u64)->Self {
         let body = GetObjResultBody::Reader(real_body,chunk_size);
-        Self { real_obj_id, real_body:body, parent_obj_body_str }
+        Self { real_obj_id, real_body:body }
     }
 
-    pub fn new_value_result(real_obj_id:ObjId,real_body:Value,parent_obj_body_str:Option<String>)->Self {
-        let body = GetObjResultBody::Value(real_body);
-        Self { real_obj_id, real_body:body, parent_obj_body_str }
+    pub fn new_named_obj_result(real_obj_id:ObjId,real_body:Value)->Self {
+        let body = GetObjResultBody::NamedObj(real_body);
+        Self { real_obj_id, real_body:body }
     }
 
-    pub fn new_text_result(real_obj_id:ObjId,real_body:String,parent_obj_body_str:Option<String>)->Self {
-        let body = GetObjResultBody::TextRecord(real_body);
-        Self { real_obj_id, real_body:body, parent_obj_body_str }
+    pub fn new_value_result(real_body:Value)->Self {
+        let body_str = serde_json::to_string(&real_body).unwrap();
+        let body = GetObjResultBody::TextRecord(body_str);
+        let fake_obj_id = ObjId::new_by_raw("fake".to_string(),vec![]);
+        Self { real_obj_id:fake_obj_id, real_body:body }
     }
 }
 
-async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset:u64,inner_obj_path:Option<String>,parent_obj_str:Option<String>)->Result<GetObjResult> {
+async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset:u64)->Result<GetObjResult> {
     let real_mgr = mgr.lock().await;
     if obj_id.is_chunk() {
         let chunk_id = ChunkId::from_obj_id(&obj_id);
@@ -54,38 +59,41 @@ async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,
                 warn!("get chunk reader by objid failed: {}", e);
                 anyhow::anyhow!("get chunk reader by objid failed: {}", e)
             })?;
-        info!("ndn route -> chunk: {}, chunk_size: {}, offset: {}", obj_id.to_base32(), chunk_size, offset);
-        return Ok(GetObjResult::new_chunk_result(obj_id.clone(),chunk_reader,chunk_size,parent_obj_str));
+
+        debug!("ndn route -> chunk: {}, chunk_size: {}, offset: {}", obj_id.to_base32(), chunk_size, offset);
+        return Ok(GetObjResult::new_chunk_result(obj_id.clone(),chunk_reader,chunk_size));
     } else {
-        let obj_body = real_mgr.get_object(&obj_id,inner_obj_path).await?;
-        if obj_body.is_string() {
-            let obj_body_str = obj_body.as_str().unwrap();
-            let p_obj_id = ObjId::new(&obj_body_str);
-            if p_obj_id.is_err() {
-                info!("ndn route -> obj.value: {}", obj_id.to_base32());
-                return Ok(GetObjResult::new_value_result(obj_id.clone(),obj_body,parent_obj_str));
-            } else {
-                let p_obj_id = p_obj_id.unwrap();
-                drop(real_mgr);
-                return Box::pin(get_obj_result(mgr, &p_obj_id, offset, None,Some(obj_body_str.to_string()))).await;
-            }
-        } else {
-            info!("ndn route -> obj {}", obj_body.to_string());
-            return Ok(GetObjResult::new_value_result(obj_id.clone(),obj_body,parent_obj_str));
-        }
+        let obj_body = real_mgr.get_object(&obj_id,None).await?;
+        debug!("ndn route -> obj {}", obj_body.to_string());
+        return Ok(GetObjResult::new_named_obj_result(obj_id.clone(),obj_body));
     }
 }
 
-async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,_obj_id:ObjId)->Result<Response<Body>> {
+pub struct InnerPathInfo {
+    pub root_obj_id:ObjId,
+    pub inner_obj_path:String,
+    pub path_obj_jwt:Option<String>,
+    pub mtree_path:Option<String>,
+}
+
+async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,inner_path_info:Option<InnerPathInfo>)->Result<Response<Body>> {
     let body_result;
     let mut result = Response::builder()
                     .header("cyfs-obj-id", obj_get_result.real_obj_id.to_base32());
-    if obj_get_result.parent_obj_body_str.is_some() {
-        result = result.header("cyfs-embeded-obj", obj_get_result.parent_obj_body_str.unwrap());
-    }
-    match obj_get_result.real_body {
-        GetObjResultBody::Value(json_value) => {
 
+    if inner_path_info.is_some() {
+        let inner_path_info = inner_path_info.unwrap();
+        result = result.header("cyfs-root-obj-id", inner_path_info.root_obj_id.to_base32());
+        if inner_path_info.path_obj_jwt.is_some() {
+            result = result.header("cyfs-path-obj", inner_path_info.path_obj_jwt.unwrap());
+        }
+        if inner_path_info.mtree_path.is_some() {
+            result = result.header("cyfs-mtree-path", inner_path_info.mtree_path.unwrap());
+        }
+    }
+
+    match obj_get_result.real_body {
+        GetObjResultBody::NamedObj(json_value) => {
             result = result.header("Content-Type", "application/json")
             .status(StatusCode::OK);
             body_result = result.body(Body::from(serde_json::to_string(&json_value)?))?;
@@ -96,7 +104,7 @@ async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,
             result = result.header("Accept-Ranges", "bytes")
                 .header("Content-Type", "application/octet-stream")
                 .header("Cache-Control", "public,max-age=31536000")
-                .header("cyfs-data-size", chunk_size.to_string());
+                .header("cyfs-obj-size", chunk_size.to_string());
             if start > 0 {
                 result = result.header("Content-Range", format!("bytes {}-{}/{}", start, chunk_size - 1, chunk_size))
                 .header("Content-Length", chunk_size - start)
@@ -145,12 +153,13 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
 
     //let chunk_id_result;
     let mut obj_id:Option<ObjId> = None;
+    let mut obj_content:Option<Value> = None;
     let mut inner_obj_path:Option<String> = None;
     let path = req.uri().path();
-    let _user_id = "guest";
+    let _user_id = "guest";//TODO: session_token from cookie
     let _app_id = "unknown";
 
-    if mgr_config.is_chunk_id_in_path {
+    if mgr_config.is_object_id_in_path {
         //let sub_path = path.trim_start_matches(path);
         let obj_id_result = ObjId::from_path(path);
         if obj_id_result.is_ok() {
@@ -166,25 +175,77 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
         }
     }
 
+    let mut path_obj_jwt:Option<String> = None;
+    //let mut root_obj_id:Option<ObjId> = None;
+    let mut inner_path_obj:Option<InnerPathInfo> = None;
     if obj_id.is_none() {
         if mgr_config.enable_mgr_file_path {
             let sub_path = buckyos_kit::get_relative_path(route_path, path);
-            let path_obj_id = named_mgr.get_obj_id_by_path(sub_path).await;
-            if path_obj_id.is_ok() {
-                obj_id = Some(path_obj_id.unwrap());
-                //TODO: get obj_path from query?
+            let target_obj_id = named_mgr.get_obj_id_by_path(&sub_path).await;
+            path_obj_jwt = named_mgr.get_path_obj(&sub_path).await;
+            if target_obj_id.is_ok() {
+                // will return (obj_id,obj_json_str)
+                obj_id = Some(target_obj_id.unwrap());
+            } else {
+                //root_obj/inner_path = obj_id,
+                let root_obj_id_result = named_mgr.select_obj_id_by_path(&sub_path).await;
+
+                if root_obj_id_result.is_ok() {
+                    
+                    let (the_root_obj_id,the_obj_path) = root_obj_id_result.unwrap();
+                    if the_obj_path.is_none() {
+                        return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not found"));
+                    }
+                    inner_obj_path = the_obj_path.clone();
+                    if the_root_obj_id.is_chunk() {
+                        return Err(anyhow::anyhow!("ndn_router:chunk is not supported to be root obj"));
+                    }
+                    if the_root_obj_id.is_big_container() {
+                        //TODO: not support now
+                    } else {
+                        let root_obj_json = named_mgr.get_object(&the_root_obj_id, None).await?;
+                        let obj_filed = get_by_json_path(&root_obj_json, &inner_obj_path.clone().unwrap());
+                        if obj_filed.is_none() {
+                            return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not valid"));
+                        }
+                        //this is the target content or target obj_id
+                        let obj_filed = obj_filed.unwrap();
+                        if obj_filed.is_string() {
+                            let obj_id_str = obj_filed.as_str().unwrap();
+                            let p_obj_id = ObjId::new(obj_id_str);
+                            if p_obj_id.is_ok() {
+                                obj_id = Some(p_obj_id.unwrap());
+                            } else {
+                                obj_content = Some(obj_filed);
+                            }
+                        } else {
+                            obj_content = Some(obj_filed);
+                        }
+                        inner_path_obj = Some(InnerPathInfo {
+                            root_obj_id: the_root_obj_id,
+                            inner_obj_path: the_obj_path.unwrap(),
+                            path_obj_jwt: path_obj_jwt,
+                            mtree_path: None,
+                        });
+                    }
+                }
             }
         } 
     }
-
-    if obj_id.is_none() {
-        return Err(anyhow::anyhow!("ndn_router:failed to get obj id from request!,request:{}",req.uri()));
-    }
-    let obj_id = obj_id.unwrap();
     drop(named_mgr);
-    
-    let get_result = get_obj_result(named_mgr2, &obj_id, start, inner_obj_path,None).await?;
-    let response = build_response_by_obj_get_result(get_result, start, obj_id).await?;
+    let get_result:GetObjResult;
+    if obj_content.is_some() {
+        //root_obj/inner_path = obj_content
+        //get_result = get_obj_result(named_mgr2, &obj_id, start, inner_obj_p).await?;     
+        get_result = GetObjResult::new_value_result(obj_content.unwrap());  
+    } else {
+        if obj_id.is_none() {
+            return Err(anyhow::anyhow!("ndn_router:failed to get obj id from request!,request.uri():{}",req.uri()));
+        }
+        let obj_id = obj_id.unwrap();
+        get_result = get_obj_result(named_mgr2, &obj_id, start).await?;
+    }
+    let response = build_response_by_obj_get_result(get_result, start,inner_path_obj).await?;
     Ok(response)
 }
 
@@ -197,10 +258,9 @@ mod tests {
     use crate::*;
     use serde_json::json;
     use cyfs_gateway_lib::*;
-    use rand::{thread_rng, RngCore};
 
     fn generate_random_bytes(size: u64) -> Vec<u8> {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut buffer = vec![0u8; size as usize];
         rng.fill_bytes(&mut buffer);
         buffer
@@ -221,7 +281,7 @@ mod tests {
                         "named_data_mgr_id":"test",
                         "read_only":true,
                         "guest_access":true,
-                        "is_chunk_id_in_path":true,
+                        "is_object_id_in_path":true,
                         "enable_mgr_file_path":true
                     }
                   }

@@ -1,4 +1,4 @@
-use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_by_json_path};
+use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_by_json_path, get_relative_path};
 use serde::{Serialize,Deserialize};
 //chunk_mgr默认是机器级别的，即多个进程可以共享同一个chunk_mgr
 //chunk_mgr使用共享内存/filemap等技术来实现跨进程的读数据共享，比使用127.0.0.1的http协议更高效
@@ -68,6 +68,30 @@ impl NamedDataMgrDB {
         })
     }
 
+    pub fn find_longest_matching_path(&self, path: &str) -> NdnResult<(String, ObjId, Option<String>)> {
+        let conn = self.conn.lock().unwrap();
+        
+        let mut stmt = conn.prepare("SELECT path, obj_id FROM paths WHERE ? LIKE (path || '%') ORDER BY length(path) DESC LIMIT 1")
+            .map_err(|e| {
+                warn!("NamedDataMgrDB: prepare statement failed! {}", e.to_string());
+                NdnError::DbError(e.to_string())
+            })?;
+
+        let path_obj_id: (String, String) = stmt.query_row([path], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        }).map_err(|e| {
+            warn!("NamedDataMgrDB: query path obj id failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+
+        let result_path = path_obj_id.0;
+        let obj_id_str = path_obj_id.1;
+        let obj_id = ObjId::new(&obj_id_str)?;
+        let relative_path = get_relative_path(&result_path, path);
+        Ok((result_path, obj_id, Some(relative_path)))
+    }
+
+    
     pub fn get_path_target_objid(&self, path: &str)->NdnResult<ObjId> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT obj_id FROM paths WHERE path = ?1").map_err(|e| {
@@ -458,9 +482,19 @@ impl NamedDataMgr {
         Ok(())
     }
 
-    pub async fn get_obj_id_by_path(&self, path:String)->NdnResult<ObjId> {
-        let obj_id = self.db.get_path_target_objid(&path)?;
+    //return path_obj_jwt
+    pub async fn get_path_obj(&self, path:&str)->Option<String> {
+        None
+    }
+
+    pub async fn get_obj_id_by_path(&self, path:&str)->NdnResult<ObjId> {
+        let obj_id = self.db.get_path_target_objid(path)?;
         Ok(obj_id)
+    }
+
+    //返回obj_id,和relative_path(如有)
+    pub async fn select_obj_id_by_path(&self, path:&str)->NdnResult<(ObjId,Option<String>)> {
+        unimplemented!()
     }
 
     pub async fn get_object(&self, obj_id:&ObjId,inner_obj_path:Option<String>)->NdnResult<serde_json::Value> {
@@ -516,16 +550,14 @@ impl NamedDataMgr {
     }
 
     pub async fn get_chunk_reader_by_path(&self, path:String,user_id:&str,app_id:&str,seek_from:SeekFrom)->NdnResult<(ChunkReader,u64,ChunkId)> {
-        let obj_id = self.db.get_path_target_objid(&path);
-        if obj_id.is_err() {
-            warn!("get_chunk_reader_by_path: no chunk_id for path:{}", path);
-            return Err(NdnError::NotFound(path));
-        }
-        let obj_id = obj_id.unwrap();
+        let obj_id = self.db.get_path_target_objid(&path)?;
+        
+        // Check if obj_id is a valid chunk id
         if !obj_id.is_chunk() {
-            warn!("get_chunk_reader_by_path: path:{} , obj type is not chunk:{}", path, obj_id.to_string());
-            return Err(NdnError::InvalidObjType(obj_id.to_string()));
+            warn!("get_chunk_reader_by_path: obj_id is not a chunk_id:{}", obj_id.to_string());
+            return Err(NdnError::InvalidParam(format!("obj_id is not a chunk_id:{}",obj_id.to_string())));
         }
+        
         let chunk_id = ChunkId::from_obj_id(&obj_id);
         let (chunk_reader,chunk_size) = self.open_chunk_reader(&chunk_id, seek_from, true).await?;
         let access_time = buckyos_get_unix_timestamp();
@@ -908,6 +940,129 @@ mod tests {
             assert_eq!(&buffer, test_data);
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_find_longest_matching_path() -> NdnResult<()> {
+        // Create a temporary directory for testing
+        init_logging("ndn-lib test");
+        let test_dir = tempdir().unwrap();
+        let config = NamedDataMgrConfig {
+            local_stores: vec![test_dir.path().to_str().unwrap().to_string()],
+            local_cache: None,
+            mmap_cache_dir: None,
+        };
+
+        let chunk_mgr = NamedDataMgr::from_config(
+            Some("test".to_string()),
+            test_dir.path().to_path_buf(),
+            config
+        ).await?;
+
+        // Create test data and paths
+        let test_data1 = b"Test data for path 1";
+        let test_data2 = b"Test data for path 2";
+        let test_data3 = b"Test data for path 3";
+        
+        let chunk_id1 = ChunkId::new("sha256:1111111111111111").unwrap();
+        let chunk_id2 = ChunkId::new("sha256:2222222222222222").unwrap();
+        let chunk_id3 = ChunkId::new("sha256:3333333333333333").unwrap();
+        
+        let base_path = "/test/path";
+        let sub_path1 = "/test/path/file1.txt";
+        let sub_path2 = "/test/path/subdir";
+        let sub_path3 = "/test/path/subdir/file2.txt";
+        
+        // Write chunks
+        let (mut writer1, _) = chunk_mgr.open_chunk_writer(&chunk_id1, test_data1.len() as u64, 0).await?;
+        writer1.write_all(test_data1).await.unwrap();
+        chunk_mgr.complete_chunk_writer(&chunk_id1).await.unwrap();
+        
+        let (mut writer2, _) = chunk_mgr.open_chunk_writer(&chunk_id2, test_data2.len() as u64, 0).await?;
+        writer2.write_all(test_data2).await.unwrap();
+        chunk_mgr.complete_chunk_writer(&chunk_id2).await.unwrap();
+        
+        let (mut writer3, _) = chunk_mgr.open_chunk_writer(&chunk_id3, test_data3.len() as u64, 0).await?;
+        writer3.write_all(test_data3).await.unwrap();
+        chunk_mgr.complete_chunk_writer(&chunk_id3).await.unwrap();
+        
+        // Bind chunks to paths
+        chunk_mgr.create_file(
+            base_path.to_string(),
+            &chunk_id1.to_obj_id(),
+            "test_app",
+            "test_user"
+        ).await?;
+        info!("Created base path: {}", base_path);
+        
+        chunk_mgr.create_file(
+            sub_path1.to_string(),
+            &chunk_id2.to_obj_id(),
+            "test_app",
+            "test_user"
+        ).await?;
+        info!("Created sub path 1: {}", sub_path1);
+        
+        chunk_mgr.create_file(
+            sub_path2.to_string(),
+            &chunk_id3.to_obj_id(),
+            "test_app",
+            "test_user"
+        ).await?;
+        info!("Created sub path 2: {}", sub_path2);
+        
+        // Test find_longest_matching_path
+        
+        // Test case 1: Exact match
+        info!("Test case 1: Exact match with {}", sub_path1);
+        let (result_path, obj_id, relative_path) = chunk_mgr.db.find_longest_matching_path(sub_path1)?;
+        info!("Result: path={}, obj_id={}, relative_path={:?}", result_path, obj_id.to_string(), relative_path);
+        assert_eq!(result_path, sub_path1);
+        assert_eq!(obj_id, chunk_id2.to_obj_id());
+        assert_eq!(relative_path, Some("".to_string()));
+        
+        // Test case 2: Match with a parent path
+        let test_path = "/test/path/subdir/file2.txt";
+        info!("Test case 2: Match with parent path. Testing {}", test_path);
+        let (result_path, obj_id, relative_path) = chunk_mgr.db.find_longest_matching_path(test_path)?;
+        info!("Result: path={}, obj_id={}, relative_path={:?}", result_path, obj_id.to_string(), relative_path);
+        assert_eq!(result_path, sub_path2);
+        assert_eq!(obj_id, chunk_id3.to_obj_id());
+        assert_eq!(relative_path, Some("/file2.txt".to_string()));
+        
+        // Test case 3: Match with the base path
+        let test_path = "/test/path/unknown/file.txt";
+        info!("Test case 3: Match with base path. Testing {}", test_path);
+        let (result_path, obj_id, relative_path) = chunk_mgr.db.find_longest_matching_path(test_path)?;
+        info!("Result: path={}, obj_id={}, relative_path={:?}", result_path, obj_id.to_string(), relative_path);
+        assert_eq!(result_path, base_path);
+        assert_eq!(obj_id, chunk_id1.to_obj_id());
+        assert_eq!(relative_path, Some("/unknown/file.txt".to_string()));
+        
+        // Test case 4: No match (should return error)
+        let test_path = "/other/path/file.txt";
+        info!("Test case 4: No match. Testing {}", test_path);
+        let result = chunk_mgr.db.find_longest_matching_path(test_path);
+        match result {
+            Ok(_) => {
+                panic!("Expected error for path with no match, but got success");
+            },
+            Err(e) => {
+                info!("Got expected error for non-matching path: {}", e);
+                // Verify it's the expected error type
+                match e {
+                    NdnError::DbError(_) => {
+                        // This is the expected error type
+                        info!("Error type is correct: DbError");
+                    },
+                    _ => {
+                        panic!("Expected DbError, but got different error type: {:?}", e);
+                    }
+                }
+            }
+        }
+        
         Ok(())
     }
 }

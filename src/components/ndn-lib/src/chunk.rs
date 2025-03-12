@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn test_chunk_hasher_save_state() {
         let mut buffer = vec![0u8; 2048];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         rng.fill(&mut buffer[..]);
 
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();

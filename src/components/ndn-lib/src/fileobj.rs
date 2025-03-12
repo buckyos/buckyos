@@ -39,6 +39,7 @@ impl FileObject {
 pub struct PathObject {
     pub path:String,
     pub update_time:u64,
+    pub target_obj_id:ObjId,
 }
 
 #[cfg(test)]

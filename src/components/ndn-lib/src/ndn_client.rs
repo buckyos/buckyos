@@ -14,6 +14,7 @@ use std::pin::Pin;
 use tokio::io::{BufReader,BufWriter};
 use std::collections::HashMap;
 use futures::Future;
+use rand::RngCore;
 
 use crate::{build_named_object_by_json, build_obj_id, copy_chunk, cyfs_get_obj_id_from_url, get_cyfs_resp_headers, verify_named_object, CYFSHttpRespHeaders, ChunkState, FileObject, PathObject};
 
@@ -570,7 +571,7 @@ mod tests {
     use rand::{thread_rng, RngCore};
 
     fn generate_random_bytes(size: u64) -> Vec<u8> {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut buffer = vec![0u8; size as usize];
         rng.fill_bytes(&mut buffer);
         buffer

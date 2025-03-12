@@ -626,7 +626,7 @@ impl RepoServer {
         }
         let named_mgr = named_mgr.unwrap();
         let named_mgr = named_mgr.lock().await;
-        let index_obj_id = named_mgr.get_obj_id_by_path("/repo/meta_index.db".to_string()).await.map_err(|e| {
+        let index_obj_id = named_mgr.get_obj_id_by_path("/repo/meta_index.db").await.map_err(|e| {
             error!("get obj_id from ndn://repo/meta_index.db failed, err:{}", e);
             RPCErrors::ReasonError(format!("get meta_index_db obj_id failed, err:{}", e))
         })?;
