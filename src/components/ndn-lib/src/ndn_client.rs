@@ -38,10 +38,11 @@ pub struct NdnClient {
     session_token:Option<String>,
     default_remote_url:Option<String>,
     enable_mutil_remote:bool,
-    enable_remote_pull:bool,
-    enable_zone_pull:bool,
+    pub enable_remote_pull:bool,
+    pub enable_zone_pull:bool,
     chunk_work_state:HashMap<ChunkId,ChunkWorkState>,//
     pub obj_id_in_host:bool,
+    pub force_trust_remote:bool,//是否强制信任远程节点
 }
 
 
@@ -63,6 +64,7 @@ impl NdnClient {
             enable_zone_pull:false,
             chunk_work_state:HashMap::new(),
             obj_id_in_host:false,
+            force_trust_remote:false,
         }
     }
 
@@ -130,6 +132,7 @@ impl NdnClient {
         let obj_str = res.text()
             .await
             .map_err(|e| NdnError::GetFromRemoteError(format!("Failed to read response body: {}", e)))?;
+        //info!(":=>RESP obj_content: {}",obj_str);
        
         if known_obj_id.is_some() {
             let known_obj_id = known_obj_id.unwrap();
@@ -165,9 +168,14 @@ impl NdnClient {
             }
         } else {
             //URL is a Semantic Object Link (CYFS R-Link)
-            if cyfs_resp_headers.obj_id.is_none() {
-                return Err(NdnError::InvalidId("no obj id".to_string()));
+            let obj_id = cyfs_resp_headers.obj_id.clone().unwrap();
+            let real_target_obj = NdnClient::verify_obj_id(&obj_id,&obj_str)?;
+            //let real_path = 
+
+            if url.starts_with("https://")  || self.force_trust_remote {
+                return Ok((obj_id,real_target_obj));
             }
+
             if cyfs_resp_headers.path_obj.is_none() {
                 return Err(NdnError::InvalidId("no path obj".to_string()));
             }
@@ -176,31 +184,35 @@ impl NdnClient {
                 .map_err(|e|NdnError::InvalidId(format!("decode path obj failed:{}",e.to_string())))?;
             let path_obj : PathObject = serde_json::from_value(path_obj)
                 .map_err(|e|NdnError::InvalidId(format!("decode path obj failed:{}",e.to_string())))?;
-            let obj_id = cyfs_resp_headers.obj_id.clone().unwrap();
-            let real_obj = NdnClient::verify_obj_id(&obj_id,&obj_str)?;
+
+            //verify path obj
 
             let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.default_ndn_mgr_id.as_deref()).await
                 .ok_or_else(|| NdnError::Internal("No named data manager available".to_string()))?;
             let real_named_mgr = named_mgr.lock().await;
             let cache_path_obj;
             if cyfs_resp_headers.root_obj_id.is_some() {
+                if path_obj.target != *cyfs_resp_headers.root_obj_id.as_ref().unwrap() {
+                    return Err(NdnError::InvalidId(format!("path obj target obj id not match, known:{} remote:{}",path_obj.target.to_string(),cyfs_resp_headers.root_obj_id.as_ref().unwrap().to_string())));
+                }
+
                 cache_path_obj = real_named_mgr.get_cache_path_obj(url);
                 obj_inner_path = Some(get_relative_path(&path_obj.path,url));
                 NdnClient::verify_inner_path_to_obj(&cyfs_resp_headers,obj_inner_path.unwrap().as_str())?;
             } else {
+                if path_obj.target != obj_id {
+                    return Err(NdnError::InvalidId(format!("path obj target obj id not match, known:{} remote:{}",path_obj.target.to_string(),obj_id.to_string())));
+                }
                 cache_path_obj = real_named_mgr.get_cache_path_obj(url);
             }
             
-            if url.starts_with("https://")  {
-                return Ok((obj_id,real_obj));
-            }
             if cache_path_obj.is_some() {
                 let cache_path_obj = cache_path_obj.unwrap();
                 if cache_path_obj == path_obj {
-                    return Ok((obj_id,real_obj));
+                    return Ok((obj_id,real_target_obj));
                 }
 
-                if cache_path_obj.update_time > path_obj.update_time {
+                if cache_path_obj.uptime > path_obj.uptime {
                     return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
                 }
             }
@@ -212,7 +224,7 @@ impl NdnClient {
                 return Err(NdnError::InvalidId("path obj is not signed by auth key".to_string()));
             }
             real_named_mgr.update_cache_path_obj(url,path_obj);
-            return Ok((obj_id,real_obj));            
+            return Ok((obj_id,real_target_obj));            
         }
 
     }
@@ -300,6 +312,11 @@ impl NdnClient {
             if cyfs_resp_headers.obj_id.is_none() {
                 return Err(NdnError::InvalidId("no obj id".to_string()));
             }
+
+            if chunk_url.starts_with("https://") || self.force_trust_remote {
+                return Ok((reader,cyfs_resp_headers));
+            }
+
             if cyfs_resp_headers.path_obj.is_none() {
                 return Err(NdnError::InvalidId("no path obj".to_string()));
             }
@@ -322,16 +339,14 @@ impl NdnClient {
                 cache_path_obj = real_named_mgr.get_cache_path_obj(chunk_url);
             }
             
-            if chunk_url.starts_with("https://")  {
-                return Ok((reader,cyfs_resp_headers));
-            }
+
             if cache_path_obj.is_some() {
                 let cache_path_obj = cache_path_obj.unwrap();
                 if cache_path_obj == path_obj {
                     return Ok((reader,cyfs_resp_headers));
                 }
 
-                if cache_path_obj.update_time > path_obj.update_time {
+                if cache_path_obj.uptime > path_obj.uptime {
                     return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
                 }
             }

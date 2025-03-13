@@ -181,22 +181,22 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
     if obj_id.is_none() {
         if mgr_config.enable_mgr_file_path {
             let sub_path = buckyos_kit::get_relative_path(route_path, path);
-            let target_obj_id = named_mgr.get_obj_id_by_path(&sub_path).await;
-            path_obj_jwt = named_mgr.get_path_obj(&sub_path).await;
-            if target_obj_id.is_ok() {
+            let target_obj_result = named_mgr.get_obj_id_by_path(&sub_path).await;
+            if target_obj_result.is_ok() {
                 // will return (obj_id,obj_json_str)
-                obj_id = Some(target_obj_id.unwrap());
+                let (target_obj_id,_) = target_obj_result.unwrap();
+                obj_id = Some(target_obj_id);
             } else {
                 //root_obj/inner_path = obj_id,
                 let root_obj_id_result = named_mgr.select_obj_id_by_path(&sub_path).await;
 
                 if root_obj_id_result.is_ok() {
-                    
-                    let (the_root_obj_id,the_obj_path) = root_obj_id_result.unwrap();
-                    if the_obj_path.is_none() {
+                    let (the_root_obj_id,the_path_obj_jwt,the_inner_path) = root_obj_id_result.unwrap();
+                    path_obj_jwt = the_path_obj_jwt;
+                    if the_inner_path.is_none() {
                         return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not found"));
                     }
-                    inner_obj_path = the_obj_path.clone();
+                    inner_obj_path = the_inner_path.clone();
                     if the_root_obj_id.is_chunk() {
                         return Err(anyhow::anyhow!("ndn_router:chunk is not supported to be root obj"));
                     }
@@ -223,7 +223,7 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
                         }
                         inner_path_obj = Some(InnerPathInfo {
                             root_obj_id: the_root_obj_id,
-                            inner_obj_path: the_obj_path.unwrap(),
+                            inner_obj_path: the_inner_path.unwrap(),
                             path_obj_jwt: path_obj_jwt,
                             mtree_path: None,
                         });
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pull_chunk() {
+    async fn test_ndn_basic_op() {
         init_logging("ndn_client_test");
         let test_server_config = json!({
             "tls_port":3243,
@@ -278,7 +278,7 @@ mod tests {
                 "routes": {
                   "/ndn/": {
                     "named_mgr": {
-                        "named_data_mgr_id":"test",
+                        "named_data_mgr_id":"test_pub",
                         "read_only":true,
                         "guest_access":true,
                         "is_object_id_in_path":true,
@@ -306,8 +306,8 @@ mod tests {
             mmap_cache_dir: None,
         };
         
-        let named_mgr = NamedDataMgr::from_config(
-            Some("test".to_string()),
+        let pub_named_mgr = NamedDataMgr::from_config(
+            Some("test_pub".to_string()),
             temp_dir.path().to_path_buf(),
             config
         ).await.unwrap();
@@ -317,10 +317,11 @@ mod tests {
         let hash_a = hasher.calc_from_bytes(&chunk_a);
         let chunk_id_a = ChunkId::from_sha256_result(&hash_a);
         info!("chunk_id_a:{}",chunk_id_a.to_string());
-        let (mut chunk_writer,_) = named_mgr.open_chunk_writer(&chunk_id_a, chunk_a_size, 0).await.unwrap();
+        let (mut chunk_writer,_) = pub_named_mgr.open_chunk_writer(&chunk_id_a, chunk_a_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_a).await.unwrap();
         drop(chunk_writer);
-        named_mgr.complete_chunk_writer(&chunk_id_a).await.unwrap();
+        pub_named_mgr.complete_chunk_writer(&chunk_id_a).await.unwrap();
+        info!("put chunk_id_a {} to test_pub named mgr OK!",chunk_id_a.to_string());
 
 
         let chunk_b_size:u64 = 1024*1024*3 + 321*71;
@@ -329,15 +330,37 @@ mod tests {
         let hash_b = hasher.calc_from_bytes(&chunk_b);
         let chunk_id_b = ChunkId::from_sha256_result(&hash_b);
         info!("chunk_id_b:{}",chunk_id_b.to_string());
-        let (mut chunk_writer,_) = named_mgr.open_chunk_writer(&chunk_id_b, chunk_b_size, 0).await.unwrap();
+        let (mut chunk_writer,_) = pub_named_mgr.open_chunk_writer(&chunk_id_b, chunk_b_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_b).await.unwrap();
         drop(chunk_writer);
-        named_mgr.complete_chunk_writer(&chunk_id_b).await.unwrap();
+        pub_named_mgr.complete_chunk_writer(&chunk_id_b).await.unwrap();
+        info!("put chunk_id_b {} to test_pub named mgr OK!",chunk_id_b.to_string());
+        //http://localhost:3280/ndn/test/chunk_a -> chunk_id_a
+        let test_path = "/test/chunk_a".to_string();
+        // Bind chunk to path
+        pub_named_mgr.create_file(
+            test_path.as_str(),
+            &chunk_id_a.to_obj_id(),
+            "test_app",
+            "test_user"
+        ).await.unwrap();
         
-        
-        info!("named_mgr [test] init OK!");
-        NamedDataMgr::set_mgr_by_id(Some("test"),named_mgr).await.unwrap();
+        //http://localhost:3280/ndn/test/fileb/content -> chunk_id_b
+        let path2 = "/test/fileb".to_string();
+        let file_obj = FileObject::new("fileb".to_string(),chunk_b_size,chunk_id_b.to_string());
+        let (file_obj_id,file_obj_str) = file_obj.gen_obj_id();
+        info!("file_obj_id -> chunk_id:{}",file_obj_id.to_string());
+        pub_named_mgr.put_object(&file_obj_id, &file_obj_str).await.unwrap();
+        pub_named_mgr.create_file(
+            path2.as_str(),
+            &file_obj_id,
+            "test_app",
+            "test_user"
+        ).await.unwrap();
 
+        info!("named_mgr [test_pub] init OK!");
+        NamedDataMgr::set_mgr_by_id(Some("test_pub"),pub_named_mgr).await.unwrap();
+        //===================================================================
         let temp_dir = tempfile::tempdir().unwrap();
         let config = NamedDataMgrConfig {
             local_stores: vec![temp_dir.path().to_str().unwrap().to_string()],
@@ -353,13 +376,14 @@ mod tests {
         NamedDataMgr::set_mgr_by_id(Some("test_client"),named_mgr2).await.unwrap();
         // Step 2: Start a cyfs-warp server based on the named_mgr and configure the ndn-router
         let named_mgr_test = NamedDataMgr::get_named_data_mgr_by_id(Some("test_client")).await.unwrap();
-        info!("test get test_client named mgr  OK!");
         drop(named_mgr_test);
     
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
         // // Step 3: Configure the ndn-client and set the cyfs-warp address (obj_id in path)
-        let client = NdnClient::new("http://localhost:3280/ndn/".to_string(),None,Some("test_client".to_string()));
+        info!("ndn_client will pull chunk_id_a");
+        let mut client = NdnClient::new("http://localhost:3280/ndn/".to_string(),None,Some("test_client".to_string()));
+        client.force_trust_remote = true;
         client.pull_chunk(chunk_id_a.clone(),Some("test_client")).await.unwrap();
 
         let named_mgr_client = NamedDataMgr::get_named_data_mgr_by_id(Some("test_client")).await.unwrap();
@@ -372,16 +396,18 @@ mod tests {
         assert_eq!(buffer,chunk_a);
 
 
-        //client.set_remote_url(format!("http://{}/{}", warp_addr, test_obj_id.to_base32()));
+        //Step 4.1: Use the ndn-client's get_obj_by_url interface to get the fileb object
+        info!("ndn_client will get obj fileb");
+        let obj_result = client.get_obj_by_url("http://localhost:3280/ndn/test/fileb",None).await;
+        info!("obj_result:{:?}",obj_result);
+        assert!(obj_result.is_ok(), "Failed to get object by URL");
 
-        // // Step 4.1: Use the ndn-client's pull_chunk interface to retrieve the chunk
-        // let chunk_id = ChunkId::from_obj_id(&test_obj_id);
-        // let pull_result = client.pull_chunk(chunk_id.clone()).await;
-        // assert!(pull_result.is_ok(), "Failed to pull chunk");
-
-        // // Step 4.2: Use the ndn-client's get_obj_by_url interface to get the chunk/object
-        // let obj_result = client.get_obj_by_url(&format!("http://{}/{}", warp_addr, test_obj_id.to_base32())).await;
-        // assert!(obj_result.is_ok(), "Failed to get object by URL");
+        info!("ndn_client will open chunk reader for fileb.content");
+        let (mut reader,cyfs_resp) = client.open_chunk_reader_by_url("http://localhost:3280/ndn/test/fileb/content",None,None).await.unwrap();
+        let mut buffer = vec![0u8;chunk_b_size as usize];
+        reader.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(cyfs_resp.obj_size.unwrap(),chunk_b_size);
+        assert_eq!(buffer,chunk_b);
 
         // // Step 4.3: Use the ndn-client's get_obj_by_url with a URL containing obj_json_path to get the corresponding value
         // let json_path = "some_json_path";

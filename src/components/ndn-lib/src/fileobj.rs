@@ -38,8 +38,8 @@ impl FileObject {
 #[derive(Serialize,Deserialize,Clone,Eq,PartialEq)]
 pub struct PathObject {
     pub path:String,
-    pub update_time:u64,
-    pub target_obj_id:ObjId,
+    pub uptime:u64,
+    pub target:ObjId,
 }
 
 #[cfg(test)]

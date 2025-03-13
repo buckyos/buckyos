@@ -12,7 +12,7 @@ enum CYFSUrlMode {
 #[derive(Debug,Clone)]
 pub struct CYFSHttpRespHeaders {
     pub obj_id:Option<ObjId>,//cyfs-obj-id
-    pub obj_size:Option<u64>,//cyfs-obj-size
+    pub obj_size:Option<u64>,//Content-Length
     //if use R-Path http mode ,need this
     pub path_obj:Option<String>,//cyfs-path-obj jwt
 
@@ -58,7 +58,7 @@ pub fn get_cyfs_resp_headers(headers:&HeaderMap)->NdnResult<CYFSHttpRespHeaders>
     }
 
     let mut real_chunk_size = None;
-    let chunk_size = headers.get("cyfs-obj-size");
+    let chunk_size = headers.get("Content-Length");
     if chunk_size.is_some() {
         let chunk_size = chunk_size.unwrap().to_str().unwrap();
         let chunk_size = chunk_size.parse::<u64>().map_err(|e| {

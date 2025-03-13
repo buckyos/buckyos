@@ -1,4 +1,5 @@
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_by_json_path, get_relative_path};
+use name_lib::decode_jwt_claim_without_verify;
 use serde::{Serialize,Deserialize};
 //chunk_mgr默认是机器级别的，即多个进程可以共享同一个chunk_mgr
 //chunk_mgr使用共享内存/filemap等技术来实现跨进程的读数据共享，比使用127.0.0.1的http协议更高效
@@ -18,7 +19,7 @@ use std::collections::HashMap;
 use rusqlite::{Connection};
 use lazy_static::lazy_static;
 
-use buckyos_kit::get_buckyos_chunk_data_dir;
+use buckyos_kit::get_buckyos_named_data_dir;
 
 use crate::{ChunkReader,ChunkWriter,ObjId};
 
@@ -52,6 +53,7 @@ impl NamedDataMgrDB {
             "CREATE TABLE IF NOT EXISTS paths (
                 path TEXT PRIMARY KEY,
                 obj_id TEXT NOT NULL,
+                path_obj_jwt TEXT ,
                 app_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 FOREIGN KEY(obj_id) REFERENCES objs(obj_id)
@@ -68,46 +70,52 @@ impl NamedDataMgrDB {
         })
     }
 
-    pub fn find_longest_matching_path(&self, path: &str) -> NdnResult<(String, ObjId, Option<String>)> {
+    //return (result_path, obj_id,path_obj_jwt,relative_path)
+    pub fn find_longest_matching_path(&self, path: &str) -> NdnResult<(String, ObjId, Option<String>,Option<String>)> {
         let conn = self.conn.lock().unwrap();
         
-        let mut stmt = conn.prepare("SELECT path, obj_id FROM paths WHERE ? LIKE (path || '%') ORDER BY length(path) DESC LIMIT 1")
+        let mut stmt = conn.prepare("SELECT path, obj_id,path_obj_jwt FROM paths WHERE ? LIKE (path || '%') ORDER BY length(path) DESC LIMIT 1")
             .map_err(|e| {
                 warn!("NamedDataMgrDB: prepare statement failed! {}", e.to_string());
                 NdnError::DbError(e.to_string())
             })?;
 
-        let path_obj_id: (String, String) = stmt.query_row([path], |row| {
-            Ok((row.get(0)?, row.get(1)?))
+        let record: (String, String,Option<String>) = stmt.query_row([path], |row| {
+            Ok((row.get(0)?, row.get(1)?,row.get(2)?))
         }).map_err(|e| {
             warn!("NamedDataMgrDB: query path obj id failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
-        let result_path = path_obj_id.0;
-        let obj_id_str = path_obj_id.1;
+        let result_path = record.0;
+        let obj_id_str = record.1;
+        let path_obj_jwt = record.2;
         let obj_id = ObjId::new(&obj_id_str)?;
         let relative_path = get_relative_path(&result_path, path);
-        Ok((result_path, obj_id, Some(relative_path)))
+        Ok((result_path, obj_id,path_obj_jwt,Some(relative_path)))
     }
 
     
-    pub fn get_path_target_objid(&self, path: &str)->NdnResult<ObjId> {
+    pub fn get_path_target_objid(&self, path: &str)->NdnResult<(ObjId,Option<String>)> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT obj_id FROM paths WHERE path = ?1").map_err(|e| {
+        let mut stmt = conn.prepare("SELECT obj_id,path_obj_jwt FROM paths WHERE path = ?1").map_err(|e| {
             warn!("NamedDataMgrDB: prepare statement failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
-        let obj_id: String = stmt.query_row([path], |row| row.get(0)).map_err(|e| {
+        let (obj_id_str,path_obj_jwt): (String,Option<String>) = stmt.query_row([path], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        }).map_err(|e| {
             warn!("NamedDataMgrDB: query path target obj failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
-        ObjId::new(&obj_id).map_err(|e| {
+        let obj_id = ObjId::new(&obj_id_str).map_err(|e| {
             warn!("NamedDataMgrDB: invalid obj_id format! {}", e.to_string());
             NdnError::Internal(e.to_string())
-        })
+        })?;
+
+        Ok((obj_id,path_obj_jwt))
     }
 
     pub fn update_obj_access_time(&self, obj_id: &ObjId, access_time: u64) -> NdnResult<()> {
@@ -122,8 +130,9 @@ impl NamedDataMgrDB {
         Ok(())
     }
 
-    pub fn create_path(&self, obj_id: &ObjId, path: String,app_id:&str,user_id:&str) -> NdnResult<()> {
+    pub fn create_path(&self, obj_id: &ObjId, path: &str,app_id:&str,user_id:&str) -> NdnResult<()> {
         let mut conn = self.conn.lock().unwrap();
+        let obj_id = obj_id.to_string();
         let tx = conn.transaction().map_err(|e| {
             warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
@@ -133,7 +142,7 @@ impl NamedDataMgrDB {
         tx.execute(
             "INSERT OR IGNORE INTO objs (obj_id, ref_count, access_time) 
              VALUES (?1, 0, strftime('%s','now'))",
-            [&obj_id.to_string()],
+            [&obj_id],
         ).map_err(|e| {
             warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
@@ -142,7 +151,7 @@ impl NamedDataMgrDB {
         // Insert the path and increment ref_count
         tx.execute(
             "INSERT INTO paths (path, obj_id, app_id, user_id) VALUES (?1, ?2, ?3, ?4)",
-            [&path, &obj_id.to_string(), app_id, user_id],
+            [&path, obj_id.as_str(), app_id, user_id],
         ).map_err(|e| {
             warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
@@ -150,7 +159,7 @@ impl NamedDataMgrDB {
 
         tx.execute(
             "UPDATE objs SET ref_count = ref_count + 1 WHERE obj_id = ?1",
-            [&obj_id.to_string()],
+            [&obj_id],
         ).map_err(|e| {
             warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
@@ -354,6 +363,18 @@ impl NamedDataMgrDB {
 
         Ok(())
     }
+
+    pub fn set_path_obj_jwt(&self, path: &str, path_obj_jwt: &str) -> NdnResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE paths SET path_obj_jwt = ?1 WHERE path = ?2",
+            [path_obj_jwt, path],
+        ).map_err(|e| {
+            warn!("NamedDataMgrDB: set path obj jwt failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+        Ok(())
+    }
 }
 
 
@@ -398,7 +419,7 @@ impl NamedDataMgr {
         }
 
         info!("NamedDataMgr: auto create new named data mgr for mgr_id:{}", named_mgr_key);
-        let root_path = get_buckyos_chunk_data_dir(named_data_mgr_id);
+        let root_path = get_buckyos_named_data_dir(named_data_mgr_id);
         //make sure the root path dir exists
         if !root_path.exists() {
             fs::create_dir_all(root_path.clone()).await.unwrap();
@@ -479,22 +500,28 @@ impl NamedDataMgr {
     }
 
     pub fn update_cache_path_obj(&self, url:&str,path_obj:PathObject)->NdnResult<()> {
+
         Ok(())
     }
 
     //return path_obj_jwt
-    pub async fn get_path_obj(&self, path:&str)->Option<String> {
-        None
+    pub async fn get_path_obj(&self, path:&str)->NdnResult<Option<String>> {
+        let (_obj_id,path_obj_jwt) = self.db.get_path_target_objid(path)?;
+        if path_obj_jwt.is_some() {
+            return Ok(Some(path_obj_jwt.unwrap()));
+        }
+        Ok(None)
     }
 
-    pub async fn get_obj_id_by_path(&self, path:&str)->NdnResult<ObjId> {
-        let obj_id = self.db.get_path_target_objid(path)?;
-        Ok(obj_id)
+    pub async fn get_obj_id_by_path(&self, path:&str)->NdnResult<(ObjId,Option<String>)> {
+        let (obj_id,path_obj_jwt) = self.db.get_path_target_objid(path)?;
+        Ok((obj_id,path_obj_jwt))
     }
 
-    //返回obj_id,和relative_path(如有)
-    pub async fn select_obj_id_by_path(&self, path:&str)->NdnResult<(ObjId,Option<String>)> {
-        unimplemented!()
+    //返回obj_id,path_obj_jwt和relative_path(如有)
+    pub async fn select_obj_id_by_path(&self, path:&str)->NdnResult<(ObjId,Option<String>,Option<String>)> {
+        let (root_path,obj_id,path_obj_jwt,relative_path) = self.db.find_longest_matching_path(path)?;
+        Ok((obj_id,path_obj_jwt,relative_path))
     }
 
     pub async fn get_object(&self, obj_id:&ObjId,inner_obj_path:Option<String>)->NdnResult<serde_json::Value> {
@@ -549,23 +576,23 @@ impl NamedDataMgr {
         Ok(())
     }
 
-    pub async fn get_chunk_reader_by_path(&self, path:String,user_id:&str,app_id:&str,seek_from:SeekFrom)->NdnResult<(ChunkReader,u64,ChunkId)> {
-        let obj_id = self.db.get_path_target_objid(&path)?;
+    pub async fn get_chunk_reader_by_path(&self, path:&str,user_id:&str,app_id:&str,seek_from:SeekFrom)->NdnResult<(ChunkReader,u64,ChunkId)> {
+        let obj_id = self.db.get_path_target_objid(path)?;
         
         // Check if obj_id is a valid chunk id
-        if !obj_id.is_chunk() {
-            warn!("get_chunk_reader_by_path: obj_id is not a chunk_id:{}", obj_id.to_string());
-            return Err(NdnError::InvalidParam(format!("obj_id is not a chunk_id:{}",obj_id.to_string())));
+        if !obj_id.0.is_chunk() {
+            warn!("get_chunk_reader_by_path: obj_id is not a chunk_id:{}", obj_id.0.to_string());
+            return Err(NdnError::InvalidParam(format!("obj_id is not a chunk_id:{}",obj_id.0.to_string())));
         }
         
-        let chunk_id = ChunkId::from_obj_id(&obj_id);
+        let chunk_id = ChunkId::from_obj_id(&obj_id.0);
         let (chunk_reader,chunk_size) = self.open_chunk_reader(&chunk_id, seek_from, true).await?;
         let access_time = buckyos_get_unix_timestamp();
-        self.db.update_obj_access_time(&obj_id, access_time)?;
+        self.db.update_obj_access_time(&obj_id.0, access_time)?;
         Ok((chunk_reader,chunk_size,chunk_id))
     }
 
-    pub async fn create_file(&self, path:String,obj_id:&ObjId,app_id:&str,user_id:&str)->NdnResult<()> {
+    pub async fn create_file(&self, path:&str,obj_id:&ObjId,app_id:&str,user_id:&str)->NdnResult<()> {
         self.db.create_path(obj_id, path.clone(), app_id, user_id).map_err(|e| {
             warn!("create_file: create path failed! {}", e.to_string());
             e
@@ -574,14 +601,16 @@ impl NamedDataMgr {
         Ok(())
     }
 
-    pub async fn set_file(&self, path:String,new_obj_id:&ObjId,app_id:&str,user_id:&str)->NdnResult<()> {
-        self.db.set_path(&path, &new_obj_id, app_id, user_id).map_err(|e| {
+    pub async fn set_file(&self, path:&str,new_obj_id:&ObjId,app_id:&str,user_id:&str)->NdnResult<()> {
+        self.db.set_path(path, &new_obj_id, app_id, user_id).map_err(|e| {
             warn!("update_file: update path failed! {}", e.to_string());
             e
         })?;
         info!("update ndn path:{} ==> {}", path, new_obj_id.to_string());
         Ok(())
     }
+
+
 
     pub async fn remove_file(&self, path:&str)->NdnResult<()> {
         self.db.remove_path(path).map_err(|e| {
@@ -718,7 +747,7 @@ impl NamedDataMgr {
         let (obj_id,obj_str) = build_named_object_by_json(obj_type,&will_pub_obj);
         let mut named_mgr = named_mgr.lock().await;
         named_mgr.put_object(&obj_id, &obj_str).await?;
-        named_mgr.set_file(ndn_path.to_string(), &obj_id, app_id, user_id).await?;
+        named_mgr.set_file(ndn_path, &obj_id, app_id, user_id).await?;
         Ok(())
     }
     
@@ -731,6 +760,28 @@ impl NamedDataMgr {
         let named_mgr = named_mgr.unwrap();
         let mut named_mgr = named_mgr.lock().await;
         named_mgr.put_object(&will_sign_obj_id, &obj_jwt).await?;
+        Ok(())
+    }
+
+    pub async fn sigh_path_obj(&self,path:&str,path_obj_jwt:&str)->NdnResult<()> {
+        let path_obj_json:serde_json::Value = decode_jwt_claim_without_verify(path_obj_jwt).map_err(|e| {
+            warn!("sigh_path_obj: decode path obj jwt failed! {}", e.to_string());
+            NdnError::DecodeError(e.to_string())
+        })?;
+
+        let path_obj : PathObject = serde_json::from_value(path_obj_json).map_err(|e| {
+            warn!("sigh_path_obj: parse path obj failed! {}", e.to_string());
+            NdnError::DecodeError(e.to_string())
+        })?;
+
+        if path_obj.path != path {
+            return Err(NdnError::InvalidParam(format!("path_obj.path != path:{}",path)));
+        }
+
+        self.db.set_path_obj_jwt(path, path_obj_jwt).map_err(|e| {
+            warn!("sigh_path_obj: set path obj jwt failed! {}", e.to_string());
+            e
+        })?;
         Ok(())
     }
 
@@ -770,10 +821,10 @@ impl NamedDataMgr {
         fileobj_template.size = chunk_size;
         let (file_obj_id,file_obj_str) = fileobj_template.gen_obj_id();
         named_mgr.put_object(&file_obj_id, file_obj_str.as_str()).await?;
-        named_mgr.set_file(ndn_path.to_string(), &file_obj_id, app_id, user_id).await?;
+        named_mgr.set_file(ndn_path, &file_obj_id, app_id, user_id).await?;
 
         let chunk_obj_id = chunk_id.to_obj_id();
-        named_mgr.set_file(ndn_content_path.to_string(), &chunk_obj_id, app_id, user_id).await?;
+        named_mgr.set_file(ndn_content_path, &chunk_obj_id, app_id, user_id).await?;
         Ok(())
     }
 
@@ -841,7 +892,7 @@ mod tests {
             mmap_cache_dir: None,
         };
 
-        let chunk_mgr = NamedDataMgr::from_config(
+        let named_mgr = NamedDataMgr::from_config(
             Some("test".to_string()),
             test_dir.path().to_path_buf(),
             config
@@ -853,13 +904,13 @@ mod tests {
         let test_path = "/test/file.txt".to_string();
         
         // Write chunk
-        let (mut writer, _) = chunk_mgr.open_chunk_writer(&chunk_id, test_data.len() as u64, 0).await?;
+        let (mut writer, _) = named_mgr.open_chunk_writer(&chunk_id, test_data.len() as u64, 0).await?;
         writer.write_all(test_data).await.unwrap();
-        chunk_mgr.complete_chunk_writer(&chunk_id).await.unwrap();
+        named_mgr.complete_chunk_writer(&chunk_id).await.unwrap();
 
         // Bind chunk to path
-        chunk_mgr.create_file(
-            test_path.clone(),
+        named_mgr.create_file(
+            test_path.as_str(),
             &chunk_id.to_obj_id(),
             "test_app",
             "test_user"
@@ -867,8 +918,8 @@ mod tests {
 
 
         // Read through path and verify
-        let (mut reader, size, retrieved_chunk_id) = chunk_mgr.get_chunk_reader_by_path(
-            test_path.clone(),
+        let (mut reader, size, retrieved_chunk_id) = named_mgr.get_chunk_reader_by_path(
+            test_path.as_str(),
             "test_user",
             "test_app",
             SeekFrom::Start(0)
@@ -887,17 +938,25 @@ mod tests {
         let (file_obj_id,file_obj_str) = file_obj.gen_obj_id();
         info!("file_obj_id:{}",file_obj_id.to_string());
         //file-obj is soft linke to chunk-obj
-        chunk_mgr.put_object(&file_obj_id, &file_obj_str).await?;
+        named_mgr.put_object(&file_obj_id, &file_obj_str).await?;
 
-        let obj_content = chunk_mgr.get_object(&file_obj_id,Some("/content".to_string())).await?;
+        let obj_content = named_mgr.get_object(&file_obj_id,Some("/content".to_string())).await?;
         info!("obj_content:{}",obj_content);
         assert_eq!(obj_content.as_str().unwrap(),chunk_id.to_string().as_str());
+
+        let (the_chunk_id,path_obj_jwt,inner_obj_path) = named_mgr.select_obj_id_by_path(test_path.as_str()).await?;
+        info!("chunk_id:{}",chunk_id.to_string());
+        info!("inner_obj_path:{}",inner_obj_path.unwrap());
+        let obj_id_of_chunk = chunk_id.to_obj_id();
+        assert_eq!(the_chunk_id,obj_id_of_chunk);
+
+        
         // Test remove file
-        chunk_mgr.remove_file(&test_path).await.unwrap();
+        named_mgr.remove_file(&test_path).await.unwrap();
 
         // Verify path is removed
-        let result = chunk_mgr.get_chunk_reader_by_path(
-            test_path.clone(),
+        let result = named_mgr.get_chunk_reader_by_path(
+            test_path.as_str(),
             "test_user",
             "test_app",
             SeekFrom::Start(0)
@@ -989,15 +1048,17 @@ mod tests {
         
         // Bind chunks to paths
         chunk_mgr.create_file(
-            base_path.to_string(),
+            base_path,
             &chunk_id1.to_obj_id(),
             "test_app",
             "test_user"
         ).await?;
+
+        //chunk_mgr.sigh_path_obj(base_path path_obj_jwt).await?;
         info!("Created base path: {}", base_path);
         
         chunk_mgr.create_file(
-            sub_path1.to_string(),
+            sub_path1,
             &chunk_id2.to_obj_id(),
             "test_app",
             "test_user"
@@ -1005,7 +1066,7 @@ mod tests {
         info!("Created sub path 1: {}", sub_path1);
         
         chunk_mgr.create_file(
-            sub_path2.to_string(),
+            sub_path2,
             &chunk_id3.to_obj_id(),
             "test_app",
             "test_user"
@@ -1016,7 +1077,7 @@ mod tests {
         
         // Test case 1: Exact match
         info!("Test case 1: Exact match with {}", sub_path1);
-        let (result_path, obj_id, relative_path) = chunk_mgr.db.find_longest_matching_path(sub_path1)?;
+        let (result_path, obj_id,path_obj_jwt, relative_path) = chunk_mgr.db.find_longest_matching_path(sub_path1)?;
         info!("Result: path={}, obj_id={}, relative_path={:?}", result_path, obj_id.to_string(), relative_path);
         assert_eq!(result_path, sub_path1);
         assert_eq!(obj_id, chunk_id2.to_obj_id());
@@ -1025,7 +1086,7 @@ mod tests {
         // Test case 2: Match with a parent path
         let test_path = "/test/path/subdir/file2.txt";
         info!("Test case 2: Match with parent path. Testing {}", test_path);
-        let (result_path, obj_id, relative_path) = chunk_mgr.db.find_longest_matching_path(test_path)?;
+        let (result_path, obj_id,path_obj_jwt, relative_path)  = chunk_mgr.db.find_longest_matching_path(test_path)?;
         info!("Result: path={}, obj_id={}, relative_path={:?}", result_path, obj_id.to_string(), relative_path);
         assert_eq!(result_path, sub_path2);
         assert_eq!(obj_id, chunk_id3.to_obj_id());
@@ -1034,7 +1095,7 @@ mod tests {
         // Test case 3: Match with the base path
         let test_path = "/test/path/unknown/file.txt";
         info!("Test case 3: Match with base path. Testing {}", test_path);
-        let (result_path, obj_id, relative_path) = chunk_mgr.db.find_longest_matching_path(test_path)?;
+        let (result_path, obj_id,path_obj_jwt, relative_path)  = chunk_mgr.db.find_longest_matching_path(test_path)?;
         info!("Result: path={}, obj_id={}, relative_path={:?}", result_path, obj_id.to_string(), relative_path);
         assert_eq!(result_path, base_path);
         assert_eq!(obj_id, chunk_id1.to_obj_id());
