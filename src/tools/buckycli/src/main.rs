@@ -258,7 +258,7 @@ async fn main() -> Result<(), String> {
         }
         Some(("pack_pkg", matches)) => {
             let pkg_path = matches.get_one::<String>("pkg_path").unwrap();
-            match pack_pkg(pkg_path).await {
+            match pack_dapp_pkg(pkg_path).await {
                 Ok(_) => {
                     println!("############\nPack package success!");
                 }

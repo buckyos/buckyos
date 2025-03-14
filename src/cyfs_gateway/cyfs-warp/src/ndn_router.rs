@@ -1,7 +1,11 @@
 use buckyos_kit::get_by_json_path;
+use futures::Stream;
+use futures::TryStreamExt;
+use hyper::body::HttpBody;
 use log::*;
 use anyhow::Result;
 use hyper::{Request,Response,Body,StatusCode};
+use tokio_util::bytes::BytesMut;
 use std::{io::SeekFrom, sync::Arc};
 use std::net::IpAddr;
 use ndn_lib::*;
@@ -9,6 +13,7 @@ use cyfs_gateway_lib::{NamedDataMgrRouteConfig};
 use serde_json::Value;
 use crate::parse_range;
 use rand::RngCore;
+use tokio_util::io::StreamReader;
 
 //1. get objid and inner path
 //2. if enable, try use relative path to get objid and inner path
@@ -124,11 +129,116 @@ async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,
     Ok(body_result)
 }
 
-pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
-    if req.method() != hyper::Method::GET {
-        return Err(anyhow::anyhow!("Invalid method: {}", req.method()));
+pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
+    if mgr_config.read_only {
+        return Err(anyhow::anyhow!("Named manager is read only"));
+    }
+    
+    if !mgr_config.enable_zone_put_chunk {
+        return Err(anyhow::anyhow!("Named manager is not enable zone put chunk"));
     }
 
+    let path = req.uri().path();
+    let obj_id = match ObjId::from_path(path) {
+        Ok((id, _)) => id,
+        Err(_) => return Err(anyhow::anyhow!("Invalid object ID in path"))
+    };
+    
+    let named_mgr_id = mgr_config.named_data_mgr_id.clone();
+    let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(named_mgr_id.as_str())).await
+        .ok_or_else(|| anyhow::anyhow!("Named manager not found: {}", named_mgr_id))?;
+    
+    let named_mgr_lock = named_mgr.lock().await;
+    let chunk_id = ChunkId::from_obj_id(&obj_id);
+
+    // 获取总大小
+    let total_size = req.headers()
+        .get("cyfs-chunk-size")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+        // 如果是最后一块数据，完成写入
+
+    // 打开写入器
+    let (mut chunk_writer, _) = named_mgr_lock.open_chunk_writer(&chunk_id, total_size, 0).await?;
+    drop(named_mgr_lock);
+    
+    // 读取整个请求体到内存
+    let body_bytes = hyper::body::to_bytes(req.into_body()).await
+        .map_err(|e| anyhow::anyhow!("Failed to read request body: {}", e))?;
+    
+    // 创建一个内存读取器
+    let chunk_reader = std::io::Cursor::new(body_bytes);
+    
+    // 使用 copy_chunk 函数
+    let write_result = ndn_lib::copy_chunk(
+        chunk_id.clone(), 
+        chunk_reader, 
+        chunk_writer, 
+        None, 
+        None::<fn(ChunkId, u64, &Option<ChunkHasher>) -> _>
+    ).await
+        .map_err(|e| {
+            warn!("Failed to copy chunk: {}", e);
+            anyhow::anyhow!("Failed to copy chunk: {}", e)
+        })?;
+    
+    if write_result == total_size {
+        let named_mgr_lock = named_mgr.lock().await;
+        named_mgr_lock.complete_chunk_writer(&chunk_id).await?;
+    }
+    
+    return Ok(Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::empty())?);
+}
+
+pub async fn handle_chunk_status(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
+    let path = req.uri().path();
+    let obj_id = match ObjId::from_path(path) {
+        Ok((id, _)) => id,
+        Err(_) => return Err(anyhow::anyhow!("Invalid object ID in path"))
+    };
+    
+    let named_mgr_id = mgr_config.named_data_mgr_id.clone();
+    let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(named_mgr_id.as_str())).await
+        .ok_or_else(|| anyhow::anyhow!("Named manager not found: {}", named_mgr_id))?;
+    
+    let named_mgr_lock = named_mgr.lock().await;
+    let chunk_id = ChunkId::from_obj_id(&obj_id);
+
+    let (chunk_state,chunk_size,progress) = named_mgr_lock.query_chunk_state(&chunk_id).await?;
+    let status_code;
+    match chunk_state {
+        ChunkState::New => {
+            status_code = StatusCode::CREATED;
+        }
+        ChunkState::Completed => {
+            status_code = StatusCode::OK;
+        }
+        ChunkState::Incompleted => {
+            status_code = StatusCode::PARTIAL_CONTENT;
+        }
+        ChunkState::Disabled => {
+            status_code = StatusCode::FORBIDDEN;
+        }
+        ChunkState::NotExist => {
+            status_code = StatusCode::NOT_FOUND;
+        }
+        ChunkState::Link(ref link_data) => {
+            status_code = StatusCode::MOVED_PERMANENTLY;
+        }
+    }
+    return Ok(Response::builder()
+        .status(status_code)
+        .header("Content-Length", chunk_size.to_string())
+        .header("cyfs-chunk-status", chunk_state.to_str())
+        .header("cyfs-chunk-progress", progress)
+        .body(Body::empty())?);
+}
+
+
+pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
     let named_mgr_id = mgr_config.named_data_mgr_id.clone();
     let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(named_mgr_id.as_str())).await;
    
@@ -250,6 +360,23 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
 }
 
 
+pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
+    if req.method() == hyper::Method::PUT || req.method() == hyper::Method::PATCH{
+        return handle_chunk_put(mgr_config, req, host, _client_ip, route_path).await;
+    }
+
+    if req.method() == hyper::Method::HEAD {
+        return handle_chunk_status(mgr_config, req, host, _client_ip, route_path).await;
+    }
+
+    if req.method() == hyper::Method::GET {
+        return handle_ndn_get(mgr_config, req, host, _client_ip, route_path).await;
+    }
+    
+    return Err(anyhow::anyhow!("Invalid method: {}", req.method()));
+}
+
+
 #[cfg(test)] 
 mod tests {
     use super::*;
@@ -279,10 +406,11 @@ mod tests {
                   "/ndn/": {
                     "named_mgr": {
                         "named_data_mgr_id":"test_pub",
-                        "read_only":true,
+                        "read_only":false,
                         "guest_access":true,
                         "is_object_id_in_path":true,
-                        "enable_mgr_file_path":true
+                        "enable_mgr_file_path":true,
+                        "enable_zone_put_chunk":true
                     }
                   }
                 } 
@@ -335,6 +463,8 @@ mod tests {
         drop(chunk_writer);
         pub_named_mgr.complete_chunk_writer(&chunk_id_b).await.unwrap();
         info!("put chunk_id_b {} to test_pub named mgr OK!",chunk_id_b.to_string());
+
+        
         //http://localhost:3280/ndn/test/chunk_a -> chunk_id_a
         let test_path = "/test/chunk_a".to_string();
         // Bind chunk to path
@@ -409,19 +539,36 @@ mod tests {
         assert_eq!(cyfs_resp.obj_size.unwrap(),chunk_b_size);
         assert_eq!(buffer,chunk_b);
 
-        // // Step 4.3: Use the ndn-client's get_obj_by_url with a URL containing obj_json_path to get the corresponding value
-        // let json_path = "some_json_path";
-        // let json_result = client.get_obj_by_url(&format!("http://{}/{}/{}", warp_addr, test_obj_id.to_base32(), json_path)).await;
-        // assert!(json_result.is_ok(), "Failed to get JSON value by URL");
+        // Step 5: Test put chunk functionality
+      
+        // Put the chunk using the client
+        let named_mgr_client = NamedDataMgr::get_named_data_mgr_by_id(Some("test_client")).await.unwrap();
+        let real_named_mgr_client = named_mgr_client.lock().await;
 
-        // // Step 4.4: Use the ndn-client's get_obj_by_url to get a typical file_obj.content
-        // let file_content_result = client.get_obj_by_url(&format!("http://{}/file_obj.content", warp_addr)).await;
-        // assert!(file_content_result.is_ok(), "Failed to get file object content");
+        let chunk_c_size:u64 = 1024*1024*3 + 321*71;
+        let chunk_c = generate_random_bytes(chunk_c_size);
+        let mut hasher = ChunkHasher::new(None).unwrap();
+        let hash_c = hasher.calc_from_bytes(&chunk_c);
+        let chunk_id_c = ChunkId::from_sha256_result(&hash_c);
+        info!("chunk_id_c:{}",chunk_id_c.to_string());
+        let (mut chunk_writer,progress_info) = real_named_mgr_client.open_chunk_writer(&chunk_id_c, chunk_c_size, 0).await.unwrap();
+        chunk_writer.write_all(&chunk_c).await.unwrap();
+        drop(chunk_writer);
+        real_named_mgr_client.complete_chunk_writer(&chunk_id_c).await.unwrap();
+        drop(real_named_mgr_client);
 
-        // // Clean up
-        // warp_server.stop().await.unwrap();
-        // temp_dir.close().unwrap();
+        info!("ndn_client will push a new chunk");
+        let put_result = client.push_chunk(chunk_id_c.clone(), None).await;
+        assert!(put_result.is_ok(), "Failed to put chunk: {:?}", put_result.err());
+
+        let named_mgr_client = NamedDataMgr::get_named_data_mgr_by_id(Some("test_pub")).await.unwrap();
+        let real_named_mgr_client = named_mgr_client.lock().await;
+        let (mut _reader,len) = real_named_mgr_client.open_chunk_reader(&chunk_id_c,SeekFrom::Start(0),false).await.unwrap();
+        assert_eq!(len,chunk_c_size);
+        
     }
+
+
 }
 
 

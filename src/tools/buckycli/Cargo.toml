@@ -20,7 +20,7 @@ buckyos-kit = { path = "../../components/buckyos-kit"}
 name-lib = { path = "../../components/name-lib"}
 ndn-lib = { path = "../../components/ndn-lib"}
 buckyos-api = { path = "../../kernel/buckyos-api"}
-package-installer = { path = "../../components/package-installer"}
+package-lib = { path = "../../components/package-lib"}
 jsonwebtoken = "9.3.0"
 ed25519-dalek = { version = "*", features = ["pkcs8", "pem"] } 
 base64 = "*"
@@ -28,6 +28,10 @@ log = "0.4"
 env_logger = "0.10"
 rustyline = "11.0.0"
 
+[dev-dependencies]
+tempfile = "*"
+
 [build-dependencies]
 vergen = { version = "8.0.0", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }
-anyhow = "1.0.86"
+anyhow = "*"
+

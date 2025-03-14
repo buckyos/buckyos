@@ -140,7 +140,7 @@ impl NamedDataDb {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS chunk_items (
                 chunk_id TEXT PRIMARY KEY,
-                chunk_size INTEGER NOT NULL,
+                chunk_size INTEGER NOT NULL, 
                 chunk_state TEXT NOT NULL,
                 progress TEXT,
                 description TEXT NOT NULL,

@@ -6,16 +6,26 @@ use serde::Deserialize;
 use url::Url;
 use cyfs_socks::SocksProxyConfig;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct NamedDataMgrRouteConfig {
     pub named_data_mgr_id : String,
+    #[serde(default = "default_true")]
     pub read_only:bool,
+    #[serde(default = "default_true")]
     pub guest_access:bool,// 是否允许zone外访问
+    #[serde(default = "default_true")]
     //是否将chunkid放在路径的第一级，
     //如果为true，则使用https://ndn.$zoneid/$chunkid/index.html?ref=www.buckyos.org 
     //如果为false，则将chunkid放在host的第一段https://$chunkid.ndn.$zoneid/index.html?ref=www.buckyos.org 
     pub is_object_id_in_path:bool,
+    #[serde(default = "default_true")]
     pub enable_mgr_file_path:bool,// 是否使用mgr路径模式
+    #[serde(default = "default_true")]
+    pub enable_zone_put_chunk:bool
 }
 
 impl Default for NamedDataMgrRouteConfig {
@@ -23,9 +33,10 @@ impl Default for NamedDataMgrRouteConfig {
         Self { 
             named_data_mgr_id:"default".to_string(), 
             read_only:true, 
-            guest_access:true, 
+            guest_access:false, 
             is_object_id_in_path:true,
-            enable_mgr_file_path:true
+            enable_mgr_file_path:true,
+            enable_zone_put_chunk:true,
         }
     }
 }

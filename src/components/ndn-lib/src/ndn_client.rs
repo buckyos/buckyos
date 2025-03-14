@@ -4,7 +4,7 @@ use name_client::resolve_auth_key;
 use tokio::io::{AsyncRead,AsyncWrite,AsyncWriteExt,AsyncReadExt};
 use url::Url;
 use log::*;
-use reqwest::Client;
+use reqwest::{Body, Client};
 use std::io::SeekFrom;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -96,6 +96,60 @@ impl NdnClient {
     fn verify_inner_path_to_obj(resp_headers:&CYFSHttpRespHeaders,inner_path:&str)->NdnResult<()> {
         //let root_hash = calc_mtree_root_hash(resp_headers.obj_id.unwrap(), inner_path, resp_headers.mtree_path);
         //return root_hash == resp_headers.root_obj_id.unwrap()
+        Ok(())
+    }
+
+    pub async fn push_chunk(&self,chunk_id:ChunkId,target_url:Option<String>)->NdnResult<()> {
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.default_ndn_mgr_id.as_deref()).await
+            .ok_or_else(|| NdnError::Internal("No named data manager available".to_string()))?;
+        let real_named_mgr = named_mgr.lock().await;
+        let (mut chunk_reader,len) = real_named_mgr.open_chunk_reader(&chunk_id,SeekFrom::Start(0),false).await?;
+        drop(real_named_mgr);
+        
+        let chunk_url;
+        if target_url.is_some() {
+            chunk_url = target_url.unwrap();
+        } else {
+            chunk_url = self.gen_chunk_url(&chunk_id, None);
+        }
+        // 首先使用HEAD请求检查chunk状态
+        let mut client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| NdnError::Internal(format!("Failed to create client: {}", e)))?;
+        
+        let head_res = client.head(&chunk_url)
+            .send()
+            .await
+            .map_err(|e| NdnError::GetFromRemoteError(format!("HEAD request failed: {}", e)))?;
+        debug!("SEND HEAD request, head_res:{}",head_res.status());
+        // 如果chunk已存在，则不需要再次上传
+        if head_res.status().is_success() {
+            info!("Chunk {} already exists at {}", chunk_id.to_string(), chunk_url);
+            return Ok(());
+        }
+
+        let mut client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| NdnError::Internal(format!("Failed to create client: {}", e)))?;
+
+        let stream = tokio_util::io::ReaderStream::new(chunk_reader);
+        debug!("SEND PUT request, chunk_url:{}",chunk_url);
+        let res = client.put(chunk_url.clone())
+            .header("Content-Type", "application/octet-stream")
+            .header("cyfs-chunk-size", len.to_string())
+            .body(Body::wrap_stream(stream))
+            .send()
+            .await
+            .map_err(|e| NdnError::GetFromRemoteError(format!("Request failed: {}", e)))?;
+
+        if !res.status().is_success() {
+            return Err(NdnError::GetFromRemoteError(
+                format!("HTTP error: {} for {}", res.status(), chunk_url)
+            ));
+        }
+        
         Ok(())
     }
 
@@ -657,6 +711,17 @@ mod tests {
         info!("chunk_id_b:{}",chunk_id_b.to_string());
         let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer(&chunk_id_b, chunk_b_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_b).await.unwrap();
+        drop(chunk_writer);
+        named_mgr.complete_chunk_writer(&chunk_id_b).await.unwrap();
+
+        let chunk_c_size:u64 = 1024*1024*3 + 321*71;
+        let chunk_c = generate_random_bytes(chunk_c_size);
+        let mut hasher = ChunkHasher::new(None).unwrap();
+        let hash_c = hasher.calc_from_bytes(&chunk_c);
+        let chunk_id_c = ChunkId::from_sha256_result(&hash_c);
+        info!("chunk_id_c:{}",chunk_id_c.to_string());
+        let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer(&chunk_id_c, chunk_c_size, 0).await.unwrap();
+        chunk_writer.write_all(&chunk_c).await.unwrap();
         drop(chunk_writer);
         named_mgr.complete_chunk_writer(&chunk_id_b).await.unwrap();
         

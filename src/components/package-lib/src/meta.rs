@@ -18,7 +18,7 @@ pub struct PackageMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_size: Option<u64>, //有些pkg不需要下载
     pub deps: HashMap<String, String>,     //key = pkg_name,value = version_req_str,like ">1.0.0-alpha"
-    pub pub_time: i64,
+    pub pub_time: u64,
 }
 
 pub struct PackageMetaNode {
