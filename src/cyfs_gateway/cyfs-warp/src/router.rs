@@ -148,8 +148,9 @@ impl Router {
             }
         }
         let req_path = req.uri().path();
+        let req_method = req.method();
         let client_ip = client_ip.ip();
-        info!("{}==>warp recv_req: {} {:?}",client_ip.to_string(),req_path,req.headers());
+        info!("{}==> {} {},{:?}",client_ip.to_string(),req_method,req_path,req.headers());
 
         let route_config = self.get_route_config(host.as_str(), req_path);
         if route_config.is_none() {

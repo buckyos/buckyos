@@ -4,7 +4,7 @@ use name_client::resolve_auth_key;
 use tokio::io::{AsyncRead,AsyncWrite,AsyncWriteExt,AsyncReadExt};
 use url::Url;
 use log::*;
-use reqwest::{Body, Client};
+use reqwest::{Body, Client, StatusCode};
 use std::io::SeekFrom;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -75,12 +75,15 @@ impl NdnClient {
         } else {
             real_base_url = self.default_remote_url.as_ref().unwrap().clone();
         }
-
+        let result;
         if self.obj_id_in_host {
-            format!("{}.{}",chunk_id.to_base32(),real_base_url)
+            result = format!("{}.{}",chunk_id.to_base32(),real_base_url);
         } else {
-            format!("{}/{}",real_base_url,chunk_id.to_base32())
+            result = format!("{}/{}",real_base_url,chunk_id.to_base32());
         }
+        //去掉多余的/
+        let result = result.replace("//", "/");
+        result
     }
 
     fn verify_obj_id(obj_id:&ObjId,obj_str:&str)->NdnResult<serde_json::Value> {
@@ -99,6 +102,41 @@ impl NdnClient {
         Ok(())
     }
 
+    pub async fn query_chunk_state(&self,chunk_id:ChunkId,target_url:Option<String>)->NdnResult<ChunkState> {
+        let chunk_url;
+        if target_url.is_some() {
+            chunk_url = target_url.unwrap();
+        } else {
+            chunk_url = self.gen_chunk_url(&chunk_id, None);
+        }
+
+        let mut client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| NdnError::Internal(format!("Failed to create client: {}", e)))?;
+        
+        let head_res = client.head(&chunk_url)
+            .send()
+            .await
+            .map_err(|e| NdnError::GetFromRemoteError(format!("HEAD request failed: {}", e)))?;
+        debug!("SEND HEAD request, head_res:{}",head_res.status());
+        // 如果chunk已存在，则不需要再次上传
+        match head_res.status() {
+            StatusCode::OK => {
+                return Ok(ChunkState::Completed);
+            },
+            StatusCode::NOT_FOUND => {
+                return Ok(ChunkState::NotExist);
+            },
+            StatusCode::PARTIAL_CONTENT => {
+                return Ok(ChunkState::Incompleted);
+            },
+            _ => {
+                return Err(NdnError::GetFromRemoteError(format!("HEAD request failed: {}", head_res.status())));
+            }
+        }
+    }       
+
     pub async fn push_chunk(&self,chunk_id:ChunkId,target_url:Option<String>)->NdnResult<()> {
         let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.default_ndn_mgr_id.as_deref()).await
             .ok_or_else(|| NdnError::Internal("No named data manager available".to_string()))?;
@@ -112,21 +150,14 @@ impl NdnClient {
         } else {
             chunk_url = self.gen_chunk_url(&chunk_id, None);
         }
-        // 首先使用HEAD请求检查chunk状态
-        let mut client = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| NdnError::Internal(format!("Failed to create client: {}", e)))?;
-        
-        let head_res = client.head(&chunk_url)
-            .send()
-            .await
-            .map_err(|e| NdnError::GetFromRemoteError(format!("HEAD request failed: {}", e)))?;
-        debug!("SEND HEAD request, head_res:{}",head_res.status());
-        // 如果chunk已存在，则不需要再次上传
-        if head_res.status().is_success() {
-            info!("Chunk {} already exists at {}", chunk_id.to_string(), chunk_url);
+
+        let chunk_state = self.query_chunk_state(chunk_id,Some(chunk_url.clone())).await?;
+        if chunk_state == ChunkState::Completed {
             return Ok(());
+        }
+
+        if chunk_state != ChunkState::NotExist {
+            return Err(NdnError::InvalidId("invlaid remote chunk state".to_string()));
         }
 
         let mut client = Client::builder()

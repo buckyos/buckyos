@@ -50,7 +50,7 @@ async fn test_object_map() {
     map.flush().await.unwrap();
 
     let objid = map.gen_obj_id().unwrap();
-    println!("objid: {:?}", objid);
+    println!("objid: {}", objid.to_string());
 
     for i in 0..count {
         let key = format!("key{}", i);
