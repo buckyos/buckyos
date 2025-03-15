@@ -27,6 +27,8 @@ lazy_static = "*"
 base32 = "*"
 block-buffer = "=0.11.0-rc.3"
 sha2 = { version = ">=0.11.0-pre.4" }
+sha3 = { version = "*" }
+blake2 = "*"
 crypto-common = { version = ">=0.2.0-rc.1" }
 bincode = { version = "^1.3"}
 rand = "*"
@@ -34,6 +36,14 @@ jsonwebtoken = "*"
 buckyos-kit = { path = "../buckyos-kit" }
 name-lib = { path = "../name-lib" }
 name-client = { path = "../name-client" }
+parity-scale-codec = { version = "*", features = ["derive"] }
+parity-util-mem = "*"
+hash-db = "*"
+memory-db = "*"
+reference-trie = "*"
+trie-db = { version = "*", features = ["std"] }
+hash256-std-hasher = "*"
+
 
 [dev-dependencies]
 tempfile = "*"
