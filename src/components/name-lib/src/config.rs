@@ -59,6 +59,22 @@ pub struct ZoneConfig {
 }
 
 impl ZoneConfig {
+
+    pub fn load_zone_config(file_path: &PathBuf) -> NSResult<ZoneConfig> {
+        let contents = std::fs::read_to_string(file_path.clone()).map_err(|err| {
+            error!("read {} failed! {}", file_path.to_string_lossy(), err);
+            return NSError::ReadLocalFileError(format!("read {} failed! {}", file_path.to_string_lossy(), err));
+        })?;
+        let config: ZoneConfig = serde_json::from_str(&contents).map_err(|err| {
+            error!("parse {} failed! {}", file_path.to_string_lossy(), err);
+            return NSError::ReadLocalFileError(format!(
+                "Failed to parse ZoneConfig json: {}",
+                err
+            ));
+        })?;    
+        Ok(config)
+    }
+    
     pub fn get_zone_short_name(&self) -> String {
         let did = DID::from_str(self.did.as_str());
         if did.is_some() {
@@ -458,6 +474,23 @@ pub struct OwnerConfig {
 
     pub exp:u64,
     pub iat:u64,
+}
+
+impl OwnerConfig {
+    pub fn load_owner_config(file_path: &PathBuf) -> NSResult<OwnerConfig> {
+        let contents = std::fs::read_to_string(file_path.clone()).map_err(|err| {
+            error!("read {} failed! {}", file_path.to_string_lossy(), err);
+            return NSError::ReadLocalFileError(format!("read {} failed! {}", file_path.to_string_lossy(), err));
+        })?;
+        let config: OwnerConfig = toml::from_str(&contents).map_err(|err| {
+            error!("parse {} failed! {}", file_path.to_string_lossy(), err);
+            return NSError::ReadLocalFileError(format!(
+                "Failed to parse OwnerConfig TOML: {}",
+                err
+            ));
+        })?;
+        Ok(config)
+    }
 }
 
 impl DIDDocumentTrait for OwnerConfig {

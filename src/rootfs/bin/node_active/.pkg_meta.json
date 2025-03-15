@@ -1,7 +1,0 @@
-{
-    "pkg_name": "node_active",
-    "version": "0.4.0",
-    "author": "waterflier",
-    "description": "node active service static web pages",
-    "dependencies": {}
-}

@@ -4,6 +4,7 @@ use serde::{Serialize,Deserialize};
 use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
 use log::*;
 use crate::{Result,RPCErrors};
+use buckyos_kit::buckyos_get_unix_timestamp;
 
 #[derive(Clone, Debug, Serialize, Deserialize,PartialEq)]
 pub enum RPCSessionTokenType {
@@ -35,6 +36,22 @@ pub struct RPCSessionToken {
 }
 
 impl RPCSessionToken {
+    pub fn generate_jwt_token(user_id:&str,app_id:&str,kid:Option<String>,private_key:&EncodingKey) -> Result<String> {
+        let timestamp = buckyos_get_unix_timestamp();
+        let session_token = RPCSessionToken {   
+            token_type : RPCSessionTokenType::JWT,
+            token: None,
+            appid: Some(app_id.to_string()),
+            exp: Some(timestamp + 3600*24*7),
+            iss: Some(user_id.to_string()),
+            nonce: None,
+            userid: Some(user_id.to_string()),
+        };
+        let result_str = session_token.generate_jwt(kid,private_key)
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to generate session token: {}", e)))?;
+        Ok(result_str)
+    }
+
     pub fn from_string(token: &str) -> Result<Self> {
         let have_dot = token.find('.');
         if have_dot.is_none() {

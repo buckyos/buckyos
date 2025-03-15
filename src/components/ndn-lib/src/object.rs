@@ -4,6 +4,7 @@ use sha2::{Sha256, Digest};
 use crate::{NdnResult, NdnError};
 use crate::{OBJ_TYPE_FILE,OBJ_TYPE_DIR,OBJ_TYPE_MTREE,OBJ_TYPE_OBJMAPT,OBJ_TYPE_PACK,OBJ_TYPE_LIST};
 use serde::{Deserialize, Serialize};
+use jsonwebtoken::{encode, EncodingKey};
 
 //objid link to a did::EncodedDocument
 #[derive(Debug, Clone,Eq, PartialEq, Serialize, Deserialize)]
@@ -182,6 +183,16 @@ pub fn verify_named_object_from_jwt(obj_id:&ObjId,jwt_str:&str)->NdnResult<bool>
    return Ok(true);
 }
 
+pub fn named_obj_to_jwt(obj_json_str:String,key:&EncodingKey,kid:Option<String>)->NdnResult<String> {
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
+    header.typ = None; // 默认为 JWT，设置为None以节约空间
+    header.kid = kid;
+    let jwt_str = encode(&header, &obj_json_str,key).map_err(|error| {
+        NdnError::Internal(format!("Failed to generate jwt token :{}",error))
+    })?;   
+
+    Ok(jwt_str)
+}
 
 
 

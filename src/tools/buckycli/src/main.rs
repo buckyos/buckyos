@@ -7,14 +7,9 @@ use buckyos_api::*;
 use clap::{Arg, Command};
 use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig, CURRENT_DEVICE_CONFIG};
 use package_cmd::*;
-use util::*;
-
-const CONFIG_FILE: &str = "~/.buckycli/config";
 
 
-async fn load_buckyos_identity_config(node_id: &str) -> Result<DeviceConfig, String> {
-    unimplemented!()
-}
+
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
@@ -141,21 +136,24 @@ async fn main() -> Result<(), String> {
         )
         .get_matches();
 
-    init_global_buckyos_value_by_load_identity_config(BuckyOSRuntimeType::AppClient).await.map_err(|e| {
+    init_buckyos_api_by_load_config("buckyos-cli",BuckyOSRuntimeType::AppClient).await.map_err(|e| {
         let err_msg = format!("init_global_buckyos_value_by_load_identity_configfailed! {}", e);
         println!("{}", err_msg.as_str());
         err_msg
     })?;
 
-    init_buckyos_api_runtime("buckyos-cli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
-        let err_msg = format!("init buckyos api runtime failed! {}", e);
-        println!("{}", err_msg.as_str());
-        err_msg
-    })?;
+    //TODO:支持通过命令行登录到verify-hub来获得后续有效的session_token,以避免在本地必须拥有私钥
+
 
     let buckyos_runtime = get_buckyos_api_runtime().unwrap();
-    println!("Connect to {:?} @ {:?}",buckyos_runtime.owner_user_id,buckyos_runtime.zone_config);
-
+    let _session_token = buckyos_runtime.generate_session_token().await.map_err(|e| {
+        println!("Failed to get session token: {}", e);
+        return e.to_string();
+    })?;
+    println!("Connect to {:?} @ {:?}",buckyos_runtime.user_did,buckyos_runtime.zone_config.name);
+    if buckyos_runtime.user_private_key.is_some() {
+        println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
+    }
 
     match matches.subcommand() {
         Some(("version", _)) => {
@@ -178,16 +176,7 @@ async fn main() -> Result<(), String> {
             
         }
         Some(("pack_pkg", matches)) => {
-            let pkg_path = matches.get_one::<String>("pkg_path").unwrap();
-            match pack_dapp_pkg(pkg_path).await {
-                Ok(_) => {
-                    println!("############\nPack package success!");
-                }
-                Err(e) => {
-                    println!("############\nPack package failed! {}", e);
-                    return Err("pack package failed!".to_string());
-                }
-            }
+            unimplemented!()
         }
         Some(("install_pkg", matches)) => {
             let pkg_name = matches.get_one::<String>("pkg_name").unwrap();

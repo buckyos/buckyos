@@ -1,9 +1,7 @@
 
-use jsonwebtoken::TokenData;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use buckyos_api::*;
-
 
 pub async fn connect_into() {
     let api_runtime = get_buckyos_api_runtime().unwrap();
@@ -14,8 +12,7 @@ pub async fn connect_into() {
         println!("connect system config service failed {}", e.to_string());
         return;
     }
-    // println!("boot config: {:?}", boot_config_result);
-
+    
     println!("connect to system_config_service success");
     // handle input
     let mut rl = DefaultEditor::new().unwrap();

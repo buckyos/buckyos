@@ -15,6 +15,14 @@ pub fn get_buckyos_root_dir() -> PathBuf {
     }
 }
 
+pub fn get_buckyos_dev_user_home() -> PathBuf {
+    if env::var("BUCKYOS_DEV_HOME").is_ok() {
+        return Path::new(&env::var("BUCKYOS_DEV_HOME").unwrap()).to_path_buf();
+    }
+    let home_dir = env::var("HOME").unwrap();
+    Path::new(&home_dir).join(".buckycli")
+}
+
 pub fn get_buckyos_system_bin_dir() -> PathBuf {
     get_buckyos_root_dir().join("bin")
 }
