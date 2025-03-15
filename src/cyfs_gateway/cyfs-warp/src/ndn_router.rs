@@ -1,19 +1,14 @@
 use buckyos_kit::get_by_json_path;
-use futures::Stream;
-use futures::TryStreamExt;
-use hyper::body::HttpBody;
 use log::*;
 use anyhow::Result;
 use hyper::{Request,Response,Body,StatusCode};
-use tokio_util::bytes::BytesMut;
+
 use std::{io::SeekFrom, sync::Arc};
 use std::net::IpAddr;
 use ndn_lib::*;
 use cyfs_gateway_lib::{NamedDataMgrRouteConfig};
 use serde_json::Value;
 use crate::parse_range;
-use rand::RngCore;
-use tokio_util::io::StreamReader;
 
 //1. get objid and inner path
 //2. if enable, try use relative path to get objid and inner path
@@ -129,7 +124,7 @@ async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,
     Ok(body_result)
 }
 
-pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
+pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, _host: &str, _client_ip:IpAddr,_route_path: &str) -> Result<Response<Body>> {
     if mgr_config.read_only {
         return Err(anyhow::anyhow!("Named manager is read only"));
     }
@@ -160,7 +155,7 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
         // 如果是最后一块数据，完成写入
 
     // 打开写入器
-    let (mut chunk_writer, _) = named_mgr_lock.open_chunk_writer(&chunk_id, total_size, 0).await?;
+    let (chunk_writer, _) = named_mgr_lock.open_chunk_writer(&chunk_id, total_size, 0).await?;
     drop(named_mgr_lock);
     
     // 读取整个请求体到内存
@@ -193,7 +188,7 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
         .body(Body::empty())?);
 }
 
-pub async fn handle_chunk_status(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
+pub async fn handle_chunk_status(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, _host: &str, _client_ip:IpAddr,_route_path: &str) -> Result<Response<Body>> {
     let path = req.uri().path();
     let obj_id = match ObjId::from_path(path) {
         Ok((id, _)) => id,
@@ -225,7 +220,7 @@ pub async fn handle_chunk_status(mgr_config: &NamedDataMgrRouteConfig, req: Requ
         ChunkState::NotExist => {
             status_code = StatusCode::NOT_FOUND;
         }
-        ChunkState::Link(ref link_data) => {
+        ChunkState::Link(_) => {
             status_code = StatusCode::MOVED_PERMANENTLY;
         }
     }

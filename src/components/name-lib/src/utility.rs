@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::str::FromStr;
 use tokio::net::UdpSocket;
 use std::net::ToSocketAddrs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use serde::{Serialize, Deserialize};
 use serde_json::json;
 use thiserror::Error;
@@ -153,12 +153,29 @@ pub fn from_pkcs8(pkcs8: &[u8]) -> NSResult<[u8;32]> {
     Ok(private_key)
 }
 
-//TODO: would use a PEM parser library
-pub fn load_pem_private_key<P: AsRef<Path>>(file_path: P) -> NSResult<[u8;48]> {
-    // load from /etc/buckyos/node_private_key.toml
-    let contents = std::fs::read_to_string(&file_path).map_err(|err| {
+pub fn load_private_key(file_path:&Path) -> NSResult<EncodingKey> {
+    let contents = std::fs::read_to_string(file_path).map_err(|err| {
         error!("read private key failed! {}", err);
-        return NSError::ReadLocalFileError(file_path.as_ref().to_string_lossy().to_string());
+        return NSError::ReadLocalFileError(file_path.to_string_lossy().to_string());
+    })?;
+
+    let private_key: EncodingKey = EncodingKey::from_ed_pem(contents.as_bytes()).map_err(|err| {
+        error!("parse private key failed! {}", err);
+        return NSError::ReadLocalFileError(format!(
+            "Failed to parse private key {}",
+            err
+        ));
+    })?;
+
+    Ok(private_key)
+}
+
+//TODO: would use a PEM parser library
+pub fn load_raw_private_key(file_path:&Path) -> NSResult<[u8;48]> {
+    // load from /etc/buckyos/node_private_key.toml
+    let contents = std::fs::read_to_string(file_path).map_err(|err| {
+        error!("read private key failed! {}", err);
+        return NSError::ReadLocalFileError(file_path.to_string_lossy().to_string());
     })?;
 
     let start_pos = contents.find("-----BEGIN PRIVATE KEY-----");
@@ -327,7 +344,7 @@ mod test {
 
     #[test]
     fn test_load_pem_private_key() {
-        let private_key = load_pem_private_key("d:\\temp\\device_key.pem").unwrap();
+        let private_key = load_raw_private_key("d:\\temp\\device_key.pem").unwrap();
         println!("private_key: {:?}",private_key);
         let private_key_der = from_pkcs8(&private_key).unwrap();
         println!("private_key_der: {:?}",private_key_der);

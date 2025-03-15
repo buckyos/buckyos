@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::result::Result;
 use log::{debug, error, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -19,7 +18,7 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    pub fn from_str(s: &str) -> Result<Self> {
         match s {
             "Pending" => Ok(TaskStatus::Pending),
             "Running" => Ok(TaskStatus::Running),
@@ -27,7 +26,7 @@ impl TaskStatus {
             "Completed" => Ok(TaskStatus::Completed),
             "Failed" => Ok(TaskStatus::Failed),
             "WaitingForApproval" => Ok(TaskStatus::WaitingForApproval),
-            _ => Err(format!("Invalid task status: {}", s)),
+            _ => Err(RPCErrors::ReasonError(format!("Invalid task status: {}", s))),
         }
     }
 }
@@ -47,7 +46,7 @@ impl ToString for TaskStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
-    pub id: i32,
+    pub id: i64,
     pub name: String,
     pub task_type: String,     // 任务类型，如"publish", "backup", "restore"等
     pub app_name: String,      // 关联的应用名称
@@ -77,7 +76,7 @@ impl TaskManagerClient {
         Self { rpc_client }
     }
 
-    pub async fn create_task(&self, name: &str, task_type: &str, app_name: &str, data: Option<Value>) -> Result<i32, String> {
+    pub async fn create_task(&self, name: &str, task_type: &str, app_name: &str, data: Option<Value>) -> Result<i64> {
         let params = json!({
             "name": name,
             "task_type": task_type,
@@ -86,18 +85,14 @@ impl TaskManagerClient {
         });
 
         //let req = RPCRequest::new("create_task", params);
-        match self.rpc_client.call("create_task", params).await {
-            Ok(resp) => {
-                match resp.get("task_id") {
-                    Some(task_id) => Ok(task_id.as_i64().unwrap_or_default() as i32),
-                    None => Err("Response missing task_id field".to_string()),
-                }
-            },
-            Err(e) => Err(format!("RPC error: {:?}", e)),
+        let resp =  self.rpc_client.call("create_task", params).await?;
+        match resp.get("task_id") {
+            Some(task_id) => Ok(task_id.as_i64().unwrap_or_default()),
+            None => Err(RPCErrors::ReasonError("Response missing task_id field".to_string())),
         }
     }
 
-    pub async fn get_task(&self, id: i32) -> Result<Task, String> {
+    pub async fn get_task(&self, id: i64) -> Result<Task> {
         let params = json!({
             "id": id
         });
@@ -109,17 +104,17 @@ impl TaskManagerClient {
                     Some(task_json) => {
                         match serde_json::from_value::<Task>(task_json.clone()) {
                             Ok(task) => Ok(task),
-                            Err(e) => Err(format!("Failed to parse task: {}", e)),
+                            Err(e) => Err(RPCErrors::ReasonError(format!("Failed to parse task: {}", e))),
                         }
                     },
-                    None => Err("Response missing task field".to_string()),
+                    None => Err(RPCErrors::ReasonError("Response missing task field".to_string())),
                 }
             },
-            Err(e) => Err(format!("RPC error: {:?}", e)),
+            Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),
         }
     }
 
-    pub async fn list_tasks(&self, filter: Option<TaskFilter>) -> Result<Vec<Task>, String> {
+    pub async fn list_tasks(&self, filter: Option<TaskFilter>) -> Result<Vec<Task>> {
         let mut params = json!({});
         
         if let Some(filter) = filter {
@@ -141,17 +136,17 @@ impl TaskManagerClient {
                     Some(tasks_json) => {
                         match serde_json::from_value::<Vec<Task>>(tasks_json.clone()) {
                             Ok(tasks) => Ok(tasks),
-                            Err(e) => Err(format!("Failed to parse tasks: {}", e)),
+                            Err(e) => Err(RPCErrors::ReasonError(format!("Failed to parse tasks: {}", e))),
                         }
                     },
-                    None => Err("Response missing tasks field".to_string()),
+                    None => Err(RPCErrors::ReasonError("Response missing tasks field".to_string())),
                 }
             },
-            Err(e) => Err(format!("RPC error: {:?}", e)),
+            Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),
         }
     }
 
-    pub async fn update_task_status(&self, id: i32, status: TaskStatus) -> Result<(), String> {
+    pub async fn update_task_status(&self, id: i64, status: TaskStatus) -> Result<()> {
         let params = json!({
             "id": id,
             "status": status.to_string()
@@ -162,11 +157,11 @@ impl TaskManagerClient {
             Ok(resp) => {
                 Ok(())
             },
-            Err(e) => Err(format!("RPC error: {:?}", e)),
+            Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),
         }
     }
 
-    pub async fn update_task_progress(&self, id: i32, completed_items: u64, total_items: u64) -> Result<(), String> {
+    pub async fn update_task_progress(&self, id: i64, completed_items: u64, total_items: u64) -> Result<()> {
         let progress = if total_items > 0 {
             (completed_items as f32 / total_items as f32) * 100.0
         } else {
@@ -185,11 +180,11 @@ impl TaskManagerClient {
             Ok(resp) => {
                 Ok(())
             },
-            Err(e) => Err(format!("RPC error: {:?}", e)),
+            Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),
         }
     }
 
-    pub async fn update_task_error(&self, id: i32, error_message: &str) -> Result<(), String> {
+    pub async fn update_task_error(&self, id: i64, error_message: &str) -> Result<()> {
         let params = json!({
             "id": id,
             "error_message": error_message
@@ -200,11 +195,11 @@ impl TaskManagerClient {
             Ok(resp) => {
                 Ok(())
             },
-            Err(e) => Err(format!("RPC error: {:?}", e)),
+            Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),
         }
     }
 
-    pub async fn update_task_data(&self, id: i32, data: Value) -> Result<(), String> {
+    pub async fn update_task_data(&self, id: i64, data: Value) -> Result<()> {
         let params = json!({
             "id": id,
             "data": data
@@ -215,11 +210,11 @@ impl TaskManagerClient {
             Ok(resp) => {
                 Ok(())
             },
-            Err(e) => Err(format!("RPC error: {:?}", e)),
+            Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),
         }
     }
 
-    pub async fn delete_task(&self, id: i32) -> Result<(), String> {
+    pub async fn delete_task(&self, id: i64) -> Result<()> {
         let params = json!({
             "id": id
         });
@@ -229,35 +224,35 @@ impl TaskManagerClient {
             Ok(resp) => {
                 Ok(())
             },
-            Err(e) => Err(format!("RPC error: {:?}", e)),
+            Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),
         }
     }
 
     // Convenience methods similar to the TypeScript client
-    pub async fn pause_task(&self, id: i32) -> Result<(), String> {
+    pub async fn pause_task(&self, id: i64) -> Result<()> {
         self.update_task_status(id, TaskStatus::Paused).await
     }
 
-    pub async fn resume_task(&self, id: i32) -> Result<(), String> {
+    pub async fn resume_task(&self, id: i64) -> Result<()> {
         self.update_task_status(id, TaskStatus::Running).await
     }
 
-    pub async fn complete_task(&self, id: i32) -> Result<(), String> {
+    pub async fn complete_task(&self, id: i64) -> Result<()> {
         self.update_task_status(id, TaskStatus::Completed).await
     }
 
-    pub async fn mark_task_as_waiting_for_approval(&self, id: i32) -> Result<(), String> {
+    pub async fn mark_task_as_waiting_for_approval(&self, id: i64) -> Result<()> {
         self.update_task_status(id, TaskStatus::WaitingForApproval).await
     }
 
-    pub async fn mark_task_as_failed(&self, id: i32, error_message: &str) -> Result<(), String> {
+    pub async fn mark_task_as_failed(&self, id: i64, error_message: &str) -> Result<()> {
         // First update the error message
         self.update_task_error(id, error_message).await?;
         // Then update the status
         self.update_task_status(id, TaskStatus::Failed).await
     }
 
-    pub async fn pause_all_running_tasks(&self) -> Result<(), String> {
+    pub async fn pause_all_running_tasks(&self) -> Result<()> {
         let filter = TaskFilter {
             app_name: None,
             task_type: None,
@@ -273,7 +268,7 @@ impl TaskManagerClient {
         Ok(())
     }
 
-    pub async fn resume_last_paused_task(&self) -> Result<(), String> {
+    pub async fn resume_last_paused_task(&self) -> Result<()> {
         let filter = TaskFilter {
             app_name: None,
             task_type: None,
@@ -286,7 +281,7 @@ impl TaskManagerClient {
             self.resume_task(last_paused.id).await?;
             Ok(())
         } else {
-            Err("No paused tasks found".to_string())
+            Err(RPCErrors::ReasonError("No paused tasks found".to_string()))
         }
     }
 }

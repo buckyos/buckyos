@@ -119,7 +119,7 @@ impl TaskManagerServer {
         };
 
         let id = match params.get("id") {
-            Some(Value::Number(n)) => n.as_i64().unwrap() as i32,
+            Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
                 return self.error(req.seq, "'id' field is not a number".to_string());
             }
@@ -214,7 +214,7 @@ impl TaskManagerServer {
         };
 
         let id = match params.get("id") {
-            Some(Value::Number(n)) => n.as_i64().unwrap() as i32,
+            Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
                 return self.error(req.seq, "'id' field is not a number".to_string());
             }
@@ -273,7 +273,7 @@ impl TaskManagerServer {
         };
 
         let id = match params.get("id") {
-            Some(Value::Number(n)) => n.as_i64().unwrap() as i32,
+            Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
                 return self.error(req.seq, "'id' field is not a number".to_string());
             }
@@ -283,7 +283,7 @@ impl TaskManagerServer {
         };
 
         let completed_items = match params.get("completed_items") {
-            Some(Value::Number(n)) => n.as_i64().unwrap() as i32,
+            Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
                 return self.error(req.seq, "'completed_items' field is not a number".to_string());
             }
@@ -293,7 +293,7 @@ impl TaskManagerServer {
         };
 
         let total_items = match params.get("total_items") {
-            Some(Value::Number(n)) => n.as_i64().unwrap() as i32,
+            Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
                 return self.error(req.seq, "'total_items' field is not a number".to_string());
             }
@@ -309,7 +309,7 @@ impl TaskManagerServer {
         };
 
         let db_manager = DB_MANAGER.lock().await;
-        let result = db_manager.update_task_progress(id, progress, completed_items, total_items).await;
+        let result = db_manager.update_task_progress(id, progress, completed_items as i32, total_items as i32).await;
         match result {
             Ok(_) => {
                 return Ok(RPCResponse::new(
@@ -341,7 +341,7 @@ impl TaskManagerServer {
         };
 
         let id = match params.get("id") {
-            Some(Value::Number(n)) => n.as_i64().unwrap() as i32,
+            Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
                 return self.error(req.seq, "'id' field is not a number".to_string());
             }
@@ -393,7 +393,7 @@ impl TaskManagerServer {
         };
 
         let id = match params.get("id") {
-            Some(Value::Number(n)) => n.as_i64().unwrap() as i32,
+            Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
                 return self.error(req.seq, "'id' field is not a number".to_string());
             }
@@ -446,7 +446,7 @@ impl TaskManagerServer {
         };
 
         let id = match params.get("id") {
-            Some(Value::Number(n)) => n.as_i64().unwrap() as i32,
+            Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
                 return self.error(req.seq, "'id' field is not a number".to_string());
             }

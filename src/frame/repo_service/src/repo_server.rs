@@ -313,6 +313,7 @@ impl RepoServer {
         return Ok(current_pkg_list);
     }
 
+    //在repo里安装pkg(pkg_name已经在index-db中了)
     async fn handle_install_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let pkg_list = req.params.get("pkg_list");
         let install_task_name = ReqHelper::get_str_param_from_req(&req,"task_name")?;
@@ -915,3 +916,4 @@ impl kRPCHandler for RepoServer {
     }
 }
 
+//TODO:需要补充设计一些单元测试

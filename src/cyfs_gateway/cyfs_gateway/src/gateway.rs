@@ -84,7 +84,7 @@ impl Gateway {
             device_private_key_path = get_buckyos_system_etc_dir().join("node_private_key.pem");
         }
 
-        let device_private_key = load_pem_private_key(&device_private_key_path)
+        let device_private_key = load_raw_private_key(&device_private_key_path)
             .map_err(|e| {
                 error!("load device_private_key failed: {}", e);
                 anyhow::anyhow!("load device_private_key failed: {}", e)

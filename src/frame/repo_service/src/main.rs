@@ -3,6 +3,10 @@
 
 mod repo_server;
 mod pkg_task_data;
+
+#[cfg(test)]
+mod test;
+
 use crate::repo_server::*;
 use std::fs::File;
 use buckyos_api::*;
@@ -73,5 +77,3 @@ fn main() {
     rt.block_on(service_main());
 }
 
-#[cfg(test)]
-mod test {}

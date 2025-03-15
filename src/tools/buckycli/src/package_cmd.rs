@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use tar::Builder;
 use tokio::io::AsyncWriteExt;
 use package_lib::*;
+use buckyos_api::*;
 
 #[derive(Debug)]
 pub enum PackCategory {
@@ -168,7 +169,8 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str, owner_private_key_path
     })?;
     // 如果提供了私钥，则对元数据进行签名
     if let Some(key_path) = owner_private_key_path {
-        let jwt_token = generate_jwt(&key_path, &pkg_meta_json_str)?;
+        //let jwt_token = generate_jwt(&key_path, &pkg_meta_json_str)?;
+        let jwt_token = "".to_string();
         let jwt_path = dest_dir_path.join("pkg_meta.jwt");
         fs::write(&jwt_path, jwt_token).map_err(|e| {
             format!("写入 pkg_meta.jwt 失败: {}", e.to_string())
@@ -192,186 +194,31 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str, owner_private_key_path
     Ok(pack_ret)
 }
 
-//发布dapp_pkg前，需要确保sub_pkgs都已经发布(因此该命令需要在ood上执行)
-//发布的dapp 的meta里，sub_pkgs使用固定版本号约束，已确保所有的sub_pkgs是统一升级的
-// 指定dapp meta的路径，和已经用pack_raw_pkg打包好的sub_pkgs的目录路径，这样可以更新最新版本
-// 将sub_pkgs最新版本发布到当前的ndn_mgr
-// 自动填充dapp_meta.json的sub_pkgs字段，并构建dapp_meta.jwt(用来publish)
-pub async fn pack_dapp_pkg(pkg_path: &str) -> Result<PackResult, String> {
-    println!("pack path: {}", pkg_path);
-    let pkg_path = Path::new(pkg_path);
-    if !pkg_path.exists() {
-        eprintln!("Error: Specified directory does not exist");
-        return Err(format!("Path {} does not exist", pkg_path.display()));
-    }
+//基于pack raw pkg的输出，发布pkg到当前zone(call repo_server.pub_pkg)
+pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>,zone_host_name: &str) {
+    unimplemented!()
+}
 
-    println!("Starting the packing process for directory: {:?}", pkg_path);
+//准备用于发布的dapp_meta,该dapp_meta可用做下一步的发布
+pub async fn pack_dapp_pkg(dapp_dir_path: &str) -> Result<PackResult, String> {
+    //发布dapp_pkg前，需要确保sub_pkgs都已经发布(因此该命令需要在ood上执行)
+    //发布的dapp 的meta里，sub_pkgs使用固定版本号约束，已确保所有的sub_pkgs是统一升级的
+    // 指定dapp meta的路径，和已经用pack_raw_pkg打包好的sub_pkgs的目录路径，这样可以更新最新版本
+    // 将sub_pkgs最新版本发布到当前的ndn_mgr
+    // 自动填充dapp_meta.json的sub_pkgs字段，并构建dapp_meta.jwt(用来publish)
+    unimplemented!()
+   
+}
 
-    // 检查目录
-    let meta_path = pkg_path.join("meta.json");
-    if !meta_path.exists() {
-        eprintln!("Error: meta.json not found in directory");
-        return Err("meta.json not found in directory".to_string());
-    }
+//基于pack_dapp_pkg输出，发布dapp_pkg到当前zone(call repo_server.pub_pkg)
+pub async fn publish_dapp_pkg(dapp_dir_path: &str,zone_host_name: &str) {
+    unimplemented!()
+}
 
-    let items: Vec<_> = fs::read_dir(pkg_path)
-        .map_err(|e| format!("Error: Failed to read directory: {}", e.to_string()))?
-        .filter_map(|entry| entry.ok())
-        .collect();
-
-    println!("Found {} items to pack", items.len());
-
-    // 解析 meta.json
-    /*
-        {
-        "name" : "Home Station",
-        "description" : "Home Station",
-        "hostname" : "test.buckyos.io",
-        "pkg_name" : "test_pkg",
-        "version" : "0.1.0",
-        "pkg_list" : {
-            "amd64_docker_image" : {
-                "package_name":"home-station-x86-img",
-                "version": "*"
-                "docker_image_name":"filebrowser/filebrowser:s6"
-            },
-            "web_pages" :{
-                "package_name" : "home-station-web-page",
-                "version": "0.0.1"
-            }
-        }
-    }
-         */
-    let meta_content = fs::read_to_string(&meta_path)
-        .map_err(|err| format!("Error: Failed to read meta.json: {}", err.to_string()))?;
-    let meta_data: Value = serde_json::from_str(&meta_content)
-        .map_err(|err| format!("Error: Failed to parse meta.json: {}", err.to_string()))?;
-
-    let pkg_name = meta_data
-        .get("pkg_name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("Error: pkg_name missing in meta.json"))?;
-
-    let version = meta_data
-        .get("version")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("Error: version missing in meta.json"))?;
-
-    let hostname = meta_data
-        .get("hostname")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("Error: hostname missing in meta.json"))?;
-
-    let deps = match meta_data.get("pkg_list") {
-        Some(deps) => {
-            //转换deps为Value::Object
-            let deps = deps
-                .as_object()
-                .ok_or_else(|| format!("Error: pkg_list is not a map"))?;
-
-            //依次遍历deps，获取pkg_name和version
-            let mut deps_pkgs = HashMap::new();
-            for (item_name, pkg_data) in deps.iter() {
-                let pkg_data = pkg_data
-                    .as_object()
-                    .ok_or_else(|| format!("Error: pkg_list item {} is not a map", pkg_name))?;
-
-                let pkg_name = pkg_data
-                    .get("package_name")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        format!("Error: sub pkg name missing in pkg_list item {}", item_name)
-                    })?;
-
-                let version = pkg_data
-                    .get("version")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        format!(
-                            "Error: sub pkg version missing in pkg_list item {}",
-                            item_name
-                        )
-                    })?;
-
-                deps_pkgs.insert(pkg_name.to_string(), version.to_string());
-            }
-            serde_json::to_string(&deps_pkgs).map_err(|e| {
-                format!(
-                    "Error: Failed to serialize dependencies to json string: {}",
-                    e.to_string()
-                )
-            })?
-        }
-        None => "{}".to_string(),
-    };
-
-    // TODO dependencies？
-    println!(
-        "Parsed meta.json: pkg_name = {}, version = {}, hostname = {}, dependencies = {}",
-        pkg_name, version, hostname, deps
-    );
-
-    // 创建 tarball
-    let parent_dir = pkg_path.parent().unwrap();
-    let tarball_name = format!("{}-{}.bkz", pkg_name, version);
-    let tarball_path = parent_dir.join(&tarball_name);
-
-    let tar_gz = File::create(&tarball_path)
-        .map_err(|err| format!("Error: Failed to create package file: {}", err.to_string()))?;
-    let enc = GzEncoder::new(tar_gz, Compression::default());
-    let mut tar = Builder::new(enc);
-
-    // 递归添加目录和文件
-    fn append_dir_all(
-        tar: &mut Builder<GzEncoder<File>>,
-        path: &Path,
-        base: &Path,
-    ) -> io::Result<()> {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let path = entry.path();
-            let name = path.strip_prefix(base).unwrap();
-
-            if path.is_dir() {
-                tar.append_dir(name, &path)?;
-                append_dir_all(tar, &path, base)?;
-            } else {
-                tar.append_file(name, &mut File::open(&path)?)?;
-            }
-        }
-        Ok(())
-    }
-
-    append_dir_all(&mut tar, pkg_path, pkg_path).map_err(|err| {
-        format!(
-            "Error: Failed to add files and directories to tarball: {}",
-            err.to_string()
-        )
-    })?;
-
-    tar.finish().map_err(|err| {
-        format!(
-            "Error: Failed to finalize package creation: {}",
-            err.to_string()
-        )
-    })?;
-
-    println!(
-        "Package {} version {} by {} has been packed successfully.",
-        pkg_name, version, hostname
-    );
-    println!("Package created at: {:?}", tarball_path);
-
-    let pack_ret = PackResult {
-        pkg_name: pkg_name.to_string(),
-        version: version.to_string(),
-        hostname: hostname.to_string(),
-        target_file_path: tarball_path,
-        dependencies: HashMap::new(),
-        meta_content,
-    };
-
-    Ok(pack_ret)
+//call repo_server.pub_index,随后在zone内就会触发相关组件的自动升级了
+pub async fn publish_repo_index() -> Result<(), String> {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    unimplemented!()
 }
 
 #[derive(Debug)]
@@ -417,16 +264,16 @@ fn calculate_file_hash(file_path: &str) -> Result<FileInfo, String> {
     })
 }
 
-fn generate_jwt(pem_file: &str, data: &String) -> Result<String, String> {
-    let private_key = load_private_key_from_file(pem_file)?;
-    let mut header = Header::new(Algorithm::EdDSA);
-    header.kid = None;
-    header.typ = None;
-    let token = encode(&header, data, &private_key)
-        .map_err(|e| format!("Failed to encode data to JWT: {}", e.to_string()))?;
+// fn generate_jwt(pem_file: &str, data: &String) -> Result<String, String> {
+//     let private_key = load_private_key_from_file(pem_file)?;
+//     let mut header = Header::new(Algorithm::EdDSA);
+//     header.kid = None;
+//     header.typ = None;
+//     let token = encode(&header, data, &private_key)
+//         .map_err(|e| format!("Failed to encode data to JWT: {}", e.to_string()))?;
 
-    Ok(token)
-}
+//     Ok(token)
+// }
 
 async fn write_file_to_chunk(
     chunk_id: &ChunkId,
@@ -552,7 +399,8 @@ pub async fn publish_package(
         dependencies: HashMap::new(),
     };
 
-    let jwt_token: String = generate_jwt(pem_file, &pack_ret.meta_content)?;
+    //let jwt_token: String = generate_jwt(pem_file, &pack_ret.meta_content)?;
+    let jwt_token = "".to_string();
     println!("pub meta: {:?}, jwt_token: {}:", pkg_meta, jwt_token);
 
     // 上传元数据到repo
@@ -577,41 +425,6 @@ pub async fn publish_package(
     Ok(())
 }
 
-pub async fn publish_index(
-    pem_file: &str,
-    version: &str,
-    hostname: &str,
-    url: &str,
-    session_token: &str,
-) -> Result<(), String> {
-    let pub_meta = IndexPubMeta {
-        version: version.to_string(),
-        hostname: hostname.to_string(),
-    };
-    let meta_json_value = serde_json::to_string(&pub_meta).map_err(|e| {
-        format!(
-            "Failed to serialize index meta to json value, err:{:?}",
-            e.to_string()
-        )
-    })?;
-    let jwt_token: String = generate_jwt(pem_file, &meta_json_value)?;
-
-    let client = kRPC::new(url, Some(session_token.to_string()));
-
-    client
-        .call(
-            "pub_index",
-            json!({
-                "version": version.to_string(),
-                "hostname": hostname.to_string(),
-                "jwt": jwt_token,
-            }),
-        )
-        .await
-        .map_err(|e| format!("Failed to publish index, err:{:?}", e))?;
-
-    Ok(())
-}
 
 pub async fn install_pkg(
     pkg_name: &str,

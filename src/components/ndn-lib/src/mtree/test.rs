@@ -200,7 +200,7 @@ async fn test_generator() {
 async fn test_serialize_hash_calculator() {
     let test_file: &str = "D:\\test";
 
-    let chunk_size = 1024 * 1024 * 4;
+    let chunk_size = 1024 * 64;
 
     let mut root_hash1;
     let mut root_hash2;

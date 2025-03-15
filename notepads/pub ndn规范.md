@@ -64,3 +64,12 @@ download_chunk_by_path:
         resp = http_client.open("http://zoneid/repo/meta_index_db")
         chunk_id = resp.obj-id
         基于chunk_id开始边下载边验证 
+
+
+## 默认权限设置
+- 允许 Zone内Push Chunk
+- 静止 Zone外Push Chunk
+- 允许 Zone外Get Chunk
+- 允许 Zone外Get File(通过区分default named_mgr和pub named_mgr来隔离)
+- 一般 SetFile / PutObject 都是应用逻辑，无通用接口
+

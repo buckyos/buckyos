@@ -17,7 +17,7 @@ fn generate_random_buf(seed: &str, len: usize) -> Vec<u8> {
 #[test]
 async fn test_object_map() {
     let storage = Box::new(MemoryStorage::new()) as Box<dyn InnerStorage>;
-    let mut map = ObjectMap::new(HashMethod::Sha256, storage).await.unwrap();
+    let mut obj_map = ObjectMap::new(HashMethod::Sha256, storage).await.unwrap();
 
     let count = 100;
     for i in 0..count {
@@ -26,46 +26,46 @@ async fn test_object_map() {
         let meta = generate_random_buf(&key, 16);
         let obj_id = ObjId::new_by_raw(OBJ_TYPE_FILE.to_owned(), hash);
 
-        map.put_object(&key, obj_id.clone(), Some(meta.clone()))
+        obj_map.put_object(&key, obj_id.clone(), Some(meta.clone()))
             .await
             .unwrap();
 
         // Test get object
-        let ret = map.get_object(&key).await.unwrap().unwrap();
+        let ret = obj_map.get_object(&key).await.unwrap().unwrap();
         assert_eq!(ret.obj_id, obj_id);
         assert_eq!(ret.meta, Some(meta.clone()));
 
         // Test exist
-        let ret = map.is_object_exist(&key).await.unwrap();
+        let ret = obj_map.is_object_exist(&key).await.unwrap();
         assert_eq!(ret, true);
 
         // Test remove
         if i % 2 == 0 {
-            let ret = map.remove_object(&key).await.unwrap().unwrap();
+            let ret = obj_map.remove_object(&key).await.unwrap().unwrap();
             assert_eq!(ret.0, obj_id);
             assert_eq!(ret.1, Some(meta));
         }
     }
 
-    map.flush().await.unwrap();
+    obj_map.flush().await.unwrap();
 
-    let objid = map.gen_obj_id().unwrap();
+    let objid = obj_map.gen_obj_id().unwrap();
     println!("objid: {}", objid.to_string());
 
     for i in 0..count {
         let key = format!("key{}", i);
         if i % 2 == 0 {
-            let ret = map.get_object(&key).await.unwrap();
+            let ret = obj_map.get_object(&key).await.unwrap();
             assert_eq!(ret.is_none(), true);
         } else {
-            let ret = map.get_object(&key).await.unwrap().unwrap();
+            let ret = obj_map.get_object(&key).await.unwrap().unwrap();
             assert_eq!(ret.meta.is_some(), true);
 
-            let proof = map.get_object_proof_path(&key).await.unwrap();
+            let proof = obj_map.get_object_proof_path(&key).await.unwrap();
             assert!(proof.is_some());
             let proof = proof.unwrap();
 
-            let verifier = ObjectMapProofVerifier::new(map.hash_method());
+            let verifier = ObjectMapProofVerifier::new(obj_map.hash_method());
             let ret = verifier.verify(&objid, &proof).unwrap(); 
             assert_eq!(ret, true);
         }

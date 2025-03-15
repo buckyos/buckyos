@@ -44,7 +44,7 @@ impl TaskDb {
         Ok(())
     }
 
-    pub async fn create_task(&self, task: &Task) -> Result<i32> {
+    pub async fn create_task(&self, task: &Task) -> Result<i64> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         conn.execute(
@@ -70,11 +70,11 @@ impl TaskDb {
         )?;
         
         // 获取最后插入的ID
-        let id = conn.last_insert_rowid() as i32;
+        let id = conn.last_insert_rowid();
         Ok(id)
     }
 
-    pub async fn get_task(&self, id: i32) -> rusqlite::Result<Option<Task>> {
+    pub async fn get_task(&self, id: i64) -> rusqlite::Result<Option<Task>> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let mut stmt = conn.prepare("SELECT * FROM task WHERE id = ?1")?;
@@ -319,7 +319,7 @@ impl TaskDb {
         Ok(tasks)
     }
 
-    pub async fn update_task_status(&self, id: i32, status: TaskStatus) -> Result<()> {
+    pub async fn update_task_status(&self, id: i64, status: TaskStatus) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = Utc::now();
@@ -334,7 +334,7 @@ impl TaskDb {
         Ok(())
     }
 
-    pub async fn update_task_progress(&self, id: i32, progress: f32, completed_items: i32, total_items: i32) -> Result<()> {
+    pub async fn update_task_progress(&self, id: i64, progress: f32, completed_items: i32, total_items: i32) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = Utc::now();
@@ -351,7 +351,7 @@ impl TaskDb {
         Ok(())
     }
 
-    pub async fn update_task_error(&self, id: i32, error_message: &str) -> Result<()> {
+    pub async fn update_task_error(&self, id: i64, error_message: &str) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = Utc::now();
@@ -367,7 +367,7 @@ impl TaskDb {
         Ok(())
     }
 
-    pub async fn update_task_data(&self, id: i32, data: &str) -> Result<()> {
+    pub async fn update_task_data(&self, id: i64, data: &str) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let updated_at = Utc::now();
@@ -382,7 +382,7 @@ impl TaskDb {
         Ok(())
     }
 
-    pub async fn delete_task(&self, id: i32) -> Result<()> {
+    pub async fn delete_task(&self, id: i64) -> Result<()> {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         conn.execute("DELETE FROM task WHERE id = ?1", params![id])?;

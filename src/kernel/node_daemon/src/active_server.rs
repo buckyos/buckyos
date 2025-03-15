@@ -229,7 +229,7 @@ pub async fn start_node_active_service() {
         Box::new(active_server.clone())
     }).await;
     //active server config
-    let active_server_dir = get_buckyos_system_bin_dir().join("active");
+    let active_server_dir = get_buckyos_system_bin_dir().join("node_active");
     let active_server_config = json!({
       "tls_port":3143,
       "http_port":3180,

@@ -1,21 +1,13 @@
-use jsonwebtoken::EncodingKey;
-use name_lib::{DeviceConfig};
-use buckyos_api::{SystemConfigClient};
+
+use jsonwebtoken::TokenData;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
-use crate::util::{get_device_token_jwt, get_device_doc, load_device_private_key};
+use buckyos_api::*;
 
 
-pub async fn connect_into(target_url:&str, node_id:&str) {
-    // 读取node配置和密钥信息
-    let device_doc: DeviceConfig = get_device_doc(node_id).unwrap();
-    let device_private_key: EncodingKey = load_device_private_key(node_id).unwrap();
-    // 生成对应jwt
-    let device_session_token_jwt = get_device_token_jwt(&device_private_key, &device_doc).unwrap();
-
-    // init client
-    let syc_cfg_client: SystemConfigClient = SystemConfigClient::new(Some(target_url), Some(device_session_token_jwt.as_str()));
-    // handle error
+pub async fn connect_into() {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
 
     // ping test connection
     if let Err(e) = syc_cfg_client.get("boot/config").await {
@@ -23,7 +15,6 @@ pub async fn connect_into(target_url:&str, node_id:&str) {
         return;
     }
     // println!("boot config: {:?}", boot_config_result);
-
 
     println!("connect to system_config_service success");
     // handle input

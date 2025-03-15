@@ -7,7 +7,7 @@ use cyfs_sn::*;
 use cyfs_socks::SocksProxyConfig;
 use cyfs_warp::register_inner_service_builder;
 use log::*;
-use name_lib::load_pem_private_key;
+use name_lib::load_raw_private_key;
 use serde_json::from_value;
 use std::collections::HashMap;
 use std::path::PathBuf;

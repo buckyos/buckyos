@@ -15,7 +15,9 @@ rand = "*"
 async-trait = "*"
 chrono = "*"
 once_cell = "*"
+toml = "*"
 tokio = { version = "*", features = ["full"] }
+jsonwebtoken = "*"
 
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }

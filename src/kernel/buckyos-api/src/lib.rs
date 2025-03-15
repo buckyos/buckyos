@@ -8,6 +8,7 @@ mod control_panel;
 mod scheduler_client;
 mod verify_hub_client;
 mod zone_provider;
+mod repo_client;
 
 use name_lib::{DeviceConfig, DeviceInfo, ZoneConfig};
 pub use system_config::*;
@@ -18,7 +19,7 @@ pub use task_mgr::*;
 pub use control_panel::*;
 pub use scheduler_client::*;
 pub use verify_hub_client::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use serde_json::Value;
@@ -31,14 +32,18 @@ use log::*;
 use name_lib::*;
 use name_client::*;
 use zone_provider::*;
-//本库以后可能改名叫buckyos-sdk, 
-// 通过syc_config_client与buckyos的各种服务交互，与传统OS的system_call类似
-#[derive(Debug, Clone)]
+use repo_client::*;
+
+use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, DecodingKey};
+use jsonwebtoken::jwk::Jwk;
+
+
+#[derive(Debug, Clone,PartialEq,Eq)]
 pub enum BuckyOSRuntimeType {
-    AppClient,    //R3
-    AppService,   //R2
-    FrameService, //R1 
-    KernelService,//R0
+    AppClient,    //R3 可能运行在Node上，指定用户，可能在容器里
+    AppService,   //R2 运行在Node上，指定用户，可能在容器里
+    FrameService, //R1 运行在Node上，可能在容器里
+    KernelService,//R0 运行在Node上
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +59,7 @@ pub struct BuckyOSRuntime {
 pub struct SystemInfo {
 
 }
-
+static CURRENT_USER_CONFIG:OnceCell<OwnerConfig> = OnceCell::new();
 static CURRENT_BUCKYOS_RUNTIME:OnceCell<BuckyOSRuntime> = OnceCell::new();
 pub static CURRENT_ZONE_CONFIG: OnceCell<ZoneConfig> = OnceCell::new();
 pub static INIT_APP_SESSION_TOKEN: OnceCell<String> = OnceCell::new();
@@ -115,6 +120,71 @@ pub fn init_global_buckyos_value_by_env(app_id: &str) -> Result<()> {
 }
 
 
+
+pub async fn init_global_buckyos_value_by_load_identity_config(runtime_type:BuckyOSRuntimeType) -> Result<()> {
+    //判断 ～/.buckycli/ 目录是否存在
+    let home_dir = env::var("HOME").unwrap();
+    let buckycli_dir = Path::new(&home_dir).join(".buckycli");
+    let node_identity_file;
+    let user_config_file;
+    let device_private_key_file;
+    let user_private_key_file;
+    let zone_config_file;
+    if buckycli_dir.exists() {
+        //
+        zone_config_file = buckycli_dir.join("zone_config.toml");
+        node_identity_file = buckycli_dir.join("node_identity.toml");
+        device_private_key_file = buckycli_dir.join("device_private_key.pem");
+        user_config_file = buckycli_dir.join("owner_config.toml");
+        user_private_key_file = buckycli_dir.join("user_private_key.pem");
+
+    } else {
+        let etc_dir = get_buckyos_system_etc_dir();
+        node_identity_file = etc_dir.join("node_identity.toml");
+        //user_config_file = etc_dir.join("owner_config.toml");
+        device_private_key_file = etc_dir.join("device_private_key.pem");
+        user_private_key_file = etc_dir.join("user_private_key.pem");
+        zone_config_file = etc_dir.join("zone_config.toml");
+    }
+    //load device_config_file
+    let node_identity_config =  NodeIdentityConfig::load_node_identity_config(&node_identity_file);
+    let node_private_key = load_private_key(&device_private_key_file);
+
+    //load zone_config_file
+    //load user_config_file
+
+
+    unimplemented!()
+}
+
+pub async fn init_buckyos_api_without_env(appid:&str,runtime_type:BuckyOSRuntimeType) -> Result<()> {
+    if CURRENT_BUCKYOS_RUNTIME.get().is_some() {
+        return Err(RPCErrors::ReasonError("BuckyOSRuntime already initialized".to_string()));
+    }
+    let owner_user_id;
+    if runtime_type == BuckyOSRuntimeType::AppClient {
+        if CURRENT_USER_CONFIG.get().is_none() {
+            owner_user_id = None;
+        } else {
+            owner_user_id = Some(CURRENT_USER_CONFIG.get().unwrap().did.clone());
+        }
+    } else {
+        owner_user_id = None;
+    }
+
+    let zone_config = CURRENT_ZONE_CONFIG.get().unwrap();
+    let runtime = BuckyOSRuntime {
+        appid: appid.to_string(),
+        owner_user_id: owner_user_id,
+        runtime_type,
+        session_token: Arc::new(RwLock::new(INIT_APP_SESSION_TOKEN.get().unwrap().clone())),
+        buckyos_root_dir: get_buckyos_root_dir(),
+        zone_config: Some(zone_config.clone()),
+    };
+    CURRENT_BUCKYOS_RUNTIME.set(runtime);
+    Ok(())
+}
+
 pub async fn init_buckyos_api_runtime(appid:&str,owner_user_id:Option<String>,runtime_type:BuckyOSRuntimeType) -> Result<()> {
     if CURRENT_BUCKYOS_RUNTIME.get().is_some() {
         return Err(RPCErrors::ReasonError("BuckyOSRuntime already initialized".to_string()));
@@ -152,6 +222,7 @@ pub fn get_buckyos_api_runtime() -> Result<BuckyOSRuntime> {
 
 
 impl BuckyOSRuntime {
+    
     //login to verify hub. 
     pub async fn login(&mut self, login_params:Option<Value>,login_config:Option<Value>) -> Result<RPCSessionToken> {
         let real_session_token; 
@@ -377,6 +448,12 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
+    pub async fn get_repo_client(&self) -> Result<RepoClient> {
+        let krpc_client = self.get_zone_service_krpc_client("repo_service").await?;
+        let client = RepoClient::new(krpc_client);
+        Ok(client)
+    }
+
     //if http_only is false, return the url with tunnel protocol
     pub fn get_zone_service_url(&self,service_name: &str,http_only: bool) -> Result<String> {
         match service_name {
@@ -386,7 +463,7 @@ impl BuckyOSRuntime {
             "verify_hub" => {
                 return Ok("http://127.0.0.1:3300/kapi/verify_hub".to_string());
             }
-            "repo_server" | "repo" => {
+            "repo_service" | "repo" => {
                 return Ok("http://127.0.0.1:4000/kapi/repo".to_string());
             }
             "task_manager" => {

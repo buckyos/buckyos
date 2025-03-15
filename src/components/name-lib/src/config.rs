@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
@@ -99,6 +100,8 @@ impl ZoneConfig {
             exp: buckyos_get_unix_timestamp() + 3600*24*365,
         }
     }
+
+    
 
     pub fn get_node_host_name(&self,node_name:&str) -> String {
         let zone_short_name = self.get_zone_short_name();
@@ -449,7 +452,6 @@ impl DIDDocumentTrait for DeviceConfig {
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct OwnerConfig {
     pub did: String,
-
     pub name: String,
     pub nickname : String,
     pub auth_key : Jwk,
@@ -522,6 +524,37 @@ impl DIDDocumentTrait for OwnerConfig {
     // }
 }
 
+//NodeIdentity from ood active progress
+#[derive(Deserialize, Debug)]
+pub struct NodeIdentityConfig {
+    pub zone_name: String,// $name.buckyos.org or did:ens:$name
+    pub owner_public_key: jsonwebtoken::jwk::Jwk, //owner is zone_owner
+    pub owner_name:String,//owner's name
+    pub device_doc_jwt:String,//device document,jwt string,siged by owner
+    pub zone_nonce:String,// random string, is default password of some service
+    //device_private_key: ,storage in partical file
+}
+
+impl NodeIdentityConfig {
+    pub fn load_node_identity_config(file_path: &PathBuf) -> NSResult<(NodeIdentityConfig)> {
+        let contents = std::fs::read_to_string(file_path.clone()).map_err(|err| {
+            error!("read {} failed! {}", file_path.to_string_lossy(), err);
+            return NSError::ReadLocalFileError(format!("read {} failed! {}", file_path.to_string_lossy(), err));
+        })?;
+    
+        let config: NodeIdentityConfig = toml::from_str(&contents).map_err(|err| {
+            error!("parse {} failed! {}", file_path.to_string_lossy(), err);
+            return NSError::ReadLocalFileError(format!(
+                "Failed to parse NodeIdentityConfig TOML: {}",
+                err
+            ));
+        })?;
+    
+        Ok(config)
+    }
+}
+
+
 //unit test
 #[cfg(test)]
 mod tests {
@@ -560,6 +593,7 @@ mod tests {
             sn: None,
             vlan: None,
             verify_hub_info: None,
+            device_list: None,
             iat:None,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
         };

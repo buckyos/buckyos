@@ -3,12 +3,18 @@ extern crate core;
 mod package_cmd;
 mod util;
 mod sys_config;
+use buckyos_api::*;
 use clap::{Arg, Command};
-use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig};
+use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig, CURRENT_DEVICE_CONFIG};
 use package_cmd::*;
 use util::*;
 
 const CONFIG_FILE: &str = "~/.buckycli/config";
+
+
+async fn load_buckyos_identity_config(node_id: &str) -> Result<DeviceConfig, String> {
+    unimplemented!()
+}
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
@@ -25,8 +31,7 @@ async fn main() -> Result<(), String> {
                 .help("This node's id")
                 .required(false),
         )
-        .subcommand(Command::new("create_token").about("Create device session token"))
-        .subcommand(Command::new("version").about("buckyos version"))
+        .subcommand(Command::new("version").about("buckycli version"))
         .subcommand(
             Command::new("pub_pkg")
                 .about("publish package")
@@ -136,48 +141,23 @@ async fn main() -> Result<(), String> {
         )
         .get_matches();
 
-    let default_node_id = "node".to_string();
-    let node_id = matches.get_one::<String>("id").unwrap_or(&default_node_id);
-    let node_config = match load_identity_config(node_id.as_ref()) {
-        Ok(node_config) => node_config,
-        Err(e) => {
-            println!("{}", e);
-            return Err(e);
-        }
-    };
+    init_global_buckyos_value_by_load_identity_config(BuckyOSRuntimeType::AppClient).await.map_err(|e| {
+        let err_msg = format!("init_global_buckyos_value_by_load_identity_configfailed! {}", e);
+        println!("{}", err_msg.as_str());
+        err_msg
+    })?;
 
-    let device_private_key = match load_device_private_key(node_id.as_str()) {
-        Ok(device_private_key) => device_private_key,
-        Err(e) => {
-            println!("{}", e);
-            return Err(e);
-        }
-    };
+    init_buckyos_api_runtime("buckyos-cli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
+        let err_msg = format!("init buckyos api runtime failed! {}", e);
+        println!("{}", err_msg.as_str());
+        err_msg
+    })?;
 
-    let device_doc_json = match decode_json_from_jwt_with_default_pk(
-        &node_config.device_doc_jwt,
-        &node_config.owner_public_key,
-    ) {
-        Ok(device_doc_json) => device_doc_json,
-        Err(_e) => {
-            println!("decode device doc from jwt failed!");
-            return Err("decode device doc from jwt failed!".to_string());
-        }
-    };
+    let buckyos_runtime = get_buckyos_api_runtime().unwrap();
+    println!("Connect to {:?} @ {:?}",buckyos_runtime.owner_user_id,buckyos_runtime.zone_config);
 
-    let device_doc: DeviceConfig = match serde_json::from_value(device_doc_json) {
-        Ok(device_doc) => device_doc,
-        Err(e) => {
-            println!("parse device doc failed! {}", e);
-            return Err("parse device doc failed!".to_string());
-        }
-    };
 
     match matches.subcommand() {
-        Some(("create_token", _matches)) => {
-            let device_session_token_jwt = get_device_token_jwt(&device_private_key, &device_doc)?;
-            println!("{}", device_session_token_jwt)
-        }
         Some(("version", _)) => {
             let version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");
             // let git_hash = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
@@ -189,72 +169,13 @@ async fn main() -> Result<(), String> {
             );
         }
         Some(("pub_pkg", matches)) => {
-            let device_session_token_jwt = get_device_token_jwt(&device_private_key, &device_doc)?;
-
-            //从args中取出参数
-            let pkg_path = matches.get_one::<String>("pkg_path").unwrap();
-            let pem_file = matches.get_one::<String>("pem").unwrap();
-            let url = matches.get_one::<String>("url").unwrap();
-            match publish_package(
-                PackCategory::Pkg,
-                pkg_path,
-                pem_file,
-                url,
-                &device_session_token_jwt,
-            )
-            .await
-            {
-                Ok(_) => {
-                    println!("############\nPublish package success!");
-                }
-                Err(e) => {
-                    println!("############\nPublish package failed! {}", e);
-                    return Err("publish package failed!".to_string());
-                }
-            }
+            unimplemented!()
         }
         Some(("pub_app", matches)) => {
-            let device_session_token_jwt = get_device_token_jwt(&device_private_key, &device_doc)?;
-
-            //从args中取出参数
-            let app_path = matches.get_one::<String>("app_path").unwrap();
-            let pem_file = matches.get_one::<String>("pem").unwrap();
-            let url = matches.get_one::<String>("url").unwrap();
-            match publish_package(
-                PackCategory::App,
-                &app_path,
-                pem_file,
-                url,
-                &device_session_token_jwt,
-            )
-            .await
-            {
-                Ok(_) => {
-                    println!("############\nPublish app success!");
-                }
-                Err(e) => {
-                    println!("############\nPublish app failed! {}", e);
-                    return Err("publish app failed!".to_string());
-                }
-            }
+            unimplemented!()
         }
-        Some(("pub_index", matches)) => {
-            let device_session_token_jwt = get_device_token_jwt(&device_private_key, &device_doc)?;
-
-            //从args中取出参数
-            let pem_file = matches.get_one::<String>("pem").unwrap();
-            let version = matches.get_one::<String>("version").unwrap();
-            let hostname = matches.get_one::<String>("hostname").unwrap();
-            let url = matches.get_one::<String>("url").unwrap();
-            match publish_index(pem_file, version, hostname, url, &device_session_token_jwt).await {
-                Ok(_) => {
-                    println!("############\nPublish index success!");
-                }
-                Err(e) => {
-                    println!("############\nPublish index failed! {}", e);
-                    return Err("publish index failed!".to_string());
-                }
-            }
+        Some(("repo_publish", matches)) => {
+            
         }
         Some(("pack_pkg", matches)) => {
             let pkg_path = matches.get_one::<String>("pkg_path").unwrap();
@@ -283,17 +204,12 @@ async fn main() -> Result<(), String> {
                 }
             }
         }
+        Some(("repo_publish", matches)) => {
+            unimplemented!()
+        }
         Some(("connect", matches)) => {
-            // 连接server的默认参数
-            let url = matches
-                .get_one::<String>("target_url")
-                .map_or(String::from("http://127.0.0.1:3200/kapi/system_config"), |arg| arg.to_string());
-            let node_id = matches
-                .get_one::<String>("node_id")
-                .map_or(String::from("node"), |arg| arg.to_string());
 
-            //
-            sys_config::connect_into(&url, &node_id).await;
+            sys_config::connect_into().await;
         }
         _ => {
             println!("unknown command!");

@@ -593,7 +593,7 @@ impl NamedDataMgr {
     }
 
     pub async fn create_file(&self, path:&str,obj_id:&ObjId,app_id:&str,user_id:&str)->NdnResult<()> {
-        self.db.create_path(obj_id, path.clone(), app_id, user_id).map_err(|e| {
+        self.db.create_path(obj_id, path, app_id, user_id).map_err(|e| {
             warn!("create_file: create path failed! {}", e.to_string());
             e
         })?;

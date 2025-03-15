@@ -49,88 +49,60 @@ enum NodeDaemonErrors {
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
-//NodeIdentity from ood active progress
-#[derive(Deserialize, Debug)]
-struct NodeIdentityConfig {
-    zone_name: String,// $name.buckyos.org or did:ens:$name
-    owner_public_key: jsonwebtoken::jwk::Jwk, //owner is zone_owner
-    owner_name:String,//owner's name
-    device_doc_jwt:String,//device document,jwt string,siged by owner
-    zone_nonce:String,// random string, is default password of some service
-    //device_private_key: ,storage in partical file
-}
 
-fn load_node_private_key() -> Result<EncodingKey> {
-    // load from /etc/buckyos/node_private_key.toml
-    let file_path = "node_private_key.pem";
-    let contents = std::fs::read_to_string(file_path).map_err(|err| {
-        error!("read node private key failed! {}", err);
-        return NodeDaemonErrors::ReadConfigError(String::from(file_path));
-    })?;
 
-    let private_key: EncodingKey = EncodingKey::from_ed_pem(contents.as_bytes()).map_err(|err| {
-        error!("parse node private key failed! {}", err);
-        return NodeDaemonErrors::ParserConfigError(format!(
-            "Failed to parse node private key {}",
-            err
-        ));
-    })?;
+// fn load_identity_config(node_id: &str) -> Result<(NodeIdentityConfig)> {
+//     //load ./node_identity.toml for debug
+//     //load from /opt/buckyos/etc/node_identity.toml
+//     let mut file_path = PathBuf::from(format!("{}_identity.toml",node_id));
+//     let path = Path::new(&file_path);
+//     if path.exists() {
+//         warn!("debug load node identity config from ./node_identity.toml");
+//     } else {
+//         let etc_dir = get_buckyos_system_etc_dir();
 
-    Ok(private_key)
-}
+//         file_path = etc_dir.join(format!("{}_identity.toml",node_id));
+//     }
 
-fn load_identity_config(node_id: &str) -> Result<(NodeIdentityConfig)> {
-    //load ./node_identity.toml for debug
-    //load from /opt/buckyos/etc/node_identity.toml
-    let mut file_path = PathBuf::from(format!("{}_identity.toml",node_id));
-    let path = Path::new(&file_path);
-    if path.exists() {
-        warn!("debug load node identity config from ./node_identity.toml");
-    } else {
-        let etc_dir = get_buckyos_system_etc_dir();
+//     let contents = std::fs::read_to_string(file_path.clone()).map_err(|err| {
+//         error!("read node identity config failed! {}", err);
+//         return NodeDaemonErrors::ReadConfigError(file_path.to_string_lossy().to_string());
+//     })?;
 
-        file_path = etc_dir.join(format!("{}_identity.toml",node_id));
-    }
+//     let config: NodeIdentityConfig = toml::from_str(&contents).map_err(|err| {
+//         error!("parse node identity config failed! {}", err);
+//         return NodeDaemonErrors::ParserConfigError(format!(
+//             "Failed to parse NodeIdentityConfig TOML: {}",
+//             err
+//         ));
+//     })?;
 
-    let contents = std::fs::read_to_string(file_path.clone()).map_err(|err| {
-        error!("read node identity config failed! {}", err);
-        return NodeDaemonErrors::ReadConfigError(file_path.to_string_lossy().to_string());
-    })?;
+//     info!("load node identity config from {} success!",file_path.to_string_lossy());
+//     Ok(config)
+// }
 
-    let config: NodeIdentityConfig = toml::from_str(&contents).map_err(|err| {
-        error!("parse node identity config failed! {}", err);
-        return NodeDaemonErrors::ParserConfigError(format!(
-            "Failed to parse NodeIdentityConfig TOML: {}",
-            err
-        ));
-    })?;
+// fn load_device_private_key(node_id: &str) -> Result<(EncodingKey)> {
+//     let mut file_path = format!("{}_private_key.pem",node_id);
+//     let path = Path::new(file_path.as_str());
+//     if path.exists() {
+//         warn!("debug load device private_key from ./device_private_key.pem");
+//     } else {
+//         let etc_dir = get_buckyos_system_etc_dir();
+//         file_path = format!("{}/{}_private_key.pem",etc_dir.to_string_lossy(),node_id);
+//     }
+//     let private_key = std::fs::read_to_string(file_path.clone()).map_err(|err| {
+//         error!("read device private key failed! {}", err);
+//         return NodeDaemonErrors::ParserConfigError("read device private key failed!".to_string());
+//     })?;
 
-    info!("load node identity config from {} success!",file_path.to_string_lossy());
-    Ok(config)
-}
+//     let private_key: EncodingKey = EncodingKey::from_ed_pem(private_key.as_bytes()).map_err(|err| {
+//         error!("parse device private key failed! {}", err);
+//         return NodeDaemonErrors::ParserConfigError("parse device private key failed!".to_string());
+//     })?;
 
-fn load_device_private_key(node_id: &str) -> Result<(EncodingKey)> {
-    let mut file_path = format!("{}_private_key.pem",node_id);
-    let path = Path::new(file_path.as_str());
-    if path.exists() {
-        warn!("debug load device private_key from ./device_private_key.pem");
-    } else {
-        let etc_dir = get_buckyos_system_etc_dir();
-        file_path = format!("{}/{}_private_key.pem",etc_dir.to_string_lossy(),node_id);
-    }
-    let private_key = std::fs::read_to_string(file_path.clone()).map_err(|err| {
-        error!("read device private key failed! {}", err);
-        return NodeDaemonErrors::ParserConfigError("read device private key failed!".to_string());
-    })?;
-
-    let private_key: EncodingKey = EncodingKey::from_ed_pem(private_key.as_bytes()).map_err(|err| {
-        error!("parse device private key failed! {}", err);
-        return NodeDaemonErrors::ParserConfigError("parse device private key failed!".to_string());
-    })?;
-
-    info!("load device private key from {} success!",file_path);
-    Ok(private_key)
-}
+//     info!("load device private key from {} success!",file_path);
+//     Ok(private_key)
+// }
 
 async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneConfig> {
     //If local files exist, priority loads local files
@@ -788,8 +760,16 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = node_id.unwrap_or(&default_node_id);
 
     info!("node_daemon start...");
+
+    init_default_name_client().await.map_err(|err| {
+        error!("init default name client failed! {}", err);
+        return String::from("init default name client failed!");
+    })?;
+    info!("init default name client OK!");
+
     //load node identity config
-    let mut node_identity = load_identity_config(node_id);
+    let node_identity_file = get_buckyos_system_etc_dir().join("node_identity.toml");
+    let mut node_identity = NodeIdentityConfig::load_node_identity_config(&node_identity_file);
     if node_identity.is_err() {
         if enable_active {
             //befor start node_active_service ,try check and upgrade self
@@ -804,15 +784,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             return Err(String::from("load node identity config failed!"));
         }
     }
-
     let node_identity = node_identity.unwrap();
-
-    init_default_name_client().await.map_err(|err| {
-        error!("init default name client failed! {}", err);
-        return String::from("init default name client failed!");
-    })?;
-    info!("init default name client OK!");
-
     //verify device_doc by owner_public_key
     {
         let owner_name = node_identity.owner_name.as_ref();
@@ -845,11 +817,13 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     info!("current node's device doc: {:?}", device_doc);
 
     //load device private key
-    let device_private_key = load_device_private_key(&node_id).map_err(|error| {
+    let device_private_key_file = get_buckyos_system_etc_dir().join("device_private_key.pem");
+    let device_private_key = load_private_key(&device_private_key_file).map_err(|error| {
         error!("load device private key failed! {}", error);
         return String::from("load device private key failed!");
     })?;
 
+    //lookup zone config
     info!("start refresh zone [{}] 's config...", node_identity.zone_name.as_str());
     let zone_config = looking_zone_config(&node_identity).await.map_err(|err| {
         error!("looking zone config failed! {}", err);
