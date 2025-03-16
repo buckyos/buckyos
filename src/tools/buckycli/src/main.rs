@@ -7,7 +7,7 @@ use buckyos_api::*;
 use clap::{Arg, Command};
 use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig, CURRENT_DEVICE_CONFIG};
 use package_cmd::*;
-
+use crate::package_cmd::*;
 
 
 
@@ -29,66 +29,47 @@ async fn main() -> Result<(), String> {
         .subcommand(Command::new("version").about("buckycli version"))
         .subcommand(
             Command::new("pub_pkg")
-                .about("publish package")
+                .about("publish packed raw package to local repo")
                 .arg(
-                    Arg::new("pkg_path")
-                        .long("pkg_path")
-                        .help("package path")
-                        .required(true),
+                    Arg::new("target_dir")
+                        .long("target_dir")
+                        .help("target dir,which contain packed raw package")
+                        .required(true)
+                        .index(1)
                 )
-                .arg(
-                    Arg::new("pem")
-                        .long("pem_file")
-                        .help("pem file path")
-                        .required(true),
-                )
-                .arg(Arg::new("url").long("url").help("repo url").required(true)),
         )
         .subcommand(
             Command::new("pub_app")
-                .about("publish app")
+                .about("update app doc and publish app to local repo")
                 .arg(
-                    Arg::new("app_path")
+                    Arg::new("app_name")
+                        .long("app_name")
+                        .help("app name")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("target_dir")
                         .long("app_path")
                         .help("app dir path")
                         .required(true),
                 )
-                .arg(
-                    Arg::new("pem")
-                        .long("pem_file")
-                        .help("pem file path")
-                        .required(true),
-                )
-                .arg(Arg::new("url").long("url").help("repo url").required(true)),
         )
         .subcommand(
             Command::new("pub_index")
-                .about("publish index")
-                .arg(
-                    Arg::new("pem")
-                        .long("pem_file")
-                        .help("pem file path")
-                        .required(true),
-                )
-                .arg(
-                    Arg::new("version")
-                        .long("version")
-                        .help("index version")
-                        .required(true),
-                )
-                .arg(
-                    Arg::new("hostname")
-                        .long("hostname")
-                        .help("author hostname")
-                        .required(true),
-                )
-                .arg(Arg::new("url").long("url").help("repo url").required(true)),
+                .about("let local repo publish wait-pub-pkg_meta_index database")
         )
         .subcommand(
             Command::new("pack_pkg").about("pack package").arg(
-                Arg::new("pkg_path")
-                    .long("pkg_path")
-                    .help("package path")
+                Arg::new("src_pkg_path")
+                    .index(1)
+                    .long("src_pkg_path")
+                    .help("source package path,which dir contain .pkg_meta.json")
+                    .required(true)
+            ).arg(
+                Arg::new("target_path")
+                    .index(2)
+                    .long("target path")
+                    .help("packed package will store at /target_path/pkg_name/")
                     .required(true),
             ),
         )
@@ -150,9 +131,11 @@ async fn main() -> Result<(), String> {
         println!("Failed to get session token: {}", e);
         return e.to_string();
     })?;
+    let mut private_key = None;
     println!("Connect to {:?} @ {:?}",buckyos_runtime.user_did,buckyos_runtime.zone_config.name);
     if buckyos_runtime.user_private_key.is_some() {
         println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
+        private_key = Some((buckyos_runtime.user_did.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
     }
 
     match matches.subcommand() {
@@ -167,17 +150,33 @@ async fn main() -> Result<(), String> {
             );
         }
         Some(("pub_pkg", matches)) => {
+            
             unimplemented!()
         }
         Some(("pub_app", matches)) => {
-            unimplemented!()
-        }
-        Some(("repo_publish", matches)) => {
-            
+            let app_name = matches.get_one::<String>("app_name").unwrap();
+            let app_dir_path = matches.get_one::<String>("target_dir").unwrap();
+            let pub_result = publish_app_pkg(app_name, app_dir_path,false).await;
+            if pub_result.is_err() {
+                println!("Publish app failed! {}", pub_result.err().unwrap());
+                return Err("publish app failed!".to_string());
+            }
         }
         Some(("pack_pkg", matches)) => {
-            unimplemented!()
+            let src_pkg_path = matches.get_one::<String>("src_pkg_path").unwrap();
+            let target_path = matches.get_one::<String>("target_path").unwrap();
+
+            match pack_raw_pkg(src_pkg_path, target_path,private_key).await {
+                Ok(_) => {
+                    println!("############\nPack package success!");
+                }
+                Err(e) => {
+                    println!("############\nPack package failed! {}", e);
+                    return Err("pack package failed!".to_string());
+                }
+            }
         }
+        
         Some(("install_pkg", matches)) => {
             let pkg_name = matches.get_one::<String>("pkg_name").unwrap();
             let version = matches.get_one::<String>("version").unwrap();
@@ -193,11 +192,15 @@ async fn main() -> Result<(), String> {
                 }
             }
         }
-        Some(("repo_publish", matches)) => {
-            unimplemented!()
+        Some(("pub_index", _matches)) => {
+            let pub_result =publish_repo_index().await;
+            if pub_result.is_err() {
+                println!("Publish repo index failed! {}", pub_result.err().unwrap());
+                return Err("publish repo index failed!".to_string());
+            }
+            println!("############\nPublish repo index success!");
         }
-        Some(("connect", matches)) => {
-
+        Some(("connect", _matches)) => {
             sys_config::connect_into().await;
         }
         _ => {

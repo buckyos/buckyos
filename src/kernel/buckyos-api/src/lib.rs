@@ -69,31 +69,85 @@ static CURRENT_BUCKYOS_RUNTIME:OnceCell<BuckyOSRuntime> = OnceCell::new();
 pub static CURRENT_ZONE_CONFIG: OnceCell<ZoneConfig> = OnceCell::new();
 pub static INIT_APP_SESSION_TOKEN: OnceCell<String> = OnceCell::new();
 
-pub fn init_global_buckyos_value_by_env(app_id: &str) -> Result<()> {
+pub async fn init_global_buckyos_value_by_env(app_id: &str) -> Result<()> {
+    let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG");
+    if zone_config_str.is_err() {
+        warn!("BUCKYOS_ZONE_CONFIG not set");
+        return Err(RPCErrors::ReasonError("BUCKYOS_ZONE_CONFIG not set".to_string()));
+    }
+    let zone_config_str = zone_config_str.unwrap();
+    info!("zone_config_str:{}",zone_config_str);    
+    let zone_config = serde_json::from_str(zone_config_str.as_str());
+    if zone_config.is_err() {
+        warn!("zone_config_str format error");
+        return Err(RPCErrors::ReasonError("zone_config_str format error".to_string()));
+    }
+    let zone_config = zone_config.unwrap();
+    let set_result = CURRENT_ZONE_CONFIG.set(zone_config);
+    if set_result.is_err() {
+        warn!("Failed to set GLOBAL_ZONE_CONFIG");
+        return Err(RPCErrors::ReasonError("Failed to set GLOBAL_ZONE_CONFIG".to_string()));
+    }
 
+    let device_doc = env::var("BUCKYOS_THIS_DEVICE");
+    if device_doc.is_err() {
+        warn!("BUCKY_DEVICE_DOC not set");
+        return Err(RPCErrors::ReasonError("BUCKY_DEVICE_DOC not set".to_string()));
+    }
+    let device_doc = device_doc.unwrap();
+    info!("device_doc:{}",device_doc);
+    let device_config= serde_json::from_str(device_doc.as_str());
+    if device_config.is_err() {
+        warn!("device_doc format error");
+        return Err(RPCErrors::ReasonError("device_doc format error".to_string()));
+    }
+    let device_config:DeviceConfig = device_config.unwrap();
+    let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
+    if set_result.is_err() {
+        warn!("Failed to set CURRENT_DEVICE_CONFIG");
+        return Err(RPCErrors::ReasonError("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
+    }
+    let upper_appid = app_id.to_uppercase();
+    let session_token_key = format!("{}_SESSION_TOKEN",upper_appid);
+    let session_token = env::var(session_token_key.as_str());
+    if session_token.is_err() {
+        warn!("{} not set",session_token_key);
+        return Err(RPCErrors::ReasonError("Failed to set CURRENT_SESSION_TOKEN".to_string()));
+    }
+    let session_token = session_token.unwrap();
+    let set_result = INIT_APP_SESSION_TOKEN.set(session_token.clone());
+    if set_result.is_err() {
+        warn!("Failed to set CURRENT_APP_SESSION_TOKEN");
+        return Err(RPCErrors::ReasonError("Failed to set CURRENT_SESSION_TOKEN".to_string()));
+    }
     Ok(())
 }
 
 
 
 pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRuntimeType) -> Result<()> {
-    init_default_name_client();
-
     if CURRENT_BUCKYOS_RUNTIME.get().is_some() {
         return Err(RPCErrors::ReasonError("BuckyOSRuntime already initialized".to_string()));
     }
     
+
+    init_default_name_client().await
+        .map_err(|e| {
+            error!("Failed to init default name client: {}", e);
+            RPCErrors::ReasonError(format!("Failed to init default name client: {}", e))
+        })?;
+
     let bucky_dev_user_home_dir = get_buckyos_dev_user_home();
     let node_identity_file;
     let user_config_file;
     let device_private_key_file;
-    let user_private_key_file;
+    let mut user_private_key_file = None;
     let zone_config_file;
     let mut user_id = None;
     let mut owner_user_config = None;
     if bucky_dev_user_home_dir.exists() {
         user_config_file = bucky_dev_user_home_dir.join("owner_config.toml");
-        user_private_key_file = bucky_dev_user_home_dir.join("user_private_key.pem");
+        user_private_key_file = Some(bucky_dev_user_home_dir.join("user_private_key.pem"));
         let owner_config = OwnerConfig::load_owner_config(&user_config_file)
             .map_err(|e| {
                 error!("Failed to load owner config: {}", e);
@@ -104,14 +158,14 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
 
         zone_config_file = bucky_dev_user_home_dir.join("zone_config.toml");
         node_identity_file = bucky_dev_user_home_dir.join("node_identity.toml");
-        device_private_key_file = bucky_dev_user_home_dir.join("device_private_key.pem");
+        device_private_key_file = bucky_dev_user_home_dir.join("node_private_key.pem");
 
     } else {
         let etc_dir = get_buckyos_system_etc_dir();
         node_identity_file = etc_dir.join("node_identity.toml");
         //user_config_file = etc_dir.join("owner_config.toml");
-        device_private_key_file = etc_dir.join("device_private_key.pem");
-        user_private_key_file = etc_dir.join("user_private_key.pem");
+        device_private_key_file = etc_dir.join("node_private_key.pem");
+        //user_private_key_file = etc_dir.join("user_private_key.pem");
         zone_config_file = etc_dir.join("zone_config.toml");
     }
 
@@ -152,10 +206,14 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
         device_private_key = None;
     }
 
-    let user_private_key;
-    let private_key = load_private_key(&user_private_key_file);
-    if private_key.is_ok() {
-        user_private_key = Some(private_key.unwrap());
+    let mut user_private_key;
+    if user_private_key_file.is_some() {
+        let private_key = load_private_key(&user_private_key_file.unwrap());
+        if private_key.is_ok() {
+            user_private_key = Some(private_key.unwrap());
+        } else {
+            user_private_key = None;
+        }
     } else {
         user_private_key = None;
     }
@@ -171,7 +229,7 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
             return Err(RPCErrors::ReasonError("zone name not match".to_string()));
         }
     } else {
-        let zone_doc: EncodedDocument = resolve_did(&node_identity_config.zone_name,None).await.map_err(|err| {
+        let mut zone_doc: EncodedDocument = resolve_did(&node_identity_config.zone_name,None).await.map_err(|err| {
             error!("resolve zone did failed! {}", err);
             return RPCErrors::ReasonError("resolve zone did failed!".to_string());
         })?;
@@ -181,6 +239,8 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
             error!("parse zone config failed! {}", err);
             return RPCErrors::ReasonError("parse zone config failed!".to_string());
         })?;
+        
+        zone_config.name = Some(node_identity_config.zone_name.clone());
     }
 
     let set_result = CURRENT_ZONE_CONFIG.set(zone_config.clone());
@@ -193,7 +253,7 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
         appid: appid.to_string(),
         user_did: user_id,
         runtime_type,
-        session_token: Arc::new(RwLock::new(INIT_APP_SESSION_TOKEN.get().unwrap().clone())),
+        session_token: Arc::new(RwLock::new("".to_string())),
         buckyos_root_dir: get_buckyos_root_dir(),
         zone_config: zone_config,
         deivce_config: Some(device_config),
@@ -220,6 +280,12 @@ pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,r
             //do nothing
         }
     }
+
+    init_default_name_client().await
+    .map_err(|e| {
+        error!("Failed to init default name client: {}", e);
+        RPCErrors::ReasonError(format!("Failed to init default name client: {}", e))
+    })?;
 
     let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG");
     if zone_config_str.is_err() {

@@ -166,6 +166,10 @@ impl DeviceInfo {
             cpu_mhz += cpu.frequency() as u32;
             cpu_mhz_last = cpu.frequency() as u32;
         }
+        if cpu_mhz < 1000 {
+            cpu_mhz = 2000*sys.cpus().len() as u32;
+            cpu_mhz_last = 2000;
+        }
         self.cpu_info = Some(format!("{} @ {} MHz,({} cores)", cpu_brand, cpu_mhz_last, sys.cpus().len()));
         self.cpu_num = Some(sys.cpus().len() as u32);
         self.cpu_mhz = Some(cpu_mhz);

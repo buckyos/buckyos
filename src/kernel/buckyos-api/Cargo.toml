@@ -20,6 +20,7 @@ tokio = { version = "*", features = ["full"] }
 jsonwebtoken = "*"
 
 buckyos-kit = { path = "../../components/buckyos-kit" }
+package-lib = { path = "../../components/package-lib" }
 name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
 kRPC ={ path = "../kRPC" }

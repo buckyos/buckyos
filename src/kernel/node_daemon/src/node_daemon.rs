@@ -375,6 +375,7 @@ async fn update_device_info(device_doc: &DeviceConfig,syste_config_client: &Syst
         return;
     }
     let device_info_str = serde_json::to_string(&device_info).unwrap();
+    info!("update device info: {:?}", device_info);
 
     let device_key = format!("devices/{}/info", device_doc.name.as_str());
     let put_result = syste_config_client.set(device_key.as_str(),device_info_str.as_str()).await;
@@ -504,9 +505,18 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
     Ok(())
 }
 
-async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, device_private_key: &EncodingKey,zone_config: &ZoneConfig,is_restart:bool) -> std::result::Result<(),String> {
+async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node_private_key: &EncodingKey,zone_config: &ZoneConfig,is_restart:bool) -> std::result::Result<(),String> {
     let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs_gateway".to_string(),get_buckyos_system_bin_dir());
-    if !cyfs_gateway_service_pkg.try_load().await {
+    info!("check cyfs_gateway service pkg status...");
+    let mut running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
+        error!("check cyfs_gateway running failed! {}", err);
+        return String::from("check cyfs_gateway running failed!");
+    })?;
+    info!("cyfs_gateway service pkg status: {:?}",running_state);
+
+
+    if running_state == ServiceState::NotExist {
+        info!("cyfs_gateway service pkg not exist, try install it...");
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
         let result = env.install_pkg("cyfs_gateway", false).await;
         if result.is_err() {
@@ -514,14 +524,11 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, devi
             return Err(String::from("install cyfs_gateway service pkg failed!"));
         } else {
             info!("install cyfs_gateway service pkg success");
-        }
+        }      
     }
-
-    let mut running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
-        error!("check cyfs_gateway running failed! {}", err);
-        return String::from("check cyfs_gateway running failed!");
-    })?;
+    
     if is_restart {
+        info!("cyfs_gateway service pkg exist, will do restart ...");
         cyfs_gateway_service_pkg.stop(None).await.map_err(|err| {
             error!("stop cyfs_gateway service failed! {}", err);
             return String::from("stop cyfs_gateway service failed!");
@@ -599,7 +606,7 @@ async fn node_main(node_host_name: &str,
     let system_pkgs = vec![
         "app_loader".to_string(),
         "node_active".to_string(),
-        "bucky-cli".to_string(),
+        "buckycli".to_string(),
         "control_panel".to_string(),
     ];
     check_and_update_system_pkgs(system_pkgs,buckyos_api_client.get_session_token()).await;
@@ -817,7 +824,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     info!("current node's device doc: {:?}", device_doc);
 
     //load device private key
-    let device_private_key_file = get_buckyos_system_etc_dir().join("device_private_key.pem");
+    let device_private_key_file = get_buckyos_system_etc_dir().join("node_private_key.pem");
     let device_private_key = load_private_key(&device_private_key_file).map_err(|error| {
         error!("load device private key failed! {}", error);
         return String::from("load device private key failed!");
@@ -846,7 +853,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     if is_ood {
         info!("Booting OOD {} ...",node_host_name);
     } else {
-        info!("Booting Node {} ...",node_host_name);
+        info!("Booting Server {} ...",node_host_name);
     }
 
     let zone_config = CURRENT_ZONE_CONFIG.get().unwrap();
@@ -881,8 +888,8 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let device_info = DeviceInfo::from_device_doc(&device_doc);
     //enable_zone_provider(Some(&device_info),Some(&device_session_token_jwt),false);
     //init kernel_service:cyfs-gateway service
-    std::env::set_var("GATEWAY_SESSIONT_TOKEN",device_session_token_jwt.clone());
-    info!("set var GATEWAY_SESSIONT_TOKEN to {}", device_session_token_jwt);
+    //std::env::set_var("GATEWAY_SESSIONT_TOKEN",device_session_token_jwt.clone());
+    //info!("set var GATEWAY_SESSIONT_TOKEN to {}", device_session_token_jwt);
     keep_cyfs_gateway_service(node_id.as_str(),&device_doc, &device_private_key,&zone_config,false).await.map_err(|err| {
         error!("init cyfs_gateway service failed! {}", err);
         return String::from("init cyfs_gateway service failed!");

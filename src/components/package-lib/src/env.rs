@@ -286,20 +286,20 @@ impl PackageEnv {
                         }
                     }
                 } else {
-                    info!("dev mode pkg_env : try load pkg: {}", pkg_id_str);
-                    let media_info = self.try_load(pkg_id_str).await;
+                    info!("dev mode env {} : try load pkg: {}", self.work_dir.display(), pkg_id_str);
+                    let media_info = self.dev_try_load(pkg_id_str).await;
                     if media_info.is_ok() {
                         return Ok(media_info.unwrap());
                     }
                     if let Some(parent_path) = &self.config.parent {
                         let parent_env = PackageEnv::new(parent_path.clone());
-                        // 使用 Box::pin 来处理递归的异步调用
                         let future = Box::pin(parent_env.load(pkg_id_str));
                         if let Ok(media_info) = future.await {
                             return Ok(media_info);
                         }
                     }
                 }
+                info!("load pkg {} failed.", pkg_id_str);
                 Err(PkgError::LoadError(
                     pkg_id_str.to_owned(),
                     "Package metadata not found".to_owned(),
@@ -534,10 +534,12 @@ impl PackageEnv {
     }
 
 
-    async fn try_load(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
+    async fn dev_try_load(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
         let pkg_dirs = self.get_pkg_dir(pkg_id_str)?;
         for pkg_dir in pkg_dirs {
+            debug!("try load pkg {} from {}", pkg_id_str, pkg_dir.display());
             if tokio_fs::metadata(&pkg_dir).await.is_ok() {
+                debug!("try load pkg {} from {} OK.", pkg_id_str, pkg_dir.display());
                 return Ok(MediaInfo {
                     pkg_id: PackageId::parse(pkg_id_str)?,
                     full_path: pkg_dir,
@@ -681,17 +683,17 @@ mod tests {
         let pkg_dir = create_test_package(&env, "test-pkg", "1.0.0").await;
         
         // 测试模糊版本匹配
-        let media_info = env.try_load("test-pkg#*").await.unwrap();
+        let media_info = env.dev_try_load("test-pkg#*").await.unwrap();
         assert_eq!(media_info.pkg_id.name, "test-pkg");
         assert_eq!(media_info.full_path, pkg_dir);
         
         // 测试精确版本匹配
-        let media_info = env.try_load("test-pkg#1.0.0").await.unwrap();
+        let media_info = env.dev_try_load("test-pkg#1.0.0").await.unwrap();
         assert_eq!(media_info.pkg_id.name, "test-pkg");
         assert_eq!(media_info.pkg_id.version_exp.as_ref().unwrap().to_string(), "1.0.0".to_string());
         
         // 测试不存在的包
-        assert!(env.try_load("not-exist#1.0.0").await.is_err());
+        assert!(env.dev_try_load("not-exist#1.0.0").await.is_err());
     }
 
     #[tokio::test]

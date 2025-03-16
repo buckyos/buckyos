@@ -1,3 +1,4 @@
+use std::ops::Deref;
 //system control panel client
 use std::sync::Arc;
 use name_lib::DeviceConfig;
@@ -10,7 +11,7 @@ use serde_json::json;
 use log::*;
 use ::kRPC::*;
 use crate::system_config::*;
-
+use package_lib::PackageMeta;
 
 #[derive(Serialize, Deserialize)]
 pub struct SubPkgDesc {
@@ -26,11 +27,11 @@ pub struct SubPkgDesc {
 //App info is store at Index-db, publish to bucky store
 #[derive(Serialize, Deserialize)]
 pub struct AppDoc {
-    pub app_id: String,
-    pub name: String,
-    pub description: String,
-    pub vendor_did: String,
-    pub pkg_id: String,
+    #[serde(flatten)]
+    pub meta: PackageMeta,
+    pub app_name: String,
+
+
     //service name -> full image url
     // 命名逻辑:<arch>_<runtimne_type>_<media_type>, 
     //"amd64_docker_image" 
@@ -40,6 +41,30 @@ pub struct AppDoc {
     //"aarch64_linux_app"
     //"aarch64_macos_app"
     pub pkg_list: HashMap<String, SubPkgDesc>,
+}
+
+impl AppDoc {
+    pub fn from_pkg_meta(pkg_meta: &PackageMeta) -> Result<Self> {
+        let pkg_json = serde_json::to_value(pkg_meta).unwrap();
+        let result_self  = serde_json::from_value(pkg_json)
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        Ok(result_self) 
+    }
+
+    pub fn to_pkg_meta(&self) -> Result<PackageMeta> {
+        let pkg_json = serde_json::to_value(self).unwrap();
+        let result_pkg_meta = serde_json::from_value(pkg_json)
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        Ok(result_pkg_meta)
+    }
+}
+
+impl Deref for AppDoc {
+    type Target = PackageMeta;
+    
+    fn deref(&self) -> &Self::Target {
+        &self.meta
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -352,5 +377,53 @@ impl ControlPanelClient {
 
     pub async fn disable_app(&self,appid:&str) -> Result<u64> {
         unimplemented!();
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system_config::*;
+    use crate::control_panel::*;
+    use serde_json::json;
+    #[tokio::test]
+    async fn test_get_parse_app_doc() {
+        let app_doc = json!({
+            "pkg_name":"buckyos.home-station",
+            "version":"1.0.0",
+            "tag":"latest",
+            "app_name" : "Home Station",
+            "description" : "Home Station",
+            "author" : "did:bns:buckyos",
+            "pub_time":1715760000,
+            "pkg_list" : {
+                "amd64_docker_image" : {
+                    "pkg_id":"home-station-x86-img",
+                    "docker_image_name":"filebrowser/filebrowser:s6"
+                },
+                "aarch64_docker_image" : {
+                    "pkg_id":"home-station-arm64-img",
+                    "docker_image_name":"filebrowser/filebrowser:s6"
+                },
+                "web_pages" :{
+                    "pkg_id" : "home-station-web-page"
+                },
+                "amd64_direct_image" :{
+                    "pkg_id" : "home-station-web-page",
+                    "package_url": "https://web3.buckyos.io/static/home-station-win.zip"
+                },
+                "amd64_win_app" :{
+                    "pkg_id" : "home-station-win-app"
+                },
+                "amd64_linux_app" :{
+                    "pkg_id" : "home-station-linux-app"
+                }
+            }
+        });
+        let app_doc:AppDoc = serde_json::from_value(app_doc).unwrap();
+        println!("{}#{}", app_doc.pkg_name, app_doc.version);
+        let app_doc_str = serde_json::to_string_pretty(&app_doc).unwrap();
+        println!("{}", app_doc_str);
     }
 }

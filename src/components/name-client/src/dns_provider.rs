@@ -214,7 +214,11 @@ impl NsProvider for DnsProvider {
     }
 
     async fn query_did(&self, did: &str, fragment: Option<&str>, from_ip: Option<IpAddr>) -> NSResult<EncodedDocument> {
-        return Err(NSError::Failed("Not implemented".to_string()));
+        let name_info = self.query(did, Some(RecordType::DID), None).await?;
+        if name_info.did_document.is_some() {
+            return Ok(name_info.did_document.unwrap());
+        }
+        return Err(NSError::Failed("DID Document not found".to_string()));
     }
 }
 

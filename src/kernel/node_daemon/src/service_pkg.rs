@@ -8,7 +8,7 @@ use buckyos_kit::*;
 
 
 
-#[derive(PartialEq)]
+#[derive(PartialEq,Debug)]
 pub enum ServiceState {
     //InstllDeps,
     Deploying,
@@ -132,6 +132,7 @@ impl ServicePkg {
         let media_info = media_info.unwrap();
         let mut media_info_lock = self.media_info.lock().await;
         *media_info_lock = Some(media_info);
+        drop(media_info_lock);
         let result = self.execute_operation("status", params).await?;
         match result {
             0 => Ok(ServiceState::Started),

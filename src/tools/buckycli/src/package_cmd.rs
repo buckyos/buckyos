@@ -2,7 +2,7 @@
 use crate::util::*;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use jsonwebtoken::{encode, Algorithm, Header};
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use kRPC::kRPC;
 use name_lib::decode_jwt_claim_without_verify;
 use ndn_lib::*;
@@ -19,7 +19,7 @@ use tar::Builder;
 use tokio::io::AsyncWriteExt;
 use package_lib::*;
 use buckyos_api::*;
-
+use name_lib::*;
 #[derive(Debug)]
 pub enum PackCategory {
     Pkg,
@@ -107,7 +107,7 @@ async fn tar_gz(src_dir: &Path, tarball_path: &Path) -> Result<(), String> {
 }
 
 
-pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str) -> Result<(), String> {
+pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(&str,&EncodingKey)>) -> Result<(), String> {
     println!("开始打包路径: {}", pkg_path);
     let pkg_path = Path::new(pkg_path);
     if !pkg_path.exists() {
@@ -169,10 +169,9 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str) -> Result<(), String> 
         format!("写入 objid 失败: {}", e.to_string())
     })?;
     // 如果提供了私钥，则对元数据进行签名
-    let runtime = get_buckyos_api_runtime().unwrap();
-    if runtime.user_private_key.is_some() { 
+    if let Some((kid,private_key)) = private_key { 
         let jwt_token = named_obj_to_jwt(pkg_meta_json_str,
-            runtime.user_private_key.as_ref().unwrap(),runtime.user_did.clone())
+            private_key,Some(kid.to_string()))
             .map_err(|e| format!("生成 pkg_meta.jwt 失败: {}", e.to_string()))?;
         let jwt_path = dest_dir_path.join("pkg_meta.jwt");
         fs::write(&jwt_path, jwt_token).map_err(|e| {
@@ -197,11 +196,14 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str) -> Result<(), String> 
 }
 
 //基于pack raw pkg的输出，发布pkg到当前zone(call repo_server.pub_pkg)
-pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>,zone_host_name: &str) -> Result<(), String> {
+pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), String> {
     //1) 首先push_chunk
     let mut pkg_meta_jwt_map = HashMap::new();
-    let base_url = format!("http://{}/ndn/",zone_host_name);
-    let ndn_client = NdnClient::new(zone_host_name.to_string(),None,None);
+    let runtime = get_buckyos_api_runtime().unwrap();
+    let zone_host_name = runtime.zone_config.name.clone().unwrap();
+
+    let base_url = format!("http://{}/ndn/",zone_host_name.as_str());
+    let ndn_client = NdnClient::new(base_url,None,None);
     let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(None).await.unwrap();
     for pkg_path in pkg_pack_path_list {
         let pkg_meta_jwt_path = pkg_path.join("pkg_meta.jwt");
@@ -268,21 +270,22 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>,zone_host_name: &
 }
 
 //准备用于发布的dapp_meta,该dapp_meta可用做下一步的发布
-pub async fn publish_app_pkg(dapp_dir_path: &str,no_pub_sub_pkg:bool,zone_host_name: &str) -> Result<(), String> {
+pub async fn publish_app_pkg(app_name: &str,dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<(), String> {
     //发布dapp_pkg前，需要用户确保sub_pkgs
     let runtime = get_buckyos_api_runtime().unwrap();
     if runtime.user_private_key.is_none() {
         return Err("没有提供开发者私钥,跳过发布dapp_pkg".to_string());
     }
-    let app_meta_path = Path::new(dapp_dir_path).join("buckyos_app_doc.json");
+    let app_doc_file_name = format!("{}.doc.json",app_name);
+    let app_meta_path = Path::new(dapp_dir_path).join(app_doc_file_name);
     if !app_meta_path.exists() {
-        return Err("buckyos_app_doc.json 文件不存在".to_string());
+        return Err(format!("{} 文件不存在", app_meta_path.display()));
     }
 
     let app_meta_str = fs::read_to_string(app_meta_path)
-        .map_err(|e| format!("读取 buckyos_app_doc.json 失败: {}", e.to_string()))?;
+        .map_err(|e| format!("读取 app doc.json 失败: {}", e.to_string()))?;
     let mut app_meta:AppDoc = serde_json::from_str(&app_meta_str)
-        .map_err(|e| format!("解析 buckyos_app_doc.json 失败: {}", e.to_string()))?;
+        .map_err(|e| format!("解析 app doc.json 失败: {}", e.to_string()))?;
 
     let mut pkg_path_list = Vec::new();
 
@@ -312,13 +315,12 @@ pub async fn publish_app_pkg(dapp_dir_path: &str,no_pub_sub_pkg:bool,zone_host_n
         }
     }
 
-    if no_pub_sub_pkg {
-        println!("跳过发布sub_pkg");
-    } else {
+    if is_pub_sub_pkg {
         println!("发布sub_pkg");
-        publish_raw_pkg(&pkg_path_list,zone_host_name).await?;
+        publish_raw_pkg(&pkg_path_list).await?;
+    } else {
+        println!("跳过发布sub_pkg");
     }
-
 
     let repo_client = runtime.get_repo_client().await.unwrap();
     let mut app_meta_jwt_map = HashMap::new();
@@ -336,10 +338,6 @@ pub async fn publish_app_pkg(dapp_dir_path: &str,no_pub_sub_pkg:bool,zone_host_n
     Ok(())
 }
 
-//基于pack_dapp_pkg输出，发布dapp_pkg到当前zone(call repo_server.pub_pkg)
-pub async fn pack_app_pkg(dapp_dir_path: &str,zone_host_name: &str) {
-    unimplemented!()
-}
 
 //call repo_server.pub_index,随后在zone内就会触发相关组件的自动升级了
 pub async fn publish_repo_index() -> Result<(), String> {
@@ -638,6 +636,8 @@ mod tests {
             chunk_size: None,
             deps: HashMap::new(),
             pub_time: 0,
+            description: "test pkg".to_string(),
+            extra_info: HashMap::new(),
         };
         
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
@@ -654,12 +654,7 @@ mod tests {
         // 验证结果
         assert!(result.is_ok(), "打包失败: {:?}", result.err());
         
-        let pack_result = result.unwrap();
-        
-        // 验证返回的结果
-        assert_eq!(pack_result.pkg_name, pkg_name);
-        assert_eq!(pack_result.version, version);
-        assert_eq!(pack_result.hostname, author);
+    
         
         // 验证文件是否存在
         let expected_tarball_path = Path::new(&dest_path)
@@ -724,6 +719,8 @@ mod tests {
             chunk_size: None,
             deps: HashMap::new(),
             pub_time: 0,
+            description: "test pkg".to_string(),
+            extra_info: HashMap::new(),
         };
         
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
@@ -737,13 +734,13 @@ mod tests {
 MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 -----END PRIVATE KEY-----
         "#).unwrap();
-        
+        let encoding_key = load_private_key(&key_path).unwrap();
         
         // 执行打包函数
         let result = pack_raw_pkg(
             src_path.to_str().unwrap(),
             &dest_path,
-            Some(key_path.to_str().unwrap().to_string()),
+            Some(("did:bns:buckyos",&encoding_key)),
         ).await;
         
         // 由于我们没有真正的私钥，这个测试可能会失败

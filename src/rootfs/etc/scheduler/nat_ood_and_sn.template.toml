@@ -163,11 +163,13 @@
 {
     "app_id":"home-station",
     "app_doc" : {
-        "app_id":"home-station",
-        "name" : "Home Station",
+        "pkg_name":"buckyos.home-station",
+        "version":"1.0.0",
+        "tag":"latest",
+        "app_name" : "Home Station",
         "description" : "Home Station",
-        "vendor_did" : "did:bns:buckyos",
-        "pkg_id" : "home-station",
+        "author" : "did:bns:buckyos",
+        "pub_time":1715760000,
         "pkg_list" : {
             "amd64_docker_image" : {
                 "pkg_id":"home-station-x86-img",

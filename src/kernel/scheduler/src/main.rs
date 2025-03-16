@@ -94,7 +94,7 @@ async fn do_boot_scheduler() -> Result<()> {
             e
         })?;
 
-    info!("use init list from template to do boot scheduler");
+    //info!("use init list from template {} to do boot scheduler",template_type_str);
     //write to system_config
     for (key,value) in init_list.iter() {
         system_config_client.create(key,value).await?;
@@ -256,7 +256,7 @@ fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfig) -> PodItem
     let mut need_container = true;
     if app_config.app_doc.pkg_list.iter().any(|(_, pkg)| pkg.docker_image_name.is_none()) &&
        //TODO: 需要从配置中获取所有的可信发布商列表
-       app_config.app_doc.vendor_did == "did:bns:buckyos" {
+       app_config.app_doc.author == "did:bns:buckyos" {
         need_container = false;
     }
 

@@ -36,3 +36,4 @@ pnpm-lock.yaml
 data/
 src/Cargo.lock
 src/frame/repo_service_old/
+src/rootfs/bin/node_active/

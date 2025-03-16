@@ -8,12 +8,13 @@ export interface SubPkgDesc {
 }
 
 export interface AppDoc {
-    app_id: string;
-    name: string;
+    pkg_name: string;
+    version: string;
+    tag: string;
+    app_name: string;
     description: string;
-    vendor_did: string;
-    pkg_id: string;
-    // service名称 -> 完整镜像URL的映射
+    author: string;
+    pub_time: number;
     pkg_list: { [key: string]: SubPkgDesc };
     //TODO:要增加安装配置还是分开？
 }

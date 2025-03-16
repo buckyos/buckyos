@@ -50,7 +50,7 @@ def copy_files(rust_target_dir):
 
     shutil.copy(os.path.join(src_dir, "killall.py"), root_bin_dir)
 
-    copy_web_apps("kernel/node_active", os.path.join(root_bin_dir, "active"))
+    copy_web_apps("kernel/node_active", os.path.join(root_bin_dir, "node_active"))
     copy_web_apps("apps/control_panel/src", os.path.join(root_bin_dir, "control_panel"))
     copy_web_apps("apps/sys_test", os.path.join(root_bin_dir, "sys_test"))
 
