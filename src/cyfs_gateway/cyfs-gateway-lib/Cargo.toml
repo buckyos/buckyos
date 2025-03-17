@@ -6,7 +6,7 @@ authors = ["BuckyOS DAO","@waterflier"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rand = "*"
+rand = "0.9.0"
 hex = "*"
 anyhow = "*"
 tokio = { version = "*", features = ["full"] }
