@@ -472,7 +472,7 @@ mod tests {
         
         // 获取并验证任务
         let retrieved_task = db.get_task(id).await.unwrap().unwrap();
-        assert_eq!(retrieved_task.id, id);
+        assert_eq!(retrieved_task.id, id as i32);
         assert_eq!(retrieved_task.name, "task1");
         assert_eq!(retrieved_task.title, "Test Task task1");
         assert_eq!(retrieved_task.status, TaskStatus::Pending);
