@@ -67,11 +67,11 @@ pub struct IndexPubMeta {
 
 async fn tar_gz(src_dir: &Path, tarball_path: &Path) -> Result<(), String> {
     let tar_gz = File::create(tarball_path)
-        .map_err(|e| format!("创建打包文件失败: {}", e.to_string()))?;
+        .map_err(|e| format!("Failed to create package file: {}", e.to_string()))?;
     let enc = GzEncoder::new(tar_gz, Compression::default());
     let mut tar = Builder::new(enc);
 
-    // 递归添加目录和文件
+    // Recursively add directories and files
     fn append_dir_all(
         tar: &mut Builder<GzEncoder<File>>,
         path: &Path,
@@ -97,107 +97,108 @@ async fn tar_gz(src_dir: &Path, tarball_path: &Path) -> Result<(), String> {
     }
 
     append_dir_all(&mut tar, src_dir, src_dir).map_err(|e| {
-        format!("添加文件到打包文件失败: {}", e.to_string())
+        format!("Failed to add files to package: {}", e.to_string())
     })?;
 
     tar.finish().map_err(|e| {
-        format!("完成打包过程失败: {}", e.to_string())
+        format!("Failed to complete packaging process: {}", e.to_string())
     })?;
     Ok(())
 }
 
 
 pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(&str,&EncodingKey)>) -> Result<(), String> {
-    println!("开始打包路径: {}", pkg_path);
+    println!("Starting to package path: {}", pkg_path);
     let pkg_path = Path::new(pkg_path);
     if !pkg_path.exists() {
-        return Err(format!("指定的路径 {} 不存在", pkg_path.display()));
+        return Err(format!("Specified path {} does not exist", pkg_path.display()));
     }
-    // 读取 meta.json 文件
+    // Read meta.json file
     let meta_path = pkg_path.join(".pkg_meta.json");
     if !meta_path.exists() {
-        return Err("meta.json 文件未在指定目录中找到".to_string());
+        return Err("meta.json file not found in specified directory".to_string());
     }
 
     let meta_content = fs::read_to_string(&meta_path)
-        .map_err(|e| format!("读取 .pkg_meta.json 失败: {}", e.to_string()))?;
+        .map_err(|e| format!("Failed to read .pkg_meta.json: {}", e.to_string()))?;
     
     let mut meta_data:PackageMeta = serde_json::from_str(&meta_content)
-        .map_err(|e| format!("解析 .pkg_meta.json 失败: {}", e.to_string()))?;
+        .map_err(|e| format!("Failed to parse .pkg_meta.json: {}", e.to_string()))?;
 
     let pkg_name = meta_data.pkg_name.clone();
+    
     let version = meta_data.version.clone();
     let author = meta_data.author.clone();
     
-    println!("解析 .pkg_meta.json: pkg_name = {}, version = {}, author = {}", pkg_name, version, author);
-    // 检查并创建目标目录
+    println!("Parsed .pkg_meta.json: pkg_name = {}, version = {}, author = {}", pkg_name, version, author);
+    // Check and create target directory
     let dest_dir_path = Path::new(dest_dir).join(&pkg_name);
     if !dest_dir_path.exists() {
         fs::create_dir_all(dest_dir_path.clone()).map_err(|e| {
-            format!("创建目标目录失败: {}", e.to_string())
+            format!("Failed to create target directory: {}", e.to_string())
         })?;
     }
-    // 创建 tarball
-    let tarball_name = format!("{}-{}.tar.gz", pkg_name, version);
+    // Create tarball
+    let tarball_name = format!("{}#{}.tar.gz", pkg_name, version);
     let tarball_path = dest_dir_path.join(&tarball_name);
 
     tar_gz(&pkg_path, &tarball_path).await?;
     println!("pack to {} done", tarball_path.display());
 
-    // 计算 tar.gz 文件的 SHA256 值
+    // Calculate SHA256 hash of the tar.gz file
     let file_info = calculate_file_hash(tarball_path.to_str().unwrap())?;
     let chunk_id = ChunkId::from_sha256_result(&file_info.sha256);
     
-    // 更新元数据
+    // Update metadata
     meta_data.chunk_id = Some(chunk_id.to_string());
     meta_data.chunk_size = Some(file_info.size);
-    meta_data.pub_time = buckyos_kit::buckyos_get_unix_timestamp();
+
     let meta_data_json = serde_json::to_value(&meta_data).map_err(|e| {
-        format!("序列化元数据失败: {}", e.to_string())
+        format!("Failed to serialize metadata: {}", e.to_string())
     })?;
     
     let (pkg_meta_obj_id,pkg_meta_json_str) = build_named_object_by_json("pkg",&meta_data_json);
     
-    // 保存更新后的元数据到 pkg.meta.json
+    // Save updated metadata to pkg.meta.json
     let meta_json_path = dest_dir_path.join("pkg_meta.json");
     
     fs::write(&meta_json_path, &pkg_meta_json_str.as_bytes()).map_err(|e| {
-        format!("写入 pkg.meta.json 失败: {}", e.to_string())
+        format!("Failed to write pkg.meta.json: {}", e.to_string())
     })?;
     let meta_json_path = dest_dir_path.join(pkg_meta_obj_id.to_base32());
     fs::write(&meta_json_path, &pkg_meta_json_str.as_bytes()).map_err(|e| {
-        format!("写入 objid 失败: {}", e.to_string())
+        format!("Failed to write objid: {}", e.to_string())
     })?;
-    // 如果提供了私钥，则对元数据进行签名
+    // If private key is provided, sign the metadata
     if let Some((kid,private_key)) = private_key { 
         let jwt_token = named_obj_to_jwt(pkg_meta_json_str,
             private_key,Some(kid.to_string()))
-            .map_err(|e| format!("生成 pkg_meta.jwt 失败: {}", e.to_string()))?;
+            .map_err(|e| format!("Failed to generate pkg_meta.jwt: {}", e.to_string()))?;
         let jwt_path = dest_dir_path.join("pkg_meta.jwt");
         fs::write(&jwt_path, jwt_token).map_err(|e| {
-            format!("写入 pkg_meta.jwt 失败: {}", e.to_string())
+            format!("Failed to write pkg_meta.jwt: {}", e.to_string())
         })?;
-        println!("pkg_meta.jwt 写入成功: {}", jwt_path.display());
+        println!("pkg_meta.jwt written successfully: {}", jwt_path.display());
     } else {
-        println!("没有提供私钥,跳过对元数据进行签名");
-        //删除旧的.jwt文件
+        println!("No private key provided, skipping metadata signing");
+        // Delete old .jwt file
         let jwt_path = dest_dir_path.join("pkg_meta.jwt");
         if jwt_path.exists() {
             fs::remove_file(jwt_path).map_err(|e| {
-                format!("删除 pkg_meta.jwt 失败: {}", e.to_string())
+                format!("Failed to delete pkg_meta.jwt: {}", e.to_string())
             })?;
         }
     }
 
-    println!("包 {} 版本 {} 作者 {} 已成功打包。", pkg_name, version, author);
-    println!("打包文件创建于: {:?}", tarball_path);
+    println!("Package {} version {} author {} has been successfully packaged.", pkg_name, version, author);
+    println!("Package file created at: {:?}", tarball_path);
 
     Ok(())
 }
 
-//基于pack raw pkg的输出，发布pkg到当前zone(call repo_server.pub_pkg)
+// Based on pack raw pkg output, publish pkg to current zone (call repo_server.pub_pkg)
 pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), String> {
-    //1) 首先push_chunk
+    // 1) First push_chunk
     let mut pkg_meta_jwt_map = HashMap::new();
     let runtime = get_buckyos_api_runtime().unwrap();
     let zone_host_name = runtime.zone_config.name.clone().unwrap();
@@ -208,106 +209,106 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
     for pkg_path in pkg_pack_path_list {
         let pkg_meta_jwt_path = pkg_path.join("pkg_meta.jwt");
         if !pkg_meta_jwt_path.exists() {
-            println!("pkg_meta.jwt 文件不存在: {}", pkg_meta_jwt_path.display());
+            println!("pkg_meta.jwt file does not exist: {}", pkg_meta_jwt_path.display());
             continue;
         }
         let pkg_meta_jwt_str = fs::read_to_string(pkg_meta_jwt_path)
-            .map_err(|e| format!("读取 pkg_meta.jwt 失败: {}", e.to_string()))?;
+            .map_err(|e| format!("Failed to read pkg_meta.jwt: {}", e.to_string()))?;
 
         let pkg_meta = decode_jwt_claim_without_verify(&pkg_meta_jwt_str)
-            .map_err(|e| format!("解码 pkg_meta.jwt 失败: {}", e.to_string()))?;
+            .map_err(|e| format!("Failed to decode pkg_meta.jwt: {}", e.to_string()))?;
         let pkg_meta:PackageMeta = serde_json::from_value(pkg_meta)
-            .map_err(|e| format!("解析 pkg_meta.jwt 失败: {}", e.to_string()))?;
+            .map_err(|e| format!("Failed to parse pkg_meta.jwt: {}", e.to_string()))?;
         let pkg_meta_obj_id = build_obj_id("pkg",&pkg_meta_jwt_str);
 
-        let pkg_tar_path = pkg_path.join(format!("{}-{}.tar.gz", pkg_meta.pkg_name, pkg_meta.version));
+        let pkg_tar_path = pkg_path.join(format!("{}#{}.tar.gz", pkg_meta.pkg_name, pkg_meta.version));
         if !pkg_tar_path.exists() {
-            println!("tar.gz 文件不存在: {}", pkg_tar_path.display());
+            println!("tar.gz file does not exist: {}", pkg_tar_path.display());
             continue;
         }
 
         let file_info = calculate_file_hash(pkg_tar_path.to_str().unwrap())?;
         let chunk_id = ChunkId::from_sha256_result(&file_info.sha256);
         if Some(chunk_id.to_string()) != pkg_meta.chunk_id {
-            println!("chunk_id 不匹配: {}", chunk_id.to_string());
+            println!("chunk_id does not match: {}", chunk_id.to_string());
             continue;
         }
         let real_named_mgr = named_mgr.lock().await;
         let is_exist = real_named_mgr.is_chunk_exist(&chunk_id).await.unwrap();
         if !is_exist {
             let (mut chunk_writer,chunk_progress_info) = real_named_mgr.open_chunk_writer(&chunk_id,file_info.size,0).await.map_err(|e| {
-                format!("打开 chunk 写入器失败: {}", e.to_string())
+                format!("Failed to open chunk writer: {}", e.to_string())
             })?;
             drop(real_named_mgr);
             let mut file_reader = tokio::fs::File::open(pkg_tar_path.to_str().unwrap()).await
                 .map_err(|e| {
-                    format!("打开 tar.gz 文件失败: {}", e.to_string())
+                    format!("Failed to open tar.gz file: {}", e.to_string())
                 })?;
             tokio::io::copy(&mut file_reader, &mut chunk_writer).await
             .map_err(|e| {
-                format!("copy tar.gz 文件失败: {}", e.to_string())
+                format!("Failed to copy tar.gz file: {}", e.to_string())
             })?;
-            println!(" {} 文件成功写入 local named-mgr 成功", pkg_tar_path.display());
+            println!(" {} file successfully written to local named-mgr", pkg_tar_path.display());
         }
           
         println!("# push chunk : {}, size: {} bytes...", chunk_id.to_string(),file_info.size);
         ndn_client.push_chunk(chunk_id.clone(),None).await.map_err(|e| {
-            format!("push chunk 失败: {}", e.to_string())
+            format!("Failed to push chunk: {}", e.to_string())
         })?;
         println!("# push chunk : {}, size: {} bytes success.", chunk_id.to_string(),file_info.size);
 
         pkg_meta_jwt_map.insert(pkg_meta_obj_id.to_string(),pkg_meta_jwt_str);
     }
-    //2) 然后调用repo_server.pub_pkg
+    // 2) Then call repo_server.pub_pkg
     let pkg_lens = pkg_meta_jwt_map.len();
     let runtime = get_buckyos_api_runtime().unwrap();
     let repo_client = runtime.get_repo_client().await.unwrap();
     repo_client.pub_pkg(pkg_meta_jwt_map).await.map_err(|e| {
-        format!("发布pkg失败: {}", e.to_string())
+        format!("Failed to publish pkg: {}", e.to_string())
     })?;
-    println!("发布pkg成功,共发布 {} 个pkg",pkg_lens);
+    println!("Successfully published pkg, total {} pkgs published",pkg_lens);
     Ok(())
 }
 
-//准备用于发布的dapp_meta,该dapp_meta可用做下一步的发布
+// Prepare dapp_meta for publishing, this dapp_meta can be used for the next step of publishing
 pub async fn publish_app_pkg(app_name: &str,dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<(), String> {
-    //发布dapp_pkg前，需要用户确保sub_pkgs
+    // Before publishing dapp_pkg, users need to ensure sub_pkgs
     let runtime = get_buckyos_api_runtime().unwrap();
     if runtime.user_private_key.is_none() {
-        return Err("没有提供开发者私钥,跳过发布dapp_pkg".to_string());
+        return Err("No developer private key provided, skipping dapp_pkg publishing".to_string());
     }
     let app_doc_file_name = format!("{}.doc.json",app_name);
     let app_meta_path = Path::new(dapp_dir_path).join(app_doc_file_name);
     if !app_meta_path.exists() {
-        return Err(format!("{} 文件不存在", app_meta_path.display()));
+        return Err(format!("{} file does not exist", app_meta_path.display()));
     }
 
     let app_meta_str = fs::read_to_string(app_meta_path)
-        .map_err(|e| format!("读取 app doc.json 失败: {}", e.to_string()))?;
+        .map_err(|e| format!("Failed to read app doc.json: {}", e.to_string()))?;
     let mut app_meta:AppDoc = serde_json::from_str(&app_meta_str)
-        .map_err(|e| format!("解析 app doc.json 失败: {}", e.to_string()))?;
+        .map_err(|e| format!("Failed to parse app doc.json: {}", e.to_string()))?;
 
     let mut pkg_path_list = Vec::new();
 
     for (pkg_id,pkg_desc) in app_meta.pkg_list.iter_mut() {
         let sub_pkg_id = pkg_desc.pkg_id.clone();
         let sub_pkg_id:PackageId = PackageId::parse(sub_pkg_id.as_str())
-            .map_err(|e| format!("解析 sub_pkg_id 失败: {}", e.to_string()))?;
+            .map_err(|e| format!("Failed to parse sub_pkg_id: {}", e.to_string()))?;
         if sub_pkg_id.version_exp.is_some() {
-            println!("{} 已经包含版本号,跳过检测构建 ", sub_pkg_id.to_string());
+            println!("{} already contains version number, skipping detection and building", sub_pkg_id.to_string());
         } else {
             let pkg_path = Path::new(dapp_dir_path).join(pkg_id);
             if !pkg_path.exists() {
-                return Err(format!("{} 目录不存在", pkg_path.display()));
+                return Err(format!("{} directory does not exist", pkg_path.display()));
             }
             let pkg_meta_path = pkg_path.join(".pkg_meta.json");
             if !pkg_meta_path.exists() {
-                return Err(format!("{} 目录不存在", pkg_path.display()));
+                return Err(format!("{} directory does not exist", pkg_path.display()));
             }
             let pkg_meta_str = fs::read_to_string(pkg_meta_path)
-                .map_err(|e| format!("读取 .pkg_meta.json 失败: {}", e.to_string()))?;
+                .map_err(|e| format!("Failed to read .pkg_meta.json: {}", e.to_string()))?;
             let pkg_meta:PackageMeta = serde_json::from_str(&pkg_meta_str)
-                .map_err(|e| format!("解析 .pkg_meta.json 失败: {}", e.to_string()))?;
+                .map_err(|e| format!("Failed to parse .pkg_meta.json: {}", e.to_string()))?;
             let version = pkg_meta.version.clone();
             pkg_desc.pkg_id = format!("{}#{}",pkg_id,version);
             println!("{} => {}", sub_pkg_id.to_string(),pkg_desc.pkg_id);
@@ -316,37 +317,37 @@ pub async fn publish_app_pkg(app_name: &str,dapp_dir_path: &str,is_pub_sub_pkg:b
     }
 
     if is_pub_sub_pkg {
-        println!("发布sub_pkg");
+        println!("Publishing sub_pkg");
         publish_raw_pkg(&pkg_path_list).await?;
     } else {
-        println!("跳过发布sub_pkg");
+        println!("Skipping sub_pkg publishing");
     }
 
     let repo_client = runtime.get_repo_client().await.unwrap();
     let mut app_meta_jwt_map = HashMap::new();
     let app_doc_json = serde_json::to_value(&app_meta).map_err(|e| {
-        format!("序列化 app_doc 失败: {}", e.to_string())
+        format!("Failed to serialize app_doc: {}", e.to_string())
     })?;
     let (app_doc_obj_id,app_doc_json_str) = build_named_object_by_json("app",&app_doc_json);
     let app_doc_jwt = named_obj_to_jwt(app_doc_json_str,runtime.user_private_key.as_ref().unwrap(),runtime.user_did.clone())
-        .map_err(|e| format!("生成 app_doc.jwt 失败: {}", e.to_string()))?;
+        .map_err(|e| format!("Failed to generate app_doc.jwt: {}", e.to_string()))?;
     app_meta_jwt_map.insert(app_doc_obj_id.to_string(),app_doc_jwt);
     repo_client.pub_pkg(app_meta_jwt_map).await.map_err(|e| {
-        format!("发布app doc失败: {}", e.to_string())
+        format!("Failed to publish app doc: {}", e.to_string())
     })?;
-    println!("发布app doc成功");
+    println!("Successfully published app doc");
     Ok(())
 }
 
 
-//call repo_server.pub_index,随后在zone内就会触发相关组件的自动升级了
+// call repo_server.pub_index, which will trigger automatic upgrades of related components in the zone
 pub async fn publish_repo_index() -> Result<(), String> {
     let api_runtime = get_buckyos_api_runtime().unwrap();
     let repo_client = api_runtime.get_repo_client().await.unwrap();
     repo_client.pub_index().await.map_err(|e| {
-        format!("发布repo index失败: {}", e.to_string())
+        format!("Failed to publish repo index: {}", e.to_string())
     })?;
-    println!("发布repo index成功");
+    println!("Successfully published repo index");
     Ok(())
 }
 

@@ -146,7 +146,7 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
     let mut user_id = None;
     let mut owner_user_config = None;
     if bucky_dev_user_home_dir.exists() {
-        user_config_file = bucky_dev_user_home_dir.join("owner_config.toml");
+        user_config_file = bucky_dev_user_home_dir.join("owner_config.json");
         user_private_key_file = Some(bucky_dev_user_home_dir.join("user_private_key.pem"));
         let owner_config = OwnerConfig::load_owner_config(&user_config_file)
             .map_err(|e| {

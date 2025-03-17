@@ -5,18 +5,22 @@ import platform
 
 import build_web_apps
 import build_rust
-import perpare_rootfs
+import prepare_rootfs
 import install
 
-def build(skip_web_app, skip_install, target):
+if platform.system() == "Windows":
     temp_dir = tempfile.gettempdir()
+else:
+    temp_dir = "/tmp/"
+
+def build(skip_web_app, skip_install, target):
     project_name = "buckyos"
     target_dir = os.path.join(temp_dir, "rust_build", project_name)
 
     if not skip_web_app:
         build_web_apps.build_web_apps()
     build_rust.build_rust(target_dir, target)
-    perpare_rootfs.copy_files(os.path.join(target_dir, target))
+    prepare_rootfs.copy_files(os.path.join(target_dir, target))
     if not skip_install:
         install.install()
 

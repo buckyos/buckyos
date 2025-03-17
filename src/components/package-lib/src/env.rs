@@ -159,8 +159,8 @@ pub struct PackageEnvConfig {
     pub prefix: Option<String>, //如果指定了，那么加载无 .符号的pkg_name时，会自动补上prefix
 }
 
-impl Default for PackageEnvConfig {
-    fn default() -> Self {
+impl PackageEnvConfig {
+    pub fn get_default_prefix() -> String {
         //得到操作系统类型
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let os_type = "nightly-linux-x86_64";
@@ -172,6 +172,14 @@ impl Default for PackageEnvConfig {
         let os_type = "nightly-apple-x86_64";
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let os_type = "nightly-apple-aarch64";
+
+        os_type.to_string()
+    }
+}
+
+impl Default for PackageEnvConfig {
+    fn default() -> Self {
+        let os_type = PackageEnvConfig::get_default_prefix();
 
         Self {
             enable_link: true,

@@ -2,9 +2,12 @@ import os
 import tempfile
 import sys
 import subprocess
-
+import platform
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-temp_dir = tempfile.gettempdir()
+if platform.system() == "Windows":
+    temp_dir = tempfile.gettempdir()
+else:
+    temp_dir = "/tmp/"
 project_name = "buckyos"
 target_dir = os.path.join(temp_dir, "rust_build", project_name)
 print(f"Target directory: {target_dir}")

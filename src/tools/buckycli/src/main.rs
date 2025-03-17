@@ -123,7 +123,7 @@ async fn main() -> Result<(), String> {
         err_msg
     })?;
 
-    //TODO:支持通过命令行登录到verify-hub来获得后续有效的session_token,以避免在本地必须拥有私钥
+    //TODO: Support login to verify-hub via command line to obtain a valid session_token, to avoid requiring a private key locally
 
 
     let buckyos_runtime = get_buckyos_api_runtime().unwrap();

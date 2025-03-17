@@ -482,10 +482,10 @@ impl OwnerConfig {
             error!("read {} failed! {}", file_path.to_string_lossy(), err);
             return NSError::ReadLocalFileError(format!("read {} failed! {}", file_path.to_string_lossy(), err));
         })?;
-        let config: OwnerConfig = toml::from_str(&contents).map_err(|err| {
+        let config: OwnerConfig = serde_json::from_str(&contents).map_err(|err| {
             error!("parse {} failed! {}", file_path.to_string_lossy(), err);
             return NSError::ReadLocalFileError(format!(
-                "Failed to parse OwnerConfig TOML: {}",
+                "Failed to parse OwnerConfig json: {}",
                 err
             ));
         })?;
