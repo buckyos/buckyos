@@ -1,0 +1,40 @@
+[package]
+name = "node_daemon"
+version = "0.4.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# 3rd party dependencies
+toml = "*"
+clap = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+log = "*"
+simplelog = "*"
+thiserror = "*"
+tokio = { version = "*", features = ["full"] }
+async-trait = "*"
+futures = "*"
+lazy_static = "*"
+jsonwebtoken = "*"  
+num_cpus = "*"
+url = "*"
+time = { version = "^0.3", features = ["formatting"] }
+sysinfo = "*"
+cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
+cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
+buckyos-kit = { path = "../../components/buckyos-kit" }
+name-lib = { path = "../../components/name-lib" }
+name-client = { path = "../../components/name-client" }
+package-lib = { path = "../../components/package-lib" }
+ndn-lib = { path = "../../components/ndn-lib" }
+#package-installer = { path = "../../components/package-installer" }
+kRPC = { path = "../kRPC" }
+buckyos-api = { path = "../buckyos-api" }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+

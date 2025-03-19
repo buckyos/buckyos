@@ -1,0 +1,16 @@
+#!/bin/python3
+
+import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts import util
+
+if __name__ == "__main__":
+    process_name = "system_config"
+    if util.check_process_exists(process_name):
+        if util.check_port(3200):
+            print(f"{process_name} is running")
+            exit(0)
+    print(f"{process_name} is not running")
+    exit(1)
+

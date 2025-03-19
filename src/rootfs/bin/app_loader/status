@@ -1,0 +1,94 @@
+#!/bin/python3
+import sys
+import platform
+import os
+import json
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+appid = sys.argv[1]
+username = sys.argv[2]
+
+container_id = f"{username}-{appid}"
+
+def is_container_running(container_name,docker_image_name,docker_image_hash):
+    try:
+        cmd = f"docker ps -q -f name=^{container_name}$"
+        output = os.popen(cmd).read().strip()
+        if output:
+            print(f"Container '{container_name}' is running.")
+            if docker_image_hash:
+                cmd = f"docker images -q '{docker_image_name}'"
+                output = os.popen(cmd).read().strip()
+                if output:
+                    if docker_image_hash.startswith(output):
+                        return True
+                    
+                print(f"Container '{container_name}' is running but with wrong image hash.")
+                return False
+            return True
+        
+        return False
+    except Exception as e:
+        print(f"Error checking container status: {e}")
+        return False
+
+def check_port() -> bool:
+    return True
+
+
+if __name__ == "__main__":
+
+    appid = sys.argv[1]
+    username = sys.argv[2]
+    full_appid = f"{appid}#{username}"
+    app_token = os.getenv(f"{full_appid}_token")
+    app_instance_config_str = os.getenv("app_instance_config")
+    media_info_str = os.getenv("app_media_info")
+    zone_config_str = os.getenv(f"BUCKYOS_ZONE_CONFIG")
+    zone_config = None
+    zone_docker_repo_base_url = None
+    device_doc_str = os.getenv(f"BUCKYOS_THIS_DEVICE")
+    device_doc = None
+
+
+    if device_doc_str:
+        device_doc = json.loads(device_doc_str)
+
+    if app_token is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+        
+    if app_instance_config_str is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+    app_instance_config = json.loads(app_instance_config_str)
+
+    if media_info_str is None:
+        print(f"No media info found for appid: {full_appid}")
+        exit(1)
+    app_media_info = json.loads(media_info_str)
+
+    #container_hash = app_meta_info.get("image_hash")
+    is_support_docker = device_doc.get("support_container", True)
+
+    if is_support_docker:
+        # check docker container status
+        docker_image_hash = app_instance_config.get("docker_image_hash")
+        docker_image_name = app_instance_config.get("docker_image_name")
+        if is_container_running(container_id,docker_image_name,docker_image_hash):
+            exit(0)
+        print(f"app {container_id} is not running")
+        exit(1)
+    else:
+        full_path = app_media_info.get("full_path")
+        if not full_path:
+            print(f"No app media full path found for appid: {full_appid}")
+            exit(1)
+        script_path = f"{full_path}/status"
+        if not os.path.exists(script_path):
+            print(f"No status script found for appid: {full_appid}")
+            exit(1)
+
+        exit(os.system(f"python3 {script_path} {appid} {username}"))
+
+

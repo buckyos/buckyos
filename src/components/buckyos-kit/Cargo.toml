@@ -1,0 +1,30 @@
+[package]
+name = "buckyos-kit"
+version = "0.4.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+chrono = "*"
+
+[dependencies]
+thiserror = "*"
+sysinfo = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+json_value_merge = "*"
+toml = "*"
+time = { version = "^0.3", features = ["formatting"] }
+tokio = { version = "*", features = ["full"] }
+log = "*"
+simplelog = "*"
+env_logger = "*"
+ed25519-dalek = { version = "*", features = ["rand_core"] } 
+pkcs8 = "*"
+#rand = ""
+base64 = "*"
+async-recursion = "*"
+lazy_static = "*"
+async-trait = "*"

@@ -1,0 +1,31 @@
+[package]
+name = "system_config"
+version = "0.4.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+
+[dependencies]
+time = { version = "^0.3", features = ["formatting"] }
+async-trait = "*"
+log = "*"
+simplelog = "*"
+serde = "*"
+serde_json = "*"
+url = "*"
+tokio = { version = "*", features = ["full"] }
+warp = "*"
+sled = "*"
+lazy_static = "*"
+thiserror = "*"
+jsonwebtoken = "*" 
+# rocksdb = "*"
+buckyos-kit = { path = "../../components/buckyos-kit" }
+name-lib = { path = "../../components/name-lib" }
+buckyos-api = { path = "../buckyos-api" }
+kRPC ={ path = "../kRPC" }
+rbac = { path = "../rbac" }
+
+

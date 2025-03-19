@@ -1,0 +1,35 @@
+[package]
+name = "name-lib"
+version = "0.4.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+sysinfo = "*"
+thiserror = "*"
+log = "*"   
+rand = "0.8"
+rand_core = "0.6.4"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+async-trait = "*"
+hickory-resolver = { version = "*", features = ["dns-over-rustls"] }
+tokio = { version = "*", features = ["full"] }
+mini-moka = "*" 
+jsonwebtoken = "*"
+ed25519-dalek = { version = "*", features = ["pkcs8"] } 
+x25519-dalek = { version = "*", features = ["static_secrets","getrandom"] }
+curve25519-dalek = "*"
+ed25519_to_curve25519 = "*"
+base64="*"
+once_cell="*"
+lazy_static="*"
+nvml-wrapper = { version = "*" }
+toml = "*"
+
+buckyos-kit = { path = "../buckyos-kit" }
+kRPC = { path = "../../kernel/kRPC" }
+
+

@@ -1,5 +1,0 @@
-{
-    "zone_id" : "mynode.site",
-    "etcd_servers":["etcd1:9801","etcd2:9802","gateway:9803"],
-    "etcd_data_version":0
-}

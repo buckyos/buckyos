@@ -1,0 +1,22 @@
+#!/bin/bash
+pip3 install docker --break-system-packages
+docker pull filebrowser/filebrowser:s6
+
+cat <<EOF > /etc/systemd/system/buckyos.service
+[Unit]
+Description=buckyos system service
+After=network.target
+
+[Service]
+ExecStart=/opt/buckyos/bin/start_node_daemon.py --enable_active
+User=root
+WorkingDirectory=/opt/buckyos/bin
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable buckyos.service
+systemctl start buckyos.service

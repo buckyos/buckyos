@@ -1,0 +1,43 @@
+<style>
+    .container {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        justify-content: center; /* 水平居中 */
+        align-items: center
+    }
+
+    .frame {
+        width: 100%;
+        min-width: 320px; /* 设置最小宽度 */
+        padding: 10px;
+        box-sizing: border-box; /* 确保padding不会影响宽度 */
+    }
+
+    .button-container {
+        position: absolute;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+    }
+</style>
+<div class="frame">
+    <div class="container">
+        <h2>激活成功!</h2>
+        <img src="success.png" style="width: 120px;height: 120px;"/>
+        <p>您的Personal Server已成功激活</p>
+        {{#if use_self_domain}}
+        <p>点击 <a href="http://{{self_domain}}/index.html">http://{{self_domain}}/index.html</a> 访问</p>
+        {{else}}
+        <p>点击 <a href="http://{{sn_user_name}}.web3.{{sn_host}}/index.html">http://{{sn_user_name}}.{{sn_host}}/index.html</a> 访问</p>
+        {{/if}}
+        <p>默认用户名密码是admin/admin.</p>
+        <p>首次打开页面如有错误请多刷新几次.</p>
+    </div>
+    
+    <p></p>
+    <p></p>
+    <div class="button-container">
+        <md-filled-button id="btn_end">关闭并跳转</md-filled-button>
+    </div>
+</div>

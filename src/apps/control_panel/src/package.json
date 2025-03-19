@@ -1,0 +1,40 @@
+{
+  "name": "control_panel",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "css-loader": "^7.1.2",
+    "less": "^4.2.0",
+    "style-loader": "^4.0.0",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8",
+    "vite-plugin-dts": "^4.2.2",
+    "vite-plugin-html": "^3.2.2",
+    "vite-plugin-static-copy": "^2.2.0"
+  },
+  "dependencies": {
+    "@material/web": "^2.2.0",
+    "@shoelace-style/shoelace": "^2.18.0",
+    "bcryptjs": "^2.4.3",
+    "buckyos": "github:buckyos/buckyos-websdk",
+    "handlebars": "^4.7.8",
+    "i18next": "^24.1.2",
+    "i18next-http-backend": "^3.0.1",
+    "lit": "^2.7.0",
+    "lit-element": "^4.1.0",
+    "path": "^0.12.7",
+    "terser": "^5.34.1",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1"
+  }
+}
