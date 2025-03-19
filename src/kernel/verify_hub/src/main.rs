@@ -574,7 +574,7 @@ async fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use jsonwebtoken::{encode, Algorithm, Header};
+    use jsonwebtoken::{Algorithm, Header};
     use serde_json::json;
     use tokio::time::{sleep};
     use tokio::task;
@@ -583,7 +583,7 @@ mod test {
     #[tokio::test]
     async fn test_login_and_verify() {
         let zone_config = ZoneConfig::get_test_config();
-        env::set_var("ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
+        env::set_var("BUCKYOS_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
         env::set_var("SESSION_TOKEN", "abcdefg");//for test only
         
 
@@ -609,18 +609,18 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 "#;
         //login test,use trust device JWT
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
-        let mut client = kRPC::new("http://127.0.0.1:3300/kapi/verify_hub",None);
+        let client = kRPC::new("http://127.0.0.1:3300/kapi/verify_hub",None);
         let mut header = Header::new(Algorithm::EdDSA);
         //完整的kid表达应该是 $zoneid#kid 这种形式，为了提高性能做了一点简化
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         header.kid = Some("{owner}".to_string());
         header.typ = None;
-        let login_params = json!({
-            "userid": "did:example:1234567890",
-            "appid": "system", 
-            "exp":(now + 3600) as usize
-        });        
-        let token = encode(&header, &login_params, &private_key).unwrap();
+        // let login_params = json!({
+        //     "userid": "did:example:1234567890",
+        //     "appid": "system",
+        //     "exp":(now + 3600) as usize
+        // });
+        // let token = encode(&header, &login_params, &private_key).unwrap();
         
         let test_login_token = RPCSessionToken {
             token_type : RPCSessionTokenType::JWT,
