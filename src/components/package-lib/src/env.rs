@@ -491,7 +491,10 @@ impl PackageEnv {
         if self.config.enable_link {
             let symlink_path = format!("./{}#{}", pkg_meta.pkg_name, pkg_meta.version);
             if tokio::fs::symlink_metadata(&symlink_path).await.is_err() {
+                #[cfg(target_family = "unix")]
                 tokio::fs::symlink(&target_dir, &symlink_path).await?;
+                #[cfg(target_family = "windows")]
+                std::os::windows::fs::symlink_dir(&target_dir, &symlink_path)?;
             }
         
             // If this is the latest version, create a symbolic link without the version

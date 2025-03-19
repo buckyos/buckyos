@@ -7,13 +7,14 @@ import build_web_apps
 import build_rust
 import prepare_rootfs
 import install
+import build_tray_controller
 
 if platform.system() == "Windows":
     temp_dir = tempfile.gettempdir()
 else:
     temp_dir = "/tmp/"
 
-def build(skip_web_app, skip_install, target):
+def build(skip_web_app, skip_install, target, with_tray_controller, auto_win_sdk):
     project_name = "buckyos"
     target_dir = os.path.join(temp_dir, "rust_build", project_name)
 
@@ -21,6 +22,14 @@ def build(skip_web_app, skip_install, target):
         build_web_apps.build_web_apps()
     build_rust.build_rust(target_dir, target)
     prepare_rootfs.copy_files(os.path.join(target_dir, target))
+
+    if with_tray_controller:
+        if platform.system() == "Windows":
+            build_tray_controller.prepare_win(auto_win_sdk)
+        build_tray_controller.build()
+        tray_controller_target_dir = os.path.join(temp_dir, "rust_build", "tray_controller")
+        prepare_rootfs.strip_and_copy_rust_file(os.path.join(tray_controller_target_dir, target), "tray-controller", prepare_rootfs.root_bin_dir)
+
     if not skip_install:
         install.install()
 
@@ -41,6 +50,8 @@ if __name__ == "__main__":
         target = "aarch64-apple-darwin"
     print(f"DEBUG: target is : {target}")
 
+    auto_win_sdk = False
+    with_tray_controller = False
     for arg in sys.argv:
         if arg == "--no-build-web-apps":
             skip_web_app = True
@@ -50,4 +61,11 @@ if __name__ == "__main__":
             target = "x86_64-unknown-linux-musl"
         if arg == "aarch64":
             target = "aarch64-unknown-linux-gnu"
-    build(skip_web_app, skip_install, target)
+        if arg == "--auto-win-sdk":
+            auto_win_sdk = True
+        if arg == "--tray-controller":
+            with_tray_controller = True
+
+
+    print(f"will build buckyos: with_tray_controller={with_tray_controller}, auto_win_sdk={auto_win_sdk}")
+    build(skip_web_app, skip_install, target, with_tray_controller, auto_win_sdk)

@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tokio::task;
 
 use buckyos_kit::*;
+use buckyos_api::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
@@ -144,7 +145,7 @@ extern "C" fn bucky_status_scaner_scan(
 
                         for process in system.processes().values() {
                             #[cfg(windows)]
-                            let name = process.name().to_ascii_lowercase().to_string();
+                            let name = process.name().to_ascii_lowercase().to_str().unwrap().to_owned();
                             #[cfg(not(any(windows, target_os = "macos")))]
                             let name = process.name().to_ascii_lowercase().into_string().unwrap();
 
@@ -692,18 +693,21 @@ async fn select_node() -> Result<Option<NodeInfomationObj>, String> {
         let sys_cfg_client = if is_ood {
             buckyos_api::SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()))
         } else {
+            // let this_device = name_lib::DeviceInfo::from_device_doc(&device_doc);
+            // let system_config_url =
+            //     name_client::get_system_config_service_url(Some(&this_device), &zone_config, false)
+            //         .await
+            //         .map_err(|err| {
+            //             log::error!("get system_config_url failed! {}", err);
+            //             String::from("get system_config_url failed!")
+            //         })?;
+            // buckyos_api::SystemConfigClient::new(
+            //     Some(system_config_url.as_str()),
+            //     Some(device_session_token_jwt.as_str()),
+            // )
             let this_device = name_lib::DeviceInfo::from_device_doc(&device_doc);
-            let system_config_url =
-                name_client::get_system_config_service_url(Some(&this_device), &zone_config, false)
-                    .await
-                    .map_err(|err| {
-                        log::error!("get system_config_url failed! {}", err);
-                        String::from("get system_config_url failed!")
-                    })?;
-            buckyos_api::SystemConfigClient::new(
-                Some(system_config_url.as_str()),
-                Some(device_session_token_jwt.as_str()),
-            )
+            let runtime = get_buckyos_api_runtime().unwrap();
+            runtime.get_system_config_client().await.unwrap()
         };
         Ok(Some(NodeInfomationObj {
             node_id: node_id.to_owned(),
