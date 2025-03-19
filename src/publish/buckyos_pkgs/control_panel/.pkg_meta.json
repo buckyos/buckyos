@@ -1,1 +1,1 @@
-{"pkg_name": "nightly-apple-aarch64.control_panel", "version": "0.4.0", "author": "buckyos.io", "description": "control panel", "category": "web", "pub_time": 1742200094}
+{"pkg_name": "control_panel", "version": "0.4.0", "author": "buckyos.io", "description": {"detail": "control panel"}, "category": "web_pages", "pub_time": 1742410438}

@@ -171,7 +171,7 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(&st
     })?;
     // If private key is provided, sign the metadata
     if let Some((kid,private_key)) = private_key { 
-        let jwt_token = named_obj_to_jwt(pkg_meta_json_str,
+        let jwt_token = named_obj_to_jwt(meta_data_json,
             private_key,Some(kid.to_string()))
             .map_err(|e| format!("Failed to generate pkg_meta.jwt: {}", e.to_string()))?;
         let jwt_path = dest_dir_path.join("pkg_meta.jwt");
@@ -248,7 +248,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
             .map_err(|e| {
                 format!("Failed to copy tar.gz file: {}", e.to_string())
             })?;
-            println!(" {} file successfully written to local named-mgr", pkg_tar_path.display());
+            println!(" {} file successfully written to local named-mgr,chunk_id: {}", pkg_tar_path.display(),chunk_id.to_string());
         }
           
         println!("# push chunk : {}, size: {} bytes...", chunk_id.to_string(),file_info.size);
@@ -329,7 +329,7 @@ pub async fn publish_app_pkg(app_name: &str,dapp_dir_path: &str,is_pub_sub_pkg:b
         format!("Failed to serialize app_doc: {}", e.to_string())
     })?;
     let (app_doc_obj_id,app_doc_json_str) = build_named_object_by_json("app",&app_doc_json);
-    let app_doc_jwt = named_obj_to_jwt(app_doc_json_str,runtime.user_private_key.as_ref().unwrap(),runtime.user_did.clone())
+    let app_doc_jwt = named_obj_to_jwt(app_doc_json,runtime.user_private_key.as_ref().unwrap(),runtime.user_did.clone())
         .map_err(|e| format!("Failed to generate app_doc.jwt: {}", e.to_string()))?;
     app_meta_jwt_map.insert(app_doc_obj_id.to_string(),app_doc_jwt);
     repo_client.pub_pkg(app_meta_jwt_map).await.map_err(|e| {

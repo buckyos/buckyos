@@ -14,6 +14,7 @@ use crate::system_config::*;
 use package_lib::PackageMeta;
 
 #[derive(Serialize, Deserialize)]
+
 pub struct SubPkgDesc {
     pub pkg_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -27,10 +28,11 @@ pub struct SubPkgDesc {
 //App info is store at Index-db, publish to bucky store
 #[derive(Serialize, Deserialize)]
 pub struct AppDoc {
-    #[serde(flatten)]
+    #[serde(flatten)]    
     pub meta: PackageMeta,
     pub app_name: String,
-
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_icon_url: Option<String>,
 
     //service name -> full image url
     // 命名逻辑:<arch>_<runtimne_type>_<media_type>, 

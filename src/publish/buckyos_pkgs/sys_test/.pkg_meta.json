@@ -1,1 +1,1 @@
-{"pkg_name": "nightly-apple-aarch64.sys_test", "version": "0.4.0", "author": "buckyos.io", "description": "sys test", "category": "web", "pub_time": 1742200094}
+{"pkg_name": "sys_test", "version": "0.4.0", "author": "buckyos.io", "description": {"detail": "sys test"}, "category": "web", "pub_time": 1742410439}

@@ -183,16 +183,31 @@ pub fn verify_named_object_from_jwt(obj_id:&ObjId,jwt_str:&str)->NdnResult<bool>
    return Ok(true);
 }
 
-pub fn named_obj_to_jwt(obj_json_str:String,key:&EncodingKey,kid:Option<String>)->NdnResult<String> {
+pub fn named_obj_str_to_jwt(obj_json_str:&String,key:&EncodingKey,kid:Option<String>)->NdnResult<String> {
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
     header.typ = None; // 默认为 JWT，设置为None以节约空间
     header.kid = kid;
-    let jwt_str = encode(&header, &obj_json_str,key).map_err(|error| {
+    let obj_json = serde_json::from_str::<serde_json::Value>(&obj_json_str).map_err(|error| {
+        NdnError::Internal(format!("Failed to parse json string :{}",error))
+    })?;
+    let jwt_str = encode(&header, &obj_json,key).map_err(|error| {
         NdnError::Internal(format!("Failed to generate jwt token :{}",error))
     })?;   
 
     Ok(jwt_str)
 }
+
+pub fn named_obj_to_jwt(obj_json:&serde_json::Value,key:&EncodingKey,kid:Option<String>)->NdnResult<String> {
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
+    header.typ = None; // 默认为 JWT，设置为None以节约空间
+    header.kid = kid;
+    let jwt_str = encode(&header, &obj_json,key).map_err(|error| {
+        NdnError::Internal(format!("Failed to generate jwt token :{}",error))
+    })?;   
+
+    Ok(jwt_str)
+}
+
 
 
 
@@ -240,6 +255,11 @@ mod tests {
         let json_value2 = json!({"name":"test","age":18});
         let (obj_id2,json_str2) = build_named_object_by_json("jobj",&json_value2);
         assert_eq!(obj_id,obj_id2);
+
+        let json_str = serde_json::to_string_pretty(&json_value2).unwrap();
+        let json_value3 = serde_json::from_str::<serde_json::Value>(&json_str).unwrap();
+        let (obj_id3,json_str3) = build_named_object_by_json("jobj",&json_value3);
+        assert_eq!(obj_id2,obj_id3);
         println!("obj_id2#base32 : {}",obj_id2.to_base32());
         println!("obj_id2#string : {}",obj_id2.to_string());
 

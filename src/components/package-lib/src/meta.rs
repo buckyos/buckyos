@@ -6,7 +6,7 @@ use serde_json::Value;
 pub struct PackageMeta {
     pub pkg_name: String,
     pub version: String,
-    pub description: String,
+    pub description: Value,
     pub pub_time: u64,
     #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]

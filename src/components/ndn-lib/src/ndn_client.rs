@@ -142,6 +142,7 @@ impl NdnClient {
             .ok_or_else(|| NdnError::Internal("No named data manager available".to_string()))?;
         let real_named_mgr = named_mgr.lock().await;
         let (mut chunk_reader,len) = real_named_mgr.open_chunk_reader(&chunk_id,SeekFrom::Start(0),false).await?;
+        info!("local chunk_reader open success");
         drop(real_named_mgr);
         
         let chunk_url;
@@ -166,7 +167,7 @@ impl NdnClient {
             .map_err(|e| NdnError::Internal(format!("Failed to create client: {}", e)))?;
 
         let stream = tokio_util::io::ReaderStream::new(chunk_reader);
-        debug!("SEND PUT request, chunk_url:{}",chunk_url);
+        info!("SEND PUT request, chunk_url:{}",chunk_url);
         let res = client.put(chunk_url.clone())
             .header("Content-Type", "application/octet-stream")
             .header("cyfs-chunk-size", len.to_string())

@@ -27,7 +27,7 @@ if platform_name == "windows":
 else:
     sys_temp_dir = "/tmp/"
 
-def prepare_package(pkg_name):
+def prepare_package(pkg_name,pkg_meta):
     tmp_dir = os.path.join(sys_temp_dir, "buckyos_pkgs")
     if not os.path.exists(tmp_dir):
         os.makedirs(tmp_dir)
@@ -39,6 +39,7 @@ def prepare_package(pkg_name):
     os.makedirs(pkg_tmp_dir, exist_ok=True)
     
     # 复制../publish/buckyos_pkgs/$pkg_name 到 /tmp/buckyos_pkgs/$pkg_name 目录
+
     src_pkg_dir = os.path.join(src_dir,"publish/buckyos_pkgs", pkg_name)
     if os.path.exists(src_pkg_dir):
         print(f"Copying {src_pkg_dir} to {pkg_tmp_dir}")
@@ -49,7 +50,9 @@ def prepare_package(pkg_name):
                 shutil.copytree(s, d)
             else:
                 shutil.copy2(s, d)
-    
+            
+    pkg_meta_file = os.path.join(pkg_tmp_dir,".pkg_meta.json") 
+    json.dump(pkg_meta, open(pkg_meta_file, "w"))
     # 将 ../rootfs/bin/$app_name 下面的目录复制到 /tmp/buckyos_pkgs/$pkg_name
     app_name = pkg_name
     app_dir = os.path.join(src_dir,"rootfs/bin", app_name)
@@ -76,9 +79,8 @@ def main():
             pkg_meta["pub_time"] = int(time.time())
             pkg_name = pkg_meta["pkg_name"]
             pkg_meta["pkg_name"] = perfix + "." + pkg_name 
-            with open(meta_file, "w") as f:
-                json.dump(pkg_meta, f)
-            prepare_package(pkg_name)
+
+            prepare_package(pkg_name,pkg_meta)
 
 if __name__ == "__main__":
     main()
