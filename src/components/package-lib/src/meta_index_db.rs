@@ -512,8 +512,8 @@ impl MetaIndexDb {
 
 
     //将另一个meta_index_db中的全部记录插入当前db
-    pub async fn merge_meta_index_db(&self, other_db_path: &str) -> PkgResult<()> {
-        let other_db = MetaIndexDb::new(PathBuf::from(other_db_path),true)?;
+    pub async fn merge_meta_index_db(&self, other_db_path: &PathBuf) -> PkgResult<()> {
+        let other_db = MetaIndexDb::new(other_db_path.clone(),true)?;
         let mut conn = Self::create_connection(&self.db_path)?;
         let mut other_conn = Self::create_connection(&PathBuf::from(other_db_path))?;
         

@@ -49,8 +49,8 @@ pub enum NdnError {
     DbError(String),
     #[error("chunk not completed: {0}")]
     InComplete(String),
-    #[error("get from url failed: {0}")]
-    GetFromRemoteError(String),
+    #[error("remote error: {0}")]
+    RemoteError(String),
     #[error("decode error: {0}")]
     DecodeError(String),
     #[error("offset too large: {0}")]

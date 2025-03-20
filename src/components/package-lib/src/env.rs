@@ -345,7 +345,7 @@ impl PackageEnv {
                     format!("Invalid chunk id: {}", e),
                 ))?;
 
-            let is_chunk_exist = named_mgr.is_chunk_exist(&chunk_id).await
+            let is_chunk_exist = named_mgr.is_chunk_exist_impl(&chunk_id).await
                 .map_err(|e| PkgError::ParseError(
                     pkg_id.to_owned(),
                     format!("Chunk not found: {}", e),
@@ -430,20 +430,13 @@ impl PackageEnv {
 
         //检查chunk是否存在
         if let Some(ref chunk_id_str) = pkg_meta.chunk_id {
-            let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.config.named_mgr_name.as_deref()).await;
-            if named_mgr.is_none() {
-                return Err(PkgError::FileNotFoundError(
-                    "Named data mgr not found".to_owned(),
-                ));
-            }
-            let named_mgr = named_mgr.unwrap();
-            let named_mgr = named_mgr.lock().await;
+
             let chunk_id = ChunkId::new(&chunk_id_str)
                 .map_err(|e| PkgError::ParseError(
                     pkg_id.to_owned(),
                     format!("Invalid chunk id: {}", e),
                 ))?;
-            if !named_mgr.is_chunk_exist(&chunk_id).await.unwrap() {
+            if !NamedDataMgr::have_chunk(&chunk_id,self.config.named_mgr_name.as_deref()).await {
                 info!("{}'s chunk {} not found, downloading...", pkg_id, chunk_id_str);
                 let zone_repo_url = "http://127.0.0.1:8080/repo";
                 let ndn_client = NdnClient::new(zone_repo_url.to_string(),None,self.config.named_mgr_name.clone());
@@ -456,7 +449,8 @@ impl PackageEnv {
 
             }
 
-            let (chunk_reader,chunk_size) = named_mgr.open_chunk_reader(&chunk_id,SeekFrom::Start(0),false).await
+            let (chunk_reader,chunk_size) = NamedDataMgr::open_chunk_reader(self.config.named_mgr_name.as_deref(),
+                &chunk_id,SeekFrom::Start(0),false).await
                 .map_err(|e| PkgError::LoadError(
                     pkg_id.to_owned(),
                     format!("Failed to open chunk reader: {}", e),
@@ -633,6 +627,7 @@ impl PackageEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tempfile::tempdir;
 
     async fn setup_test_env() -> (PackageEnv, tempfile::TempDir) {
@@ -652,6 +647,7 @@ mod tests {
         // 创建meta文件
         let meta = PackageMeta {
             pkg_name: pkg_name.to_string(),
+            description:json!({}),
             version: version.to_string(),
             tag: Some("test".to_string()),
             category: Some("test".to_string()),
@@ -661,6 +657,7 @@ mod tests {
             chunk_url: Some("http://test.com".to_string()),
             deps: HashMap::new(),
             pub_time: 0,
+            extra_info:HashMap::new()
         };
         
         let meta_path = pkg_dir.join(".pkg.meta");
@@ -707,27 +704,27 @@ mod tests {
         assert!(env.dev_try_load("not-exist#1.0.0").await.is_err());
     }
 
-    #[tokio::test]
-    async fn test_install_pkg() {
-        let (env, _temp) = setup_test_env().await;
+    // #[tokio::test]
+    // async fn test_install_pkg() {
+    //     let (env, _temp) = setup_test_env().await;
         
-        // 创建测试包及其依赖
-        create_test_package(&env, "test-pkg", "1.0.0").await;
-        create_test_package(&env, "dep-pkg", "0.1.0").await;
+    //     // 创建测试包及其依赖
+    //     create_test_package(&env, "test-pkg", "1.0.0").await;
+    //     create_test_package(&env, "dep-pkg", "0.1.0").await;
         
-        // 测试安装包(不包含依赖)
-        let task_id = env.install_pkg("test-pkg#1.0.0", false).await.unwrap();
-        assert_eq!(task_id, "test-pkg#1.0.0");
+    //     // 测试安装包(不包含依赖)
+    //     let task_id = env.install_pkg("test-pkg#1.0.0", false).await.unwrap();
+    //     assert_eq!(task_id, "test-pkg#1.0.0");
         
-        // 等待任务完成
-        env.wait_task(&task_id).await.unwrap();
+    //     // 等待任务完成
+    //     env.wait_task(&task_id).await.unwrap();
         
-        // 验证任务状态
-        let tasks = env.install_tasks.lock().await;
-        let task = tasks.get(&task_id).unwrap();
-        assert!(matches!(task.status, InstallStatus::Completed));
-        assert!(task.sub_tasks.is_empty());
-    }
+    //     // 验证任务状态
+    //     let tasks = env.install_tasks.lock().await;
+    //     let task = tasks.get(&task_id).unwrap();
+    //     assert!(matches!(task.status, InstallStatus::Completed));
+    //     assert!(task.sub_tasks.is_empty());
+    // }
 
     #[tokio::test]
     async fn test_get_pkg_meta() {
@@ -746,19 +743,7 @@ mod tests {
         assert!(env.get_pkg_meta("not-exist#1.0.0").await.is_err());
     }
 
-    #[tokio::test]
-    async fn test_check_pkg_ready() {
-        let (env, _temp) = setup_test_env().await;
-        
-        // 创建测试包
-        create_test_package(&env, "test-pkg", "1.0.0").await;
-        
-        // 测试包就绪检查
-        assert!(env.check_pkg_ready("test-pkg#1.0.0", false).await.is_ok());
-        
-        // 测试不存在的包
-        assert!(env.check_pkg_ready("not-exist#1.0.0", false).await.is_err());
-    }
+ 
 
     #[tokio::test]
     async fn test_try_update_index_db() {

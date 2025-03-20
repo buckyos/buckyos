@@ -15,7 +15,7 @@ use crate::package_cmd::*;
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    env_logger::init();
+    buckyos_kit::init_logging("buckycli");
 
     let matches = Command::new("buckyos control tool")
         .author("buckyos")
@@ -195,7 +195,6 @@ async fn main() -> Result<(), String> {
                 return Err("publish pkg failed!".to_string());
             }
             println!("############\nPublish pkg success!");
-            unimplemented!()
         }
         Some(("pub_app", matches)) => {
             let app_name = matches.get_one::<String>("app_name").unwrap();

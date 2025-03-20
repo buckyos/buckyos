@@ -77,6 +77,7 @@ def main():
         if os.path.exists(meta_file):
             pkg_meta = json.load(open(meta_file))
             pkg_meta["pub_time"] = int(time.time())
+            pkg_meta["exp"] = int(time.time()) + 3600 * 24 * 365 * 3
             pkg_name = pkg_meta["pkg_name"]
             pkg_meta["pkg_name"] = perfix + "." + pkg_name 
 

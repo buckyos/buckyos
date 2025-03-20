@@ -54,7 +54,7 @@ async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,
     if obj_id.is_chunk() {
         let chunk_id = ChunkId::from_obj_id(&obj_id);
         let seek_from = SeekFrom::Start(offset);
-        let (chunk_reader,chunk_size) = real_mgr.open_chunk_reader(&chunk_id, seek_from, true).await
+        let (chunk_reader,chunk_size) = real_mgr.open_chunk_reader_impl(&chunk_id, seek_from, true).await
             .map_err(|e| {
                 warn!("get chunk reader by objid failed: {}", e);
                 anyhow::anyhow!("get chunk reader by objid failed: {}", e)
@@ -63,7 +63,7 @@ async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,
         debug!("ndn route -> chunk: {}, chunk_size: {}, offset: {}", obj_id.to_base32(), chunk_size, offset);
         return Ok(GetObjResult::new_chunk_result(obj_id.clone(),chunk_reader,chunk_size));
     } else {
-        let obj_body = real_mgr.get_object(&obj_id,None).await?;
+        let obj_body = real_mgr.get_object_impl(&obj_id,None).await?;
         debug!("ndn route -> obj {}", obj_body.to_string());
         return Ok(GetObjResult::new_named_obj_result(obj_id.clone(),obj_body));
     }
@@ -126,10 +126,12 @@ async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,
 
 pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, _host: &str, _client_ip:IpAddr,_route_path: &str) -> Result<Response<Body>> {
     if mgr_config.read_only {
+        error!("Named manager is read only,cann't process put");
         return Err(anyhow::anyhow!("Named manager is read only"));
     }
     
     if !mgr_config.enable_zone_put_chunk {
+        error!("Named manager is not enable zone put chunk");
         return Err(anyhow::anyhow!("Named manager is not enable zone put chunk"));
     }
 
@@ -155,7 +157,7 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
         // 如果是最后一块数据，完成写入
 
     // 打开写入器
-    let (chunk_writer, _) = named_mgr_lock.open_chunk_writer(&chunk_id, total_size, 0).await?;
+    let (chunk_writer, _) = named_mgr_lock.open_chunk_writer_impl(&chunk_id, total_size, 0).await?;
     drop(named_mgr_lock);
     
     // 读取整个请求体到内存
@@ -180,7 +182,10 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
     
     if write_result == total_size {
         let named_mgr_lock = named_mgr.lock().await;
-        named_mgr_lock.complete_chunk_writer(&chunk_id).await?;
+        named_mgr_lock.complete_chunk_writer_impl(&chunk_id).await?;
+    } else {
+        warn!("Failed to complete chunk: {}", write_result);
+        return Err(anyhow::anyhow!("Failed to complete chunk: {}", write_result));
     }
     
     return Ok(Response::builder()
@@ -195,14 +200,10 @@ pub async fn handle_chunk_status(mgr_config: &NamedDataMgrRouteConfig, req: Requ
         Err(_) => return Err(anyhow::anyhow!("Invalid object ID in path"))
     };
     
-    let named_mgr_id = mgr_config.named_data_mgr_id.clone();
-    let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(named_mgr_id.as_str())).await
-        .ok_or_else(|| anyhow::anyhow!("Named manager not found: {}", named_mgr_id))?;
-    
-    let named_mgr_lock = named_mgr.lock().await;
+
     let chunk_id = ChunkId::from_obj_id(&obj_id);
 
-    let (chunk_state,chunk_size,progress) = named_mgr_lock.query_chunk_state(&chunk_id).await?;
+    let (chunk_state,chunk_size,progress) = NamedDataMgr::query_chunk_state(Some(mgr_config.named_data_mgr_id.as_str()),&chunk_id).await?;
     let status_code;
     match chunk_state {
         ChunkState::New => {
@@ -243,7 +244,7 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
     }
     let named_mgr = named_mgr.unwrap();
     let named_mgr2 = named_mgr.clone();
-    let named_mgr = named_mgr.lock().await;
+
             
     let range_str = req.headers().get(hyper::header::RANGE);
     let mut start = 0;
@@ -284,16 +285,17 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
     //let mut root_obj_id:Option<ObjId> = None;
     let mut inner_path_obj:Option<InnerPathInfo> = None;
     if obj_id.is_none() {
+        let real_named_mgr = named_mgr.lock().await;
         if mgr_config.enable_mgr_file_path {
             let sub_path = buckyos_kit::get_relative_path(route_path, path);
-            let target_obj_result = named_mgr.get_obj_id_by_path(&sub_path).await;
+            let target_obj_result = real_named_mgr.get_obj_id_by_path_impl(&sub_path).await;
             if target_obj_result.is_ok() {
                 // will return (obj_id,obj_json_str)
                 let (target_obj_id,_) = target_obj_result.unwrap();
                 obj_id = Some(target_obj_id);
             } else {
                 //root_obj/inner_path = obj_id,
-                let root_obj_id_result = named_mgr.select_obj_id_by_path(&sub_path).await;
+                let root_obj_id_result = real_named_mgr.select_obj_id_by_path_impl(&sub_path).await;
 
                 if root_obj_id_result.is_ok() {
                     let (the_root_obj_id,the_path_obj_jwt,the_inner_path) = root_obj_id_result.unwrap();
@@ -308,7 +310,7 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
                     if the_root_obj_id.is_big_container() {
                         //TODO: not support now
                     } else {
-                        let root_obj_json = named_mgr.get_object(&the_root_obj_id, None).await?;
+                        let root_obj_json = real_named_mgr.get_object_impl(&the_root_obj_id, None).await?;
                         let obj_filed = get_by_json_path(&root_obj_json, &inner_obj_path.clone().unwrap());
                         if obj_filed.is_none() {
                             return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not valid"));
@@ -337,7 +339,6 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
             }
         } 
     }
-    drop(named_mgr);
     let get_result:GetObjResult;
     if obj_content.is_some() {
         //root_obj/inner_path = obj_content
@@ -376,6 +377,7 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
 mod tests {
     use super::*;
     use buckyos_kit::*;
+    use rand::RngCore;
     use tokio::io::{AsyncReadExt,AsyncWriteExt};
     use crate::*;
     use serde_json::json;
@@ -384,6 +386,7 @@ mod tests {
     fn generate_random_bytes(size: u64) -> Vec<u8> {
         let mut rng = rand::rng();
         let mut buffer = vec![0u8; size as usize];
+
         rng.fill_bytes(&mut buffer);
         buffer
     }
@@ -440,10 +443,10 @@ mod tests {
         let hash_a = hasher.calc_from_bytes(&chunk_a);
         let chunk_id_a = ChunkId::from_sha256_result(&hash_a);
         info!("chunk_id_a:{}",chunk_id_a.to_string());
-        let (mut chunk_writer,_) = pub_named_mgr.open_chunk_writer(&chunk_id_a, chunk_a_size, 0).await.unwrap();
+        let (mut chunk_writer,_) = pub_named_mgr.open_chunk_writer_impl(&chunk_id_a, chunk_a_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_a).await.unwrap();
         drop(chunk_writer);
-        pub_named_mgr.complete_chunk_writer(&chunk_id_a).await.unwrap();
+        pub_named_mgr.complete_chunk_writer_impl(&chunk_id_a).await.unwrap();
         info!("put chunk_id_a {} to test_pub named mgr OK!",chunk_id_a.to_string());
 
 
@@ -453,17 +456,17 @@ mod tests {
         let hash_b = hasher.calc_from_bytes(&chunk_b);
         let chunk_id_b = ChunkId::from_sha256_result(&hash_b);
         info!("chunk_id_b:{}",chunk_id_b.to_string());
-        let (mut chunk_writer,_) = pub_named_mgr.open_chunk_writer(&chunk_id_b, chunk_b_size, 0).await.unwrap();
+        let (mut chunk_writer,_) = pub_named_mgr.open_chunk_writer_impl(&chunk_id_b, chunk_b_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_b).await.unwrap();
         drop(chunk_writer);
-        pub_named_mgr.complete_chunk_writer(&chunk_id_b).await.unwrap();
+        pub_named_mgr.complete_chunk_writer_impl(&chunk_id_b).await.unwrap();
         info!("put chunk_id_b {} to test_pub named mgr OK!",chunk_id_b.to_string());
 
         
         //http://localhost:3280/ndn/test/chunk_a -> chunk_id_a
         let test_path = "/test/chunk_a".to_string();
         // Bind chunk to path
-        pub_named_mgr.create_file(
+        pub_named_mgr.create_file_impl(
             test_path.as_str(),
             &chunk_id_a.to_obj_id(),
             "test_app",
@@ -475,8 +478,8 @@ mod tests {
         let file_obj = FileObject::new("fileb".to_string(),chunk_b_size,chunk_id_b.to_string());
         let (file_obj_id,file_obj_str) = file_obj.gen_obj_id();
         info!("file_obj_id -> chunk_id:{}",file_obj_id.to_string());
-        pub_named_mgr.put_object(&file_obj_id, &file_obj_str).await.unwrap();
-        pub_named_mgr.create_file(
+        pub_named_mgr.put_object_impl(&file_obj_id, &file_obj_str).await.unwrap();
+        pub_named_mgr.create_file_impl(
             path2.as_str(),
             &file_obj_id,
             "test_app",
@@ -513,7 +516,7 @@ mod tests {
 
         let named_mgr_client = NamedDataMgr::get_named_data_mgr_by_id(Some("test_client")).await.unwrap();
         let real_named_mgr_client = named_mgr_client.lock().await;
-        let (mut reader,len) = real_named_mgr_client.open_chunk_reader(&chunk_id_a,SeekFrom::Start(0),false).await.unwrap();
+        let (mut reader,len) = real_named_mgr_client.open_chunk_reader_impl(&chunk_id_a,SeekFrom::Start(0),false).await.unwrap();
         assert_eq!(len,chunk_a_size);
         drop(real_named_mgr_client);
         let mut buffer = vec![0u8;chunk_a_size as usize];
@@ -546,10 +549,10 @@ mod tests {
         let hash_c = hasher.calc_from_bytes(&chunk_c);
         let chunk_id_c = ChunkId::from_sha256_result(&hash_c);
         info!("chunk_id_c:{}",chunk_id_c.to_string());
-        let (mut chunk_writer,progress_info) = real_named_mgr_client.open_chunk_writer(&chunk_id_c, chunk_c_size, 0).await.unwrap();
+        let (mut chunk_writer,progress_info) = real_named_mgr_client.open_chunk_writer_impl(&chunk_id_c, chunk_c_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_c).await.unwrap();
         drop(chunk_writer);
-        real_named_mgr_client.complete_chunk_writer(&chunk_id_c).await.unwrap();
+        real_named_mgr_client.complete_chunk_writer_impl(&chunk_id_c).await.unwrap();
         drop(real_named_mgr_client);
 
         info!("ndn_client will push a new chunk");
@@ -558,7 +561,7 @@ mod tests {
 
         let named_mgr_client = NamedDataMgr::get_named_data_mgr_by_id(Some("test_pub")).await.unwrap();
         let real_named_mgr_client = named_mgr_client.lock().await;
-        let (mut _reader,len) = real_named_mgr_client.open_chunk_reader(&chunk_id_c,SeekFrom::Start(0),false).await.unwrap();
+        let (mut _reader,len) = real_named_mgr_client.open_chunk_reader_impl(&chunk_id_c,SeekFrom::Start(0),false).await.unwrap();
         assert_eq!(len,chunk_c_size);
         
     }

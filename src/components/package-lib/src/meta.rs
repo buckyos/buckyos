@@ -9,6 +9,8 @@ pub struct PackageMeta {
     pub description: Value,
     pub pub_time: u64,
     #[serde(default)]
+    pub exp:u64,
+    #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub deps: HashMap<String, String>,     //key = pkg_name,value = version_req_str,like ">1.0.0-alpha"
     #[serde(skip_serializing_if = "Option::is_none")]

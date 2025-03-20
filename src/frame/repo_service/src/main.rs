@@ -40,6 +40,16 @@ async fn service_main() -> Result<()> {
       anyhow::anyhow!("repo service settings parse error! err:{}", e)
     })?;
 
+    let repo_server_data_folder = runtime.get_my_data_folder();
+    // 确保repo_server_data_folder目录存在
+    if !repo_server_data_folder.exists() {
+        std::fs::create_dir_all(&repo_server_data_folder).map_err(|e| {
+            error!("Failed to create repo_server_data_folder: {}, err: {}", repo_server_data_folder.display(), e);
+            anyhow::anyhow!("Failed to create repo_server_data_folder: {}, err: {}", repo_server_data_folder.display(), e)
+        })?;
+        info!("Created repo_server_data_folder: {}", repo_server_data_folder.display());
+    }
+
     let repo_server = RepoServer::new(repo_service_settings).await
       .map_err(|e| {
         error!("repo service init error! err:{}", e);

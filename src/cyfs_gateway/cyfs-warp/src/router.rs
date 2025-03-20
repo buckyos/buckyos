@@ -163,7 +163,7 @@ impl Router {
         let (route_path, route_config) = route_config.unwrap();
         debug!("route_config: {:?}", route_config);
 
-        match &*route_config {
+        let real_resp = match &*route_config {
             RouteConfig {
                 response: Some(response),
                 ..
@@ -218,7 +218,16 @@ impl Router {
                 header.insert(hyper::header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("Content-Type, Authorization"));
             }
             resp
-        })
+        });
+
+        if real_resp.is_err() {
+            let err_msg = real_resp.as_ref().unwrap_err().to_string();
+            error!("{} <==| {}",client_ip.to_string(),err_msg);
+        } else {
+            info!("{} <==| {}",client_ip.to_string(),real_resp.as_ref().unwrap().status());
+        }
+
+        return real_resp;
     }
 
 

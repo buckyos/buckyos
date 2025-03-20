@@ -89,6 +89,15 @@
                 "*": {
                     "enable_cors":true,
                     "routes": {
+                        "/ndn/": {
+                            "named_mgr": {
+                                "named_data_mgr_id":"default",
+                                "read_only":false,
+                                "guest_access":true,
+                                "is_chunk_id_in_path":true,
+                                "enable_mgr_file_path":true
+                            }
+                        }, 
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
                         }
@@ -239,6 +248,16 @@
                 "*": {
                     "enable_cors":true,
                     "routes": {
+                        "/ndn/": {
+                            "named_mgr": {
+                                "named_data_mgr_id":"default",
+                                "read_only":false,
+                                "guest_access":true,
+                                "is_chunk_id_in_path":true,
+                                "enable_mgr_file_path":true
+                            }
+                        }, 
+
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
                         }
