@@ -194,6 +194,14 @@ impl RepoServer {
         }
         Ok(())
     }
+
+    async fn copy_file(target_file_path:&PathBuf,file_path:&PathBuf) -> Result<(),RPCErrors> {
+        tokio::fs::copy(file_path, target_file_path).await.map_err(|e| {
+            error!("Failed to copy file, err: {}", e);
+            RPCErrors::ReasonError(format!("Failed to copy file, err: {}", e))
+        })?;
+        Ok(())
+    }
     
     
     async fn replace_file(target_file_path:&PathBuf,file_path:&PathBuf) -> Result<(),RPCErrors> {
@@ -465,6 +473,7 @@ impl RepoServer {
             RepoServer::replace_file(&current_meta_index_db_path,&new_meta_index_db_path).await?;
 
             self.create_new_default_meta_index_db().await?;
+            break;
         }
         
         Ok(RPCResponse::new(RPCResult::Success(json!({
@@ -476,19 +485,23 @@ impl RepoServer {
         let default_meta_index_db_path = self.get_my_default_meta_index_db_path();
         let default_source_meta_index_db_path = self.get_source_meta_index_db_path("root");
         let pub_meta_index_db_path = self.get_my_pub_meta_index_db_path();
+        info!("will create_new_default_meta_index_db, default_meta_index_db_path:{}", default_meta_index_db_path.display());
         let mut have_result = false;
         let mut need_merge_source_meta_index_db = false;
 
         
         if default_source_meta_index_db_path.exists() {
-            RepoServer::replace_file(&default_meta_index_db_path,&default_source_meta_index_db_path).await?;
+            info!("default_source_meta_index_db_path exists, will replace default_meta_index_db_path with default_source_meta_index_db_path");
+            RepoServer::copy_file(&default_meta_index_db_path,&default_source_meta_index_db_path).await?;
             have_result = true;
             need_merge_source_meta_index_db = true;
         }
 
         if pub_meta_index_db_path.exists() {
+            info!("pub_meta_index_db_path exists, will merge pub_meta_index_db_path with default_meta_index_db_path");
             have_result = true;
             if need_merge_source_meta_index_db {
+                info!("need_merge_source_meta_index_db, will merge pub_meta_index_db_path with default_meta_index_db_path");
                 let default_meta_index_db = MetaIndexDb::new(default_meta_index_db_path,false).map_err(|e| {
                     error!("open default meta-index-db failed, err:{}", e);
                     RPCErrors::ReasonError(format!("open default meta-index-db failed, err:{}", e))
@@ -499,7 +512,8 @@ impl RepoServer {
                         RPCErrors::ReasonError(format!("merge meta-index-db failed, err:{}", e))
                     })?;   
             } else {
-                RepoServer::replace_file(&default_meta_index_db_path,&pub_meta_index_db_path).await?;
+                info!("no need_merge_source_meta_index_db, will replace default_meta_index_db_path with pub_meta_index_db_path");
+                RepoServer::copy_file(&default_meta_index_db_path,&pub_meta_index_db_path).await?;
             }
         }
         
@@ -613,24 +627,30 @@ impl RepoServer {
         }
         let wait_meta_db_path = self.get_my_wait_pub_meta_index_db_path();
         let pub_meta_db_path = self.get_my_pub_meta_index_db_path();
-        RepoServer::replace_file(&pub_meta_db_path,&wait_meta_db_path).await?;
+        //info!("start replace pub_meta_db with wait_meta_db, pub_meta_db_path:{}", pub_meta_db_path.display());
+        RepoServer::copy_file(&pub_meta_db_path,&wait_meta_db_path).await?;
+        info!("copy wait_meta_db to pub_meta_db success");
         let mut file_object = FileObject::new("pub_meta_index.db".to_string(),0,String::new());
+        //info!("will pub pub_meta_index to named-mgr");
         NamedDataMgr::pub_local_file_as_fileobj(None,&pub_meta_db_path,
         "/repo/pub_meta_index.db","/repo/pub_meta_index.db/content",
         &mut file_object,user_id.as_str(),"repo_service").await.map_err(|e| {
-            error!("pub wait-pub-meta-index-db to named-mgr failed, err:{}", e);
+            error!("pub pub-meta-index-db to named-mgr failed, err:{}", e);
             RPCErrors::ReasonError(format!("pub_index failed, err:{}", e))
         })?;
-
+        info!("pub pub_meta_index.db to named-mgr success");
         self.create_new_default_meta_index_db().await?;
+
+        //info!("will pub new default meta-index-db to named-mgr");
         let mut file_object = FileObject::new("meta_index.db".to_string(),0,String::new());
         let default_meta_index_db_path = self.get_my_default_meta_index_db_path();
         NamedDataMgr::pub_local_file_as_fileobj(None,&default_meta_index_db_path,
-            "/repo/pub_meta_index.db","/repo/pub_meta_index.db/content",
+            "/repo/meta_index.db","/repo/meta_index.db/content",
             &mut file_object,user_id.as_str(),"repo_service").await.map_err(|e| {
-                error!("pub wait-pub-meta-index-db to named-mgr failed, err:{}", e);
+                error!("pub default meta-index-db to named-mgr failed, err:{}", e);
                 RPCErrors::ReasonError(format!("pub_index failed, err:{}", e))
             })?;
+        info!("pub new default meta-index-db to named-mgr success");
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "success": true,
         })), req.seq))

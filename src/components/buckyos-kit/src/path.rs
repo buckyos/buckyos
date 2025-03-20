@@ -54,11 +54,11 @@ pub fn adjust_path(old_path: &str) -> std::io::Result<PathBuf> {
     std::path::absolute(new_path)?.canonicalize()
 }
 
-pub fn get_buckyos_named_data_dir(mgr_id: Option<&str>) -> PathBuf {
-    if mgr_id.is_none() {
+pub fn get_buckyos_named_data_dir(mgr_id: &str) -> PathBuf {
+    if mgr_id == "default" {
         get_buckyos_root_dir().join("data").join("ndn")
     } else {
-        get_buckyos_root_dir().join("data").join("ndn").join(mgr_id.unwrap())
+        get_buckyos_root_dir().join("data").join("ndn").join(mgr_id)
     }
 }
 

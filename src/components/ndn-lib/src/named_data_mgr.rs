@@ -82,7 +82,7 @@ impl NamedDataMgrDB {
         let record: (String, String,Option<String>) = stmt.query_row([path], |row| {
             Ok((row.get(0)?, row.get(1)?,row.get(2)?))
         }).map_err(|e| {
-            warn!("NamedDataMgrDB: query path obj id failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: query {} obj id failed! {}",path, e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
@@ -105,7 +105,7 @@ impl NamedDataMgrDB {
         let (obj_id_str,path_obj_jwt): (String,Option<String>) = stmt.query_row([path], |row| {
             Ok((row.get(0)?, row.get(1)?))
         }).map_err(|e| {
-            warn!("NamedDataMgrDB: query path target obj failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: query {} target obj failed! {}", path, e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
@@ -333,7 +333,7 @@ impl NamedDataMgr {
         }
 
         info!("NamedDataMgr: auto create new named data mgr for mgr_id:{}", named_mgr_key);
-        let root_path = get_buckyos_named_data_dir(named_data_mgr_id);
+        let root_path = get_buckyos_named_data_dir(named_mgr_key.as_str());
         //make sure the root path dir exists
         if !root_path.exists() {
             fs::create_dir_all(root_path.clone()).await.unwrap();
@@ -859,15 +859,17 @@ impl NamedDataMgr {
         }
         let named_mgr = named_mgr.unwrap();
         //TODO：优化，边算边传，支持断点续传
+        debug!("start pub local_file_as_fileobj, local_file_path:{}", local_file_path.display());
         let mut file_reader =tokio::fs::File::open(local_file_path).await
             .map_err(|e| {
                 error!("open local_file_path failed, err:{}", e);
                 NdnError::IoError(format!("open local_file_path failed, err:{}", e))
             })?;
-        
+        debug!("open local_file_path success");
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();
         let (chunk_raw_id,chunk_size) = chunk_hasher.calc_from_reader(&mut file_reader).await.unwrap();
         let chunk_id = ChunkId::from_sha256_result(&chunk_raw_id);
+        debug!("calc chunk_id success");
         let real_named_mgr = named_mgr.lock().await;
         let is_exist = real_named_mgr.is_chunk_exist_impl(&chunk_id).await.unwrap();
         if !is_exist {
@@ -881,6 +883,8 @@ impl NamedDataMgr {
                 })?;
             let real_named_mgr = named_mgr.lock().await;
             real_named_mgr.complete_chunk_writer_impl(&chunk_id).await?;
+        } else {
+            drop(real_named_mgr);
         }
 
         fileobj_template.content = chunk_id.to_string();
@@ -889,8 +893,8 @@ impl NamedDataMgr {
         let chunk_obj_id = chunk_id.to_obj_id();
         let real_named_mgr = named_mgr.lock().await;
         real_named_mgr.put_object_impl(&file_obj_id, file_obj_str.as_str()).await?;
-        real_named_mgr.create_file_impl(ndn_path, &file_obj_id, app_id, user_id).await?;
-        real_named_mgr.create_file_impl(ndn_content_path, &chunk_obj_id, app_id, user_id).await?;
+        real_named_mgr.set_file_impl(ndn_path, &file_obj_id, app_id, user_id).await?;
+        real_named_mgr.set_file_impl(ndn_content_path, &chunk_obj_id, app_id, user_id).await?;
         Ok(())
     }
 
