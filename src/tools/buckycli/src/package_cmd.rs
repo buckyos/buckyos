@@ -171,7 +171,7 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(&st
     })?;
     // If private key is provided, sign the metadata
     if let Some((kid,private_key)) = private_key { 
-        let jwt_token = named_obj_to_jwt(pkg_meta_json_str,
+        let jwt_token = named_obj_to_jwt(&meta_data_json,
             private_key,Some(kid.to_string()))
             .map_err(|e| format!("Failed to generate pkg_meta.jwt: {}", e.to_string()))?;
         let jwt_path = dest_dir_path.join("pkg_meta.jwt");
@@ -205,7 +205,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
 
     let base_url = format!("http://{}/ndn/",zone_host_name.as_str());
     let ndn_client = NdnClient::new(base_url,None,None);
-    let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(None).await.unwrap();
+    //let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(None).await.unwrap();
     for pkg_path in pkg_pack_path_list {
         let pkg_meta_jwt_path = pkg_path.join("pkg_meta.jwt");
         if !pkg_meta_jwt_path.exists() {
@@ -233,13 +233,13 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
             println!("chunk_id does not match: {}", chunk_id.to_string());
             continue;
         }
-        let real_named_mgr = named_mgr.lock().await;
-        let is_exist = real_named_mgr.is_chunk_exist(&chunk_id).await.unwrap();
+        //let real_named_mgr = named_mgr.lock().await;
+        let is_exist = NamedDataMgr::have_chunk(&chunk_id,None).await;
         if !is_exist {
-            let (mut chunk_writer,chunk_progress_info) = real_named_mgr.open_chunk_writer(&chunk_id,file_info.size,0).await.map_err(|e| {
+            let (mut chunk_writer, _) = NamedDataMgr::open_chunk_writer(None,&chunk_id, file_info.size, 0).await.map_err(|e| {
                 format!("Failed to open chunk writer: {}", e.to_string())
             })?;
-            drop(real_named_mgr);
+        
             let mut file_reader = tokio::fs::File::open(pkg_tar_path.to_str().unwrap()).await
                 .map_err(|e| {
                     format!("Failed to open tar.gz file: {}", e.to_string())
@@ -248,9 +248,16 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
             .map_err(|e| {
                 format!("Failed to copy tar.gz file: {}", e.to_string())
             })?;
-            println!(" {} file successfully written to local named-mgr", pkg_tar_path.display());
+            println!(" {} file successfully written to local named-mgr,chunk_id: {}", pkg_tar_path.display(),chunk_id.to_string());
+ 
+            NamedDataMgr::complete_chunk_writer(None,&chunk_id).await.map_err(|e| {
+                format!("Failed to complete chunk writer: {}", e.to_string())
+            })?;
+
+        } else {
+            println!(" {} file already exists in local named-mgr,chunk_id: {}", pkg_tar_path.display(),chunk_id.to_string());
         }
-          
+        
         println!("# push chunk : {}, size: {} bytes...", chunk_id.to_string(),file_info.size);
         ndn_client.push_chunk(chunk_id.clone(),None).await.map_err(|e| {
             format!("Failed to push chunk: {}", e.to_string())
@@ -328,8 +335,8 @@ pub async fn publish_app_pkg(app_name: &str,dapp_dir_path: &str,is_pub_sub_pkg:b
     let app_doc_json = serde_json::to_value(&app_meta).map_err(|e| {
         format!("Failed to serialize app_doc: {}", e.to_string())
     })?;
-    let (app_doc_obj_id,app_doc_json_str) = build_named_object_by_json("app",&app_doc_json);
-    let app_doc_jwt = named_obj_to_jwt(app_doc_json_str,runtime.user_private_key.as_ref().unwrap(),runtime.user_did.clone())
+    let (app_doc_obj_id,_) = build_named_object_by_json("app",&app_doc_json);
+    let app_doc_jwt = named_obj_to_jwt(&app_doc_json,runtime.user_private_key.as_ref().unwrap(),runtime.user_did.clone())
         .map_err(|e| format!("Failed to generate app_doc.jwt: {}", e.to_string()))?;
     app_meta_jwt_map.insert(app_doc_obj_id.to_string(),app_doc_jwt);
     repo_client.pub_pkg(app_meta_jwt_map).await.map_err(|e| {
@@ -398,100 +405,6 @@ fn calculate_file_hash(file_path: &str) -> Result<FileInfo, String> {
     })
 }
 
-// fn generate_jwt(pem_file: &str, data: &String) -> Result<String, String> {
-//     let private_key = load_private_key_from_file(pem_file)?;
-//     let mut header = Header::new(Algorithm::EdDSA);
-//     header.kid = None;
-//     header.typ = None;
-//     let token = encode(&header, data, &private_key)
-//         .map_err(|e| format!("Failed to encode data to JWT: {}", e.to_string()))?;
-
-//     Ok(token)
-// }
-
-async fn write_file_to_chunk(
-    chunk_id: &ChunkId,
-    file_path: &PathBuf,
-    file_size: u64,
-    chunk_mgr_id: Option<&str>,
-) -> Result<(), String> {
-    let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(chunk_mgr_id)
-        .await
-        .ok_or_else(|| "Failed to get repo named data mgr".to_string())?;
-
-    println!("upload chunk_id: {}", chunk_id.to_string());
-
-    let named_mgr = named_mgr.lock().await;
-
-    // 可能重复pub，需要排除AlreadyExists错误
-    let (mut chunk_writer, progress_info) =
-        match named_mgr.open_chunk_writer(chunk_id, file_size, 0).await {
-            Ok(v) => v,
-            Err(e) => {
-                if let NdnError::AlreadyExists(_) = e {
-                    println!("chunk {} already exists", chunk_id.to_string());
-                    return Ok(());
-                } else {
-                    return Err(format!(
-                        "Failed to open chunk writer for chunk_id: {}, err:{}",
-                        chunk_id.to_string(),
-                        e.to_string()
-                    ));
-                }
-            }
-        };
-
-    // 读取文件，按块写入
-    let file = File::open(&file_path).map_err(|e| {
-        format!(
-            "Failed to open package file: {}, err:{}",
-            file_path.display(),
-            e.to_string()
-        )
-    })?;
-    let mut reader = BufReader::new(file);
-    let mut buffer = vec![0u8; 10 * 1024 * 1024]; // 使用 Vec 在堆上分配
-    loop {
-        let bytes_read = reader.read(&mut buffer).map_err(|e| {
-            format!(
-                "Failed to read package file: {}, err:{}",
-                file_path.display(),
-                e.to_string()
-            )
-        })?;
-        if bytes_read == 0 {
-            break;
-        }
-        chunk_writer
-            .write(&buffer[..bytes_read])
-            .await
-            .map_err(|e| {
-                format!(
-                    "Failed to write chunk data for chunk_id: {}, err:{}",
-                    chunk_id.to_string(),
-                    e.to_string()
-                )
-            })?;
-    }
-
-    drop(chunk_writer);
-    named_mgr
-        .complete_chunk_writer(chunk_id)
-        .await
-        .map_err(|e| {
-            format!(
-                "Failed to complete chunk writer for chunk_id: {}, err:{}",
-                chunk_id.to_string(),
-                e.to_string()
-            )
-        })?;
-
-    Ok(())
-}
-
-
-
-
 pub async fn install_pkg(
     pkg_name: &str,
     version: &str,
@@ -512,79 +425,6 @@ pub async fn install_pkg(
 
     Ok(())
 }
-
-// pub async fn publish_app(
-//     app_desc_file: &PathBuf,
-//     did: &str,
-//     hostname: &str,
-//     pem_file: &str,
-//     url: &str,
-//     session_token: &str,
-// ) -> Result<(), String> {
-//     if !app_desc_file.exists() {
-//         eprintln!("Error: App desc file {} not found", app_desc_file.display());
-//         return Err(format!(
-//             "App desc file {} not found",
-//             app_desc_file.display()
-//         ));
-//     }
-
-//     let desc_content = fs::read_to_string(app_desc_file)
-//         .map_err(|err| format!("Error: Failed to read app desc file: {}", err.to_string()))?;
-
-//     let app_desc: HashMap<String, String> = serde_json::from_str(&desc_content)
-//         .map_err(|err| format!("Error: Failed to parse app desc file: {}", err.to_string()))?;
-
-//     let app_name = app_desc
-//         .get("app_name")
-//         .ok_or_else(|| format!("Error: app_name missing in app desc file"))?;
-//     let version = app_desc
-//         .get("version")
-//         .ok_or_else(|| format!("Error: version missing in app desc file"))?;
-//     let hostname = app_desc
-//         .get("hostname")
-//         .ok_or_else(|| format!("Error: hostname missing in app desc file"))?;
-//     let pkg_list = app_desc
-//         .get("pkg_list")
-//         .ok_or_else(|| format!("Error: pkg_list missing in app desc file"))?;
-
-//     // 创建元数据
-//     let pkg_meta = PackagePubMeta {
-//         pkg_name: app_name.to_string(),
-//         version: version.to_string(),
-//         hostname: hostname.to_string(),
-//         chunk_id: None,
-//         dependencies: pkg_list.to_string(),
-//     };
-
-//     let meta_json_value = serde_json::to_value(&pkg_meta).map_err(|e| {
-//         format!(
-//             "Failed to serialize app meta to json value, err:{:?}",
-//             e.to_string()
-//         )
-//     })?;
-
-//     let jwt_token: String = generate_jwt(pem_file, &desc_content)?;
-
-//     // 上传元数据到repo
-//     let client = kRPC::new(url, Some(session_token.to_string()));
-
-//     client
-//         .call(
-//             "pub_app",
-//             json!({
-//                 "pkg_name": pkg_meta.pkg_name,
-//                 "version": pkg_meta.version,
-//                 "hostname": hostname.to_string(),
-//                 "dependencies": pkg_meta.dependencies,
-//                 "jwt": jwt_token,
-//             }),
-//         )
-//         .await
-//         .map_err(|e| format!("Failed to publish app meta to repo, err:{:?}", e))?;
-
-//     Ok(())
-// }
 
 #[cfg(test)]
 mod tests {

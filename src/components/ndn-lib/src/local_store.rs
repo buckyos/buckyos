@@ -474,7 +474,7 @@ impl NamedDataStore {
             NdnError::IoError(e.to_string())
         })?;
 
-        let named_db_path = format!("{}/objstroe.db", base_dir.clone());
+        let named_db_path = format!("{}/named_object_store.db", base_dir.clone());
         let named_db = NamedDataDb::new(named_db_path.clone())?;
         if !std::path::Path::new(&named_db_path).exists() {
             info!("NamedDataStore: Database file does not exist, creating it");
