@@ -405,24 +405,40 @@ fn calculate_file_hash(file_path: &str) -> Result<FileInfo, String> {
     })
 }
 
-pub async fn install_pkg(
-    pkg_name: &str,
-    version: &str,
-    dest_dir: &str,
-    url: &str,
+
+pub async fn load_pkg(
+    pkg_id: &str,
+    target_env:&str
 ) -> Result<(), String> {
-    println!(
-        "install package: {}, version: {}, dest_dir: {}, url: {}",
-        pkg_name, version, dest_dir, url
-    );
-    let pkg_id = format!("{}#{}", pkg_name, version);
+    let target_env = PathBuf::from(target_env);
+    if !target_env.exists() {
+        return Err(format!("target env {} does not exist", target_env.display()));
+    }
 
-    // let deps = Installer::install(&pkg_id, &PathBuf::from(dest_dir), url, None)
-    //     .await
-    //     .map_err(|e| format!("Failed to call install package, err:{:?}", e))?;
+    let the_env:PackageEnv = PackageEnv::new(target_env);
+    let media_info = the_env.load(pkg_id).await;
+    if media_info.is_err() {
+        println!("Load package failed! {}", media_info.err().unwrap());
+        return Err("load package failed!".to_string());
+    }
+    println!("### Load package success! {:?}", media_info.unwrap());
+    Ok(())
+}
 
-    //println!("install package success, deps: {:?}", deps);
+pub async fn install_pkg(
+    pkg_id: &str,
+    target_env:&str
+) -> Result<(), String> {
+    let target_env = PathBuf::from(target_env);
+    if !target_env.exists() {
+        return Err(format!("target env {} does not exist", target_env.display()));
+    }
 
+    let the_env:PackageEnv = PackageEnv::new(target_env);
+    the_env.install_pkg(pkg_id, false).await.map_err(|e| {
+        format!("Failed to install pkg: {}", e.to_string())
+    })?;
+    
     Ok(())
 }
 

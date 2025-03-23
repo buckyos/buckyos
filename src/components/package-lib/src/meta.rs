@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, str::EncodeUtf16};
 use serde_json::Value;
-
+use name_lib::*;
+use crate::{PkgResult, PkgError};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackageMeta {
     pub pkg_name: String,
@@ -28,6 +29,20 @@ pub struct PackageMeta {
     #[serde(flatten)]
     pub extra_info: HashMap<String, Value>,
 
+}
+
+impl PackageMeta {
+    pub fn from_str(meta_str: &str) -> PkgResult<Self> {
+        let pkg_meta_doc = EncodedDocument::from_str(meta_str.to_string())
+            .map_err(|e| PkgError::ParseError(meta_str.to_string(), e.to_string()))?;
+
+        let pkg_json = pkg_meta_doc.to_json_value()
+            .map_err(|e| PkgError::ParseError(meta_str.to_string(), e.to_string()))?;
+
+        let meta: PackageMeta = serde_json::from_value(pkg_json)
+            .map_err(|e| PkgError::ParseError(meta_str.to_string(), e.to_string()))?;
+        Ok(meta)
+    }
 }
 
 pub struct PackageMetaNode {

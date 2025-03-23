@@ -77,31 +77,38 @@ async fn main() -> Result<(), String> {
         )
         .subcommand(
             Command::new("install_pkg")
-                .about("install pkg")
+                .about("install pkg in current pkg env or target pkg env")
                 .arg(
-                    Arg::new("pkg_name")
-                        .long("pkg_name")
-                        .help("pkg name")
+                    Arg::new("pkg_id")
+                        .index(1)
+                        .long("pkg_id")
+                        .help("pkg id is pkg name with version")
+                        .required(true),
+                        
+                )
+                .arg(
+                    Arg::new("env")
+                        .long("target env path")
+                        .help("target env path, default is current dir")
+                        .required(false),
+                )
+        )
+        .subcommand(
+            Command::new("load_pkg")
+                .about("try load pkg in current pkg env,will return pkg media info")
+                .arg(
+                    Arg::new("pkg_id")
+                        .index(1)
+                        .long("pkg_id")
+                        .help("pkg id is pkg name with version")
                         .required(true),
                 )
                 .arg(
-                    Arg::new("version")
-                        .long("version")
-                        .help("index version")
-                        .required(true),
+                    Arg::new("env")
+                        .long("target env path")
+                        .help("target env path, default is current dir")
+                        .required(false),
                 )
-                .arg(
-                    Arg::new("dest_dir")
-                        .long("dest_dir")
-                        .help("dest dir")
-                        .required(true),
-                )
-                .arg(
-                    Arg::new("url")
-                        .long("url")
-                        .help("local repo url")
-                        .required(true),
-                ),
         )
         .subcommand(
             Command::new("connect")
@@ -221,11 +228,20 @@ async fn main() -> Result<(), String> {
         }
         
         Some(("install_pkg", matches)) => {
-            let pkg_name = matches.get_one::<String>("pkg_name").unwrap();
-            let version = matches.get_one::<String>("version").unwrap();
-            let dest_dir = matches.get_one::<String>("dest_dir").unwrap();
-            let url = matches.get_one::<String>("url").unwrap();
-            match install_pkg(pkg_name, version, dest_dir, url).await {
+            let pkg_id = matches.get_one::<String>("pkg_id").unwrap();
+            let target_env = matches.get_one::<String>("env");
+            let real_target_env:String = if target_env.is_some() {
+                target_env.unwrap().to_string()
+            } else {
+                // 获取当前目录作为默认环境
+                std::env::current_dir()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string())
+            };
+
+            println!("start install pkg: {} to target env: {}", pkg_id, real_target_env.as_str());
+            
+            match install_pkg(pkg_id, real_target_env.as_str()).await {
                 Ok(_) => {
                     println!("############\nInstall package success!");
                 }
@@ -233,6 +249,24 @@ async fn main() -> Result<(), String> {
                     println!("############\nInstall package failed! {}", e);
                     return Err("install package failed!".to_string());
                 }
+            }
+        }
+        Some(("load_pkg", matches)) => {
+            let pkg_id = matches.get_one::<String>("pkg_id").unwrap();
+            let target_env = matches.get_one::<String>("env");
+            let real_target_env:String = if target_env.is_some() {
+                target_env.unwrap().to_string()
+            } else {
+                // 获取当前目录作为默认环境
+                std::env::current_dir()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string())
+            };
+
+            println!("start load pkg: {} to target env: {}", pkg_id, real_target_env.as_str());
+            let load_result = load_pkg(pkg_id, real_target_env.as_str()).await;
+            if load_result.is_err() {
+                println!("Load package failed! {}", load_result.err().unwrap());
             }
         }
         Some(("pub_index", _matches)) => {

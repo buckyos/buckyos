@@ -244,6 +244,7 @@ impl PackageEnv {
                 }
             }
         }
+        
         Self {
             work_dir,
             config: env_config,
@@ -307,6 +308,7 @@ impl PackageEnv {
                         }
                     }
                 }
+
                 info!("load pkg {} failed.", pkg_id_str);
                 Err(PkgError::LoadError(
                     pkg_id_str.to_owned(),
@@ -408,6 +410,8 @@ impl PackageEnv {
     //安装pkg，安装成功后该pkg可以加载成功,返回安装成功的pkg的meta_obj_id
     //安装操作会锁定env，直到安装完成（不会出现两个安装操作同时进行）
     //安装过程会根据env是否支持符号链接，尝试建立有好的符号链接
+    //在parent envinstall pkg成功，会对所有的child env都有影响
+    //在child env install pkg成功，对parent env没有影响
     pub async fn install_pkg(&self, pkg_id: &str, install_deps: bool) -> PkgResult<String> {
         if self.config.ready_only {
             return Err(PkgError::InstallError(
@@ -503,15 +507,22 @@ impl PackageEnv {
         Ok(())
     }
 
+    fn get_prefix(&self) -> String {
+        if let Some(prefix) = &self.config.prefix {
+            prefix.clone()
+        } else {
+            PackageEnvConfig::get_default_prefix()
+        }
+    }
+
     async fn load_strictly(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
-        let pkg_id = PackageId::parse(pkg_id_str)?;
-        let mut real_pkg_id = pkg_id_str.to_string();
+        let mut pkg_id = PackageId::parse(pkg_id_str)?;
         if pkg_id.name.find(".").is_none() {
-            if let Some(prefix) = &self.config.prefix {
-                real_pkg_id = format!("{}.{}", prefix, pkg_id_str);
-            }
+            let real_pkg_id = format!("{}.{}", self.get_prefix(), pkg_id.name.as_str());
+            pkg_id.name = real_pkg_id;
         }
         // 在严格模式下，先获取包的元数据以获得准确的物理目录
+        let real_pkg_id = pkg_id.to_string();
         let (meta_obj_id,pkg_meta) = self.get_pkg_meta(&real_pkg_id).await?;
         
         // 使用元数据中的信息构建准确的物理路径

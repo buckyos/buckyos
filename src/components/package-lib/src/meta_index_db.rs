@@ -126,7 +126,9 @@ impl MetaIndexDb {
     pub fn get_pkg_meta(&self, pkg_id: &str) -> PkgResult<Option<(String, PackageMeta)>> {
         let package_id = PackageId::parse(pkg_id)?;
         //let conn = Self::create_connection(&self.db_path)?;
-        let author = PackageId::get_author(&package_id.name.as_str());
+        //let author = PackageId::get_author(&package_id.name.as_str());
+
+        let author = None;
         let version_exp = package_id.version_exp.unwrap_or_default();
 
         match &version_exp.version_exp {
@@ -184,7 +186,7 @@ impl MetaIndexDb {
         let result = stmt.query_row(params_slice.as_slice(), |row| {
             let metaobjid: String = row.get(0)?;
             let pkg_meta_str: String = row.get(1)?;
-            let pkg_meta = serde_json::from_str(&pkg_meta_str);
+            let pkg_meta = PackageMeta::from_str(&pkg_meta_str);
             if pkg_meta.is_err() {
                 let err_str = pkg_meta.err().unwrap().to_string();
                 error!("parse pkg_meta_str failed: {:?}", err_str);
@@ -296,9 +298,7 @@ impl MetaIndexDb {
                 |row| row.get(0)
             ).map_err(|e| PkgError::SqlError(e.to_string()))?;
 
-            let pkg_meta: PackageMeta = serde_json::from_str(&pkg_meta)
-                .map_err(|e| PkgError::ParseError(pkg_meta.clone(), e.to_string()))?;
-
+            let pkg_meta = PackageMeta::from_str(pkg_meta.as_str())?;
             Ok(Some((metaobjid, pkg_meta)))
         } else {
             Ok(None)
