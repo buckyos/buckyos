@@ -596,6 +596,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use std::cmp::Ordering;
+    use serde_json::json;
 
 
     #[test]
@@ -606,6 +607,9 @@ mod tests {
         let meta_db = MetaIndexDb::new(db_path,false)?;
         let test_pkg_meta = PackageMeta {
             pkg_name: "test-pkg".to_string(),
+            description: json!({}),
+            exp: 0,
+            extra_info: HashMap::new(),
             version: "1.0.1".to_string(),
             author: "author1".to_string(),
             tag: Some("stable".to_string()),
@@ -614,7 +618,7 @@ mod tests {
             chunk_size: Some(100),
             chunk_url: Some("http://test.com/chunk1".to_string()),
             deps: HashMap::new(),
-            pub_time: Utc::now().timestamp(),
+            pub_time: 0,
         };
 
         let test_pkg_meta_str = serde_json::to_string(&test_pkg_meta).unwrap();
@@ -673,7 +677,10 @@ mod tests {
             chunk_size: Some(100),
             chunk_url: Some("http://test.com/chunk1".to_string()),
             deps: HashMap::new(),
-            pub_time: Utc::now().timestamp(),
+            pub_time: 0,
+            exp: 0,
+            extra_info: HashMap::new(),
+            description: json!({}),
         };  
         let test_pkg_meta_str1 = serde_json::to_string(&test_pkg_meta1).unwrap();
         meta_db.add_pkg_meta("meta1", &test_pkg_meta_str1, "author1", Some("pk1".to_string()))?;
@@ -720,6 +727,11 @@ mod tests {
         assert!(v1.is_some());
         let (metaobjid, pkg_meta) = v1.unwrap();
         assert_eq!(metaobjid, "meta3");
+
+        let v1 = meta_db.get_pkg_meta("test-pkg#>1.9.0")?;
+        assert!(v1.is_some());
+        let (metaobjid, pkg_meta) = v1.unwrap();
+        assert_eq!(metaobjid, "meta4");
         
         // 测试按标签获取
         let beta_version = meta_db.get_pkg_meta("test-pkg#*:beta")?;

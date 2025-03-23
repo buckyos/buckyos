@@ -97,13 +97,13 @@ impl VersionExp {
                         match comparator.op {
                             Op::Greater | Op::GreaterEq => {
                                 let min = Self::comparator_to_int(comparator)?;
-                                let max = u64::MAX;
-                                Ok((min, max))
+                                let max = i64::MAX;
+                                Ok((min as u64, max as u64))
                             }
                             Op::Less | Op::LessEq => {
-                                let min = u64::MIN;
+                                let min = i64::MIN;
                                 let max = Self::comparator_to_int(comparator)?;
-                                Ok((min, max))
+                                Ok((min as u64, max as u64))
                             }
                             _ => {
                                 return Err(PkgError::ParseError(self.to_string(), "VersionExp can not be converted to range int".to_string()));
@@ -334,6 +334,7 @@ mod tests {
         let result = PackageId::parse(pkg_id).unwrap();
         assert_eq!(&result.name, "a");
         assert_eq!(result.version_exp.as_ref().unwrap().to_string(), "0.1.0:stable".to_string());
+        assert_eq!(result.version_exp.as_ref().unwrap().tag,Some("stable".to_string()));
         let pkg_id2 = result.to_string();
         assert_eq!(pkg_id, pkg_id2);
 

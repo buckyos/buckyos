@@ -668,6 +668,7 @@ mod tests {
             chunk_url: Some("http://test.com".to_string()),
             deps: HashMap::new(),
             pub_time: 0,
+            exp: 0,
             extra_info:HashMap::new()
         };
         

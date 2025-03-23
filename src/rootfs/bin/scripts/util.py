@@ -7,10 +7,18 @@ ext = ""
 if system == "Windows":
     ext = ".exe"
 
-def check_process_exists(process_name):
-    check_args = ["pgrep", "-f", process_name]
+# TODO:process_full_path是目标进程的完整路径
+def check_process_exists(process_full_path):
     if system == "Windows":
-        check_args = ["tasklist", "/NH", "/FI", f"IMAGENAME eq {process_name}.exe"]
+        # 在Windows上使用wmic来检查进程的完整路径
+        check_args = ["wmic", "process", "where", f"ExecutablePath like '%{process_full_path}%'", "get", "ProcessId", "/format:list"]
+    else:
+        # pgrep 使用 -f 选项可以匹配完整的命令行，包括完整路径
+        # 如果 process_full_path 是进程名称，则直接匹配
+        # 如果是完整路径，则使用 -f 选项进行模式匹配
+        check_args = ["pgrep", "-f", process_full_path]
+
+
     try:
         output = subprocess.check_output(check_args).decode()
         #print(f"check_process_exists {process_name} output: {output}")
