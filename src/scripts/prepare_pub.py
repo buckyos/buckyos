@@ -65,8 +65,22 @@ def prepare_package(pkg_name,pkg_meta):
                 shutil.copytree(s, d)
             else:
                 shutil.copy2(s, d)
+
+        print(f"Copying scripts to {pkg_tmp_dir}/scripts")
+        os.makedirs(os.path.join(pkg_tmp_dir, "scripts"), exist_ok=True)
+        scripts_dir = os.path.join(src_dir,"rootfs/bin/scripts")
+        for item in os.listdir(scripts_dir):
+            if item.startswith("."):
+                continue
+            s = os.path.join(scripts_dir, item)
+            d = os.path.join(pkg_tmp_dir, "scripts",item)
+            if os.path.isdir(s):
+                shutil.copytree(s, d)
+            else:
+                shutil.copy2(s, d)
     
     print(f"Package {pkg_name} prepared at {pkg_tmp_dir}")
+
 
 def main():
     # 获取所有包名

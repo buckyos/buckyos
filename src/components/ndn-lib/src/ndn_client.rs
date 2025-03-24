@@ -525,6 +525,8 @@ impl NdnClient {
             return Ok(false);
         }
 
+        info!("verify_remote_is_same_as_local_file: verify remote fileobj {} with local file {:?}", url, local_path);
+
         let mut file = tokio::fs::File::open(local_path).await
             .map_err(|e| NdnError::IoError(format!("Failed to open local file: {}", e)))?;
         let file_size = file.metadata().await

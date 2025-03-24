@@ -59,3 +59,17 @@ def nohup_start(run_cmd):
     print(f"will rum cmd {cmd} on system {system}")
     subprocess.run(cmd, shell=True, creationflags=creationflags)
     # os.system(cmd)
+
+def get_buckyos_root():
+    buckyos_root = os.environ.get("BUCKYOS_ROOT")
+    if buckyos_root:
+        return buckyos_root
+
+    if system == "Windows":
+        user_data_dir = os.environ.get("APPDATA")
+        if not user_data_dir:
+            user_data_dir = os.environ.get("USERPROFILE", ".")
+        return os.path.join(user_data_dir, "buckyos")
+    else:
+        return "/opt/buckyos/"
+

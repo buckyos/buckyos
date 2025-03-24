@@ -292,11 +292,46 @@ async fn check_and_update_system_pkgs(pkg_list: Vec<String>,session_token: Optio
     Ok(true)
 }
 
+async fn make_sure_system_pkgs_ready(meta_db_path: &PathBuf,prefix: &str,session_token: Option<String>) -> std::result::Result<(), String> {
+    let system_pkgs = vec![
+        "app_loader".to_string(),
+        "node_active".to_string(),
+        "buckycli".to_string(),
+        "control_panel".to_string(),
+        "repo_service".to_string(),
+        "cyfs_gateway".to_string(),
+        "system_config".to_string(),
+        "verify_hub".to_string(),
+    ];
+    let mut miss_chunk_list = vec![];
+    for pkg_id in system_pkgs {
+        let pkg_id = format!("{}.{}",prefix,pkg_id);
+        let check_result = PackageEnv::check_pkg_ready(meta_db_path, pkg_id.as_str(), 
+        None, &mut miss_chunk_list, true).await;
+        if check_result.is_err() {
+            error!("make_sure_system_pkgs_ready: pkg {} is not ready! {}", pkg_id, check_result.err().unwrap());
+            return Err(String::from("pkg is not ready!"));  
+        }
+    }
+    
+    for chunk_id in miss_chunk_list {
+        let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
+        let chunk_result = ndn_client.pull_chunk(chunk_id.clone(),None).await;
+        if chunk_result.is_err() {
+            error!("make_sure_system_pkgs_ready: pull chunk {} failed! {}", chunk_id.to_string(), chunk_result.err().unwrap());
+        }
+        info!("make_sure_system_pkgs_ready: pull chunk {} success", chunk_id.to_string());
+    }
+
+
+    Ok(())
+}
+
 async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> std::result::Result<bool, String>  {
     let zone_repo_index_db_url = "http://127.0.0.1/ndn/repo/meta_index.db";
     let root_env_path = BuckyOSRuntime::get_root_pkg_env_path();
     let meta_db_file_patgh = root_env_path.join(".pkgs").join("meta_index.db");
-    let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token,None);
+    let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
     
     let is_same = ndn_client.verify_remote_is_same_as_local_file(zone_repo_index_db_url,&meta_db_file_patgh).await
         .map_err(|err| {
@@ -318,6 +353,8 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
         })?;
     info!("download new meta-index.db success,update root env's meta-index.db..");
     let mut root_env = PackageEnv::new(root_env_path);
+    let prefix = root_env.get_prefix();
+    make_sure_system_pkgs_ready(&download_path, &prefix, session_token.clone()).await?;
     root_env.try_update_index_db(&download_path).await
         .map_err(|err| {
             error!("update root pkg env's meta-Index db failed! {}", err);
@@ -483,6 +520,12 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
 
 
     if running_state == ServiceState::NotExist {
+        //TODO:这里有一个问题，理想逻辑如下：
+        //旧版本在运行，检查到新版本，触发部署操作下载版本（依赖旧版本gateway）+ 安装新版本，调用新的启动脚本，新的启动脚本会kill旧版本
+        //但实际操作中，检查到新版本后，如果因为意外旧版本已经结束，那么系统将无法完成部署操作，系统启动失败
+        // 原理上： 执行部署操作不依赖任何服务（包括zone内服务），确保必定成功
+        //        对env的安装操作事务化，不实用按需deploy逻辑，而是由node_daemon统一次性触发更新
+        
         info!("cyfs_gateway service pkg not exist, try install it...");
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
         let result = env.install_pkg("cyfs_gateway", false).await;
@@ -575,6 +618,10 @@ async fn node_main(node_host_name: &str,
         "node_active".to_string(),
         "buckycli".to_string(),
         "control_panel".to_string(),
+        "repo_service".to_string(),
+        "cyfs_gateway".to_string(),
+        "system_config".to_string(),
+        "verify_hub".to_string(),
     ];
     check_and_update_system_pkgs(system_pkgs,buckyos_api_client.get_session_token()).await;
     

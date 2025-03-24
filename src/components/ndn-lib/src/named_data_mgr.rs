@@ -878,19 +878,22 @@ impl NamedDataMgr {
         debug!("open local_file_path success");
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();
         let (chunk_raw_id,chunk_size) = chunk_hasher.calc_from_reader(&mut file_reader).await.unwrap();
+    
         let chunk_id = ChunkId::from_sha256_result(&chunk_raw_id);
-        debug!("calc chunk_id success");
+        info!("pub_local_file_as_fileobj:calc chunk_id success,chunk_id:{},chunk_size:{}", chunk_id.to_string(),chunk_size);
         let real_named_mgr = named_mgr.lock().await;
         let is_exist = real_named_mgr.is_chunk_exist_impl(&chunk_id).await.unwrap();
         if !is_exist {
             let (mut chunk_writer, _) = real_named_mgr.open_chunk_writer_impl(&chunk_id, chunk_size, 0).await?;
             drop(real_named_mgr);
             file_reader.seek(std::io::SeekFrom::Start(0)).await.unwrap();
-            tokio::io::copy(&mut file_reader, &mut chunk_writer).await
+            let copy_bytes = tokio::io::copy(&mut file_reader, &mut chunk_writer).await
                 .map_err(|e| {
                     error!("copy local_file {:?} to named-mgr failed, err:{}", local_file_path, e);
                     NdnError::IoError(format!("copy local_file to named-mgr failed, err:{}", e))
                 })?;
+
+            info!("pub_local_file_as_fileobj:copy local_file {:?} to named-mgr's chunk success,copy_bytes:{}", local_file_path, copy_bytes);
             let real_named_mgr = named_mgr.lock().await;
             real_named_mgr.complete_chunk_writer_impl(&chunk_id).await?;
         } else {

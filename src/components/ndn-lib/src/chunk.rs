@@ -151,8 +151,7 @@ impl ChunkHasher {
             if n < CACL_HASH_PIECE_SIZE as usize {
                 break;
             }
-            hasher.update(&buffer[..n]);
-            
+            hasher.update(&buffer[..n]); 
         }
 
         Ok((hasher.finalize().to_vec(),total_read))

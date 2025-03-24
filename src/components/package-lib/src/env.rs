@@ -333,7 +333,7 @@ impl PackageEnv {
     }
 
     //检查pkg的依赖是否都已经在本机就绪，注意本操作并不会修改env
-    pub async fn check_pkg_ready(meta_index_db: PathBuf, pkg_id: &str, named_mgr_id: Option<&str>, need_check_deps: bool) -> PkgResult<()> {
+    pub async fn check_pkg_ready(meta_index_db: &PathBuf, pkg_id: &str, named_mgr_id: Option<&str>,miss_chunk_list: &mut Vec<ChunkId>, need_check_deps: bool) -> PkgResult<()> {
         let meta_db = MetaIndexDb::new(meta_index_db.clone(),true)?;
         let meta_info = meta_db.get_pkg_meta(pkg_id)?;
         if meta_info.is_none() {
@@ -347,6 +347,7 @@ impl PackageEnv {
         // 检查chunk是否存在
         if let Some(chunk_id) = pkg_meta.chunk_id {
             // TODO: 实现chunk存在性检查
+            info!("check chunk {} exist", chunk_id.to_string());
             let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(named_mgr_id).await;
             if named_mgr.is_none() {
                 return Err(PkgError::FileNotFoundError(
@@ -368,17 +369,14 @@ impl PackageEnv {
                 ))?;
 
             if !is_chunk_exist {
-                return Err(PkgError::InstallError(
-                    pkg_id.to_owned(),
-                    "Chunk not found".to_owned(),
-                ));
+                miss_chunk_list.push(chunk_id);
             }
         }
 
         if need_check_deps {
             for (dep_name, dep_version) in pkg_meta.deps.iter() {
                 let dep_id = format!("{}#{}", dep_name, dep_version);
-                let check_future = Box::pin(PackageEnv::check_pkg_ready(meta_index_db.clone(), &dep_id, named_mgr_id, true));
+                let check_future = Box::pin(PackageEnv::check_pkg_ready(meta_index_db, &dep_id, named_mgr_id, miss_chunk_list, true));
                 let _ = check_future.await?;
             }
         }
@@ -442,7 +440,6 @@ impl PackageEnv {
 
         //检查chunk是否存在
         if let Some(ref chunk_id_str) = pkg_meta.chunk_id {
-
             let chunk_id = ChunkId::new(&chunk_id_str)
                 .map_err(|e| PkgError::ParseError(
                     pkg_id.to_owned(),
@@ -450,6 +447,7 @@ impl PackageEnv {
                 ))?;
             if !NamedDataMgr::have_chunk(&chunk_id,self.config.named_mgr_name.as_deref()).await {
                 info!("{}'s chunk {} not found, downloading...", pkg_id, chunk_id_str);
+                //TODO:需要得到zone repo url
                 let zone_ndn_url = "http://127.0.0.1/ndn/";
                 let ndn_client = NdnClient::new(zone_ndn_url.to_string(),None,self.config.named_mgr_name.clone());
                 let chunk_size = ndn_client.pull_chunk(chunk_id.clone(),None).await
@@ -458,7 +456,6 @@ impl PackageEnv {
                         format!("Failed to download chunk: {}", e),
                     ))?;
                 info!("chunk {} downloaded, size: {}", chunk_id_str, chunk_size);
-
             }
 
             let (chunk_reader,chunk_size) = NamedDataMgr::open_chunk_reader(self.config.named_mgr_name.as_deref(),
@@ -489,6 +486,7 @@ impl PackageEnv {
         // 创建异步 tar 解压器
         let mut archive = Archive::new(gz_decoder);
         let target_dir = format!(".pkgs/{}/{}", pkg_meta.pkg_name, meta_obj_id);
+        let target_dir = self.work_dir.join(target_dir);
         tokio::fs::create_dir_all(&target_dir).await?;
         // 解压文件到目标目录
         archive.unpack(&target_dir).await?;
@@ -496,6 +494,7 @@ impl PackageEnv {
         // Create symbolic links
         if self.config.enable_link {
             let symlink_path = format!("./{}#{}", pkg_meta.pkg_name, pkg_meta.version);
+            let symlink_path = self.work_dir.join(symlink_path);
             if tokio::fs::symlink_metadata(&symlink_path).await.is_err() {
                 #[cfg(target_family = "unix")]
                 tokio::fs::symlink(&target_dir, &symlink_path).await?;
@@ -515,7 +514,7 @@ impl PackageEnv {
         Ok(())
     }
 
-    fn get_prefix(&self) -> String {
+    pub fn get_prefix(&self) -> String {
         if let Some(prefix) = &self.config.prefix {
             prefix.clone()
         } else {

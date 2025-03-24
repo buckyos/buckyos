@@ -521,7 +521,7 @@ impl MetaIndexDb {
         let tx = conn.transaction().map_err(|e| PkgError::SqlError(e.to_string()))?;
         
         // 1. 合并包元数据表
-        let mut pkg_metas = other_conn.prepare("SELECT metaobjid, pkg_meta, author, author_pk FROM pkg_metas")
+        let mut pkg_metas = other_conn.prepare("SELECT metaobjid, pkg_meta, author, author_pk,update_time FROM pkg_metas")
             .map_err(|e| PkgError::SqlError(e.to_string()))?;
             
         let pkg_meta_rows = pkg_metas.query_map([], |row| {
@@ -529,20 +529,21 @@ impl MetaIndexDb {
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?
             ))
         }).map_err(|e| PkgError::SqlError(e.to_string()))?;
         
         for meta_result in pkg_meta_rows {
-            let (metaobjid, pkg_meta, author, author_pk) = meta_result.map_err(|e| PkgError::SqlError(e.to_string()))?;
+            let (metaobjid, pkg_meta, author, author_pk,update_time) = meta_result.map_err(|e| PkgError::SqlError(e.to_string()))?;
             tx.execute(
-                "INSERT OR REPLACE INTO pkg_metas (metaobjid, pkg_meta, author, author_pk) VALUES (?, ?, ?, ?)",
-                params![metaobjid, pkg_meta, author, author_pk]
+                "INSERT OR REPLACE INTO pkg_metas (metaobjid, pkg_meta, author, author_pk,update_time) VALUES (?, ?, ?, ?, ?)",
+                params![metaobjid, pkg_meta, author, author_pk,update_time]
             ).map_err(|e| PkgError::SqlError(e.to_string()))?;
         }
         
         // 2. 合并包版本表
-        let mut pkg_versions = other_conn.prepare("SELECT pkg_name, version, metaobjid, tag FROM pkg_versions")
+        let mut pkg_versions = other_conn.prepare("SELECT pkg_name, author, version, version_int, metaobjid, tag, update_time FROM pkg_versions")
             .map_err(|e| PkgError::SqlError(e.to_string()))?;
             
         let version_rows = pkg_versions.query_map([], |row| {
@@ -550,15 +551,18 @@ impl MetaIndexDb {
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?
+                row.get::<_, u64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, i64>(6)?
             ))
         }).map_err(|e| PkgError::SqlError(e.to_string()))?;
         
         for version_result in version_rows {
-            let (pkg_name, version, metaobjid, tag) = version_result.map_err(|e| PkgError::SqlError(e.to_string()))?;
+            let (pkg_name, author, version, version_int, metaobjid, tag, update_time) = version_result.map_err(|e| PkgError::SqlError(e.to_string()))?;
             tx.execute(
-                "INSERT OR REPLACE INTO pkg_versions (pkg_name, version, metaobjid, tag) VALUES (?, ?, ?, ?)",
-                params![pkg_name, version, metaobjid, tag]
+                "INSERT OR REPLACE INTO pkg_versions (pkg_name, author, version, version_int, metaobjid, tag, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![pkg_name, author, version, version_int, metaobjid, tag, update_time]
             ).map_err(|e| PkgError::SqlError(e.to_string()))?;
         }
         
