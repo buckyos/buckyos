@@ -257,28 +257,41 @@ impl PackageEnv {
     // 基于env获得pkg的meta信息
     pub async fn get_pkg_meta(&self, pkg_id: &str) -> PkgResult<(String,PackageMeta)> {
         // 先检查lock db
+        let pkg_id = PackageId::parse(pkg_id)?;
+        let pkg_id = self.prefix_pkg_id(&pkg_id);
+        let pkg_id_str = pkg_id.to_string();
         if let Some(lock_db) = self.lock_db.lock().await.as_ref() {
-            if let Some((meta_obj_id,meta)) = lock_db.get(pkg_id) {
+            if let Some((meta_obj_id,meta)) = lock_db.get(&pkg_id_str) {
                 return Ok((meta_obj_id.clone(),meta.clone()));
             }
         }
 
         let meta_db_path = self.get_meta_db_path();
         let meta_db = MetaIndexDb::new(meta_db_path,true)?;
-        if let Some((meta_obj_id,pkg_meta)) = meta_db.get_pkg_meta(pkg_id)? {
+        if let Some((meta_obj_id,pkg_meta)) = meta_db.get_pkg_meta(&pkg_id_str)? {
              return Ok((meta_obj_id,pkg_meta));
         }
 
         if self.config.parent.is_some() {
             let parent_env = PackageEnv::new(self.config.parent.as_ref().unwrap().clone());
-            let (meta_obj_id,pkg_meta) = Box::pin(parent_env.get_pkg_meta(pkg_id)).await?;
+            let (meta_obj_id,pkg_meta) = Box::pin(parent_env.get_pkg_meta(&pkg_id_str)).await?;
             return Ok((meta_obj_id,pkg_meta));
         }
         
         Err(PkgError::LoadError(
-            pkg_id.to_owned(),
+            pkg_id_str,
             "Package metadata not found".to_owned(),
         ))
+    }
+
+    fn prefix_pkg_id(&self, pkg_id: &PackageId) -> PackageId {
+        let mut pkg_id = pkg_id.clone();
+        if pkg_id.name.find(".").is_some() {
+            return pkg_id;
+        }
+        let prefix = self.get_prefix();
+        pkg_id.name = format!("{}.{}", prefix, pkg_id.name.as_str());
+        pkg_id
     }
 
     //加载pkg,加载成功说明pkg已经安装
@@ -437,8 +450,8 @@ impl PackageEnv {
                 ))?;
             if !NamedDataMgr::have_chunk(&chunk_id,self.config.named_mgr_name.as_deref()).await {
                 info!("{}'s chunk {} not found, downloading...", pkg_id, chunk_id_str);
-                let zone_repo_url = "http://127.0.0.1:8080/repo";
-                let ndn_client = NdnClient::new(zone_repo_url.to_string(),None,self.config.named_mgr_name.clone());
+                let zone_ndn_url = "http://127.0.0.1/ndn/";
+                let ndn_client = NdnClient::new(zone_ndn_url.to_string(),None,self.config.named_mgr_name.clone());
                 let chunk_size = ndn_client.pull_chunk(chunk_id.clone(),None).await
                     .map_err(|e| PkgError::DownloadError(
                         pkg_id.to_owned(),

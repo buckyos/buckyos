@@ -133,21 +133,22 @@ impl CyfsWarpServer {
                     error!("Failed to start HTTP server: {}", e);
                 }
             }
-
-            let bind_addr_https = format!("{}:{}", formatted_bind_addr, self.config.tls_port);
-            match Self::start_listen_https(
-                bind_addr_https,
-                https_router,
-                Arc::new(cert_mgr.clone()),
-            )
-            .await
-            {
-                Ok(server_task) => {
-                    self.https_servers.lock().await.push(server_task);
-                }
-                Err(e) => {
-                    // FIXME: should we return error here or just log it?
-                    error!("Failed to start HTTPS server: {}", e);
+            if self.config.tls_port > 0 {
+                let bind_addr_https = format!("{}:{}", formatted_bind_addr, self.config.tls_port);
+                match Self::start_listen_https(
+                    bind_addr_https,
+                    https_router,
+                    Arc::new(cert_mgr.clone()),
+                )
+                .await
+                {
+                    Ok(server_task) => {
+                        self.https_servers.lock().await.push(server_task);
+                    }
+                    Err(e) => {
+                        // FIXME: should we return error here or just log it?
+                        error!("Failed to start HTTPS server: {}", e);
+                    }
                 }
             }
         }

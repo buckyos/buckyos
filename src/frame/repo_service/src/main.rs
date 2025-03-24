@@ -61,6 +61,7 @@ async fn service_main() -> Result<()> {
     //let repo_server_dir = get_buckyos_system_bin_dir().join("repo");
     let repo_server_config = json!({
       "http_port":4000,//TODO：服务的端口分配和管理
+      "tls_port":0,
       "hosts": {
         "*": {
           "enable_cors":true,
@@ -75,7 +76,7 @@ async fn service_main() -> Result<()> {
 
     let repo_server_config: WarpServerConfig = serde_json::from_value(repo_server_config).unwrap();
     //start!
-    info!("start repo service...");
+    info!("Start Repo Service...");
     start_cyfs_warp_server(repo_server_config).await;
 
     let _ = tokio::signal::ctrl_c().await;
