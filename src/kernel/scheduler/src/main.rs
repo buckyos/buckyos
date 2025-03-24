@@ -515,7 +515,7 @@ async fn schedule_loop(is_boot:bool) -> Result<()> {
 
 
 async fn service_main(is_boot:bool) -> Result<i32> {
-    init_logging("scheduler");
+    init_logging("scheduler",true);
     info!("Starting scheduler service............................");
     init_global_buckyos_value_by_env("SCHEDULER");
     let _ =init_default_name_client().await;
@@ -916,7 +916,7 @@ g, app2, app
 }
 """
         "#;
-        buckyos_kit::init_logging("scheduler");
+        buckyos_kit::init_logging("scheduler",false);
         let input_config: HashMap<String, String> = toml::from_str(input_config_str).unwrap();
         //let schedule_result = do_one_ood_schedule(&input_config).await;
         //let schedule_result = schedule_result.unwrap();

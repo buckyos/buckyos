@@ -8,7 +8,7 @@ use server::start_task_manager_service;
 
 #[tokio::main]
 async fn main() {
-    init_logging("task_manager");
+    init_logging("task_manager",true);
 
     let db_path = "tasks.db";
     init_db(&db_path).await;

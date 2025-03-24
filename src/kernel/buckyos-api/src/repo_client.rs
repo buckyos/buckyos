@@ -28,4 +28,10 @@ impl RepoClient {
         let _result = self.krpc_client.call("pub_pkg", params).await?;
         Ok(())
     }
+
+    pub async fn sync_from_remote_source(&self) -> Result<()> {
+        let params = json!({});
+        let _result = self.krpc_client.call("sync_from_remote_source", params).await?;
+        Ok(())
+    }
 }

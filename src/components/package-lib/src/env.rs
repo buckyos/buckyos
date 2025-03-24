@@ -263,7 +263,8 @@ impl PackageEnv {
             }
         }
 
-        let meta_db = self.get_meta_db().await?;
+        let meta_db_path = self.get_meta_db_path();
+        let meta_db = MetaIndexDb::new(meta_db_path,true)?;
         if let Some((meta_obj_id,pkg_meta)) = meta_db.get_pkg_meta(pkg_id)? {
              return Ok((meta_obj_id,pkg_meta));
         }
@@ -380,16 +381,9 @@ impl PackageEnv {
             ));
         }
 
-        // 获取文件锁
         let _lock = self.acquire_lock().await?;
 
-        let mut index_db_path;
-        if let Some(index_db_path_str) = &self.config.index_db_path {
-            index_db_path = PathBuf::from(index_db_path_str);
-        } else {
-            index_db_path = self.work_dir.join(".pkgs/meta_index.db");
-        }
-        
+        let mut index_db_path = self.get_meta_db_path();    
         let backup_path = index_db_path.with_extension("old");
         if tokio_fs::metadata(&backup_path).await.is_ok() {
             tokio_fs::remove_file(&backup_path).await?;
@@ -398,12 +392,13 @@ impl PackageEnv {
 
         if tokio_fs::metadata(&index_db_path).await.is_ok() {
             let backup_path = index_db_path.with_extension("old");
+            info!("rename old index db: {:?} to {:?}", index_db_path, backup_path);
             tokio_fs::rename(&index_db_path, &backup_path).await?;
         }
 
         // 移动新数据库
         tokio_fs::copy(new_index_db, &index_db_path).await?;
-
+        info!("update index db: {:?} OK", index_db_path);
         Ok(())
     }
 
@@ -574,15 +569,14 @@ impl PackageEnv {
         self.work_dir.join(".pkgs")
     }
 
-    async fn get_meta_db(&self) -> PkgResult<MetaIndexDb> {
+    fn get_meta_db_path(&self) -> PathBuf {
         let mut meta_db_path;
         if let Some(index_db_path) = &self.config.index_db_path {
             meta_db_path = PathBuf::from(index_db_path);
         } else {
             meta_db_path = self.work_dir.join(".pkgs/meta_index.db")
         }
-        let meta_db = MetaIndexDb::new(meta_db_path,true)?;
-        Ok(meta_db)
+        meta_db_path
     }
 
 

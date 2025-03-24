@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn test_get_dest_info_from_url_path() {
         std::env::set_var("BUCKY_LOG", "debug");
-        buckyos_kit::init_logging("test_get_dest_info_from_url_path");
+        buckyos_kit::init_logging("test_get_dest_info_from_url_path",false);
         let (host, port) = get_dest_info_from_url_path("127.0.0.1:8080").unwrap();
         assert_eq!(host, Some("127.0.0.1".to_string()));
         assert_eq!(port, 8080);

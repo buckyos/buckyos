@@ -17,7 +17,7 @@ mod tests {
     use std::net::IpAddr;
     #[tokio::test]
     async fn test_rtcp_url() {
-        init_logging("test_rtcp_tunnel");
+        init_logging("test_rtcp_tunnel",false);
 
         let url1 = "dev02";
         let target1 = parse_rtcp_stack_id(url1);
@@ -43,7 +43,7 @@ mod tests {
         //4. use stream_url like rtcp://$stack_id/:$port to connect to remote tcp server at remote device
         //5  use stream_url like rtcp://$stack_id/google.com:443 to use remote device as a tcp proxy
         std::env::set_var("BUCKY_LOG", "debug");
-        init_logging("test_rtcp_tunnel");
+        init_logging("test_rtcp_tunnel",false);
         init_default_name_client().await.unwrap();
         //1. create client rtcp stack(device default rtcp stack)
         let (sk, sk_pkcs) = generate_ed25519_key();

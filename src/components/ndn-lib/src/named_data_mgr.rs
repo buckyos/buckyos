@@ -1,6 +1,7 @@
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_by_json_path, get_relative_path};
 use name_lib::decode_jwt_claim_without_verify;
 use serde::{Serialize,Deserialize};
+use serde_json::json;
 //chunk_mgr默认是机器级别的，即多个进程可以共享同一个chunk_mgr
 //chunk_mgr使用共享内存/filemap等技术来实现跨进程的读数据共享，比使用127.0.0.1的http协议更高效
 //从实现简单的角度考虑，先用http协议实现写数据？
@@ -89,6 +90,9 @@ impl NamedDataMgrDB {
         let result_path = record.0;
         let obj_id_str = record.1;
         let path_obj_jwt = record.2;
+        if path_obj_jwt.is_some() {
+            info!("NamedDataMgrDB: find_longest_matching_path, path_obj_jwt {}", path_obj_jwt.as_ref().unwrap());
+        }
         let obj_id = ObjId::new(&obj_id_str)?;
         let relative_path = get_relative_path(&result_path, path);
         Ok((result_path, obj_id,path_obj_jwt,Some(relative_path)))
@@ -113,6 +117,10 @@ impl NamedDataMgrDB {
             warn!("NamedDataMgrDB: invalid obj_id format! {}", e.to_string());
             NdnError::Internal(e.to_string())
         })?;
+
+        if path_obj_jwt.is_some() {
+            info!("NamedDataMgrDB: path_obj_jwt {}", path_obj_jwt.as_ref().unwrap());
+        }
 
         Ok((obj_id,path_obj_jwt))
     }
@@ -153,7 +161,7 @@ impl NamedDataMgrDB {
         Ok(())
     }
 
-    pub fn set_path(&self, path: &str,new_obj_id:&ObjId,app_id:&str,user_id:&str) -> NdnResult<()> {
+    pub fn set_path(&self, path: &str,new_obj_id:&ObjId,path_obj_str:String,app_id:&str,user_id:&str) -> NdnResult<()> {
         //如果不存在路径则创建，否则更新已经存在的路径指向的chunk
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| {
@@ -174,8 +182,8 @@ impl NamedDataMgrDB {
             Ok(obj_id) => {
                 // Path exists, update the obj_id
                 tx.execute(
-                    "UPDATE paths SET obj_id = ?1, app_id = ?2, user_id = ?3 WHERE path = ?4",
-                    [obj_id_str.as_str(), app_id, user_id, &path],
+                    "UPDATE paths SET obj_id = ?1, path_obj_jwt = ?2, app_id = ?3, user_id = ?4 WHERE path = ?5",
+                    [obj_id_str.as_str(), path_obj_str.as_str(), app_id, user_id, &path],
                 ).map_err(|e| {
                     warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
                     NdnError::DbError(e.to_string())
@@ -185,8 +193,8 @@ impl NamedDataMgrDB {
             Err(_) => {
                 // Path does not exist, create a new path
                 tx.execute(
-                    "INSERT INTO paths (path, obj_id, app_id, user_id) VALUES (?1, ?2, ?3, ?4)",
-                    [&path, obj_id_str.as_str(), app_id, user_id],
+                    "INSERT INTO paths (path, obj_id, path_obj_jwt, app_id, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    [&path, obj_id_str.as_str(), path_obj_str.as_str(), app_id, user_id],
                 ).map_err(|e| {
                     warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
                     NdnError::DbError(e.to_string())
@@ -576,7 +584,9 @@ impl NamedDataMgr {
     }
 
     pub async fn set_file_impl(&self, path:&str,new_obj_id:&ObjId,app_id:&str,user_id:&str)->NdnResult<()> {
-        self.db.set_path(path, &new_obj_id, app_id, user_id).map_err(|e| {
+        let path_obj = PathObject::new(path.to_string(),new_obj_id.clone());
+        let path_obj_str = serde_json::to_string(&path_obj).unwrap();
+        self.db.set_path(path, &new_obj_id, path_obj_str,app_id, user_id).map_err(|e| {
             warn!("update_file: update path failed! {}", e.to_string());
             e
         })?;
@@ -955,7 +965,7 @@ mod tests {
     #[tokio::test]
     async fn test_base_operations() -> NdnResult<()> {
         // Create a temporary directory for testing
-        init_logging("ndn-lib test");
+        init_logging("ndn-lib test",false);
         let test_dir = tempdir().unwrap();
         let config = NamedDataMgrConfig {
             local_stores: vec![test_dir.path().to_str().unwrap().to_string()],
@@ -1077,7 +1087,7 @@ mod tests {
     #[tokio::test]
     async fn test_find_longest_matching_path() -> NdnResult<()> {
         // Create a temporary directory for testing
-        init_logging("ndn-lib test");
+        init_logging("ndn-lib test",false);
         let test_dir = tempdir().unwrap();
         let config = NamedDataMgrConfig {
             local_stores: vec![test_dir.path().to_str().unwrap().to_string()],

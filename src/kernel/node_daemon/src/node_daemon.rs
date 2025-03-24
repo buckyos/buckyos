@@ -297,6 +297,7 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
     let root_env_path = BuckyOSRuntime::get_root_pkg_env_path();
     let meta_db_file_patgh = root_env_path.join(".pkgs").join("meta_index.db");
     let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token,None);
+    
     let is_same = ndn_client.verify_remote_is_same_as_local_file(zone_repo_index_db_url,&meta_db_file_patgh).await
         .map_err(|err| {
             error!("verify remote index db  to root pkg env's meta-Index db failed! {}", err);
@@ -332,40 +333,6 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
     Ok(true)
 }
 
-async fn check_and_update_sys_pkgs(is_ood: bool,buckyos_api_client: &SystemConfigClient) {
-    let mut will_check_update_pkg_list = vec![
-        "cyfs-gateway".to_string(),
-        "app_loader".to_string(),
-        "node-active".to_string(),
-        "bucky-cli".to_string(),
-        "control_panel".to_string(),
-        "repo_service".to_string(),
-        "scheduler".to_string(),
-        "smb_service".to_string(),
-        "verify_hub".to_string(),
-    ];
-
-    if is_ood {
-        will_check_update_pkg_list.push("system_config".to_string());
-    }
-
-    let env = PackageEnv::new(get_buckyos_system_etc_dir());
-    for pkg_id in will_check_update_pkg_list {
-        let mut need_update = true;
-        let pkg_meta = env.get_pkg_meta(pkg_id.as_str()).await;
-        if pkg_meta.is_ok() {
-            let (meta_obj_id,pkg_meta) = pkg_meta.unwrap();
-        }
-
-        if need_update {
-            //通过repo_service安装pkg
-            //call env.install_pkg_from_repo(pkg_id,local_repo_url);
-            //env安装新版本完成后，停止进程，等待自动重启。从=
-            // create ServicePkg
-            // call ServicePkg.stop()
-        }
-    }    
-}
 
 async fn update_device_info(device_doc: &DeviceConfig,syste_config_client: &SystemConfigClient) {
     let mut device_info = DeviceInfo::from_device_doc(device_doc);

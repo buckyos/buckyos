@@ -289,7 +289,7 @@ fn create_test_directory_with_root(base_dir: &Path) -> std::io::Result<()> {
 #[tokio::test]
 async fn main() {
     std::env::set_var("BUCKY_LOG", "debug");
-    crate::log_util::init_logging("test_config");
+    crate::log_util::init_logging("test_config",false);
 
     // Get temp directory on current system
     let temp_dir = std::env::temp_dir();

@@ -155,7 +155,7 @@ fn main() {
     }
 
     // init log
-    init_logging("cyfs_gateway");
+    init_logging("cyfs_gateway",true);
     info!("cyfs_gateway start...");
 
     let config: String = load_config_from_args(&matches)
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     async fn test_dispatcher() {
         std::env::set_var("BUCKY_LOG", "debug");
-        buckyos_kit::init_logging("test_dispatcher");
+        buckyos_kit::init_logging("test_dispatcher",false);
         buckyos_kit::start_tcp_echo_server("127.0.0.1:8888").await;
         buckyos_kit::start_udp_echo_server("127.0.0.1:8889").await;
 

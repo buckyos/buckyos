@@ -250,7 +250,7 @@ m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)
     #[test]
     async fn test_enforce() {
         std::env::set_var("BUCKY_LOG","debug");
-        buckyos_kit::init_logging("test_rbac");
+        buckyos_kit::init_logging("test_rbac",false);
         create_enforcer(None,None).await.unwrap();
         let res = enforce("ood1", Some("node_daemon"), "kv://boot/config", "read").await;
         assert_eq!(res, true);

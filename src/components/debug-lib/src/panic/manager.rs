@@ -153,7 +153,7 @@ impl PanicBuilder {
         assert!(!product_name.is_empty());
         assert!(!service_name.is_empty());
 
-        let mut root = get_buckyos_log_dir("panic");
+        let mut root = get_buckyos_log_dir("panic",false);
         root.push(product_name);
 
         Self {

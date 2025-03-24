@@ -505,7 +505,7 @@ async fn init_service_config() -> Result<()> {
 
 
 async fn service_main() -> i32 {
-    init_logging("verify_hub");
+    init_logging("verify_hub",true);
     info!("Starting verify_hub service...");
     //init service config from system config service and env
     let _ = init_service_config().await.map_err(

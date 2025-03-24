@@ -215,6 +215,7 @@ impl NdnClient {
         }
         
         let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
+        debug!("get_obj_by_url: cyfs_resp_headers {:?}",cyfs_resp_headers);
         // 获取响应内容
         let obj_str = res.text()
             .await
@@ -259,7 +260,7 @@ impl NdnClient {
             let real_target_obj = NdnClient::verify_obj_id(&obj_id,&obj_str)?;
             //let real_path = 
 
-            if url.starts_with("https://")  || self.force_trust_remote {
+            if url.starts_with("http://127.0.0.1/") || url.starts_with("https://")  || self.force_trust_remote {
                 return Ok((obj_id,real_target_obj));
             }
 
@@ -498,6 +499,7 @@ impl NdnClient {
         
         // 构建content chunk的URL
         let content_chunk_url = self.gen_chunk_url(&content_chunk_id, None);
+        info!("download_fileobj_to_local: content_chunk_url {}",content_chunk_url);
         
         // 3. 使用download_chunk_to_local将chunk下载到本地指定文件
         let (_, chunk_size) = self.download_chunk_to_local(&content_chunk_url, content_chunk_id, local_path, no_verify).await?;
@@ -519,8 +521,10 @@ impl NdnClient {
         // 3. 比较fileobj的hcontent和本地文件的hash
 
         if !local_path.exists() {
-            return Err(NdnError::Internal(format!("Local file does not exist: {:?}", local_path)));
+            warn!("verify_remote_is_same_as_local_file: local file does not exist: {:?}", local_path);
+            return Ok(false);
         }
+
         let mut file = tokio::fs::File::open(local_path).await
             .map_err(|e| NdnError::IoError(format!("Failed to open local file: {}", e)))?;
         let file_size = file.metadata().await
@@ -531,7 +535,7 @@ impl NdnClient {
         let file_obj: FileObject = serde_json::from_value(file_obj_json)
             .map_err(|e| NdnError::Internal(format!("Failed to parse FileObject: {}", e)))?;
         let content_chunk_id = ChunkId::new(file_obj.content.as_str())
-        .map_err(|e| NdnError::Internal(format!("Failed to parse content chunk id: {}", e)))?;
+            .map_err(|e| NdnError::Internal(format!("Failed to parse content chunk id: {}", e)))?;
 
         if file_size != file_obj.size {
             return Ok(false);
@@ -564,7 +568,7 @@ impl NdnClient {
         let mut reader = None;
         match chunk_state {
             ChunkState::Completed => {
-                warn!("pull_chunk: chunk {} already exists at named_mgr:{}",chunk_id.to_string(),mgr_id.unwrap());
+                warn!("pull_chunk: chunk {} already exists at named_mgr:{:?}",chunk_id.to_string(),&mgr_id);
                 return Ok(0);
             },
             ChunkState::NotExist => {
@@ -677,7 +681,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_chunk() {
-        init_logging("ndn_client_test");
+        init_logging("ndn_client_test",false);
         let test_server_config = json!({
             "tls_port":3243,
             "http_port":3280,

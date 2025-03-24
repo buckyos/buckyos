@@ -157,6 +157,10 @@ impl RepoServer {
     }
 
     fn get_source_meta_index_db_path(&self,source: &str) -> PathBuf {
+        if source == "root" {
+            return self.get_my_default_meta_index_db_path();
+        }
+
         let runtime = get_buckyos_api_runtime().unwrap();
         let path = runtime.get_my_data_folder().join(source).join("meta_index.db");
         return path;
@@ -425,63 +429,66 @@ impl RepoServer {
         //尝试拿到sync操作的锁，拿不到则说明已经在处理了
         //1.先下载并验证远程版本到临时db
         //let will_update_source_list = self.settng.remote_source.keys().cloned();
-       
-        for (source,source_url) in self.settng.remote_source.iter() {
-            info!("update meta-index-db:source {}, download url:{}", source, source_url);
-            let new_meta_index_db_path = self.get_source_meta_index_db_path(&source).with_extension("download");
+        let root_source_url = self.settng.remote_source.get("root");
+        if root_source_url.is_none() {
+            error!("handle_sync_from_remote_source error:root source not found");
+            return Err(RPCErrors::ReasonError("root source not found".to_string()));
+        }
+        let root_source_url = root_source_url.unwrap();
 
-            let runtime = get_buckyos_api_runtime()?;
-            let session_token = runtime.get_session_token().await;
-            let ndn_client = NdnClient::new(source_url.clone(),Some(session_token),None);
-            ndn_client.download_fileobj_to_local(source_url.as_str(),&new_meta_index_db_path, None).await.map_err(|e| {
-                error!("download remote meta-index-db by {} failed, err:{}", source_url, e);
-                RPCErrors::ReasonError(format!("download remote meta-index-db by {} failed, err:{}", source_url, e))
+        info!("update meta-index-db:source {}, download url:{}", "root", root_source_url);
+        let new_meta_index_db_path = self.get_my_default_meta_index_db_path().with_extension("download");
+
+        let runtime = get_buckyos_api_runtime()?;
+        let session_token = runtime.get_session_token().await;
+        let ndn_client = NdnClient::new(root_source_url.clone(),Some(session_token),None);
+        ndn_client.download_fileobj_to_local(root_source_url.as_str(),&new_meta_index_db_path, None).await.map_err(|e| {
+            error!("download remote meta-index-db by {} failed, err:{}", root_source_url, e);
+            RPCErrors::ReasonError(format!("download remote meta-index-db by {} failed, err:{}", root_source_url, e))
+        })?;
+
+        let need_check_chunk_list = self.get_need_chunk_in_remote_index_db(&new_meta_index_db_path).await;
+        if need_check_chunk_list.is_err() {
+            error!("check_new_remote_index failed, source:{}", "root");
+            return Err(RPCErrors::ReasonError("check_new_remote_index failed".to_string()));
+        }
+
+        let need_check_chunk_list = need_check_chunk_list.unwrap();
+        let total_size = need_check_chunk_list.values().map(|info| info.chunk_size).sum::<u64>();
+        info!("sync_from_remote_source, start check {} chunks,total size:{}", need_check_chunk_list.len(),total_size);
+        for (chunk_id, will_download_pkg_info) in need_check_chunk_list.iter() {
+            debug!("sync_from_remote_source, check chunk:{}", chunk_id.as_str());
+            //TODO：如何通过防止这些chunk被删除
+            let chunk_id = ChunkId::new(chunk_id.as_str()).map_err(|e| {
+                error!("parse chunk_id failed, err:{}", e);
+                RPCErrors::ReasonError(format!("parse chunk_id failed, err:{}", e))
             })?;
-
-            let need_check_chunk_list = self.get_need_chunk_in_remote_index_db(&new_meta_index_db_path).await;
-            if need_check_chunk_list.is_err() {
-                error!("check_new_remote_index failed, source:{}", source);
+            let pull_chunk_result = ndn_client.pull_chunk(chunk_id.clone(),None).await;
+            if pull_chunk_result.is_err() {
+                error!("pull chunk:{} failed, err:{}", chunk_id.to_string(), pull_chunk_result.err().unwrap());
                 continue;
             }
-            
-            let need_check_chunk_list = need_check_chunk_list.unwrap();
-            let total_size = need_check_chunk_list.values().map(|info| info.chunk_size).sum::<u64>();
-            info!("sync_from_remote_source, start check {} chunks,total size:{}", need_check_chunk_list.len(),total_size);
-            for (chunk_id, will_download_pkg_info) in need_check_chunk_list.iter() {
-                debug!("sync_from_remote_source, check chunk:{}", chunk_id.as_str());
-                //TODO：如何通过防止这些chunk被删除
-                let chunk_id = ChunkId::new(chunk_id.as_str()).map_err(|e| {
-                    error!("parse chunk_id failed, err:{}", e);
-                    RPCErrors::ReasonError(format!("parse chunk_id failed, err:{}", e))
-                })?;
-                let pull_chunk_result = ndn_client.pull_chunk(chunk_id.clone(),None).await;
-                if pull_chunk_result.is_err() {
-                    error!("pull chunk:{} failed, err:{}", chunk_id.to_string(), pull_chunk_result.err().unwrap());
-                    continue;
-                }
-                let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(None).await.unwrap();
-                let named_mgr = named_mgr.lock().await;
-                //下面的操作并不会让旧版本失效，后续需要通过一个完整的重建 /repo/install_pkg的操作来释放
-                named_mgr.set_file_impl(format!("/repo/install_pkg/{}/{}/chunk",will_download_pkg_info.pkg_name,will_download_pkg_info.pkg_version).as_str(),&chunk_id.to_obj_id(),
-                "repo_service","root").await.map_err(|e| {
-                    error!("set file failed, err:{}", e);
-                    RPCErrors::ReasonError(format!("set file failed, err:{}", e))
-                })?;
-            }
-
-            let current_meta_index_db_path = self.get_source_meta_index_db_path(&source);
-            RepoServer::replace_file(&current_meta_index_db_path,&new_meta_index_db_path).await?;
-
-            self.create_new_default_meta_index_db().await?;
-            break;
+            let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(None).await.unwrap();
+            let named_mgr = named_mgr.lock().await;
+            //下面的操作并不会让旧版本失效，后续需要通过一个完整的重建 /repo/install_pkg的操作来释放
+            named_mgr.set_file_impl(format!("/repo/install_pkg/{}/{}/chunk",will_download_pkg_info.pkg_name,will_download_pkg_info.pkg_version).as_str(),&chunk_id.to_obj_id(),
+            "repo_service","root").await.map_err(|e| {
+                error!("set file failed, err:{}", e);
+                RPCErrors::ReasonError(format!("set file failed, err:{}", e))
+            })?;
         }
-        
+
+        let current_meta_index_db_path = self.get_my_default_meta_index_db_path();
+        RepoServer::replace_file(&current_meta_index_db_path,&new_meta_index_db_path).await?;
+
+        self.create_new_default_meta_index_db("root").await?;
+
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "success": true,
         })), req.seq))  
     }
 
-    async fn create_new_default_meta_index_db(&self) -> Result<(),RPCErrors> {
+    async fn create_new_default_meta_index_db(&self,user_id: &str) -> Result<(),RPCErrors> {
         let default_meta_index_db_path = self.get_my_default_meta_index_db_path();
         let default_source_meta_index_db_path = self.get_source_meta_index_db_path("root");
         let pub_meta_index_db_path = self.get_my_pub_meta_index_db_path();
@@ -489,7 +496,7 @@ impl RepoServer {
         let mut have_result = false;
         let mut need_merge_source_meta_index_db = false;
 
-        
+
         if default_source_meta_index_db_path.exists() {
             info!("default_source_meta_index_db_path exists, will replace default_meta_index_db_path with default_source_meta_index_db_path");
             RepoServer::copy_file(&default_meta_index_db_path,&default_source_meta_index_db_path).await?;
@@ -516,12 +523,24 @@ impl RepoServer {
                 RepoServer::copy_file(&default_meta_index_db_path,&pub_meta_index_db_path).await?;
             }
         }
-        
+
         if !have_result {
             error!("no source-meta-index and no pub-meta-index, there is no record can write to meta-index-db found");
             return Err(RPCErrors::ReasonError("no record can write to meta-index-db ".to_string()));
         }
-        
+
+        //TODO: 将meta-index-db发布到named-mgr
+        //info!("will pub new default meta-index-db to named-mgr");
+        let mut file_object = FileObject::new("meta_index.db".to_string(),0,String::new());
+        let default_meta_index_db_path = self.get_my_default_meta_index_db_path();
+        NamedDataMgr::pub_local_file_as_fileobj(None,&default_meta_index_db_path,
+            "/repo/meta_index.db","/repo/meta_index.db/content",
+            &mut file_object,user_id,"repo_service").await.map_err(|e| {
+                error!("pub default meta-index-db to named-mgr failed, err:{}", e);
+                RPCErrors::ReasonError(format!("pub_index failed, err:{}", e))
+            })?;
+        info!("pub new default meta-index-db to named-mgr success");
+
         Ok(())
     }
 
@@ -639,18 +658,9 @@ impl RepoServer {
             RPCErrors::ReasonError(format!("pub_index failed, err:{}", e))
         })?;
         info!("pub pub_meta_index.db to named-mgr success");
-        self.create_new_default_meta_index_db().await?;
+        self.create_new_default_meta_index_db("root").await?;
 
-        //info!("will pub new default meta-index-db to named-mgr");
-        let mut file_object = FileObject::new("meta_index.db".to_string(),0,String::new());
-        let default_meta_index_db_path = self.get_my_default_meta_index_db_path();
-        NamedDataMgr::pub_local_file_as_fileobj(None,&default_meta_index_db_path,
-            "/repo/meta_index.db","/repo/meta_index.db/content",
-            &mut file_object,user_id.as_str(),"repo_service").await.map_err(|e| {
-                error!("pub default meta-index-db to named-mgr failed, err:{}", e);
-                RPCErrors::ReasonError(format!("pub_index failed, err:{}", e))
-            })?;
-        info!("pub new default meta-index-db to named-mgr success");
+
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "success": true,
         })), req.seq))

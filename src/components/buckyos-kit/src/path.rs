@@ -31,8 +31,22 @@ pub fn get_buckyos_system_etc_dir() -> PathBuf {
     get_buckyos_root_dir().join("etc")
 }
 
-pub fn get_buckyos_log_dir(service: &str) -> PathBuf {
-    get_buckyos_root_dir().join("logs").join(service)
+pub fn get_buckyos_log_dir(service: &str,is_service:bool) -> PathBuf {
+    if is_service {
+        get_buckyos_root_dir().join("logs").join(service)
+    } else {
+        // 获取用户临时目录
+        if cfg!(target_os = "windows") {
+            let temp_dir = env::var("TEMP").or_else(|_| env::var("TMP")).unwrap_or_else(|_| {
+                // 如果环境变量不存在，使用用户目录下的临时文件夹
+                let user_profile = env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string());
+                format!("{}\\AppData\\Local\\Temp", user_profile)
+            });
+            Path::new(&temp_dir).join("buckyos").join("logs")
+        } else {
+            Path::new("/tmp").join("buckyos").join("logs")
+        }
+    }
 }
 
 pub fn get_buckyos_service_data_dir(service_name: &str) -> PathBuf {

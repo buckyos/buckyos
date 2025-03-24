@@ -15,7 +15,7 @@ use crate::package_cmd::*;
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    buckyos_kit::init_logging("buckycli");
+    buckyos_kit::init_logging("buckycli",false);
 
     let matches = Command::new("buckyos control tool")
         .author("buckyos")
@@ -109,6 +109,10 @@ async fn main() -> Result<(), String> {
                         .help("target env path, default is current dir")
                         .required(false),
                 )
+        )
+        .subcommand(
+            Command::new("update_index")
+                .about("update zone repo service's meta-index-db from remote source")
         )
         .subcommand(
             Command::new("connect")
@@ -270,12 +274,19 @@ async fn main() -> Result<(), String> {
             }
         }
         Some(("pub_index", _matches)) => {
-            let pub_result =publish_repo_index().await;
+            let pub_result = publish_repo_index().await;
             if pub_result.is_err() {
                 println!("Publish repo index failed! {}", pub_result.err().unwrap());
                 return Err("publish repo index failed!".to_string());
             }
             println!("############\nPublish repo index success!");
+        }
+        Some(("update_index", _matches)) => {
+            let sync_result = sync_from_remote_source().await;
+            if sync_result.is_err() {
+                println!("Sync from remote source failed! {}", sync_result.err().unwrap());
+                return Err("sync from remote source failed!".to_string());
+            }
         }
         Some(("connect", _matches)) => {
             sys_config::connect_into().await;

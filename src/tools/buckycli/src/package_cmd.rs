@@ -362,6 +362,16 @@ pub async fn publish_app_to_remote_repo(app_dir_path: &str,zone_host_name: &str)
     unimplemented!()
 }
 
+pub async fn sync_from_remote_source() -> Result<(), String> {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    let repo_client = api_runtime.get_repo_client().await.unwrap();
+    repo_client.sync_from_remote_source().await.map_err(|e| {
+        format!("Failed to sync zone repo service's meta-index-db from remote source: {}", e.to_string())
+    })?;
+    println!("Successfully synced zone repo service's meta-index-db from remote source, new default meta-index-db is ready");
+    Ok(())
+}
+
 #[derive(Debug)]
 struct FileInfo {
     sha256: Vec<u8>,

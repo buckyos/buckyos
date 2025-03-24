@@ -35,8 +35,12 @@ version到pkg_meta_objid的转换需要依赖某个版本的pkg-index-db
     pkg-index-db有所在channel的概念
     env也有所在channel的概念
 
-pkg_name完整的由2部分组成，但参考rust,我们可以使用相同的先到先得规则，尽可能的减少在pkg_id里引入author的时间
-    Author/pkg_friendly_name
+pkg_name完整的由2部分组成:perfix.fullname,其中 prefix的典型逻辑是nightly-linux-x86_64, fullname的典型逻辑是 $authorname-pkgname.在perfix和fullname中都不能包含 `.`, 使用`-`来连接不同含义.
+
+在编码的时候，使用不带prefix的pkg_name来加载pkg，比如要加载nightly-apple-x86_64.fogworks-filestation 这个pkg,应该正确的写成 env.load("fogworks-filestation"),由env来正确的产生前缀。由一些本身就是全平台的包，可以一个包在所有平台下运行，其加载可以写成 env.load("all.fogworks-filestation"),一旦load的时候pkg_name包含.,env就不会启用perfix的自动附着机制。
+
+通常源本身发布的pkg可以没有$authorname.pkg_name需要做到全网唯一，因此不同的源在收录的时候会要求$authorname（第一个`-`以前）要预先注册。但对pkg-system的基础系统来说，并不需要了解这个规则。
+
 
 ### env.load(pkg_id):
 重要：env的大部分函数，都是只读和幂等的。这意味着在env没有改变（安装新的pkg)的情况下，执行同样的操作必然会得到相同的结果。为了开发方便，env支持在没有index-db的时候，用纯路径查找的方法完成加载。

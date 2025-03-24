@@ -19,7 +19,7 @@ use buckyos_kit::{init_logging};
 use log::*;
 
 fn main() {
-    init_logging("node_daemon");
+    init_logging("node_daemon",true);
     let matches = Command::new("BuckyOS Node Daemon")
         .arg(
             Arg::new("id")
