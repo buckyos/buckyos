@@ -1,17 +1,11 @@
 #[allow(unused_mut, dead_code, unused_variables)]
-extern crate core;
 mod package_cmd;
-mod util;
 mod sys_config;
-use std::path::Path;
 
+use std::path::Path;
 use buckyos_api::*;
 use clap::{Arg, Command};
-use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig, CURRENT_DEVICE_CONFIG};
 use package_cmd::*;
-use crate::package_cmd::*;
-
-
 
 #[tokio::main]
 async fn main() -> Result<(), String> {

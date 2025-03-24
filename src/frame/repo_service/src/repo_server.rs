@@ -18,6 +18,8 @@ use buckyos_kit::buckyos_get_unix_timestamp;
 use buckyos_api::*;
 use tokio::io::AsyncSeekExt;
 use name_lib::*;
+use tokio::sync::Mutex as TokioMutex;
+use std::sync::LazyLock;
 
 use crate::pkg_task_data::*;
 struct ReqHelper;
@@ -113,6 +115,9 @@ pub struct RepoServer {
     
     //session_token : Option<String>,
 }
+
+// 添加一个静态的互斥锁
+static DEFAULT_META_INDEX_DB_LOCK: LazyLock<TokioMutex<()>> = LazyLock::new(|| TokioMutex::new(()));
 
 impl RepoServer {
     pub async fn new(config: RepoServerSetting) -> PkgResult<Self> {
@@ -426,9 +431,12 @@ impl RepoServer {
     }
     // 将source-meta-index更新到最新版本
     async fn handle_sync_from_remote_source(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        // 该操作可能会修改default_meta_index_db_path，需要加锁
+        let _lock = DEFAULT_META_INDEX_DB_LOCK.lock().await;
         //尝试拿到sync操作的锁，拿不到则说明已经在处理了
         //1.先下载并验证远程版本到临时db
         //let will_update_source_list = self.settng.remote_source.keys().cloned();
+
         let root_source_url = self.settng.remote_source.get("root");
         if root_source_url.is_none() {
             error!("handle_sync_from_remote_source error:root source not found");
@@ -489,13 +497,15 @@ impl RepoServer {
     }
 
     async fn create_new_default_meta_index_db(&self,user_id: &str) -> Result<(),RPCErrors> {
+        // 获取锁，确保只有一个调用可以进入临界区
+        let _lock = DEFAULT_META_INDEX_DB_LOCK.lock().await;
+        
         let default_meta_index_db_path = self.get_my_default_meta_index_db_path();
         let default_source_meta_index_db_path = self.get_source_meta_index_db_path("root");
         let pub_meta_index_db_path = self.get_my_pub_meta_index_db_path();
         info!("will create_new_default_meta_index_db, default_meta_index_db_path:{}", default_meta_index_db_path.display());
         let mut have_result = false;
         let mut need_merge_source_meta_index_db = false;
-
 
         if default_source_meta_index_db_path.exists() {
             info!("default_source_meta_index_db_path exists, will replace default_meta_index_db_path with default_source_meta_index_db_path");
@@ -640,6 +650,8 @@ impl RepoServer {
 
     //将local-wait-meta发布（发布后只读），发布后会计算index-db的chunk_id并构造fileobj,更新R路径的信息
     async fn handle_pub_index(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        // 该操作可能会修改default_meta_index_db_path，需要加锁
+        let _lock = DEFAULT_META_INDEX_DB_LOCK.lock().await;
         let mut user_id = "".to_string();
         if !self.settng.enable_dev_mode {
             return Err(RPCErrors::ReasonError("repo_server dev mode is not enabled".to_string()));

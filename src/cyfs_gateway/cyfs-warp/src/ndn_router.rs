@@ -262,7 +262,7 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
     //let chunk_id_result;
     let mut obj_id:Option<ObjId> = None;
     let mut obj_content:Option<Value> = None;
-    let mut inner_obj_path:Option<String> = None;
+    let mut _inner_obj_path:Option<String> = None;
     let path = req.uri().path();
     let _user_id = "guest";//TODO: session_token from cookie
     let _app_id = "unknown";
@@ -273,7 +273,7 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
         if obj_id_result.is_ok() {
             let (the_obj_id,the_obj_path) = obj_id_result.unwrap();
             obj_id = Some(the_obj_id);
-            inner_obj_path = the_obj_path;
+            _inner_obj_path = the_obj_path;
         }
     } else {
         //get chunkid by hostname
@@ -309,7 +309,7 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
                     if the_inner_path.is_none() {
                         return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not found"));
                     }
-                    inner_obj_path = the_inner_path.clone();
+                    _inner_obj_path = the_inner_path.clone();
                     if the_root_obj_id.is_chunk() {
                         return Err(anyhow::anyhow!("ndn_router:chunk is not supported to be root obj"));
                     }
@@ -319,7 +319,7 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
                         return Err(anyhow::anyhow!("ndn_router:big container is not supported to be root obj"));
                     } else {
                         let root_obj_json = real_named_mgr.get_object_impl(&the_root_obj_id, None).await?;
-                        let obj_filed = get_by_json_path(&root_obj_json, &inner_obj_path.clone().unwrap());
+                        let obj_filed = get_by_json_path(&root_obj_json, &_inner_obj_path.clone().unwrap());
                         if obj_filed.is_none() {
                             return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not valid"));
                         }

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use version_compare::Cmp;
 use std::str::FromStr;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionExpType {
     None,
     Req(VersionReq),
@@ -39,7 +39,7 @@ impl FromStr for VersionExpType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionExp {
     pub tag: Option<String>,
     pub version_exp: VersionExpType,
@@ -227,7 +227,7 @@ pkg_name#>0.1.4,<=0.1.6:stable : 指定范围版本里的,有stable tag的版本
 pkg_name#$objid : 指定一个精确版本
 pkg_name#0.1.5#$objid : 语义更强的指定一个精确版本，在加载的时候会对版本号进行验证
  */
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageId {
     pub name: String,
     pub version_exp: Option<VersionExp>,

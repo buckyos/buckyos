@@ -146,6 +146,26 @@ impl MetaIndexDb {
         }        
     }
 
+    pub fn is_latest_version(&self,pkg_id:&PackageId) -> PkgResult<bool> {
+        let pkg_name = pkg_id.name.as_str();
+        let latest_version = format!("{}#*:latest",pkg_name);
+        let pkg_meta = self.get_pkg_meta(&latest_version)?;
+        if pkg_meta.is_some() {
+            let (_,pkg_meta) = pkg_meta.unwrap();
+            let latest_pkg_id = pkg_meta.get_package_id();
+            return Ok(pkg_id == &latest_pkg_id)
+        } else {
+            let latest_version = format!("{}#*",pkg_name);
+            let pkg_meta = self.get_pkg_meta(&latest_version)?;
+            if pkg_meta.is_some() {
+                let (_,pkg_meta) = pkg_meta.unwrap();
+                let latest_pkg_id = pkg_meta.get_package_id();
+                return Ok(pkg_id == &latest_pkg_id)
+            }
+        }
+        Ok(false)
+    }
+
     pub fn get_pkg_meta_by_version(&self,pkg_name: &str,author: Option<String>,version: &Version,tag: Option<String>) -> PkgResult<Option<(String, PackageMeta)>> {
         let conn = Self::create_connection(&self.db_path)?;
         // 构建查询条件

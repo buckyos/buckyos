@@ -472,23 +472,23 @@ impl PackageEnv {
         Ok(meta_obj_id)   
     }
 
+    pub async fn is_latest_version(&self,pkg_id: &PackageId) -> PkgResult<bool> {
+        let meta_db = MetaIndexDb::new(self.get_meta_db_path(),true)?;
+        meta_db.is_latest_version(pkg_id)
+    }
+
     async fn extract_pkg_from_chunk(&self, pkg_meta: &PackageMeta,meta_obj_id: &str,chunk_reader: ChunkReader) -> PkgResult<()> {
         //将chunk (这是一个tar.gz文件)解压安装到真实目录 .pkgs/pkg_nameA/$meta_obj_id
         //注意处理前缀: 如果包名与当前env前缀相同，那么符号链接里只包含无前缀部分
         //建立符号链接 ./pkg_nameA#version -> .pkgs/pkg_nameA/$meta_obj_id
         //如果是最新版本，建立符号链接 ./pkg_nameA -> .pkgs/pkg_nameA/$meta_obj_id
-    
 
-        // Decompress the tar.gz file
         let buf_reader = BufReader::new(chunk_reader);
-        // 创建异步 GZip 解压器
         let gz_decoder = GzipDecoder::new(buf_reader);
-        // 创建异步 tar 解压器
         let mut archive = Archive::new(gz_decoder);
         let target_dir = format!(".pkgs/{}/{}", pkg_meta.pkg_name, meta_obj_id);
         let target_dir = self.work_dir.join(target_dir);
         tokio::fs::create_dir_all(&target_dir).await?;
-        // 解压文件到目标目录
         archive.unpack(&target_dir).await?;
 
         // Create symbolic links
@@ -503,12 +503,17 @@ impl PackageEnv {
             }
         
             // If this is the latest version, create a symbolic link without the version
-            // if self.is_latest_version(&pkg_meta.pkg_name, &pkg_meta.version).await? {
-            //     let latest_symlink_path = format!("./{}", pkg_meta.pkg_name);
-            //     if tokio::fs::symlink_metadata(&latest_symlink_path).await.is_err() {
-            //         tokio::fs::symlink(&target_dir, &latest_symlink_path).await?;
-            //     }
-            // }
+            let pkg_id = pkg_meta.get_package_id();
+            if self.is_latest_version(&pkg_id).await? {
+                let latest_symlink_path = format!("./{}", pkg_meta.pkg_name);
+                let latest_symlink_path = self.work_dir.join(latest_symlink_path);
+                if tokio::fs::symlink_metadata(&latest_symlink_path).await.is_err() {
+                    #[cfg(target_family = "unix")]
+                    tokio::fs::symlink(&target_dir, &latest_symlink_path).await?;
+                    #[cfg(target_family = "windows")]
+                    std::os::windows::fs::symlink_dir(&target_dir, &latest_symlink_path)?;
+                }
+            }
         }
 
         Ok(())
@@ -523,11 +528,8 @@ impl PackageEnv {
     }
 
     async fn load_strictly(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
-        let mut pkg_id = PackageId::parse(pkg_id_str)?;
-        if pkg_id.name.find(".").is_none() {
-            let real_pkg_id = format!("{}.{}", self.get_prefix(), pkg_id.name.as_str());
-            pkg_id.name = real_pkg_id;
-        }
+        let pkg_id = PackageId::parse(pkg_id_str)?;
+        let pkg_id = self.prefix_pkg_id(&pkg_id);
         // 在严格模式下，先获取包的元数据以获得准确的物理目录
         let real_pkg_id = pkg_id.to_string();
         let (meta_obj_id,pkg_meta) = self.get_pkg_meta(&real_pkg_id).await?;

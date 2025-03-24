@@ -83,6 +83,7 @@ impl Task {
         }
     }
     
+    #[allow(dead_code)]
     pub fn update_progress(&mut self, completed_items: i32, total_items: i32) {
         self.completed_items = completed_items;
         self.total_items = total_items;
@@ -92,17 +93,20 @@ impl Task {
         self.updated_at = Utc::now();
     }
     
+    #[allow(dead_code)]
     pub fn set_error(&mut self, error_message: String) {
         self.error_message = Some(error_message);
         self.status = TaskStatus::Failed;
         self.updated_at = Utc::now();
     }
     
+    #[allow(dead_code)]
     pub fn update_status(&mut self, status: TaskStatus) {
         self.status = status;
         self.updated_at = Utc::now();
     }
     
+    #[allow(dead_code)]
     pub fn update_data(&mut self, data: String) {
         self.data = Some(data);
         self.updated_at = Utc::now();

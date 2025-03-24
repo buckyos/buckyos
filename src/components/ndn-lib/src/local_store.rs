@@ -837,6 +837,7 @@ impl NamedDataStore {
         let mut chunk_item = chunk_item.unwrap();
         chunk_item.chunk_state = ChunkState::Completed;
         chunk_item.progress = "".to_string();
+        info!("complete_chunk_writer: complete chunk {} success itemsize:{}",chunk_id.to_string(),chunk_item.chunk_size);
         self.named_db.set_chunk_item(&chunk_item).await?;
         Ok(())
     }

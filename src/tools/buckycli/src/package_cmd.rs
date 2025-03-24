@@ -1,14 +1,10 @@
 #[allow(dead_code, unused)]
-use crate::util::*;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-use kRPC::kRPC;
+use jsonwebtoken::EncodingKey;
 use name_lib::decode_jwt_claim_without_verify;
 use ndn_lib::*;
-//use package_installer::*;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -16,27 +12,9 @@ use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use tar::Builder;
-use tokio::io::AsyncWriteExt;
 use package_lib::*;
 use buckyos_api::*;
-use name_lib::*;
-#[derive(Debug)]
-pub enum PackCategory {
-    Pkg,
-    App,
-    Agent,
-}
 
-//为PackCategory实现to_string方法
-impl PackCategory {
-    pub fn to_string(&self) -> String {
-        match self {
-            PackCategory::Pkg => "pkg".to_string(),
-            PackCategory::App => "app".to_string(),
-            PackCategory::Agent => "agent".to_string(),
-        }
-    }
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PackResult {
@@ -358,7 +336,7 @@ pub async fn publish_repo_index() -> Result<(), String> {
     Ok(())
 }
 
-pub async fn publish_app_to_remote_repo(app_dir_path: &str,zone_host_name: &str) -> Result<(), String> {
+pub async fn publish_app_to_remote_repo(_app_dir_path: &str,_zone_host_name: &str) -> Result<(), String> {
     unimplemented!()
 }
 
@@ -457,8 +435,10 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::Path;
+    use name_lib::load_private_key;
     use tempfile::tempdir;
     use std::mem;
+    use serde_json::json;
     
     #[tokio::test]
     async fn test_pack_pkg() {
@@ -503,8 +483,9 @@ mod tests {
             chunk_size: None,
             deps: HashMap::new(),
             pub_time: 0,
-            description: "test pkg".to_string(),
+            description: json!("{}"),
             extra_info: HashMap::new(),
+            exp:0,
         };
         
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
@@ -586,8 +567,9 @@ mod tests {
             chunk_size: None,
             deps: HashMap::new(),
             pub_time: 0,
-            description: "test pkg".to_string(),
+            description: json!("{}"),
             extra_info: HashMap::new(),
+            exp:0,
         };
         
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
@@ -613,7 +595,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         // 由于我们没有真正的私钥，这个测试可能会失败
         // 在实际环境中，应该使用有效的私钥或者 mock generate_jwt 函数
         if result.is_ok() {
-            let pack_result = result.unwrap();
+            let _pack_result = result.unwrap();
             
             // 验证 JWT 文件是否存在
             let expected_jwt_path = Path::new(&dest_path)

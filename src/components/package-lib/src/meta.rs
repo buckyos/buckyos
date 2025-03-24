@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str::EncodeUtf16};
 use serde_json::Value;
 use name_lib::*;
-use crate::{PkgResult, PkgError};
+use crate::{PkgResult, PkgError,PackageId};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackageMeta {
     pub pkg_name: String,
@@ -42,6 +42,16 @@ impl PackageMeta {
         let meta: PackageMeta = serde_json::from_value(pkg_json)
             .map_err(|e| PkgError::ParseError(meta_str.to_string(), e.to_string()))?;
         Ok(meta)
+    }
+
+    pub fn get_package_id(&self) -> PackageId {
+        if self.tag.is_some() {
+            let package_id_str = format!("{}#{}:{}",self.pkg_name,self.version,self.tag.as_ref().unwrap());
+            PackageId::parse(&package_id_str).unwrap()
+        } else {
+            let package_id_str = format!("{}#{}",self.pkg_name,self.version);
+            PackageId::parse(&package_id_str).unwrap()
+        }
     }
 }
 

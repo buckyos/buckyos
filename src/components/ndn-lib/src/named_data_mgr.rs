@@ -118,10 +118,6 @@ impl NamedDataMgrDB {
             NdnError::Internal(e.to_string())
         })?;
 
-        if path_obj_jwt.is_some() {
-            info!("NamedDataMgrDB: path_obj_jwt {}", path_obj_jwt.as_ref().unwrap());
-        }
-
         Ok((obj_id,path_obj_jwt))
     }
 
@@ -716,7 +712,7 @@ impl NamedDataMgr {
             }
         }
 
-        warn!("get_chunk_reader: CACHE MISS :{}", chunk_id.to_string());
+        debug!("get_chunk_reader: CACHE MISS :{}", chunk_id.to_string());
         if self.local_cache.is_some() {
             let local_cache = self.local_cache.as_ref().unwrap();
             let local_reader = local_cache.open_chunk_reader(chunk_id,seek_from).await;
@@ -726,7 +722,7 @@ impl NamedDataMgr {
             }
         }
 
-        warn!("get_chunk_reader: no cache file:{}", chunk_id.to_string());
+        debug!("get_chunk_reader: no cache file:{}", chunk_id.to_string());
         for local_store in self.local_store_list.iter() {
             let local_reader = local_store.open_chunk_reader(chunk_id,seek_from).await;
             if local_reader.is_ok() {

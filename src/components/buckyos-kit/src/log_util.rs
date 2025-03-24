@@ -22,7 +22,6 @@ pub fn init_logging(app_name: &str,is_service:bool) {
         .build();
 
     CombinedLogger::init(vec![
-   
         TermLogger::new(
             log_level,
             config.clone(),
@@ -32,7 +31,7 @@ pub fn init_logging(app_name: &str,is_service:bool) {
         WriteLogger::new(
             LevelFilter::Info,
             config,
-            File::create(log_file).unwrap(),
+            File::options().append(true).create(true).open(log_file).unwrap(),
         ),
     ])
     .unwrap();
