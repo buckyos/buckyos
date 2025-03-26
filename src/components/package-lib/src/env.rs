@@ -163,13 +163,13 @@ impl PackageEnvConfig {
     pub fn get_default_prefix() -> String {
         //得到操作系统类型
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let os_type = "nightly-linux-x86_64";
+        let os_type = "nightly-linux-amd64";
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         let os_type = "nightly-linux-aarch64";
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        let os_type = "nightly-windows-x86_64";
+        let os_type = "nightly-windows-amd64";
         #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-        let os_type = "nightly-apple-x86_64";
+        let os_type = "nightly-apple-amd64";
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let os_type = "nightly-apple-aarch64";
 

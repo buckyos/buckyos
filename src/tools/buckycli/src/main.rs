@@ -45,8 +45,8 @@ async fn main() -> Result<(), String> {
                 )
                 .arg(
                     Arg::new("target_dir")
-                        .long("app_path")
-                        .help("app dir path")
+                        .long("target_dir")
+                        .help("app output dir,contain app doc and app sub pkgs")
                         .required(true),
                 )
         )
@@ -204,7 +204,7 @@ async fn main() -> Result<(), String> {
         Some(("pub_app", matches)) => {
             let app_name = matches.get_one::<String>("app_name").unwrap();
             let app_dir_path = matches.get_one::<String>("target_dir").unwrap();
-            let pub_result = publish_app_pkg(app_name, app_dir_path,false).await;
+            let pub_result = publish_app_pkg(app_name, app_dir_path,true).await;
             if pub_result.is_err() {
                 println!("Publish app failed! {}", pub_result.err().unwrap());
                 return Err("publish app failed!".to_string());

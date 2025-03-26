@@ -20,6 +20,8 @@ pub struct SubPkgDesc {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_image_name:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_image_hash:Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub package_url:Option<String>,
     #[serde(flatten)]
     pub configs:HashMap<String,String>,
@@ -39,9 +41,8 @@ pub struct AppDoc {
     //"amd64_docker_image" 
     //"aarch64_docker_image"
     //"amd64_win_app"
-    //"amd64_linux_app"
-    //"aarch64_linux_app"
-    //"aarch64_macos_app"
+    //"aarch64_apple_app"
+    //"amd64_apple_app"
     pub pkg_list: HashMap<String, SubPkgDesc>,
 }
 

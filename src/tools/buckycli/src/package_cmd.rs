@@ -275,30 +275,28 @@ pub async fn publish_app_pkg(app_name: &str,dapp_dir_path: &str,is_pub_sub_pkg:b
 
     let mut pkg_path_list = Vec::new();
 
-    for (pkg_id,pkg_desc) in app_meta.pkg_list.iter_mut() {
+    for (sub_pkg_section,pkg_desc) in app_meta.pkg_list.iter_mut() {
         let sub_pkg_id = pkg_desc.pkg_id.clone();
         let sub_pkg_id:PackageId = PackageId::parse(sub_pkg_id.as_str())
             .map_err(|e| format!("Failed to parse sub_pkg_id: {}", e.to_string()))?;
-        if sub_pkg_id.version_exp.is_some() {
-            println!("{} already contains version number, skipping detection and building", sub_pkg_id.to_string());
-        } else {
-            let pkg_path = Path::new(dapp_dir_path).join(pkg_id);
-            if !pkg_path.exists() {
-                return Err(format!("{} directory does not exist", pkg_path.display()));
-            }
-            let pkg_meta_path = pkg_path.join(".pkg_meta.json");
-            if !pkg_meta_path.exists() {
-                return Err(format!("{} directory does not exist", pkg_path.display()));
-            }
-            let pkg_meta_str = fs::read_to_string(pkg_meta_path)
-                .map_err(|e| format!("Failed to read .pkg_meta.json: {}", e.to_string()))?;
-            let pkg_meta:PackageMeta = serde_json::from_str(&pkg_meta_str)
-                .map_err(|e| format!("Failed to parse .pkg_meta.json: {}", e.to_string()))?;
-            let version = pkg_meta.version.clone();
-            pkg_desc.pkg_id = format!("{}#{}",pkg_id,version);
-            println!("{} => {}", sub_pkg_id.to_string(),pkg_desc.pkg_id);
-            pkg_path_list.push(pkg_path);
+   
+        let pkg_path = Path::new(dapp_dir_path).join(sub_pkg_id.name.as_str());
+        if !pkg_path.exists() {
+            return Err(format!("sub pkg {} directory does not exist", pkg_path.display()));
         }
+        let pkg_meta_path = pkg_path.join("pkg_meta.json");
+        if !pkg_meta_path.exists() {
+            return Err(format!("sub pkg {} pkg_meta.json does not exist", pkg_path.display()));
+        }
+        let pkg_meta_str = fs::read_to_string(pkg_meta_path)
+            .map_err(|e| format!("Failed to read .pkg_meta.json: {}", e.to_string()))?;
+        let pkg_meta:PackageMeta = serde_json::from_str(&pkg_meta_str)
+            .map_err(|e| format!("Failed to parse .pkg_meta.json: {}", e.to_string()))?;
+        let version = pkg_meta.version.clone();
+        //pkg_desc.pkg_id = format!("{}#{}",sub_pkg_section,version);
+        println!("{} => {}", sub_pkg_section,pkg_meta.get_package_id().to_string());
+        pkg_path_list.push(pkg_path);
+        
     }
 
     if is_pub_sub_pkg {
@@ -320,7 +318,10 @@ pub async fn publish_app_pkg(app_name: &str,dapp_dir_path: &str,is_pub_sub_pkg:b
     repo_client.pub_pkg(app_meta_jwt_map).await.map_err(|e| {
         format!("Failed to publish app doc: {}", e.to_string())
     })?;
-    println!("Successfully published app doc");
+    repo_client.pub_index().await.map_err(|e| {
+        format!("Failed to publish repo index: {}", e.to_string())
+    })?;
+    println!("Successfully published App {}", app_name);
     Ok(())
 }
 

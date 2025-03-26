@@ -25,7 +25,7 @@ pub struct DeviceInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub arch:Option<String>,
+    pub arch:Option<String>, //amd64,aarch64
     #[serde(skip_serializing_if = "Option::is_none")]
     pub did:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -153,7 +153,7 @@ impl DeviceInfo {
 
         // Get OS information
         self.base_os_info = Some(format!("{} {} {}",System::name().unwrap_or_default(), System::os_version().unwrap_or_default(), System::kernel_version().unwrap_or_default()));
-
+        self.arch = Some(System::cpu_arch());
         // Get CPU information
         let mut cpu_usage = 0.0;
         let mut cpu_mhz:u32 = 0;

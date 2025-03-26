@@ -498,7 +498,7 @@ impl RepoServer {
 
     async fn create_new_default_meta_index_db(&self,user_id: &str) -> Result<(),RPCErrors> {
         // 获取锁，确保只有一个调用可以进入临界区
-        let _lock = DEFAULT_META_INDEX_DB_LOCK.lock().await;
+        //et _lock = DEFAULT_META_INDEX_DB_LOCK.lock().await;
         
         let default_meta_index_db_path = self.get_my_default_meta_index_db_path();
         let default_source_meta_index_db_path = self.get_source_meta_index_db_path("root");
