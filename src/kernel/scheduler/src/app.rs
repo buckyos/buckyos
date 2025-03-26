@@ -10,30 +10,35 @@ use crate::scheduler::*;
 use anyhow::Result;
 
 fn build_app_service_config(user_id:&str,app_config:&AppConfig,node_info:&DeviceInfo) -> Result<AppServiceInstanceConfig> {
-    let arch_name = node_info.arch.clone().unwrap_or("amd64".to_string());
-    let docker_pkg_name = format!("{}_docker_image",arch_name.as_str());
-    let docker_pkg_info =  app_config.app_doc.pkg_list.get(&docker_pkg_name);
-    if docker_pkg_info.is_none() {
-        return Err(anyhow::anyhow!("docker_pkg_name: {} not found",docker_pkg_name));
-    }
-    let docker_pkg_info = docker_pkg_info.unwrap();
-
     let mut result_config = AppServiceInstanceConfig::new(user_id,app_config);
-    result_config.image_pkg_id = Some(docker_pkg_info.pkg_id.clone());
-    result_config.docker_image_name = Some(docker_pkg_info.docker_image_name.clone().unwrap());
-
-    // 解析是否有<arch>_direct_image字段
-    let direct_pkg_name = format!("{}_direct_image", arch_name.as_str());
-    if let Some(info) = app_config.app_doc.pkg_list.get(&direct_pkg_name) {
-        result_config.direct_image = Some(info.package_url.clone().unwrap_or(String::new()));
+    //result_config.app_pkg_id = Some(docker_pkg_info.pkg_id.clone());
+    if node_info.support_container {
+        let docker_pkg_name = format!("{}_docker_image",node_info.arch.as_str());
+        let docker_pkg_info =  app_config.app_doc.pkg_list.get(&docker_pkg_name);
+        if docker_pkg_info.is_none() {
+            return Err(anyhow::anyhow!("docker_pkg_name: {} not found",docker_pkg_name));
+        }
+        let docker_pkg_info = docker_pkg_info.unwrap();
+        result_config.docker_image_pkg_id = Some(docker_pkg_info.pkg_id.clone());
+        result_config.docker_image_name = docker_pkg_info.docker_image_name.clone();
+        result_config.docker_image_hash = docker_pkg_info.docker_image_hash.clone();
+        
+    } else {
+        // 解析是否有<arch>_<os_type>_app字段
+        let app_pkg_name = format!("{}_{}_app", node_info.arch.as_str(),node_info.os_type.as_str());
+        if let Some(info) = app_config.app_doc.pkg_list.get(&app_pkg_name) {
+            result_config.app_pkg_id = Some(info.pkg_id.clone());
+        } else {
+            return Err(anyhow::anyhow!("app_pkg_name: {} not found",app_pkg_name));
+        }
     }
 
-    if  app_config.app_index  > 400 {
+    if  app_config.app_index  > 1024 {
         warn!("app_index: {} is too large,skip",app_config.app_index);
         return Err(anyhow::anyhow!("app_index: {} is too large",app_config.app_index));
     }
 
-    let mut real_port:u16 = 20080 + app_config.app_index * 100;
+    let mut real_port:u16 = 20080 + app_config.app_index * 32;
     for (port_desc,inner_port) in app_config.tcp_ports.iter() {
         result_config.tcp_ports.insert(real_port, inner_port.clone());
         real_port += 1;

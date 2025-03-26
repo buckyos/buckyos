@@ -11,7 +11,7 @@ username = None
 app_token = None
 app_instance_config = None
 app_media_info = None
-
+media_info_str = None
 zone_config = None
 zone_docker_repo_base_url = None
 
@@ -62,16 +62,17 @@ def start_app_with_docker():
 
     # 得到镜像名
     image_name = app_instance_config.get("docker_image_name")
-    image_pkg_id = app_instance_config.get("image_pkg_id")
+    image_pkg_id = app_instance_config.get("docker_image_pkg_id")
     if not image_name:
         print("Image name not found in the configuration")
         exit(1)
 
     if not check_image_exists(image_name):
         print(f"Image {image_name} not installed, trying to import docker image from local tar file")
-        if app_media_info is None:
-            print(f"No app media info found for appid: {appid}")
+        if media_info_str is None:
+            print(f"No media info found for appid: {full_appid}")
             exit(1)
+        app_media_info = json.loads(media_info_str)
 
         full_path = app_media_info.get("full_path")
         if not full_path:
@@ -109,20 +110,27 @@ def start_app_with_docker():
 
     # 通过配置得到镜像的启动参数，包括路径映射，虚拟网络，CPU配额，内存配额
     volume_mapping = ""
-    data_mount_point = app_instance_config.get("data_mount_point", "")
+    data_mount_point = app_instance_config.get("data_mount_point",[])
     if data_mount_point:
-        os.makedirs(f"/opt/buckyos/data/{username}/{appid}", exist_ok=True)
-        volume_mapping += f"-v /opt/buckyos/data/{username}/{appid}/:{data_mount_point} "
+        base_data_dir = f"/opt/buckyos/data/{username}/{appid}"
+        os.makedirs(base_data_dir, exist_ok=True)
+        for mount_point in data_mount_point:
+            volume_mapping += f"-v {base_data_dir}/{mount_point}:{mount_point} "
 
-    local_cache_mount_point = app_instance_config.get("local_cache_mount_point", "")
+    cache_mount_point = app_instance_config.get("cache_mount_point", [])
+    if cache_mount_point:
+        base_cache_dir = f"/opt/buckyos/cache/{username}/{appid}"
+        os.makedirs(base_cache_dir, exist_ok=True)
+        for mount_point in cache_mount_point:
+            volume_mapping += f"-v {base_cache_dir}/{mount_point}:{mount_point} "
+
+    local_cache_mount_point = app_instance_config.get("local_cache_mount_point", [])
     if local_cache_mount_point:
-        os.makedirs(f"/opt/buckyos/tmp/{username}/{appid}", exist_ok=True)
-        volume_mapping += f"-v /opt/buckyos/tmp/{username}/{appid}/:{local_cache_mount_point} "
+        base_cache_dir = f"/opt/buckyos/tmp/{username}/{appid}"
+        os.makedirs(base_cache_dir, exist_ok=True)
+        for mount_point in local_cache_mount_point:
+            volume_mapping += f"-v {base_cache_dir}/{mount_point}:{mount_point} "
 
-    extra_mounts = app_instance_config.get("extra_mounts", "")
-    if extra_mounts:
-        for (k ,v) in extra_mounts.items():
-            docker_command += f"-v {k}:{v} "
 
     #network_settings = config.get("network_settings", "")
     cpu_quota = app_instance_config.get("cpu_quota", "")
@@ -159,7 +167,7 @@ def start_app_with_docker():
 
 
 def start_app():
-    global appid, full_appid,username, app_token, app_instance_config,app_media_info
+    global appid, full_appid,username, app_token, app_instance_config,app_media_info,media_info_str
     global zone_config, zone_docker_repo_base_url
     global device_doc, is_support_docker
     
@@ -193,10 +201,7 @@ def start_app():
         exit(1)
     app_instance_config = json.loads(app_instance_config_str)
 
-    if media_info_str is None:
-        print(f"No media info found for appid: {full_appid}")
-        exit(1)
-    app_media_info = json.loads(media_info_str)
+
 
     #container_hash = app_meta_info.get("image_hash")
     is_support_docker = device_doc.get("support_container", True)
@@ -205,6 +210,11 @@ def start_app():
         print(f"Start app {full_appid} with docker")
         start_app_with_docker()
     else:
+        if media_info_str is None:
+            print(f"No media info found for appid: {full_appid}")
+            exit(1)
+            
+        app_media_info = json.loads(media_info_str)
         print(f"Start app {full_appid} without docker")
         start_app_without_docker()
 

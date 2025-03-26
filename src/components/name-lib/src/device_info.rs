@@ -24,8 +24,9 @@ pub struct DeviceInfo {
     pub support_container:bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state:Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arch:Option<String>, //amd64,aarch64
+
+    pub arch:String, //amd64,aarch64
+    pub os_type:String, //linux,windows,apple
     #[serde(skip_serializing_if = "Option::is_none")]
     pub did:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,12 +111,25 @@ impl DeviceInfo {
             net_id = None;
         }   
 
+        #[cfg(all(target_os = "macos"))]
+        let os_type = "apple";
+        #[cfg(all(target_os = "linux"))]
+        let os_type = "linux";
+        #[cfg(all(target_os = "windows"))]
+        let os_type = "windows";
+
+        #[cfg(all(target_arch = "x86_64"))]
+        let arch = "amd64";
+        #[cfg(all(target_arch = "aarch64"))]
+        let arch = "aarch64";
+
         DeviceInfo {
             hostname:hostname.to_string(),
             device_type:"ood".to_string(),
             state:Some("Ready".to_string()),
             support_container:true,
-            arch:None,
+            arch:arch.to_string(),
+            os_type:os_type.to_string(),
             ip:ip,
             did:did,
             main_net_interface:None,
@@ -153,7 +167,6 @@ impl DeviceInfo {
 
         // Get OS information
         self.base_os_info = Some(format!("{} {} {}",System::name().unwrap_or_default(), System::os_version().unwrap_or_default(), System::kernel_version().unwrap_or_default()));
-        self.arch = Some(System::cpu_arch());
         // Get CPU information
         let mut cpu_usage = 0.0;
         let mut cpu_mhz:u32 = 0;

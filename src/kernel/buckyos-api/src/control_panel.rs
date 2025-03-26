@@ -14,7 +14,27 @@ use crate::system_config::*;
 use package_lib::PackageMeta;
 
 #[derive(Serialize, Deserialize)]
+pub struct InstallConfig {
+    pub data_mount_point: Vec<String>,
+    pub cache_mount_point: Vec<String>,
+    pub local_cache_mount_point: Vec<String>,
+    pub tcp_ports: HashMap<String,u16>,
+    pub udp_ports: HashMap<String,u16>,
+}
 
+impl Default for InstallConfig {
+    fn default() -> Self {
+        Self {
+            data_mount_point: vec![],
+            cache_mount_point: vec![],
+            local_cache_mount_point: vec![],
+            tcp_ports: HashMap::new(),
+            udp_ports: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct SubPkgDesc {
     pub pkg_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -35,6 +55,7 @@ pub struct AppDoc {
     pub app_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_icon_url: Option<String>,
+    pub install_config:InstallConfig,
 
     //service name -> full image url
     // 命名逻辑:<arch>_<runtimne_type>_<media_type>, 
@@ -93,14 +114,10 @@ pub struct AppConfig {
     pub instance: u32,//期望的instance数量
     pub state: String,
     //mount pint
-    pub data_mount_point: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_mount_point: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_cache_mount_point: Option<String>,
+    pub data_mount_point: Vec<String>,
+    pub cache_mount_point: Vec<String>,
+    pub local_cache_mount_point: Vec<String>,
     //extra mount pint, real_path:docker_inner_path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extra_mounts: Option<HashMap<String,String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cpu_num: Option<u32>,
     // 0 - 100
@@ -112,8 +129,7 @@ pub struct AppConfig {
     
     //network resource, name:docker_inner_port
     pub tcp_ports: HashMap<String,u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub udp_ports: Option<HashMap<String,u16>>,
+    pub udp_ports: HashMap<String,u16>
 }
 
 
@@ -125,18 +141,14 @@ pub struct AppServiceInstanceConfig {
     pub app_id: String,
     pub user_id: String,
 
-    pub image_pkg_id: Option<String>,
+    pub app_pkg_id: Option<String>,
+    pub docker_image_pkg_id: Option<String>,
     pub docker_image_name : Option<String>,//TODO:能否从pkg_id中推断出docker_image_name?
     pub docker_image_hash: Option<String>,
-    pub direct_image: Option<String>,         // 现在这里只要是Some就可以，以后可以放二进制包的url
-    pub data_mount_point: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_mount_point: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_cache_mount_point: Option<String>,
-    //extra mount pint, real_path:docker_inner_path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extra_mounts: Option<HashMap<String,String>>,
+    pub service_pkg_id: Option<String>,         
+    pub data_mount_point: Vec<String>,
+    pub cache_mount_point: Vec<String>,
+    pub local_cache_mount_point: Vec<String>,
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cpu_num: Option<u32>,
@@ -148,8 +160,7 @@ pub struct AppServiceInstanceConfig {
 
     // target port ==> real port in docker
     pub tcp_ports: HashMap<u16,u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub udp_ports: Option<HashMap<u16,u16>>,
+    pub udp_ports: HashMap<u16,u16>,
     //pub service_image_name : String, // support mutil platform image name (arm/x86...)
 }
 
@@ -161,19 +172,19 @@ impl AppServiceInstanceConfig {
             target_state: "Running".to_string(),
             app_id: app_config.app_id.clone(),
             user_id:owner_user_id.to_string(),
-            image_pkg_id: None,
+            app_pkg_id: None,
+            docker_image_pkg_id: None,
             docker_image_name: None,
             docker_image_hash: None,
-            direct_image: None,
+            service_pkg_id: None,
             data_mount_point: app_config.data_mount_point.clone(),
             cache_mount_point: app_config.cache_mount_point.clone(),
             local_cache_mount_point: app_config.local_cache_mount_point.clone(),
-            extra_mounts: app_config.extra_mounts.clone(),
             max_cpu_num: app_config.max_cpu_num.clone(),
             max_cpu_percent: app_config.max_cpu_percent.clone(),
             memory_quota: app_config.memory_quota.clone(),
             tcp_ports: HashMap::new(),//TODO
-            udp_ports: None,
+            udp_ports: HashMap::new(),
         }
     }
 

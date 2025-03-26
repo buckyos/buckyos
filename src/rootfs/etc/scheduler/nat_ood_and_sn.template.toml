@@ -168,53 +168,76 @@
 # install apps
 
 
-"users/{{user_name}}/apps/home-station/config" = """
+"users/{{user_name}}/apps/buckyos-filebrowser/config" = """
 {
-    "app_id":"home-station",
+    "app_id":"buckyos-filebrowser",
     "app_doc" : {
-        "pkg_name":"buckyos.home-station",
-        "version":"1.0.0",
-        "tag":"latest",
-        "app_name" : "Home Station",
-        "description" : "Home Station",
-        "author" : "did:bns:buckyos",
-        "pub_time":1715760000,
-        "pkg_list" : {
-            "amd64_docker_image" : {
-                "pkg_id":"home-station-x86-img",
-                "docker_image_name":"filebrowser/filebrowser:s6"
+        "pkg_name": "buckyos-filebrowser",
+        "version": "0.4.0",
+        "tag": "latest",
+        "app_name": "BuckyOS File Browser",
+        "description": {
+            "detail": "BuckyOS File Browser"
+        },
+        "author": "buckyos.io",
+        "pub_time": 1743008063,
+        "exp": 1837616063,
+        "pkg_list": {
+            "amd64_docker_image": {
+                "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.0-amd64",
+                "pkg_id": "nightly-linux-amd64.buckyos-filebrowser-img#0.4.0",
+                "docker_image_hash": "sha256:503bf3e2003b4e0b39930c0cb90f1aed4dee18d37079c7e0599ce17d4d1d7e00"
             },
-            "aarch64_docker_image" : {
-                "pkg_id":"home-station-arm64-img",
-                "docker_image_name":"filebrowser/filebrowser:s6"
+            "aarch64_docker_image": {
+                "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.0-aarch64",
+                "pkg_id": "nightly-linux-aarch64.buckyos-filebrowser-img#0.4.0",
+                "docker_image_hash": "sha256:237c67af98da4a0d6f26de1bb9acd82e1f18e9d75684c82961b5754197a5b81b"
             },
-            "web_pages" :{
-                "pkg_id" : "home-station-web-page"
+            "amd64_win_app": {
+                "pkg_id": "nightly-windows-amd64.buckyos-filebrowser-bin#0.4.0"
             },
-            "amd64_direct_image" :{
-                "pkg_id" : "home-station-web-page",
-                "package_url": "https://web3.buckyos.io/static/home-station-win.zip"
+            "aarch64_apple_app": {
+                "pkg_id": "nightly-apple-aarch64.buckyos-filebrowser-bin#0.4.0"
             },
-            "amd64_win_app" :{
-                "pkg_id" : "home-station-win-app"
-            },
-            "amd64_linux_app" :{
-                "pkg_id" : "home-station-linux-app"
+            "amd64_apple_app": {
+                "pkg_id": "nightly-apple-amd64.buckyos-filebrowser-bin#0.4.0"
             }
+        },
+        "deps": {
+            "nightly-linux-amd64.buckyos-filebrowser-img": "0.4.0",
+            "nightly-linux-aarch64.buckyos-filebrowser-img": "0.4.0",
+            "nightly-windows-amd64.buckyos-filebrowser-bin": "0.4.0",
+            "nightly-apple-amd64.buckyos-filebrowser-bin": "0.4.0",
+            "nightly-apple-aarch64.buckyos-filebrowser-bin": "0.4.0"
+        },
+        "install_config": {
+            "data_mount_point": [
+                "/srv/",
+                "/database/",
+                "/config/"
+            ],
+            "cache_mount_point": [],
+            "local_cache_mount_point": [],
+            "tcp_ports": {
+                "www": 80
+            },
+            "udp_ports": {}
         }
     },
     "app_index" : 0,
     "enable" : true,
     "state":"New",
-    "instance" : 2,
-    "data_mount_point" : "/srv/",
-    "cache_mount_point" : "/database/",
-    "local_cache_mount_point" : "/config/",
-    "max_cpu_num" : 4,
-    "max_cpu_percent" : 80,
+    "instance" : 1,
+    "data_mount_point" : ["/srv/","/database/","/config/"],
+    "cache_mount_point" :[],
+    "local_cache_mount_point" : [],
+    "max_cpu_num" : 2,
+    "max_cpu_percent" : 20,
     "memory_quota" : 1073741824,
     "tcp_ports" : {
         "www":80
+    },
+    "udp_ports" : {
     }
 }
 """
