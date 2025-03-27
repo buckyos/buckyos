@@ -38,19 +38,6 @@ def set_data_dir_permissions():
             # 设置目录权限为 755 (rwxr-xr-x)
             os.chmod(data_dir, 0o755)
 
-            data_dir = os.path.join(install_root_dir, "tmp")
-                     # 递归设置目录权限
-            for root, dirs, files in os.walk(data_dir):
-                os.chown(root, uid, gid)
-                for d in dirs:
-                    os.chown(os.path.join(root, d), uid, gid)
-                for f in files:
-                    os.chown(os.path.join(root, f), uid, gid)
-            
-            # 设置目录权限为 755 (rwxr-xr-x)
-            os.chmod(data_dir, 0o755)   
-            print(f"set data dir {data_dir} permissions to {real_user}")
-
 def install(install_all=False):
     if install_root_dir == "":
         print("Unknown platform, not support install, skip.")
@@ -90,23 +77,6 @@ def install(install_all=False):
         #just update bin
         shutil.copytree(os.path.join(src_dir, "rootfs/bin"), bin_dir)
 
-    if platform.system() == "Windows":
-        app_bin_dir = os.path.join(install_root_dir, "bin", "home-station")
-        if not os.path.exists(app_bin_dir):
-            print("downloading filebrowser app on windows")
-            os.makedirs(app_bin_dir,exist_ok=True)
-
-            import urllib.request
-            import zipfile
-            [tmp_path, msg] = urllib.request.urlretrieve("https://web3.buckyos.io/static/home-station-win.zip")
-
-            with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
-                zip_ref.extractall(app_bin_dir)
-            os.remove(tmp_path)
-    else:
-        print("pulling filebrowser docker image...")
-        os.system("docker pull filebrowser/filebrowser:s6")
-    
     # 在安装完成后设置数据目录权限
     set_data_dir_permissions()
 

@@ -62,7 +62,7 @@
         "www": {
             "type":"app",
             "user_id":"{{user_name}}",
-            "app_id":"home-station"
+            "app_id":"buckyos-filebrowser"
         },
         "sys": {
             "type":"app",
@@ -186,7 +186,7 @@
             "amd64_docker_image": {
                 "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.0-amd64",
                 "pkg_id": "nightly-linux-amd64.buckyos-filebrowser-img#0.4.0",
-                "docker_image_hash": "sha256:503bf3e2003b4e0b39930c0cb90f1aed4dee18d37079c7e0599ce17d4d1d7e00"
+                "docker_image_hash": "sha256:ab004b6d5c60ec9aa5fbb5a8a46cf4c81137333091af3b18ba0858555ab5e5b7"
             },
             "aarch64_docker_image": {
                 "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.0-aarch64",
@@ -283,7 +283,8 @@
 
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
-                        }
+                        },
+                        
                     }
                 },
                 "sys.*": {
