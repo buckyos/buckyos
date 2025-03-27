@@ -126,6 +126,26 @@ impl RepoServer {
         })
     }
     
+    pub async fn init_check(&self) -> Result<(),RPCErrors> {
+        let get_result = NamedDataMgr::get_obj_id_by_path(None, "/repo/meta_index.db").await;
+        if get_result.is_ok() {
+            let default_meta_index_db_path = self.get_my_default_meta_index_db_path();
+            if !default_meta_index_db_path.exists() {
+                info!("default meta-index-db found, but not set to NDN, bind it");
+                let mut file_object = FileObject::new("meta_index.db".to_string(),0,String::new());
+                NamedDataMgr::pub_local_file_as_fileobj(None,&default_meta_index_db_path,
+                    "/repo/meta_index.db","/repo/meta_index.db/content",
+                    &mut file_object,"kernel","repo_service").await.map_err(|e| {
+                        error!("pub default meta-index-db to named-mgr failed, err:{}", e);
+                        RPCErrors::ReasonError(format!("pub_index failed, err:{}", e))
+                    })?;
+                info!("pub default meta-index-db to named-mgr success");
+            }
+        }
+
+        Ok(())
+    }
+
     //成功返回需要下载的chunkid列表
     async fn get_need_chunk_in_remote_index_db(&self,new_meta_index_db_path: &PathBuf) -> Result<HashMap<String,WillDownloadPkgInfo>, RPCErrors> {
         let meta_index_db = MetaIndexDb::new(new_meta_index_db_path.clone(),true).map_err(|e| {
@@ -447,9 +467,19 @@ impl RepoServer {
         info!("update meta-index-db:source {}, download url:{}", "root", root_source_url);
         let new_meta_index_db_path = self.get_my_default_meta_index_db_path().with_extension("download");
 
+
         let runtime = get_buckyos_api_runtime()?;
         let session_token = runtime.get_session_token().await;
         let ndn_client = NdnClient::new(root_source_url.clone(),Some(session_token),None);
+
+        let is_better = ndn_client.verify_local_is_better(root_source_url.as_str(),&self.get_my_default_meta_index_db_path()).await;
+        if is_better.is_ok() && is_better.unwrap() {
+            info!("local meta-index-db is better than remote, will not download");
+            return Ok(RPCResponse::new(RPCResult::Success(json!({
+                "success": true,
+            })), req.seq));
+        }
+        
         ndn_client.download_fileobj_to_local(root_source_url.as_str(),&new_meta_index_db_path, None).await.map_err(|e| {
             error!("download remote meta-index-db by {} failed, err:{}", root_source_url, e);
             RPCErrors::ReasonError(format!("download remote meta-index-db by {} failed, err:{}", root_source_url, e))

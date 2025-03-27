@@ -55,7 +55,9 @@ async fn service_main() -> Result<()> {
         error!("repo service init error! err:{}", e);
         anyhow::anyhow!("repo service init error! err:{}", e)
       })?;
-
+    
+    repo_server.init_check().await?;
+    info!("repo service init check OK.");
 
     register_inner_service_builder("repo_server", move || Box::new(repo_server.clone())).await;
     //let repo_server_dir = get_buckyos_system_bin_dir().join("repo");

@@ -1,9 +1,10 @@
-use buckyos_kit::buckyos_get_unix_timestamp;
+use buckyos_kit::{buckyos_get_unix_timestamp,is_default};
 use serde::{Serialize,Deserialize};
+
 use crate::{ChunkId, LinkData};
 use std::collections::HashMap;
 use crate::{OBJ_TYPE_FILE,OBJ_TYPE_PATH,build_named_object_by_json,ObjId};
-
+use serde_json::Value;
 //TODO：NDN如何提供一种通用机制，检查FileObject在本地是 完全存在的 ？ 在这里的逻辑是FileObject的Content(存在)
 // 思路：Object如果引用了另一个Object,要区分这个引用是强引用(依赖）还是弱引用，
 #[derive(Serialize,Deserialize,Clone)]
@@ -11,6 +12,9 @@ pub struct FileObject {
     pub name:String,
     pub size:u64,
     pub content:String,//chunkid
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
+    pub exp:u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta:Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -23,11 +27,14 @@ pub struct FileObject {
     pub chunk_list:Option<HashMap<String,Vec<String>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub links:Option<Vec<LinkData>>,
+    #[serde(flatten)]
+    pub extra_info: HashMap<String, Value>,
 }
 
 impl FileObject {
     pub fn new(name:String,size:u64,content:String)->Self {
-        Self {name,size,content,meta:None,mime:None,owner:None,create_time:None,chunk_list:None,links:None}
+        Self {name,size,content,meta:None,mime:None,owner:None,exp:0,
+            create_time:None,chunk_list:None,links:None,extra_info:HashMap::new()}
     }
 
     pub fn gen_obj_id(&self)->(ObjId, String) {

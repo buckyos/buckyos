@@ -333,14 +333,10 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
     let meta_db_file_patgh = root_env_path.join(".pkgs").join("meta_index.db");
     let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
     
-    let is_same = ndn_client.verify_remote_is_same_as_local_file(zone_repo_index_db_url,&meta_db_file_patgh).await
-        .map_err(|err| {
-            error!("verify remote index db  to root pkg env's meta-Index db failed! {}", err);
-            return String::from("verify remote index db  to root pkg env's meta-Index db failed!");
-        })?;
+    let local_is_better = ndn_client.verify_local_is_better(zone_repo_index_db_url,&meta_db_file_patgh).await
 
-    if is_same {
-        info!("remote index db is same as local index db, no need to update!");
+    if local_is_better.is_ok() && local_is_better.unwrap() {
+        info!("local meta-index.db is better than repo's default meta-index.db, no need to update!");
         return Ok(false);
     }
 
