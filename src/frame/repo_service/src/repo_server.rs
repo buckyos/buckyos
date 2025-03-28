@@ -472,7 +472,7 @@ impl RepoServer {
         let session_token = runtime.get_session_token().await;
         let ndn_client = NdnClient::new(root_source_url.clone(),Some(session_token),None);
 
-        let is_better = ndn_client.verify_local_is_better(root_source_url.as_str(),&self.get_my_default_meta_index_db_path()).await;
+        let is_better = ndn_client.local_is_better(root_source_url.as_str(),&self.get_my_default_meta_index_db_path()).await;
         if is_better.is_ok() && is_better.unwrap() {
             info!("local meta-index-db is better than remote, will not download");
             return Ok(RPCResponse::new(RPCResult::Success(json!({

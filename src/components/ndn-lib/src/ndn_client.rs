@@ -515,18 +515,15 @@ impl NdnClient {
         Ok((obj_id, file_obj))
     }
 
-    pub async fn verify_local_is_better(&self,url:&str,local_path:&PathBuf) -> NdnResult<bool> {
+    pub async fn local_is_better(&self,url:&str,local_path:&PathBuf) -> NdnResult<bool> {
         // 1. 通过url下载fileojbect对象
         // 2. 计算本地文件的hash 
         // 3. 比较fileobj的hcontent和本地文件的hash
 
         if !local_path.exists() {
-            warn!("verify_remote_is_same_as_local_file: local file does not exist: {:?}", local_path);
+            warn!("local_is_better: local file does not exist: {:?}", local_path);
             return Ok(false);
         }
-
-
-        info!("verify_remote_is_same_as_local_file: verify remote fileobj {} with local file {:?}", url, local_path);
 
         let mut file = tokio::fs::File::open(local_path).await
             .map_err(|e| NdnError::IoError(format!("Failed to open local file: {}", e)))?;
@@ -540,8 +537,9 @@ impl NdnClient {
         let content_chunk_id = ChunkId::new(file_obj.content.as_str())
             .map_err(|e| NdnError::Internal(format!("Failed to parse content chunk id: {}", e)))?;
 
-        let local_fileobj_file = local_path.with_extension("fileobj");
+        let local_fileobj_file = PathBuf::from(format!("{}.fileobj",local_path.to_string_lossy()));
         if local_fileobj_file.exists() {
+            info!("local_is_better: local fileobj file exists: {:?}", local_fileobj_file);
             let local_fileobj = tokio::fs::read_to_string(local_path.with_extension("fileobj")).await
                 .map_err(|e| NdnError::IoError(format!("Failed to read local fileobj file: {}", e)))?;
             let local_fileobj: FileObject = serde_json::from_str(&local_fileobj)
@@ -552,6 +550,7 @@ impl NdnClient {
         }
 
         if file_size != file_obj.size {
+            info!("local_is_better: file size not match, remote:{} local:{}",file_obj.size,file_size);
             return Ok(false);
         }
 

@@ -431,6 +431,48 @@ pub async fn install_pkg(
     Ok(())
 }
 
+pub async fn set_pkg_meta(
+    meta_path: &str,
+    db_path: &str
+) -> Result<(), String> {
+    let meta_path = PathBuf::from(meta_path);
+    let db_path = PathBuf::from(db_path);
+    if !meta_path.exists() {
+        return Err(format!("meta_path {} does not exist", meta_path.display()));
+    }
+    if !db_path.exists() {
+        return Err(format!("db_path {} does not exist", db_path.display()));
+    }
+
+    let meta_content = fs::read_to_string(meta_path).map_err(|e| {
+        format!("Failed to read meta_path: {}", e.to_string())
+    })?;
+
+    let meta_data:PackageMeta = PackageMeta::from_str(&meta_content).map_err(|e| {
+        format!("Failed to parse meta_path: {}", e.to_string())
+    })?;
+    let (meta_obj_id,meta_obj_id_str) = meta_data.gen_obj_id();
+
+    let meta_db = MetaIndexDb::new(db_path,false);
+    if meta_db.is_err() {
+        return Err(format!("Failed to open meta_db: {}", meta_db.err().unwrap()));
+    }
+    let meta_db = meta_db.unwrap();
+    let mut pkg_meta_map = HashMap::new();
+    pkg_meta_map.insert(meta_obj_id.to_string(),PackageMetaNode {
+        meta_jwt: meta_content,
+        pkg_name: meta_data.pkg_name.clone(),
+        version: meta_data.version.clone(),
+        tag: meta_data.tag.clone(),
+        author: meta_data.author.clone(),
+        author_pk: "".to_string(),
+    });
+    meta_db.add_pkg_meta_batch(&pkg_meta_map).map_err(|e| {
+        format!("Failed to set pkg meta: {}", e.to_string())
+    })?;
+    
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;

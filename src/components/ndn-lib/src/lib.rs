@@ -79,6 +79,8 @@ pub const OBJ_TYPE_MTREE: &str = "cytree";
 pub const OBJ_TYPE_OBJMAPT: &str = "cymap"; // object map
 pub const OBJ_TYPE_PACK: &str = "cypack"; // object set
 pub const OBJ_TYPE_LIST: &str = "cylist"; // object list
+
+pub const OBJ_TYPE_PKG: &str = "pkg"; // package
 // mod http;
 // pub use http::*;
 

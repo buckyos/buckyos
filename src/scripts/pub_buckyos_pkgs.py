@@ -53,6 +53,7 @@ def pack_packages(pkg_dir, target_dir):
     for pkg_path in pkg_dirs:
         if not os.path.isdir(pkg_path):
             continue
+        print(f"# pack {pkg_path}")
             
         # 检查是否有有效的.pkg_meta.json
         meta_file = os.path.join(pkg_path, ".pkg_meta.json")

@@ -179,8 +179,8 @@ impl CyfsWarpServer {
     ) -> Result<Response<Body>, hyper::Error> {
         match router.route(req, client_ip).await {
             Ok(response) => Ok(response),
-            Err(e) => {
-                error!("Error handling request: {:?}", e);
+            Err(_e) => {
+                //error!("Error handling request: {}", e.to_string());
                 Ok(Response::builder()
                     .status(500)
                     .body(Body::from("Internal Server Error"))

@@ -267,6 +267,7 @@ impl PackageEnv {
         }
 
         let meta_db_path = self.get_meta_db_path();
+        //info!("get meta db from {}", meta_db_path.display());
         let meta_db = MetaIndexDb::new(meta_db_path,true)?;
         if let Some((meta_obj_id,pkg_meta)) = meta_db.get_pkg_meta(&pkg_id_str)? {
              return Ok((meta_obj_id,pkg_meta));
@@ -484,15 +485,15 @@ impl PackageEnv {
         //注意处理前缀: 如果包名与当前env前缀相同，那么符号链接里只包含无前缀部分
         //建立符号链接 ./pkg_nameA#version -> .pkgs/pkg_nameA/$meta_obj_id
         //如果是最新版本，建立符号链接 ./pkg_nameA -> .pkgs/pkg_nameA/$meta_obj_id
-
+        info!("extract pkg {} from chunk",pkg_meta.pkg_name.as_str());
         let buf_reader = BufReader::new(chunk_reader);
         let gz_decoder = GzipDecoder::new(buf_reader);
         let mut archive = Archive::new(gz_decoder);
-        let synlink_target = format!(".pkgs/{}/{}", pkg_meta.pkg_name, meta_obj_id);
+        let synlink_target = format!("./.pkgs/{}/{}", pkg_meta.pkg_name, meta_obj_id);
         let target_dir = self.work_dir.join(synlink_target.clone());
         //如果target_dir存在？则根据是否强制安装决定是否删除后继续
         if force_install {
-            tokio::fs::remove_dir_all(&target_dir).await?;
+            tokio::fs::remove_dir_all(&target_dir).await;
         }
 
         if target_dir.exists() {
@@ -502,12 +503,19 @@ impl PackageEnv {
             ));
         }
 
+        let link_pkg_name;
+        if pkg_meta.pkg_name.starts_with(self.get_prefix().as_str()) {
+            link_pkg_name = pkg_meta.pkg_name.split(".").last().unwrap().to_string();
+        } else {
+            link_pkg_name = pkg_meta.pkg_name.clone();
+        }
+        
         tokio::fs::create_dir_all(&target_dir).await?;
         archive.unpack(&target_dir).await?;
 
         // Create symbolic links
         if self.config.enable_link {
-            let symlink_path = format!("./{}#{}", pkg_meta.pkg_name, pkg_meta.version);
+            let symlink_path = format!("./{}#{}", link_pkg_name, pkg_meta.version);
             let symlink_path = self.work_dir.join(symlink_path);
             // 如果链接存在则删除
             if tokio::fs::symlink_metadata(&symlink_path).await.is_ok() {
@@ -523,7 +531,7 @@ impl PackageEnv {
             // If this is the latest version, create a symbolic link without the version
             let pkg_id = pkg_meta.get_package_id();
             if self.is_latest_version(&pkg_id).await? {
-                let latest_symlink_path = format!("./{}", pkg_meta.pkg_name);
+                let latest_symlink_path = format!("./{}", link_pkg_name);
                 let latest_symlink_path = self.work_dir.join(latest_symlink_path);
                 if tokio::fs::symlink_metadata(&latest_symlink_path).await.is_ok() {
                     tokio::fs::remove_file(&latest_symlink_path).await?;

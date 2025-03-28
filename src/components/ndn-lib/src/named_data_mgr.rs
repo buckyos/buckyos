@@ -898,6 +898,8 @@ impl NamedDataMgr {
 
         fileobj_template.content = chunk_id.to_string();
         fileobj_template.size = chunk_size;
+        fileobj_template.create_time = Some(buckyos_get_unix_timestamp());
+        
         let (file_obj_id,file_obj_str) = fileobj_template.gen_obj_id();
         let chunk_obj_id = chunk_id.to_obj_id();
         let real_named_mgr = named_mgr.lock().await;

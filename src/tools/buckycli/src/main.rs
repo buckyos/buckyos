@@ -82,7 +82,7 @@ async fn main() -> Result<(), String> {
                 )
                 .arg(
                     Arg::new("env")
-                        .long("target env path")
+                        .long("env")
                         .help("target env path, default is current dir")
                         .required(false),
                 )
@@ -99,9 +99,27 @@ async fn main() -> Result<(), String> {
                 )
                 .arg(
                     Arg::new("env")
-                        .long("target env path")
+                        .long("env")
                         .help("target env path, default is current dir")
                         .required(false),
+                )
+        )
+        .subcommand(
+            Command::new("set_pkg_meta")
+                .about("set(add or update) pkg meta to meta-index-db")
+                .arg(
+                    Arg::new("meta_path")
+                        .index(1)
+                        .long("meta_path")
+                        .help("meta path")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("db_path")
+                        .index(2)
+                        .long("db_path")
+                        .help("db path")
+                        .required(true),
                 )
         )
         .subcommand(
@@ -223,6 +241,16 @@ async fn main() -> Result<(), String> {
                     return Err("pack package failed!".to_string());
                 }
             }
+        }
+        Some(("set_pkg_meta", matches)) => {
+            let meta_path = matches.get_one::<String>("meta_path").unwrap();
+            let db_path = matches.get_one::<String>("db_path").unwrap();
+            let set_result = set_pkg_meta(meta_path, db_path).await;
+            if set_result.is_err() {
+                println!("Set pkg meta failed! {}", set_result.err().unwrap());
+                return Err("set pkg meta failed!".to_string());
+            }
+            println!("############\nSet pkg meta {} to db {} success!", meta_path, db_path);
         }
         
         Some(("install_pkg", matches)) => {

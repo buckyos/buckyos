@@ -16,9 +16,13 @@ channel = "nightly"
 platform_name = platform.system().lower()
 if platform_name == "darwin":
     platform_name = "apple"
+    
 machine_name = platform.machine()
+print(f"machine_name: {machine_name}")
 if machine_name == "arm64":
     machine_name = "aarch64"
+if machine_name == "x86_64":
+    machine_name = "amd64"
 
 perfix = channel + "-" + platform_name + "-" + machine_name
 
