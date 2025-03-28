@@ -121,7 +121,7 @@ def env.try_update_index_db(new_index_db):
 */
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -150,13 +150,14 @@ use crate::meta_index_db::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageEnvConfig {
+    pub prefix: Option<String>, //如果指定了，那么加载无 . 的pkg_name时，会自动补上prefix,变成加载 $prefix.$pkg_name
     pub enable_link: bool,
     pub enable_strict_mode: bool,
     pub index_db_path: Option<String>,
     pub parent: Option<PathBuf>, //parent package env work_dir
-    pub ready_only: bool,
-    pub named_mgr_name: Option<String>, //如果指定了，则使用named_mgr_name作为命名空间
-    pub prefix: Option<String>, //如果指定了，那么加载无 .符号的pkg_name时，会自动补上prefix
+    pub ready_only: bool,//read only env cann't install any new pkgs
+    pub named_mgr_name: Option<String>, //如果指定了，则使用named_mgr_name作为默认read chunk的named_mgr
+    pub installed:HashSet<String>, //pkg_id列表，表示已经安装的pkg
 }
 
 impl PackageEnvConfig {
@@ -189,6 +190,7 @@ impl Default for PackageEnvConfig {
             ready_only: false,
             named_mgr_name: None,
             prefix: Some(os_type.to_string()),
+            installed: HashSet::new(),
         }
     }
 }
@@ -211,25 +213,9 @@ pub struct PackageEnv {
     pub work_dir: PathBuf,
     pub config: PackageEnvConfig,
     lock_db: Arc<TokioMutex<Option<HashMap<String, (String,PackageMeta)>>>>,
-    install_tasks: Arc<TokioMutex<HashMap<String, InstallTask>>>,
-    task_notifiers: Arc<TokioMutex<HashMap<String, oneshot::Receiver<()>>>>,
 }
 
-#[derive(Debug)]
-struct InstallTask {
-    pkg_id: String,
-    status: InstallStatus,
-    sub_tasks: Vec<String>,
-}
 
-#[derive(Debug)]
-enum InstallStatus {
-    Pending,
-    Downloading,
-    Installing,
-    Completed,
-    Failed(String),
-}
 
 impl PackageEnv {
     pub fn new(work_dir: PathBuf) -> Self {
@@ -248,10 +234,22 @@ impl PackageEnv {
         Self {
             work_dir,
             config: env_config,
-            lock_db: Arc::new(TokioMutex::new(None)),
-            install_tasks: Arc::new(TokioMutex::new(HashMap::new())),
-            task_notifiers: Arc::new(TokioMutex::new(HashMap::new())),
+            lock_db: Arc::new(TokioMutex::new(None))
         }
+    }
+
+    pub fn update_config_file(&self,config: &PackageEnvConfig) -> PkgResult<()> {
+        let config_path = self.work_dir.join("pkg.cfg.json");
+        if config_path.exists() {
+            let config_str = serde_json::to_string(config).unwrap();
+            std::fs::write(config_path, config_str).unwrap();
+        } else {
+            return Err(PkgError::FileNotFoundError(
+                "Package config file not found".to_owned(),
+            ));
+        }
+
+        Ok(())
     }
 
     // 基于env获得pkg的meta信息
@@ -333,8 +331,20 @@ impl PackageEnv {
         }
     }
 
+    pub async fn cacl_pkg_deps_metas(&self,pkg_meta: &PackageMeta,deps: &mut HashMap<String,PackageMeta>) -> PkgResult<()> {
+        for (dep_name, dep_version) in pkg_meta.deps.iter() {
+            let dep_id = format!("{}#{}", dep_name, dep_version);
+            let (meta_obj_id,dep_meta) = self.get_pkg_meta(&dep_id).await?;
+            let next_future = Box::pin(self.cacl_pkg_deps_metas(&dep_meta,deps));
+            let _ = next_future.await?;
+            deps.insert(meta_obj_id,dep_meta);
+        }
+        Ok(())
+    }
+    
+
     //检查pkg的依赖是否都已经在本机就绪，注意本操作并不会修改env
-    pub async fn check_pkg_ready(meta_index_db: &PathBuf, pkg_id: &str, named_mgr_id: Option<&str>,miss_chunk_list: &mut Vec<ChunkId>, need_check_deps: bool) -> PkgResult<()> {
+    pub async fn check_pkg_ready(meta_index_db: &PathBuf, pkg_id: &str, named_mgr_id: Option<&str>,miss_chunk_list: &mut Vec<ChunkId>) -> PkgResult<()> {
         let meta_db = MetaIndexDb::new(meta_index_db.clone(),true)?;
         let meta_info = meta_db.get_pkg_meta(pkg_id)?;
         if meta_info.is_none() {
@@ -374,14 +384,6 @@ impl PackageEnv {
             }
         }
 
-        if need_check_deps {
-            for (dep_name, dep_version) in pkg_meta.deps.iter() {
-                let dep_id = format!("{}#{}", dep_name, dep_version);
-                let check_future = Box::pin(PackageEnv::check_pkg_ready(meta_index_db, &dep_id, named_mgr_id, miss_chunk_list, true));
-                let _ = check_future.await?;
-            }
-        }
-
         Ok(())
     }
 
@@ -414,12 +416,49 @@ impl PackageEnv {
         Ok(())
     }
 
+
+    pub async fn install_pkg_impl(&mut self, meta_obj_id: &str,pkg_meta: &PackageMeta,force_install: bool) -> PkgResult<()> {
+        let pkg_id = pkg_meta.get_package_id().to_string();
+        //检查chunk是否存在
+        if let Some(ref chunk_id_str) = pkg_meta.chunk_id {
+            let chunk_id = ChunkId::new(&chunk_id_str)
+                .map_err(|e| PkgError::ParseError(
+                    pkg_id.clone(),
+                    format!("Invalid chunk id: {}", e),
+                ))?;
+            if !NamedDataMgr::have_chunk(&chunk_id,self.config.named_mgr_name.as_deref()).await {
+                info!("{}'s chunk {} not found, downloading...", pkg_id, chunk_id_str);
+                //TODO:需要得到zone repo url
+                let zone_ndn_url = "http://127.0.0.1/ndn/";
+                let ndn_client = NdnClient::new(zone_ndn_url.to_string(),None,self.config.named_mgr_name.clone());
+                let chunk_size = ndn_client.pull_chunk(chunk_id.clone(),None).await
+                    .map_err(|e| PkgError::DownloadError(
+                        pkg_id.clone(),
+                        format!("Failed to download chunk: {}", e),
+                    ))?;
+                info!("chunk {} downloaded, size: {}", chunk_id_str, chunk_size);
+            }
+
+            let (chunk_reader,chunk_size) = NamedDataMgr::open_chunk_reader(self.config.named_mgr_name.as_deref(),
+                &chunk_id,SeekFrom::Start(0),false).await
+                .map_err(|e| PkgError::LoadError(
+                    pkg_id.clone(),
+                    format!("Failed to open chunk reader: {}", e),
+                ))?;
+
+            self.extract_pkg_from_chunk(&pkg_meta,meta_obj_id,chunk_reader,force_install).await?;
+            info!("{} extract chunk to pkg_env OK.", pkg_id);
+        }
+
+        Ok(())
+    }
+
     //安装pkg，安装成功后该pkg可以加载成功,返回安装成功的pkg的meta_obj_id
     //安装操作会锁定env，直到安装完成（不会出现两个安装操作同时进行）
     //安装过程会根据env是否支持符号链接，尝试建立有好的符号链接
     //在parent envinstall pkg成功，会对所有的child env都有影响
     //在child env install pkg成功，对parent env没有影响
-    pub async fn install_pkg(&self, pkg_id: &str, install_deps: bool,force_install: bool) -> PkgResult<String> {
+    pub async fn install_pkg(&mut self, pkg_id: &str, install_deps: bool,force_install: bool) -> PkgResult<String> {
         if self.config.ready_only {
             return Err(PkgError::InstallError(
                 pkg_id.to_owned(),
@@ -441,37 +480,25 @@ impl PackageEnv {
         //先将必要的chunk下载到named_mgr中,对于单OOD系统，这些chunk可能都已经准备好了
         let (meta_obj_id,pkg_meta) = self.get_pkg_meta(pkg_id).await?;
 
-        //检查chunk是否存在
-        if let Some(ref chunk_id_str) = pkg_meta.chunk_id {
-            let chunk_id = ChunkId::new(&chunk_id_str)
-                .map_err(|e| PkgError::ParseError(
-                    pkg_id.to_owned(),
-                    format!("Invalid chunk id: {}", e),
-                ))?;
-            if !NamedDataMgr::have_chunk(&chunk_id,self.config.named_mgr_name.as_deref()).await {
-                info!("{}'s chunk {} not found, downloading...", pkg_id, chunk_id_str);
-                //TODO:需要得到zone repo url
-                let zone_ndn_url = "http://127.0.0.1/ndn/";
-                let ndn_client = NdnClient::new(zone_ndn_url.to_string(),None,self.config.named_mgr_name.clone());
-                let chunk_size = ndn_client.pull_chunk(chunk_id.clone(),None).await
-                    .map_err(|e| PkgError::DownloadError(
-                        pkg_id.to_owned(),
-                        format!("Failed to download chunk: {}", e),
-                    ))?;
-                info!("chunk {} downloaded, size: {}", chunk_id_str, chunk_size);
-            }
-
-            let (chunk_reader,chunk_size) = NamedDataMgr::open_chunk_reader(self.config.named_mgr_name.as_deref(),
-                &chunk_id,SeekFrom::Start(0),false).await
-                .map_err(|e| PkgError::LoadError(
-                    pkg_id.to_owned(),
-                    format!("Failed to open chunk reader: {}", e),
-                ))?;
-
-            self.extract_pkg_from_chunk(&pkg_meta,meta_obj_id.as_str(),chunk_reader,force_install).await?;
-            info!("{} extract chunk to pkg_env OK.", pkg_id);
+        let will_install_pkg_id = pkg_meta.get_package_id();
+        if self.config.installed.insert(will_install_pkg_id.to_string()) {
+            self.update_config_file(&self.config)?;
+            info!("added pkg {} to env.pkg_cfg.json installed list", pkg_id);
         }
 
+        if install_deps {
+            info!("install deps for pkg {}", pkg_id);
+            let mut deps = HashMap::new();
+            self.cacl_pkg_deps_metas(&pkg_meta,&mut deps).await?;
+
+            for (dep_meta_obj_id, dep_pkg_meta) in deps.iter() {
+                info!("install dep pkg {}#{}", dep_pkg_meta.pkg_name, dep_pkg_meta.version);
+                    self.install_pkg_impl(dep_meta_obj_id, &dep_pkg_meta, force_install).await?;
+            }
+        }
+
+        
+        self.install_pkg_impl(&meta_obj_id,&pkg_meta,force_install).await?;
         Ok(meta_obj_id)   
     }
 
@@ -527,10 +554,12 @@ impl PackageEnv {
             tokio::fs::symlink(&synlink_target, &symlink_path).await?;
             #[cfg(target_family = "windows")]
             std::os::windows::fs::symlink_dir(&synlink_target, &symlink_path)?;
-        
-            // If this is the latest version, create a symbolic link without the version
-            let pkg_id = pkg_meta.get_package_id();
-            if self.is_latest_version(&pkg_id).await? {
+            info!("create version symlink: {} -> {}", symlink_path.display(), synlink_target.as_str());
+        }
+
+        let pkg_id = pkg_meta.get_package_id();
+        if self.is_latest_version(&pkg_id).await? {
+            if self.config.enable_link {
                 let latest_symlink_path = format!("./{}", link_pkg_name);
                 let latest_symlink_path = self.work_dir.join(latest_symlink_path);
                 if tokio::fs::symlink_metadata(&latest_symlink_path).await.is_ok() {
@@ -540,6 +569,16 @@ impl PackageEnv {
                 tokio::fs::symlink(&synlink_target, &latest_symlink_path).await?;
                 #[cfg(target_family = "windows")]
                 std::os::windows::fs::symlink_dir(&synlink_target, &latest_symlink_path)?;
+                info!("create latest symlink: {} -> {}", latest_symlink_path.display(), synlink_target.as_str());
+            } else {
+                let latest_folder_path = format!("./{}", link_pkg_name);
+                let latest_folder_path = self.work_dir.join(latest_folder_path);
+                if tokio::fs::metadata(&latest_folder_path).await.is_ok() {
+                    tokio::fs::remove_dir(&latest_folder_path).await?;
+                }
+                tokio::fs::create_dir(&latest_folder_path).await?;
+                tokio::fs::copy(&synlink_target, &latest_folder_path).await?;
+                info!("create latest folder: {} && copy files.", latest_folder_path.display());
             }
         }
 

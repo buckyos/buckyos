@@ -278,12 +278,13 @@ async fn do_boot_upgreade() -> std::result::Result<(), String>  {
 
 async fn check_and_update_system_pkgs(pkg_list: Vec<String>,session_token: Option<String>) -> std::result::Result<bool, String>  {
     let mut is_self_upgrade = false;
+    let mut pkg_env = PackageEnv::new(get_buckyos_system_bin_dir());
     for pkg_id in pkg_list {
-        let pkg_env = PackageEnv::new(get_buckyos_system_bin_dir());
+
         let media_info = pkg_env.load(&pkg_id).await;
         if media_info.is_err() {
             info!("check_and_update_system_pkgs: pkg {} not exist, deploy it", pkg_id);
-            let result = pkg_env.install_pkg(&pkg_id, false,false).await;
+            let result = pkg_env.install_pkg(&pkg_id, true,false).await;
             if result.is_err() {
                 error!("check_and_update_system_pkgs: deploy pkg {} failed! {}", pkg_id, result.err().unwrap());
             }
@@ -311,7 +312,7 @@ async fn make_sure_system_pkgs_ready(meta_db_path: &PathBuf,prefix: &str,session
     for pkg_id in system_pkgs {
         let pkg_id = format!("{}.{}",prefix,pkg_id);
         let check_result = PackageEnv::check_pkg_ready(meta_db_path, pkg_id.as_str(), 
-        None, &mut miss_chunk_list, true).await;
+        None, &mut miss_chunk_list).await;
         if check_result.is_err() {
             error!("make_sure_system_pkgs_ready: pkg {} is not ready! {}", pkg_id, check_result.err().unwrap());
             return Err(String::from("pkg is not ready!"));  
@@ -471,7 +472,7 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
 
     if !system_config_service_pkg.try_load().await {
         error!("load system_config_service pkg failed!");
-        let env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
         let result = env.install_pkg("system_config", false,false).await;
         if result.is_err() {
             error!("install system_config_service pkg failed! {}", result.err().unwrap());
@@ -524,7 +525,7 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
         //        对env的安装操作事务化，不实用按需deploy逻辑，而是由node_daemon统一次性触发更新
         
         info!("cyfs_gateway service pkg not exist, try install it...");
-        let env = PackageEnv::new(get_buckyos_system_bin_dir());
+        let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
         let result = env.install_pkg("cyfs_gateway", false,false).await;
         if result.is_err() {
             error!("install cyfs_gateway service pkg failed! {}", result.err().unwrap());
