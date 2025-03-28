@@ -424,7 +424,7 @@ pub async fn install_pkg(
     }
 
     let the_env:PackageEnv = PackageEnv::new(target_env);
-    the_env.install_pkg(pkg_id, false).await.map_err(|e| {
+    the_env.install_pkg(pkg_id, false,true).await.map_err(|e| {
         format!("Failed to install pkg: {}", e.to_string())
     })?;
     

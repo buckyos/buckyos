@@ -33,7 +33,7 @@ def copy_web_apps(src, target):
 def copy_files(rust_target_dir):
     print("Copying files...")
     # code to copy files
-    strip_and_copy_rust_file(rust_target_dir, "node_daemon", root_bin_dir)
+    strip_and_copy_rust_file(rust_target_dir, "node_daemon", root_bin_dir,True)
     strip_and_copy_rust_file(rust_target_dir, "system_config", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "verify_hub", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "scheduler", root_bin_dir, True)

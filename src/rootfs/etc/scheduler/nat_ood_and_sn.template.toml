@@ -280,11 +280,9 @@
                                 "enable_mgr_file_path":true
                             }
                         }, 
-
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
-                        },
-                        
+                        }
                     }
                 },
                 "sys.*": {

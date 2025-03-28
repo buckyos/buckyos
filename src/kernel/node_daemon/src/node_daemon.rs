@@ -277,19 +277,23 @@ async fn do_boot_upgreade() -> std::result::Result<(), String>  {
 
 
 async fn check_and_update_system_pkgs(pkg_list: Vec<String>,session_token: Option<String>) -> std::result::Result<bool, String>  {
+    let mut is_self_upgrade = false;
     for pkg_id in pkg_list {
         let pkg_env = PackageEnv::new(get_buckyos_system_bin_dir());
         let media_info = pkg_env.load(&pkg_id).await;
         if media_info.is_err() {
             info!("check_and_update_system_pkgs: pkg {} not exist, deploy it", pkg_id);
-            let result = pkg_env.install_pkg(&pkg_id, false).await;
+            let result = pkg_env.install_pkg(&pkg_id, false,false).await;
             if result.is_err() {
                 error!("check_and_update_system_pkgs: deploy pkg {} failed! {}", pkg_id, result.err().unwrap());
+            }
+            if pkg_id == "node_daemon" {
+                is_self_upgrade = true;
             }
             info!("check_and_update_system_pkgs: deploy pkg {} success", pkg_id);
         }
     }
-    Ok(true)
+    Ok(is_self_upgrade)
 }
 
 async fn make_sure_system_pkgs_ready(meta_db_path: &PathBuf,prefix: &str,session_token: Option<String>) -> std::result::Result<(), String> {
@@ -396,8 +400,6 @@ async fn register_device_doc(device_doc:&DeviceConfig,syste_config_client: &Syst
     }
 }
 
-
-
 //if register OK then return sn's URL
 async fn report_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
     //try register ood's device_info to sn,
@@ -470,7 +472,7 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
     if !system_config_service_pkg.try_load().await {
         error!("load system_config_service pkg failed!");
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let result = env.install_pkg("system_config", false).await;
+        let result = env.install_pkg("system_config", false,false).await;
         if result.is_err() {
             error!("install system_config_service pkg failed! {}", result.err().unwrap());
             return Err(String::from("install system_config_service pkg failed!"));
@@ -523,7 +525,7 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
         
         info!("cyfs_gateway service pkg not exist, try install it...");
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let result = env.install_pkg("cyfs_gateway", false).await;
+        let result = env.install_pkg("cyfs_gateway", false,false).await;
         if result.is_err() {
             error!("install cyfs_gateway service pkg failed! {}", result.err().unwrap());
             return Err(String::from("install cyfs_gateway service pkg failed!"));
@@ -577,37 +579,18 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
     }
 
     Ok(())
-}
-
-fn get_node_daemon_version() -> u32 {
-    let build_number = 99999999;
-    return build_number;
-}
-
-async fn stop_all_system_services() -> std::result::Result<(), String> {
-    Ok(())
-}
+}   
 
 async fn node_main(node_host_name: &str,
                    is_ood: bool,
                    buckyos_api_client: &SystemConfigClient,
                    device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
-    let need_check_update:bool;
+
+    //check and upgrade some system pkgs not in app_stream or kernel_stream
     let root_env_need_upgrade = check_and_update_root_pkg_index_db(buckyos_api_client.get_session_token()).await;
     if root_env_need_upgrade.is_err() {
-        error!("check and update root pkg index db failed! {}", root_env_need_upgrade.err().unwrap());
-        need_check_update = false 
-    } else {
-        need_check_update = root_env_need_upgrade.unwrap();
+        warn!("check and update root_pkg_env index db failed! {}", root_env_need_upgrade.err().unwrap());
     }
-    
-
-    let node_daemon_version = get_node_daemon_version();
-    if node_daemon_version < 99999999 {
-        //TODO:check and update node_daemon
-
-    }
-    //2.check and upgrade some system pkgs not in app_stream or kernel_stream
     let system_pkgs = vec![
         "app_loader".to_string(),
         "node_active".to_string(),
@@ -617,10 +600,19 @@ async fn node_main(node_host_name: &str,
         "cyfs_gateway".to_string(),
         "system_config".to_string(),
         "verify_hub".to_string(),
+        "node_daemon".to_string(),
     ];
-    check_and_update_system_pkgs(system_pkgs,buckyos_api_client.get_session_token()).await;
-    
-    //3. control pod instance to target state
+    let is_self_upgrade = check_and_update_system_pkgs(system_pkgs,buckyos_api_client.get_session_token()).await;
+    if is_self_upgrade.is_err() {
+        warn!("check and update system pkgs failed! {}", is_self_upgrade.err().unwrap());
+    } else {
+        if is_self_upgrade.unwrap() {
+            warn!("node_daemon self upgrade,will restart!");
+            return Ok(false);
+        }
+    }
+
+    //control pod instance to target state
     let node_config = load_node_config(node_host_name, buckyos_api_client).await
         .map_err(|err| {
             error!("load node config failed! {}", err);
@@ -731,6 +723,10 @@ async fn node_daemon_main_loop(
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         } else {
             is_running = main_result.unwrap();
+            if !is_running {
+                break;
+            }
+
             let new_node_gateway_config = load_node_gateway_config(node_host_name, buckyos_api_client).await;
             if new_node_gateway_config.is_ok() {
                 let mut need_restart = false;

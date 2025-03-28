@@ -6,6 +6,7 @@ import subprocess
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 publish_dir = os.path.join(src_dir, "publish", "deb_template")
+base_meta_db_url = "http://buckyos.ai/ndn/repo/pub_meta_index.db/content"
 
 def adjust_control_file(dest_dir, new_version, architecture):
     control_file = os.path.join(dest_dir, "DEBIAN/control")
@@ -20,6 +21,29 @@ def adjust_control_file(dest_dir, new_version, architecture):
 
 temp_dir = tempfile.gettempdir()
 
+
+def prepare_meta_db():
+    # 1 download base meta db
+    print("# download base meta db from {base_meta_db_url}")
+    # 2 scan packed pkgs dir, add pkg_meta_info to meta db
+    # 3 save meta db to deb_dir/opt/buckyos/bin/.pkgs/meta_index.db
+    pass
+
+def install_pkgs_to_bin():
+    pkg_list = [
+        "app_loader",
+        "cyfs_gateway",
+        "cyfs_node",
+        "cyfs_node_daemon",
+        "cyfs_node_mgr",
+        "cyfs_node_mgr_daemon",
+        "cyfs_node_mgr_daemon_daemon",
+        "cyfs_node_mgr_daemon_daemon_daemon",
+    ]
+    pass
+
+
+
 def make_deb(architecture, version):
     print(f"make deb with architecture: {architecture}, version: {version}")
     deb_root_dir = os.path.join(temp_dir, "deb_build")
@@ -32,7 +56,17 @@ def make_deb(architecture, version):
     rootfs_dir = os.path.join(src_dir, "rootfs")
     dest_dir = os.path.join(deb_dir, "opt", "buckyos")
     shutil.copytree(rootfs_dir, dest_dir, dirs_exist_ok=True)
-    print(f"copy rootfs to {dest_dir}")
+    print(f"# copy rootfs to {dest_dir}")
+    bin_dir = os.path.join(dest_dir, "opt", "buckyos", "bin")
+    shutil.rmtree(bin_dir)
+    os.makedirs(bin_dir)
+    # write pkg.cfg.json to bin_dir
+    # write node_daemon to bin_dir 
+    print("# remove /opt/buckyos/bin dir and create it again")
+
+    prepare_meta_db()
+
+    install_pkgs_to_bin()
 
     print(f"run: chmod -R 755 {deb_dir}")
     subprocess.run(["chmod", "-R", "755", deb_dir], check=True)
@@ -48,7 +82,7 @@ def make_deb(architecture, version):
 if __name__ == "__main__":
     print("make sure YOU already run build.py!!!")
     architecture = "amd64"
-    version = "0.3.0"
+    version = "0.4.0"
 
     if len(sys.argv) > 1:
         architecture = sys.argv[1]

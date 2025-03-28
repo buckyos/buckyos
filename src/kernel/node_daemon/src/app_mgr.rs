@@ -117,7 +117,7 @@ impl RunItemControl for AppRunItem {
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         let instance_pkg_id = self.get_instance_pkg_id()?;
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
-        env.install_pkg(&instance_pkg_id, false).await
+        env.install_pkg(&instance_pkg_id, false,false).await
             .map_err(|e| {
                 error!("AppRunItem install pkg {} failed! {}", self.app_id, e);
                 return ControlRuntItemErrors::ExecuteError(

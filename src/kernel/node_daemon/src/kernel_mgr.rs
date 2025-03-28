@@ -54,7 +54,7 @@ impl RunItemControl for KernelServiceRunItem {
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         //这个逻辑是不区分新装和升级的
         let pkg_env = PackageEnv::new(get_buckyos_system_bin_dir());
-        pkg_env.install_pkg(&self.pkg_id, false).await
+        pkg_env.install_pkg(&self.pkg_id, false,false).await
             .map_err(|e| {
                 error!("KernelServiceRunItem install pkg {} failed! {}", self.pkg_id, e);
                 return ControlRuntItemErrors::ExecuteError(

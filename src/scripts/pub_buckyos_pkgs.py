@@ -10,11 +10,21 @@ import tempfile
 import platform
 import sys
 import json
-
+import shutil
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 buckycli_path = os.path.join(src_dir, "rootfs/bin/buckycli", "buckycli")
+
+
 if platform.system() == "Windows":
     buckycli_path += ".exe"
+
+def get_deb_rootfs_dir():
+    """获取deb的rootfs目录"""
+    if platform.system() == "Windows":
+        sys_temp_dir = tempfile.gettempdir()
+    else:
+        sys_temp_dir = "/tmp/"
+    return os.path.join(sys_temp_dir, "buckyos_deb_build")
 
 def get_default_pkg_dir():
     """获取默认的待发布的pack的pkg目录"""
@@ -101,6 +111,8 @@ def publish_index():
     else:
         print(f"发布索引失败: {result.stderr}")
         return False
+    
+
 
 def main():
     # 获取默认目录
@@ -135,6 +147,7 @@ def main():
         
     print("所有操作完成")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

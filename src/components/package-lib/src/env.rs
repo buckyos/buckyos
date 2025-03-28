@@ -418,13 +418,15 @@ impl PackageEnv {
     //安装过程会根据env是否支持符号链接，尝试建立有好的符号链接
     //在parent envinstall pkg成功，会对所有的child env都有影响
     //在child env install pkg成功，对parent env没有影响
-    pub async fn install_pkg(&self, pkg_id: &str, install_deps: bool) -> PkgResult<String> {
+    pub async fn install_pkg(&self, pkg_id: &str, install_deps: bool,force_install: bool) -> PkgResult<String> {
         if self.config.ready_only {
             return Err(PkgError::InstallError(
                 pkg_id.to_owned(),
                 "Cannot install in read-only mode".to_owned(),
             ));
         }
+
+        //如何检查目标pkg已经安装？
 
         if install_deps {
             return Err(PkgError::InstallError(
@@ -465,7 +467,7 @@ impl PackageEnv {
                     format!("Failed to open chunk reader: {}", e),
                 ))?;
 
-            self.extract_pkg_from_chunk(&pkg_meta,meta_obj_id.as_str(),chunk_reader).await?;
+            self.extract_pkg_from_chunk(&pkg_meta,meta_obj_id.as_str(),chunk_reader,force_install).await?;
             info!("{} extract chunk to pkg_env OK.", pkg_id);
         }
 
@@ -477,7 +479,7 @@ impl PackageEnv {
         meta_db.is_latest_version(pkg_id)
     }
 
-    async fn extract_pkg_from_chunk(&self, pkg_meta: &PackageMeta,meta_obj_id: &str,chunk_reader: ChunkReader) -> PkgResult<()> {
+    async fn extract_pkg_from_chunk(&self, pkg_meta: &PackageMeta,meta_obj_id: &str,chunk_reader: ChunkReader,force_install: bool) -> PkgResult<()> {
         //将chunk (这是一个tar.gz文件)解压安装到真实目录 .pkgs/pkg_nameA/$meta_obj_id
         //注意处理前缀: 如果包名与当前env前缀相同，那么符号链接里只包含无前缀部分
         //建立符号链接 ./pkg_nameA#version -> .pkgs/pkg_nameA/$meta_obj_id
@@ -486,8 +488,20 @@ impl PackageEnv {
         let buf_reader = BufReader::new(chunk_reader);
         let gz_decoder = GzipDecoder::new(buf_reader);
         let mut archive = Archive::new(gz_decoder);
-        let target_dir = format!(".pkgs/{}/{}", pkg_meta.pkg_name, meta_obj_id);
-        let target_dir = self.work_dir.join(target_dir);
+        let synlink_target = format!(".pkgs/{}/{}", pkg_meta.pkg_name, meta_obj_id);
+        let target_dir = self.work_dir.join(synlink_target.clone());
+        //如果target_dir存在？则根据是否强制安装决定是否删除后继续
+        if force_install {
+            tokio::fs::remove_dir_all(&target_dir).await?;
+        }
+
+        if target_dir.exists() {
+            return Err(PkgError::InstallError(
+                meta_obj_id.to_owned(),
+                "Package already installed".to_owned(),
+            ));
+        }
+
         tokio::fs::create_dir_all(&target_dir).await?;
         archive.unpack(&target_dir).await?;
 
@@ -495,24 +509,29 @@ impl PackageEnv {
         if self.config.enable_link {
             let symlink_path = format!("./{}#{}", pkg_meta.pkg_name, pkg_meta.version);
             let symlink_path = self.work_dir.join(symlink_path);
-            if tokio::fs::symlink_metadata(&symlink_path).await.is_err() {
-                #[cfg(target_family = "unix")]
-                tokio::fs::symlink(&target_dir, &symlink_path).await?;
-                #[cfg(target_family = "windows")]
-                std::os::windows::fs::symlink_dir(&target_dir, &symlink_path)?;
+            // 如果链接存在则删除
+            if tokio::fs::symlink_metadata(&symlink_path).await.is_ok() {
+                tokio::fs::remove_file(&symlink_path).await?;
             }
+
+            // 创建新的符号链接(使用相对路径)
+            #[cfg(target_family = "unix")]
+            tokio::fs::symlink(&synlink_target, &symlink_path).await?;
+            #[cfg(target_family = "windows")]
+            std::os::windows::fs::symlink_dir(&synlink_target, &symlink_path)?;
         
             // If this is the latest version, create a symbolic link without the version
             let pkg_id = pkg_meta.get_package_id();
             if self.is_latest_version(&pkg_id).await? {
                 let latest_symlink_path = format!("./{}", pkg_meta.pkg_name);
                 let latest_symlink_path = self.work_dir.join(latest_symlink_path);
-                if tokio::fs::symlink_metadata(&latest_symlink_path).await.is_err() {
-                    #[cfg(target_family = "unix")]
-                    tokio::fs::symlink(&target_dir, &latest_symlink_path).await?;
-                    #[cfg(target_family = "windows")]
-                    std::os::windows::fs::symlink_dir(&target_dir, &latest_symlink_path)?;
+                if tokio::fs::symlink_metadata(&latest_symlink_path).await.is_ok() {
+                    tokio::fs::remove_file(&latest_symlink_path).await?;
                 }
+                #[cfg(target_family = "unix")]
+                tokio::fs::symlink(&synlink_target, &latest_symlink_path).await?;
+                #[cfg(target_family = "windows")]
+                std::os::windows::fs::symlink_dir(&synlink_target, &latest_symlink_path)?;
             }
         }
 
