@@ -19,7 +19,7 @@ def strip_and_copy_rust_file(rust_target_dir, name, dest, need_dir=False):
     shutil.copy(src_file+ext, dest)
 
     # no need strip symbol on windows
-    if system == "Linux":
+    if system != "Windows":
         os.system(f"strip {os.path.join(dest, name)}")
 
 def copy_web_apps(src, target):

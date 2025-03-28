@@ -23,7 +23,7 @@ def adjust_control_file(dest_dir, new_version, architecture):
     f.write(content)
     f.close()
 
-temp_dir = tempfile.gettempdir()
+temp_dir = "/tmp/"
 
 
 def prepare_meta_db(rootfs_dir):

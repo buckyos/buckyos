@@ -465,16 +465,6 @@ impl PackageEnv {
                 "Cannot install in read-only mode".to_owned(),
             ));
         }
-
-        //如何检查目标pkg已经安装？
-
-        if install_deps {
-            return Err(PkgError::InstallError(
-                pkg_id.to_owned(),
-                "Install deps is not supported at this version".to_owned(),
-            ));
-        }
-
         // 获取文件锁
         let _filelock = self.acquire_lock().await?;
         //先将必要的chunk下载到named_mgr中,对于单OOD系统，这些chunk可能都已经准备好了
