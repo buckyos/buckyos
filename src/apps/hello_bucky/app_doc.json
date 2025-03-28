@@ -15,15 +15,15 @@
             }
         }
     },
-    "install_config" : {
-        "data_mount_point" : null,
-        "cache_mount_point" : null,
-        "local_cache_mount_point" : null,
-        "max_cpu_num" : 1,
-        "max_cpu_percent" : 10,
-        "memory_quota" : null,
-        "tcp_ports" : {
-            "www":80
-        }
+
+    "data_mount_point" : null,
+    "cache_mount_point" : null,
+    "local_cache_mount_point" : null,
+    "max_cpu_num" : 1,
+    "max_cpu_percent" : 10,
+    "memory_quota" : null,
+    "tcp_ports" : {
+        "www":80
     }
+    
 }
