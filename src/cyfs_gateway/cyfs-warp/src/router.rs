@@ -414,3 +414,51 @@ impl Router {
     }
 }
 
+pub struct SNIResolver {
+    configs: HashMap<String, Arc<ServerConfig>>,
+}
+
+impl SNIResolver {
+    pub fn new(configs: HashMap<String, Arc<ServerConfig>>) -> Self {
+        SNIResolver { configs }
+    }
+
+    fn get_config_by_host(&self,host:&str) -> Option<&Arc<ServerConfig>> {
+        let host_config = self.configs.get(host);
+        if host_config.is_some() {
+            info!("find tls config for host: {}",host);
+            return host_config;
+        }
+
+        for (key,value) in self.configs.iter() {
+            if key.starts_with("*.") {
+                if host.ends_with(&key[2..]) {
+                    info!("find tls config for host: {} ==> key:{}",host,key);
+                    return Some(value);
+                }
+            }
+        }
+
+        return self.configs.get("*");
+    }
+}
+
+impl rustls::server::ResolvesServerCert for SNIResolver {
+    fn resolve(&self, client_hello: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        let server_name = client_hello.server_name();
+        if server_name.is_none() {
+            warn!("No server name found in sni-client hello");
+            return None;
+        }
+        let server_name = server_name.unwrap();
+        info!("try reslove tls certifiled key for : {}", server_name);
+
+        let config = self.get_config_by_host(&server_name);
+        if config.is_some() {
+            return config.unwrap().cert_resolver.resolve(client_hello);
+        } else {
+            warn!("No tls config found for server_name: {}", server_name);
+            return None;
+        }
+    }
+}
