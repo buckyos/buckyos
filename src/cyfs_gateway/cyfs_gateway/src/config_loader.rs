@@ -131,12 +131,12 @@ impl GatewayConfig {
     pub async fn load_from_json_value(json_value: serde_json::Value) -> Result<Self, String> {
         let mut device_key_path = PathBuf::new();
         if let Some(Some(path)) = json_value.get("device_key_path").map(|p| p.as_str()) {
-            device_key_path =
-                adjust_path(path).map_err(|e| format!("adjust path failed! {}", e))?;
+            device_key_path = adjust_path(path).
+                map_err(|e| format!("adjust path failed! {}", e))?;
+
             info!(
                 "adjust device key path {} to {}",
-                path,
-                device_key_path.display()
+                path,device_key_path.display()
             );
         }
 

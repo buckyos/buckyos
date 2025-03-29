@@ -98,7 +98,9 @@ impl ActiveServer {
             .map_err(|_|RPCErrors::ReasonError("Failed to encode device config".to_string()))?;
         
         if sn_url.is_some() {
-            need_sn = true;
+            if sn_url.as_ref().unwrap().len() > 5 {
+                need_sn = true;
+            }
         }
         
         if need_sn {

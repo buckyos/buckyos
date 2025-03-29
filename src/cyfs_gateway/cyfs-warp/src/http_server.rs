@@ -258,7 +258,7 @@ impl CyfsWarpServer {
                 }
                 let cert:Vec<Certificate> = certs.into_iter().map(Certificate).collect();
                 //let cert = cert.remove(0);
-                info!("load tls cert: {:?} OK",cert);
+                debug!("load tls cert: {:?} OK",cert);
                 let key_file = File::open(&host_config.tls.key_path.as_ref().unwrap()).map_err(|e| {
                     error!("Failed to open key file: {}", e);
                     anyhow::anyhow!("Failed to open key file: {}", e)
@@ -301,7 +301,7 @@ impl CyfsWarpServer {
         let listener = listener.unwrap();
         let listener_stream = TcpListenerStream::new(listener);
         let incoming_tls_stream = listener_stream.filter_map(move |conn| {
-            info!("tls accept a new tcp stream ...");
+            debug!("tls accept a new tcp stream ...");
             let tls_acceptor = tls_acceptor.clone();
             async move {
                 match conn {

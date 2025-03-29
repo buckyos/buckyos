@@ -641,7 +641,7 @@ impl BuckyOSRuntime {
                 return Ok("http://127.0.0.1:3300/kapi/verify_hub".to_string());
             }
             "repo_service" | "repo" => {
-                return Ok("http://127.0.0.1:4000/kapi/repo".to_string());
+                return Ok("http://127.0.0.1:4000/kapi/repo_service".to_string());
             }
             "task_manager" => {
                 return Ok("http://127.0.0.1:3380/kapi/task_manager".to_string());

@@ -426,14 +426,14 @@ impl SNIResolver {
     fn get_config_by_host(&self,host:&str) -> Option<&Arc<ServerConfig>> {
         let host_config = self.configs.get(host);
         if host_config.is_some() {
-            info!("find tls config for host: {}",host);
+            debug!("find tls config for host: {}",host);
             return host_config;
         }
 
         for (key,value) in self.configs.iter() {
             if key.starts_with("*.") {
                 if host.ends_with(&key[2..]) {
-                    info!("find tls config for host: {} ==> key:{}",host,key);
+                    debug!("find tls config for host: {} ==> key:{}",host,key);
                     return Some(value);
                 }
             }
@@ -451,7 +451,7 @@ impl rustls::server::ResolvesServerCert for SNIResolver {
             return None;
         }
         let server_name = server_name.unwrap();
-        info!("try reslove tls certifiled key for : {}", server_name);
+        debug!("try reslove tls certifiled key for : {}", server_name);
 
         let config = self.get_config_by_host(&server_name);
         if config.is_some() {

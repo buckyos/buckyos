@@ -27,13 +27,7 @@ async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
     let start_params_str = tokio::fs::read_to_string(start_params_file_path).await?;
     let mut start_params:serde_json::Value = serde_json::from_str(&start_params_str)?;
 
-    let mut template_type_str = "nat_ood_and_sn".to_string();
-    //load template by zone_type from start params.
-    let template_type = start_params.get("zone_type");
-    if template_type.is_some() {
-        template_type_str = template_type.unwrap().as_str().unwrap().to_string();
-    }
-
+    let template_type_str = "boot".to_string();
     let template_file_path = get_buckyos_system_etc_dir().join("scheduler").join(format!("{}.template.toml",template_type_str));
     let template_str = tokio::fs::read_to_string(template_file_path).await?;
 
