@@ -33,14 +33,13 @@ impl Hasher for Sha512Hasher {
 pub struct Blake2s256Hasher;
 
 impl Hasher for Blake2s256Hasher {
-    type Out = [u8; 32];
+    type Out = GenericArray<u8, U32>;
     type StdHasher = std::collections::hash_map::DefaultHasher;
     const LENGTH: usize = 32;
 
     fn hash(data: &[u8]) -> Self::Out {
-        HashHelper::calc_hash(HashMethod::Blake2s256, data)
-            .try_into()
-            .unwrap()
+        let value = HashHelper::calc_hash(HashMethod::Blake2s256, data);
+        GenericArray::clone_from_slice(&value)
     }
 }
 
@@ -48,13 +47,12 @@ impl Hasher for Blake2s256Hasher {
 pub struct Keccak256Hasher;
 
 impl Hasher for Keccak256Hasher {
-    type Out = [u8; 32];
+    type Out = GenericArray<u8, U32>;
     type StdHasher = std::collections::hash_map::DefaultHasher;
     const LENGTH: usize = 32;
 
     fn hash(data: &[u8]) -> Self::Out {
-        HashHelper::calc_hash(HashMethod::Keccak256, data)
-            .try_into()
-            .unwrap()
+        let value = HashHelper::calc_hash(HashMethod::Keccak256, data);
+        GenericArray::clone_from_slice(&value)
     }
 }
