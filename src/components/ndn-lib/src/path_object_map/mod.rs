@@ -1,4 +1,4 @@
-//mod object_map;
+mod object_map;
 mod hash;
 mod storage;
 
