@@ -1,13 +1,16 @@
 
 
+use std::collections::HashMap;
+
 use jsonwebtoken::{jwk::Jwk, DecodingKey, EncodingKey};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize,Serializer, Deserializer};
 use serde_json::{Value, json};
 use async_trait::async_trait;
-
+use once_cell::sync::OnceCell;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
 use crate::{NSError, NSResult,decode_jwt_claim_without_verify};
-#[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
+
+#[derive(Clone,Debug,PartialEq,Hash,Eq,PartialOrd,Ord)]
 pub struct DID {
     pub method: String,
     pub id: String,
@@ -23,6 +26,13 @@ impl DID {
         }
     }
 
+    pub fn undefined() -> Self {
+        DID {
+            method: "undefined".to_string(),
+            id: "undefined".to_string(),
+        }
+    }
+
     pub fn get_auth_key(&self) -> Option<[u8; 32]> {
         if self.method == "dev" {
             let auth_key = URL_SAFE_NO_PAD.decode(self.id.as_str()).unwrap();
@@ -30,18 +40,28 @@ impl DID {
         }
         None
     }
+
+    pub fn is_self_auth(&self) -> bool {
+        self.method == "dev"
+    }
     
-    pub fn from_str(did: &str) -> Option<Self> {
+    pub fn from_str(did: &str) -> NSResult<Self> {
         let parts: Vec<&str> = did.split(':').collect();
-        if parts.len() != 3 {
-            return None;
+        if parts.len() < 3 {
+            return Err(NSError::InvalidDID(format!("invalid did {}",did)));
         }
         if parts[0] != "did" {
-            return None;
+            //this is a host name
+            let result = Self::from_host_name(did);
+            if result.is_some() {
+                return Ok(result.unwrap());
+            }
+            return Err(NSError::InvalidDID(format!("invalid did {}",did)));
         }
-        Some(DID {
+        let id = parts[2..].join(":");
+        Ok(DID {
             method: parts[1].to_string(),
-            id: parts[2].to_string(),
+            id,
         })
     }
 
@@ -50,25 +70,60 @@ impl DID {
     }
 
     pub fn to_host_name(&self) -> String {
+        if self.method == "web" {
+            return self.id.clone();
+        }
+
+        let web3_bridge_config = KNOWN_WEB3_BRIDGE_CONFIG.get();
+        if web3_bridge_config.is_some() {
+            let web3_bridge_config = web3_bridge_config.unwrap();
+            let bridge_base_hostname = web3_bridge_config.get(self.method.as_str());
+            if bridge_base_hostname.is_some() {
+                return format!("{}.{}",self.id,bridge_base_hostname.unwrap());
+            }
+        }
+        //todo: find web3 bridge config
         format!("{}.{}.did",self.id,self.method)
     }
 
     pub fn from_host_name(host_name: &str) -> Option<Self> {
-        let parts: Vec<&str> = host_name.split('.').collect();
-        if parts.len() != 3 {
-            return None;
+        let web3_bridge_config = KNOWN_WEB3_BRIDGE_CONFIG.get();
+        if web3_bridge_config.is_some() {
+            let web3_bridge_config = web3_bridge_config.unwrap();
+            for (method,bridge_base_hostname) in web3_bridge_config.iter() {
+                if host_name.ends_with(bridge_base_hostname) {
+                    let id = host_name[..host_name.len()-bridge_base_hostname.len()-1].to_string();
+                    return Some(DID::new(method, &id));
+                }
+            }
         }
-        if parts[2] != "did" {
-            return None;
-        }
-        Some(DID {
-            id: parts[0].to_string(),
-            method: parts[1].to_string(),
-        })
+
+        return Some(DID::new("web", host_name.to_string().as_str()));
     }
 }
 
+impl Serialize for DID {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
 
+impl<'de> Deserialize<'de> for DID {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let result = Self::from_str(&s);
+        if result.is_err() {
+            return Err(serde::de::Error::custom(format!("invalid did: {}", s)));
+        }
+        Ok(result.unwrap())
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub enum EncodedDocument {
@@ -77,6 +132,24 @@ pub enum EncodedDocument {
 }
 
 impl EncodedDocument {
+    pub fn is_proof(&self) -> bool {
+        match self {
+            EncodedDocument::Jwt(_jwt) => true,
+            _ => false,
+        }
+    }
+
+    // pub fn get_prover_kid(&self) -> Option<String> {
+    //     match self {
+    //         EncodedDocument::Jwt(jwt) => {
+    //             //return jwt header kid
+    //             let header = decode_jwt_header_without_verify(jwt.as_str()).unwrap();
+    //             header.kid
+    //         }
+    //         _ => None,
+    //     }
+    // }
+
     pub fn to_string(&self) -> String {
         match self {
             EncodedDocument::Jwt(jwt) => jwt.clone(),
@@ -107,10 +180,10 @@ impl EncodedDocument {
 
 #[async_trait]
 pub trait DIDDocumentTrait {
-    fn get_did(&self) -> &str;
-    fn get_auth_key(&self) -> Option<DecodingKey>;
-    fn is_proof(self) -> bool;
-    fn get_prover_kid(&self) -> Option<String>;
+    fn get_id(&self) -> DID;
+    //key id is none means the default key
+    fn get_auth_key(&self,kid:Option<&str>) -> Option<DecodingKey>;
+
     fn get_iss(&self) -> Option<String>;
     fn get_exp(&self) -> Option<u64>;
     fn get_iat(&self) -> Option<u64>;
@@ -128,14 +201,36 @@ pub trait DIDDocumentTrait {
 }
 
 
+static KNOWN_WEB3_BRIDGE_CONFIG:OnceCell<HashMap<String,String>> = OnceCell::new();
 
-// #[derive(Clone, Serialize, Deserialize)]
-// pub struct DIDDocument<T> {
-//     pub did: String,
-//     pub payload: T, 
-//     pub auth_key: Option<Jwk>,
-//     pub iss:Option<String>,
-//     pub exp:u64,
-//     pub iat:Option<u64>,
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_did_from_str() {
+        let did = DID::from_str("did:bns:waterflier").unwrap();
+        assert_eq!(did.method, "bns");
+        assert_eq!(did.id, "waterflier");
+
+        let did = DID::from_str("did:bns:waterflier:sssn.did").unwrap();
+        assert_eq!(did.method, "bns");
+        assert_eq!(did.id, "waterflier:sssn.did");
+
+        let mut web3_bridge_config = HashMap::new();
+        web3_bridge_config.insert("bns".to_string(), "web3.buckyos.io".to_string());
+        KNOWN_WEB3_BRIDGE_CONFIG.set(web3_bridge_config).unwrap();
+
+        let did = DID::from_host_name("waterflier.web3.buckyos.io").unwrap();
+        assert_eq!(did.method, "bns");
+        assert_eq!(did.id, "waterflier");
+        let host_name = did.to_host_name();
+        assert_eq!(host_name, "waterflier.web3.buckyos.io");
+
+        let did = DID::from_host_name("zhicong.me").unwrap();
+        assert_eq!(did.method, "web");
+        assert_eq!(did.id, "zhicong.me");
+    }
+    
+}
 

@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use buckyos_kit::*;
+use jsonwebtoken::jwk::Jwk;
 use serde_json::{Value,json};
+use std::collections::HashMap;
 use std::{net::IpAddr, process::exit};
 use std::result::Result;
 use ::kRPC::*;
@@ -56,9 +58,10 @@ impl ActiveServer {
             .map_err(|_|RPCErrors::ReasonError("Invalid owner private key".to_string()))?;
         let device_private_key_pem = EncodingKey::from_ed_pem(device_private_key.as_bytes())
             .map_err(|_|RPCErrors::ReasonError("Invalid device private key".to_string()))?;
+        let device_did = get_device_did_from_ed25519_jwk(&device_public_key)
+            .map_err(|_|RPCErrors::ReasonError("Invalid device public key".to_string()))?;
+        let device_public_jwk:Jwk = serde_json::from_value(device_public_key.clone()).unwrap();
 
-        let device_did = get_device_did_from_ed25519_jwk(&device_public_key).unwrap();
-        let device_public_jwk = serde_json::from_value(device_public_key.clone()).unwrap();
         let device_ip:Option<IpAddr> = None;
         let mut net_id:Option<String> = None;
         let mut ddns_sn_url:Option<String> = None;
@@ -80,20 +83,12 @@ impl ActiveServer {
             }
         }
 
-        let device_config:DeviceConfig = DeviceConfig {
-            did: device_did.clone(),
-            name: "ood1".to_string(),
-            arch: None,
-            device_type: "ood".to_string(),
-            auth_key: device_public_jwk,
-            iss: user_name.to_string(),
-            ip:None,
-            net_id:net_id,
-            ddns_sn_url:ddns_sn_url,
-            support_container: is_support_container,
-            exp: buckyos_get_unix_timestamp() + 3600*24*365*10, 
-            iat: buckyos_get_unix_timestamp() as u64,
-        };
+        let mut device_config = DeviceConfig::new_by_jwk("ood1",device_public_jwk);
+        device_config.net_id = net_id;
+        device_config.ddns_sn_url = ddns_sn_url;
+        device_config.support_container = is_support_container;
+        device_config.iss = user_name.to_string();
+        
         let device_doc_jwt = device_config.encode(Some(&owner_private_key_pem))
             .map_err(|_|RPCErrors::ReasonError("Failed to encode device config".to_string()))?;
         
@@ -124,9 +119,9 @@ impl ActiveServer {
             device_info.auto_fill_by_system_info().await.unwrap();
             let device_info_json = serde_json::to_string(&device_info).unwrap();
             let device_ip = device_info.ip.unwrap().to_string();
-
+            
             let sn_result = sn_register_device(sn_url.as_str(), Some(user_rpc_token), 
-                user_name, "ood1", &device_did.as_str(), &device_ip, device_info_json.as_str()).await;
+                user_name, "ood1", &device_did.to_string(), &device_ip, device_info_json.as_str()).await;
             if sn_result.is_err() {
                 return Err(RPCErrors::ReasonError(format!("Failed to register device to sn: {}",sn_result.err().unwrap())));
             }
@@ -139,13 +134,17 @@ impl ActiveServer {
         let owner_public_key_str = owner_public_key.to_string();
         let owner_public_key_str = owner_public_key_str.replace(":", "=");
         //write device idenity
+        let zone_did = DID::from_str(zone_name)
+            .map_err(|_|RPCErrors::ReasonError("Invalid zone name".to_string()))?;
+
+
         let device_identity_str = format!(r#"
-zone_name = "{}"
+zone_did = "{}"
 owner_public_key={}
-owner_name = "did:ens:{}"
+owner_did = "did:bns:{}"
 device_doc_jwt = "{}"
 zone_nonce = "1234567890"
-        "#,zone_name,owner_public_key_str,user_name,device_doc_jwt.to_string());
+        "#,zone_did.to_string(),owner_public_key_str,user_name,device_doc_jwt.to_string());
 
         let device_identity_file = write_dir.join("node_identity.toml");
         tokio::fs::write(device_identity_file,device_identity_str.as_bytes()).await
@@ -180,7 +179,7 @@ zone_nonce = "1234567890"
     }
 
     async fn handle_get_device_info(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
-        let mut device_info = DeviceInfo::new("ood1",None);
+        let mut device_info = DeviceInfo::new("ood1",DID::new("dns","ood1"));
         device_info.auto_fill_by_system_info().await.unwrap();
         let device_info_json = serde_json::to_value(device_info).unwrap();
         Ok(RPCResponse::new(RPCResult::Success(json!({
@@ -188,25 +187,25 @@ zone_nonce = "1234567890"
         })),req.seq))
     }
 
-    async fn handle_generate_zone_config_jwt(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
-        let zone_config_str = req.params.get("zone_config");
+    async fn handle_generate_zone_boot_config_jwt(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
+        let zone_boot_config_str = req.params.get("zone_boot_config");
         let private_key = req.params.get("private_key");
-        if zone_config_str.is_none() || private_key.is_none() {
+        if zone_boot_config_str.is_none() || private_key.is_none() {
             return Err(RPCErrors::ParseRequestError("Invalid params, zone_config or private_key is none".to_string()));
         }
-        let zone_config = zone_config_str.unwrap().as_str().unwrap();
+        let zone_config = zone_boot_config_str.unwrap().as_str().unwrap();
         let private_key = private_key.unwrap().as_str().unwrap();
 
         info!("will sign zone config: {}",zone_config);
-        let mut zone_config:ZoneConfig = serde_json::from_str(zone_config)
+        let mut zone_boot_config:ZoneBootConfig = serde_json::from_str(zone_config)
             .map_err(|e|RPCErrors::ParseRequestError(format!("Invalid zone config: {}",e.to_string())))?;
         let private_key_pem = EncodingKey::from_ed_pem(private_key.as_bytes())
             .map_err(|e|RPCErrors::ParseRequestError(format!("Invalid private key: {}",e.to_string())))?;
-        let zone_config_jwt = zone_config.encode(Some(&private_key_pem))
+        let zone_boot_config_jwt = zone_boot_config.encode(Some(&private_key_pem))
             .map_err(|e|RPCErrors::ParseRequestError(format!("Failed to encode zone config: {}",e.to_string())))?;
         
         return Ok(RPCResponse::new(RPCResult::Success(json!({
-            "zone_config_jwt":zone_config_jwt.to_string()
+            "zone_boot_config_jwt":zone_boot_config_jwt.to_string()
         })),req.seq));
     }
 }
@@ -217,7 +216,7 @@ impl kRPCHandler for ActiveServer {
         match req.method.as_str() {
             "generate_key_pair" => self.handle_generate_key_pair(req).await,
             "get_device_info" => self.handle_get_device_info(req).await,
-            "generate_zone_config" => self.handle_generate_zone_config_jwt(req).await,
+            "generate_zone_boot_config" => self.handle_generate_zone_boot_config_jwt(req).await,
             "do_active" => self.handel_do_active(req).await,
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }

@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use thiserror::Error;
 
+//TODO:整体设计基本与jsonrpc2.0一致，要考虑是否完全兼容
+
 #[derive(Error, Debug)]
 pub enum RPCErrors {
     #[error("Failed due to reason: {0}")]

@@ -157,10 +157,10 @@ async fn main() -> Result<(), String> {
         return e.to_string();
     })?;
     let mut private_key = None;
-    println!("Connect to {:?} @ {:?}",buckyos_runtime.user_did,buckyos_runtime.zone_config.name);
+    println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id,buckyos_runtime.zone_config.name);
     if buckyos_runtime.user_private_key.is_some() {
         println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
-        private_key = Some((buckyos_runtime.user_did.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
+        private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
     }
 
     match matches.subcommand() {

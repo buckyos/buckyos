@@ -37,9 +37,9 @@ pub struct SNServer {
     server_host:String,
     server_ip:IpAddr,
 
-    zone_config:String,
-    zone_config_pkx:String,
-    device_list:Option<Vec<String>>,//device_list is the list of device_did
+    zone_boot_config:String,
+    zone_boot_config_pkx:String,
+    zone_gateway_list:Option<Vec<String>>,//device_list is the list of device_did
 }
 
 impl SNServer {
@@ -61,13 +61,14 @@ impl SNServer {
         let current_device_config = CURRENT_DEVICE_CONFIG.get();
         if current_device_config.is_some() {
             let current_device_config = current_device_config.unwrap();
-            device_list = Some(vec![current_device_config.get_did().to_string()]);
+            device_list = Some(vec![current_device_config.get_id().to_string()]);
         } 
 
         if server_config.is_some() {
             let server_config = server_config.unwrap();
             server_host = server_config.host;
             server_ip = IpAddr::from_str(server_config.ip.as_str()).unwrap();
+            //TODO:需要改进
             zone_config = server_config.zone_config_jwt;
             zone_config_pkx = server_config.zone_config_pkx;
         } 
@@ -77,9 +78,9 @@ impl SNServer {
             all_user_zone_config:Arc::new(Mutex::new(HashMap::new())),
             server_host:server_host,
             server_ip:server_ip,
-            zone_config:zone_config,
-            zone_config_pkx:zone_config_pkx,
-            device_list:device_list,
+            zone_boot_config:zone_config,
+            zone_boot_config_pkx:zone_config_pkx,
+            zone_gateway_list:device_list,
         }
     }
 
@@ -249,21 +250,15 @@ impl SNServer {
         })?;    
 
         //check session_token is valid (verify pub key is device's public key)
-        if device_info.did.is_none() {
-            return Err(RPCErrors::ParseRequestError("Invalid params, device_did is none".to_string()));
-        }
-        let device_did = device_info.did.as_ref().unwrap().as_str();
+    
         let session_token = req.token;
         if session_token.is_none() {
             return Err(RPCErrors::ParseRequestError("Invalid params, session_token is none".to_string()));
         }
         let session_token = session_token.unwrap();
         let mut rpc_session_token = RPCSessionToken::from_string(session_token.as_str())?;
-        let device_did = DID::from_str(device_did);
-        if device_did.is_none() {
-            return Err(RPCErrors::ParseRequestError("Invalid params, device_did is invalid".to_string()));
-        }
-        let device_did = device_did.unwrap();
+        let device_did = device_info.did.clone();
+
         let verify_public_key = DecodingKey::from_ed_components(device_did.id.as_str())
             .map_err(|e|{
                 error!("Failed to decode device public key: {:?}",e);
@@ -271,17 +266,17 @@ impl SNServer {
             })?;
         rpc_session_token.verify_by_key(&verify_public_key)?;
 
-        info!("start update {}_{} ==> {:?}",owner_id,device_info.hostname.clone(),device_info_json);
+        info!("start update {}_{} ==> {:?}",owner_id,device_info.name.clone(),device_info_json);
 
         let conn = sn_db::get_sn_db_conn().unwrap();
         let ip_str = ip_from.to_string();
-        sn_db::update_device_by_name(&conn, owner_id, &device_info.hostname.clone(), ip_str.as_str(), device_info_json.to_string().as_str());
+        sn_db::update_device_by_name(&conn, owner_id, &device_info.name.clone(), ip_str.as_str(), device_info_json.to_string().as_str());
         let resp = RPCResponse::new(RPCResult::Success(json!({
             "code":0 
         })),req.seq);
 
         let mut device_info_map = self.all_device_info.lock().await;
-        let key = format!("{}_{}",owner_id,device_info.hostname.clone());
+        let key = format!("{}_{}",owner_id,device_info.name.clone());
         device_info_map.insert(key.clone(), (device_info.clone(),ip_from));
 
         info!("update device info done: for {}",key);
@@ -454,9 +449,9 @@ impl NsProvider for SNServer {
                 },
                 RecordType::TXT => {
                     //返回当前服务器的zoneconfig和auth_key
-                    let result_name_info = NameInfo::from_zone_config_str(name, self.zone_config.as_str(),
-                         self.zone_config_pkx.as_str(),
-                         &self.device_list);
+                    let result_name_info = NameInfo::from_zone_config_str(name, self.zone_boot_config.as_str(),
+                         self.zone_boot_config_pkx.as_str(),
+                         &self.zone_gateway_list);
                     return Ok(result_name_info);
                 },
                 _ => {
@@ -540,7 +535,7 @@ impl NsProvider for SNServer {
         }
     }
 
-    async fn query_did(&self, did: &str,fragment:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<EncodedDocument> {
+    async fn query_did(&self, did: &DID,fragment:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<EncodedDocument> {
         return Err(NSError::NotFound("sn-server not support did query".to_string()));
     }
 }
@@ -602,19 +597,11 @@ impl TunnelSelector for SNServer {
             if device_info.is_some() {
                 //info!("ood1 device info found for {} in sn server",username);
                 //let device_did = device_info.unwrap().0.did;
-                let device_did = device_info.unwrap().0.did;
-                if device_did.is_some() {
-                    let device_did_str = device_did.unwrap();
-                    let device_did = DID::from_str(device_did_str.as_str());
-                    if device_did.is_some() {
-                        let device_host_name = device_did.unwrap().to_host_name();
-                        let result_str = format!("rtcp://{}/:80",device_host_name.as_str());
-                        //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
-                        return Some(result_str);
-                    }
-                } else {
-                    warn!("ood1 device did not found for {} in sn server",username);
-                }
+                let device_host_name = device_info.unwrap().0.did.to_host_name();
+                //TODO: stream url的形式？
+                let result_str = format!("rtcp://{}/:80",device_host_name.as_str());
+                //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
+                return Some(result_str);
             } else {
                 warn!("ood1 device info not found for {} in sn server",username);
             }
@@ -630,18 +617,10 @@ impl TunnelSelector for SNServer {
                 //info!("ood1 device info found for {} in sn server",username);
                 //let device_did = device_info.unwrap().0.did;
                 let device_did = device_info.unwrap().0.did;
-                if device_did.is_some() {
-                    let device_did_str = device_did.unwrap();
-                    let device_did = DID::from_str(device_did_str.as_str());
-                    if device_did.is_some() {
-                        let device_host_name = device_did.unwrap().to_host_name();
-                        let result_str = format!("rtcp://{}/:80",device_host_name.as_str());
-                        //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
-                        return Some(result_str);
-                    }
-                } else {
-                    warn!("ood1 device did not found for {} in sn server",username);
-                }
+                let device_host_name = device_did.to_host_name();
+                let result_str = format!("rtcp://{}/:80",device_host_name.as_str());
+                //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
+                return Some(result_str);
             } else {
                 warn!("ood1 device info not found for {} in sn server",username);
             }

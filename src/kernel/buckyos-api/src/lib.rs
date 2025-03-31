@@ -49,7 +49,7 @@ pub enum BuckyOSRuntimeType {
 #[derive(Clone)]
 pub struct BuckyOSRuntime {
     pub appid:String,
-    pub user_did:Option<String>,
+    pub user_id:Option<String>,
     pub buckyos_root_dir:PathBuf,
     pub runtime_type:BuckyOSRuntimeType,
     pub session_token:Arc<RwLock<String>>,
@@ -143,7 +143,7 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
     let device_private_key_file;
     let mut user_private_key_file = None;
     let zone_config_file;
-    let mut user_id = None;
+    let mut user_id:Option<String> = None;
     let mut owner_user_config = None;
     if bucky_dev_user_home_dir.exists() {
         user_config_file = bucky_dev_user_home_dir.join("owner_config.json");
@@ -153,7 +153,7 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
                 error!("Failed to load owner config: {}", e);
                 RPCErrors::ReasonError(format!("Failed to load owner config: {}", e))
             })?;
-        user_id = Some(owner_config.did.clone());
+        user_id = Some("root".to_string());
         owner_user_config = Some(owner_config);
 
         zone_config_file = bucky_dev_user_home_dir.join("zone_config.toml");
@@ -195,7 +195,7 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
     }
 
     if user_id.is_none() {
-        user_id = Some(device_config.did.clone());
+        user_id = Some(device_config.name.clone());
     }
 
     let device_private_key;
@@ -225,11 +225,11 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
                 error!("Failed to load zone config: {}", e);
                 RPCErrors::ReasonError(format!("Failed to load zone config: {}", e))
             })?;
-        if zone_config.name != Some(node_identity_config.zone_name.clone()) {
-            return Err(RPCErrors::ReasonError("zone name not match".to_string()));
+        if zone_config.id != node_identity_config.zone_did {
+            return Err(RPCErrors::ReasonError("zone did not match".to_string()));
         }
     } else {
-        let mut zone_doc: EncodedDocument = resolve_did(&node_identity_config.zone_name,None).await.map_err(|err| {
+        let mut zone_doc: EncodedDocument = resolve_did(&node_identity_config.zone_did,None).await.map_err(|err| {
             error!("resolve zone did failed! {}", err);
             return RPCErrors::ReasonError("resolve zone did failed!".to_string());
         })?;
@@ -240,7 +240,7 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
             return RPCErrors::ReasonError("parse zone config failed!".to_string());
         })?;
         
-        zone_config.name = Some(node_identity_config.zone_name.clone());
+        zone_config.id = node_identity_config.zone_did.clone();
     }
 
     let set_result = CURRENT_ZONE_CONFIG.set(zone_config.clone());
@@ -251,7 +251,7 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
     
     let runtime = BuckyOSRuntime {
         appid: appid.to_string(),
-        user_did: user_id,
+        user_id,
         runtime_type,
         session_token: Arc::new(RwLock::new("".to_string())),
         buckyos_root_dir: get_buckyos_root_dir(),
@@ -341,7 +341,7 @@ pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,r
     let zone_config = CURRENT_ZONE_CONFIG.get().unwrap();
     let runtime = BuckyOSRuntime {
         appid: app_id.to_string(),
-        user_did: owner_user_id,
+        user_id: owner_user_id,
         runtime_type,
         session_token: Arc::new(RwLock::new(session_token)),
         buckyos_root_dir: get_buckyos_root_dir(),
@@ -392,9 +392,9 @@ impl BuckyOSRuntime {
         if self.session_token.read().await.is_empty() {
             if self.user_private_key.is_some() {
                 let session_token = RPCSessionToken::generate_jwt_token(
-                    self.user_did.as_ref().unwrap(),
+                    self.user_id.as_ref().unwrap(),
                     self.appid.as_str(),
-                    self.user_did.clone(),
+                    self.user_id.clone(),
                     self.user_private_key.as_ref().unwrap()
                 )?;
                 let mut session_token_guard = self.session_token.write().await;
@@ -407,11 +407,11 @@ impl BuckyOSRuntime {
                 if self.device_private_key.is_none() {
                     return Err(RPCErrors::ReasonError("Device private key not set".to_string()));
                 }
-                let device_did = self.deivce_config.as_ref().unwrap().did.clone();
+                let device_uid= self.deivce_config.as_ref().unwrap().name.clone();
                 let session_token = RPCSessionToken::generate_jwt_token(
-                    device_did.as_str(),
+                    device_uid.as_str(),
                     self.appid.as_str(),
-                    Some(device_did.clone()),
+                    Some(device_uid.clone()),
                     self.device_private_key.as_ref().unwrap()
                 )?;
                 let mut session_token_guard = self.session_token.write().await;
@@ -446,7 +446,7 @@ impl BuckyOSRuntime {
     }
 
     pub fn get_owner_user_id(&self) -> Option<String> {
-        self.user_did.clone()
+        self.user_id.clone()
     }
 
     pub async fn get_session_token(&self) -> String {
@@ -467,7 +467,7 @@ impl BuckyOSRuntime {
             }
             BuckyOSRuntimeType::AppService => {
                 //返回 
-                return self.buckyos_root_dir.join("data").join(self.user_did.clone().unwrap()).join(self.appid.clone());
+                return self.buckyos_root_dir.join("data").join(self.user_id.clone().unwrap()).join(self.appid.clone());
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
                 return self.buckyos_root_dir.join("data").join(self.appid.clone());     //返回 
@@ -483,7 +483,7 @@ impl BuckyOSRuntime {
             }
             BuckyOSRuntimeType::AppService => {
                 //返回 
-                return self.buckyos_root_dir.join("cache").join(self.user_did.clone().unwrap()).join(self.appid.clone());
+                return self.buckyos_root_dir.join("cache").join(self.user_id.clone().unwrap()).join(self.appid.clone());
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
                 return self.buckyos_root_dir.join("cache").join(self.appid.clone());     //返回 
@@ -499,7 +499,7 @@ impl BuckyOSRuntime {
             }
             BuckyOSRuntimeType::AppService => {
                 //返回 
-                return self.buckyos_root_dir.join("tmp").join(self.user_did.clone().unwrap()).join(self.appid.clone());
+                return self.buckyos_root_dir.join("tmp").join(self.user_id.clone().unwrap()).join(self.appid.clone());
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
                 return self.buckyos_root_dir.join("tmp").join(self.appid.clone());     //返回 
@@ -523,7 +523,7 @@ impl BuckyOSRuntime {
                 unimplemented!()
             }
             BuckyOSRuntimeType::AppService => {
-                format!("users/{}/apps/{}/settings",self.user_did.as_ref().unwrap(),self.appid.as_str())
+                format!("users/{}/apps/{}/settings",self.user_id.as_ref().unwrap(),self.appid.as_str())
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
                 format!("services/{}/settings",self.appid.as_str())
@@ -583,10 +583,10 @@ impl BuckyOSRuntime {
     pub fn get_my_sys_config_path(&self,config_name: &str) -> String {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
-                format!("users/{}/apps/{}/{}",self.user_did.as_ref().unwrap(),self.appid.as_str(),config_name)
+                format!("users/{}/apps/{}/{}",self.user_id.as_ref().unwrap(),self.appid.as_str(),config_name)
             }
             BuckyOSRuntimeType::AppService => {
-                format!("users/{}/apps/{}/{}",self.user_did.as_ref().unwrap(),self.appid.as_str(),config_name)
+                format!("users/{}/apps/{}/{}",self.user_id.as_ref().unwrap(),self.appid.as_str(),config_name)
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
                 format!("services/{}/{}",self.appid.as_str(),config_name)
@@ -633,21 +633,38 @@ impl BuckyOSRuntime {
 
     //if http_only is false, return the url with tunnel protocol
     pub fn get_zone_service_url(&self,service_name: &str,http_only: bool) -> Result<String> {
-        match service_name {
-            "system_config" => {
-                return Ok("http://127.0.0.1:3200/kapi/system_config".to_string());
+        let mut schema = "https";
+        if http_only {
+            schema = "http";
+        }
+
+        let service_name = match service_name {
+            "repo_service"  => "repo".to_string(),
+            _ => service_name.to_string(),
+        };
+
+
+        let host_name = self.zone_config.get_id().to_host_name();
+        match self.runtime_type {
+            BuckyOSRuntimeType::AppClient => {
+                return Ok(format!("{}://{}/kapi/{}",schema,host_name,service_name));
             }
-            "verify_hub" => {
-                return Ok("http://127.0.0.1:3300/kapi/verify_hub".to_string());
+            BuckyOSRuntimeType::AppService => {
+                return Ok(format!("http://127.0.0.1/kapi/{}",service_name));
             }
-            "repo_service" | "repo" => {
-                return Ok("http://127.0.0.1:4000/kapi/repo_service".to_string());
+            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
+                let service_port = match service_name.as_str() {
+                    "system_config" => 3200,
+                    "verify_hub" => 3300,
+                    "repo" => 4000,
+                    "task_manager" => 3380,
+                    _ => {
+                        return Err(RPCErrors::ServiceNotValid(service_name.to_string()));
+                    }
+                };
+
+                return Ok(format!("http://127.0.0.1:{}/kapi/{}",service_port,service_name));
             }
-            "task_manager" => {
-                return Ok("http://127.0.0.1:3380/kapi/task_manager".to_string());
-            }
-            
-            _ => Err(RPCErrors::ServiceNotValid(service_name.to_string())),
         }
     }
 

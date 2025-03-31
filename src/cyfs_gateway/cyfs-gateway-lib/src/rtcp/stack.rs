@@ -29,14 +29,14 @@ pub struct RTcpStack {
     dispatcher_manager: RTcpDispatcherManager,
 
     tunnel_port: u16,
-    this_device_hostname: String, //name or did
+    this_device_did: DID, //name or did
     this_device_ed25519_sk: Option<EncodingKey>,
     this_device_x25519_sk: Option<StaticSecret>,
 }
 
 impl RTcpStack {
     pub fn new(
-        this_device_hostname: String,
+        this_device_did: DID,
         port: u16,
         private_key_pkcs8_bytes: Option<[u8; 48]>,
     ) -> RTcpStack {
@@ -63,7 +63,7 @@ impl RTcpStack {
             dispatcher_manager: RTcpDispatcherManager::new(),
 
             tunnel_port: port,
-            this_device_hostname,
+            this_device_did,
             this_device_ed25519_sk: this_device_ed25519_sk, //for sign tunnel token
             this_device_x25519_sk: this_device_x25519_sk,   //for decode tunnel token from remote
         };
@@ -107,7 +107,7 @@ impl RTcpStack {
         //create jwt by tunnel token payload
         let tunnel_token_payload = TunnelTokenPayload {
             to: remote_did_id,
-            from: self.this_device_hostname.clone(),
+            from: self.this_device_did.to_string(),
             xpub: my_public_hex,
             exp: buckyos_get_unix_timestamp() + 3600 * 2,
         };
@@ -217,7 +217,7 @@ impl RTcpStack {
 
         info!(
             "RTcp stack {} start ok: {}",
-            self.this_device_hostname.as_str(),
+            self.this_device_did.to_string(),
             bind_addr
         );
 
@@ -253,14 +253,14 @@ impl RTcpStack {
 
         debug!(
             "RTcp stream {} read first package ok",
-            self.this_device_hostname.as_str()
+            self.this_device_did.to_string()
         );
         let package = first_package.unwrap();
         match package {
             RTcpTunnelPackage::HelloStream(session_key) => {
                 info!(
                     "RTcp stack {} accept new stream: {}, {}",
-                    self.this_device_hostname.as_str(),
+                    self.this_device_did.to_string(),
                     addr,
                     session_key
                 );
@@ -269,7 +269,7 @@ impl RTcpStack {
             RTcpTunnelPackage::Hello(hello_package) => {
                 info!(
                     "RTcp stack {} accept new tunnel: {}, {} -> {}",
-                    self.this_device_hostname.as_str(),
+                    self.this_device_did.to_string(),
                     addr,
                     hello_package.body.from_id,
                     hello_package.body.to_id
@@ -287,7 +287,7 @@ impl RTcpStack {
         // find waiting ropen stream by session_key
         let real_key = format!(
             "{}_{}",
-            self.this_device_hostname.as_str(),
+            self.this_device_did.to_string(),
             session_key.as_str()
         );
 
@@ -315,8 +315,14 @@ impl RTcpStack {
         }
 
         let (aes_key, random_pk) = aes_key.unwrap();
-        let target = RTcpTargetStackId::new(
-            hello_package.body.from_id.as_str(),
+        let from_did = DID::from_str(hello_package.body.from_id.as_str());
+        if from_did.is_err() {
+            error!("parser remote did error:{}", from_did.err().unwrap());
+            return;
+        }
+        let from_did = from_did.unwrap();
+        let target = RTcpTargetStackEP::new(
+            from_did,
             hello_package.body.my_port,
         );
         if target.is_err() {
@@ -327,7 +333,7 @@ impl RTcpStack {
         let tunnel = RTcpTunnel::new(
             self.stream_helper.clone(),
             self.dispatcher_manager.clone(),
-            self.this_device_hostname.clone(),
+            self.this_device_did.clone(),
             &target,
             false,
             stream,
@@ -337,7 +343,7 @@ impl RTcpStack {
 
         let tunnel_key = format!(
             "{}_{}",
-            self.this_device_hostname.as_str(),
+            self.this_device_did.to_string(),
             hello_package.body.from_id.as_str()
         );
         {
@@ -381,12 +387,12 @@ impl TunnelBuilder for RTcpStack {
                 target
             )));
         }
-        let target: RTcpTargetStackId = target.unwrap();
-        let target_id_str = target.get_id_str();
+        let target: RTcpTargetStackEP = target.unwrap();
+        let target_id_str = target.did.to_string();
 
         let tunnel_key = format!(
             "{}_{}",
-            self.this_device_hostname.as_str(),
+            self.this_device_did.to_string(),
             target_id_str.as_str()
         );
         debug!(
@@ -454,7 +460,7 @@ impl TunnelBuilder for RTcpStack {
         let mut tunnel_stream = tunnel_stream.unwrap();
         let hello_package = RTcpHelloPackage::new(
             0,
-            self.this_device_hostname.clone(),
+            self.this_device_did.to_string(),
             target_id_str.clone(),
             self.tunnel_port,
             Some(tunnel_token),
@@ -477,7 +483,7 @@ impl TunnelBuilder for RTcpStack {
         let tunnel = RTcpTunnel::new(
             self.stream_helper.clone(),
             self.dispatcher_manager.clone(),
-            self.this_device_hostname.clone(),
+            self.this_device_did.clone(),
             &target,
             true,
             tunnel_stream,

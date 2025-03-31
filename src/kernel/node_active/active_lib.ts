@@ -30,7 +30,7 @@ export type ActiveWizzardData = {
 
 }
 
-export let SN_API_URL:string = "https://web3.buckyos.io/kapi/sn";
+export let SN_API_URL:string = "https://web3.buckyos.ai/kapi/sn";
 
 export function set_sn_api_url(url:string) {
     SN_API_URL = url;
@@ -95,32 +95,32 @@ export async function generate_key_pair():Promise<[JsonValue,string]> {
     return [public_key,private_key];
 }
 
-export async function generate_zone_config_jwt(zone_short_id:string,sn:string,owner_private_key:string):Promise<string> {
+export async function generate_zone_boot_config_jwt(sn:string,owner_private_key:string):Promise<string> {
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
     const now = Math.floor(Date.now() / 1000);
-    let zone_config:JsonValue;
+    let zone_boot_config:JsonValue;
     if (sn == "") {
-        zone_config = {
-            did: "did:bns:"+zone_short_id,
+        zone_boot_config = {
             oods: ["ood1"],
             exp: now + 3600*24*365*10, 
+            nonce:now,
         };
     } else {
-        zone_config = {
-            did: "did:bns:"+zone_short_id,
+        zone_boot_config = {
             oods: ["ood1"],
             sn: sn,
             exp: now + 3600*24*365*10, 
+            nonce:now,
         };
     }
 
-    let zoen_config_str =  JSON.stringify(zone_config);
-    let result = await rpc_client.call("generate_zone_config",{
-        zone_config:zoen_config_str,
+    let zoen_boot_config_str =  JSON.stringify(zone_boot_config);
+    let result = await rpc_client.call("generate_zone_boot_config",{
+        zone_boot_config:zoen_boot_config_str,
         private_key:owner_private_key   
     });
-    let zone_config_jwt = result["zone_config_jwt"];
-    return zone_config_jwt;
+    let zone_boot_config_jwt = result["zone_boot_config_jwt"];
+    return zone_boot_config_jwt;
 }
 
 export function isValidDomain(domain: string): boolean {
@@ -193,7 +193,13 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
             return false;
         }
     }
-    let zone_name = data.use_self_domain ? data.self_domain : data.sn_user_name + ".web3.buckyos.io";
+    let zone_name = "";
+    if (data.use_self_domain) {
+        zone_name = data.self_domain;
+    } else {
+        zone_name = data.sn_user_name + "." + data.sn_host;
+    }
+
 
     let active_ood_result = await active_ood(
         data,

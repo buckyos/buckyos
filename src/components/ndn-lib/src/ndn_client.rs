@@ -1,5 +1,5 @@
 use buckyos_kit::get_relative_path;
-use name_lib::{decode_json_from_jwt_with_pk, decode_jwt_claim_without_verify};
+use name_lib::{decode_json_from_jwt_with_pk, decode_jwt_claim_without_verify, DID};
 use name_client::resolve_auth_key;
 use tokio::io::{AsyncRead,AsyncWrite,AsyncWriteExt,AsyncReadExt};
 use url::Url;
@@ -304,7 +304,12 @@ impl NdnClient {
                     return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
                 }
             }
-            let pk = resolve_auth_key(url).await
+            let did = DID::from_host_name(url);
+            if did.is_none() {
+                return Err(NdnError::InvalidId("invalid did".to_string()));
+            }
+            let did = did.unwrap();
+            let pk = resolve_auth_key(&did,None).await
                 .map_err(|e|NdnError::InvalidId(format!("resolve auth key failed:{}",e.to_string())))?;
             //veirfy path_obj is signed by pk
             let path_obj_result = decode_json_from_jwt_with_pk(&path_obj_jwt,&pk);
@@ -438,7 +443,12 @@ impl NdnClient {
                     return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
                 }
             }
-            let pk = resolve_auth_key(chunk_url).await
+            let did = DID::from_host_name(chunk_url);
+            if did.is_none() {
+                return Err(NdnError::InvalidId("invalid did".to_string()));
+            }
+            let did = did.unwrap();
+            let pk = resolve_auth_key(&did,None).await
                 .map_err(|e|NdnError::InvalidId(format!("resolve auth key failed:{}",e.to_string())))?;
             //veirfy path_obj is signed by pk
             let path_obj_result = decode_json_from_jwt_with_pk(&path_obj_jwt,&pk);

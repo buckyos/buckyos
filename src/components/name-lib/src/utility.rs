@@ -24,6 +24,8 @@ pub enum NSError {
     Failed(String),
     #[error("Invalid response")]
     InvalidData,
+    #[error("Invalid did: {0}")]
+    InvalidDID(String),
     #[error("{0} not found")]
     NotFound(String),
     #[error("decode txt record error")]
@@ -344,7 +346,8 @@ mod test {
 
     #[test]
     fn test_load_pem_private_key() {
-        let private_key = load_raw_private_key("d:\\temp\\device_key.pem").unwrap();
+        let key_path = Path::new("d:\\temp\\device_key.pem");
+        let private_key = load_raw_private_key(&key_path).unwrap();
         println!("private_key: {:?}",private_key);
         let private_key_der = from_pkcs8(&private_key).unwrap();
         println!("private_key_der: {:?}",private_key_der);

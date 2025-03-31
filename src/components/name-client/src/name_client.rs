@@ -38,7 +38,7 @@ pub struct NameClient {
     name_query: NameQuery,
     config: NameClientConfig,
     cache: mini_moka::sync::Cache<String, NameInfo>,
-    doc_cache: mini_moka::sync::Cache<String, EncodedDocument>,
+    doc_cache: mini_moka::sync::Cache<DID, EncodedDocument>,
 }
 
 impl NameClient {
@@ -60,8 +60,8 @@ impl NameClient {
         self.name_query.add_provider(provider).await;
     } 
 
-    pub fn add_did_cache(&self, did: &str, doc: EncodedDocument) -> NSResult<()> {
-        self.doc_cache.insert(did.to_string(), doc);
+    pub fn add_did_cache(&self, did: DID, doc: EncodedDocument) -> NSResult<()> {
+        self.doc_cache.insert(did, doc);
         Ok(())
     }
 
@@ -93,11 +93,11 @@ impl NameClient {
 
     pub async fn resolve_did(
         &self,
-        did: &str,
+        did: &DID,
         fragment: Option<&str>,
     ) -> NSResult<EncodedDocument> {
         if self.config.enable_cache {
-            let cache_info = self.doc_cache.get(&did.to_string());
+            let cache_info = self.doc_cache.get(did);
 
             if cache_info.is_some() {
                 return Ok(cache_info.unwrap().clone());
@@ -112,10 +112,10 @@ impl NameClient {
                 // let file_path = format!("{}/{}.doc.json", cache_dir, did);
                 let mut file_path = std::path::PathBuf::new();
                 file_path.push(cache_dir);
-                file_path.push(format!("{}.doc.json", did));
+                file_path.push(format!("{}.doc.json", did.to_host_name()));
                 let file_path = file_path.to_str().unwrap().to_string();
 
-                info!("try load did doc from local cache: {}", file_path);
+                debug!("try load did doc from local cache: {}", file_path);
                 let ret = std::fs::read_to_string(file_path.as_str());
                 match ret {
                     Ok(did_doc) => {
@@ -144,7 +144,7 @@ impl NameClient {
         }
 
         let did_doc = did_doc.unwrap();
-        self.doc_cache.insert(did.to_string(), did_doc.clone());
+        self.doc_cache.insert(did.clone(), did_doc.clone());
         return Ok(did_doc);
     }
 }

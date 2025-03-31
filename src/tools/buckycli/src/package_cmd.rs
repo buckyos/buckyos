@@ -2,6 +2,7 @@
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use jsonwebtoken::EncodingKey;
+use log::info;
 use name_lib::decode_jwt_claim_without_verify;
 use ndn_lib::*;
 use serde::{Deserialize, Serialize};
@@ -272,7 +273,7 @@ pub async fn publish_app_pkg(app_name: &str,dapp_dir_path: &str,is_pub_sub_pkg:b
         .map_err(|e| format!("Failed to read app doc.json: {}", e.to_string()))?;
     let mut app_meta:AppDoc = serde_json::from_str(&app_meta_str)
         .map_err(|e| format!("Failed to parse app doc.json: {}", e.to_string()))?;
-
+    //info!("app_meta:{} {}",app_meta.pkg_name.as_str(), serde_json::to_string_pretty(&app_meta).unwrap());
     let mut pkg_path_list = Vec::new();
 
     for (sub_pkg_section,pkg_desc) in app_meta.pkg_list.iter_mut() {
@@ -312,7 +313,7 @@ pub async fn publish_app_pkg(app_name: &str,dapp_dir_path: &str,is_pub_sub_pkg:b
         format!("Failed to serialize app_doc: {}", e.to_string())
     })?;
     let (app_doc_obj_id,_) = build_named_object_by_json("app",&app_doc_json);
-    let app_doc_jwt = named_obj_to_jwt(&app_doc_json,runtime.user_private_key.as_ref().unwrap(),runtime.user_did.clone())
+    let app_doc_jwt = named_obj_to_jwt(&app_doc_json,runtime.user_private_key.as_ref().unwrap(),runtime.user_id.clone())
         .map_err(|e| format!("Failed to generate app_doc.jwt: {}", e.to_string()))?;
     app_meta_jwt_map.insert(app_doc_obj_id.to_string(),app_doc_jwt);
     repo_client.pub_pkg(app_meta_jwt_map).await.map_err(|e| {

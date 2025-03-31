@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -10,12 +11,133 @@ use serde::{Serialize,Deserialize};
 use serde_json::json;
 use buckyos_kit::*;
 use once_cell::sync::OnceCell;
+use crate::get_x_from_jwk;
 use crate::DID;
 use crate::DeviceInfo;
 
 use crate::{DIDDocumentTrait,EncodedDocument};
 use crate::{NSResult,NSError};
 use crate::{decode_json_from_jwt_with_pk,decode_jwt_claim_without_verify,decode_json_from_jwt_with_default_pk};
+
+#[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
+pub(crate) struct VerificationMethodNode {
+    #[serde(rename = "type")]
+    pub key_type: String,
+    #[serde(rename = "id")]
+    pub key_id: String,
+    #[serde(rename = "controller")]
+    pub key_controller: String,
+    #[serde(rename = "publicKeyJwk")]
+    pub public_key: Jwk,
+    #[serde(flatten)]
+    pub extra_info: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
+pub(crate) struct ServiceNode {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub service_type: String,
+    #[serde(rename = "serviceEndpoint")]
+    pub service_endpoint: String,
+}
+
+fn default_context() -> String {
+    "https://www.w3.org/ns/did/v1".to_string()
+}
+
+//this config is store at DNS TXT record,and can be used to boot up the zone
+#[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
+pub struct ZoneBootConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id:Option<DID>,
+    pub oods: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sn:Option<String>,
+    pub exp:u64,
+    pub nonce:u32,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner:Option<DID>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_key:Option<Jwk>,//PKX=0:xxxxxxx;
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gateway_devs:Vec<DID>,
+
+    #[serde(flatten)]
+    pub extra_info: HashMap<String, serde_json::Value>,
+}
+
+impl DIDDocumentTrait for ZoneBootConfig {
+    fn get_id(&self) -> DID {
+        if self.id.is_some() {
+            return self.id.clone().unwrap();
+        }
+        return DID::undefined();
+    }
+    
+    fn get_auth_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+        if kid.is_none() {
+            if self.owner_key.is_none() {
+                return None;
+            }
+            let result_key = DecodingKey::from_jwk(&self.owner_key.as_ref().unwrap());
+            if result_key.is_err() {
+                error!("Failed to decode owner key: {:?}",result_key.err().unwrap());
+                return None;
+            }
+            return Some(result_key.unwrap());
+        }
+        return None;
+    }
+
+    fn get_iss(&self) -> Option<String> {
+        return None;
+    }
+
+    fn get_exp(&self) -> Option<u64> {
+        return Some(self.exp);
+    }
+
+    fn get_iat(&self) -> Option<u64> {
+        return None;
+    }
+
+    fn encode(&self,key:Option<&EncodingKey>) -> NSResult<EncodedDocument> {
+        if key.is_none() {
+            return Err(NSError::Failed("No key provided".to_string()));
+        }
+        let key = key.unwrap();
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.typ = None; // 默认为 JWT，设置为None以节约空间
+        let token = encode(&header, self,key).map_err(|error| {
+            NSError::Failed(format!("Failed to encode zone boot config:{}",error))
+        })?;
+        return Ok(EncodedDocument::Jwt(token));
+    }
+
+    fn decode(doc: &EncodedDocument,key:Option<&DecodingKey>) -> NSResult<Self> where Self: Sized {
+        match doc {
+            EncodedDocument::Jwt(jwt_str) => {
+                if key.is_none() {
+                    return Err(NSError::Failed("No key provided".to_string()));
+                }
+                let json_result = decode_json_from_jwt_with_pk(jwt_str,key.unwrap())?;
+                let result:ZoneBootConfig = serde_json::from_value(json_result).map_err(|error| {
+                    NSError::Failed(format!("Failed to decode zone boot config:{}",error))
+                })?;
+                return Ok(result);
+            },
+            EncodedDocument::JsonLd(json_value) => {
+                let result:ZoneBootConfig = serde_json::from_value(json_value.clone()).map_err(|error| {
+                    NSError::Failed(format!("Failed to decode zone boot config:{}",error))
+                })?;
+                return Ok(result);
+            },
+        }
+    }
+
+}
 
 
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
@@ -28,37 +150,66 @@ pub struct VerifyHubInfo {
 
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct ZoneConfig {
-    pub did: String,//full did
+    #[serde(rename = "@context",default = "default_context")]
+    pub context: String,
+    pub id: DID,
+    #[serde(rename = "verificationMethod")]
+    verification_method: Vec<VerificationMethodNode>,
+    authentication: Vec<String>,
+    #[serde(rename = "assertionMethod")]
+    assertion_method: Vec<String>,
+    service:Vec<ServiceNode>,
+    pub exp:u64,
+    pub iat:u64,
+    #[serde(flatten)]
+    pub extra_info: HashMap<String, serde_json::Value>,
+
+    //--------------------------------
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,//domain name
+    pub owner: Option<DID>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub owner_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_key : Option<Jwk>,//owner's public key
+    pub name: Option<String>,//zone short name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_list: Option<Vec<String>>,//device did list
-    
     //ood server endpoints,can be ["ood1","ood2@192.168.32.1","ood3#vlan1]
-    pub oods: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub services:Option<Vec<String>>,//like ["http:0","https:443","smb"],0 means disable
-    
+    pub oods: Vec<String>,    
     //因为所有的Node上的Gateway都是同质的，所以这里可以不用配置？DNS记录解析到哪个Node，哪个Node的Gateway就是ZoneGateway
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gateway:Option<String>,//default gateway node name for this zone,like gate@210.22.12.3#wan
-    
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sn:Option<String>,//
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vlan:Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub verify_hub_info:Option<VerifyHubInfo>,
-    pub exp:u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iat:Option<u64>,
+    pub nonce:u32,
+
 }
 
 impl ZoneConfig {
+
+    pub fn new(id:DID,owner_did:DID,public_key:Jwk) -> Self {
+        ZoneConfig {
+            context: default_context(),
+            id: id,
+            verification_method: vec![VerificationMethodNode { 
+                key_type: "Ed25519VerificationKey2020".to_string(),
+                key_id: "#main_key".to_string(),
+                key_controller: owner_did.to_string(),
+                public_key: public_key,
+                extra_info: HashMap::new(),
+            }],
+            authentication: vec!["#main_key".to_string()],
+            assertion_method: vec!["#main_key".to_string()],
+            service: vec![],
+            exp: 0,
+            iat: 0,
+            extra_info: HashMap::new(),
+            owner: Some(owner_did),
+            name: None,
+            device_list: None,
+            oods: vec![],
+            sn: None,
+            verify_hub_info: None,
+            nonce: 0,
+        }
+    }
 
     pub fn load_zone_config(file_path: &PathBuf) -> NSResult<ZoneConfig> {
         let contents = std::fs::read_to_string(file_path.clone()).map_err(|err| {
@@ -74,50 +225,22 @@ impl ZoneConfig {
         })?;    
         Ok(config)
     }
-    
-    pub fn get_zone_short_name(&self) -> String {
-        let did = DID::from_str(self.did.as_str());
-        if did.is_some() {
-            let did = did.unwrap();
-            return did.id.clone();
-        }
-        
+
+    pub fn init_by_boot_config(&mut self,boot_config:&ZoneBootConfig) {
+        self.oods = boot_config.oods.clone();
+        self.sn = boot_config.sn.clone();
+        self.nonce = boot_config.nonce;
+        self.extra_info.extend(boot_config.extra_info.clone());
+    }
+
+    pub fn get_zone_short_name(&self) -> String {        
         if self.name.is_some() {
-            let name = self.name.as_ref().unwrap();
-            let short_name = name.split('.').next().unwrap_or(name);
-            return short_name.to_string();
+            return self.name.clone().unwrap();
         }
-
-        return self.did.clone();
+        let host_name = self.id.to_host_name();
+        let short_name = host_name.split('.').next().unwrap();
+        return short_name.to_string();
     }
-
-    pub fn get_test_config() -> ZoneConfig {
-        let jwk = json!(
-            {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
-            }
-        );
-        let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
-        return ZoneConfig {
-            did: "did:ens:example".to_string(),
-            name: Some("waterflier.web3.buckyos.io".to_string()),
-            owner_name: None,
-            auth_key: Some(public_key_jwk),
-            device_list: None,
-            oods: vec!["ood01".to_string()],
-            gateway: None,
-            sn: None,
-            vlan: None,
-            services: None,
-            verify_hub_info: None,
-            iat:None,
-            exp: buckyos_get_unix_timestamp() + 3600*24*365,
-        }
-    }
-
-    
 
     pub fn get_node_host_name(&self,node_name:&str) -> String {
         let zone_short_name = self.get_zone_short_name();
@@ -125,7 +248,8 @@ impl ZoneConfig {
         return host_name;
     }
 
-    pub fn get_ood_string(&self,node_name:&str) -> Option<String> {
+    //ood需要通用这个信息，来与zone内的其它ood建立连接
+    pub fn get_ood_desc_string(&self,node_name:&str) -> Option<String> {
         for ood in self.oods.iter() {
             if ood.starts_with(node_name) {
                 return Some(ood.clone());
@@ -139,8 +263,8 @@ impl ZoneConfig {
         ood_list.shuffle(&mut rand::thread_rng());
 
         for ood in ood_list.iter() {
-            let ood_device_info = DeviceInfo::new(ood,None);
-            if ood_device_info.net_id == device_info.net_id {
+            let (device_name,net_id,ip) = DeviceInfo::get_net_info_from_ood_desc_string(ood);
+            if net_id == device_info.net_id {
                 return Some(ood.clone());
             }
         }
@@ -152,29 +276,20 @@ impl ZoneConfig {
         let mut ood_list = self.oods.clone();
         ood_list.shuffle(&mut rand::thread_rng());
         for ood in self.oods.iter() {
-            let device_info = DeviceInfo::new(ood,None);
-            if device_info.is_wan_device() {
-                return Some(ood.clone());
+            let (device_name,net_id,ip) = DeviceInfo::get_net_info_from_ood_desc_string(ood);   
+            if net_id.is_some() {
+                if net_id.as_ref().unwrap().starts_with("wan") {
+                    return Some(ood.clone());
+                }
             }
         }
         return None;
     }
 
     pub fn get_sn_url(&self) -> Option<String> {
-        let sn_port = self.get_service_port("http");
-        if sn_port.is_none() {
-            return None;
-        }
-
-        let sn_port = sn_port.unwrap();
         if self.sn.is_some() {
-            if sn_port == 80 {
-                return Some(format!("http://{}/kapi/sn",self.sn.as_ref().unwrap()));
-            } else {
-                return Some(format!("http://{}:{}/kapi/sn",self.sn.as_ref().unwrap(),sn_port));
-            }
+            return Some(format!("https://{}/kapi/sn",self.sn.as_ref().unwrap()));
         }
-
         return None;
     }
 
@@ -185,71 +300,64 @@ impl ZoneConfig {
             return Some(443);
         }
         return None;
-    }
+    }   
 
-    pub fn get_service_port(&self,service_name: &str) -> Option<u16> {
-        if self.services.is_none() {
-            return self.get_default_service_port(service_name);
-        }
-        let services = self.services.as_ref().unwrap();
-        if services.is_empty() {
-            return self.get_default_service_port(service_name);
-        }
-
-        for service in services.iter() {
-            if service.starts_with(service_name) {
-                let port_str = service.split(':').nth(1).unwrap_or("");
-                if port_str.is_empty() {
-                    return self.get_default_service_port(service_name);
-                }
-                if port_str == "0" {
-                    return None;
-                }
-                return Some(port_str.parse::<u16>().unwrap());
+    pub fn get_default_key(&self) -> Option<Jwk> {
+        for method in self.verification_method.iter() {
+            if method.key_id == "#main_key" {
+                return Some(method.public_key.clone());
             }
         }
-
         return None;
-    }
-    
+    } 
 }
 
 
 
 impl DIDDocumentTrait for ZoneConfig {
     
-    fn get_did(&self) -> &str {    
-        return self.did.as_str();
+    fn get_id(&self) -> DID {    
+        return self.id.clone();
     }
-    fn get_auth_key(&self) -> Option<DecodingKey> {
-        if self.auth_key.is_some() {
-            let result_key = DecodingKey::from_jwk(&self.auth_key.as_ref().unwrap());
-            if result_key.is_err() {
-                error!("Failed to decode auth key: {:?}",result_key.err().unwrap());
-                return None;
-            }
-            return Some(result_key.unwrap());
-        } else {
+
+    fn get_auth_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+        if self.verification_method.is_empty() {
             return None;
         }
-    }
-    fn is_proof(self) -> bool{
-        return true;
-    }
-    fn get_prover_kid(&self) -> Option<String> {
-        if self.owner_name.is_some() {
-            return Some(format!("{}#auth_key",self.owner_name.as_ref().unwrap()));
+        if kid.is_none() {
+            let decoding_key = DecodingKey::from_jwk(&self.verification_method[0].public_key);
+            if decoding_key.is_err() {
+                error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
+                return None;
+            }
+            return Some(decoding_key.unwrap());
+        }
+        let kid = kid.unwrap();
+        for method in self.verification_method.iter() {
+            if method.key_id == kid {
+                let decoding_key = DecodingKey::from_jwk(&method.public_key);
+                if decoding_key.is_err() {
+                    error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
+                    return None;
+                }
+                return Some(decoding_key.unwrap());
+            }
         }
         return None;
     }
+
     fn get_iss(&self) -> Option<String> {
-        return self.owner_name.clone();
+        if self.owner.is_some() {
+            return Some(self.owner.as_ref().unwrap().to_string());
+        }
+        return None;
     }
     fn get_exp(&self) -> Option<u64> {
         return Some(self.exp)
     }
+
     fn get_iat(&self) -> Option<u64> {
-        return self.iat;
+        return Some(self.iat);
     }
 
     fn encode(&self,key:Option<&EncodingKey>) -> NSResult<EncodedDocument> {
@@ -264,24 +372,25 @@ impl DIDDocumentTrait for ZoneConfig {
         })?;
         return Ok(EncodedDocument::Jwt(token));
     }
+
     fn decode(doc: &EncodedDocument,key:Option<&DecodingKey>) -> NSResult<Self> where Self: Sized {
         match doc {
             EncodedDocument::Jwt(jwt_str) => {
-                if key.is_none() {
-                    return Err(NSError::Failed("No key provided".to_string()));
+                let decoded_payload = decode_jwt_claim_without_verify(jwt_str)?;
+                let result:ZoneConfig = serde_json::from_value(decoded_payload).map_err(|error| {
+                    NSError::Failed(format!("Failed to decode OwnerConfig from json:{}",error))
+                })?;
+                let default_key = result.get_default_key();
+                if default_key.is_none() {
+                    return Err(NSError::Failed("No default key found".to_string()));
                 }
-                let json_result = decode_json_from_jwt_with_pk(jwt_str,key.unwrap())?;
-                let result:ZoneConfig = serde_json::from_value(json_result).map_err(|error| {
-                    NSError::Failed(format!("Failed to decode zone config:{}",error))
-                })?;
+                let default_key = default_key.unwrap();
+                let json_result = decode_json_from_jwt_with_default_pk(jwt_str,&default_key)?;
                 return Ok(result);
             },
-            EncodedDocument::JsonLd(json_value) => {
-                let result:ZoneConfig = serde_json::from_value(json_value.clone()).map_err(|error| {
-                    NSError::Failed(format!("Failed to decode zone config:{}",error))
-                })?;
-                return Ok(result);
-            },
+            _ => {
+                return Err(NSError::Failed("Invalid document type".to_string()));
+            }
         }
     }
     // async fn decode_with_load_key<'a, F, Fut>(doc: &'a EncodedDocument,loader:F) -> NSResult<Self> 
@@ -302,122 +411,124 @@ pub enum DeviceType {
 
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct DeviceConfig {
-    pub did: String,
+    #[serde(rename = "@context",default = "default_context")]
+    pub context: String,
+    pub id: DID,
+    #[serde(rename = "verificationMethod")]
+    verification_method: Vec<VerificationMethodNode>,
+    authentication: Vec<String>,
+    #[serde(rename = "assertionMethod")]
+    assertion_method: Vec<String>,
+    service:Vec<ServiceNode>,
+    pub exp:u64,
+    pub iat:u64,
+    #[serde(flatten)]
+    pub extra_info: HashMap<String, serde_json::Value>,
 
-    pub name: String,//host name
+    //--------------------------------
+    pub device_type: String,//[ood,node,sensor
+    pub name: String,//short name,like ood1
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arch: Option<String>,
-    pub device_type: String,//[ood,node,sensor
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip:Option<IpAddr>,//main_ip
     #[serde(skip_serializing_if = "Option::is_none")]
     pub net_id:Option<String>,// lan1 | wan ，为None时表示为 lan0
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ddns_sn_url:Option<String>,
-    pub auth_key : Jwk,
     #[serde(skip_serializing_if = "is_true", default = "bool_default_true")]
     pub support_container:bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_did: Option<DID>,//Device 所在的zone did
     pub iss:String,
-    pub exp:u64,
-    pub iat:u64,
 }
 
 impl DeviceConfig {
-    pub fn new(name:&str,pkx:Option<String>) -> Self {
-        if pkx.is_some() {
-            let did = format!("did:dev:{}",pkx.as_ref().unwrap());
-            let jwk = json!(
-                {
-                    "kty": "OKP",
-                    "crv": "Ed25519",
-                    "x": pkx
-                }
-            );
-            let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
-            DeviceConfig {
-                did: did,
-                name: name.to_string(),
-                arch: None,
-                device_type: "node".to_string(),
-                ip: None,
-                net_id: None,
-                ddns_sn_url: None,
-                auth_key: public_key_jwk,
-                support_container: true,
-                iss: "".to_string(),
-                exp: 0,
-                iat: 0,
-            }
-        } else {
-            let jwk = json!(
-                {
-                    "kty": "OKP",
-                    "crv": "Ed25519",
-                    "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
-                }
-            );
-            let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
-            DeviceConfig {
-                did: name.to_string(),
-                name: name.to_string(),
-                arch: None,
-                device_type: "node".to_string(),
-                ip: None,
-                net_id: None,
-                ddns_sn_url: None,
-                auth_key: public_key_jwk,
-                support_container: true,
-                iss: "".to_string(),
-                exp: 0,
-                iat: 0,
-            } 
-        }
+    pub fn new_by_jwk(name:&str,pk:Jwk) -> Self {
+        let x = get_x_from_jwk(&pk).unwrap();
+        return DeviceConfig::new(name,x);
     }
 
-    pub fn get_test_config() -> DeviceConfig {
+    pub fn new(name:&str,pkx:String) -> Self {
+        let did = format!("did:dev:{}",pkx);
         let jwk = json!(
             {
                 "kty": "OKP",
                 "crv": "Ed25519",
-                "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
+                "x": pkx
             }
         );
+
         let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
-        return DeviceConfig {
-            did: "did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
-            name: "ood1".to_string(),
+        DeviceConfig {
+            context: default_context(),
+            id: DID::from_str(&did).unwrap(),
+            name: name.to_string(),
             arch: None,
-            device_type: "ood".to_string(),
-            ip:None,
-            net_id:None,
+            device_type: "node".to_string(),
+            ip: None,
+            net_id: None,
             ddns_sn_url: None,
-            auth_key: public_key_jwk,
+            verification_method: vec![VerificationMethodNode {
+                key_type: "Ed25519VerificationKey2020".to_string(),
+                key_id: "#main_key".to_string(),
+                key_controller: did.clone(),
+                public_key: public_key_jwk,
+                extra_info: HashMap::new(),
+            }],
+            authentication: vec!["#main_key".to_string()],
+            assertion_method: vec!["#main_key".to_string()],
+            service: vec![],
             support_container: true,
-            iss: "waterfllier".to_string(),
-            exp: buckyos_get_unix_timestamp() + 3600*24*365, 
-            iat: buckyos_get_unix_timestamp(),
+            zone_did: None,
+            iss: "".to_string(),
+            exp: buckyos_get_unix_timestamp() + 3600*24*365*10,
+            iat: buckyos_get_unix_timestamp() as u64,
+            extra_info: HashMap::new(),
         }
+    }
+
+    pub fn get_default_key(&self) -> Option<Jwk> {
+        for method in self.verification_method.iter() {
+            if method.key_id == "#main_key" {
+                return Some(method.public_key.clone());
+            }
+        }
+        return None;
     }
 }
 
 impl DIDDocumentTrait for DeviceConfig {
-    fn get_did(&self) -> &str {
-        return self.did.as_str()
+    fn get_id(&self) -> DID {
+        return self.id.clone();
     }
-    fn get_auth_key(&self) -> Option<DecodingKey> {
-        let result_key = DecodingKey::from_jwk(&self.auth_key);
-        if result_key.is_err() {
-            error!("Failed to decode auth key: {:?}",result_key.err().unwrap());
+
+    fn get_auth_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+        if self.verification_method.is_empty() {
             return None;
         }
-        return Some(result_key.unwrap());
+        if kid.is_none() {
+            let decoding_key = DecodingKey::from_jwk(&self.verification_method[0].public_key);
+            if decoding_key.is_err() {
+                error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
+                return None;
+            }
+            return Some(decoding_key.unwrap());
+        }
+        let kid = kid.unwrap();
+        for method in self.verification_method.iter() {
+            if method.key_id == kid {
+                let decoding_key = DecodingKey::from_jwk(&method.public_key);
+                if decoding_key.is_err() {
+                    error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
+                    return None;
+                }
+                return Some(decoding_key.unwrap());
+            }
+        }
+        return None;
     }
-    fn is_proof(self) -> bool{
-        return true;
-    }
-    fn get_prover_kid(&self) -> Option<String> {
-        return Some(format!("{}#auth_key",self.iss));
-    }
+
     fn get_iss(&self) -> Option<String> {
         return Some(self.iss.clone());
     }
@@ -443,13 +554,16 @@ impl DIDDocumentTrait for DeviceConfig {
     fn decode(doc: &EncodedDocument,key:Option<&DecodingKey>) -> NSResult<Self> where Self: Sized {
         match doc {
             EncodedDocument::Jwt(jwt_str) => {
-                if key.is_none() {
-                    return Err(NSError::Failed("No key provided".to_string()));
-                }
-                let json_result = decode_json_from_jwt_with_pk(jwt_str,key.unwrap())?;
-                let result:DeviceConfig = serde_json::from_value(json_result).map_err(|error| {
-                    NSError::Failed(format!("Failed to decode zone config:{}",error))
+                let decoded_payload = decode_jwt_claim_without_verify(jwt_str)?;
+                let result:DeviceConfig = serde_json::from_value(decoded_payload).map_err(|error| {
+                    NSError::Failed(format!("Failed to decode OwnerConfig from json:{}",error))
                 })?;
+                let default_key = result.get_default_key();
+                if default_key.is_none() {
+                    return Err(NSError::Failed("No default key found".to_string()));
+                }
+                let default_key = default_key.unwrap();
+                let json_result = decode_json_from_jwt_with_default_pk(jwt_str,&default_key)?;
                 return Ok(result);
             },
             _ => {
@@ -465,18 +579,67 @@ impl DIDDocumentTrait for DeviceConfig {
     // }
 }
 
+
+
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct OwnerConfig {
-    pub did: String,
-    pub name: String,
-    pub nickname : String,
-    pub auth_key : Jwk,
-
+    #[serde(rename = "@context",default = "default_context")]
+    pub context: String,
+    pub id: DID,
+    #[serde(rename = "verificationMethod")]
+    verification_method: Vec<VerificationMethodNode>,
+    authentication: Vec<String>,
+    #[serde(rename = "assertionMethod")]
+    assertion_method: Vec<String>,
+    service:Vec<ServiceNode>,
     pub exp:u64,
     pub iat:u64,
+    #[serde(flatten)]
+    pub extra_info: HashMap<String, serde_json::Value>,
+
+    //--------------------------------
+    pub name: String,
+    pub full_name : String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_zone_did: Option<DID>,
+
 }
 
 impl OwnerConfig {
+    pub fn new(id:DID,name:String,full_name:String,public_key:Jwk) -> Self {
+        let verification_method = vec![VerificationMethodNode {
+            key_type: "Ed25519VerificationKey2020".to_string(),
+            key_id: "#main_key".to_string(),
+            key_controller: id.to_string(),
+            public_key: public_key, 
+            extra_info: HashMap::new(),
+        }];
+
+        OwnerConfig {
+            context: default_context(),
+            id: id,
+            name: name,
+            full_name: full_name,
+            verification_method: verification_method,
+            authentication: vec!["#main_key".to_string()],
+            assertion_method: vec!["#main_key".to_string()],
+            default_zone_did: None,
+            exp: buckyos_get_unix_timestamp() + 3600*24*365*10,
+            iat: buckyos_get_unix_timestamp(),
+            extra_info: HashMap::new(),
+            service: vec![],
+        }
+    }
+
+    pub fn set_default_zone_did(&mut self,default_zone_did:DID) {
+        self.default_zone_did = Some(default_zone_did.clone());
+        self.service.push(ServiceNode { 
+            id: format!("{}#lastDoc",self.id.to_string()),
+            service_type: "DIDDoc".to_string(),
+            service_endpoint: format!("https://{}/resolve/{}",default_zone_did.to_host_name(),self.id.to_string()),
+        });
+    }
+
     pub fn load_owner_config(file_path: &PathBuf) -> NSResult<OwnerConfig> {
         let contents = std::fs::read_to_string(file_path.clone()).map_err(|err| {
             error!("read {} failed! {}", file_path.to_string_lossy(), err);
@@ -491,26 +654,51 @@ impl OwnerConfig {
         })?;
         Ok(config)
     }
+
+    pub fn get_default_zone_did(&self) -> Option<DID> {
+        return self.default_zone_did.clone();
+    }
+
+    pub fn get_default_key(&self) -> Option<Jwk> {
+        for method in self.verification_method.iter() {
+            if method.key_id == "#main_key" {
+                return Some(method.public_key.clone());
+            }
+        }
+        return None;
+    }
 }
 
 impl DIDDocumentTrait for OwnerConfig {
-    fn get_did(&self) -> &str {
-        return self.did.as_str()
+    fn get_id(&self) -> DID {
+        return self.id.clone();
     }
-    fn get_auth_key(&self) -> Option<DecodingKey> {
-        let result_key = DecodingKey::from_jwk(&self.auth_key);
-        if result_key.is_err() {
-            error!("Failed to decode auth key: {:?}",result_key.err().unwrap());
+    fn get_auth_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+        if self.verification_method.is_empty() {
             return None;
         }
-        return Some(result_key.unwrap());
-    }
-    fn is_proof(self) -> bool{
-        return false;
-    }
-    fn get_prover_kid(&self) -> Option<String> {
+        if kid.is_none() {
+            let decoding_key = DecodingKey::from_jwk(&self.verification_method[0].public_key);
+            if decoding_key.is_err() {
+                error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
+                return None;
+            }
+            return Some(decoding_key.unwrap());
+        }
+        let kid = kid.unwrap();
+        for method in self.verification_method.iter() {
+            if method.key_id == kid {
+                let decoding_key = DecodingKey::from_jwk(&method.public_key);
+                if decoding_key.is_err() {
+                    error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
+                    return None;
+                }
+                return Some(decoding_key.unwrap());
+            }
+        }
         return None;
     }
+
     fn get_iss(&self) -> Option<String> {
         return None;
     }
@@ -532,8 +720,8 @@ impl DIDDocumentTrait for OwnerConfig {
             NSError::Failed(format!("Failed to encode OwnerConfig :{}",error))
         })?;
         return Ok(EncodedDocument::Jwt(token));
-
     }
+
     fn decode(doc: &EncodedDocument,key:Option<&DecodingKey>) -> NSResult<Self> where Self: Sized {
         match doc {
             EncodedDocument::Jwt(jwt_str) => {
@@ -541,7 +729,12 @@ impl DIDDocumentTrait for OwnerConfig {
                 let result:OwnerConfig = serde_json::from_value(decoded_payload).map_err(|error| {
                     NSError::Failed(format!("Failed to decode OwnerConfig from json:{}",error))
                 })?;
-                let json_result = decode_json_from_jwt_with_default_pk(jwt_str,&result.auth_key)?;
+                let default_key = result.get_default_key();
+                if default_key.is_none() {
+                    return Err(NSError::Failed("No default key found".to_string()));
+                }
+                let default_key = default_key.unwrap();
+                let json_result = decode_json_from_jwt_with_default_pk(jwt_str,&default_key)?;
                 return Ok(result);
             },
             _ => {
@@ -560,11 +753,11 @@ impl DIDDocumentTrait for OwnerConfig {
 //NodeIdentity from ood active progress
 #[derive(Deserialize, Debug)]
 pub struct NodeIdentityConfig {
-    pub zone_name: String,// $name.buckyos.org or did:ens:$name
-    pub owner_public_key: jsonwebtoken::jwk::Jwk, //owner is zone_owner
-    pub owner_name:String,//owner's name
+    pub zone_did: DID,// $name.buckyos.org or did:ens:$name
+    pub owner_public_key: jsonwebtoken::jwk::Jwk, //owner is zone_owner, must same as zone_config.default_auth_key
+    pub owner_did:DID,//owner's did
     pub device_doc_jwt:String,//device document,jwt string,siged by owner
-    pub zone_nonce:String,// random string, is default password of some service
+    pub zone_nonce:String,// random string, use to identify the zone
     //device_private_key: ,storage in partical file
 }
 
@@ -616,9 +809,9 @@ mod tests {
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         let zone_config = ZoneConfig {
-            did: "did:bns:dev_test".to_string(),
+            id: DID::new("bns","dev_test"),
             name: None,
-            owner_name: None,
+            owner: None,
             gateway: None,
             auth_key: None, 
             oods: vec!["ood1".to_string()],
@@ -629,6 +822,7 @@ mod tests {
             device_list: None,
             iat:None,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
+            extra_info: HashMap::new(),
         };
 
         let json_str = serde_json::to_string(&zone_config).unwrap();
@@ -675,7 +869,7 @@ mod tests {
         );
         let ood_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(ood_public_key).unwrap();
         let device_config = DeviceConfig {
-            did: "did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
+            id: DID::new("dev","gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"),
             name: "ood1".to_string(),
             device_type: "ood".to_string(),
             auth_key: ood_key_jwk,
@@ -687,6 +881,7 @@ mod tests {
             support_container: true,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
+            extra_info: HashMap::new(),
         };
 
         let json_str = serde_json::to_string(&device_config).unwrap();
@@ -723,7 +918,7 @@ mod tests {
         );
         let gateway_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(gateway_public_key).unwrap();
         let device_config = DeviceConfig {
-            did: "did:dev:M3-pAdhs0uFkWmmjdHLBfs494R91QmQeXzCEhEHP-tI".to_string(),
+            id: DID::new("dev","M3-pAdhs0uFkWmmjdHLBfs494R91QmQeXzCEhEHP-tI"),
             name: "gateway".to_string(),
             device_type: "node".to_string(),
             auth_key: gateway_key_jwk,
@@ -735,6 +930,7 @@ mod tests {
             support_container: true,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
+            extra_info: HashMap::new(),
         };
 
         let json_str = serde_json::to_string(&device_config).unwrap();
@@ -764,7 +960,7 @@ mod tests {
         );
         let server_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(server_public_key).unwrap();
         let device_config = DeviceConfig {
-            did: "did:dev:LBgzvFCD4VqQxTsO2LCZjs9FPVaQV2Dt0Q5W_lr4mr0".to_string(),
+            id: DID::new("dev","LBgzvFCD4VqQxTsO2LCZjs9FPVaQV2Dt0Q5W_lr4mr0"),
             name: "server1".to_string(),
             device_type: "node".to_string(),
             auth_key: server_key_jwk,
@@ -776,6 +972,7 @@ mod tests {
             support_container: true,
             exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365*10, 
             iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
+            extra_info: HashMap::new(),
         };
         let json_str = serde_json::to_string(&device_config).unwrap();
         println!("server json_str: {:?}",json_str);
@@ -809,22 +1006,19 @@ mod tests {
         let private_key: EncodingKey = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap();
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
-        let owner_config = OwnerConfig {
-            did: "did:ens:waterfllier".to_string(),
-            name: "waterflier".to_string(),
-            nickname: "zhicong liu".to_string(),
-            auth_key: public_key_jwk,
-            exp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64 + 3600*24*365, 
-            iat: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64,
-        };   
-        let json_str = serde_json::to_string(&owner_config).unwrap();
-        println!("json_str: {:?}",json_str);
+        let mut owner_config = OwnerConfig::new(DID::new("bns","lzc"),
+        "lzc".to_string(),"zhicong liu".to_string(),public_key_jwk);
+
+        owner_config.set_default_zone_did(DID::new("bns","waterflier"));
+   
+        let json_str = serde_json::to_string_pretty(&owner_config).unwrap();
+        println!("json_str: {}",json_str.as_str());
 
         let encoded = owner_config.encode(Some(&private_key)).unwrap();
         println!("encoded: {:?}",encoded);
 
         let decoded = OwnerConfig::decode(&encoded,None).unwrap();
-        println!("decoded: {:?}",serde_json::to_string(&decoded).unwrap());
+        println!("decoded: {}",serde_json::to_string_pretty(&decoded).unwrap());
         let token2 = decoded.encode(Some(&private_key)).unwrap();
 
         assert_eq!(owner_config,decoded);

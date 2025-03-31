@@ -9,7 +9,7 @@ import time
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 publish_dir = os.path.join(src_dir, "publish", "deb_template")
-base_meta_db_url = "http://test.buckyos.io/ndn/repo/meta_index.db/content"
+base_meta_db_url = "https://buckyos.ai/ndn/repo/meta_index.db/content"
 bucky_cli_path = os.path.join(src_dir, "rootfs","bin", "buckycli","buckycli")
 
 def adjust_control_file(dest_dir, new_version, architecture):
@@ -75,6 +75,7 @@ def install_pkgs_to_bin(bin_path):
         "system_config",
         "verify_hub",
         "app_loader",
+        "sys_test",
     ]
 
     for pkg_id in pkg_list:

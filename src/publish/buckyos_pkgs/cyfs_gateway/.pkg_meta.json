@@ -1,1 +1,10 @@
-{"pkg_name": "cyfs_gateway", "version": "0.4.0", "author": "buckyos.io", "description": {"detail": "cyfs gateway"}, "category": "sys_module", "pub_time": 1742410439}
+{
+    "pkg_name": "cyfs_gateway",
+    "version": "0.4.0",
+    "author": "buckyos.io",
+    "description": {
+        "detail": "cyfs gateway"
+    },
+    "category": "sys_module",
+    "pub_time": 1742410439
+}

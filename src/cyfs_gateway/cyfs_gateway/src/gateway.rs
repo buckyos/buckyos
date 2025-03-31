@@ -98,7 +98,7 @@ impl Gateway {
         let mut will_use_current_device_from_env = false;
         if try_load_current_device_config_from_env().is_ok() {
             let device_config = CURRENT_DEVICE_CONFIG.get().unwrap();
-            let x_of_auth_key = get_x_from_jwk(&device_config.auth_key);
+            let x_of_auth_key = get_x_from_jwk(&device_config.get_default_key().unwrap());
             if x_of_auth_key.is_ok() {
                 let x_of_auth_key = x_of_auth_key.unwrap();
                 if x_of_auth_key == public_key {
@@ -107,7 +107,7 @@ impl Gateway {
                     if set_result.is_err() {
                         error!("device_config can only be set once");
                     }
-                    info!("cyfs-gatway use current device from env,device_did:{},device_name:{}",device_config.did.as_str(),device_config.name.as_str());
+                    info!("cyfs-gatway use current device from env,device_did:{},device_name:{}",device_config.id.to_string(),device_config.name.clone());
                 }
             }
         }
@@ -118,7 +118,7 @@ impl Gateway {
                 return Err(anyhow::anyhow!("device_name not set"));
             }
 
-            let this_device_config = DeviceConfig::new(self.config.device_name.as_ref().unwrap(), Some(public_key));
+            let this_device_config = DeviceConfig::new(self.config.device_name.as_ref().unwrap(), public_key);
             let set_result = self.device_config.set(this_device_config.clone());
             if set_result.is_err() {
                 error!("device_config can only be set once");

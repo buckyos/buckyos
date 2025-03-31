@@ -68,7 +68,7 @@ async fn service_main() -> Result<()> {
         "*": {
           "enable_cors":true,
           "routes": {
-            "/kapi/repo_service" : {
+            "/kapi/repo" : {
                 "inner_service":"repo_server"
             }
           }

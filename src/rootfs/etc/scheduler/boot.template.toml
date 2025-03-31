@@ -438,17 +438,8 @@ g, samba,services
 g, {{user_name}},admin
 g, sys-test, app
 """
-
+# boot config will merge with zone_boot_config
+# todo:
 "boot/config" = """
-{
-    "did": "did:bns:{{user_name}}",
-    "name": "{{zone_name}}",
-    "owner_name": "did:bns:{{user_name}}",
-
-    "device_list": [],
-    "oods": [
-        "ood1"
-    ],
-    "exp": 2052190594
-}
+{}
 """

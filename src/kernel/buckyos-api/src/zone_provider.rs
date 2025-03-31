@@ -107,13 +107,13 @@ async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfig) -
     
 
     if !ood_info.is_wan_device() {
-        let hostname = format!("{}-{}",zone_short_name.as_str(),ood_info.hostname.as_str());
+        let hostname = format!("{}-{}",zone_short_name.as_str(),ood_info.name.as_str());
         let addr = resolve_lan_hostname(hostname.as_str());
         if addr.is_some() {
             return Ok(addr.unwrap());
         }
 
-        let hostname = format!("{}-{}.local",zone_short_name.as_str(),ood_info.hostname.as_str());
+        let hostname = format!("{}-{}.local",zone_short_name.as_str(),ood_info.name.as_str());
         let addr = resolve_lan_hostname(hostname.as_str());
         if addr.is_some() {
             return Ok(addr.unwrap());
@@ -124,9 +124,9 @@ async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfig) -
     let sn_url = zone_config.get_sn_url();
     if sn_url.is_some() {
         let sn_url = sn_url.unwrap();
-        info!("try resolve ood {} ip by sn: {}",ood_info.hostname.clone(),sn_url);
+        info!("try resolve ood {} ip by sn: {}",ood_info.name.clone(),sn_url);
         let device_info = sn_get_device_info(sn_url.as_str(),None,
-            zone_config.get_zone_short_name().as_str(),ood_info.hostname.as_str()).await;
+            zone_config.get_zone_short_name().as_str(),ood_info.name.as_str()).await;
 
         if device_info.is_ok() {
             let device_info = device_info.unwrap();
@@ -145,7 +145,7 @@ pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_
     }
 
     let this_device = this_device.unwrap();
-    let ood_string = zone_config.get_ood_string(this_device.hostname.as_str());
+    let ood_string = zone_config.get_ood_desc_string(this_device.name.as_str());
     if ood_string.is_some() {
         return Ok(String::from("http://127.0.0.1:3200/kapi/system_config"));
     }
@@ -153,8 +153,8 @@ pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_
     //this device is not ood, looking best ood for system config service
     let ood_info_str = zone_config.select_same_subnet_ood(this_device);
     if ood_info_str.is_some() {
-        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),None);
-        info!("try connect to same subnet ood: {}",ood_info.hostname);
+        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),this_device.did.clone());
+        info!("try connect to same subnet ood: {}",ood_info.name);
         let ood_ip = resolve_ood_ip_by_info(&ood_info,zone_config).await;
         if ood_ip.is_ok() {
             let ood_ip = ood_ip.unwrap();
@@ -166,8 +166,8 @@ pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_
     let ood_info_str = zone_config.select_wan_ood();
     if ood_info_str.is_some() {
         //try connect to wan ood
-        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),None);
-        info!("try connect to wan ood: {}",ood_info.hostname);
+        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),this_device.did.clone());
+        info!("try connect to wan ood: {}",ood_info.name);
         let ood_ip = resolve_ood_ip_by_info(&ood_info,zone_config).await;
         if ood_ip.is_ok() {
             let ood_ip = ood_ip.unwrap();
@@ -261,9 +261,10 @@ impl NsProvider for ZoneProvider {
             return Err(NSError::NotFound("zone config not found".to_string()));
         }
         let zone_config = zone_config.unwrap();
-        let ood_string = zone_config.get_ood_string(name);
+        let ood_string = zone_config.get_ood_desc_string(name);
         if ood_string.is_some() {
-            let ood_info = DeviceInfo::new(ood_string.unwrap().as_str(),None);
+            //TODO: 需要更系统性的思考如何得到 devi
+            let ood_info = DeviceInfo::new(ood_string.unwrap().as_str(),DID::new("dns","ood"));
             let ip = resolve_ood_ip_by_info(&ood_info,&zone_config).await;
             if ip.is_ok() {
                 return Ok(NameInfo::from_address(name,ip.unwrap()));
@@ -273,18 +274,18 @@ impl NsProvider for ZoneProvider {
         Err(NSError::NotFound(format!("cann't resolve ip for {}",name)))
     }
 
-    async fn query_did(&self, did: &str,fragment:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<EncodedDocument> {
+    async fn query_did(&self, did: &DID,fragment:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<EncodedDocument> {
         let zone_config = CURRENT_ZONE_CONFIG.get();
         if zone_config.is_none() {
             return Err(NSError::NotFound("zone config not found".to_string()));
         }
         let zone_config = zone_config.unwrap();
-        if did == zone_config.did.as_str() {
+        if did == &zone_config.id {
             let zone_value = serde_json::to_value(zone_config).unwrap();
             return Ok(EncodedDocument::JsonLd(zone_value));
         }
 
-        Err(NSError::NotFound(format!("did {} not found",did)))
+        Err(NSError::NotFound(format!("did {} not found",did.to_host_name())))
     }
 
 }

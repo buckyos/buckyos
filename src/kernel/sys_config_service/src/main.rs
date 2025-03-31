@@ -510,14 +510,18 @@ async fn init_by_boot_config()->Result<()> {
     if device_doc_str.is_ok() {
         let device_doc_str = device_doc_str.unwrap();
         let device_doc:DeviceConfig = serde_json::from_str(&device_doc_str).unwrap();
-        let device_key_str = serde_json::to_string(&device_doc.auth_key).unwrap();
-        let devcie_key = device_doc.get_auth_key();
+       
+        let devcie_key = device_doc.get_default_key();
+   
         if devcie_key.is_some() {
+
             let devcie_key = devcie_key.unwrap();
-            TRUST_KEYS.lock().await.insert(device_doc.name.clone(),devcie_key.clone());
+            let device_key_str = serde_json::to_string(&devcie_key).unwrap();
+            let real_key = DecodingKey::from_jwk(&devcie_key).unwrap();
+            TRUST_KEYS.lock().await.insert(device_doc.name.clone(),real_key.clone());
             info!("Insert device name:[{}] - key:[{}] to trust keys",device_doc.name,device_key_str);
-            TRUST_KEYS.lock().await.insert(device_doc.did.clone(),devcie_key);
-            info!("Insert device did:[{}] - key:[{}] to trust keys",device_doc.did,device_key_str);
+            TRUST_KEYS.lock().await.insert(device_doc.id.to_string(),real_key);
+            info!("Insert device did:[{}] - key:[{}] to trust keys",device_doc.id.to_string(),device_key_str);
         }
     } else {
         error!("Missing BUCKYOS_THIS_DEVICE");

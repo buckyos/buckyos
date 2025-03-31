@@ -110,8 +110,6 @@ fn generate_ed25519_key_pair_to_local() {
 }
 
 fn main() {
-    std::env::set_var("RUST_BACKTRACE", "1");
-
     let matches = Command::new("CYFS Gateway Service")
         .version(buckyos_kit::get_version())
         .arg(
@@ -148,7 +146,6 @@ fn main() {
         .get_matches();
 
     // set buckyos root dir
-
     if matches.get_flag("new_key_pair") {
         generate_ed25519_key_pair_to_local();
         std::process::exit(0);
@@ -171,6 +168,7 @@ fn main() {
 
     if matches.get_flag("debug") {
         info!("Debug mode enabled");
+        std::env::set_var("RUST_BACKTRACE", "1");
         console_subscriber::init();
     }
 

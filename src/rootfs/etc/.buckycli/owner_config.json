@@ -1,12 +1,23 @@
 {
-    "did":"did:bns:lzc",
-    "name":"devtest",
-    "nickname":"devtest",
-    "auth_key":{
-        "crv": "Ed25519",
-        "kty": "OKP",
-        "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
-    },
-    "exp":1736832365,
-    "iat":1736832365
-}
+    "@context": "https://www.w3.org/ns/did/v1",
+    "id": "did:bns:lzc",
+    "verificationMethod": [
+      {
+        "id": "#main_key",
+        "type": "Ed25519VerificationKey2020",
+        "controller": "did:bns:lzc",
+        "publicKeyMultibase": "zT4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
+      }
+    ],
+    "authentication": ["#main_key"],
+    "assertionMethod": ["#main_key"],
+    "service": [
+      {
+        "id": "did:bns:lzc#lastDoc",
+        "type": "DIDDoc",
+        "serviceEndpoint": "https://waterflier.web3.buckyos.ai/resolve/did:bns:lzc"
+      }
+    ]
+  }
+
+

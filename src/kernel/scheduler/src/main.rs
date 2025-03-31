@@ -60,15 +60,15 @@ async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
 
 async fn do_boot_scheduler() -> Result<()> {
     let mut init_list : HashMap<String,String> = HashMap::new();
-    let zone_config_str = std::env::var("BUCKYOS_ZONE_CONFIG");
+    let zone_boot_config_str = std::env::var("BUCKYOS_ZONE_BOOT_CONFIG");
 
-    if zone_config_str.is_err() {
-        warn!("BUCKYOS_ZONE_CONFIG is not set, use default zone config");
-        return Err(anyhow::anyhow!("BUCKYOS_ZONE_CONFIG is not set"));
+    if zone_boot_config_str.is_err() {
+        warn!("BUCKYOS_ZONE_BOOT_CONFIG is not set, use default zone config");
+        return Err(anyhow::anyhow!("BUCKYOS_ZONE_BOOT_CONFIG is not set"));
     }
 
-    info!("zone_config_str:{}",zone_config_str.as_ref().unwrap());
-    let mut zone_config:ZoneConfig = serde_json::from_str(&zone_config_str.unwrap()).unwrap();
+    info!("zone_boot_config_str:{}",zone_boot_config_str.as_ref().unwrap());
+    let zone_boot_config:ZoneBootConfig = serde_json::from_str(&zone_boot_config_str.unwrap()).unwrap();
     let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
 
     if rpc_session_token_str.is_err() {
@@ -82,12 +82,24 @@ async fn do_boot_scheduler() -> Result<()> {
         return Err(anyhow::anyhow!("boot/config already exists, boot scheduler failed"));
     }
 
-    let init_list = create_init_list_by_template().await
+    let mut init_list = create_init_list_by_template().await
         .map_err(|e| {
             error!("create_init_list_by_template failed: {:?}", e);
             e
         })?;
 
+    let boot_config_str = init_list.get("boot/config");
+    if boot_config_str.is_none() {
+        return Err(anyhow::anyhow!("boot/config not found in init list"));
+    }
+    let boot_config_str = boot_config_str.unwrap();
+    let mut zone_config:ZoneConfig = serde_json::from_str(boot_config_str.as_str())
+        .map_err(|e| {
+            error!("zone_config serde_json::from_str failed: {:?}", e);
+            e
+        })?;
+    zone_config.init_by_boot_config(&zone_boot_config);
+    init_list.insert("boot/config".to_string(),serde_json::to_string(&zone_config).unwrap());
     //info!("use init list from template {} to do boot scheduler",template_type_str);
     //write to system_config
     for (key,value) in init_list.iter() {
@@ -104,124 +116,6 @@ async fn do_boot_scheduler() -> Result<()> {
     info!("boot scheduler success");
     return Ok(());
 }
-
-
-
-// async fn do_one_ood_schedule(input_config: &HashMap<String, String>) -> Result<(HashMap<String, JsonValueAction>,Value)> {
-//     let mut result_config: HashMap<String, JsonValueAction> = HashMap::new();
-//     let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
-//     for (key, value) in input_config.iter() {
-//         if key.starts_with("devices/") && key.ends_with("/info") {
-//             let device_name = key.split('/').nth(1).unwrap();
-//             let device_info:DeviceInfo = serde_json::from_str(value)
-//                 .map_err(|e| {
-//                     error!("serde_json::from_str failed: {:?}", e);
-//                     e
-//                 })?;
-//             device_list.insert(device_name.to_string(), device_info);
-//         }
-//     }
-//     let mut all_app_http_port:HashMap<String,u16> = HashMap::new();
-
-//     // deploy all app configurations
-//     for (key, value) in input_config.iter() {
-//         if key.starts_with("users/") && key.ends_with("/config") {
-//             let parts: Vec<&str> = key.split('/').collect();
-//             if parts.len() >= 4 && parts[2] == "apps" {
-//                 let user_name = parts[1];
-//                 let app_id = parts[3];
-
-//                 // Install app for user
-//                 let app_config = deploy_app_service(user_name, app_id,&device_list, &input_config).await;
-//                 if app_config.is_err() {
-//                     error!("do_one_ood_schedule Failed to install app {} for user {}: {:?}", app_id, user_name, app_config.err().unwrap());
-//                     return Err(anyhow::anyhow!("do_one_ood_schedule Failed to install app"));
-//                 }
-//                 let (app_config,http_port) = app_config.unwrap();
-//                 extend_json_action_map(&mut result_config, &app_config);
-//                 if http_port.is_some() {
-//                     all_app_http_port.insert(format!("{}.{}",app_id,user_name),http_port.unwrap());
-//                 }
-//             }
-//         }
-//     }
-
-//     //结合系统的快捷方式配置,设置nodes/gateway 配置,目前所有节点的gateway配置都是一样的
-//     let mut real_base_gateway_config : Value = json!({});
-//     let base_gateway_config = input_config.get("services/gateway/base_config");
-//     if base_gateway_config.is_some() {
-//         let base_gateway_config = base_gateway_config.unwrap();
-//         let base_gateway_config = serde_json::from_str(base_gateway_config);
-//         if base_gateway_config.is_ok() {
-//             real_base_gateway_config = base_gateway_config.unwrap();
-//         } else {
-//             error!("serde_json::from_str failed: {:?}", base_gateway_config.err().unwrap());
-//         }
-//     } else {
-//         error!("services/gateway/base_config is not set");
-//     }
-
-//     let gateway_setting = input_config.get("services/gateway/settings");
-//     if gateway_setting.is_some() {
-//         info!("gateway_setting:{}",gateway_setting.unwrap());
-//         let gateway_setting = gateway_setting.unwrap();
-//         let gateway_setting = serde_json::from_str(gateway_setting);
-//         if gateway_setting.is_ok() {
-//             let gateway_setting:Value = gateway_setting.unwrap();
-//             let shortcuts = gateway_setting.get("shortcuts");
-//             if shortcuts.is_some() {
-//                 let shortcuts = shortcuts.unwrap();
-//                 for (short_name,value) in shortcuts.as_object().unwrap() {
-//                     let short_type = value.get("type");
-//                     let short_owner = value.get("user_id");
-//                     let short_app_id = value.get("app_id");
-//                     if short_type.is_some() && short_owner.is_some() && short_app_id.is_some() {
-//                         //let short_type = short_type.unwrap();
-//                         let short_owner = short_owner.unwrap().as_str().unwrap();
-//                         let short_app_id = short_app_id.unwrap().as_str().unwrap();
-//                         let short_app_key = format!("{}.{}",short_app_id,short_owner);
-//                         if all_app_http_port.contains_key(&short_app_key) {
-//                             let http_port = all_app_http_port.get(&short_app_key).unwrap();
-//                             info!("find shortcut to app_service :{} http_port:{},modify gateway_config",short_app_key,http_port);
-//                             let app_gateway_config = json!({
-//                                 "routes":{
-//                                     "/":{
-//                                         "upstream":format!("http://127.0.0.1:{}",http_port)
-//                                     }
-//                                 }
-//                             });
-//                             if short_name == "www" {
-//                                 let default_upstream = json!({
-//                                     "/":{
-//                                         "upstream":format!("http://127.0.0.1:{}",http_port)
-//                                     }
-//                                 });
-
-//                                 set_json_by_path(&mut real_base_gateway_config,"/servers/main_http_server/hosts/*/routes",Some(&default_upstream));
-
-//                             }
-//                             set_json_by_path(&mut real_base_gateway_config,format!("/servers/main_http_server/hosts/{}.*",short_name).as_str(),Some(&app_gateway_config));
-//                         } else {
-//                             warn!("find shortcut to app_service :{} not found",short_app_key);
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//     }
-
-
-//     Ok((result_config,real_base_gateway_config))
-// }
-
-// fn path_is_gateway_config(path: &str) -> bool {
-//     if path.starts_with("nodes") && path.ends_with("gateway") {
-//         return true;
-//     }
-
-//     false
-// }
-
 
 fn craete_node_item_by_device_info(device_name: &str,device_info: &DeviceInfo) -> NodeItem {
     let node_state = NodeState::from(device_info.state.clone().unwrap_or("Ready".to_string()));
@@ -250,7 +144,9 @@ fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfig) -> PodItem
     let mut need_container = true;
     if app_config.app_doc.pkg_list.iter().any(|(_, pkg)| pkg.docker_image_name.is_none()) &&
        //TODO: 需要从配置中获取所有的可信发布商列表
-       app_config.app_doc.author == "did:bns:buckyos" {
+       app_config.app_doc.author == "did:web:buckyos.ai" ||
+       app_config.app_doc.author == "did:web:buckyos.io" ||
+       app_config.app_doc.author == "did:web:buckyos.org" {
         need_container = false;
     }
 

@@ -188,21 +188,21 @@ impl NsProvider for DnsProvider {
                     }
                     let public_key = public_key.unwrap();
 
-                    let mut zone_config = ZoneConfig::decode(&jwt_str, Some(&public_key));
-                    if zone_config.is_err() {
-                        return Err(NSError::Failed("parse zone config failed!".to_string()));
+                    let mut zone_boot_config = ZoneBootConfig::decode(&jwt_str, Some(&public_key));
+                    if zone_boot_config.is_err() {
+                        return Err(NSError::Failed("parse zone boot config failed!".to_string()));
                     }
                     
-                    let mut zone_config = zone_config.unwrap();
-                    zone_config.auth_key = Some(public_key_jwk);
-                    let device_list = name_info.get_device_list();
-                    if device_list.is_some() {
-                        zone_config.device_list = device_list;
+                    let mut zone_boot_config = zone_boot_config.unwrap();
+                    zone_boot_config.owner_key = Some(public_key_jwk);
+                    let gateway_devs = name_info.get_gateway_device_list();
+                    if gateway_devs.is_some() {
+                        zone_boot_config.gateway_devs =  gateway_devs.unwrap();
                     }
-
-                    info!("resolve & verify zone_config from {} TXT record OK.",name);
-                    let zone_config_value = serde_json::to_value(&zone_config).unwrap();
-                    name_info.did_document = Some(EncodedDocument::JsonLd(zone_config_value));
+         
+                    info!("resolve & verify zone_boot_config from {} TXT record OK.",name);
+                    let zone_boot_config_value = serde_json::to_value(&zone_boot_config).unwrap();
+                    name_info.did_document = Some(EncodedDocument::JsonLd(zone_boot_config_value));
                 }
                 return Ok(name_info);
             },
@@ -213,8 +213,8 @@ impl NsProvider for DnsProvider {
         
     }
 
-    async fn query_did(&self, did: &str, fragment: Option<&str>, from_ip: Option<IpAddr>) -> NSResult<EncodedDocument> {
-        let name_info = self.query(did, Some(RecordType::DID), None).await?;
+    async fn query_did(&self, did: &DID, fragment: Option<&str>, from_ip: Option<IpAddr>) -> NSResult<EncodedDocument> {
+        let name_info = self.query(&did.to_host_name(), Some(RecordType::DID), None).await?;
         if name_info.did_document.is_some() {
             return Ok(name_info.did_document.unwrap());
         }

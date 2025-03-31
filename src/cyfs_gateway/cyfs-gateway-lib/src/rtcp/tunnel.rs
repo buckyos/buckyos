@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use buckyos_kit::buckyos_get_unix_timestamp;
 use buckyos_kit::AsyncStream;
 use log::*;
+use name_lib::DID;
 use rand::Rng;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -30,10 +31,10 @@ pub(crate) struct RTcpTunnel {
     build_helper: RTcpStreamBuildHelper,
     dispatcher_manager: RTcpDispatcherManager,
 
-    target: RTcpTargetStackId,
+    target: RTcpTargetStackEP,
     can_direct: bool,
     peer_addr: SocketAddr,
-    this_device: String,
+    this_device: DID,
     aes_key: [u8; 32],
     //random_pk:[u8;32],
     //write_stream:Arc<Mutex<WriteHalf<EncryptedStream<TcpStream>>>>,
@@ -51,8 +52,8 @@ impl RTcpTunnel {
     pub fn new(
         build_helper: RTcpStreamBuildHelper,
         dispatcher_manager: RTcpDispatcherManager,
-        this_device: String,
-        target: &RTcpTargetStackId,
+        this_device: DID,
+        target: &RTcpTargetStackEP,
         can_direct: bool,
         stream: TcpStream,
         aes_key: [u8; 32],
@@ -237,7 +238,7 @@ impl RTcpTunnel {
         if let Some(dispatcher) = ret {
             //TODO: bug?
             let end_point = TunnelEndpoint {
-                device_id: self.target.get_id_str(),
+                device_id: self.target.did.to_string(),
                 port: self.target.stack_port,
             };
             dispatcher.on_new_stream(stream, end_point).await?;
@@ -312,7 +313,7 @@ impl RTcpTunnel {
         if let Some(dispatcher) = ret {
             //TODO: bug?
             let end_point = TunnelEndpoint {
-                device_id: self.target.get_id_str(),
+                device_id: self.target.did.to_string(),
                 port: self.target.stack_port,
             };
             dispatcher.on_new_stream(stream, end_point).await?;
@@ -341,7 +342,7 @@ impl RTcpTunnel {
         // 1. Prepare wait for the new stream before send open_resp
         let real_key = format!(
             "{}_{}",
-            self.this_device.as_str(),
+            self.this_device.to_string(),
             open_package.body.stream_id
         );
         self.build_helper.wait_ropen_stream(&real_key).await?;
@@ -392,7 +393,7 @@ impl RTcpTunnel {
     }
 
     pub async fn run(self) {
-        let source_info = self.target.get_id_str();
+        let source_info = self.target.did.to_string();
         let mut read_stream = self.read_stream.lock().await;
         //let read_stream = self.read_stream.clone();
         loop {
@@ -473,7 +474,7 @@ impl RTcpTunnel {
     }
 
     async fn wait_ropen_stream(&self, session_key: &str) -> Result<TcpStream, std::io::Error> {
-        let real_key = format!("{}_{}", self.this_device.as_str(), session_key);
+        let real_key = format!("{}_{}", self.this_device.to_string(), session_key);
         self.build_helper.wait_ropen_stream(&real_key).await
     }
 
@@ -486,7 +487,7 @@ impl RTcpTunnel {
         // First generate 32byte session_key
         let random_bytes: [u8; 16] = rand::rng().random();
         let session_key = hex::encode(random_bytes);
-        let real_key = format!("{}_{}", self.this_device.as_str(), session_key);
+        let real_key = format!("{}_{}", self.this_device.to_string(), session_key);
         let seq = self.next_seq();
 
         info!(
@@ -527,7 +528,7 @@ impl RTcpTunnel {
                 error!(
                     "RTcp tunnel open direct stream to {}, {} error: {}",
                     target_addr,
-                    self.target.get_id_str(),
+                    self.target.did.to_string(),
                     e
                 );
                 return Err(e);
@@ -549,7 +550,7 @@ impl RTcpTunnel {
             info!(
                 "RTcp tunnel open direct stream to {}, {}",
                 target_addr,
-                self.target.get_id_str()
+                self.target.did.to_string()
             );
 
             Ok(Box::new(aes_stream))

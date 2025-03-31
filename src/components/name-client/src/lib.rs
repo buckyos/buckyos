@@ -71,7 +71,7 @@ pub async fn resolve(name: &str, record_type: Option<RecordType>) -> NSResult<Na
     client.resolve(name, record_type).await
 }
 
-pub async fn resolve_auth_key(hostname: &str) -> NSResult<DecodingKey> {
+pub async fn resolve_auth_key(did: &DID,kid:Option<&str>) -> NSResult<DecodingKey> {
     //return #auth-key
     //let did = DID::from_host_name(hostname);
     // if did.is_some(){
@@ -87,18 +87,18 @@ pub async fn resolve_auth_key(hostname: &str) -> NSResult<DecodingKey> {
         error!("{}",msg);
         return Err(NSError::InvalidState(msg));
     }
-    let did_doc = client.unwrap().resolve_did(hostname,None).await?;
+    let did_doc = client.unwrap().resolve_did(did,None).await?;
+    //did_doc.get_auth_key(kid)
     //info!("did_doc: {:?}",did_doc);
     // did_doc could be ZoneConfig or DeviceConfig
     let zone_config = ZoneConfig::decode(&did_doc, None);
     if zone_config.is_ok() {
         let zone_config = zone_config.unwrap();
-        let auth_key = zone_config.auth_key; 
+        let auth_key = zone_config.get_auth_key(kid);
         if auth_key.is_some() {
-            let auth_key = auth_key.unwrap();
-            let auth_key = DecodingKey::from_jwk(&auth_key)
-                .map_err(|e|NSError::InvalidState(format!("Failed to decode auth key:{}",e.to_string())))?;
-            return Ok(auth_key);
+            return Ok(auth_key.unwrap());
+        } else {
+            return Err(NSError::NotFound("Invalid kid".to_string()));
         }
     }
     return Err(NSError::NotFound("Invalid did document".to_string()));
@@ -107,30 +107,32 @@ pub async fn resolve_auth_key(hostname: &str) -> NSResult<DecodingKey> {
 pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],String)> {
     //return #auth-key
     let did = DID::from_host_name(hostname);
-    if did.is_some(){
-        let did = did.unwrap();
-        if let Some(auth_key) = did.get_auth_key() {
-            return Ok((auth_key,hostname.to_string()));
-        }
+    if did.is_none() {
+        return Err(NSError::InvalidDID(format!("invalid did {}",hostname)));
     }
-
+    let did = did.unwrap();
+    if let Some(auth_key) = did.get_auth_key() {
+        return Ok((auth_key,hostname.to_string()));
+    }
+    
     let client = get_name_client();
     if client.is_none() {
         let msg = "Name client not init yet".to_string();
         error!("{}",msg);
         return Err(NSError::InvalidState(msg));
     }
-    let did_doc = client.unwrap().resolve_did(hostname,None).await?;
+    let did_doc = client.unwrap().resolve_did(&did,None).await?;
     //info!("did_doc: {:?}",did_doc);
     // did_doc could be ZoneConfig or DeviceConfig
     let zone_config = ZoneConfig::decode(&did_doc, None);
     if zone_config.is_ok() {
         let zone_config = zone_config.unwrap();
+        
         if zone_config.device_list.is_some() {
-            let device_list = zone_config.device_list.unwrap();
+            let device_list = zone_config.device_list.as_ref().unwrap();
             for device_did in device_list {
                 let device_did = DID::from_str(device_did.as_str());
-                if device_did.is_some() {
+                if device_did.is_ok() {
                     let device_did = device_did.unwrap();
                     if let Some(auth_key) = device_did.get_auth_key() {
                         return Ok((auth_key,hostname.to_string()));
@@ -139,7 +141,7 @@ pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],Stri
             }
         }
         
-        let auth_key = zone_config.auth_key;
+        let auth_key = zone_config.get_default_key();
         if auth_key.is_some() {
             let auth_key = auth_key.unwrap();
             let auth_key = serde_json::to_value(&auth_key);
@@ -158,7 +160,7 @@ pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],Stri
 }
 
 
-pub async fn resolve_did(did: &str,fragment:Option<&str>) -> NSResult<EncodedDocument> {
+pub async fn resolve_did(did: &DID ,fragment:Option<&str>) -> NSResult<EncodedDocument> {
     let client = get_name_client();
     if client.is_none() {
         return Err(NSError::NotFound("Name client not found".to_string()));
@@ -167,7 +169,7 @@ pub async fn resolve_did(did: &str,fragment:Option<&str>) -> NSResult<EncodedDoc
     client.resolve_did(did,fragment).await
 }
 
-pub async fn add_did_cache(did: &str, doc:EncodedDocument) -> NSResult<()> {
+pub async fn add_did_cache(did: DID, doc:EncodedDocument) -> NSResult<()> {
     let client = get_name_client();
     if client.is_none() {
         return Err(NSError::NotFound("Name client not found".to_string()));
@@ -176,16 +178,14 @@ pub async fn add_did_cache(did: &str, doc:EncodedDocument) -> NSResult<()> {
     client.add_did_cache(did, doc)
 }
 
-pub async fn add_nameinfo_cache(name: &str, info:NameInfo) -> NSResult<()> {
+pub async fn add_nameinfo_cache(hostname: &str, info:NameInfo) -> NSResult<()> {
     let client = get_name_client();
     if client.is_none() {
         return Err(NSError::NotFound("Name client not found".to_string()));
     }
     let client = client.unwrap();
-    client.add_nameinfo_cache(name, info)
+    client.add_nameinfo_cache(hostname, info)
 }
-
-
 
 #[cfg(test)]
 mod tests {
