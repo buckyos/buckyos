@@ -107,12 +107,18 @@ async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneB
         return NodeDaemonErrors::ReasonError("resolve zone did failed!".to_string());
     })?;
 
+
     let mut zone_boot_config = ZoneBootConfig::decode(&zone_doc, Some(&owner_public_key))
         .map_err(|err| {
             error!("parse zone config failed! {}", err);
             return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
         })?;
 
+    if node_identity.zone_nonce > zone_boot_config.nonce {
+        error!("zone_boot_config.nonce is earlier than node_identity.zone_nonce!");
+        return Err(NodeDaemonErrors::ReasonError("zone_boot_config.nonce is not match!".to_string()));
+    }
+    
     if zone_boot_config.owner.is_some() {
         if zone_boot_config.owner.as_ref().unwrap() != & node_identity.owner_did {
             error!("zone boot config's owner is not match node_identity's owner_did!");
