@@ -146,6 +146,7 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
     let mut user_id:Option<String> = None;
     let mut owner_user_config = None;
     if bucky_dev_user_home_dir.exists() {
+        info!("dev folder exists: {}",bucky_dev_user_home_dir.to_string_lossy());
         user_config_file = bucky_dev_user_home_dir.join("owner_config.json");
         user_private_key_file = Some(bucky_dev_user_home_dir.join("user_private_key.pem"));
         let owner_config = OwnerConfig::load_owner_config(&user_config_file)
@@ -156,17 +157,15 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
         user_id = Some("root".to_string());
         owner_user_config = Some(owner_config);
 
-        zone_config_file = bucky_dev_user_home_dir.join("zone_config.toml");
+        zone_config_file = bucky_dev_user_home_dir.join("zone_config.json");
         node_identity_file = bucky_dev_user_home_dir.join("node_identity.json");
         device_private_key_file = bucky_dev_user_home_dir.join("node_private_key.pem");
 
     } else {
         let etc_dir = get_buckyos_system_etc_dir();
         node_identity_file = etc_dir.join("node_identity.json");
-        //user_config_file = etc_dir.join("owner_config.toml");
         device_private_key_file = etc_dir.join("node_private_key.pem");
-        //user_private_key_file = etc_dir.join("user_private_key.pem");
-        zone_config_file = etc_dir.join("zone_config.toml");
+        zone_config_file = etc_dir.join("zone_config.json");
     }
 
     let node_identity_config =  NodeIdentityConfig::load_node_identity_config(&node_identity_file)
@@ -235,12 +234,14 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
         })?;
        
         let owner_public_key = DecodingKey::from_jwk(&node_identity_config.owner_public_key);
-        zone_config = ZoneConfig::decode(&zone_doc,None).map_err(|err| {
-            error!("parse zone config failed! {}", err);
-            return RPCErrors::ReasonError("parse zone config failed!".to_string());
+        let mut zone_boot_config = ZoneBootConfig::decode(&zone_doc,None).map_err(|err| {
+            error!("parse zone boot config failed! {}", err);
+            return RPCErrors::ReasonError("parse zone boot config failed!".to_string());
         })?;
-        
-        zone_config.id = node_identity_config.zone_did.clone();
+        zone_boot_config.owner = Some(node_identity_config.owner_did.clone());
+        zone_boot_config.id = Some(node_identity_config.zone_did.clone());
+        zone_boot_config.owner_key = Some(node_identity_config.owner_public_key.clone());
+        zone_config = zone_boot_config.to_zone_config();
     }
 
     let set_result = CURRENT_ZONE_CONFIG.set(zone_config.clone());

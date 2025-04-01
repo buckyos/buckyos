@@ -1,0 +1,28 @@
+{
+  "@context": "https://www.w3.org/ns/did/v1",
+  "id": "did:web:test.buckyos.io",
+  "verificationMethod": [
+    {
+      "type": "Ed25519VerificationKey2020",
+      "id": "#main_key",
+      "controller": "did:bns:devtest",
+      "publicKeyJwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
+      }
+    }
+  ],
+  "authentication": [
+    "#main_key"
+  ],
+  "assertionMethod": [
+    "#main_key"
+  ],
+  "exp": 2058838939,
+  "iat": 1743478939,
+  "owner": "did:bns:devtest",
+  "oods": [
+    "ood1"
+  ]
+}

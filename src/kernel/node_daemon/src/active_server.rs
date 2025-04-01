@@ -131,24 +131,25 @@ impl ActiveServer {
         let write_dir = get_buckyos_system_etc_dir();
         let device_private_key_file = write_dir.join("node_private_key.pem");
         tokio::fs::write(device_private_key_file,device_private_key.as_bytes()).await.unwrap();
-        let owner_public_key_str = owner_public_key.to_string();
-        let owner_public_key_str = owner_public_key_str.replace(":", "=");
+        let owner_public_key:Jwk = serde_json::from_value(owner_public_key.clone()).unwrap();
         //write device idenity
         let zone_did = DID::from_str(zone_name)
             .map_err(|_|RPCErrors::ReasonError("Invalid zone name".to_string()))?;
 
 
-        let device_identity_str = format!(r#"
-zone_did = "{}"
-owner_public_key={}
-owner_did = "did:bns:{}"
-device_doc_jwt = "{}"
-zone_nonce = "1234567890"
-        "#,zone_did.to_string(),owner_public_key_str,user_name,device_doc_jwt.to_string());
+        let node_identity = NodeIdentityConfig {
+            zone_did:zone_did,
+            owner_public_key:owner_public_key,
+            owner_did:DID::new("bns",user_name),
+            device_doc_jwt:device_doc_jwt.to_string(),
+            zone_iat:buckyos_get_unix_timestamp() as u32,
+        };
 
-        let device_identity_file = write_dir.join("node_identity.toml");
+
+        let device_identity_file = write_dir.join("node_identity.json");
+        let device_identity_str = serde_json::to_string(&node_identity).unwrap();
         tokio::fs::write(device_identity_file,device_identity_str.as_bytes()).await
-            .map_err(|_|RPCErrors::ReasonError("Failed to write device identity".to_string()))?;
+            .map_err(|_|RPCErrors::ReasonError("Failed to write node_identity.json".to_string()))?;
 
         //write boot config
         let start_params_str = serde_json::to_string(&req.params).unwrap();
@@ -157,7 +158,7 @@ zone_nonce = "1234567890"
             .map_err(|_|RPCErrors::ReasonError("Failed to write start params".to_string()))?;
 
             
-        info!("Write Active files [.device_private_key.pem,.device_identity.toml,start_config.json] success");
+        info!("Write Active files [node_private_key.pem,node_identity.json,start_config.json] success");
         
         tokio::task::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
