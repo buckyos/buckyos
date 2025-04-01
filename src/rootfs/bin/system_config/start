@@ -10,11 +10,11 @@ print("try to kill system_config")
 util.kill_process("system_config")
 
 # 读取必要的环境变量，确保关键的环境变量已经设置
-BUCKYOS_ZONE_CONFIG = os.getenv("BUCKYOS_ZONE_CONFIG")
-if len(BUCKYOS_ZONE_CONFIG) == 0:
-    print("BUCKYOS_ZONE_CONFIG is not set")
+BUCKYOS_ZONE_BOOT_CONFIG = os.getenv("BUCKYOS_ZONE_BOOT_CONFIG")
+if len(BUCKYOS_ZONE_BOOT_CONFIG) == 0:
+    print("BUCKYOS_ZONE_BOOT_CONFIG is not set")
     exit(1)
-#print("BUCKYOS_ZONE_CONFIG is:",BUCKYOS_ZONE_CONFIG)
+
 
 BUCKYOS_THIS_DEVICE = os.getenv("BUCKYOS_THIS_DEVICE")
 if len(BUCKYOS_THIS_DEVICE) == 0:

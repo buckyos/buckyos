@@ -55,7 +55,7 @@ pub struct ZoneBootConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sn:Option<String>,
     pub exp:u64,
-    pub nonce:u32,
+    pub iat:u32,
 
     //---------------------------------
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,6 +63,7 @@ pub struct ZoneBootConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_key:Option<Jwk>,//PKX=0:xxxxxxx;
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub gateway_devs:Vec<DID>,
 
     #[serde(flatten)]
@@ -101,7 +102,7 @@ impl DIDDocumentTrait for ZoneBootConfig {
     }
 
     fn get_iat(&self) -> Option<u64> {
-        return None;
+        return Some(self.iat as u64);
     }
 
     fn encode(&self,key:Option<&EncodingKey>) -> NSResult<EncodedDocument> {
@@ -183,7 +184,6 @@ pub struct ZoneConfig {
     pub sn:Option<String>,//
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify_hub_info:Option<VerifyHubInfo>,
-    pub nonce:u32,
 
 }
 
@@ -212,7 +212,6 @@ impl ZoneConfig {
             oods: vec![],
             sn: None,
             verify_hub_info: None,
-            nonce: 0,
         }
     }
 
@@ -234,7 +233,15 @@ impl ZoneConfig {
     pub fn init_by_boot_config(&mut self,boot_config:&ZoneBootConfig) {
         self.oods = boot_config.oods.clone();
         self.sn = boot_config.sn.clone();
-        self.nonce = boot_config.nonce;
+        self.exp = boot_config.exp;
+        self.iat = boot_config.iat as u64;
+        
+        if boot_config.owner.is_some() {
+            self.owner = Some(boot_config.owner.clone().unwrap());
+        }
+        if boot_config.owner_key.is_some() {
+            self.verification_method[0].public_key = boot_config.owner_key.clone().unwrap();
+        }
         self.extra_info.extend(boot_config.extra_info.clone());
     }
 
@@ -291,7 +298,7 @@ impl ZoneConfig {
         return None;
     }
 
-    pub fn get_sn_url(&self) -> Option<String> {
+    pub fn get_sn_api_url(&self) -> Option<String> {
         if self.sn.is_some() {
             return Some(format!("https://{}/kapi/sn",self.sn.as_ref().unwrap()));
         }
@@ -409,7 +416,8 @@ impl DIDDocumentTrait for ZoneConfig {
 
 pub enum DeviceType {
     OOD, //run system config service
-    Server,//run other service
+    Node,//run other service
+    Device,//client device
     Sensor,
     Browser,
 }
@@ -769,7 +777,7 @@ pub struct NodeIdentityConfig {
     pub owner_public_key: jsonwebtoken::jwk::Jwk, //owner is zone_owner, must same as zone_config.default_auth_key
     pub owner_did:DID,//owner's did
     pub device_doc_jwt:String,//device document,jwt string,siged by owner
-    pub zone_nonce:u32,// random string, use to identify the zone
+    pub zone_iat:u32,
     //device_private_key: ,storage in partical file
 }
 
@@ -780,10 +788,10 @@ impl NodeIdentityConfig {
             return NSError::ReadLocalFileError(format!("read {} failed! {}", file_path.to_string_lossy(), err));
         })?;
     
-        let config: NodeIdentityConfig = toml::from_str(&contents).map_err(|err| {
+        let config: NodeIdentityConfig = serde_json::from_str(&contents).map_err(|err| {
             error!("parse {} failed! {}", file_path.to_string_lossy(), err);
             return NSError::ReadLocalFileError(format!(
-                "Failed to parse NodeIdentityConfig TOML: {}",
+                "Failed to parse NodeIdentityConfig JSON: {}",
                 err
             ));
         })?;
@@ -851,7 +859,8 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
               }
         );
         let ood1_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(ood1_jwk.clone()).unwrap();
-        let ood1_device_config = DeviceConfig::new_by_jwk("ood1",ood1_jwk.clone());
+        let mut ood1_device_config = DeviceConfig::new_by_jwk("ood1",ood1_jwk.clone());
+        ood1_device_config.iss = "did:bns:devtest".to_string();
         let ood1_device_config_json_str = serde_json::to_string_pretty(&ood1_device_config).unwrap();
         println!("ood1 device config: {}",ood1_device_config_json_str);
         let device_jwt = ood1_device_config.encode(Some(&owner_private_key)).unwrap();
@@ -872,7 +881,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             oods:vec!["ood1".to_string()],
             sn:None,
             exp:exp,
-            nonce:now as u32,
+            iat:now as u32,
             owner:None,
             owner_key:None,
             gateway_devs:vec![],
@@ -880,7 +889,8 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         };
         let zone_boot_config_json_str = serde_json::to_string_pretty(&zone_boot_config).unwrap();
         println!("zone boot config: {}",zone_boot_config_json_str.as_str());
-        let zone_boot_config_path = tmp_dir.join("test.buckyos.zone.json");
+        
+        let zone_boot_config_path = tmp_dir.join(format!("{}.zone.json",DID::new("web","test.buckyos.io").to_host_name()));
         std::fs::write(zone_boot_config_path.clone(),zone_boot_config_json_str.clone()).unwrap();
         println!("# zone boot config write to file: {}",zone_boot_config_path.to_string_lossy());
         let zone_boot_config_jwt = zone_boot_config.encode(Some(&owner_private_key)).unwrap();
@@ -898,7 +908,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             owner_public_key:owner_jwk.clone(),
             owner_did:DID::new("bns","devtest"),
             device_doc_jwt:device_jwt.to_string(),
-            zone_nonce:now as u32,
+            zone_iat:now as u32,
         };
         let node_identity_config_json_str = serde_json::to_string_pretty(&node_identity_config).unwrap();
         println!("node identity config: {}",node_identity_config_json_str.as_str());
@@ -909,7 +919,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         //build start_config.json
         let start_config = json!(
             {
-                "admin_password_hash":"o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4=",
+                "admin_password_hash":"o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4=",//bucky2025
                 "device_private_key":device_private_key_pem,
                 "device_public_key":ood1_jwk,
                 "friend_passcode":"sdfsdfsdf",
@@ -926,7 +936,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         println!("start config: {}",start_config_json_str.as_str());
         let start_config_path = tmp_dir.join("start_config.json");
         std::fs::write(start_config_path.clone(),start_config_json_str.clone()).unwrap();
-        println!("# start config will store at {}",start_config_path.to_string_lossy());
+        println!("# start_config will store at {}",start_config_path.to_string_lossy());
 
         println!("# test.buckyos.io TXT Record: DID={};",zone_boot_config_jwt.to_string());
         let owner_x = get_x_from_jwk(&owner_jwk).unwrap();

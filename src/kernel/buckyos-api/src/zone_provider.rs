@@ -121,7 +121,7 @@ async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfig) -
     }
 
     //try resolve by HTTP-SN
-    let sn_url = zone_config.get_sn_url();
+    let sn_url = zone_config.get_sn_api_url();
     if sn_url.is_some() {
         let sn_url = sn_url.unwrap();
         info!("try resolve ood {} ip by sn: {}",ood_info.name.clone(),sn_url);

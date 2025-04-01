@@ -1,23 +1,26 @@
 {
-    "@context": "https://www.w3.org/ns/did/v1",
-    "id": "did:bns:lzc",
-    "verificationMethod": [
-      {
-        "id": "#main_key",
-        "type": "Ed25519VerificationKey2020",
-        "controller": "did:bns:lzc",
-        "publicKeyMultibase": "zT4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
+  "@context": "https://www.w3.org/ns/did/v1",
+  "id": "did:bns:devtest",
+  "verificationMethod": [
+    {
+      "type": "Ed25519VerificationKey2020",
+      "id": "#main_key",
+      "controller": "did:bns:devtest",
+      "publicKeyJwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
       }
-    ],
-    "authentication": ["#main_key"],
-    "assertionMethod": ["#main_key"],
-    "service": [
-      {
-        "id": "did:bns:lzc#lastDoc",
-        "type": "DIDDoc",
-        "serviceEndpoint": "https://waterflier.web3.buckyos.ai/resolve/did:bns:lzc"
-      }
-    ]
-  }
-
-
+    }
+  ],
+  "authentication": [
+    "#main_key"
+  ],
+  "assertion_method": [
+    "#main_key"
+  ],
+  "exp": 2058851072,
+  "iat": 1743491072,
+  "name": "devtest",
+  "full_name": "zhicong liu"
+}

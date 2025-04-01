@@ -157,12 +157,12 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
         owner_user_config = Some(owner_config);
 
         zone_config_file = bucky_dev_user_home_dir.join("zone_config.toml");
-        node_identity_file = bucky_dev_user_home_dir.join("node_identity.toml");
+        node_identity_file = bucky_dev_user_home_dir.join("node_identity.json");
         device_private_key_file = bucky_dev_user_home_dir.join("node_private_key.pem");
 
     } else {
         let etc_dir = get_buckyos_system_etc_dir();
-        node_identity_file = etc_dir.join("node_identity.toml");
+        node_identity_file = etc_dir.join("node_identity.json");
         //user_config_file = etc_dir.join("owner_config.toml");
         device_private_key_file = etc_dir.join("node_private_key.pem");
         //user_private_key_file = etc_dir.join("user_private_key.pem");

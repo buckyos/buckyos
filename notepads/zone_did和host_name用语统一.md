@@ -253,7 +253,7 @@ service_client = get_service_client(full_zone_config)
 - [x] DNS 能正确的resolve zone-boot-config,SN能正确通过NameInfo返回Zone-Boot-Config
 - [x] 检查Node_Active的构造
 - [ ] 修改SDK,注意修改SDK中的相关config数据结构定义
-- [ ] 修改所有配置文件，和DNS配置
+- [x] 修改所有配置文件，和DNS配置
 - [x] XXXConfig与现有的DIDDoc体系进行最大程度的兼容设计
 
 2. 检查系统内权限是否能正确与DID集成

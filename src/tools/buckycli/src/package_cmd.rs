@@ -2,7 +2,6 @@
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use jsonwebtoken::EncodingKey;
-use log::info;
 use name_lib::decode_jwt_claim_without_verify;
 use ndn_lib::*;
 use serde::{Deserialize, Serialize};

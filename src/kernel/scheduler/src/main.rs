@@ -99,7 +99,7 @@ async fn do_boot_scheduler() -> Result<()> {
             e
         })?;
     zone_config.init_by_boot_config(&zone_boot_config);
-    init_list.insert("boot/config".to_string(),serde_json::to_string(&zone_config).unwrap());
+    init_list.insert("boot/config".to_string(),serde_json::to_string_pretty(&zone_config).unwrap());
     //info!("use init list from template {} to do boot scheduler",template_type_str);
     //write to system_config
     for (key,value) in init_list.iter() {

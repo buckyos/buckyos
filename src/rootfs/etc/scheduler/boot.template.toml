@@ -441,5 +441,31 @@ g, sys-test, app
 # boot config will merge with zone_boot_config
 # todo:
 "boot/config" = """
-{}
+{
+  "@context": "https://www.w3.org/ns/did/v1",
+  "id": "did:null:null",
+  "verificationMethod": [
+    {
+      "type": "Ed25519VerificationKey2020",
+      "id": "#main_key",
+      "controller": "did:bns:{{user_name}}",
+      "publicKeyJwk": {
+        "crv": "Ed25519",
+        "kty": "OKP",
+        "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
+      }
+    }
+  ],
+  "authentication": [
+    "#main_key"
+  ],
+  "assertionMethod": [
+    "#main_key"
+  ],
+  "exp": 0,
+  "iat": 0,
+  "owner": "did:bns:{{user_name}}",
+  "oods": [
+  ]
+}
 """
