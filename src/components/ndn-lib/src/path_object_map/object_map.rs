@@ -86,7 +86,7 @@ impl PathObjectMap {
         let item = PathObjectMapItem::new(obj_id, meta);
         let value = item.encode()?;
         self.db.put(key.as_bytes(), &value).await?;
-        self.db.commit().await?;
+
         Ok(())
     }
 
@@ -110,6 +110,10 @@ impl PathObjectMap {
         }
     }
 
+    pub async fn is_object_exist(&self, key: &str) -> NdnResult<bool> {
+        self.db.is_exist(key.as_bytes()).await
+    }
+
     pub async fn get_object_proof_path(
         &self,
         key: &str,
@@ -125,12 +129,12 @@ impl PathObjectMap {
 }
 
 #[derive(Clone)]
-pub struct ObjectMapProofVerifier {
+pub struct PathObjectMapProofVerifier {
     hash_method: HashMethod,
     verifier: PathObjectMapProofVerifierRef,
 }
 
-impl ObjectMapProofVerifier {
+impl PathObjectMapProofVerifier {
     pub fn new(hash_method: HashMethod) -> Self {
         let verifier =
             PathObjectMapInnerStorageFactory::create_verifier_by_hash_method(hash_method);

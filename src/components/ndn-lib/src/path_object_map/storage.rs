@@ -3,7 +3,7 @@ use crate::{HashMethod, NdnError, NdnResult, ObjId};
 use generic_array::{ArrayLength, GenericArray};
 use hash_db::Hasher;
 use memory_db::{HashKey, MemoryDB};
-use reference_trie::{RefTrieDB, RefTrieDBMut, ReferenceNodeCodec};
+use reference_trie::{ReferenceNodeCodec};
 use std::sync::{Arc, RwLock};
 use trie_db::proof::generate_proof;
 use trie_db::{NodeCodec, Trie, TrieLayout, TrieMut, Value};
@@ -13,6 +13,7 @@ pub trait PathObjectMapInnerStorage: Send + Sync {
     async fn put(&self, key: &[u8], value: &[u8]) -> NdnResult<()>;
     async fn get(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>>;
     async fn remove(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>>;
+    async fn is_exist(&self, key: &[u8]) -> NdnResult<bool>;
     async fn commit(&self) -> NdnResult<()>;
     async fn root(&self) -> Vec<u8>;
     async fn generate_proof(&self, key: &[u8]) -> NdnResult<Vec<Vec<u8>>>;
@@ -49,7 +50,7 @@ pub struct GenericMemoryStorage<H: Hasher> {
 
 impl<H: Hasher> GenericMemoryStorage<H> {
     pub fn new() -> Self {
-        let root = Default::default();
+        let root = <GenericLayout<H> as TrieLayout>::Codec::hashed_null_node();
         let db = Arc::new(RwLock::new(GenericMemoryDB::<H>::default()));
         let root = Arc::new(RwLock::new(root));
         Self { db, root }
@@ -65,13 +66,18 @@ where
     async fn put(&self, key: &[u8], value: &[u8]) -> NdnResult<()> {
         let mut db_write = self.db.write().unwrap();
         let mut root = self.root.write().unwrap();
-        let mut trie = GenericTrieDBMutBuilder::new(&mut *db_write, &mut root).build();
+
+        let mut trie = GenericTrieDBMutBuilder::from_existing(&mut *db_write, &mut root).build();
         trie.insert(key, value).map_err(|e| {
             let msg = format!("Failed to insert key-value pair: {:?}", e);
             error!("{}", msg);
             NdnError::DbError(msg)
         })?;
 
+        
+        // The trie will auto commit when it goes out of scope, but we can also call commit explicitly if needed.
+        // trie.commit();
+    
         Ok(())
     }
 
@@ -91,14 +97,14 @@ where
     async fn remove(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>> {
         let mut db_write = self.db.write().unwrap();
         let mut root = self.root.write().unwrap();
-        let mut trie = GenericTrieDBMutBuilder::new(&mut *db_write, &mut root).build();
+        let mut trie = GenericTrieDBMutBuilder::from_existing(&mut *db_write, &mut root).build();
+        
+        
         let value = trie.remove(key).map_err(|e| {
             let msg = format!("Failed to get value for key: {:?}", e);
             error!("{}", msg);
             NdnError::DbError(msg)
         })?;
-
-        drop(trie); // Explicitly drop the trie to release the lock before using it again
 
         if value.is_none() {
             warn!("Remove key not found: {:?}", key);
@@ -125,14 +131,30 @@ where
 
         info!("Removed key: {:?}, value: {:?}", key, value);
 
+        // The trie will auto commit when it goes out of scope, but we can also call commit explicitly if needed.
+        // trie.commit();
+
         Ok(Some(value))
+    }
+
+    async fn is_exist(&self, key: &[u8]) -> NdnResult<bool> {
+        let db_read = self.db.read().unwrap();
+        let root = self.root.read().unwrap();
+        let trie = GenericTrieDBBuilder::new(&*db_read, &root).build();
+        let exists = trie.contains(key).map_err(|e| {
+            let msg = format!("Failed to check existence for key: {:?}", e);
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        Ok(exists)
     }
 
     async fn commit(&self) -> NdnResult<()> {
         let mut db_write = self.db.write().unwrap();
         let mut root = self.root.write().unwrap();
 
-        let mut trie = GenericTrieDBMutBuilder::new(&mut *db_write, &mut root).build();
+        let mut trie = GenericTrieDBMutBuilder::from_existing(&mut *db_write, &mut root).build();
         trie.commit();
 
         // let new_root = trie.root_hash().to_vec();
