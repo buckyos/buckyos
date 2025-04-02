@@ -1,9 +1,9 @@
 use super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
+use super::layout::GenericLayout;
 use crate::{HashMethod, NdnError, NdnResult, ObjId};
 use generic_array::{ArrayLength, GenericArray};
 use hash_db::Hasher;
 use memory_db::{HashKey, MemoryDB};
-use reference_trie::{ReferenceNodeCodec};
 use std::sync::{Arc, RwLock};
 use trie_db::proof::generate_proof;
 use trie_db::{NodeCodec, Trie, TrieLayout, TrieMut, Value};
@@ -26,17 +26,6 @@ type Sha256DB = GenericMemoryDB<Sha256Hasher>;
 type Sha512DB = GenericMemoryDB<Sha512Hasher>;
 type Blake2s256DB = GenericMemoryDB<Blake2s256Hasher>;
 type Keccak256DB = GenericMemoryDB<Keccak256Hasher>;
-
-pub struct GenericLayout<H: Hasher>(std::marker::PhantomData<H>);
-
-impl<H: Hasher> TrieLayout for GenericLayout<H> {
-    const USE_EXTENSION: bool = true;
-    const ALLOW_EMPTY: bool = false;
-    const MAX_INLINE_VALUE: Option<u32> = None;
-
-    type Hash = H;
-    type Codec = ReferenceNodeCodec<H>;
-}
 
 type GenericTrieDB<'a, 'cache, H> = trie_db::TrieDB<'a, 'cache, GenericLayout<H>>;
 type GenericTrieDBBuilder<'a, 'cache, H> = trie_db::TrieDBBuilder<'a, 'cache, GenericLayout<H>>;
@@ -74,10 +63,9 @@ where
             NdnError::DbError(msg)
         })?;
 
-        
         // The trie will auto commit when it goes out of scope, but we can also call commit explicitly if needed.
         // trie.commit();
-    
+
         Ok(())
     }
 
@@ -98,8 +86,7 @@ where
         let mut db_write = self.db.write().unwrap();
         let mut root = self.root.write().unwrap();
         let mut trie = GenericTrieDBMutBuilder::from_existing(&mut *db_write, &mut root).build();
-        
-        
+
         let value = trie.remove(key).map_err(|e| {
             let msg = format!("Failed to get value for key: {:?}", e);
             error!("{}", msg);
@@ -110,6 +97,10 @@ where
             warn!("Remove key not found: {:?}", key);
             return Ok(None);
         }
+
+        drop(trie); // Explicitly drop the trie to commit changes
+        drop(root);
+        drop(db_write);
 
         let value = value.unwrap();
         let value = match value {

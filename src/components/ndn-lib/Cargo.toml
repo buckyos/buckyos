@@ -42,8 +42,8 @@ parity-scale-codec = { version = "*", features = ["derive"] }
 parity-util-mem = "*"
 hash-db = "*"
 memory-db = "*"
-reference-trie = "0.29"
-trie-db = { version = "0.27", features = ["std"] }
+trie-db = { version = "0.29", features = ["std"] }
+sp-trie = "38.0"
 
 [dev-dependencies]
 tempfile = "*"
