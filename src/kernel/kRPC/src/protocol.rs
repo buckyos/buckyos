@@ -218,7 +218,8 @@ impl<'de> Deserialize<'de> for RPCResponse {
 }
 
 #[async_trait]
-pub trait kRPCHandler {
+pub trait InnerServiceHandler {
     async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors>;
+    async fn handle_http_get(&self, req_path:&str,ip_from:IpAddr) -> Result<String,RPCErrors>;
 }
 

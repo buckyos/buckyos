@@ -19,6 +19,7 @@ pub use task_mgr::*;
 pub use control_panel::*;
 pub use scheduler_client::*;
 pub use verify_hub_client::*;
+pub use zone_provider::*;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -64,10 +65,11 @@ pub struct SystemInfo {
 
 }
 
-static CURRENT_USER_CONFIG:OnceCell<OwnerConfig> = OnceCell::new();
-static CURRENT_BUCKYOS_RUNTIME:OnceCell<BuckyOSRuntime> = OnceCell::new();
+pub static CURRENT_USER_CONFIG:OnceCell<OwnerConfig> = OnceCell::new();
 pub static CURRENT_ZONE_CONFIG: OnceCell<ZoneConfig> = OnceCell::new();
 pub static INIT_APP_SESSION_TOKEN: OnceCell<String> = OnceCell::new();
+
+static CURRENT_BUCKYOS_RUNTIME:OnceCell<BuckyOSRuntime> = OnceCell::new();
 
 pub async fn init_global_buckyos_value_by_env(app_id: &str) -> Result<()> {
     let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG");
@@ -131,7 +133,7 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
     }
     
 
-    init_default_name_client().await
+    init_name_lib().await
         .map_err(|e| {
             error!("Failed to init default name client: {}", e);
             RPCErrors::ReasonError(format!("Failed to init default name client: {}", e))
@@ -282,7 +284,7 @@ pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,r
         }
     }
 
-    init_default_name_client().await
+    init_name_lib().await
     .map_err(|e| {
         error!("Failed to init default name client: {}", e);
         RPCErrors::ReasonError(format!("Failed to init default name client: {}", e))
@@ -430,15 +432,16 @@ impl BuckyOSRuntime {
         let client = GLOBAL_NAME_CLIENT.get();
         if client.is_none() {
             let mut client = NameClient::new(NameClientConfig::default());
-            client.add_provider(Box::new(ZoneProvider::new(is_gateway))).await;
+            client.add_provider(Box::new(ZONE_PROVIDER.clone())).await;
             let set_result = GLOBAL_NAME_CLIENT.set(client);
             if set_result.is_err() {
                 error!("Failed to set GLOBAL_NAME_CLIENT");
             }
         } else {
             let client = client.unwrap();            
-            client.add_provider(Box::new(ZoneProvider::new(is_gateway))).await;
+            client.add_provider(Box::new(ZONE_PROVIDER.clone())).await;
         }
+
         Ok(())
    }
 

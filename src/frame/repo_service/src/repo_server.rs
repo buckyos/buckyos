@@ -983,7 +983,7 @@ impl RepoServer {
 }
 
 #[async_trait]
-impl kRPCHandler for RepoServer {
+impl InnerServiceHandler for RepoServer {
     async fn handle_rpc_call(
         &self,
         req: RPCRequest,
@@ -1004,6 +1004,10 @@ impl kRPCHandler for RepoServer {
                 Err(RPCErrors::UnknownMethod(req.method))
             }
         }
+    }
+
+    async fn handle_http_get(&self, req_path:&str,ip_from:IpAddr) -> Result<String,RPCErrors> {
+        return Err(RPCErrors::UnknownMethod(req_path.to_string()));
     }
 }
 

@@ -20,7 +20,7 @@ pub struct InstallConfig {
     pub local_cache_mount_point: Vec<String>,
     pub tcp_ports: HashMap<String,u16>,
     pub udp_ports: HashMap<String,u16>,
-}
+} 
 
 impl Default for InstallConfig {
     fn default() -> Self {

@@ -93,11 +93,7 @@ async fn do_boot_scheduler() -> Result<()> {
         return Err(anyhow::anyhow!("boot/config not found in init list"));
     }
     let boot_config_str = boot_config_str.unwrap();
-    let mut zone_config:ZoneConfig = serde_json::from_str(boot_config_str.as_str())
-        .map_err(|e| {
-            error!("zone_config serde_json::from_str failed: {:?}", e);
-            e
-        })?;
+    let mut zone_config:ZoneConfig = zone_boot_config.to_zone_config();
     zone_config.init_by_boot_config(&zone_boot_config);
     init_list.insert("boot/config".to_string(),serde_json::to_string_pretty(&zone_config).unwrap());
     //info!("use init list from template {} to do boot scheduler",template_type_str);
@@ -408,7 +404,7 @@ async fn service_main(is_boot:bool) -> Result<i32> {
     init_logging("scheduler",true);
     info!("Starting scheduler service............................");
     init_global_buckyos_value_by_env("SCHEDULER");
-    let _ =init_default_name_client().await;
+    let _ =init_name_lib().await;
     if is_boot {
         info!("do_boot_scheduler,scheduler run once");
         do_boot_scheduler().await.map_err(|e| {

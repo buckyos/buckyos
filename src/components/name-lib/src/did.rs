@@ -100,6 +100,10 @@ impl DID {
 
         return Some(DID::new("web", host_name.to_string().as_str()));
     }
+
+    pub fn is_did(did: &str) -> bool {
+        did.starts_with("did:")
+    }
 }
 
 impl Serialize for DID {
@@ -201,7 +205,7 @@ pub trait DIDDocumentTrait {
 }
 
 
-static KNOWN_WEB3_BRIDGE_CONFIG:OnceCell<HashMap<String,String>> = OnceCell::new();
+pub static KNOWN_WEB3_BRIDGE_CONFIG:OnceCell<HashMap<String,String>> = OnceCell::new();
 
 #[cfg(test)]
 mod tests {

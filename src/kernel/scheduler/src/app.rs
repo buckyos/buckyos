@@ -25,7 +25,7 @@ fn build_app_service_config(user_id:&str,app_config:&AppConfig,node_info:&Device
         
     } else {
         // 解析是否有<arch>_<os_type>_app字段
-        let app_pkg_name = format!("{}_{}_app", node_info.arch.as_str(),node_info.os_type.as_str());
+        let app_pkg_name = format!("{}_{}_app", node_info.arch.as_str(),node_info.os.as_str());
         if let Some(info) = app_config.app_doc.pkg_list.get(&app_pkg_name) {
             result_config.app_pkg_id = Some(info.pkg_id.clone());
         } else {

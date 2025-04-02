@@ -483,7 +483,7 @@ impl TaskManagerServer {
 }
 
 #[async_trait]
-impl kRPCHandler for TaskManagerServer {
+impl InnerServiceHandler for TaskManagerServer {
     async fn handle_rpc_call(
         &self,
         req: RPCRequest,
@@ -500,6 +500,10 @@ impl kRPCHandler for TaskManagerServer {
             "delete_task" => self.handle_delete_task(req).await,
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }
+    }
+    
+    async fn handle_http_get(&self, req_path:&str,_ip_from:IpAddr) -> Result<String,RPCErrors> {
+        return Err(RPCErrors::UnknownMethod(req_path.to_string()));
     }
 }
 

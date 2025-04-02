@@ -78,69 +78,6 @@
 }
 """
 
-"services/gateway/base_config" = """
-{
-    "servers":{
-        "main_http_server":{
-            "type":"cyfs-warp",
-            "bind":"0.0.0.0",
-            "http_port":80,
-            "hosts": {
-                "*": {
-                    "enable_cors":true,
-                    "routes": {
-                        "/ndn/": {
-                            "named_mgr": {
-                                "named_data_mgr_id":"default",
-                                "read_only":false,
-                                "guest_access":true,
-                                "is_chunk_id_in_path":true,
-                                "enable_mgr_file_path":true
-                            }
-                        }, 
-                        "/kapi/system_config":{
-                            "upstream":"http://127.0.0.1:3200"
-                        }
-                    }
-                },
-                "sys.*": {
-                    "enable_cors":true,
-                    "routes": {
-                        "/":{
-                            "local_dir":"{{BUCKYOS_ROOT}}/bin/control_panel"
-                        },
-                        "/kapi/system_config":{
-                            "upstream":"http://127.0.0.1:3200"
-                        },
-                        "/kapi/verify_hub":{
-                            "upstream":"http://127.0.0.1:3300"
-                        }
-                    }
-                },
-                "test.*": {
-                    "enable_cors":true,
-                    "routes": {
-                        "/":{
-                            "local_dir":"{{BUCKYOS_ROOT}}/bin/sys_test"
-                        }
-                    }
-                }
-
-            }
-        }
-    },
-    "dispatcher" : {
-        "tcp://0.0.0.0:80":{
-            "type":"server",
-            "id":"main_http_server"
-        },
-        "tcp://0.0.0.0:443":{
-            "type":"server",
-            "id":"main_http_server"
-        }
-    }
-}
-"""
 "services/repo_service/config" = """
 {
     "name":"repo_service",
@@ -262,6 +199,11 @@
 
 "nodes/ood1/gateway_config" = """
 {
+    "inner_services": {
+        "zone_provider": {
+            "type": "zone-provider"
+        }
+    },
     "servers":{
         "main_http_server":{
             "type":"cyfs-warp",
@@ -282,6 +224,9 @@
                         }, 
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/resolve": {
+                            "inner_service": "zone_provider"
                         }
                     }
                 },

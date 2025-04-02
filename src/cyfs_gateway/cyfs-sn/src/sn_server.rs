@@ -257,7 +257,7 @@ impl SNServer {
         }
         let session_token = session_token.unwrap();
         let mut rpc_session_token = RPCSessionToken::from_string(session_token.as_str())?;
-        let device_did = device_info.did.clone();
+        let device_did = device_info.id.clone();
 
         let verify_public_key = DecodingKey::from_ed_components(device_did.id.as_str())
             .map_err(|e|{
@@ -541,7 +541,7 @@ impl NsProvider for SNServer {
 }
 
 #[async_trait]
-impl kRPCHandler for SNServer {
+impl InnerServiceHandler for SNServer {
     async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors> {
         match req.method.as_str() {
             "get_user_tls_cert" => {
@@ -575,6 +575,10 @@ impl kRPCHandler for SNServer {
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }
     }
+
+    async fn handle_http_get(&self, req_path:&str,ip_from:IpAddr) -> Result<String,RPCErrors> {
+        return Err(RPCErrors::UnknownMethod(req_path.to_string()));
+    }
 }
 
 
@@ -597,7 +601,7 @@ impl TunnelSelector for SNServer {
             if device_info.is_some() {
                 //info!("ood1 device info found for {} in sn server",username);
                 //let device_did = device_info.unwrap().0.did;
-                let device_host_name = device_info.unwrap().0.did.to_host_name();
+                let device_host_name = device_info.unwrap().0.id.to_host_name();
                 //TODO: stream url的形式？
                 let result_str = format!("rtcp://{}/:80",device_host_name.as_str());
                 //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
@@ -616,7 +620,7 @@ impl TunnelSelector for SNServer {
             if device_info.is_some() {
                 //info!("ood1 device info found for {} in sn server",username);
                 //let device_did = device_info.unwrap().0.did;
-                let device_did = device_info.unwrap().0.did;
+                let device_did = device_info.as_ref().unwrap().0.id.clone();
                 let device_host_name = device_did.to_host_name();
                 let result_str = format!("rtcp://{}/:80",device_host_name.as_str());
                 //info!("select device {} for http upstream:{}",device_did.as_str(),result_str.as_str());
@@ -650,7 +654,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_device_info() {
+    fn test_split_host_name() {
         let req_host = "home.lzc.web3.buckyos.io".to_string();
         let server_host = "web3.buckyos.io".to_string();
         let end_string = format!(".{}",server_host.as_str());
@@ -663,8 +667,10 @@ mod tests {
                 warn!("invalid username for sn tunnel selector {}",req_host);
                 return;
             }
-            let username = username.unwrap();
+            let username = username.unwrap().to_string();
+            assert_eq!(username, "lzc".to_string());
             println!("username: {}",username);
+
         }
     }
 }

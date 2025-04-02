@@ -44,7 +44,7 @@ mod tests {
         //5  use stream_url like rtcp://$stack_id/google.com:443 to use remote device as a tcp proxy
         std::env::set_var("BUCKY_LOG", "debug");
         init_logging("test_rtcp_tunnel",false);
-        init_default_name_client().await.unwrap();
+        init_name_lib().await.unwrap();
         //1. create client rtcp stack(device default rtcp stack)
         let (sk, sk_pkcs) = generate_ed25519_key();
         let pk = encode_ed25519_sk_to_pk_jwt(&sk);

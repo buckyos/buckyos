@@ -1,0 +1,10 @@
+{
+    "web3_bridge": {
+        "bns": "web3.buckyos.ai"
+    },
+    "trust_did": [
+        "did:web:buckyos.org",
+        "did:web:buckyos.ai",
+        "did:web:buckyos.io"
+    ]
+}

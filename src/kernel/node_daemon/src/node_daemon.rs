@@ -740,7 +740,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     info!("node_daemon start...");
 
-    init_default_name_client().await.map_err(|err| {
+    init_name_lib().await.map_err(|err| {
         error!("init default name client failed! {}", err);
         return String::from("init default name client failed!");
     })?;

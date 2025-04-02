@@ -237,7 +237,9 @@ mod tests {
             .await
             .unwrap();
 
-        let dispatcher = dispatcher::ServiceDispatcher::new(dispatcher_cfg);
+        //let tunnel_manager = TunnelManager::new(false);
+
+        let dispatcher = dispatcher::ServiceDispatcher::new(tunnel_manager,dispatcher_cfg);
         dispatcher.start().await;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         buckyos_kit::start_tcp_echo_client("127.0.0.1:6001").await;

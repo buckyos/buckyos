@@ -72,7 +72,9 @@ pub struct ZoneBootConfig {
 
 impl ZoneBootConfig {
     pub fn to_zone_config(&self) -> ZoneConfig {
-        let mut result = ZoneConfig::new(self.id.clone().unwrap(),self.owner.clone().unwrap(),self.owner_key.clone().unwrap());
+        let mut result = ZoneConfig::new(self.id.clone().unwrap(),
+        self.owner.clone().unwrap(),
+    self.owner_key.clone().unwrap());
         result.init_by_boot_config(self);
         return result;
     }
@@ -129,12 +131,14 @@ impl DIDDocumentTrait for ZoneBootConfig {
     fn decode(doc: &EncodedDocument,key:Option<&DecodingKey>) -> NSResult<Self> where Self: Sized {
         match doc {
             EncodedDocument::Jwt(jwt_str) => {
+                let json_result:serde_json::Value;
                 if key.is_none() {
-                    return Err(NSError::Failed("No key provided".to_string()));
+                    json_result = decode_jwt_claim_without_verify(jwt_str)?;
+                } else {
+                    json_result = decode_json_from_jwt_with_pk(jwt_str,key.unwrap())?;
                 }
-                let json_result = decode_json_from_jwt_with_pk(jwt_str,key.unwrap())?;
                 let result:ZoneBootConfig = serde_json::from_value(json_result).map_err(|error| {
-                    NSError::Failed(format!("Failed to decode zone boot config:{}",error))
+                    NSError::Failed(format!("Failed to decode device config:{}",error))
                 })?;
                 return Ok(result);
             },
@@ -198,9 +202,10 @@ pub struct ZoneConfig {
 impl ZoneConfig {
 
     pub fn new(id:DID,owner_did:DID,public_key:Jwk) -> Self {
+        let id2 = id.clone();
         ZoneConfig {
             context: default_context(),
-            id: id,
+            id: id2,
             verification_method: vec![VerificationMethodNode { 
                 key_type: "Ed25519VerificationKey2020".to_string(),
                 key_id: "#main_key".to_string(),
@@ -210,7 +215,13 @@ impl ZoneConfig {
             }],
             authentication: vec!["#main_key".to_string()],
             assertion_method: vec!["#main_key".to_string()],
-            service: vec![],
+            service: vec![
+                ServiceNode {
+                    id: format!("{}#lastDoc",id.to_string()),
+                    service_type: "DIDDoc".to_string(),
+                    service_endpoint: format!("https://{}/resolve/this_zone",id.to_host_name()),
+                }
+            ],
             exp: buckyos_get_unix_timestamp() + 3600*24*365*10,
             iat: buckyos_get_unix_timestamp(),
             extra_info: HashMap::new(),
@@ -396,10 +407,12 @@ impl DIDDocumentTrait for ZoneConfig {
     fn decode(doc: &EncodedDocument,key:Option<&DecodingKey>) -> NSResult<Self> where Self: Sized {
         match doc {
             EncodedDocument::Jwt(jwt_str) => {
+                let json_result:serde_json::Value;
                 if key.is_none() {
-                    return Err(NSError::Failed("No key provided".to_string()));
+                    json_result = decode_jwt_claim_without_verify(jwt_str)?;
+                } else {
+                    json_result = decode_json_from_jwt_with_pk(jwt_str,key.unwrap())?;
                 }
-                let json_result = decode_json_from_jwt_with_pk(jwt_str,key.unwrap())?;
                 let result:ZoneConfig = serde_json::from_value(json_result).map_err(|error| {
                     NSError::Failed(format!("Failed to decode zone config:{}",error))
                 })?;
@@ -453,8 +466,7 @@ pub struct DeviceConfig {
     //--------------------------------
     pub device_type: String,//[ood,node,sensor
     pub name: String,//short name,like ood1
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arch: Option<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip:Option<IpAddr>,//main_ip
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -474,6 +486,8 @@ impl DeviceConfig {
         return DeviceConfig::new(name,x);
     }
 
+
+
     pub fn new(name:&str,pkx:String) -> Self {
         let did = format!("did:dev:{}",pkx);
         let jwk = json!(
@@ -484,12 +498,12 @@ impl DeviceConfig {
             }
         );
 
+
         let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
         DeviceConfig {
             context: default_context(),
             id: DID::from_str(&did).unwrap(),
             name: name.to_string(),
-            arch: None,
             device_type: "node".to_string(),
             ip: None,
             net_id: None,
@@ -520,6 +534,15 @@ impl DeviceConfig {
             }
         }
         return None;
+    }
+
+    pub fn set_zone_did(&mut self,zone_did:DID) {
+        self.zone_did = Some(zone_did.clone());
+        self.service.push(ServiceNode { 
+            id: format!("{}#lastDoc",self.id.to_string()),
+            service_type: "DIDDoc".to_string(),
+            service_endpoint: format!("https://{}/resolve/{}",zone_did.to_host_name(),self.id.to_string()),
+        });
     }
 }
 
@@ -579,10 +602,12 @@ impl DIDDocumentTrait for DeviceConfig {
     fn decode(doc: &EncodedDocument,key:Option<&DecodingKey>) -> NSResult<Self> where Self: Sized {
         match doc {
             EncodedDocument::Jwt(jwt_str) => {
+                let json_result:serde_json::Value;
                 if key.is_none() {
-                    return Err(NSError::Failed("No key provided".to_string()));
+                    json_result = decode_jwt_claim_without_verify(jwt_str)?;
+                } else {
+                    json_result = decode_json_from_jwt_with_pk(jwt_str,key.unwrap())?;
                 }
-                let json_result = decode_json_from_jwt_with_pk(jwt_str,key.unwrap())?;
                 let result:DeviceConfig = serde_json::from_value(json_result).map_err(|error| {
                     NSError::Failed(format!("Failed to decode device config:{}",error))
                 })?;
@@ -753,10 +778,12 @@ impl DIDDocumentTrait for OwnerConfig {
     fn decode(doc: &EncodedDocument,key:Option<&DecodingKey>) -> NSResult<Self> where Self: Sized {
         match doc {
             EncodedDocument::Jwt(jwt_str) => {
+                let json_result:serde_json::Value;
                 if key.is_none() {
-                    return Err(NSError::Failed("No key provided".to_string()));
+                    json_result = decode_jwt_claim_without_verify(jwt_str)?;
+                } else {
+                    json_result = decode_json_from_jwt_with_pk(jwt_str,key.unwrap())?;
                 }
-                let json_result = decode_json_from_jwt_with_pk(jwt_str,key.unwrap())?;
                 let result:OwnerConfig = serde_json::from_value(json_result).map_err(|error| {
                     NSError::Failed(format!("Failed to decode owner config:{}",error))
                 })?;

@@ -55,6 +55,12 @@ ZoneID是一种特殊的DID，其设计目标是能支持通过ZoneID建立与Zo
   - oods中的ood string可能包含固定的地址信息 ood1#70.230.11.103
   - sn信息（用于方便非TCP链接）
 
+解析Zone Did的优先级
+    - 通过区块链解析
+    - 通过https解析：比用DNS解析更可靠
+        我都能通过https获取zone的did了，那我还要连接他干嘛？要用tunnel连接，因此先用https协议获得zone-config
+    - 用过DNS解析：返回的JWT需要可信的知道Zone的Owner才可以校验，该流程一般只用于Zone内的boot流程
+
 可以防御的攻击
 - Zone内： 
   - 通用验证公开的Zone DID Document的签名，可以确保Zone Config没有被解析服务提供商篡改，并基于该信息安全的连接system_config （核心需求！）
@@ -84,7 +90,7 @@ did_host_name = did_a.to_hostname() //to_xxx表示不需要网络行为即可得
 if did_host_name.is_same() {
     return http://did_host_name/ndn/cid
 } else {
-    did_doc = resolve_did(did_a) //did指向了一个OwnerConfig，这是必ZoneConfig更精简的
+    did_doc = resolve_did(did_a) //did指向了一个OwnerConfig，这比ZoneConfig更精简的
     zone_did = did_doc.get_default_zone()
     zone_host_name = zone_did.to_hostname()
     return http://did_a.zone_host_name/ndn/cid
@@ -95,7 +101,9 @@ if did_host_name.is_same() {
 最优的方法系统会一直迭代
 
 我们希望能直接支持, 这样当用户切换其default_zone时，
+```
 cyfs://did_a/cid
+```
 
 ## zone_did与zone_hostname
 没有SN（或网桥的时候)，很好理解的标准转换
@@ -240,35 +248,4 @@ service_client = get_service_client(full_zone_config)
 - 内核服务: （总是使用最新版本的api),使用和gateway一样的机制，直接连接目标服务 （我们会通过inner service,减少进程间通讯）
 
 
--------------TODO---------
-1. 根据典型流程，检查关键的配置文件修改 
 
-- [x] 调整krpc获得服务地址的方法
-- [x] 区分ZoneConfig和ZoneBootConfig
-- [x] gateway/system_config/schedule能基于ZoneBootConfig初始化
-  - [x] gateway
-  - [x] schedule
-  - [x] system_config
-- [x] 正确实现did<->host_name的转化： 要支持读取配置文件修改
-- [x] DNS 能正确的resolve zone-boot-config,SN能正确通过NameInfo返回Zone-Boot-Config
-- [x] 检查Node_Active的构造
-- [ ] 修改SDK,注意修改SDK中的相关config数据结构定义
-- [x] 修改所有配置文件，和DNS配置
-- [x] XXXConfig与现有的DIDDoc体系进行最大程度的兼容设计
-
-2. 检查系统内权限是否能正确与DID集成
-- [ ] 可同时使用did和友好名称(name)
-- [ ] 导入User(Owner) /Config时，需要对name的一致性进行检查
-- [ ] 检查device的注册与上报逻辑，区分私有设备和公开设备
-
-3. 检查zone_provider的实现 （寻址/服务发现逻辑)
-- [ ] 使用 $name.zonehost的方式，得到设备的地址信息，在通内网兼容TCP
-- [ ] 
-
-4. 用户/公开设备 如何基于现有设施发布DID-DOC
-- [ ] 最理想，通过BNS合约 ---> 我们是否应该使用成熟的合约？
-- [ ] 基于所在的zone,使用标准路径发布
-
-- [ ] 在resolve_did的环境里，增加通过http协议resolve的设计 
-  - [ ] 定义通过http获得zone公开的did_doc的标准 https://$zone_hostname/ndn/resolve/$did
-  - [ ] 支持使用标准W3C基础设施解析OwnerConfig https://dev.uniresolver.io/

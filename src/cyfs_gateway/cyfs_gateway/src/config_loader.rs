@@ -12,6 +12,7 @@ use serde_json::from_value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use url::Url;
+use buckyos_api::ZONE_PROVIDER;
 
 pub struct GatewayConfig {
     pub dispatcher: HashMap<Url, DispatcherConfig>,
@@ -142,6 +143,7 @@ impl GatewayConfig {
 
         let device_name:Option<String> = json_value.get("device_name").map(|v| v.as_str()).flatten().map(|s| s.to_string());
         // register inner services
+        //TODO:需要通过插件优化，否则每次添加一个新的类型都要在这里添加注册函数
         if let Some(Some(inner_services)) = json_value.get("inner_services").map(|v| v.as_object())
         {
             for (server_id, server_config) in inner_services.iter() {
@@ -155,7 +157,7 @@ impl GatewayConfig {
                 }
                 let server_type = server_type.unwrap();
                 match server_type {
-                    "cyfs_sn" => {
+                    "cyfs-sn" => {
                         let sn_config =
                             serde_json::from_value::<SNServerConfig>(server_config.clone());
                         if sn_config.is_err() {
@@ -167,6 +169,12 @@ impl GatewayConfig {
                         info!("Register sn server: {:?}", server_id);
                         register_inner_service_builder(server_id, move || {
                             Box::new(sn_server.clone())
+                        })
+                        .await;
+                    }
+                    "zone-provider" => {
+                        register_inner_service_builder(server_id, move || {
+                            Box::new(ZONE_PROVIDER.clone())
                         })
                         .await;
                     }

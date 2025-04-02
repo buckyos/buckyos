@@ -212,7 +212,7 @@ impl ActiveServer {
 }
 
 #[async_trait]
-impl kRPCHandler for ActiveServer {
+impl InnerServiceHandler for ActiveServer {
     async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors> {
         match req.method.as_str() {
             "generate_key_pair" => self.handle_generate_key_pair(req).await,
@@ -221,6 +221,10 @@ impl kRPCHandler for ActiveServer {
             "do_active" => self.handel_do_active(req).await,
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }
+    }
+
+    async fn handle_http_get(&self, req_path:&str,ip_from:IpAddr) -> Result<String,RPCErrors> {
+        return Err(RPCErrors::UnknownMethod(req_path.to_string()));
     }
 }
 

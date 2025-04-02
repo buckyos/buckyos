@@ -32,11 +32,11 @@ use crate::ndn_router::*;
 use crate::*;
 
 lazy_static!{
-    static ref INNER_SERVICES_BUILDERS: Arc<Mutex< HashMap<String, Arc<dyn Fn () -> Box<dyn kRPCHandler + Send + Sync>+ Send + Sync>>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref INNER_SERVICES_BUILDERS: Arc<Mutex< HashMap<String, Arc<dyn Fn () -> Box<dyn InnerServiceHandler + Send + Sync>+ Send + Sync>>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 pub async fn register_inner_service_builder<F>(inner_service_name: &str, constructor : F)
-    where F: Fn () -> Box<dyn kRPCHandler + Send + Sync> + 'static + Send + Sync,
+    where F: Fn () -> Box<dyn InnerServiceHandler + Send + Sync> + 'static + Send + Sync,
 {
     let mut inner_service_builder = INNER_SERVICES_BUILDERS.lock().await;
     inner_service_builder.insert(inner_service_name.to_string(), Arc::new(constructor));
@@ -58,7 +58,7 @@ impl Clone for Router {
 
 struct RouterInner {
     hosts: RwLock<HashMap<String, HashMap<String, Arc<RouteConfig>> >>,
-    inner_service: OnceCell<Box<dyn kRPCHandler + Send + Sync> >,
+    inner_service: OnceCell<Box<dyn InnerServiceHandler + Send + Sync> >,
 }
 
 impl Router {
@@ -238,6 +238,10 @@ impl Router {
         if inner_service.is_none() {
             let inner_service_builder_map = INNER_SERVICES_BUILDERS.lock().await;
             let inner_service_builder = inner_service_builder_map.get(inner_service_name);
+            if inner_service_builder.is_none() {
+                return Err(anyhow::anyhow!("Inner service not found: {}", inner_service_name));
+            }
+
             let inner_service_builder = inner_service_builder.unwrap();
             let inner_service = inner_service_builder();
             let _ =self.inner.inner_service.set(inner_service);
@@ -246,24 +250,42 @@ impl Router {
             true_service = inner_service.unwrap();
         }
 
-        let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
-            anyhow::anyhow!("Failed to read body: {}", e)
-        })?;
+        //先判断请求的类型，有2种，1种是标准的krpc请求，另一种是标准的HTTP RESETful API请求
+        let method = req.method();
+        match *method {
+            hyper::Method::POST => {
+                let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
+                    anyhow::anyhow!("Failed to read body: {}", e)
+                })?;
 
-        let body_str = String::from_utf8(body_bytes.to_vec()).map_err(|e| {
-            anyhow::anyhow!("Failed to convert body to string: {}", e)
-        })?;
+                let body_str = String::from_utf8(body_bytes.to_vec()).map_err(|e| {
+                    anyhow::anyhow!("Failed to convert body to string: {}", e)
+                })?;
 
-        info!("|==>recv kRPC req: {}",body_str);
+                info!("|==>recv kRPC req: {}",body_str);
 
-        //parse req to RPCRequest
-        let rpc_request: RPCRequest = serde_json::from_str(body_str.as_str()).map_err(|e| {
-            anyhow::anyhow!("Failed to parse request body to RPCRequest: {}", e)
-        })?;
+                //parse req to RPCRequest
+                let rpc_request: RPCRequest = serde_json::from_str(body_str.as_str()).map_err(|e| {
+                    anyhow::anyhow!("Failed to parse request body to RPCRequest: {}", e)
+                })?;
 
-        let resp = true_service.handle_rpc_call(rpc_request,client_ip).await?;
-        //parse resp to Response<Body>
-        Ok(Response::new(Body::from(serde_json::to_string(&resp)?)))
+                let resp = true_service.handle_rpc_call(rpc_request,client_ip).await?;
+                //parse resp to Response<Body>
+                Ok(Response::new(Body::from(serde_json::to_string(&resp)?)))
+            }
+            hyper::Method::GET => {
+                let resp = true_service.handle_http_get(req.uri().path(),client_ip).await;
+                if resp.is_err() {
+                    return Err(anyhow::anyhow!("Failed to handle http get: {}", resp.as_ref().unwrap_err()));
+                }
+                let resp = resp.unwrap();
+                Ok(Response::new(Body::from(resp)))
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Not supported request method: {}", req.method()));
+            }
+        }
+        
     }
 
     async fn handle_upstream_selector(&self, selector_id:&str,req: Request<Body>,host:&str, client_ip:IpAddr) -> Result<Response<Body>> {

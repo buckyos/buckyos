@@ -57,7 +57,7 @@ impl Gateway {
             return;
         }
         
-        if init_default_name_client().await.is_err() {
+        if init_name_lib().await.is_err() {
             error!("init default name client failed");
             return;
         }

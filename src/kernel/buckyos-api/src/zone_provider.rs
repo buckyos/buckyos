@@ -20,7 +20,8 @@ use once_cell::sync::OnceCell;
 use serde_json::{Value,json};
 use crate::*;
 use ::kRPC::*;
-
+use lazy_static::lazy_static;
+use std::sync::Mutex;
 
 
 fn is_unicast_link_local_stable(ipv6: &Ipv6Addr) -> bool {
@@ -153,7 +154,7 @@ pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_
     //this device is not ood, looking best ood for system config service
     let ood_info_str = zone_config.select_same_subnet_ood(this_device);
     if ood_info_str.is_some() {
-        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),this_device.did.clone());
+        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),this_device.id.clone());
         info!("try connect to same subnet ood: {}",ood_info.name);
         let ood_ip = resolve_ood_ip_by_info(&ood_info,zone_config).await;
         if ood_ip.is_ok() {
@@ -166,7 +167,7 @@ pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_
     let ood_info_str = zone_config.select_wan_ood();
     if ood_info_str.is_some() {
         //try connect to wan ood
-        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),this_device.did.clone());
+        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),this_device.id.clone());
         info!("try connect to wan ood: {}",ood_info.name);
         let ood_ip = resolve_ood_ip_by_info(&ood_info,zone_config).await;
         if ood_ip.is_ok() {
@@ -185,18 +186,165 @@ pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_
     Err(NSError::NotFound("cann't find system config service url".to_string()))
 }
 
+lazy_static! {
+    pub static ref ZONE_PROVIDER: ZoneProvider = ZoneProvider::new();
+}
 
-
-
-pub struct ZoneProvider {
-    is_gateway:bool,
+#[derive(Clone)]
+pub struct ZoneProvider {   
+    did_cache:Arc<RwLock<HashMap<String,String>>>,
 }
 
 impl ZoneProvider {
-    pub fn new(is_gateway:bool) -> Self {
-        Self { 
-            is_gateway,
+    pub fn new() -> Self {
+        let mut init_hash_map = HashMap::new();
+        let zone_config = CURRENT_ZONE_CONFIG.get();
+        if zone_config.is_some() {
+            let zone_config = zone_config.unwrap();
+            let zone_config_str = serde_json::to_string_pretty(&zone_config).unwrap();
+            init_hash_map.insert(zone_config.id.to_string(),zone_config_str);
         }
+
+        let device_config = CURRENT_DEVICE_CONFIG.get();
+        if device_config.is_some() {
+            let device_config = device_config.unwrap();
+            let device_config_str = serde_json::to_string_pretty(&device_config).unwrap();
+            init_hash_map.insert(device_config.id.to_string(),device_config_str);
+        }
+
+        let owner_config = CURRENT_USER_CONFIG.get();
+        if owner_config.is_some() {
+            let owner_config = owner_config.unwrap();
+            let owner_config_str = serde_json::to_string_pretty(&owner_config).unwrap();
+            init_hash_map.insert(owner_config.id.to_string(),owner_config_str);
+        }
+
+        Self { 
+            did_cache:Arc::new(RwLock::new(init_hash_map)),
+        }
+    }
+
+
+    async fn do_query_did(&self,did_str:&str) -> NSResult<String> {
+        if DID::is_did(did_str) {
+            let did = DID::from_str(did_str);
+            if did.is_ok() {
+                let did = did.unwrap();
+                let cache = self.did_cache.read().await;
+                let did_doc = cache.get(did_str);
+                if did_doc.is_some() {
+                    let did_doc_str = did_doc.unwrap().to_string();
+                    info!("zone_provider resolve did {} => {}",did_str,did_doc_str.as_str());
+                    return Ok(did_doc_str);
+                } 
+            }
+            return Err(NSError::NotFound(format!("did {} not found",did_str)));
+        } else {
+            match did_str {
+                "this_zone" => {
+                    let zone_config = CURRENT_ZONE_CONFIG.get();
+                    if zone_config.is_none() {
+                        return Err(NSError::NotFound("current zone config not found".to_string()));
+                    }
+                    let zone_config = zone_config.unwrap();
+                    return Ok(serde_json::to_string(&zone_config).unwrap());
+                },
+                "this_device" => {
+                    let device_config = CURRENT_DEVICE_CONFIG.get();
+                    if device_config.is_none() {
+                        return Err(NSError::NotFound("current device config not found".to_string()));
+                    }
+                    let device_config = device_config.unwrap();
+                    return Ok(serde_json::to_string(&device_config).unwrap());
+                },
+                "owner" => {
+                    let owner_config = CURRENT_USER_CONFIG.get();
+                    if owner_config.is_none() {
+                        return Err(NSError::NotFound("current owner config not found".to_string()));
+                    }
+                    let owner_config = owner_config.unwrap();
+                    return Ok(serde_json::to_string(&owner_config).unwrap());
+                },
+                _ => {
+                    let runtime = get_buckyos_api_runtime().map_err(|e|{
+                        warn!("ZoneProvider get buckyos api runtime failed: {}",e);
+                        NSError::NotFound(format!("get buckyos api runtime failed: {}",e))
+                    })?;
+        
+                    let system_config_client = runtime.get_system_config_client().await
+                        .map_err(|e|{
+                            warn!("ZoneProvider get system config client failed: {}",e);
+                            NSError::NotFound(format!("get system config client failed: {}",e))
+                        })?;
+                        
+                    let obj_path = format!("devices/{}/doc",did_str);
+                    let obj_config_str = system_config_client.get(obj_path.as_str()).await;
+                    if obj_config_str.is_ok() {
+
+                        let obj_config_str = obj_config_str.unwrap().0;
+                        let encoded_doc = EncodedDocument::from_str(obj_config_str.clone()).map_err(|e|{
+                            warn!("ZoneProvider parse device config failed: {}",e);
+                            NSError::Failed(format!("parse device config failed: {}",e))
+                        })?;
+                        let device_config:DeviceConfig = DeviceConfig::decode(&encoded_doc,None).map_err(|e|{
+                            warn!("ZoneProvider parse device config failed: {}",e);
+                            NSError::Failed(format!("parse device config failed: {}",e))
+                        })?;
+                        let mut cache = self.did_cache.write().await;
+                        cache.insert(device_config.id.to_string(),obj_config_str.clone());
+                        drop(cache);
+                        info!("zone_provider resolve name {} => {}",did_str,obj_config_str.as_str());
+                        return Ok(obj_config_str);
+                    }
+
+                    let obj_path = format!("users/{}/doc",did_str);
+                    let obj_config_str = system_config_client.get(obj_path.as_str()).await;
+                    if obj_config_str.is_ok() {
+                        let obj_config_str = obj_config_str.unwrap();
+                        let encoded_doc = EncodedDocument::from_str(obj_config_str.0.clone()).map_err(|e|{
+                            warn!("ZoneProvider parse owner config failed: {}",e);
+                            NSError::Failed(format!("parse owner config failed: {}",e))
+                        })?;
+                        let owner_config:OwnerConfig = OwnerConfig::decode(&encoded_doc,None).map_err(|e|{
+                            warn!("ZoneProvider parse owner config failed: {}",e);
+                            NSError::Failed(format!("parse owner config failed: {}",e))
+                        })?;
+
+                        let mut cache = self.did_cache.write().await;
+                        cache.insert(owner_config.id.to_string(),obj_config_str.0.clone());
+                        drop(cache);
+                        info!("zone_provider resolve name {} => {}",did_str,obj_config_str.0.as_str());
+                        return Ok(obj_config_str.0);
+                    }
+                    
+                    warn!("ZoneProvider resolve name {} failed",did_str);
+                    return Err(NSError::NotFound(format!("name {} not found",did_str)));
+                }
+            }    
+        }
+    }
+
+    async fn do_query_info(&self,name:&str) -> NSResult<String> {
+        let runtime = get_buckyos_api_runtime()
+            .map_err(|e|{
+                warn!("ZoneProvider get buckyos api runtime failed: {}",e);
+                NSError::NotFound(format!("get buckyos api runtime failed: {}",e))
+            })?;
+
+        let control_panel_client = runtime.get_control_panel_client().await
+            .map_err(|e|{
+                warn!("ZoneProvider get control panel client failed: {}",e);
+                NSError::NotFound(format!("get control panel client failed: {}",e))
+            })?;
+        
+        let device_info = control_panel_client.get_device_info(name).await
+            .map_err(|e|{
+                warn!("ZoneProvider get device info failed: {}",e);
+                NSError::NotFound(format!("get device info failed: {}",e))
+            })?;
+
+        let device_info_str = serde_json::to_string(&device_info).unwrap();
+        return Ok(device_info_str);
     }
 
     async fn do_system_config_client_query(&self,name:&str) -> NSResult<NameInfo> {
@@ -289,3 +437,39 @@ impl NsProvider for ZoneProvider {
     }
 
 }
+
+
+#[async_trait]
+impl InnerServiceHandler for ZoneProvider {
+    async fn handle_http_get(&self, req_path:&str,ip_from:IpAddr) -> std::result::Result<String,RPCErrors> {
+        // Check if the path contains a "resolve" folder and extract the filename after it
+        if req_path.contains("/resolve/") {
+            let parts: Vec<&str> = req_path.split("/resolve/").collect();
+            if parts.len() > 1 && !parts[1].is_empty() {
+                let domain_name = parts[1];
+                debug!("ZoneProvider trying to resolve domain: {}", domain_name);
+                if domain_name.ends_with("/info") {
+                    let info = self.do_query_info(domain_name).await.map_err(|e|{
+                        warn!("ZoneProvider query object info failed: {}",e);
+                        RPCErrors::ReasonError(e.to_string())
+                    })?;
+                    return Ok(info);
+         
+                } else {
+                    let did_doc = self.do_query_did(domain_name).await.map_err(|e|{
+                        warn!("ZoneProvider query object did-document failed: {}",e);
+                        RPCErrors::ReasonError(e.to_string())
+                    })?;
+
+                    let did_doc_string = did_doc.to_string();
+                    return Ok(did_doc_string);
+                }
+            }
+        }
+        return Err(RPCErrors::UnknownMethod(req_path.to_string()));
+    }
+    async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> std::result::Result<RPCResponse,RPCErrors> {
+        return Err(RPCErrors::UnknownMethod(req.method));
+    }
+}
+
