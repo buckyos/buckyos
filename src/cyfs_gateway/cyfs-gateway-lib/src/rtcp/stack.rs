@@ -80,8 +80,14 @@ impl RTcpStack {
                 "this device ed25519 sk is none".to_string(),
             ));
         }
-
-        let (auth_key, remote_did_id) = resolve_ed25519_auth_key(target_hostname.as_str())
+        let remote_did = DID::from_host_name(target_hostname.as_str());
+        if remote_did.is_none() {
+            return Err(TunnelError::DocumentError(
+                "invalid target device is not did".to_string(),
+            ));
+        }
+        let remote_did = remote_did.unwrap();
+        let auth_key = resolve_ed25519_auth_key(&remote_did)
             .await
             .map_err(|op| {
                 let msg = format!(
@@ -106,8 +112,8 @@ impl RTcpStack {
         //info!("aes_key: {:?}",aes_key);
         //create jwt by tunnel token payload
         let tunnel_token_payload = TunnelTokenPayload {
-            to: remote_did_id,
-            from: self.this_device_did.to_string(),
+            to: remote_did.to_host_name(),
+            from: self.this_device_did.to_host_name(),
             xpub: my_public_hex,
             exp: buckyos_get_unix_timestamp() + 3600 * 2,
         };
@@ -153,7 +159,14 @@ impl RTcpStack {
         token: String,
         from_hostname: String,
     ) -> Result<([u8; 32], [u8; 32]), TunnelError> {
-        let (ed25519_pk, _from_did) = resolve_ed25519_auth_key(from_hostname.as_str())
+        let from_did = DID::from_host_name(from_hostname.as_str());
+        if from_did.is_none() {
+            return Err(TunnelError::DocumentError(
+                "invalid from device is not did".to_string(),
+            ));
+        }
+        let from_did = from_did.unwrap();
+        let ed25519_pk = resolve_ed25519_auth_key(&from_did)
             .await
             .map_err(|op| {
                 TunnelError::DocumentError(format!(

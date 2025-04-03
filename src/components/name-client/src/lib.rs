@@ -99,14 +99,11 @@ pub async fn resolve(name: &str, record_type: Option<RecordType>) -> NSResult<Na
 }
 
 pub async fn resolve_auth_key(did: &DID,kid:Option<&str>) -> NSResult<DecodingKey> {
-    //return #auth-key
-    //let did = DID::from_host_name(hostname);
-    // if did.is_some(){
-    //     let did = did.unwrap();
-    //     if let Some(auth_key) = did.get_auth_key() {
-    //         return Ok((auth_key,hostname.to_string()));
-    //     }
-    // }
+    let ed25519_auth_key = did.get_ed25519_auth_key();
+    if ed25519_auth_key.is_some() {
+        let auth_key = ed25519_to_decoding_key(&ed25519_auth_key.unwrap())?;
+        return Ok(auth_key);
+    }
 
     let client = get_name_client();
     if client.is_none() {
@@ -115,31 +112,18 @@ pub async fn resolve_auth_key(did: &DID,kid:Option<&str>) -> NSResult<DecodingKe
         return Err(NSError::InvalidState(msg));
     }
     let did_doc = client.unwrap().resolve_did(did,None).await?;
-    //did_doc.get_auth_key(kid)
-    //info!("did_doc: {:?}",did_doc);
-    // did_doc could be ZoneConfig or DeviceConfig
-    let zone_config = ZoneConfig::decode(&did_doc, None);
-    if zone_config.is_ok() {
-        let zone_config = zone_config.unwrap();
-        let auth_key = zone_config.get_auth_key(kid);
-        if auth_key.is_some() {
-            return Ok(auth_key.unwrap());
-        } else {
-            return Err(NSError::NotFound("Invalid kid".to_string()));
-        }
+    let did_doc = parse_did_doc(did_doc)?;
+    let auth_key = did_doc.get_auth_key(kid);
+    if auth_key.is_some() {
+        return Ok(auth_key.unwrap());
     }
-    return Err(NSError::NotFound("Invalid did document".to_string()));
+    return Err(NSError::NotFound("Invalid kid".to_string()));
 }
 
-pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],String)> {
+pub async fn resolve_ed25519_auth_key(remote_did: &DID) -> NSResult<[u8; 32]> {
     //return #auth-key
-    let did = DID::from_host_name(hostname);
-    if did.is_none() {
-        return Err(NSError::InvalidDID(format!("invalid did {}",hostname)));
-    }
-    let did = did.unwrap();
-    if let Some(auth_key) = did.get_auth_key() {
-        return Ok((auth_key,hostname.to_string()));
+    if let Some(auth_key) = remote_did.get_ed25519_auth_key() {
+        return Ok(auth_key);
     }
     
     let client = get_name_client();
@@ -148,40 +132,13 @@ pub async fn resolve_ed25519_auth_key(hostname: &str) -> NSResult<([u8; 32],Stri
         error!("{}",msg);
         return Err(NSError::InvalidState(msg));
     }
-    let did_doc = client.unwrap().resolve_did(&did,None).await?;
-    //info!("did_doc: {:?}",did_doc);
-    // did_doc could be ZoneConfig or DeviceConfig
-    let zone_config = ZoneConfig::decode(&did_doc, None);
-    if zone_config.is_ok() {
-        let zone_config = zone_config.unwrap();
-        
-        if zone_config.device_list.is_some() {
-            let device_list = zone_config.device_list.as_ref().unwrap();
-            for device_did in device_list {
-                let device_did = DID::from_str(device_did.as_str());
-                if device_did.is_ok() {
-                    let device_did = device_did.unwrap();
-                    if let Some(auth_key) = device_did.get_auth_key() {
-                        return Ok((auth_key,hostname.to_string()));
-                    }
-                }
-            }
-        }
-        
-        let auth_key = zone_config.get_default_key();
-        if auth_key.is_some() {
-            let auth_key = auth_key.unwrap();
-            let auth_key = serde_json::to_value(&auth_key);
-            let auth_key = auth_key.unwrap();
-            let x = auth_key.get("x");
-            if x.is_some() {
-                let x = x.unwrap();
-                let x = x.as_str().unwrap();
-                //let did_id = format!("did:dev:{}",x);
-                let auth_key = URL_SAFE_NO_PAD.decode(x).unwrap();
-                return Ok((auth_key.try_into().unwrap(),hostname.to_string()));
-            }
-        }
+    let did_doc = client.unwrap().resolve_did(remote_did,None).await?;
+    let did_doc = parse_did_doc(did_doc)?;
+    let auth_key = did_doc.get_auth_key(None);
+    if auth_key.is_some() {
+        let auth_key = auth_key.unwrap();
+        let auth_key = decoding_key_to_ed25519_sk(&auth_key)?;
+        return Ok(auth_key);
     }
     return Err(NSError::NotFound("Invalid did document".to_string()));
 }

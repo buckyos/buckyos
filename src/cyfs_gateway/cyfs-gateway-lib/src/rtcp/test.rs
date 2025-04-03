@@ -47,7 +47,7 @@ mod tests {
         init_name_lib().await.unwrap();
         //1. create client rtcp stack(device default rtcp stack)
         let (sk, sk_pkcs) = generate_ed25519_key();
-        let pk = encode_ed25519_sk_to_pk_jwt(&sk);
+        let pk = encode_ed25519_sk_to_pk_jwk(&sk);
         let pk_str = serde_json::to_string(&pk).unwrap();
         let mut name_info =
             NameInfo::from_address("dev02", IpAddr::V4("127.0.0.1".parse().unwrap()));

@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
 use crate::{NSError, NSResult,decode_jwt_claim_without_verify};
+use crate::config::{OwnerConfig, DeviceConfig,ZoneConfig};
 
 #[derive(Clone,Debug,PartialEq,Hash,Eq,PartialOrd,Ord)]
 pub struct DID {
@@ -33,7 +34,7 @@ impl DID {
         }
     }
 
-    pub fn get_auth_key(&self) -> Option<[u8; 32]> {
+    pub fn get_ed25519_auth_key(&self) -> Option<[u8; 32]> {
         if self.method == "dev" {
             let auth_key = URL_SAFE_NO_PAD.decode(self.id.as_str()).unwrap();
             return Some(auth_key.try_into().unwrap());
@@ -206,6 +207,23 @@ pub trait DIDDocumentTrait {
 
 
 pub static KNOWN_WEB3_BRIDGE_CONFIG:OnceCell<HashMap<String,String>> = OnceCell::new();
+
+pub fn parse_did_doc(doc: EncodedDocument) -> NSResult<Box<dyn DIDDocumentTrait>> {
+    let doc_value = doc.to_json_value()?;
+    if doc_value.get("full_name").is_some() {
+        let owner_config = serde_json::from_value::<OwnerConfig>(doc_value).map_err(|e| NSError::Failed(format!("parse owner config failed: {}",e)))?;
+        return Ok(Box::new(owner_config));
+    }
+    if doc_value.get("device_type").is_some() {
+        let device_config = serde_json::from_value::<DeviceConfig>(doc_value).map_err(|e| NSError::Failed(format!("parse device config failed: {}",e)))?;
+        return Ok(Box::new(device_config));
+    }
+    if doc_value.get("oods").is_some() {
+        let zone_config = serde_json::from_value::<ZoneConfig>(doc_value).map_err(|e| NSError::Failed(format!("parse zone config failed: {}",e)))?;
+        return Ok(Box::new(zone_config));
+    }
+    Err(NSError::Failed("unknown did document".to_string()))
+}
 
 #[cfg(test)]
 mod tests {
