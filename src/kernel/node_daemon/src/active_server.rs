@@ -167,7 +167,7 @@ impl ActiveServer {
         
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "code":0
-        })),req.seq))
+        })),req.id))
     }
 
     async fn handle_generate_key_pair(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
@@ -176,7 +176,7 @@ impl ActiveServer {
         return Ok(RPCResponse::new(RPCResult::Success(json!({
             "private_key":private_key,
             "public_key":public_key
-        })),req.seq));
+        })),req.id));
     }
 
     async fn handle_get_device_info(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
@@ -185,7 +185,7 @@ impl ActiveServer {
         let device_info_json = serde_json::to_value(device_info).unwrap();
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "device_info":device_info_json
-        })),req.seq))
+        })),req.id))
     }
 
     async fn handle_generate_zone_boot_config_jwt(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
@@ -207,7 +207,7 @@ impl ActiveServer {
         
         return Ok(RPCResponse::new(RPCResult::Success(json!({
             "zone_boot_config_jwt":zone_boot_config_jwt.to_string()
-        })),req.seq));
+        })),req.id));
     }
 }
 

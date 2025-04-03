@@ -447,7 +447,7 @@ impl RepoServer {
 
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "task_id": task_id,
-        })), req.seq))
+        })), req.id))
     }
     // 将source-meta-index更新到最新版本
     async fn handle_sync_from_remote_source(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -477,7 +477,7 @@ impl RepoServer {
             info!("local meta-index-db is better than remote, will not download");
             return Ok(RPCResponse::new(RPCResult::Success(json!({
                 "success": true,
-            })), req.seq));
+            })), req.id));
         }
         
         ndn_client.download_fileobj_to_local(root_source_url.as_str(),&new_meta_index_db_path, None).await.map_err(|e| {
@@ -523,7 +523,7 @@ impl RepoServer {
 
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "success": true,
-        })), req.seq))  
+        })), req.id))  
     }
 
     async fn create_new_default_meta_index_db(&self,user_id: &str) -> Result<(),RPCErrors> {
@@ -675,7 +675,7 @@ impl RepoServer {
 
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "success": true,
-        })), req.seq))
+        })), req.id))
     }
 
     //将local-wait-meta发布（发布后只读），发布后会计算index-db的chunk_id并构造fileobj,更新R路径的信息
@@ -705,7 +705,7 @@ impl RepoServer {
 
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "success": true,
-        })), req.seq))
+        })), req.id))
 
 
     }
@@ -732,7 +732,7 @@ impl RepoServer {
 
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "success": true,
-        })), req.seq))
+        })), req.id))
     }
 
     // 当前repo-service也作为源，有zone外的用户要将pkg发布到meta
@@ -843,7 +843,7 @@ impl RepoServer {
 
         return Ok(RPCResponse::new(RPCResult::Success(json!({
             "task_id": task_id,
-        })), req.seq));
+        })), req.id));
     }
 
     async fn handle_merge_wait_pub(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -917,7 +917,7 @@ impl RepoServer {
 
         Ok(RPCResponse::new(RPCResult::Success(json!({
             "success": true,
-        })), req.seq))
+        })), req.id))
     }
 
     // 查询index-meta

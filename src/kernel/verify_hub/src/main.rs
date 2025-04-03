@@ -533,14 +533,14 @@ async fn service_main() -> i32 {
         .and_then(|req: RPCRequest| async move {
             info!("|==>Received request: {}", serde_json::to_string(&req).unwrap());
             
-            let process_result =  process_request(req.method,req.params,req.seq).await;
+            let process_result =  process_request(req.method,req.params,req.id).await;
             
             let rpc_response : RPCResponse;
             match process_result {
                 Ok(result) => {
                     rpc_response = RPCResponse {
                         result: RPCResult::Success(result),
-                        seq:req.seq,
+                        seq:req.id,
                         token:None,
                         trace_id:req.trace_id,
                     };
@@ -548,7 +548,7 @@ async fn service_main() -> i32 {
                 Err(err) => {
                     rpc_response = RPCResponse {
                         result: RPCResult::Failed(err.to_string()),
-                        seq:req.seq,
+                        seq:req.id,
                         token:None,
                         trace_id:req.trace_id,
                     };

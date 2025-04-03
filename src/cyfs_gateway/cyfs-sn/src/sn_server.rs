@@ -105,7 +105,7 @@ impl SNServer {
         })?;
         let resp = RPCResponse::new(RPCResult::Success(json!({
             "valid":!ret 
-        })),req.seq);
+        })),req.id);
         return Ok(resp);
     }
 
@@ -127,7 +127,7 @@ impl SNServer {
         let valid = ret.unwrap();
         let resp = RPCResponse::new(RPCResult::Success(json!({
             "valid":valid 
-        })),req.seq);
+        })),req.id);
         return Ok(resp);
     }
 
@@ -166,7 +166,7 @@ impl SNServer {
 
         let resp = RPCResponse::new(RPCResult::Success(json!({
             "code":0 
-        })),req.seq);
+        })),req.id);
         return Ok(resp);
     }
 
@@ -228,7 +228,7 @@ impl SNServer {
 
         let resp = RPCResponse::new(RPCResult::Success(json!({
             "code":0 
-        })),req.seq);
+        })),req.id);
         return Ok(resp);
     }
 
@@ -273,7 +273,7 @@ impl SNServer {
         sn_db::update_device_by_name(&conn, owner_id, &device_info.name.clone(), ip_str.as_str(), device_info_json.to_string().as_str());
         let resp = RPCResponse::new(RPCResult::Success(json!({
             "code":0 
-        })),req.seq);
+        })),req.id);
 
         let mut device_info_map = self.all_device_info.lock().await;
         let key = format!("{}_{}",owner_id,device_info.name.clone());
@@ -306,12 +306,12 @@ impl SNServer {
                 warn!("Failed to parse device info: {:?}",e);
                 RPCErrors::ReasonError(e.to_string())
             })?;
-            return Ok(RPCResponse::new(RPCResult::Success(device_value),req.seq));
+            return Ok(RPCResponse::new(RPCResult::Success(device_value),req.id));
         }
          else {
             warn!("device info not found for {}_{}",owner_id,device_id);
             let device_json = serde_json::to_value(device_info.clone()).unwrap();
-            return Ok(RPCResponse::new(RPCResult::Success(device_json),req.seq)); 
+            return Ok(RPCResponse::new(RPCResult::Success(device_json),req.id)); 
         }
     }
 

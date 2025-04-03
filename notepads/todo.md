@@ -17,11 +17,11 @@
 - [x] device_info应该是device_doc的扩展
 
 ## 检查系统内权限是否能正确与DID集成
-- [ ] 可同时使用did和友好名称(name)
+- [x] 可同时使用did和友好名称(name)
 - [ ] users/$username/config -> OwnerConfig
 - [ ] 导入User(Owner) /Config时，需要对name的一致性进行检查
 - [ ] 检查device的注册与上报逻辑，区分私有设备和公开设备
-- [ ] review现有权限配置，更新SUDO文档
+- [x] review现有权限配置，更新key data文档
 - [ ] 增加SDK里的verify-hub api
     从请求中提取session_token
     从session_token中提取出user_id,app_id

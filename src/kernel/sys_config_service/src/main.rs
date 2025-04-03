@@ -598,16 +598,16 @@ async fn service_main() {
             Ok(result) => {
                 rpc_response = RPCResponse {
                     result: RPCResult::Success(result),
-                    seq: req.seq,
+                    seq: req.id,
                     token: None,
                     trace_id: req.trace_id.clone()
                 };
-                info!("<==|Response: OK {} {}", req.seq,req.trace_id.as_deref().unwrap_or(""));
+                info!("<==|Response: OK {} {}", req.id,req.trace_id.as_deref().unwrap_or(""));
             },
             Err(err) => {
                 rpc_response = RPCResponse {
                     result: RPCResult::Failed(err.to_string()),
-                    seq: req.seq,
+                    seq: req.id,
                     token: None,
                     trace_id: req.trace_id
                 };

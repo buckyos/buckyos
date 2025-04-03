@@ -150,7 +150,7 @@ mod test {
         let req = RPCRequest {
             method: "add".to_string(),
             params: json!({"a":1,"b":2}),
-            seq: 100,
+            id: 100,
             token: Some("$dsdsd".to_string()),
             trace_id: Some("$trace_id".to_string()),
         };
