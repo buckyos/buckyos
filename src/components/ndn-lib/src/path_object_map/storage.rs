@@ -87,7 +87,8 @@ where
         let mut root = self.root.write().unwrap();
         let mut trie = GenericTrieDBMutBuilder::from_existing(&mut *db_write, &mut root).build();
 
-        let value = trie.remove(key).map_err(|e| {
+        // First get value 
+        let value = trie.get(key).map_err(|e| {
             let msg = format!("Failed to get value for key: {:?}", e);
             error!("{}", msg);
             NdnError::DbError(msg)
@@ -97,28 +98,15 @@ where
             warn!("Remove key not found: {:?}", key);
             return Ok(None);
         }
-
-        drop(trie); // Explicitly drop the trie to commit changes
-        drop(root);
-        drop(db_write);
-
         let value = value.unwrap();
-        let value = match value {
-            Value::Inline(v) | Value::NewNode(_, v) => v.to_vec(),
-            Value::Node(hash) => {
-                use hash_db::HashDBRef;
+        
+        let remove_value = trie.remove(key).map_err(|e| {
+            let msg = format!("Failed to get value for key: {:?}", e);
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
 
-                let db = self.db.read().unwrap();
-                let value = db.get(&hash, hash_db::EMPTY_PREFIX);
-                if value.is_none() {
-                    error!("Remove key but hash not found: {:?}, {:?}", key, hash);
-                    return Ok(None);
-                }
-
-                let value = value.unwrap();
-                value
-            }
-        };
+        assert!(remove_value.is_some(), "Value should be present after remove");
 
         info!("Removed key: {:?}, value: {:?}", key, value);
 
