@@ -332,6 +332,12 @@ impl RepoServer {
 
     //在repo里安装pkg(pkg_name已经在index-db中了)
     async fn handle_install_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+
+        let runtime = get_buckyos_api_runtime()?;   
+        let _r = runtime.enforce(&req,"write",
+        "dfs://system/data/repo/meta_index.db").await?;
+
+
         let pkg_list = req.params.get("pkg_list");
         let install_task_name = ReqHelper::get_str_param_from_req(&req,"task_name")?;
         let session_token = ReqHelper::get_session_token(&req)?;
@@ -453,10 +459,14 @@ impl RepoServer {
     async fn handle_sync_from_remote_source(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         // 该操作可能会修改default_meta_index_db_path，需要加锁
         let _lock = DEFAULT_META_INDEX_DB_LOCK.lock().await;
+        let runtime = get_buckyos_api_runtime()?;
+        let _r = runtime.enforce(&req,"write",
+        "dfs://system/data/repo/meta_index.db").await?;
+
         //尝试拿到sync操作的锁，拿不到则说明已经在处理了
         //1.先下载并验证远程版本到临时db
         //let will_update_source_list = self.settng.remote_source.keys().cloned();
-
+        //let key_map = HashMap::new();
         let root_source_url = self.settng.remote_source.get("root");
         if root_source_url.is_none() {
             error!("handle_sync_from_remote_source error:root source not found");
@@ -591,10 +601,14 @@ impl RepoServer {
         Zone内在调用接口前已经将chunk写入repo-servere可访问的named_mgr了
         检查完所有pkg_list都ready后（尤其是其依赖都ready后），通过SQL事务插入一批pkg到 local-wait-meta
         */
-        let user_id = "root".to_string();
         if !self.settng.enable_dev_mode {
             return Err(RPCErrors::ReasonError("repo_server dev mode is not enabled".to_string()));
         }
+        
+        let runtime = get_buckyos_api_runtime()?;
+        let (user_id,app_id) = runtime.enforce(&req,"write",
+        "dfs://system/data/repo/meta_index.db").await?;
+
         //1）检验参数,得到meta_id:pkg-meta的map
         let pkg_list = req.params.get("pkg_list");
         if pkg_list.is_none() {
@@ -686,6 +700,10 @@ impl RepoServer {
         if !self.settng.enable_dev_mode {
             return Err(RPCErrors::ReasonError("repo_server dev mode is not enabled".to_string()));
         }
+        let runtime = get_buckyos_api_runtime()?;
+        let (user_id,app_id) = runtime.enforce(&req,"write",
+        "dfs://system/data/repo/meta_index.db").await?;
+
         let wait_meta_db_path = self.get_my_wait_pub_meta_index_db_path();
         let pub_meta_db_path = self.get_my_pub_meta_index_db_path();
         //info!("start replace pub_meta_db with wait_meta_db, pub_meta_db_path:{}", pub_meta_db_path.display());
@@ -712,10 +730,12 @@ impl RepoServer {
 
     // 更新已发布的local-pub meta-index-db的签名
     async fn handle_sign_index(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        let mut user_id = "".to_string();
         if !self.settng.enable_dev_mode {
             return Err(RPCErrors::ReasonError("repo_server dev mode is not enabled".to_string()));
         }
+        let runtime = get_buckyos_api_runtime()?;
+        let (user_id,app_id) = runtime.enforce(&req,"write",
+        "dfs://system/data/repo/meta_index.db").await?;
 
         let meta_index_jwt = ReqHelper::get_str_param_from_req(&req, "meta_index_jwt")?;
 
@@ -744,10 +764,12 @@ impl RepoServer {
         2. 检查pkg_list的各种deps已经存在了,失败在发布任务中写入错误信息
        
         */
-        let user_id = "root".to_string();
+        let runtime = get_buckyos_api_runtime()?;
+        let (user_id,app_id) = runtime.enforce(&req,"write",
+        "dfs://system/data/repo/meta_index.db").await?;
+
         let task_name = ReqHelper::get_str_param_from_req(&req, "task_name")?;
         let real_task_name = format!("pub_pkg_to_source_{}_{}",user_id,task_name);
-        let runtime = get_buckyos_api_runtime()?;
         let task_mgr = runtime.get_task_mgr_client().await?;
 
         let task_data = req.params.get("task_data");
@@ -766,6 +788,7 @@ impl RepoServer {
             RPCErrors::ReasonError(format!("create task failed, err:{}", e))
         })?;
 
+        //注意和req的session_token不一样，app_id是不同的
         let session_token = runtime.get_session_token().await;
         let ndn_client = NdnClient::new(pub_task_data.author_repo_url.clone(),Some(session_token),None);
         let author_pk = pub_task_data.author_pk.clone();

@@ -6,7 +6,6 @@ mod name_query;
 mod dns_provider;
 mod utility;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use buckyos_kit::{get_buckyos_system_etc_dir,BuckyOSMachineConfig};
 use jsonwebtoken::DecodingKey;
 pub use provider::*;
@@ -66,7 +65,6 @@ pub async fn init_name_lib() -> NSResult<()> {
     if set_result.is_err() {
         return Err(NSError::Failed("Failed to set GLOBAL_BOOT_NAME_CLIENT".to_string()));
     }
-
     
     Ok(())
 }

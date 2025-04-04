@@ -520,6 +520,7 @@ async fn init_by_boot_config()->Result<()> {
             let real_key = DecodingKey::from_jwk(&devcie_key).unwrap();
             TRUST_KEYS.lock().await.insert(device_doc.name.clone(),real_key.clone());
             info!("Insert device name:[{}] - key:[{}] to trust keys",device_doc.name,device_key_str);
+
             TRUST_KEYS.lock().await.insert(device_doc.id.to_string(),real_key);
             info!("Insert device did:[{}] - key:[{}] to trust keys",device_doc.id.to_string(),device_key_str);
         }
@@ -531,8 +532,8 @@ async fn init_by_boot_config()->Result<()> {
         let zone_owner_key_str  = zone_owner_str.unwrap();
         let zone_owner_key : jsonwebtoken::jwk::Jwk = serde_json::from_str(&zone_owner_key_str).unwrap();
         let zone_owner_key = DecodingKey::from_jwk(&zone_owner_key).unwrap();
-        TRUST_KEYS.lock().await.insert("{owner}".to_string(),zone_owner_key.clone());
-        info!("Insert zone owner key:[{}] to trust keys",zone_owner_key_str);
+        TRUST_KEYS.lock().await.insert("root".to_string(),zone_owner_key.clone());
+        info!("Insert zone owner (root) key:[{}] to trust keys",zone_owner_key_str);
         //TRUST_KEYS.lock().await.insert("{owner}".to_string(),zone_owner_key);
     } else {
         error!("Missing BUCKY_ZONE_OWNER");
@@ -554,7 +555,7 @@ async fn init_by_boot_config()->Result<()> {
                     let verify_hub_public_key = verify_hub_public_key.unwrap();
                     let verify_hub_public_key:jsonwebtoken::jwk::Jwk = serde_json::from_value(verify_hub_public_key.clone()).unwrap();
                     let verify_hub_public_key = DecodingKey::from_jwk(&verify_hub_public_key).unwrap();
-                    TRUST_KEYS.lock().await.insert("{verify_hub}".to_string(),verify_hub_public_key.clone());
+                    TRUST_KEYS.lock().await.insert("verify-hub".to_string(),verify_hub_public_key.clone());
                     info!("Insert verify_hub_public_key to trust keys");
                 }
             }

@@ -203,7 +203,7 @@ impl RPCSessionToken {
 
         let kid:String;
         if header.kid.is_none() {
-            kid = "{verify_hub}".to_string();
+            kid = "$default".to_string();
         } else {
             kid = header.kid.unwrap();
         }    

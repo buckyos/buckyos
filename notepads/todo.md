@@ -11,6 +11,7 @@
 - [x] DNS 能正确的resolve zone-boot-config,SN能正确通过NameInfo返回Zone-Boot-Config
 - [x] 检查Node_Active构造的配置文件
 - [ ] 修改SDK,注意修改SDK中的相关config数据结构定义
+  - [] 确认3个特殊进程初始化BuckyOS Runtime可能会有的问题
 - [x] 修改所有配置文件，和DNS配置
 - [x] XXXConfig与现有的DIDDoc体系进行最大程度的兼容设计
 - [x] 通过配置文件切换bns web3网桥

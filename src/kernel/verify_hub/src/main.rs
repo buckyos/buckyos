@@ -63,13 +63,13 @@ async fn generate_session_token(appid:&str,userid:&str,login_nonce:u64,duration:
         appid: Some(appid.to_string()),
         userid: Some(userid.to_string()),
         token: None,
-        iss: Some("{verify_hub}".to_string()),
+        iss: Some("verify-hub".to_string()),
         exp: Some(exp),
     };
     
     {
         let private_key = PRIVATE_KEY.read().await;
-        session_token.token = Some(session_token.generate_jwt(Some("{verify_hub}".to_string()), &private_key).unwrap());
+        session_token.token = Some(session_token.generate_jwt(Some("verify-hub".to_string()), &private_key).unwrap());
     }
     
     return session_token;
@@ -600,8 +600,8 @@ mod test {
         let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(test_jwk).unwrap();
         let test_pk = DecodingKey::from_jwk(&public_key_jwk).unwrap();
        
-        cache_trustkey("{verify_hub}",test_pk.clone()).await;
-        cache_trustkey("{owner}",test_pk).await;
+        cache_trustkey("verify-hub",test_pk.clone()).await;
+        cache_trustkey("root",test_pk).await;
         let test_owner_private_key_pem = r#"
 -----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp

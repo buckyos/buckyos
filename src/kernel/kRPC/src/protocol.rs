@@ -1,8 +1,8 @@
 use std::net::IpAddr;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize,Serializer};
-use serde_json::{Value};
 use serde::ser::SerializeStruct;
+use serde_json::Value;
 use crate::RPCErrors;
 pub enum RPCProtoclType {
     HttpPostJson,
@@ -32,7 +32,8 @@ impl RPCRequest {
             trace_id:None,
         }
     }
-    fn get_str_param_from_req(self: &RPCRequest, key: &str) -> Result<String, RPCErrors> {
+
+    pub fn get_str_param_from_req(self: &RPCRequest, key: &str) -> Result<String, RPCErrors> {
         self.params
             .get(key)
             .and_then(|value| value.as_str())

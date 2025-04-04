@@ -363,6 +363,7 @@ g, system-config, kernel
 g, verify-hub, kernel
 g, control-panel, kernel
 g, repo-service, kernel
+g, buckycli,kernel
 g, samba-service,services
 """
 
@@ -410,7 +411,9 @@ g, system-config, kernel
 g, verify-hub, kernel
 g, control-panel, kernel
 g, repo-service, kernel
+g, buckycli,kernel
 g, samba-service,services
+
 
 g, sys-test, app
 g, buckyos-filebrowser, app

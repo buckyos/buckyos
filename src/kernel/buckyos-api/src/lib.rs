@@ -59,6 +59,8 @@ pub struct BuckyOSRuntime {
     pub device_private_key:Option<EncodingKey>,
     pub user_private_key:Option<EncodingKey>,
     pub owner_user_config:Option<OwnerConfig>,
+
+    trust_keys:Arc<RwLock<HashMap<String,DecodingKey>>>,
 }
 
 pub struct SystemInfo {
@@ -263,6 +265,7 @@ pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRunt
         device_private_key: device_private_key,
         user_private_key: user_private_key,
         owner_user_config: owner_user_config,
+        trust_keys: Arc::new(RwLock::new(HashMap::new())),
     };
     CURRENT_BUCKYOS_RUNTIME.set(runtime);
     Ok(())
@@ -353,6 +356,7 @@ pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,r
         device_private_key: None,
         user_private_key: None,
         owner_user_config: None,
+        trust_keys: Arc::new(RwLock::new(HashMap::new())),
     };
     CURRENT_BUCKYOS_RUNTIME.set(runtime);
     Ok(())
@@ -426,6 +430,67 @@ impl BuckyOSRuntime {
         } else {
             return Ok(self.session_token.read().await.clone());
         }
+    }
+
+    pub async fn remove_trust_key(&self,kid: &str) -> Result<()> {
+        let mut key_map = self.trust_keys.write().await;
+        let remove_result = key_map.remove(kid);
+        if remove_result.is_none() {
+            return Err(RPCErrors::ReasonError(format!("kid {} not found",kid)));
+        }
+        Ok(())
+    }
+
+    pub async fn set_trust_key(&self,kid: &str,key: &DecodingKey) -> Result<()> {
+        let mut key_map = self.trust_keys.write().await;
+        key_map.insert(kid.to_string(),key.clone());
+        Ok(())
+    }
+
+    //success return (userid,appid)
+    pub async fn enforce(&self,req:&RPCRequest, action: &str,resource_path: &str) -> Result<(String,String)> {
+        let token = req.token
+            .as_ref()
+            .map(|token| RPCSessionToken::from_string(token.as_str()))
+            .unwrap_or(Err(RPCErrors::ParseRequestError(
+                "Invalid params, session_token is none".to_string(),
+            )));
+        let token = token.unwrap();
+        if !token.is_self_verify() {
+            return Err(RPCErrors::InvalidToken("Session token is not valid".to_string()));
+        }
+        let token_str = token.token.as_ref().unwrap();
+        let header: jsonwebtoken::Header = jsonwebtoken::decode_header(token_str).map_err(|error| {
+            RPCErrors::InvalidToken(format!("JWT decode header error : {}",error))
+        })?;
+
+        let key_map = self.trust_keys.read().await;
+        let kid = header.kid.unwrap_or("$default".to_string());
+        let decoding_key = key_map.get(&kid);
+        if decoding_key.is_none() {
+            warn!("kid {} not found,Session token is not valid",kid.as_str());
+            return Err(RPCErrors::NoPermission(format!("kid {} not found",kid.as_str())));
+        }
+        let decoding_key = decoding_key.unwrap();
+
+        let validation = Validation::new(header.alg);
+        //exp always checked 
+        let decoded_token = decode::<serde_json::Value>(token_str, &decoding_key, &validation).map_err(
+            |error| RPCErrors::InvalidToken(format!("JWT decode error:{}",error))
+        )?;
+        let decoded_json = decoded_token.claims.as_object()
+            .ok_or(RPCErrors::InvalidToken("Invalid token".to_string()))?;
+ 
+        let userid = decoded_json.get("userid")
+            .ok_or(RPCErrors::InvalidToken("Missing userid".to_string()))?;
+        let userid = userid.as_str().ok_or(RPCErrors::InvalidToken("Invalid userid".to_string()))?;
+        let appid = decoded_json.get("appid").map(|appid| appid.as_str().unwrap_or("kernel"));
+        let appid = appid.unwrap_or("kernel");
+        let result = rbac::enforce(userid, Some(appid),resource_path,action).await;
+        if !result {
+            return Err(RPCErrors::NoPermission(format!("enforce failed,userid:{},appid:{},resource:{},action:{}",userid,appid,resource_path,action)));
+        }
+        Ok((userid.to_string(),appid.to_string()))
     }
 
     pub async fn enable_zone_provider (is_gateway: bool) -> Result<()> {
