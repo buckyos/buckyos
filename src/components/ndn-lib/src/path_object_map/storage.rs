@@ -99,7 +99,7 @@ where
             return Ok(None);
         }
         let value = value.unwrap();
-        
+
         let remove_value = trie.remove(key).map_err(|e| {
             let msg = format!("Failed to get value for key: {:?}", e);
             error!("{}", msg);
@@ -167,6 +167,13 @@ pub type Sha512MemoryStorage = GenericMemoryStorage<Sha512Hasher>;
 pub type Blake2s256MemoryStorage = GenericMemoryStorage<Blake2s256Hasher>;
 pub type Keccak256MemoryStorage = GenericMemoryStorage<Keccak256Hasher>;
 
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub enum PathObjectMapProofVerifyResult {
+    Inclusion,
+    NonInclusion,
+    Error,
+}
+
 pub trait PathObjectMapProofVerifier: Send + Sync {
     fn verify(
         &self,
@@ -174,7 +181,7 @@ pub trait PathObjectMapProofVerifier: Send + Sync {
         root_hash: &[u8],
         key: &[u8],
         value: Option<&[u8]>,
-    ) -> NdnResult<bool>;
+    ) -> NdnResult<PathObjectMapProofVerifyResult>;
 }
 
 pub type PathObjectMapProofVerifierRef = Arc<Box<dyn PathObjectMapProofVerifier>>;
@@ -232,20 +239,36 @@ where
         root_hash: &[u8],
         key: &[u8],
         value: Option<&[u8]>,
-    ) -> NdnResult<bool> {
+    ) -> NdnResult<PathObjectMapProofVerifyResult> {
         use trie_db::proof::{verify_proof, VerifyError};
 
         let root_hash: H::Out = H::Out::from_slice(root_hash)?;
 
+        let value_is_empty = value.is_none();
         let ret = verify_proof::<GenericLayout<H>, _, _, &[u8]>(
             &root_hash,
             proof_nodes,
             &vec![(key, value)], // The data to be verified, if the data is None, it means to check the existence of the key
         );
 
+        println!("Verify proof: {:?}, {:?}", key, ret);
         match ret {
-            Ok(_) => Ok(true),
+            Ok(_) => {
+                if value_is_empty {
+                    Ok(PathObjectMapProofVerifyResult::NonInclusion)
+                } else {
+                    Ok(PathObjectMapProofVerifyResult::Inclusion)
+                }
+            }
             Err(e) => match &e {
+                VerifyError::ValueMismatch(_) => {
+                    if value_is_empty {
+                        // We only check the existence of the key, so we don't care about the value
+                        Ok(PathObjectMapProofVerifyResult::Inclusion)
+                    } else {
+                        Ok(PathObjectMapProofVerifyResult::NonInclusion)
+                    }
+                }
                 VerifyError::DecodeError(_) => {
                     let msg = format!("Error decoding proof: {:?}", e);
                     error!("{}", msg);
@@ -259,7 +282,7 @@ where
                 _ => {
                     let msg = format!("Verification error: {:?}, {:?}", key, e);
                     info!("{}", msg);
-                    Ok(false)
+                    Ok(PathObjectMapProofVerifyResult::Error)
                 }
             },
         }

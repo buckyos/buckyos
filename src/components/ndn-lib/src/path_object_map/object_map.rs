@@ -11,6 +11,8 @@ use crypto_common::Key;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+pub use super::storage::PathObjectMapProofVerifyResult;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PathObjectMapItem {
     pub obj_id: ObjId,
@@ -68,6 +70,10 @@ impl PathObjectMap {
         Self { hash_method, db }
     }
 
+    pub async fn get_root_hash(&self) -> Vec<u8> {
+        self.db.root().await
+    }
+    
     pub async fn get_obj_id(&self) -> ObjId {
         let root_hash = self.db.root().await;
         ObjId::new_by_raw(OBJ_TYPE_OBJMAPT.to_owned(), root_hash)
@@ -149,9 +155,26 @@ impl PathObjectMapProofVerifier {
         key: &str,
         value: Option<&[u8]>,
         proof: &PathObjectMapItemProof,
-    ) -> NdnResult<bool> {
+    ) -> NdnResult<PathObjectMapProofVerifyResult> {
         let key_bytes = key.as_bytes();
         self.verifier
             .verify(&proof.proof_nodes, &proof.root_hash, key.as_bytes(), value)
+    }
+
+    pub fn verify_object(
+        &self,
+        key: &str,
+        value: Option<(ObjId, Option<Vec<u8>>)>, // (obj_id, meta)
+        proof: &PathObjectMapItemProof,
+    ) -> NdnResult<PathObjectMapProofVerifyResult> {
+        let value = match value {
+            Some((obj_id, meta)) => {
+                let item = PathObjectMapItem::new(obj_id.clone(), meta.clone());
+                Some(item.encode()?)
+            }
+            None => None,
+        };
+
+        self.verify(key, value.as_deref(), proof)
     }
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use crate::ObjId;
-use super::object_map::PathObjectMap;
+use super::object_map::{PathObjectMap, PathObjectMapProofVerifier, PathObjectMapProofVerifyResult};
 use crate::OBJ_TYPE_FILE;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -82,7 +82,41 @@ async fn test_path_object_map() {
 
         println!("Object exist: {}", key);
 
+        // Test proof path
+        let proof = obj_map.get_object_proof_path(key).await.unwrap();
+        assert!(proof.is_some());
+        let mut proof = proof.unwrap();
+        assert_eq!(proof.proof_nodes.len() > 0, true);
+
+        assert_eq!(proof.root_hash.len() > 0, true);
+        println!("Get object proof path success: {}", key);
+
+        // Test proof path with invalid key
+        let key1 = format!("{}/1000", key);
+        let proof1 = obj_map.get_object_proof_path(&key1).await.unwrap();
+        assert!(proof1.is_some());
+        println!("Get object proof path with invalid key success: {}", key1);
+        let proof1 = proof1.unwrap();
+
+        // Test verification
+        let verifier = PathObjectMapProofVerifier::new(obj_map.hash_method());
+        
+        // First test verify without value
+        let ret = verifier.verify_object(&key, None, &proof).unwrap();
+        assert_eq!(ret, PathObjectMapProofVerifyResult::Inclusion);
+
+        // Test verification with value
+        let ret = verifier.verify_object(&key, Some((obj_id.clone(), Some(meta.clone()))), &proof).unwrap();
+        assert_eq!(ret, PathObjectMapProofVerifyResult::Inclusion);
+
+        // Test verification with invalid value
+        let ret = verifier.verify_object(&key1, None, &proof1).unwrap();
+        assert_eq!(ret, PathObjectMapProofVerifyResult::NonInclusion);
+
+
         // Test remove
+        let prev_root_hash = obj_map.get_root_hash().await;
+        assert!(proof.root_hash == prev_root_hash);
         if i % 2 == 0 {
             let ret = obj_map.remove_object(&key).await.unwrap().unwrap();
             assert_eq!(ret.0, obj_id);
@@ -90,5 +124,14 @@ async fn test_path_object_map() {
 
             println!("Remove object success: {}", key);
         }
+        // Test root hash after remove
+        let root_hash = obj_map.get_root_hash().await;
+        assert_eq!(prev_root_hash != root_hash, true);
+
+        // Test verification after remove
+        proof.root_hash = root_hash.clone();
+        let ret = verifier.verify(&key, None, &proof).unwrap();
+        assert_eq!(ret, PathObjectMapProofVerifyResult::NonInclusion);
+        println!("Verify after remove success: {}", key);
     }
 }
