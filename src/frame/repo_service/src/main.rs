@@ -23,7 +23,7 @@ use anyhow::Result;
 
 async fn service_main() -> Result<()> {
     init_logging("repo_service",true);
-    init_buckyos_api_runtime("repo_service",None,BuckyOSRuntimeType::FrameService).await?;
+    init_buckyos_api_runtime("repo-service",None,BuckyOSRuntimeType::KernelService).await?;
     let mut runtime = get_buckyos_api_runtime()?;
     let login_result = runtime.login().await;
     if  login_result.is_err() {

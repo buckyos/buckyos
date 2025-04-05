@@ -358,7 +358,7 @@ async fn handle_list(params:Value,session_token:&RPCSessionToken) -> Result<Valu
 
 async fn dump_configs_for_scheduler(_params:Value,session_token:&RPCSessionToken) -> Result<Value> {
     let appid = session_token.appid.as_deref().unwrap();
-    if appid != "kernel" {
+    if appid != "scheduler" && appid != "kernel" {
         return Err(RPCErrors::NoPermission("No permission".to_string()));
     }
 

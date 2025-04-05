@@ -593,6 +593,7 @@ async fn node_main(node_host_name: &str,
     let kernel_stream = stream::iter(node_config.kernel);
     let kernel_task = kernel_stream.for_each_concurrent(4, |(kernel_service_name, kernel_cfg)| async move {
         let kernel_run_item = KernelServiceRunItem::new(
+            kernel_service_name.as_str(),
             &kernel_cfg,
             &device_doc,
             &device_private_key

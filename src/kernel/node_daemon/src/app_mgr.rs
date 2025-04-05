@@ -15,7 +15,7 @@ use crate::run_item::*;
 use crate::service_pkg::*;
 
 //use package_installer::*;
-use buckyos_api::{AppServiceInstanceConfig,get_full_appid};
+use buckyos_api::{get_full_appid, get_session_token_env_key, AppServiceInstanceConfig};
 
 
 pub struct AppRunItem {
@@ -99,9 +99,8 @@ impl AppRunItem {
                 );
             })?;
         let full_appid = get_full_appid(&self.app_id, &self.app_service_config.user_id);
-        let env_key = format!("{}_token", full_appid.as_str());
+        let env_key = get_session_token_env_key(&full_appid,true);
         std::env::set_var(full_appid.as_str(), device_session_token_jwt);
-
         Ok(())
     }
 }

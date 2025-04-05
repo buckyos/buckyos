@@ -3,12 +3,14 @@ import sys
 import platform
 import os
 import json
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts import util
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
- 
+
 appid = sys.argv[1]
 username = sys.argv[2]
-
-container_id = f"{username}-{appid}"
+container_id = util.get_full_appid(appid, username)
 
 def is_container_running(container_name,docker_image_name,docker_image_hash):
     try:
@@ -40,8 +42,7 @@ if __name__ == "__main__":
 
     appid = sys.argv[1]
     username = sys.argv[2]
-    full_appid = f"{appid}#{username}"
-    app_token = os.getenv(f"{full_appid}_token")
+    full_appid = f"{appid}-{username}"
     app_instance_config_str = os.getenv("app_instance_config")
     media_info_str = os.getenv("app_media_info")
     zone_config_str = os.getenv(f"BUCKYOS_ZONE_CONFIG")
@@ -53,10 +54,6 @@ if __name__ == "__main__":
 
     if device_doc_str:
         device_doc = json.loads(device_doc_str)
-
-    if app_token is None:
-        print(f"No configuration found for appid: {full_appid}")
-        exit(1)
         
     if app_instance_config_str is None:
         print(f"No configuration found for appid: {full_appid}")

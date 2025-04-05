@@ -118,11 +118,11 @@
 }
 """
 
-"system/verify_hub/key" = """
+"system/verify-hub/key" = """
 {{verify_hub_key}}
 """
 # frames & services
-"services/verify_hub/config" = """
+"services/verify-hub/config" = """
 {
     "name":"verify_hub",
     "description":"verify hub is SSO service of buckyos",
@@ -135,7 +135,7 @@
     "instance":1
 }
 """
-"services/verify_hub/settings" = """
+"services/verify-hub/settings" = """
     "trust_keys" : []
 }
 """
@@ -175,9 +175,9 @@
 }
 """
 
-"services/repo_service/config" = """
+"services/repo-service/config" = """
 {
-    "name":"repo_service",
+    "name":"repo-service",
     "description":"repo service is the repo service of buckyos",
     "vendor_did":"did:bns:buckyos",
     "pkg_id":"repo_service",
@@ -190,7 +190,7 @@
 """
 
 # root 源必须设置
-"services/repo_service/settings" = """
+"services/repo-service/settings" = """
 {
     "remote_source": {
         "root":"https://buckyos.io/ndn/repo/meta_index.db"

@@ -19,6 +19,7 @@ use crate::service_pkg::*;
 use crate::run_item::*;
 
 pub struct KernelServiceRunItem {
+    pub app_id: String,
     pub target_state: RunItemTargetState,
     pub pkg_id: String,
     service_pkg: ServicePkg,
@@ -28,6 +29,7 @@ pub struct KernelServiceRunItem {
 
 impl KernelServiceRunItem {
     pub fn new(
+        app_id: &str,
         kernel_config: &KernelServiceInstanceConfig,
         device_doc: &DeviceConfig,
         device_private_key: &EncodingKey,
@@ -35,6 +37,7 @@ impl KernelServiceRunItem {
         let service_pkg = ServicePkg::new(kernel_config.pkg_id.clone(), 
         get_buckyos_system_bin_dir());
         Self {
+            app_id: app_id.to_string(),
             target_state: RunItemTargetState::from_str(&kernel_config.target_state.as_str()).unwrap(),
             pkg_id: kernel_config.pkg_id.clone(),
             service_pkg: service_pkg,
@@ -70,11 +73,12 @@ impl RunItemControl for KernelServiceRunItem {
 
     async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
         let timestamp = buckyos_get_unix_timestamp();
+        let app_id = self.app_id.clone();
         let device_session_token = kRPC::RPCSessionToken {
             token_type: kRPC::RPCSessionTokenType::JWT,
             nonce: None,
             userid: Some(self.device_doc.name.clone()),
-            appid: Some("kernel".to_string()),
+            appid: Some(app_id),
             exp: Some(timestamp + 3600 * 24 * 7),
             iss: Some(self.device_doc.name.clone()),
             token: None,
@@ -90,8 +94,7 @@ impl RunItemControl for KernelServiceRunItem {
                 );
             })?;
 
-        let upper_name = self.pkg_id.to_uppercase();
-        let env_key = format!("{}_SESSION_TOKEN", upper_name);
+        let env_key = get_session_token_env_key(&self.app_id,false);;
         std::env::set_var(env_key.as_str(), device_session_token_jwt);
 
         let result = self.service_pkg

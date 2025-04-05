@@ -3,7 +3,9 @@
 import os
 import sys
 import json
-import platform
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts import util
 
 appid = None
 full_appid = None
@@ -173,8 +175,9 @@ def start_app():
     
     appid = sys.argv[1]
     username = sys.argv[2]
-    full_appid = f"{appid}-{username}"
-    app_token = os.getenv(f"{full_appid}_token")
+    full_appid = util.get_full_appid(appid, username)
+    app_token_env_key = util.get_session_token_env_key(full_appid, True)
+    app_token = os.getenv(app_token_env_key)
     app_instance_config_str = os.getenv("app_instance_config")
     media_info_str = os.getenv("app_media_info")
     zone_config_str = os.getenv(f"BUCKYOS_ZONE_CONFIG")
@@ -193,7 +196,7 @@ def start_app():
         device_doc = json.loads(device_doc_str)
 
     if app_token is None:
-        print(f"No configuration found for appid: {full_appid}")
+        print(f"No session token found for appid: {full_appid}")
         exit(1)
         
     if app_instance_config_str is None:
