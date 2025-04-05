@@ -141,6 +141,8 @@ async fn handle_create(params:Value,session_token:&RPCSessionToken) -> Result<Va
     info!("Create key:[{}] to value:[{}]",key,new_value);
     store.create(key,new_value).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
+    //if key is boot/config,will update trust_keys
+
     return Ok(Value::Null);
 }
 

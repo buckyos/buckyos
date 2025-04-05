@@ -141,23 +141,22 @@ async fn main() -> Result<(), String> {
                 )
         )
         .get_matches();
-
-    init_buckyos_api_by_load_config("buckyos-cli",BuckyOSRuntimeType::AppClient).await.map_err(|e| {
-        let err_msg = format!("init_global_buckyos_value_by_load_identity_configfailed! {}", e);
-        println!("{}", err_msg.as_str());
-        err_msg
+    
+    init_buckyos_api_runtime("buckyos-cli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
+        println!("Failed to init buckyos runtime: {}", e);
+        return e.to_string();
     })?;
 
     //TODO: Support login to verify-hub via command line to obtain a valid session_token, to avoid requiring a private key locally
-
-
-    let buckyos_runtime = get_buckyos_api_runtime().unwrap();
-    let _session_token = buckyos_runtime.generate_session_token().await.map_err(|e| {
-        println!("Failed to get session token: {}", e);
+    let mut buckyos_runtime = get_buckyos_api_runtime().unwrap();
+    let _session_token = buckyos_runtime.login().await.map_err(|e| {
+        println!("Failed to login: {}", e);
         return e.to_string();
     })?;
+
     let mut private_key = None;
-    println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id,buckyos_runtime.zone_config.name);
+    let zone_host_name = buckyos_runtime.zone_id.to_host_name();
+    println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id,zone_host_name);
     if buckyos_runtime.user_private_key.is_some() {
         println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
         private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));

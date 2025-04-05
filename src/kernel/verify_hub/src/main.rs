@@ -111,7 +111,7 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
 
     if kid.is_none() {
         //return verify_hub's public key
-        return load_trustkey_from_cache("{verify_hub}").await.ok_or(RPCErrors::ReasonError("Verify hub public key not found".to_string()));
+        return load_trustkey_from_cache("verify-hub").await.ok_or(RPCErrors::ReasonError("Verify hub public key not found".to_string()));
     }
 
     let kid = kid.as_ref().unwrap();
@@ -122,7 +122,7 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
 
     //not found in trustkey_cache, try load from system config service
     let result_key : DecodingKey;
-    if kid == "{owner}" {
+    if kid == "root" {
         //load zone config from system config service
         result_key = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap()
                         .zone_config.get_auth_key(None).ok_or(RPCErrors::ReasonError("Owner public key not found".to_string()))?;

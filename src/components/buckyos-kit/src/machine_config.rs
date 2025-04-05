@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
-
+use std::fs::File;
+use crate::get_buckyos_system_etc_dir;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub struct BuckyOSMachineConfig {
@@ -22,3 +23,18 @@ impl Default for BuckyOSMachineConfig {
     }
 }
 
+
+impl BuckyOSMachineConfig {
+    pub fn load_machine_config() -> Option<Self> {
+        let machine_config_path = get_buckyos_system_etc_dir().join("machine.json");
+        let machine_config_file = File::open(machine_config_path);
+        if machine_config_file.is_err() {
+            return None;
+        }
+        let machine_config  = serde_json::from_reader(machine_config_file.unwrap());
+        if machine_config.is_err() {
+            return None;
+        }
+        return Some(machine_config.unwrap());
+    }
+}

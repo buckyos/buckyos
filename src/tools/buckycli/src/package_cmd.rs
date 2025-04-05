@@ -2,7 +2,7 @@
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use jsonwebtoken::EncodingKey;
-use name_lib::decode_jwt_claim_without_verify;
+use name_lib::{decode_jwt_claim_without_verify, DIDDocumentTrait};
 use ndn_lib::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -179,7 +179,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
     // 1) First push_chunk
     let mut pkg_meta_jwt_map = HashMap::new();
     let runtime = get_buckyos_api_runtime().unwrap();
-    let zone_host_name = runtime.zone_config.name.clone().unwrap();
+    let zone_host_name = runtime.zone_config.as_ref().unwrap().get_id().to_host_name();
 
     let base_url = format!("http://{}/ndn/",zone_host_name.as_str());
     let ndn_client = NdnClient::new(base_url,None,None);

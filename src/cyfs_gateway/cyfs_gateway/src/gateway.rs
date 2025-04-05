@@ -16,6 +16,7 @@ use once_cell::sync::OnceCell;
 use tokio::sync::Mutex;
 use url::Url;
 use anyhow::Result;
+use buckyos_api::{*};
 pub struct GatewayParams {
     pub keep_tunnel: Vec<String>,
 }
@@ -51,16 +52,23 @@ impl Gateway {
     }
 
     pub async fn start(&self, params: GatewayParams) {
-        let init_result = self.init_device_keypair().await;
+        let init_result = self.load_device_keypair().await;
         if init_result.is_err() {
             error!("init device keypair failed, err:{}", init_result.err().unwrap());
             return;
         }
-        
-        if init_name_lib().await.is_err() {
-            error!("init default name client failed");
+        let mut real_machine_config = BuckyOSMachineConfig::default();
+        let machine_config = BuckyOSMachineConfig::load_machine_config();
+        if machine_config.is_some() {
+            real_machine_config = machine_config.unwrap();
+        }
+        let init_result = init_name_lib(&real_machine_config.web3_bridge).await;
+        if init_result.is_err() {
+            error!("init default name client failed, err:{}", init_result.err().unwrap());
             return;
         }
+        info!("init default name client OK!");
+        
         // Init tunnel manager
         self.init_tunnel_manager().await;
 
@@ -74,7 +82,7 @@ impl Gateway {
         self.start_dispatcher().await;
     }
 
-    async fn init_device_keypair(&self) -> Result<()> {
+    async fn load_device_keypair(&self) -> Result<()> {
         //get device private key from config
         // if not set,try load from default path
         let device_private_key_path;

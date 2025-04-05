@@ -164,7 +164,7 @@ impl GatewayConfig {
                             return Err(format!("Invalid sn config: {}", sn_config.err().unwrap()));
                         }
                         let sn_config = sn_config.unwrap();
-                        let sn_server = SNServer::new(Some(sn_config));
+                        let sn_server = SNServer::new(sn_config);
                         register_sn_server(server_id, sn_server.clone()).await;
                         info!("Register sn server: {:?}", server_id);
                         register_inner_service_builder(server_id, move || {

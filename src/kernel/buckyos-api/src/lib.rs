@@ -20,6 +20,8 @@ pub use control_panel::*;
 pub use scheduler_client::*;
 pub use verify_hub_client::*;
 pub use zone_provider::*;
+use std::fmt::format;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -49,228 +51,65 @@ pub enum BuckyOSRuntimeType {
 
 #[derive(Clone)]
 pub struct BuckyOSRuntime {
-    pub appid:String,
-    pub user_id:Option<String>,
-    pub buckyos_root_dir:PathBuf,
+    pub app_owner_id:Option<String>,
+    pub app_id:String,
     pub runtime_type:BuckyOSRuntimeType,
-    pub session_token:Arc<RwLock<String>>,
-    pub deivce_config:Option<DeviceConfig>,
-    pub zone_config:ZoneConfig,
-    pub device_private_key:Option<EncodingKey>,
+
+    pub user_id:Option<String>,
+    pub user_config:Option<OwnerConfig>,
     pub user_private_key:Option<EncodingKey>,
-    pub owner_user_config:Option<OwnerConfig>,
 
+    pub deivce_config:Option<DeviceConfig>, 
+    pub device_private_key:Option<EncodingKey>,
+
+    pub zone_id:DID,
+    pub zone_boot_config:Option<ZoneBootConfig>,
+
+    pub zone_config:Option<ZoneConfig>,
+    pub session_token:Arc<RwLock<String>>,
     trust_keys:Arc<RwLock<HashMap<String,DecodingKey>>>,
+    
+    pub buckyos_root_dir:PathBuf,
+    pub web3_bridges:HashMap<String,String>,
 }
 
-pub struct SystemInfo {
 
-}
-
-pub static CURRENT_USER_CONFIG:OnceCell<OwnerConfig> = OnceCell::new();
-pub static CURRENT_ZONE_CONFIG: OnceCell<ZoneConfig> = OnceCell::new();
-pub static INIT_APP_SESSION_TOKEN: OnceCell<String> = OnceCell::new();
-
-static CURRENT_BUCKYOS_RUNTIME:OnceCell<BuckyOSRuntime> = OnceCell::new();
-
-pub async fn init_global_buckyos_value_by_env(app_id: &str) -> Result<()> {
-    let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG");
-    if zone_config_str.is_err() {
-        warn!("BUCKYOS_ZONE_CONFIG not set");
-        return Err(RPCErrors::ReasonError("BUCKYOS_ZONE_CONFIG not set".to_string()));
-    }
-    let zone_config_str = zone_config_str.unwrap();
-    info!("zone_config_str:{}",zone_config_str);    
-    let zone_config = serde_json::from_str(zone_config_str.as_str());
-    if zone_config.is_err() {
-        warn!("zone_config_str format error");
-        return Err(RPCErrors::ReasonError("zone_config_str format error".to_string()));
-    }
-    let zone_config = zone_config.unwrap();
-    let set_result = CURRENT_ZONE_CONFIG.set(zone_config);
-    if set_result.is_err() {
-        warn!("Failed to set GLOBAL_ZONE_CONFIG");
-        return Err(RPCErrors::ReasonError("Failed to set GLOBAL_ZONE_CONFIG".to_string()));
-    }
-
+//pub static CURRENT_ZONE_CONFIG: OnceCell<ZoneConfig> = OnceCell::new();
+//pub static INIT_APP_SESSION_TOKEN: OnceCell<String> = OnceCell::new();
+pub static CURRENT_DEVICE_CONFIG: OnceCell<DeviceConfig> = OnceCell::new();
+pub fn try_load_current_device_config_from_env() -> NSResult<()> {
     let device_doc = env::var("BUCKYOS_THIS_DEVICE");
     if device_doc.is_err() {
-        warn!("BUCKY_DEVICE_DOC not set");
-        return Err(RPCErrors::ReasonError("BUCKY_DEVICE_DOC not set".to_string()));
+        return Err(NSError::NotFound("BUCKY_DEVICE_DOC not set".to_string()));
     }
     let device_doc = device_doc.unwrap();
-    info!("device_doc:{}",device_doc);
+
     let device_config= serde_json::from_str(device_doc.as_str());
     if device_config.is_err() {
-        warn!("device_doc format error");
-        return Err(RPCErrors::ReasonError("device_doc format error".to_string()));
+        warn!("parse device_doc format error");
+        return Err(NSError::Failed("device_doc format error".to_string()));
     }
     let device_config:DeviceConfig = device_config.unwrap();
-    let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
+    let set_result = CURRENT_DEVICE_CONFIG.set(device_config);
     if set_result.is_err() {
         warn!("Failed to set CURRENT_DEVICE_CONFIG");
-        return Err(RPCErrors::ReasonError("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
-    }
-    let upper_appid = app_id.to_uppercase();
-    let session_token_key = format!("{}_SESSION_TOKEN",upper_appid);
-    let session_token = env::var(session_token_key.as_str());
-    if session_token.is_err() {
-        warn!("{} not set",session_token_key);
-        return Err(RPCErrors::ReasonError("Failed to set CURRENT_SESSION_TOKEN".to_string()));
-    }
-    let session_token = session_token.unwrap();
-    let set_result = INIT_APP_SESSION_TOKEN.set(session_token.clone());
-    if set_result.is_err() {
-        warn!("Failed to set CURRENT_APP_SESSION_TOKEN");
-        return Err(RPCErrors::ReasonError("Failed to set CURRENT_SESSION_TOKEN".to_string()));
+        return Err(NSError::Failed("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
     }
     Ok(())
 }
 
-
-
-pub async fn init_buckyos_api_by_load_config(appid:&str,runtime_type:BuckyOSRuntimeType) -> Result<()> {
-    if CURRENT_BUCKYOS_RUNTIME.get().is_some() {
-        return Err(RPCErrors::ReasonError("BuckyOSRuntime already initialized".to_string()));
-    }
-    
-
-    init_name_lib().await
-        .map_err(|e| {
-            error!("Failed to init default name client: {}", e);
-            RPCErrors::ReasonError(format!("Failed to init default name client: {}", e))
-        })?;
-
-    let bucky_dev_user_home_dir = get_buckyos_dev_user_home();
-    let node_identity_file;
-    let user_config_file;
-    let device_private_key_file;
-    let mut user_private_key_file = None;
-    let zone_config_file;
-    let mut user_id:Option<String> = None;
-    let mut owner_user_config = None;
-    if bucky_dev_user_home_dir.exists() {
-        info!("dev folder exists: {}",bucky_dev_user_home_dir.to_string_lossy());
-        user_config_file = bucky_dev_user_home_dir.join("owner_config.json");
-        user_private_key_file = Some(bucky_dev_user_home_dir.join("user_private_key.pem"));
-        let owner_config = OwnerConfig::load_owner_config(&user_config_file)
-            .map_err(|e| {
-                error!("Failed to load owner config: {}", e);
-                RPCErrors::ReasonError(format!("Failed to load owner config: {}", e))
-            })?;
-        user_id = Some("root".to_string());
-        owner_user_config = Some(owner_config);
-
-        zone_config_file = bucky_dev_user_home_dir.join("zone_config.json");
-        node_identity_file = bucky_dev_user_home_dir.join("node_identity.json");
-        device_private_key_file = bucky_dev_user_home_dir.join("node_private_key.pem");
-
-    } else {
-        let etc_dir = get_buckyos_system_etc_dir();
-        node_identity_file = etc_dir.join("node_identity.json");
-        device_private_key_file = etc_dir.join("node_private_key.pem");
-        zone_config_file = etc_dir.join("zone_config.json");
-    }
-
-    let node_identity_config =  NodeIdentityConfig::load_node_identity_config(&node_identity_file)
-        .map_err(|e| {
-            error!("Failed to load node identity config: {}", e);
-            RPCErrors::ReasonError(format!("Failed to load node identity config: {}", e))
-        })?;
-    
-    
-    let device_config = decode_jwt_claim_without_verify(node_identity_config.device_doc_jwt.as_str())
-        .map_err(|e| {
-            error!("Failed to decode device config: {}", e);
-            RPCErrors::ReasonError(format!("Failed to decode device config: {}", e))
-        })?;
-
-    let devcie_config = serde_json::from_value::<DeviceConfig>(device_config);
-    if devcie_config.is_err() {
-        error!("Failed to parse device config: {}", devcie_config.err().unwrap());
-        return Err(RPCErrors::ReasonError(format!("Failed to parse device config from jwt: {}", node_identity_config.device_doc_jwt.as_str())));
-    }
-    let device_config = devcie_config.unwrap();
-    let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
-    if set_result.is_err() {
-        warn!("Failed to set CURRENT_DEVICE_CONFIG");
-        return Err(RPCErrors::ReasonError("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
-    }
-
-    if user_id.is_none() {
-        user_id = Some(device_config.name.clone());
-    }
-
-    let device_private_key;
-    let private_key = load_private_key(&device_private_key_file);
-    if private_key.is_ok() {
-        device_private_key = Some(private_key.unwrap());
-    } else {
-        device_private_key = None;
-    }
-
-    let mut user_private_key;
-    if user_private_key_file.is_some() {
-        let private_key = load_private_key(&user_private_key_file.unwrap());
-        if private_key.is_ok() {
-            user_private_key = Some(private_key.unwrap());
-        } else {
-            user_private_key = None;
-        }
-    } else {
-        user_private_key = None;
-    }
-
-    let mut zone_config;
-    if zone_config_file.exists() {
-        zone_config = ZoneConfig::load_zone_config(&zone_config_file)
-            .map_err(|e| {
-                error!("Failed to load zone config: {}", e);
-                RPCErrors::ReasonError(format!("Failed to load zone config: {}", e))
-            })?;
-        if zone_config.id != node_identity_config.zone_did {
-            return Err(RPCErrors::ReasonError("zone did not match".to_string()));
-        }
-    } else {
-        let mut zone_doc: EncodedDocument = resolve_did(&node_identity_config.zone_did,None).await.map_err(|err| {
-            error!("resolve zone did failed! {}", err);
-            return RPCErrors::ReasonError("resolve zone did failed!".to_string());
-        })?;
-       
-        let owner_public_key = DecodingKey::from_jwk(&node_identity_config.owner_public_key);
-        let mut zone_boot_config = ZoneBootConfig::decode(&zone_doc,None).map_err(|err| {
-            error!("parse zone boot config failed! {}", err);
-            return RPCErrors::ReasonError("parse zone boot config failed!".to_string());
-        })?;
-        zone_boot_config.owner = Some(node_identity_config.owner_did.clone());
-        zone_boot_config.id = Some(node_identity_config.zone_did.clone());
-        zone_boot_config.owner_key = Some(node_identity_config.owner_public_key.clone());
-        zone_config = zone_boot_config.to_zone_config();
-    }
-
-    let set_result = CURRENT_ZONE_CONFIG.set(zone_config.clone());
-    if set_result.is_err() {
-        warn!("Failed to set GLOBAL_ZONE_CONFIG");
-        return Err(RPCErrors::ReasonError("Failed to set GLOBAL_ZONE_CONFIG".to_string()));
-    }
-    
-    let runtime = BuckyOSRuntime {
-        appid: appid.to_string(),
-        user_id,
-        runtime_type,
-        session_token: Arc::new(RwLock::new("".to_string())),
-        buckyos_root_dir: get_buckyos_root_dir(),
-        zone_config: zone_config,
-        deivce_config: Some(device_config),
-        device_private_key: device_private_key,
-        user_private_key: user_private_key,
-        owner_user_config: owner_user_config,
-        trust_keys: Arc::new(RwLock::new(HashMap::new())),
-    };
-    CURRENT_BUCKYOS_RUNTIME.set(runtime);
-    Ok(())
+static CURRENT_BUCKYOS_RUNTIME:OnceCell<BuckyOSRuntime> = OnceCell::new();
+pub fn get_buckyos_api_runtime() -> Result<BuckyOSRuntime> {
+    let runtime = CURRENT_BUCKYOS_RUNTIME.get().unwrap();
+    Ok(runtime.clone())
 }
 
+pub fn get_full_appid(app_id: &str,owner_user_id: &str) -> String {
+    if owner_user_id == "root" {
+        return app_id.to_string();
+    }
+    format!("{}-{}",app_id,owner_user_id)
+}
 pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,runtime_type:BuckyOSRuntimeType) -> Result<()> {
     if CURRENT_BUCKYOS_RUNTIME.get().is_some() {
         return Err(RPCErrors::ReasonError("BuckyOSRuntime already initialized".to_string()));
@@ -287,150 +126,360 @@ pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,r
         }
     }
 
-    init_name_lib().await
-    .map_err(|e| {
-        error!("Failed to init default name client: {}", e);
-        RPCErrors::ReasonError(format!("Failed to init default name client: {}", e))
-    })?;
-
-    let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG");
-    if zone_config_str.is_err() {
-        warn!("BUCKYOS_ZONE_CONFIG not set");
-        return Err(RPCErrors::ReasonError("BUCKYOS_ZONE_CONFIG not set".to_string()));
-    }
-    let zone_config_str = zone_config_str.unwrap();
-    info!("zone_config_str:{}",zone_config_str);    
-    let zone_config = serde_json::from_str(zone_config_str.as_str());
-    if zone_config.is_err() {
-        warn!("zone_config_str format error");
-        return Err(RPCErrors::ReasonError("zone_config_str format error".to_string()));
-    }
-    let zone_config = zone_config.unwrap();
-    let set_result = CURRENT_ZONE_CONFIG.set(zone_config);
-    if set_result.is_err() {
-        warn!("Failed to set GLOBAL_ZONE_CONFIG");
-        return Err(RPCErrors::ReasonError("Failed to set GLOBAL_ZONE_CONFIG".to_string()));
-    }
-
-    let device_doc = env::var("BUCKYOS_THIS_DEVICE");
-    if device_doc.is_err() {
-        warn!("BUCKY_DEVICE_DOC not set");
-        return Err(RPCErrors::ReasonError("BUCKY_DEVICE_DOC not set".to_string()));
-    }
-    let device_doc = device_doc.unwrap();
-    info!("device_doc:{}",device_doc);
-    let device_config= serde_json::from_str(device_doc.as_str());
-    if device_config.is_err() {
-        warn!("device_doc format error");
-        return Err(RPCErrors::ReasonError("device_doc format error".to_string()));
-    }
-    let device_config:DeviceConfig = device_config.unwrap();
-    let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
-    if set_result.is_err() {
-        warn!("Failed to set CURRENT_DEVICE_CONFIG");
-        return Err(RPCErrors::ReasonError("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
-    }
-    let upper_appid = app_id.to_uppercase();
-    let session_token_key = format!("{}_SESSION_TOKEN",upper_appid);
-    let session_token = env::var(session_token_key.as_str());
-    if session_token.is_err() {
-        warn!("{} not set",session_token_key);
-        return Err(RPCErrors::ReasonError("Failed to set CURRENT_SESSION_TOKEN".to_string()));
-    }
-    let session_token = session_token.unwrap();
-    let set_result = INIT_APP_SESSION_TOKEN.set(session_token.clone());
-    if set_result.is_err() {
-        warn!("Failed to set CURRENT_APP_SESSION_TOKEN");
-        return Err(RPCErrors::ReasonError("Failed to set CURRENT_SESSION_TOKEN".to_string()));
-    }
-
-    let zone_config = CURRENT_ZONE_CONFIG.get().unwrap();
-    let runtime = BuckyOSRuntime {
-        appid: app_id.to_string(),
-        user_id: owner_user_id,
-        runtime_type,
-        session_token: Arc::new(RwLock::new(session_token)),
-        buckyos_root_dir: get_buckyos_root_dir(),
-        zone_config: zone_config.clone(),
-        deivce_config: Some(device_config),
-        device_private_key: None,
-        user_private_key: None,
-        owner_user_config: None,
-        trust_keys: Arc::new(RwLock::new(HashMap::new())),
-    };
+    let mut runtime = BuckyOSRuntime::new(app_id,owner_user_id,runtime_type);
+    runtime.fill_by_load_config().await?;
+    runtime.fill_by_env_var().await?;
     CURRENT_BUCKYOS_RUNTIME.set(runtime);
     Ok(())
 }
 
-pub fn get_buckyos_api_runtime() -> Result<BuckyOSRuntime> {
-    let runtime = CURRENT_BUCKYOS_RUNTIME.get().unwrap();
-    Ok(runtime.clone())
-}
-
 
 impl BuckyOSRuntime {
-    
-    //login to verify hub. 
-    pub async fn login(&mut self, login_params:Option<Value>,login_config:Option<Value>) -> Result<RPCSessionToken> {
-        let real_session_token; 
-        match self.runtime_type {
-            BuckyOSRuntimeType::AppClient => {
-                unimplemented!()
+
+    pub fn new(app_id: &str,app_owner_user_id: Option<String>,runtime_type: BuckyOSRuntimeType) -> Self {
+        let runtime = BuckyOSRuntime {
+            app_id: app_id.to_string(),
+            app_owner_id: app_owner_user_id,
+            user_id: None,
+            runtime_type,
+            session_token: Arc::new(RwLock::new("".to_string())),
+            buckyos_root_dir: get_buckyos_root_dir(),
+            zone_config: None,
+            deivce_config: None,
+            device_private_key: None,
+            user_private_key: None,
+            user_config: None,
+            zone_id: DID::undefined(),
+            zone_boot_config: None,
+            trust_keys: Arc::new(RwLock::new(HashMap::new())),
+            web3_bridges: HashMap::new(),
+        };
+        runtime
+    }
+
+    pub async fn fill_by_env_var(&mut self) -> Result<()> {
+
+        // let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG");
+        // if zone_config_str.is_err() {
+        //     warn!("BUCKYOS_ZONE_CONFIG not set");
+        //     return Err(RPCErrors::ReasonError("BUCKYOS_ZONE_CONFIG not set".to_string()));
+        // }
+        // let zone_config_str = zone_config_str.unwrap();
+        // info!("zone_config_str:{}",zone_config_str);    
+        // let zone_config = serde_json::from_str(zone_config_str.as_str());
+        // if zone_config.is_err() {
+        //     warn!("zone_config_str format error");
+        //     return Err(RPCErrors::ReasonError("zone_config_str format error".to_string()));
+        // }
+        // let zone_config = zone_config.unwrap();
+        // let set_result = CURRENT_ZONE_CONFIG.set(zone_config);
+        // if set_result.is_err() {
+        //     warn!("Failed to set GLOBAL_ZONE_CONFIG");
+        //     return Err(RPCErrors::ReasonError("Failed to set GLOBAL_ZONE_CONFIG".to_string()));
+        // }
+
+        let zone_boot_config = env::var("BUCKYOS_ZONE_BOOT_CONFIG");
+        if zone_boot_config.is_ok() {
+            let zone_boot_config:ZoneBootConfig = serde_json::from_str(zone_boot_config.unwrap().as_str())
+                .map_err(|e| {
+                    error!("Failed to parse zone boot config: {}", e);
+                    RPCErrors::ReasonError(format!("Failed to parse zone boot config: {}", e))
+                })?;
+            if zone_boot_config.id.is_none() {
+                return Err(RPCErrors::ReasonError("zone_boot_config id is not set".to_string()));
             }
-            _ => {
-                let current_session_token = self.session_token.read().await;
-                if current_session_token.is_empty() {
-                    return Err(RPCErrors::ReasonError("Session token not exists".to_string()));
-                } 
-                real_session_token = RPCSessionToken::from_string(current_session_token.clone().as_str())?;
-                drop(current_session_token);
+            
+            self.zone_id = zone_boot_config.id.clone().unwrap();
+            self.zone_boot_config = Some(zone_boot_config);
+        }
+    
+        let device_doc = env::var("BUCKYOS_THIS_DEVICE");
+        if device_doc.is_ok() {
+            let device_doc = device_doc.unwrap();
+            info!("device_doc:{}",device_doc);
+            let device_config= serde_json::from_str(device_doc.as_str());
+            if device_config.is_err() {
+                warn!("device_doc format error");
+                return Err(RPCErrors::ReasonError("device_doc format error".to_string()));
+            }
+            let device_config:DeviceConfig = device_config.unwrap();
+            self.deivce_config = Some(device_config.clone());
+            let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
+            if set_result.is_err() {
+                warn!("Failed to set CURRENT_DEVICE_CONFIG");
+                return Err(RPCErrors::ReasonError("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
             }
         }
-       
+
+        let session_token_key;
+        if self.runtime_type == BuckyOSRuntimeType::KernelService || 
+           self.runtime_type == BuckyOSRuntimeType::FrameService {
+            let upper_appid = self.app_id.to_uppercase();
+            session_token_key = format!("{}_SESSION_TOKEN",upper_appid);
+        } else {
+            session_token_key = format!("{}_token",self.get_full_appid());
+            
+        }
+
+        let session_token = env::var(session_token_key.as_str());
+        if session_token.is_ok() {
+            let mut this_session_token = self.session_token.write().await;
+            *this_session_token = session_token.unwrap();
+        }
+
+        Ok(())
+    }
+
+    pub async fn fill_by_load_config(&mut self) -> Result<()> {
+        let mut config_root_dir = None;
+        if self.runtime_type == BuckyOSRuntimeType::AppClient {
+            let bucky_dev_user_home_dir = get_buckyos_dev_user_home();
+            if bucky_dev_user_home_dir.exists() {
+                info!("dev folder exists: {}",bucky_dev_user_home_dir.to_string_lossy());
+                config_root_dir = Some(bucky_dev_user_home_dir);
+            } 
+        } 
+
+        if config_root_dir.is_none() {
+            let etc_dir = get_buckyos_system_etc_dir();
+            config_root_dir = Some(etc_dir);
+        }
+        
+
+        // //使用当前当前执行文件的目录作为配置根目录主要是为了兼容cyfs-gateway,可以不支持？
+        // let exe_path = std::env::current_exe()
+        // .map_err(|e| {
+        //     error!("cannot get exe path: {}", e);
+        //     RPCErrors::ReasonError(format!("cannot get exe path: {}", e))
+        // })?;
+        // let exe_dir = exe_path.parent()
+        //     .ok_or_else(|| {
+        //         let err_msg = "cannot get exe path";
+        //         error!("{}", err_msg);
+        //         RPCErrors::ReasonError(err_msg.to_string())
+        //     })?;
+        // config_root_dir = Some(exe_dir.to_path_buf());
+
+        if config_root_dir.is_none() {
+            return Err(RPCErrors::ReasonError("config_root_dir is not set".to_string()));
+        }
+        let config_root_dir = config_root_dir.unwrap();
+        if !config_root_dir.exists() {
+            error!("config_root_dir not exists: {}, init buckyos runtime config would failed!",
+                config_root_dir.to_string_lossy());
+            return Err(RPCErrors::ReasonError("config_root_dir not exists".to_string()));
+        }
+        info!("will use config_root_dir: {} to load buckyos runtime config", 
+            config_root_dir.to_string_lossy());
+    
+        let node_identity_file = config_root_dir.join("node_identity.json");
+        let device_private_key_file = config_root_dir.join("node_private_key.pem");
+        let machine_config_file = config_root_dir.join("machine_config.json");
+
+        let node_identity_config =  NodeIdentityConfig::load_node_identity_config(&node_identity_file)
+        .map_err(|e| {
+            error!("Failed to load node identity config: {}", e);
+            RPCErrors::ReasonError(format!("Failed to load node identity config: {}", e))
+        })?;
+    
+        let device_config = decode_jwt_claim_without_verify(node_identity_config.device_doc_jwt.as_str())
+            .map_err(|e| {
+                error!("Failed to decode device config: {}", e);
+                RPCErrors::ReasonError(format!("Failed to decode device config: {}", e))
+            })?;
+
+        let devcie_config = serde_json::from_value::<DeviceConfig>(device_config);
+        if devcie_config.is_err() {
+            error!("Failed to parse device config: {}", devcie_config.err().unwrap());
+            return Err(RPCErrors::ReasonError(format!("Failed to parse device config from jwt: {}", node_identity_config.device_doc_jwt.as_str())));
+        }
+        let device_config = devcie_config.unwrap();
+        let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
+        if set_result.is_err() {
+            warn!("Failed to set CURRENT_DEVICE_CONFIG");
+            return Err(RPCErrors::ReasonError("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
+        }
+
+        let device_private_key;
+        let private_key = load_private_key(&device_private_key_file);
+        if private_key.is_ok() {
+            device_private_key = Some(private_key.unwrap());
+        } else {
+            device_private_key = None;
+        }
+
+        //let zone_config_file;
+        if self.runtime_type == BuckyOSRuntimeType::AppClient {
+            let user_config_file = config_root_dir.join("user_config.json");
+            let user_private_key_file = config_root_dir.join("user_private_key.pem");
+            let owner_config = OwnerConfig::load_owner_config(&user_config_file)
+                .map_err(|e| {
+                    error!("Failed to load owner config: {}", e);
+                    RPCErrors::ReasonError(format!("Failed to load owner config: {}", e))
+                })?;
+            self.user_id = Some(owner_config.name.clone());
+            self.user_config = Some(owner_config);
+            
+            let private_key = load_private_key(&user_private_key_file);
+            if private_key.is_ok() {
+                self.user_private_key = Some(private_key.unwrap());
+            } 
+        }
+        let zone_did = node_identity_config.zone_did.clone();
+        self.zone_id = zone_did.clone();
+        let zone_config_file = config_root_dir.join(format!("{}.zone.json",zone_did.to_host_name()));
+        if zone_config_file.exists() {
+            let zone_config = ZoneConfig::load_zone_config(&zone_config_file)
+                .map_err(|e| {
+                    error!("Failed to load zone config: {}", e);
+                    RPCErrors::ReasonError(format!("Failed to load zone config: {}", e))
+                })?;
+            if zone_config.id != node_identity_config.zone_did {
+                return Err(RPCErrors::ReasonError("zone did not match".to_string()));
+            }
+            self.zone_config = Some(zone_config);
+        }
+
+        let mut machine_config = BuckyOSMachineConfig::default();
+        if machine_config_file.exists() {
+            let machine_config_file = File::open(machine_config_file);
+            if machine_config_file.is_ok() {
+                let machine_config_json = serde_json::from_reader(machine_config_file.unwrap());
+                if machine_config_json.is_ok() {
+                    machine_config = machine_config_json.unwrap();
+                } else {
+                    error!("Failed to parse machine_config: {}", machine_config_json.err().unwrap());
+                    return Err(RPCErrors::ReasonError(format!("Failed to parse machine_config ")));
+                }
+            } 
+        }
+        self.web3_bridges = machine_config.web3_bridge;
+
+        // } else {
+        //     let mut zone_doc: EncodedDocument = resolve_did(&node_identity_config.zone_did,None).await.map_err(|err| {
+        //         error!("resolve zone did failed! {}", err);
+        //         return RPCErrors::ReasonError("resolve zone did failed!".to_string());
+        //     })?;
+           
+        //     let owner_public_key = DecodingKey::from_jwk(&node_identity_config.owner_public_key);
+        //     let mut zone_boot_config = ZoneBootConfig::decode(&zone_doc,None).map_err(|err| {
+        //         error!("parse zone boot config failed! {}", err);
+        //         return RPCErrors::ReasonError("parse zone boot config failed!".to_string());
+        //     })?;
+        //     zone_boot_config.owner = Some(node_identity_config.owner_did.clone());
+        //     zone_boot_config.id = Some(node_identity_config.zone_did.clone());
+        //     zone_boot_config.owner_key = Some(node_identity_config.owner_public_key.clone());
+        //     zone_config = zone_boot_config.to_zone_config();
+        // }
+        
+
+        Ok(())
+    }
+
+    pub async fn login(&mut self) -> Result<RPCSessionToken> {
+        if !self.zone_id.is_valid() {
+            return Err(RPCErrors::ReasonError("Zone id is not valid,api-runtime.login failed".to_string()));
+        }
+
+        let mut real_session_token; 
+        if self.app_id.is_empty() || self.user_id.is_none() {
+            return Err(RPCErrors::ReasonError("App id or user id is not set".to_string()));
+        }
+
+        if self.runtime_type == BuckyOSRuntimeType::FrameService || self.runtime_type == BuckyOSRuntimeType::KernelService {
+            if self.deivce_config.is_none() {
+                return Err(RPCErrors::ReasonError("Device config is not set!".to_string()));
+            }
+        }
+        init_name_lib(&self.web3_bridges).await;
+        let mut session_token = self.session_token.write().await;
+        if session_token.is_empty() {
+            info!("api-runtime: session token is empty,runtime_type:{:?},try to create session token by known private key",self.runtime_type);
+            if self.runtime_type == BuckyOSRuntimeType::AppClient {
+                if self.user_private_key.is_some() && self.user_config.is_some() {
+                    let (session_token_str,real_session_token) = RPCSessionToken::generate_jwt_token(
+                        self.user_id.as_ref().unwrap(),
+                        self.app_id.as_str(),
+                        Some(self.user_config.as_ref().unwrap().id.to_string()),
+                        self.user_private_key.as_ref().unwrap()
+                    )?;
+                    *session_token = session_token_str;
+                }
+                if self.device_private_key.is_some() && self.deivce_config.is_some() {
+                    let (session_token_str,real_session_token) = RPCSessionToken::generate_jwt_token(
+                        self.user_id.as_ref().unwrap(),
+                        self.app_id.as_str(),
+                        Some(self.deivce_config.as_ref().unwrap().name.clone()),
+                        self.device_private_key.as_ref().unwrap()
+                    )?;
+                    *session_token = session_token_str;
+                }
+
+                if session_token.is_empty() {
+                    return Err(RPCErrors::ReasonError("No private key found".to_string()));
+                }
+            }
+            return Err(RPCErrors::ReasonError("No private key found".to_string()));
+        } else {
+            info!("api-runtime: session token is set,runtime_type:{:?},check and use current session token",self.runtime_type);
+            real_session_token = RPCSessionToken::from_string(session_token.as_str())?;
+            let appid = real_session_token.appid.clone().unwrap_or("kernel".to_string());
+            if appid != self.app_id || real_session_token.userid != self.user_id {
+                return Err(RPCErrors::ReasonError("Session token is not valid".to_string()));
+            }
+
+            // let trust_keys = self.trust_keys.read().await;
+            // real_session_token.verify_by_key_map(&trust_keys).map_err(|e| {
+            //     error!("api-runtime: session token is set,runtime_type:{:?},check and use current session token failed:{}",self.runtime_type,e);
+            //     RPCErrors::ReasonError(format!("session token is set,runtime_type:{:?},check and use current session token failed:{}",self.runtime_type,e))
+            // })?;
+        }
+        drop(session_token);
+
+        
+        //session token already set, try to connect to control-panel and get zone config
         let control_panel_client = self.get_control_panel_client().await?;
         let zone_config = control_panel_client.load_zone_config().await?;
-        //self.zone_config = Some(zone_config);
-        //CURRENT_ZONE_CONFIG.set(self.zone_config.clone().unwrap());
-
+        self.zone_config = Some(zone_config); 
         Ok(real_session_token)
     }
 
-    pub async fn generate_session_token(&self) -> Result<String> {
-        if self.session_token.read().await.is_empty() {
-            if self.user_private_key.is_some() {
-                let session_token = RPCSessionToken::generate_jwt_token(
-                    self.user_id.as_ref().unwrap(),
-                    self.appid.as_str(),
-                    self.user_id.clone(),
-                    self.user_private_key.as_ref().unwrap()
-                )?;
-                let mut session_token_guard = self.session_token.write().await;
-                *session_token_guard = session_token.clone();
-                return Ok(session_token);
-            } else if self.device_private_key.is_some() {
-                if self.deivce_config.is_none() {
-                    return Err(RPCErrors::ReasonError("Device config not set".to_string()));
-                }
-                if self.device_private_key.is_none() {
-                    return Err(RPCErrors::ReasonError("Device private key not set".to_string()));
-                }
-                let device_uid= self.deivce_config.as_ref().unwrap().name.clone();
-                let session_token = RPCSessionToken::generate_jwt_token(
-                    device_uid.as_str(),
-                    self.appid.as_str(),
-                    Some(device_uid.clone()),
-                    self.device_private_key.as_ref().unwrap()
-                )?;
-                let mut session_token_guard = self.session_token.write().await;
-                *session_token_guard = session_token.clone();
-                return Ok(session_token);
-            } else {
-                return Err(RPCErrors::ReasonError("No private key found".to_string()));
-            }
-        } else {
-            return Ok(self.session_token.read().await.clone());
-        }
-    }
+    // pub async fn generate_session_token(&self) -> Result<String> {
+    //     if self.session_token.read().await.is_empty() {
+    //         if self.user_private_key.is_some() {
+    //             let session_token = RPCSessionToken::generate_jwt_token(
+    //                 self.user_id.as_ref().unwrap(),
+    //                 self.app_id.as_str(),
+    //                 self.user_id.clone(),
+    //                 self.user_private_key.as_ref().unwrap()
+    //             )?;
+    //             let mut session_token_guard = self.session_token.write().await;
+    //             *session_token_guard = session_token.clone();
+    //             return Ok(session_token);
+    //         } else if self.device_private_key.is_some() {
+    //             if self.deivce_config.is_none() {
+    //                 return Err(RPCErrors::ReasonError("Device config not set".to_string()));
+    //             }
+    //             if self.device_private_key.is_none() {
+    //                 return Err(RPCErrors::ReasonError("Device private key not set".to_string()));
+    //             }
+    //             let device_uid= self.deivce_config.as_ref().unwrap().name.clone();
+    //             let session_token = RPCSessionToken::generate_jwt_token(
+    //                 device_uid.as_str(),
+    //                 self.app_id.as_str(),
+    //                 Some(device_uid.clone()),
+    //                 self.device_private_key.as_ref().unwrap()
+    //             )?;
+    //             let mut session_token_guard = self.session_token.write().await;
+    //             *session_token_guard = session_token.clone();
+    //             return Ok(session_token);
+    //         } else {
+    //             return Err(RPCErrors::ReasonError("No private key found".to_string()));
+    //         }
+    //     } else {
+    //         return Ok(self.session_token.read().await.clone());
+    //     }
+    // }
 
     pub async fn remove_trust_key(&self,kid: &str) -> Result<()> {
         let mut key_map = self.trust_keys.write().await;
@@ -438,6 +487,44 @@ impl BuckyOSRuntime {
         if remove_result.is_none() {
             return Err(RPCErrors::ReasonError(format!("kid {} not found",kid)));
         }
+        Ok(())
+    }
+
+    async fn refresh_trust_keys(&self) -> Result<()> {
+        //zone_config 中包含trust_keys
+        //从当前device_config中获取trust_keys
+        if self.deivce_config.is_some() {
+            let device_config = self.deivce_config.as_ref().unwrap();
+            let device_key = device_config.get_auth_key(None);
+            if device_key.is_some() {
+                let kid = device_config.get_id().to_string();
+                let key = device_key.as_ref().unwrap().clone();
+                self.set_trust_key(kid.as_str(),&key).await;
+
+                let kid = device_config.name.clone();
+                self.set_trust_key(kid.as_str(),&key).await;
+            }
+        }
+
+        if self.zone_config.is_some() {
+            let zone_config = self.zone_config.as_ref().unwrap();
+            let trust_key = zone_config.get_auth_key(None);
+            if trust_key.is_some() {
+                let kid = "root".to_string();
+                let key = trust_key.as_ref().unwrap();
+                self.set_trust_key(kid.as_str(),key).await;
+            }
+
+            if zone_config.verify_hub_info.is_some() {
+                let verify_hub_info = zone_config.verify_hub_info.as_ref().unwrap();
+                let kid = "verify-hub".to_string();
+                let key = DecodingKey::from_jwk(&verify_hub_info.public_key);
+                if key.is_ok() {
+                    self.set_trust_key(kid.as_str(),&key.unwrap()).await;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -511,75 +598,96 @@ impl BuckyOSRuntime {
    }
 
     pub fn get_app_id(&self) -> String {
-        self.appid.clone()
+        self.app_id.clone()
     }
 
     pub fn get_owner_user_id(&self) -> Option<String> {
-        self.user_id.clone()
+        self.app_owner_id.clone()
     }
+
+    pub fn get_zone_config(&self) -> Option<&ZoneConfig> {
+        self.zone_config.as_ref()
+    }
+
+    //use https://full_appid.zonehost/ to access the app
+    pub fn get_full_appid(&self) -> String {
+        if self.runtime_type == BuckyOSRuntimeType::AppClient {
+            let owner_id = self.app_owner_id.as_ref().unwrap();
+            if owner_id == "root" {
+                return self.app_id.clone();
+            }
+            return format!("{}-{}",self.app_id.as_str(),owner_id);
+        } else {
+            return self.app_id.clone();
+        }
+    }
+
 
     pub async fn get_session_token(&self) -> String {
         let session_token = self.session_token.read().await;
         session_token.clone()
     }
 
-    pub async fn get_system_info(&self) -> Result<SystemInfo> {
-        unimplemented!()
-    }
-
-
-    pub fn get_my_data_folder(&self) -> PathBuf {
+    pub fn get_data_folder(&self) -> PathBuf {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
                 //返回 
-               unimplemented!()
+               panic!("AppClient not support get_data_folder");
             }
             BuckyOSRuntimeType::AppService => {
                 //返回 
-                return self.buckyos_root_dir.join("data").join(self.user_id.clone().unwrap()).join(self.appid.clone());
+                return self.buckyos_root_dir.join("data").join(self.user_id.clone().unwrap()).join(self.app_id.clone());
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
-                return self.buckyos_root_dir.join("data").join(self.appid.clone());     //返回 
+                return self.buckyos_root_dir.join("data").join(self.app_id.clone());     //返回 
             }
         }
     }
 
-    pub fn get_my_cache_folder(&self) -> PathBuf {
+    pub fn get_cache_folder(&self) -> PathBuf {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
                 //返回 
-               unimplemented!()
+                panic!("AppClient not support get_cache_folder");
             }
             BuckyOSRuntimeType::AppService => {
                 //返回 
-                return self.buckyos_root_dir.join("cache").join(self.user_id.clone().unwrap()).join(self.appid.clone());
+                return self.buckyos_root_dir.join("cache").join(self.user_id.clone().unwrap()).join(self.app_id.clone());
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
-                return self.buckyos_root_dir.join("cache").join(self.appid.clone());     //返回 
+                return self.buckyos_root_dir.join("cache").join(self.app_id.clone());     //返回 
             }
         }
     }
 
-    pub fn get_my_local_cache_folder(&self) -> PathBuf {
+    pub fn get_local_cache_folder(&self) -> PathBuf {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
                 //返回 
-               unimplemented!()
+               panic!("AppClient not support get_local_cache_folder");
             }
             BuckyOSRuntimeType::AppService => {
-                //返回 
-                return self.buckyos_root_dir.join("tmp").join(self.user_id.clone().unwrap()).join(self.appid.clone());
+                return self.buckyos_root_dir.join("tmp").join(self.user_id.clone().unwrap()).join(self.app_id.clone());
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
-                return self.buckyos_root_dir.join("tmp").join(self.appid.clone());     //返回 
+                return self.buckyos_root_dir.join("tmp").join(self.app_id.clone());     
             }
         }
     }
 
     // 获得与物理逻辑磁盘绑定的本地存储目录，存储的可靠性和特性由物理磁盘决定
     //目录原理上是  disk_id/service_instance_id/
-    pub fn get_lcoal_storage_folder(&self,disk_id: &str) -> PathBuf {
-        unimplemented!()
+    pub fn get_lcoal_storage_folder(&self,disk_id: Option<String>) -> PathBuf {
+        if self.runtime_type == BuckyOSRuntimeType::KernelService || self.runtime_type == BuckyOSRuntimeType::FrameService {
+            if disk_id.is_some() {
+                let disk_id = disk_id.unwrap();
+                return self.buckyos_root_dir.join("local").join(disk_id).join(self.app_id.clone());
+            } else {
+                return self.buckyos_root_dir.join("local").join(self.app_id.clone());
+            }
+        } else {
+            panic!("This runtime type not support get_lcoal_storage_folder");
+        }
     }
 
     pub fn get_root_pkg_env_path() -> PathBuf {
@@ -589,18 +697,16 @@ impl BuckyOSRuntime {
     fn get_my_settings_path(&self) -> String {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
-                unimplemented!()
+                panic!("AppClient not support get_my_settings_path");
             }
             BuckyOSRuntimeType::AppService => {
-                format!("users/{}/apps/{}/settings",self.user_id.as_ref().unwrap(),self.appid.as_str())
+                format!("users/{}/apps/{}/settings",self.user_id.as_ref().unwrap(),self.app_id.as_str())
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
-                format!("services/{}/settings",self.appid.as_str())
+                format!("services/{}/settings",self.app_id.as_str())
             }
         }
     }
-
-
 
     pub async fn get_my_settings(&self) -> Result<serde_json::Value> {
         let system_config_client = self.get_system_config_client().await?;
@@ -652,13 +758,13 @@ impl BuckyOSRuntime {
     pub fn get_my_sys_config_path(&self,config_name: &str) -> String {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
-                format!("users/{}/apps/{}/{}",self.user_id.as_ref().unwrap(),self.appid.as_str(),config_name)
+                format!("users/{}/apps/{}/{}",self.user_id.as_ref().unwrap(),self.app_id.as_str(),config_name)
             }
             BuckyOSRuntimeType::AppService => {
-                format!("users/{}/apps/{}/{}",self.user_id.as_ref().unwrap(),self.appid.as_str(),config_name)
+                format!("users/{}/apps/{}/{}",self.user_id.as_ref().unwrap(),self.app_id.as_str(),config_name)
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
-                format!("services/{}/{}",self.appid.as_str(),config_name)
+                format!("services/{}/{}",self.app_id.as_str(),config_name)
             }
         }
     }
@@ -713,7 +819,7 @@ impl BuckyOSRuntime {
         };
 
 
-        let host_name = self.zone_config.get_id().to_host_name();
+        let host_name = self.zone_config.as_ref().unwrap().get_id().to_host_name();
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
                 return Ok(format!("{}://{}/kapi/{}",schema,host_name,service_name));
@@ -722,6 +828,8 @@ impl BuckyOSRuntime {
                 return Ok(format!("http://127.0.0.1/kapi/{}",service_name));
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
+                //TODO:根据system config上的信息，得到更合适的host
+
                 let service_port = match service_name.as_str() {
                     "system_config" => 3200,
                     "verify_hub" => 3300,
@@ -744,4 +852,3 @@ impl BuckyOSRuntime {
         Ok(client)
     }   
 }
-

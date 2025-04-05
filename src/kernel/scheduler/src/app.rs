@@ -89,7 +89,7 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
             app_prefix = format!("{}.*",app_id);
         } else {
             if user_owner_domain.is_none() {
-                app_prefix = format!("{}_{}.*",app_id,user_id);
+                app_prefix = format!("{}-{}.*",app_id,user_id);
             } else {
                 app_prefix = format!("{}.{}",app_id,user_owner_domain.as_ref().unwrap());
             }

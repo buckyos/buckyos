@@ -15,6 +15,7 @@ use std::str::FromStr;
 use lazy_static::lazy_static;
 use jsonwebtoken::DecodingKey;
 use crate::sn_db::{self, *};
+use buckyos_api::CURRENT_DEVICE_CONFIG;
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
 pub struct SNServerConfig {
@@ -43,7 +44,7 @@ pub struct SNServer {
 }
 
 impl SNServer {
-    pub fn new(server_config:Option<SNServerConfig>) -> Self {
+    pub fn new(server_config:SNServerConfig) -> Self {
         let conn = get_sn_db_conn();
         if conn.is_ok() {
             let conn = conn.unwrap();
@@ -53,10 +54,6 @@ impl SNServer {
             panic!("Failed to open sn_db.sqlite3");
         }
 
-        let mut server_host = "web3.buckyos.io".to_string();
-        let mut server_ip:IpAddr = IpAddr::V4(Ipv4Addr::new(127,0,0,1));
-        let mut zone_config = "".to_string();
-        let mut zone_config_pkx = "".to_string();
         let mut device_list: Option<Vec<String>> = None;
         let current_device_config = CURRENT_DEVICE_CONFIG.get();
         if current_device_config.is_some() {
@@ -64,14 +61,12 @@ impl SNServer {
             device_list = Some(vec![current_device_config.get_id().to_string()]);
         } 
 
-        if server_config.is_some() {
-            let server_config = server_config.unwrap();
-            server_host = server_config.host;
-            server_ip = IpAddr::from_str(server_config.ip.as_str()).unwrap();
-            //TODO:需要改进
-            zone_config = server_config.zone_config_jwt;
-            zone_config_pkx = server_config.zone_config_pkx;
-        } 
+        let server_host = server_config.host;
+        let server_ip = IpAddr::from_str(server_config.ip.as_str()).unwrap();
+        //TODO:需要改进
+        let zone_config = server_config.zone_config_jwt;
+        let zone_config_pkx = server_config.zone_config_pkx;
+         
 
         SNServer {
             all_device_info:Arc::new(Mutex::new(HashMap::new())),

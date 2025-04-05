@@ -17,6 +17,7 @@ use buckyos_api::*;
 use scheduler::*;
 use service::*;
 use app::*;
+use buckyos_api::*;
 
 use anyhow::Result;
 
@@ -399,12 +400,15 @@ async fn schedule_loop(is_boot:bool) -> Result<()> {
 
 }
 
-
 async fn service_main(is_boot:bool) -> Result<i32> {
     init_logging("scheduler",true);
     info!("Starting scheduler service............................");
-    init_global_buckyos_value_by_env("SCHEDULER");
-    let _ =init_name_lib().await;
+    init_buckyos_api_runtime("scheduler",None,BuckyOSRuntimeType::KernelService).await
+        .map_err(|e| {
+            error!("init_buckyos_api_runtime failed: {:?}", e);
+            e
+        })?;
+
     if is_boot {
         info!("do_boot_scheduler,scheduler run once");
         do_boot_scheduler().await.map_err(|e| {
@@ -412,14 +416,20 @@ async fn service_main(is_boot:bool) -> Result<i32> {
             e
         })?;
         return Ok(0);
+    } else {
+        info!("Enter schedule loop.");
+        let mut runtime = get_buckyos_api_runtime().unwrap();
+        runtime.login().await.map_err(|e| {
+            error!("login failed: {:?}", e);
+            e
+        })?;
+        
+        schedule_loop(false).await.map_err(|e| {
+            error!("schedule_loop failed: {:?}", e);
+            e
+        })?;
+        return Ok(0);
     }
-
-    info!("Enter schedule loop.");
-    schedule_loop(false).await.map_err(|e| {
-        error!("schedule_loop failed: {:?}", e);
-        e
-    })?;
-    return Ok(0);
 }
 
 #[tokio::main]

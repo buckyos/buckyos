@@ -739,8 +739,13 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = node_id.unwrap_or(&default_node_id);
 
     info!("node_daemon start...");
+    let mut real_machine_config = BuckyOSMachineConfig::default();
+    let machine_config = BuckyOSMachineConfig::load_machine_config();
+    if machine_config.is_some() {
+        real_machine_config = machine_config.unwrap();
+    }
 
-    init_name_lib().await.map_err(|err| {
+    init_name_lib(&real_machine_config.web3_bridge).await.map_err(|err| {
         error!("init default name client failed! {}", err);
         return String::from("init default name client failed!");
     })?;
@@ -931,7 +936,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         error!("parse zone config from boot/config failed! {}", err);
         return String::from("parse zone config from boot/config failed!");
     })?;
-    CURRENT_ZONE_CONFIG.set(zone_config.clone()).unwrap();
+    //CURRENT_ZONE_CONFIG.set(zone_config.clone()).unwrap();
     std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
     info!("{}@{} boot OK, enter node daemon main loop!", device_doc.name, node_identity.zone_did.to_host_name());
 

@@ -273,16 +273,16 @@ impl ControlPanelClient {
         Self { system_config_client }
     }
 
-    pub async fn load_zone_config(&self) -> Result<String> {
+    pub async fn load_zone_config(&self) -> Result<ZoneConfig> {
         let zone_config_path = "boot/config";
         let zone_config_result = self.system_config_client.get(zone_config_path).await;
         if zone_config_result.is_err() {
             return Err(RPCErrors::ReasonError("boot config(Zone config) not found".to_string()));
         }
         let (zone_config_str,_version) = zone_config_result.unwrap();
-        //let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str)
-        //    .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        Ok(zone_config_str)
+        let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        Ok(zone_config)
     }
 
     pub async fn get_device_info(&self,device_id:&str) -> Result<DeviceInfo> {

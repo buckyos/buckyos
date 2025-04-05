@@ -873,7 +873,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
         let mut owner_config = OwnerConfig::new(DID::new("bns","devtest"),"devtest".to_string(),"zhicong liu".to_string(),owner_jwk.clone());
         let owner_config_json_str = serde_json::to_string_pretty(&owner_config).unwrap();
-        let owner_config_path = tmp_dir.join("owner_config.json");
+        let owner_config_path = tmp_dir.join("user_config.json");
         std::fs::write(owner_config_path.clone(),owner_config_json_str.clone()).unwrap();
         println!("owner config: {}",owner_config_json_str);
         println!("# owner config write to file: {}",owner_config_path.to_string_lossy());

@@ -34,6 +34,10 @@ impl DID {
         }
     }
 
+    pub fn is_valid(&self) -> bool {
+        self.method != "undefined"
+    }
+
     pub fn get_ed25519_auth_key(&self) -> Option<[u8; 32]> {
         if self.method == "dev" {
             let auth_key = URL_SAFE_NO_PAD.decode(self.id.as_str()).unwrap();

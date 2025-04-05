@@ -25,7 +25,7 @@ async fn service_main() -> Result<()> {
     init_logging("repo_service",true);
     init_buckyos_api_runtime("repo_service",None,BuckyOSRuntimeType::FrameService).await?;
     let mut runtime = get_buckyos_api_runtime()?;
-    let login_result = runtime.login(None,None).await;
+    let login_result = runtime.login().await;
     if  login_result.is_err() {
         error!("repo service login to system failed! err:{:?}", login_result);
         return Err(anyhow::anyhow!("repo service login to system failed! err:{:?}", login_result));
@@ -40,7 +40,7 @@ async fn service_main() -> Result<()> {
       anyhow::anyhow!("repo service settings parse error! err:{}", e)
     })?;
 
-    let repo_server_data_folder = runtime.get_my_data_folder();
+    let repo_server_data_folder = runtime.get_data_folder();
     // 确保repo_server_data_folder目录存在
     if !repo_server_data_folder.exists() {
         std::fs::create_dir_all(&repo_server_data_folder).map_err(|e| {

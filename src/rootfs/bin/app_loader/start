@@ -173,7 +173,7 @@ def start_app():
     
     appid = sys.argv[1]
     username = sys.argv[2]
-    full_appid = f"{appid}#{username}"
+    full_appid = f"{appid}-{username}"
     app_token = os.getenv(f"{full_appid}_token")
     app_instance_config_str = os.getenv("app_instance_config")
     media_info_str = os.getenv("app_media_info")

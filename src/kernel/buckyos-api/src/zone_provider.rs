@@ -198,25 +198,19 @@ pub struct ZoneProvider {
 impl ZoneProvider {
     pub fn new() -> Self {
         let mut init_hash_map = HashMap::new();
-        let zone_config = CURRENT_ZONE_CONFIG.get();
+        let runtime = get_buckyos_api_runtime().unwrap();
+
+        let zone_config = runtime.get_zone_config();
         if zone_config.is_some() {
             let zone_config = zone_config.unwrap();
             let zone_config_str = serde_json::to_string_pretty(&zone_config).unwrap();
             init_hash_map.insert(zone_config.id.to_string(),zone_config_str);
         }
 
-        let device_config = CURRENT_DEVICE_CONFIG.get();
-        if device_config.is_some() {
-            let device_config = device_config.unwrap();
+        if runtime.deivce_config.is_some() {
+            let device_config = runtime.deivce_config.as_ref().unwrap();
             let device_config_str = serde_json::to_string_pretty(&device_config).unwrap();
             init_hash_map.insert(device_config.id.to_string(),device_config_str);
-        }
-
-        let owner_config = CURRENT_USER_CONFIG.get();
-        if owner_config.is_some() {
-            let owner_config = owner_config.unwrap();
-            let owner_config_str = serde_json::to_string_pretty(&owner_config).unwrap();
-            init_hash_map.insert(owner_config.id.to_string(),owner_config_str);
         }
 
         Self { 
@@ -241,30 +235,31 @@ impl ZoneProvider {
             return Err(NSError::NotFound(format!("did {} not found",did_str)));
         } else {
             match did_str {
-                "this_zone" => {
-                    let zone_config = CURRENT_ZONE_CONFIG.get();
-                    if zone_config.is_none() {
-                        return Err(NSError::NotFound("current zone config not found".to_string()));
-                    }
-                    let zone_config = zone_config.unwrap();
-                    return Ok(serde_json::to_string(&zone_config).unwrap());
-                },
-                "this_device" => {
-                    let device_config = CURRENT_DEVICE_CONFIG.get();
-                    if device_config.is_none() {
-                        return Err(NSError::NotFound("current device config not found".to_string()));
-                    }
-                    let device_config = device_config.unwrap();
-                    return Ok(serde_json::to_string(&device_config).unwrap());
-                },
-                "owner" => {
-                    let owner_config = CURRENT_USER_CONFIG.get();
-                    if owner_config.is_none() {
-                        return Err(NSError::NotFound("current owner config not found".to_string()));
-                    }
-                    let owner_config = owner_config.unwrap();
-                    return Ok(serde_json::to_string(&owner_config).unwrap());
-                },
+                // "this_zone" => {
+                //     let zone_config = CURRENT_ZONE_CONFIG.get();
+                //     if zone_config.is_none() {
+                //         return Err(NSError::NotFound("current zone config not found".to_string()));
+                //     }
+                //     let zone_config = zone_config.unwrap();
+                //     return Ok(serde_json::to_string(&zone_config).unwrap());
+                // },
+                // "this_device" => {
+                //     let device_config = CURRENT_DEVICE_CONFIG.get();
+                //     if device_config.is_none() {
+                //         return Err(NSError::NotFound("current device config not found".to_string()));
+                //     }
+                //     let device_config = device_config.unwrap();
+                //     return Ok(serde_json::to_string(&device_config).unwrap());
+                // },
+                // "owner" => {
+                //     // let owner_config = CURRENT_USER_CONFIG.get();
+                //     // if owner_config.is_none() {
+                //     //     return Err(NSError::NotFound("current owner config not found".to_string()));
+                //     // }
+                //     // let owner_config = owner_config.unwrap();
+                //     // return Ok(serde_json::to_string(&owner_config).unwrap());
+                //     unimplemented!()
+                // },
                 _ => {
                     let runtime = get_buckyos_api_runtime().map_err(|e|{
                         warn!("ZoneProvider get buckyos api runtime failed: {}",e);
@@ -404,7 +399,8 @@ impl NsProvider for ZoneProvider {
 
         //if target device is ood, try resolve ip by ood info in zone config
         info!("ZoneProvider try resolve ip by ood info in zone config for {} ...",name);
-        let zone_config = CURRENT_ZONE_CONFIG.get();
+        let runtime = get_buckyos_api_runtime().unwrap();
+        let zone_config = runtime.get_zone_config();
         if zone_config.is_none() {
             return Err(NSError::NotFound("zone config not found".to_string()));
         }
@@ -423,7 +419,8 @@ impl NsProvider for ZoneProvider {
     }
 
     async fn query_did(&self, did: &DID,fragment:Option<&str>,from_ip:Option<IpAddr>) -> NSResult<EncodedDocument> {
-        let zone_config = CURRENT_ZONE_CONFIG.get();
+        let runtime = get_buckyos_api_runtime().unwrap();
+        let zone_config = runtime.get_zone_config();
         if zone_config.is_none() {
             return Err(NSError::NotFound("zone config not found".to_string()));
         }

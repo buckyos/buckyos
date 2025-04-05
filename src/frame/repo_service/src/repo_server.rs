@@ -187,25 +187,25 @@ impl RepoServer {
         }
 
         let runtime = get_buckyos_api_runtime().unwrap();
-        let path = runtime.get_my_data_folder().join(source).join("meta_index.db");
+        let path = runtime.get_data_folder().join(source).join("meta_index.db");
         return path;
     }
 
     fn get_my_pub_meta_index_db_path(&self) -> PathBuf {
         let runtime = get_buckyos_api_runtime().unwrap();
-        let path = runtime.get_my_data_folder().join("pub_meta_index.db");
+        let path = runtime.get_data_folder().join("pub_meta_index.db");
         return path;
     }
 
     fn get_my_wait_pub_meta_index_db_path(&self) -> PathBuf {
         let runtime = get_buckyos_api_runtime().unwrap();
-        let path = runtime.get_my_data_folder().join("wait_pub_meta_index.db");
+        let path = runtime.get_data_folder().join("wait_pub_meta_index.db");
         return path;
     }
 
     fn get_my_default_meta_index_db_path(&self) -> PathBuf {
         let runtime = get_buckyos_api_runtime().unwrap();
-        let path = runtime.get_my_data_folder().join("default_meta_index.db");
+        let path = runtime.get_data_folder().join("default_meta_index.db");
         return path;
     }
 
@@ -615,7 +615,17 @@ impl RepoServer {
             return Err(RPCErrors::ReasonError("pkg_list is none".to_string()));
         }
         let pkg_list = pkg_list.unwrap();
-        let owner_pk = CURRENT_ZONE_CONFIG.get().unwrap().get_default_key().unwrap();
+        let zone_config = runtime.get_zone_config();
+        if zone_config.is_none() {
+            return Err(RPCErrors::ReasonError("zone_config is none".to_string()));
+        }
+        let zone_config = zone_config.unwrap();
+        let owner_pk = zone_config.get_default_key();
+        if owner_pk.is_none() {
+            return Err(RPCErrors::ReasonError("owner_pk is none".to_string()));
+        }
+        let owner_pk = owner_pk.unwrap();
+
         let pkg_meta_jwt_map:HashMap<String,String> = serde_json::from_value(pkg_list.clone()).map_err(|e| {
             error!("parse pkg_list failed, err:{}", e);
             RPCErrors::ReasonError(format!("parse pkg_list failed, err:{}", e))

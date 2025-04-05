@@ -6,7 +6,6 @@ mod name_query;
 mod dns_provider;
 mod utility;
 
-use buckyos_kit::{get_buckyos_system_etc_dir,BuckyOSMachineConfig};
 use jsonwebtoken::DecodingKey;
 pub use provider::*;
 pub use name_client::*;
@@ -24,8 +23,8 @@ cfg_if! {
 
 
 use log::*;
+use std::collections::HashMap;
 use std::net::IpAddr;
-use std::fs::File;
 use once_cell::sync::OnceCell;
 use name_lib::*;
 
@@ -35,26 +34,19 @@ extern crate log;
 pub static GLOBAL_BOOT_NAME_CLIENT: OnceCell<NameClient> = OnceCell::new();
 pub static GLOBAL_NAME_CLIENT: OnceCell<NameClient> = OnceCell::new();
 
-//name lib 是系统最基础的库，应尽量在进程启动时完成初始化
-pub async fn init_name_lib() -> NSResult<()> {
-    //init web3 bridge config
-    let mut machine_config = BuckyOSMachineConfig::default();
-    let machine_config_path = get_buckyos_system_etc_dir().join("machine.json");
-    if machine_config_path.exists() {
-        let machine_config_file = File::open(machine_config_path);
-        if machine_config_file.is_ok() {
-            let machine_config_json = serde_json::from_reader(machine_config_file.unwrap());
-            if machine_config_json.is_ok() {
-                machine_config = machine_config_json.unwrap();
-            } else {
-                error!("Failed to parse machine_config: {}", machine_config_json.err().unwrap());
-            }
-        } else {
-            error!("Failed to open machine_config file: {}", machine_config_file.err().unwrap());
-        }
-    }
 
-    let set_result = KNOWN_WEB3_BRIDGE_CONFIG.set(machine_config.web3_bridge.clone());
+pub fn get_default_web3_bridge_config() -> HashMap<String, String> {
+    let mut web3_bridge_config = HashMap::new();
+    web3_bridge_config.insert("bns".to_string(), "web3.buckyos.org".to_string());
+    web3_bridge_config
+}
+
+//name lib 是系统最基础的库，应尽量在进程启动时完成初始化
+pub async fn init_name_lib(web3_bridge_config:&HashMap<String, String>) -> NSResult<()> {
+    //init web3 bridge config
+
+
+    let set_result = KNOWN_WEB3_BRIDGE_CONFIG.set(web3_bridge_config.clone());
     if set_result.is_err() {
         return Err(NSError::Failed("Failed to set KNOWN_WEB3_BRIDGE_CONFIG".to_string()));
     }
@@ -178,9 +170,9 @@ mod tests {
     async fn test_resolve_did_nameinfo() {
         std::env::set_var("BUCKY_LOG", "debug");
         let service_name = "name-client-test";
-        
+        let web3_bridge_config = get_default_web3_bridge_config();
         buckyos_kit::init_logging(service_name,false);
-        init_name_lib().await.unwrap();
+        init_name_lib(&web3_bridge_config).await.unwrap();
         let name_info = resolve("test.buckyos.io", crate::provider::RecordType::from_str("DID")).await.unwrap();
         println!("name_info: {:?}",name_info);
     }
