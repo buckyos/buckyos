@@ -52,7 +52,7 @@ pub struct SubPkgDesc {
 pub struct AppDoc {
     #[serde(flatten)]    
     pub meta: PackageMeta,
-    pub app_name: String,
+    pub app_name: String, // just for display, app_id is meta.pkg_name (like "buckyos-filebrowser")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_icon_url: Option<String>,
     pub install_config:InstallConfig,
@@ -139,13 +139,14 @@ pub struct AppConfig {
 pub struct AppServiceInstanceConfig {
     pub target_state: String,
     pub app_id: String,
-    pub user_id: String,
+    pub user_id: String,//owner user id
 
     pub app_pkg_id: Option<String>,
     pub docker_image_pkg_id: Option<String>,
     pub docker_image_name : Option<String>,//TODO:能否从pkg_id中推断出docker_image_name?
     pub docker_image_hash: Option<String>,
-    pub service_pkg_id: Option<String>,         
+    pub service_pkg_id: Option<String>,    
+
     pub data_mount_point: Vec<String>,
     pub cache_mount_point: Vec<String>,
     pub local_cache_mount_point: Vec<String>,

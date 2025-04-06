@@ -195,12 +195,12 @@ pub struct ZoneConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sn:Option<String>,//
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_repo_base_url:Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub verify_hub_info:Option<VerifyHubInfo>,
-
 }
 
 impl ZoneConfig {
-
     pub fn new(id:DID,owner_did:DID,public_key:Jwk) -> Self {
         let id2 = id.clone();
         ZoneConfig {
@@ -230,6 +230,7 @@ impl ZoneConfig {
             device_list: None,
             oods: vec![],
             sn: None,
+            docker_repo_base_url: None,
             verify_hub_info: None,
         }
     }

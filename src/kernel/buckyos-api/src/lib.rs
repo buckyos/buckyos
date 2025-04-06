@@ -64,6 +64,7 @@ pub struct BuckyOSRuntime {
 
     pub deivce_config:Option<DeviceConfig>, 
     pub device_private_key:Option<EncodingKey>,
+    pub device_info:Option<DeviceInfo>,
 
     pub zone_id:DID,
     pub zone_boot_config:Option<ZoneBootConfig>,
@@ -158,6 +159,7 @@ impl BuckyOSRuntime {
             zone_config: None,
             deivce_config: None,
             device_private_key: None,
+            device_info: None,
             user_private_key: None,
             user_config: None,
             zone_id: DID::undefined(),
@@ -169,26 +171,6 @@ impl BuckyOSRuntime {
     }
 
     pub async fn fill_by_env_var(&mut self) -> Result<()> {
-
-        // let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG");
-        // if zone_config_str.is_err() {
-        //     warn!("BUCKYOS_ZONE_CONFIG not set");
-        //     return Err(RPCErrors::ReasonError("BUCKYOS_ZONE_CONFIG not set".to_string()));
-        // }
-        // let zone_config_str = zone_config_str.unwrap();
-        // info!("zone_config_str:{}",zone_config_str);    
-        // let zone_config = serde_json::from_str(zone_config_str.as_str());
-        // if zone_config.is_err() {
-        //     warn!("zone_config_str format error");
-        //     return Err(RPCErrors::ReasonError("zone_config_str format error".to_string()));
-        // }
-        // let zone_config = zone_config.unwrap();
-        // let set_result = CURRENT_ZONE_CONFIG.set(zone_config);
-        // if set_result.is_err() {
-        //     warn!("Failed to set GLOBAL_ZONE_CONFIG");
-        //     return Err(RPCErrors::ReasonError("Failed to set GLOBAL_ZONE_CONFIG".to_string()));
-        // }
-
         let zone_boot_config = env::var("BUCKYOS_ZONE_BOOT_CONFIG");
         if zone_boot_config.is_ok() {
             let zone_boot_config:ZoneBootConfig = serde_json::from_str(zone_boot_config.unwrap().as_str())
@@ -202,7 +184,34 @@ impl BuckyOSRuntime {
             
             self.zone_id = zone_boot_config.id.clone().unwrap();
             self.zone_boot_config = Some(zone_boot_config);
+        } else {
+            let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG");
+            if zone_config_str.is_ok() {
+                let zone_config_str = zone_config_str.unwrap();
+                debug!("zone_config_str:{}",zone_config_str);    
+                let zone_config = serde_json::from_str(zone_config_str.as_str());
+                if zone_config.is_err() {
+                    warn!("zone_config_str format error");
+                    return Err(RPCErrors::ReasonError("zone_config_str format error".to_string()));
+                }
+                let zone_config:ZoneConfig = zone_config.unwrap();
+                self.zone_id = zone_config.id.clone();
+                self.zone_config = Some(zone_config);
+            }
         }
+
+        let device_info_str = env::var("BUCKYOS_THIS_DEVICE_INFO");
+        if device_info_str.is_ok() {
+            let device_info_str = device_info_str.unwrap();
+            let device_info = serde_json::from_str(device_info_str.as_str());
+            if device_info.is_err() {
+                warn!("device_info_str format error");  
+                return Err(RPCErrors::ReasonError("device_info_str format error".to_string()));
+            }
+            let device_info = device_info.unwrap();
+            self.device_info = Some(device_info);
+        }
+        
 
         if CURRENT_DEVICE_CONFIG.get().is_none() {
             let device_doc = env::var("BUCKYOS_THIS_DEVICE");
@@ -241,6 +250,7 @@ impl BuckyOSRuntime {
         } else {
             info!("load session_token from env var failed");
         }
+
 
         Ok(())
     }

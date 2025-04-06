@@ -337,38 +337,39 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
 }
 
 
-async fn update_device_info(device_doc: &DeviceConfig,syste_config_client: &SystemConfigClient) {
+async fn update_device_info_from_doc(device_doc: &DeviceConfig,syste_config_client: &SystemConfigClient) {
     let mut device_info = DeviceInfo::from_device_doc(device_doc);
     let fill_result = device_info.auto_fill_by_system_info().await;
     if fill_result.is_err() {
         error!("auto fill device info failed! {}", fill_result.err().unwrap());
         return;
     }
+    update_device_info(&device_info,syste_config_client).await;
+}
+async fn update_device_info(device_info: &DeviceInfo,syste_config_client: &SystemConfigClient) {
+    let device_key = format!("devices/{}/info", device_info.name.as_str());
     let device_info_str = serde_json::to_string(&device_info).unwrap();
-    info!("update device info: {:?}", device_info);
-
-    let device_key = format!("devices/{}/info", device_doc.name.as_str());
     let put_result = syste_config_client.set(device_key.as_str(),device_info_str.as_str()).await;
     if put_result.is_err() {
         error!("update device info to system_config failed! {}", put_result.err().unwrap());
     } else {
-        info!("update device info to system_config success!");
+        info!("update {} info to system_config success!",device_info.name.as_str());
     }
 }
 
-async fn register_device_doc(device_doc:&DeviceConfig,syste_config_client: &SystemConfigClient) {
-    let device_key = format!("devices/{}/doc", device_doc.name.as_str());
-    let device_doc_str = serde_json::to_string(&device_doc).unwrap();
-    let put_result = syste_config_client.create(device_key.as_str(),device_doc_str.as_str()).await;
-    if put_result.is_err() {
-        error!("register device doc to system_config failed! {}", put_result.err().unwrap());
-    } else {
-        info!("register device doc to system_config success!");
-    }
-}
+// async fn register_device_doc(device_doc:&DeviceConfig,syste_config_client: &SystemConfigClient) {
+//     let device_key = format!("devices/{}/doc", device_doc.name.as_str());
+//     let device_doc_str = serde_json::to_string(&device_doc).unwrap();
+//     let put_result = syste_config_client.create(device_key.as_str(),device_doc_str.as_str()).await;
+//     if put_result.is_err() {
+//         error!("register device doc to system_config failed! {}", put_result.err().unwrap());
+//     } else {
+//         info!("register device doc to system_config success!");
+//     }
+// }
 
 //if register OK then return sn's URL
-async fn report_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
+async fn report_ood_info_to_sn(device_info: &DeviceInfo, device_token_jwt: &str,zone_config: &ZoneConfig) -> std::result::Result<String,String> {
     //try register ood's device_info to sn,
     // TODO: move this logic to cyfs-gateway service?
     let mut need_sn = false;
@@ -376,9 +377,9 @@ async fn report_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str
     if sn_url.is_some() {
         need_sn = true;
     } else {
-        if device_doc.ddns_sn_url.is_some() {
+        if device_info.ddns_sn_url.is_some() {
             need_sn = true;
-            sn_url = device_doc.ddns_sn_url.clone();
+            sn_url = device_info.ddns_sn_url.clone();
         }
     }
     if !need_sn {
@@ -387,26 +388,18 @@ async fn report_ood_info_to_sn(device_doc: &DeviceConfig, device_token_jwt: &str
 
     let sn_url = sn_url.unwrap();
 
-    let ood_string = zone_config.get_ood_desc_string(device_doc.name.as_str());
+    let ood_string = zone_config.get_ood_desc_string(device_info.name.as_str());
     if ood_string.is_none() {
         error!("this device is not in zone's ood list!");
         return Err(String::from("this device is not in zone's ood list!"));
     }
 
     let ood_string = ood_string.unwrap();
-    let mut ood_info = DeviceInfo::from_device_doc(&device_doc);
-    let fill_result =ood_info.auto_fill_by_system_info().await;
-    if fill_result.is_err() {
-        error!("auto fill ood info failed! {}", fill_result.err().unwrap());
-        return Err(String::from("auto fill ood info failed!"));
-    }
-
-    info!("ood info: {:?}",ood_info);
 
     sn_update_device_info(sn_url.as_str(), Some(device_token_jwt.to_string()),
-                          &zone_config.get_zone_short_name(),device_doc.name.as_str(), &ood_info, ).await;
+                          &zone_config.get_zone_short_name(),device_info.name.as_str(), &device_info).await;
 
-    info!("update ood info to sn {} success!",sn_url.as_str());
+    info!("update {} 's info to sn {} success!",device_info.name.as_str(),sn_url.as_str());
     Ok(sn_url)
 }
 
@@ -657,12 +650,8 @@ async fn node_daemon_main_loop(
     let mut loop_step = 0;
     let mut is_running = true;
     let mut last_register_time = 0;
-
-    //TODO: check and upgrade self use repo_service
-    //try regsiter device doc
-    report_ood_info_to_sn(&device_doc, device_session_token_jwt,&zone_config).await;
-
     let mut node_gateway_config = None;
+    
     loop {
         if !is_running {
             break;
@@ -670,10 +659,20 @@ async fn node_daemon_main_loop(
 
         loop_step += 1;
         info!("node daemon main loop step:{}", loop_step);
-        report_ood_info_to_sn(&device_doc, device_session_token_jwt,&zone_config).await;
+
         let now = buckyos_get_unix_timestamp();
         if now - last_register_time > 30 {
-            update_device_info(&device_doc, buckyos_api_client).await;
+            let mut device_info = DeviceInfo::from_device_doc(device_doc);
+            let fill_result = device_info.auto_fill_by_system_info().await;
+            if fill_result.is_err() {
+                error!("auto fill device info failed! {}", fill_result.err().unwrap());
+                break;
+            }
+            let device_info_str = serde_json::to_string(&device_info).unwrap();
+            debug!("update device info: {:?}", device_info);
+            std::env::set_var("BUCKYOS_THIS_DEVICE_INFO", device_info_str);
+            update_device_info(&device_info, buckyos_api_client).await;
+            report_ood_info_to_sn(&device_info, device_session_token_jwt,&zone_config).await;
             last_register_time = now;
         }
 
@@ -862,7 +861,6 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             error!("generate device session token failed! {}", err);
             return String::from("generate device session token failed!");})?;
 
-    let device_info = DeviceInfo::from_device_doc(&device_doc);
     keep_cyfs_gateway_service(node_id.as_str(),&device_doc, &device_private_key,   
     zone_boot_config.sn.clone(),false).await.map_err(|err| {
         error!("init cyfs_gateway service failed! {}", err);
@@ -880,8 +878,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         })?;
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         syc_cfg_client = SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()));
-        update_device_info(&device_doc, &syc_cfg_client).await;
-        //register_device_doc(&device_doc, &syc_cfg_client).await;
+        update_device_info_from_doc(&device_doc, &syc_cfg_client).await;
         while boot_config_result_str.is_empty() {
             let boot_config_result = syc_cfg_client.get("boot/config").await;
             match boot_config_result {
@@ -940,8 +937,10 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     //CURRENT_ZONE_CONFIG.set(zone_config.clone()).unwrap();
     std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
     info!("{}@{} boot OK, enter node daemon main loop!", device_doc.name, node_identity.zone_did.to_host_name());
-
-    register_device_doc(&device_doc, &syc_cfg_client).await;
+    
+    
+    //应用专有接口来设置device_doc
+    //register_device_doc(&device_doc, &syc_cfg_client).await;
     node_daemon_main_loop(node_id,&device_doc.name.as_str(), &syc_cfg_client, 
         &device_doc, &device_session_token_jwt,&device_private_key, &zone_config, is_ood)
         .await
