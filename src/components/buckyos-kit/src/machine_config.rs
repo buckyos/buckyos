@@ -7,6 +7,10 @@ use crate::get_buckyos_system_etc_dir;
 pub struct BuckyOSMachineConfig {
     pub web3_bridge: HashMap<String, String>,
     pub trust_did: Vec<String>,//did
+    pub force_https: bool,
+
+    #[serde(flatten)]
+    pub extra_info: HashMap<String, serde_json::Value>,
 }
 
 impl Default for BuckyOSMachineConfig {
@@ -19,6 +23,8 @@ impl Default for BuckyOSMachineConfig {
             trust_did: vec!["did:web:buckyos.org".to_string(),
             "did:web:buckyos.ai".to_string(),
             "did:web:buckyos.io".to_string()],
+            force_https: true,
+            extra_info: HashMap::new(),
         }
     }
 }

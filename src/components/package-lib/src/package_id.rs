@@ -269,6 +269,24 @@ impl PackageId {
         }
     }
 
+    pub fn get_pkg_id_simple_name(pkg_id: &str) -> String {
+        let the_pkg_id = PackageId::parse(pkg_id);
+        if the_pkg_id.is_err() {
+            return pkg_id.to_string();
+        }
+        let the_pkg_id = the_pkg_id.unwrap();
+        the_pkg_id.to_simple_name()
+    }
+
+    pub fn to_simple_name(&self) -> String {
+        //after . and before #
+        let mut result = self.name.clone();
+        if let Some(pos) = result.find('.') {
+            result = result[pos + 1..].to_string();
+        }
+        result
+    }
+
     pub fn parse(pkg_id: &str) -> PkgResult<PackageId> {
         let parts = pkg_id.split('#').collect::<Vec<&str>>();
         match parts.len() {
@@ -338,6 +356,14 @@ mod tests {
         let pkg_id2 = result.to_string();
         assert_eq!(pkg_id, pkg_id2);
 
+        let pkg_id = "nightly-linux-amd64.buckyos-filebrowser#0.4.0";
+        let result = PackageId::parse(pkg_id).unwrap();
+        assert_eq!(&result.name, "nightly-linux-amd64.buckyos-filebrowser");
+        assert_eq!(result.version_exp.as_ref().unwrap().to_string(), "0.4.0".to_string());
+        assert_eq!(result.version_exp.as_ref().unwrap().tag,None);
+        let simple_name = result.to_simple_name();
+        assert_eq!(simple_name, "buckyos-filebrowser".to_string());
+
         let pkg_id = "a#1234567890";
         let result = PackageId::parse(pkg_id).unwrap();
         assert_eq!(&result.name, "a");
@@ -359,6 +385,8 @@ mod tests {
         assert_eq!(result.version_exp.as_ref().unwrap().to_string(), ">0.1.0, <0.1.2:stable".to_string());
         let pkg_id2 = result.to_string();
         assert_eq!(pkg_id, pkg_id2);
+
+
     }
 
     #[test]

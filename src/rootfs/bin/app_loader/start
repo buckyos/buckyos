@@ -179,6 +179,12 @@ def start_app():
     zone_docker_repo_base_url = None
     device_info_str = os.getenv(f"BUCKYOS_THIS_DEVICE_INFO")
     device_info = None
+    # 打印所有环境变量用于调试
+    # print("=== 环境变量列表（用于调试）===")
+    # for key, value in os.environ.items():
+    #     print(f"{key}: {value}")
+    # print("=== 环境变量列表结束 ===")
+
 
     if zone_config_str:
         zone_config = json.loads(zone_config_str)
@@ -190,7 +196,7 @@ def start_app():
         device_info = json.loads(device_info_str)
 
     if app_token is None:
-        print(f"No session token found for appid: {full_appid}")
+        print(f"No session token found for appid: {full_appid},env_key: {app_token_env_key}")
         exit(1)
         
     if app_instance_config_str is None:

@@ -2,6 +2,7 @@
     "web3_bridge": {
         "bns": "web3.buckyos.ai"
     },
+    "force_https": false,
     "trust_did": [
         "did:web:buckyos.org",
         "did:web:buckyos.ai",

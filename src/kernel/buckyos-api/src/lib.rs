@@ -73,6 +73,7 @@ pub struct BuckyOSRuntime {
     pub session_token:Arc<RwLock<String>>,
     trust_keys:Arc<RwLock<HashMap<String,DecodingKey>>>,
     
+    pub force_https:bool,
     pub buckyos_root_dir:PathBuf,
     pub web3_bridges:HashMap<String,String>,
 }
@@ -128,7 +129,7 @@ pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,r
     }
 
     match runtime_type {
-        BuckyOSRuntimeType::AppClient | BuckyOSRuntimeType::AppService => {
+        BuckyOSRuntimeType::AppService => {
             if owner_user_id.is_none() {
                 return Err(RPCErrors::ReasonError("owner_user_id is required for AppClient or AppService".to_string()));
             }
@@ -166,6 +167,7 @@ impl BuckyOSRuntime {
             zone_boot_config: None,
             trust_keys: Arc::new(RwLock::new(HashMap::new())),
             web3_bridges: HashMap::new(),
+            force_https: true,
         };
         runtime
     }
@@ -262,7 +264,9 @@ impl BuckyOSRuntime {
             if bucky_dev_user_home_dir.exists() {
                 info!("dev folder exists: {}",bucky_dev_user_home_dir.to_string_lossy());
                 config_root_dir = Some(bucky_dev_user_home_dir);
-            } 
+            } else {
+                info!("dev folder {} not exists,try to use $BUCKYOS_ROOT/etc folder",bucky_dev_user_home_dir.to_string_lossy());
+            }
         } 
 
         if config_root_dir.is_none() {
@@ -302,10 +306,11 @@ impl BuckyOSRuntime {
         let machine_config_file = config_root_dir.join("machine_config.json");
 
         let node_identity_config =  NodeIdentityConfig::load_node_identity_config(&node_identity_file)
-        .map_err(|e| {
-            error!("Failed to load node identity config: {}", e);
-            RPCErrors::ReasonError(format!("Failed to load node identity config: {}", e))
-        })?;
+            .map_err(|e| {
+                error!("Failed to load node identity config: {}", e);
+                RPCErrors::ReasonError(format!("Failed to load node identity config: {}", e))
+            })?;
+
     
         if CURRENT_DEVICE_CONFIG.get().is_none() {
             let device_config = decode_jwt_claim_without_verify(node_identity_config.device_doc_jwt.as_str())
@@ -321,53 +326,45 @@ impl BuckyOSRuntime {
             }
             let device_config = devcie_config.unwrap();
             self.deivce_config = Some(device_config.clone());
+            self.user_id = Some(device_config.name.clone());
             let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
             if set_result.is_err() {
                 warn!("Failed to set CURRENT_DEVICE_CONFIG");
                     return Err(RPCErrors::ReasonError("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
             }
-
         }
 
-        let device_private_key;
         let private_key = load_private_key(&device_private_key_file);
         if private_key.is_ok() {
-            device_private_key = Some(private_key.unwrap());
+            self.device_private_key = Some(private_key.unwrap());
         } else {
-            device_private_key = None;
+            self.device_private_key = None;
         }
 
         //let zone_config_file;
         if self.runtime_type == BuckyOSRuntimeType::AppClient {
             let user_config_file = config_root_dir.join("user_config.json");
             let user_private_key_file = config_root_dir.join("user_private_key.pem");
-            let owner_config = OwnerConfig::load_owner_config(&user_config_file)
-                .map_err(|e| {
-                    error!("Failed to load owner config: {}", e);
-                    RPCErrors::ReasonError(format!("Failed to load owner config: {}", e))
-                })?;
-            self.user_id = Some(owner_config.name.clone());
-            self.user_config = Some(owner_config);
-            
-            let private_key = load_private_key(&user_private_key_file);
-            if private_key.is_ok() {
-                self.user_private_key = Some(private_key.unwrap());
-            } 
+            if user_config_file.exists() {
+                let owner_config = OwnerConfig::load_owner_config(&user_config_file)
+                    .map_err(|e| {
+                        error!("Failed to load owner config: {}", e);
+                        RPCErrors::ReasonError(format!("Failed to load owner config: {}", e))
+                    })?;
+                self.user_id = Some(owner_config.name.clone());
+                self.user_config = Some(owner_config);
+                
+                let private_key = load_private_key(&user_private_key_file);
+                if private_key.is_ok() {
+                    info!("!!!! Make sure your development machine is secured,user_private_key_file {} load success, ",user_private_key_file.to_string_lossy());
+                    self.user_private_key = Some(private_key.unwrap());
+                } else {
+                    info!("user_private_key_file {} load failed!:{:?}",user_private_key_file.to_string_lossy(),private_key.err().unwrap());
+                }
+            }
         }
         let zone_did = node_identity_config.zone_did.clone();
         self.zone_id = zone_did.clone();
-        // let zone_config_file = config_root_dir.join(format!("{}.zone.json",zone_did.to_host_name()));
-        // if zone_config_file.exists() {
-        //     let zone_config = ZoneConfig::load_zone_config(&zone_config_file)
-        //         .map_err(|e| {
-        //             error!("Failed to load zone config: {}", e);
-        //             RPCErrors::ReasonError(format!("Failed to load zone config: {}", e))
-        //         })?;
-        //     if zone_config.id != node_identity_config.zone_did {
-        //         return Err(RPCErrors::ReasonError("zone did not match".to_string()));
-        //     }
-        //     self.zone_config = Some(zone_config);
-        // }
 
         let mut machine_config = BuckyOSMachineConfig::default();
         if machine_config_file.exists() {
@@ -383,29 +380,11 @@ impl BuckyOSRuntime {
             } 
         }
         self.web3_bridges = machine_config.web3_bridge;
-
-        // } else {
-        //     let mut zone_doc: EncodedDocument = resolve_did(&node_identity_config.zone_did,None).await.map_err(|err| {
-        //         error!("resolve zone did failed! {}", err);
-        //         return RPCErrors::ReasonError("resolve zone did failed!".to_string());
-        //     })?;
-           
-        //     let owner_public_key = DecodingKey::from_jwk(&node_identity_config.owner_public_key);
-        //     let mut zone_boot_config = ZoneBootConfig::decode(&zone_doc,None).map_err(|err| {
-        //         error!("parse zone boot config failed! {}", err);
-        //         return RPCErrors::ReasonError("parse zone boot config failed!".to_string());
-        //     })?;
-        //     zone_boot_config.owner = Some(node_identity_config.owner_did.clone());
-        //     zone_boot_config.id = Some(node_identity_config.zone_did.clone());
-        //     zone_boot_config.owner_key = Some(node_identity_config.owner_public_key.clone());
-        //     zone_config = zone_boot_config.to_zone_config();
-        // }
-        
-
+        self.force_https = machine_config.force_https;
         Ok(())
     }
 
-    pub async fn login(&mut self) -> Result<RPCSessionToken> {
+    pub async fn login(&mut self) -> Result<()> {
         if !self.zone_id.is_valid() {
             return Err(RPCErrors::ReasonError("Zone id is not valid,api-runtime.login failed".to_string()));
         }
@@ -420,22 +399,24 @@ impl BuckyOSRuntime {
                 return Err(RPCErrors::ReasonError("Device config is not set!".to_string()));
             }
         }
+
         init_name_lib(&self.web3_bridges).await;
         {
             let mut session_token = self.session_token.write().await;
             if session_token.is_empty() {
-                info!("api-runtime: session token is empty,runtime_type:{:?},try to create session token by known private key",self.runtime_type);
+                //info!("api-runtime: session token is empty,runtime_type:{:?},try to create session token by known private key",self.runtime_type);
                 if self.runtime_type == BuckyOSRuntimeType::AppClient {
                     if self.user_private_key.is_some() && self.user_config.is_some() {
+                        info!("api-runtime: session token is empty,runtime_type:{:?},try to create session token by user_private_key",self.runtime_type);
                         let (session_token_str,real_session_token) = RPCSessionToken::generate_jwt_token(
                             self.user_id.as_ref().unwrap(),
                             self.app_id.as_str(),
-                            Some(self.user_config.as_ref().unwrap().id.to_string()),
+                            Some(self.user_config.as_ref().unwrap().name.to_string()),
                             self.user_private_key.as_ref().unwrap()
                         )?;
                         *session_token = session_token_str;
-                    }
-                    if self.device_private_key.is_some() && self.deivce_config.is_some() {
+                    } else if self.device_private_key.is_some() && self.deivce_config.is_some() {
+                        info!("api-runtime: session token is empty,runtime_type:{:?},try to create session token by device_private_key",self.runtime_type);
                         let (session_token_str,real_session_token) = RPCSessionToken::generate_jwt_token(
                             self.user_id.as_ref().unwrap(),
                             self.app_id.as_str(),
@@ -443,13 +424,12 @@ impl BuckyOSRuntime {
                             self.device_private_key.as_ref().unwrap()
                         )?;
                         *session_token = session_token_str;
+                    } else {
+                        return Err(RPCErrors::ReasonError("session_token is empty, and No private key found,generate session_token failed!".to_string()));
                     }
-
-                    if session_token.is_empty() {
-                        return Err(RPCErrors::ReasonError("No private key found".to_string()));
-                    }
+                } else {
+                    return Err(RPCErrors::ReasonError("session_token is empty!".to_string()));
                 }
-                return Err(RPCErrors::ReasonError("No private key found".to_string()));
             } else {
                 info!("api-runtime: session token is set,runtime_type:{:?},check and use current session token",self.runtime_type);
                 real_session_token = RPCSessionToken::from_string(session_token.as_str())?;
@@ -479,7 +459,7 @@ impl BuckyOSRuntime {
             self.refresh_trust_keys().await?;
             info!("refresh trust keys OK");
         }
-        Ok(real_session_token)
+        Ok(())
     }
 
     // pub async fn generate_session_token(&self) -> Result<String> {
@@ -806,7 +786,7 @@ impl BuckyOSRuntime {
     }
 
     pub async fn get_system_config_client(&self) -> Result<SystemConfigClient> {
-        let url = self.get_zone_service_url("system_config",false)?;
+        let url = self.get_zone_service_url("system_config",self.force_https)?;
         info!("get system config client,url:{}",url);
         let session_token = self.session_token.read().await;
         info!("get system config client,session_token:{}",session_token.as_str());
@@ -846,10 +826,10 @@ impl BuckyOSRuntime {
     }
 
     //if http_only is false, return the url with tunnel protocol
-    pub fn get_zone_service_url(&self,service_name: &str,http_only: bool) -> Result<String> {
-        let mut schema = "https";
-        if http_only {
-            schema = "http";
+    pub fn get_zone_service_url(&self,service_name: &str,https_only: bool) -> Result<String> {
+        let mut schema = "http";
+        if https_only {
+            schema = "https";
         }
 
         let service_name = match service_name {

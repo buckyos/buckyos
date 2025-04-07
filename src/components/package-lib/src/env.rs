@@ -238,6 +238,10 @@ impl PackageEnv {
         }
     }
 
+    pub fn is_strict(&self) -> bool {
+        self.config.enable_strict_mode
+    }
+
     pub fn update_config_file(&self,config: &PackageEnvConfig) -> PkgResult<()> {
         let config_path = self.work_dir.join("pkg.cfg.json");
         if config_path.exists() {
