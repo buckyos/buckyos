@@ -9,7 +9,7 @@ import time
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 publish_dir = os.path.join(src_dir, "publish", "deb_template")
-base_meta_db_url = "https://buckyos.ai/ndn/repo/meta_index.db/content"
+base_meta_db_url = "http://test.buckyos.io/ndn/repo/meta_index.db/content"
 bucky_cli_path = os.path.join(src_dir, "rootfs","bin", "buckycli","buckycli")
 
 def adjust_control_file(dest_dir, new_version, architecture):
@@ -125,6 +125,9 @@ def make_deb(architecture, version):
     print(f"clean all .pem and .toml files and start_config.json in {clean_dir}")
     subprocess.run("rm -f *.pem *.toml", shell=True, check=True, cwd=clean_dir)
     subprocess.run("rm -f start_config.json", shell=True, check=True, cwd=clean_dir)
+    subprocess.run("rm -f node_identity.json", shell=True, check=True, cwd=clean_dir)
+    subprocess.run("rm -f *.zone.json", shell=True, check=True, cwd=clean_dir)
+    subprocess.run("mv machine.json machine_config.json", shell=True, check=True, cwd=clean_dir)
     subprocess.run([f"dpkg-deb --build {architecture}"], shell=True, check=True, cwd=deb_root_dir)
     print(f"build deb success at {deb_dir}")
     shutil.copy(f"{deb_root_dir}/{architecture}.deb", os.path.join(src_dir, f"buckyos_{architecture}.deb"))

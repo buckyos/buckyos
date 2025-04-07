@@ -51,6 +51,7 @@ def start_app_without_docker():
 
 def start_app_with_docker():
     # 如果镜像已经在运行，则先停止再启动
+    global app_media_info
     container_id = full_appid
     print(f"Before start, try stopping container: {container_id}")
     docker_command = f"docker kill {container_id}"
@@ -65,46 +66,35 @@ def start_app_with_docker():
 
     if not check_image_exists(image_name):
         print(f"Image {image_name} not installed, trying to import docker image from local tar file")
-        if media_info_str is None:
-            print(f"No media info found for appid: {full_appid}")
-            exit(1)
-        app_media_info = json.loads(media_info_str)
-
-        full_path = app_media_info.get("full_path")
-        if not full_path:
-            print(f"No app media full path found for appid: {appid}")
-            exit(1)
-        if not image_pkg_id:
-            print(f"No image pkg id found for appid: {appid}")
-            exit(1)
-        image_tar_path = f"{full_path}/{appid}.tar"
-
         is_imported = False
-        if os.path.exists(image_tar_path):
-            print(f"Try loading docker image from {image_tar_path}")
-            load_image_from_tar(image_tar_path)
-            is_imported = True
+        # 如果能import，优先import
+        if media_info_str is not None:
+            app_media_info = json.loads(media_info_str)
+            full_path = app_media_info.get("full_path")
+            if not full_path:
+                print(f"No app media full path found for appid: {appid}")
+                exit(1)
+            if not image_pkg_id:
+                print(f"No image pkg id found for appid: {appid}")
+                exit(1)
+            image_tar_path = f"{full_path}/{appid}.tar"
+            if os.path.exists(image_tar_path):
+                print(f"Try loading docker image from {image_tar_path}")
+                load_image_from_tar(image_tar_path)
+                is_imported = True
 
         if not is_imported:
             if zone_docker_repo_base_url:
                 image_full_name = f"{zone_docker_repo_base_url}/{image_name}"
                 pull_cmd = f"docker pull {image_full_name}"
-                print(f"Try Pulling docker image from {image_full_name}")
-                ret = os.system(pull_cmd)
-                if ret == 0:
-                    is_imported = True
-
-        if not is_imported:
-            #尝试docker pull
-            pull_cmd = f"docker pull {image_name}"
-            print(f"Try Pulling docker image from {image_name}")
+            else: 
+                pull_cmd = f"docker pull {image_name}"
+            print(f"Try Pulling docker image from {image_full_name}")
             ret = os.system(pull_cmd)
             if ret != 0:
-                print(f"Failed to pull docker image {image_name}")
+                print(f"Failed to import  docker image {image_name}")
                 exit(1)
 
-
-    # 通过配置得到镜像的启动参数，包括路径映射，虚拟网络，CPU配额，内存配额
     volume_mapping = ""
     data_mount_point = app_instance_config.get("data_mount_point",[])
     if data_mount_point:

@@ -103,14 +103,14 @@ export async function generate_zone_boot_config_jwt(sn:string,owner_private_key:
         zone_boot_config = {
             oods: ["ood1"],
             exp: now + 3600*24*365*10, 
-            nonce:now,
+            iat:now,
         };
     } else {
         zone_boot_config = {
             oods: ["ood1"],
             sn: sn,
             exp: now + 3600*24*365*10, 
-            nonce:now,
+            iat:now,
         };
     }
 

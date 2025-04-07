@@ -52,14 +52,8 @@ if __name__ == "__main__":
         exit(1)
     app_instance_config = json.loads(app_instance_config_str)
 
-    if media_info_str is None:
-        print(f"No media info found for appid: {full_appid}")
-        exit(1)
-    app_media_info = json.loads(media_info_str)
-
     if device_info_str:
         device_info = json.loads(device_info_str)
-
 
     if app_instance_config_str is None:
         print(f"No configuration found for appid: {full_appid}")

@@ -24,11 +24,6 @@ if __name__ == "__main__":
         exit(1)
     app_instance_config = json.loads(app_instance_config_str)
 
-    if media_info_str is None:
-        print(f"No media info found for appid: {full_appid}")
-        exit(1)
-    app_media_info = json.loads(media_info_str)
-
     if device_info_str:
         device_info = json.loads(device_info_str)
     #container_hash = app_meta_info.get("image_hash")
@@ -38,6 +33,10 @@ if __name__ == "__main__":
         container_id = full_appid
         os.system(f"docker stop {container_id}")
     else:
+        if media_info_str is None:
+            print(f"No media info found for appid: {full_appid}")
+            exit(1)
+        app_media_info = json.loads(media_info_str)
         full_path = app_media_info.get("full_path")
         if not full_path:
             print(f"No app media full path found for appid: {full_appid}")

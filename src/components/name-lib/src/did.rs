@@ -52,9 +52,6 @@ impl DID {
     
     pub fn from_str(did: &str) -> NSResult<Self> {
         let parts: Vec<&str> = did.split(':').collect();
-        if parts.len() < 3 {
-            return Err(NSError::InvalidDID(format!("invalid did {}",did)));
-        }
         if parts[0] != "did" {
             //this is a host name
             let result = Self::from_host_name(did);
@@ -256,6 +253,14 @@ mod tests {
         let did = DID::from_host_name("zhicong.me").unwrap();
         assert_eq!(did.method, "web");
         assert_eq!(did.id, "zhicong.me");
+
+        let did = DID::from_str("buckyos.ai").unwrap();
+        assert_eq!(did.method, "web");
+        assert_eq!(did.id, "buckyos.ai");
+        let host_name = did.to_host_name();
+        assert_eq!(host_name, "buckyos.ai");
+        let did_str = did.to_string();
+        assert_eq!(did_str, "did:web:buckyos.ai");
     }
     
 }

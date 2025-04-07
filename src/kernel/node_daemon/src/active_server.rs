@@ -142,7 +142,7 @@ impl ActiveServer {
             owner_public_key:owner_public_key,
             owner_did:DID::new("bns",user_name),
             device_doc_jwt:device_doc_jwt.to_string(),
-            zone_iat:buckyos_get_unix_timestamp() as u32,
+            zone_iat:(buckyos_get_unix_timestamp() as u32 - 3600),
         };
 
 

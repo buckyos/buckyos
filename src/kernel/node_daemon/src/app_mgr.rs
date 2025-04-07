@@ -67,22 +67,21 @@ impl AppRunItem {
         ))
     }
 
-    async fn set_env_var(&self) -> Result<()> {
+    async fn set_env_var(&self,_is_system_app:bool) -> Result<()> {
         //if self.app_service_config.app_pkg_id.is_some() {
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
         let instance_pkg_id = self.get_instance_pkg_id(env.is_strict())?;
         
         let app_pkg = env.load(instance_pkg_id.as_str()).await;
-        if app_pkg.is_err() {
-            return Err(ControlRuntItemErrors::PkgNotExist(instance_pkg_id));
+        if app_pkg.is_ok() {
+            let app_pkg = app_pkg.unwrap();
+            let media_info_json = json!({
+                "pkg_id": instance_pkg_id,
+                "full_path": app_pkg.full_path.to_string_lossy(),
+            });
+            let media_info_json_str = media_info_json.to_string();
+            std::env::set_var("app_media_info", media_info_json_str);
         }
-        let app_pkg = app_pkg.unwrap();
-        let media_info_json = json!({
-            "pkg_id": instance_pkg_id,
-            "full_path": app_pkg.full_path.to_string_lossy(),
-        });
-        let media_info_json_str = media_info_json.to_string();
-        std::env::set_var("app_media_info", media_info_json_str);
 
         let app_config_str = serde_json::to_string(&self.app_service_config).unwrap();
         std::env::set_var("app_instance_config",app_config_str);
@@ -141,7 +140,11 @@ impl RunItemControl for AppRunItem {
 
     async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
         //TODO
-        self.set_env_var().await?;
+        if self.app_service_config.app_pkg_id.is_some() {
+            self.set_env_var(true).await?;
+        } else {
+            self.set_env_var(false).await?;
+        }
         let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
 
         let result = self.app_loader
@@ -166,9 +169,12 @@ impl RunItemControl for AppRunItem {
 
     
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
-        self.set_env_var().await?;
+        if self.app_service_config.app_pkg_id.is_some() {
+            self.set_env_var(true).await?;
+        } else {
+            self.set_env_var(false).await?;
+        }
         let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
-        
         let result = self.app_loader
             .stop(Some(&real_param))
             .await
@@ -189,16 +195,21 @@ impl RunItemControl for AppRunItem {
     }
 
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
+        let is_system_app;
         if self.app_service_config.app_pkg_id.is_some() {
             let env = PackageEnv::new(get_buckyos_system_bin_dir());
             let instance_pkg_id = self.get_instance_pkg_id(env.is_strict())?;
+            info!("state system app,will load dapp's app_pkg {}",instance_pkg_id.as_str());
             let app_pkg = env.load(instance_pkg_id.as_str()).await;
             if app_pkg.is_err() {
                 return Ok(ServiceState::NotExist);
             }
+            is_system_app = true;
+        } else {
+            is_system_app = false;
         }  
         
-        self.set_env_var().await?;
+        self.set_env_var(is_system_app).await?;
         let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
         let result = self.app_loader.status(Some(&real_param)).await.map_err(|err| {
             return ControlRuntItemErrors::ExecuteError(

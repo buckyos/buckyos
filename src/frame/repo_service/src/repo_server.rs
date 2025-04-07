@@ -615,9 +615,7 @@ impl RepoServer {
             return Err(RPCErrors::ReasonError("pkg_list is none".to_string()));
         }
         let pkg_list = pkg_list.unwrap();
-        if runtime.zone_config.is_some() {
-            info!("zone_config is some!!!");
-        }
+
         let zone_config = runtime.get_zone_config();
         if zone_config.is_none() {
             return Err(RPCErrors::ReasonError("zone_config is none".to_string()));
