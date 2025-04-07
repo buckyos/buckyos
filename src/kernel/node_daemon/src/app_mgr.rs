@@ -125,6 +125,7 @@ impl RunItemControl for AppRunItem {
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
         let instance_pkg_id = self.get_instance_pkg_id(env.is_strict())?;
+        info!("install app instance pkg {}",instance_pkg_id);
         env.install_pkg(&instance_pkg_id, true,false).await
             .map_err(|e| {
                 error!("AppRunItem install pkg {} failed! {}", self.app_id, e);
@@ -189,9 +190,9 @@ impl RunItemControl for AppRunItem {
 
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState> {
         if self.app_service_config.app_pkg_id.is_some() {
-            let app_pkg_id = self.app_service_config.app_pkg_id.as_ref().unwrap().clone();
             let env = PackageEnv::new(get_buckyos_system_bin_dir());
-            let app_pkg = env.load(app_pkg_id.as_str()).await;
+            let instance_pkg_id = self.get_instance_pkg_id(env.is_strict())?;
+            let app_pkg = env.load(instance_pkg_id.as_str()).await;
             if app_pkg.is_err() {
                 return Ok(ServiceState::NotExist);
             }

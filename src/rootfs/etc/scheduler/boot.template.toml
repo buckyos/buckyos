@@ -44,7 +44,7 @@
         "description": {
             "detail": "BuckyOS File Browser"
         },
-        "author": "buckyos.io",
+        "author": "did:web:buckyos.io",
         "pub_time": 1743008063,
         "exp": 1837616063,
         "pkg_list": {

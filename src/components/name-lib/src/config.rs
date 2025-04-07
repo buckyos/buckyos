@@ -896,6 +896,13 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         );
         let ood1_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(ood1_jwk.clone()).unwrap();
         let mut ood1_device_config = DeviceConfig::new_by_jwk("ood1",ood1_jwk.clone());
+
+        ood1_device_config.support_container = false;
+        #[cfg(all(target_os = "linux"))]
+        {
+            ood1_device_config.support_container = true;
+        }
+        
         ood1_device_config.iss = "did:bns:devtest".to_string();
         let ood1_device_config_json_str = serde_json::to_string_pretty(&ood1_device_config).unwrap();
         println!("ood1 device config: {}",ood1_device_config_json_str);
