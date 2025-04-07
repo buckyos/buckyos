@@ -28,6 +28,7 @@ use log::*;
 use name_client::*;
 use name_lib::*;
 use std::path::PathBuf;
+use serde_json::{Value};
 use tokio::task;
 use url::Url;
 
@@ -161,8 +162,14 @@ fn main() {
             std::process::exit(1);
         })
         .unwrap();
+    
+    let config_json = serde_json::from_str(&config).map_err(|e| {
+        error!("Error parsing gateway config: {}", e);
+        std::process::exit(1);
+    });
 
-    info!("Gateway config: {}", config);
+    let config_json : Value = config_json.unwrap();
+    info!("Gateway config: {}", serde_json::to_string_pretty(&config_json).unwrap());
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 

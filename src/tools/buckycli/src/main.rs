@@ -142,18 +142,20 @@ async fn main() -> Result<(), String> {
         )
         .get_matches();
     
-    init_buckyos_api_runtime("buckyos-cli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
+
+    let mut runtime = init_buckyos_api_runtime("buckycli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
         println!("Failed to init buckyos runtime: {}", e);
         return e.to_string();
     })?;
 
     //TODO: Support login to verify-hub via command line to obtain a valid session_token, to avoid requiring a private key locally
-    let mut buckyos_runtime = get_buckyos_api_runtime().unwrap();
-    let _session_token = buckyos_runtime.login().await.map_err(|e| {
+
+    runtime.login().await.map_err(|e| {
         println!("Failed to login: {}", e);
         return e.to_string();
     })?;
-
+    set_buckyos_api_runtime(runtime);
+    let buckyos_runtime = get_buckyos_api_runtime().unwrap();
     let mut private_key = None;
     let zone_host_name = buckyos_runtime.zone_id.to_host_name();
     println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id,zone_host_name);

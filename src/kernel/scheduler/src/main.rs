@@ -403,14 +403,16 @@ async fn schedule_loop(is_boot:bool) -> Result<()> {
 async fn service_main(is_boot:bool) -> Result<i32> {
     init_logging("scheduler",true);
     info!("Starting scheduler service............................");
-    init_buckyos_api_runtime("scheduler",None,BuckyOSRuntimeType::KernelService).await
+
+
+    if is_boot {
+        info!("do_boot_scheduler,scheduler run once");
+        let runtime = init_buckyos_api_runtime("scheduler",None,BuckyOSRuntimeType::KernelService).await
         .map_err(|e| {
             error!("init_buckyos_api_runtime failed: {:?}", e);
             e
         })?;
-
-    if is_boot {
-        info!("do_boot_scheduler,scheduler run once");
+        set_buckyos_api_runtime(runtime);
         do_boot_scheduler().await.map_err(|e| {
             error!("do_boot_scheduler failed: {:?}", e);
             e
@@ -418,12 +420,16 @@ async fn service_main(is_boot:bool) -> Result<i32> {
         return Ok(0);
     } else {
         info!("Enter schedule loop.");
-        let mut runtime = get_buckyos_api_runtime().unwrap();
+        let mut runtime = init_buckyos_api_runtime("scheduler",None,BuckyOSRuntimeType::KernelService).await
+            .map_err(|e| {
+                error!("init_buckyos_api_runtime failed: {:?}", e);
+                e
+            })?;
         runtime.login().await.map_err(|e| {
             error!("login failed: {:?}", e);
             e
         })?;
-        
+        set_buckyos_api_runtime(runtime);
         schedule_loop(false).await.map_err(|e| {
             error!("schedule_loop failed: {:?}", e);
             e

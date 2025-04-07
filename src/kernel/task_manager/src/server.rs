@@ -518,7 +518,7 @@ pub async fn start_task_manager_service() {
         "*": {
           "enable_cors":true,
           "routes": {
-            "/kapi/task_manager" : {
+            "/kapi/task-manager" : {
                 "inner_service":"task_manager"
             }
           }

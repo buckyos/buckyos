@@ -104,9 +104,13 @@ pub fn try_load_current_device_config_from_env() -> NSResult<()> {
 }
 
 static CURRENT_BUCKYOS_RUNTIME:OnceCell<BuckyOSRuntime> = OnceCell::new();
-pub fn get_buckyos_api_runtime() -> Result<BuckyOSRuntime> {
+pub fn get_buckyos_api_runtime() -> Result<&'static BuckyOSRuntime> {
     let runtime = CURRENT_BUCKYOS_RUNTIME.get().unwrap();
-    Ok(runtime.clone())
+    Ok(runtime)
+}
+
+pub fn set_buckyos_api_runtime(runtime: BuckyOSRuntime) {
+    CURRENT_BUCKYOS_RUNTIME.set(runtime);
 }
 
 pub fn get_full_appid(app_id: &str,owner_user_id: &str) -> String {
@@ -123,7 +127,7 @@ pub fn get_session_token_env_key(app_full_id: &str,is_app_service:bool) -> Strin
     }
 }
 
-pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,runtime_type:BuckyOSRuntimeType) -> Result<()> {
+pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,runtime_type:BuckyOSRuntimeType) -> Result<BuckyOSRuntime> {
     if CURRENT_BUCKYOS_RUNTIME.get().is_some() {
         return Err(RPCErrors::ReasonError("BuckyOSRuntime already initialized".to_string()));
     }
@@ -142,8 +146,8 @@ pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,r
     let mut runtime = BuckyOSRuntime::new(app_id,owner_user_id,runtime_type);
     runtime.fill_by_load_config().await?;
     runtime.fill_by_env_var().await?;
-    CURRENT_BUCKYOS_RUNTIME.set(runtime);
-    Ok(())
+    //CURRENT_BUCKYOS_RUNTIME.set(runtime);
+    Ok(runtime)
 }
 
 
@@ -358,6 +362,7 @@ impl BuckyOSRuntime {
                 if private_key.is_ok() {
                     info!("!!!! Make sure your development machine is secured,user_private_key_file {} load success, ",user_private_key_file.to_string_lossy());
                     self.user_private_key = Some(private_key.unwrap());
+                    self.user_id = Some("root".to_string());
                 } else {
                     info!("user_private_key_file {} load failed!:{:?}",user_private_key_file.to_string_lossy(),private_key.err().unwrap());
                 }
@@ -383,6 +388,7 @@ impl BuckyOSRuntime {
         self.force_https = machine_config.force_https;
         Ok(())
     }
+
 
     pub async fn login(&mut self) -> Result<()> {
         if !self.zone_id.is_valid() {
@@ -453,9 +459,11 @@ impl BuckyOSRuntime {
         //session token already set, try to connect to control-panel and get zone config
         let control_panel_client = self.get_control_panel_client().await?;
         let zone_config = control_panel_client.load_zone_config().await?;
-        info!("get zone config OK ,api-runtime: login success");
         self.zone_config = Some(zone_config); 
+        info!("get zone config OK ,api-runtime: login success");
         if self.runtime_type == BuckyOSRuntimeType::KernelService || self.runtime_type == BuckyOSRuntimeType::FrameService {
+            let (rbac_model,rbac_policy) = control_panel_client.load_rbac_config().await?;
+            rbac::create_enforcer(Some(rbac_model.as_str()),Some(rbac_policy.as_str())).await.unwrap();
             self.refresh_trust_keys().await?;
             info!("refresh trust keys OK");
         }
@@ -526,12 +534,6 @@ impl BuckyOSRuntime {
 
         if self.zone_config.is_some() {
             let zone_config = self.zone_config.as_ref().unwrap();
-            let trust_key = zone_config.get_auth_key(None);
-            if trust_key.is_some() {
-                let kid = "root".to_string();
-                let key = trust_key.as_ref().unwrap();
-                self.set_trust_key(kid.as_str(),key).await;
-            }
 
             if zone_config.verify_hub_info.is_some() {
                 let verify_hub_info = zone_config.verify_hub_info.as_ref().unwrap();
@@ -539,6 +541,22 @@ impl BuckyOSRuntime {
                 let key = DecodingKey::from_jwk(&verify_hub_info.public_key);
                 if key.is_ok() {
                     self.set_trust_key(kid.as_str(),&key.unwrap()).await;
+                }
+            }
+
+            if zone_config.owner.is_some() {
+                let owner_key = zone_config.get_default_key();
+                let owner_did = zone_config.owner.as_ref().unwrap().clone();
+                if owner_key.is_some() {
+                    let owner_key = owner_key.unwrap();
+                    let owner_public_key = DecodingKey::from_jwk(&owner_key).map_err(|err| {
+                        error!("Failed to parse owner_public_key from zone_config: {}",err);
+                        RPCErrors::ReasonError(err.to_string())
+                    })?;
+                    self.set_trust_key("root",&owner_public_key).await;
+                    self.set_trust_key(owner_did.to_string().as_str(),&owner_public_key).await;
+                    self.set_trust_key(owner_did.id.clone().as_str(),&owner_public_key).await;
+                    info!("update owner_public_key [{}],[{}] to trust keys",owner_did.to_string(),owner_did.id);
                 }
             }
         }
@@ -787,16 +805,14 @@ impl BuckyOSRuntime {
 
     pub async fn get_system_config_client(&self) -> Result<SystemConfigClient> {
         let url = self.get_zone_service_url("system_config",self.force_https)?;
-        info!("get system config client,url:{}",url);
         let session_token = self.session_token.read().await;
-        info!("get system config client,session_token:{}",session_token.as_str());
         let client = SystemConfigClient::new(Some(url.as_str()),Some(session_token.as_str()));
-        info!("get system config client OK");
+        info!("get system config client OK,url:{}",url);
         Ok(client)
     }
 
     pub async fn get_task_mgr_client(&self) -> Result<TaskManagerClient> {
-        let krpc_client = self.get_zone_service_krpc_client("task_manager").await?;
+        let krpc_client = self.get_zone_service_krpc_client("task-manager").await?;
         let client = TaskManagerClient::new(krpc_client);
         Ok(client)
     }
@@ -814,13 +830,13 @@ impl BuckyOSRuntime {
     }
 
     pub async fn get_verify_hub_client(&self) -> Result<VerifyHubClient> {
-        let krpc_client = self.get_zone_service_krpc_client("verify_hub").await?;
+        let krpc_client = self.get_zone_service_krpc_client("verify-hub").await?;
         let client = VerifyHubClient::new(krpc_client);
         Ok(client)
     }
 
     pub async fn get_repo_client(&self) -> Result<RepoClient> {
-        let krpc_client = self.get_zone_service_krpc_client("repo_service").await?;
+        let krpc_client = self.get_zone_service_krpc_client("repo-service").await?;
         let client = RepoClient::new(krpc_client);
         Ok(client)
     }
@@ -831,11 +847,6 @@ impl BuckyOSRuntime {
         if https_only {
             schema = "https";
         }
-
-        let service_name = match service_name {
-            "repo_service"  => "repo".to_string(),
-            _ => service_name.to_string(),
-        };
 
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
@@ -848,11 +859,11 @@ impl BuckyOSRuntime {
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
                 //TODO:根据system config上的信息，得到更合适的host
 
-                let service_port = match service_name.as_str() {
+                let service_port = match service_name {
                     "system_config" => 3200,
-                    "verify_hub" => 3300,
-                    "repo" => 4000,
-                    "task_manager" => 3380,
+                    "verify-hub" => 3300,
+                    "repo-service" => 4000,
+                    "task-manager" => 3380,
                     _ => {
                         return Err(RPCErrors::ServiceNotValid(service_name.to_string()));
                     }
@@ -864,7 +875,7 @@ impl BuckyOSRuntime {
     }
 
     pub async fn get_zone_service_krpc_client(&self,service_name: &str) -> Result<kRPC> {
-        let url = self.get_zone_service_url(service_name,true)?;
+        let url = self.get_zone_service_url(service_name,self.force_https)?;
         let session_token = self.session_token.read().await;
         let client = kRPC::new(&url,Some(session_token.clone()));
         Ok(client)

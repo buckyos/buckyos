@@ -23,13 +23,15 @@ use anyhow::Result;
 
 async fn service_main() -> Result<()> {
     init_logging("repo_service",true);
-    init_buckyos_api_runtime("repo-service",None,BuckyOSRuntimeType::KernelService).await?;
-    let mut runtime = get_buckyos_api_runtime()?;
+    let mut runtime = init_buckyos_api_runtime("repo-service",None,BuckyOSRuntimeType::KernelService).await?;
     let login_result = runtime.login().await;
     if  login_result.is_err() {
         error!("repo service login to system failed! err:{:?}", login_result);
         return Err(anyhow::anyhow!("repo service login to system failed! err:{:?}", login_result));
     }
+    set_buckyos_api_runtime(runtime);
+    let runtime = get_buckyos_api_runtime()?;
+
     let repo_service_settings = runtime.get_my_settings().await
       .map_err(|e| {
         error!("repo service settings not found! err:{}", e);
@@ -68,7 +70,7 @@ async fn service_main() -> Result<()> {
         "*": {
           "enable_cors":true,
           "routes": {
-            "/kapi/repo" : {
+            "/kapi/repo-service" : {
                 "inner_service":"repo_server"
             }
           }

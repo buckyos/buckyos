@@ -19,6 +19,13 @@
   "assertionMethod": [
     "#main_key"
   ],
+  "service": [
+    {
+      "id": "did:web:test.buckyos.io#lastDoc",
+      "type": "DIDDoc",
+      "serviceEndpoint": "https://test.buckyos.io/resolve/this_zone"
+    }
+  ],
   "exp": 2058838939,
   "iat": 1743478939,
   "owner": "did:bns:devtest",

@@ -609,7 +609,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 "#;
         //login test,use trust device JWT
         let private_key = EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap();
-        let client = kRPC::new("http://127.0.0.1:3300/kapi/verify_hub",None);
+        let client = kRPC::new("http://127.0.0.1:3300/kapi/verify-hub",None);
         let mut header = Header::new(Algorithm::EdDSA);
         //完整的kid表达应该是 $zoneid#kid 这种形式，为了提高性能做了一点简化
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
