@@ -108,21 +108,21 @@ def start_app_with_docker():
     volume_mapping = ""
     data_mount_point = app_instance_config.get("data_mount_point",[])
     if data_mount_point:
-        base_data_dir = f"/opt/buckyos/data/{username}/{appid}"
+        base_data_dir = util.get_app_data_dir(appid,username)
         os.makedirs(base_data_dir, exist_ok=True)
         for mount_point in data_mount_point:
             volume_mapping += f"-v {base_data_dir}/{mount_point}:{mount_point} "
 
     cache_mount_point = app_instance_config.get("cache_mount_point", [])
     if cache_mount_point:
-        base_cache_dir = f"/opt/buckyos/cache/{username}/{appid}"
+        base_cache_dir = util.get_app_cache_dir(appid,username)
         os.makedirs(base_cache_dir, exist_ok=True)
         for mount_point in cache_mount_point:
             volume_mapping += f"-v {base_cache_dir}/{mount_point}:{mount_point} "
 
     local_cache_mount_point = app_instance_config.get("local_cache_mount_point", [])
     if local_cache_mount_point:
-        base_cache_dir = f"/opt/buckyos/tmp/{username}/{appid}"
+        base_cache_dir = util.get_app_local_cache_dir(appid,username)
         os.makedirs(base_cache_dir, exist_ok=True)
         for mount_point in local_cache_mount_point:
             volume_mapping += f"-v {base_cache_dir}/{mount_point}:{mount_point} "

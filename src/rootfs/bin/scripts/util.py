@@ -7,6 +7,16 @@ ext = ""
 if system == "Windows":
     ext = ".exe"
 
+
+def get_app_data_dir(app_id: str,owner_user_id: str) -> str:
+    return os.path.join(get_buckyos_root(),"data", owner_user_id, app_id)
+
+def get_app_cache_dir(app_id: str,owner_user_id: str) -> str:
+    return os.path.join(get_buckyos_root(),"cache", owner_user_id, app_id)
+
+def get_app_local_cache_dir(app_id: str,owner_user_id: str) -> str:
+    return os.path.join(get_buckyos_root(),"tmp", owner_user_id, app_id)
+
 def get_session_token_env_key(app_full_id: str, is_app_service: bool) -> str:
     app_id = app_full_id.upper().replace("-", "_")
     if not is_app_service:
