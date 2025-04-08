@@ -9,7 +9,7 @@ import time
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 publish_dir = os.path.join(src_dir, "publish", "deb_template")
-base_meta_db_url = "http://test.buckyos.io/ndn/repo/meta_index.db/content"
+base_meta_db_url = "http://buckyos.ai/ndn/repo/meta_index.db/content"
 bucky_cli_path = os.path.join(src_dir, "rootfs","bin", "buckycli","buckycli")
 
 def adjust_control_file(dest_dir, new_version, architecture):
@@ -107,6 +107,7 @@ def make_deb(architecture, version):
     pkg_cfg_path = os.path.join(src_dir, "publish", "buckyos_pkgs","pkg.cfg.json")
     pkg_cfg = json.load(open(pkg_cfg_path))
     pkg_cfg["prefix"] = f"nightly-linux-{architecture}"
+    old_parent = pkg_cfg["parent"]
     pkg_cfg["parent"] = None
     json.dump(pkg_cfg, open(os.path.join(bin_dir, "pkg.cfg.json"), "w"))
     print(f"# write pkg.cfg.json to {bin_dir} OK ")
@@ -115,6 +116,9 @@ def make_deb(architecture, version):
     print(f"# prepare meta db to {dest_dir}")
     install_pkgs_to_bin(bin_dir)
     print(f"# install pkgs to {bin_dir}")
+    pkg_cfg["parent"] = old_parent
+    json.dump(pkg_cfg, open(os.path.join(bin_dir, "pkg.cfg.json"), "w"))
+
     os.remove(os.path.join(bin_dir, ".pkgs", "meta_index.db"))
     print(f"# remove meta_index.db from {bin_dir}")
 
@@ -127,6 +131,8 @@ def make_deb(architecture, version):
     subprocess.run("rm -f start_config.json", shell=True, check=True, cwd=clean_dir)
     subprocess.run("rm -f node_identity.json", shell=True, check=True, cwd=clean_dir)
     subprocess.run("rm -f *.zone.json", shell=True, check=True, cwd=clean_dir)
+    subprocess.run("rm -f scheduler/boot.template.toml", shell=True, check=True, cwd=clean_dir)
+    subprocess.run("mv scheduler/nightly.template.toml scheduler/boot.template.toml", shell=True, check=True, cwd=clean_dir)
     subprocess.run("mv machine.json machine_config.json", shell=True, check=True, cwd=clean_dir)
     subprocess.run([f"dpkg-deb --build {architecture}"], shell=True, check=True, cwd=deb_root_dir)
     print(f"build deb success at {deb_dir}")

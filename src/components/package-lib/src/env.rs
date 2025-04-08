@@ -475,10 +475,10 @@ impl PackageEnv {
         let (meta_obj_id,pkg_meta) = self.get_pkg_meta(pkg_id).await?;
 
         let will_install_pkg_id = pkg_meta.get_package_id();
-        if self.config.installed.insert(will_install_pkg_id.to_string()) {
-            self.update_config_file(&self.config)?;
-            info!("added pkg {} to env.pkg_cfg.json installed list", pkg_id);
-        }
+        // if self.config.installed.insert(will_install_pkg_id.to_string()) {
+        //     self.update_config_file(&self.config)?;
+        //     info!("added pkg {} to env.pkg_cfg.json installed list", pkg_id);
+        // }
 
         if install_deps {
             info!("install deps for pkg {}", pkg_id);

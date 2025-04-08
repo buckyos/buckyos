@@ -309,7 +309,7 @@ impl Router {
 
     async fn handle_upstream(&self, req: Request<Body>, upstream: &UpstreamRouteConfig) -> Result<Response<Body>> {
         let org_url = req.uri().to_string();
-        let url = format!("{}{}", upstream.target, req.uri().path_and_query().map_or("", |x| x.as_str()));
+        let url = format!("{}{}", upstream.target, org_url);
         let upstream_url = Url::parse(upstream.target.as_str());
         if upstream_url.is_err() {
             return Err(anyhow::anyhow!("Failed to parse upstream url: {}", upstream_url.err().unwrap()));
@@ -356,9 +356,9 @@ impl Router {
 
                 let header = req.headers().clone();
                 let mut upstream_req = Request::builder()
-                .method(req.method())
-                .uri(&org_url)
-                .body(req.into_body())?;
+                    .method(req.method())
+                    .uri(&url)
+                    .body(req.into_body())?;
 
                 *upstream_req.headers_mut() = header;
                 let resp = client.request(upstream_req).await?;

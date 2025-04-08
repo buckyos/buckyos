@@ -163,13 +163,11 @@ fn nameinfo_to_rdata(record_type: &str, name_info: &NameInfo) -> Result<Vec<RDat
 
             if name_info.did_document.is_some() {
                 let did_string = name_info.did_document.as_ref().unwrap().to_string();
-                let mut records = Vec::new();
                 records.push(RData::TXT(TXT::new(vec![format!("DID={};", did_string)])));
             }
 
             if name_info.pk_x_list.is_some() {
                 let pk_x_list = name_info.pk_x_list.as_ref().unwrap();
-                let mut records = Vec::new();
                 for pk_x in pk_x_list.iter() {
                     records.push(RData::TXT(TXT::new(vec![format!("PKX={};", pk_x)])));
                 }

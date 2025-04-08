@@ -2,7 +2,7 @@
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use jsonwebtoken::EncodingKey;
-use name_lib::{decode_jwt_claim_without_verify, DIDDocumentTrait};
+use name_lib::{decode_jwt_claim_without_verify};
 use ndn_lib::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

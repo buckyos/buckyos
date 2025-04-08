@@ -77,9 +77,18 @@ impl NameClient {
                 return Ok(cache_info.unwrap().clone());
             }
         }
+        let mut real_name = name.to_string();
+        if name.starts_with("did:") {
+            let name_did = DID::from_str(name);
+            if name_did.is_ok() {
+                let name_did = name_did.unwrap();
+                if name_did.method.as_str() == "web" {
+                    real_name = name_did.id.clone();
+                }
+            }
+        }
 
-        let name_info = self.name_query.query(name, record_type).await?;
-
+        let name_info = self.name_query.query(real_name.as_str(), record_type).await?;
         if name_info.ttl.is_some() {
             let mut ttl = name_info.ttl.clone().unwrap();
             if ttl > self.config.max_ttl {

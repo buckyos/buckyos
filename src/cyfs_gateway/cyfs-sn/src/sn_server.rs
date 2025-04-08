@@ -340,7 +340,7 @@ impl SNServer {
         }
     }
 
-    //return (zone_config_jwt,owner_public_key)
+    //return (owner_public_key,zone_config_jwt)
     async fn get_user_zone_config(&self, username: &str) -> Option<(String,String)> {
         let mut user_zone_config_map = self.all_user_zone_config.lock().await;
         let zone_config_reuslt = user_zone_config_map.get(username);
@@ -422,7 +422,7 @@ impl NsProvider for SNServer {
 
 
     async fn query(&self, name: &str,record_type:Option<RecordType>,from_ip:Option<IpAddr>) -> NSResult<NameInfo> {
-        info!("sn server dns process name query: {}, record_type: {:?}",name,record_type);
+        info!("sn server process name query: {}, record_type: {:?}",name,record_type);
         let record_type = record_type.unwrap_or_default();
         let from_ip = from_ip.unwrap_or(self.server_ip);
         let mut is_support = false;
@@ -476,9 +476,14 @@ impl NsProvider for SNServer {
                     let zone_config = self.get_user_zone_config(username).await;
                     if zone_config.is_some() {
                         let zone_config = zone_config.unwrap();
-                        let pkx = get_x_from_jwk_string(zone_config.1.as_str())?;
+                        let pkx = get_x_from_jwk_string(zone_config.0.as_str())
+                            .map_err(|e|{
+                                error!("failed to get x from jwk string: {:?}",e);
+                                NSError::NotFound(format!("failed to get x from jwk string: {}",e.to_string()))
+                            })?;
                         let result_name_info = NameInfo::from_zone_config_str(name, 
-                            zone_config.0.as_str(), pkx.as_str(),&None);
+                            zone_config.1.as_str(), pkx.as_str(),&None);
+                        info!("result_name_info: {:?}",result_name_info);
                         return Ok(result_name_info);
                     } else {
                         return Err(NSError::NotFound(name.to_string()));

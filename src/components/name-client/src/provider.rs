@@ -105,7 +105,7 @@ impl NameInfo {
     pub fn from_zone_config_str(name:&str,zone_config_jwt:&str,zone_config_pkx:&str,zone_gateway_device_list:&Option<Vec<String>>) -> Self {
         //let txt_string = format!("DID={};",zone_config_jwt);
         let ttl = 3600;
-        let pkx_string = format!("0:{};",zone_config_pkx);
+        let pkx_string = format!("0:{}",zone_config_pkx);
         let mut pk_x_list = vec![pkx_string];
         if let Some(device_list) = zone_gateway_device_list {
             for device_did in device_list {

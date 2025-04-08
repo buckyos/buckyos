@@ -44,7 +44,8 @@ mod tests {
         //5  use stream_url like rtcp://$stack_id/google.com:443 to use remote device as a tcp proxy
         std::env::set_var("BUCKY_LOG", "debug");
         init_logging("test_rtcp_tunnel",false);
-        init_name_lib().await.unwrap();
+        let web3_bridge_config = get_default_web3_bridge_config();
+        init_name_lib(&web3_bridge_config).await.unwrap();
         //1. create client rtcp stack(device default rtcp stack)
         let (sk, sk_pkcs) = generate_ed25519_key();
         let pk = encode_ed25519_sk_to_pk_jwk(&sk);
@@ -56,11 +57,12 @@ mod tests {
 
         //add_did_cache("dev01", EncodedDocument::Jwt(pk_str.clone())).await.unwrap();
         //add_did_cache("dev02", EncodedDocument::Jwt(pk_str.clone())).await.unwrap();
-
-        let mut local_stack = RTcpStack::new("dev01".to_string(), 8000, Some(sk_pkcs.clone()));
+        let did1 = DID::new("dev","dev01");
+        let mut local_stack = RTcpStack::new(did1, 8000, Some(sk_pkcs.clone()));
         local_stack.start().await.unwrap();
 
-        let mut remote_stack = RTcpStack::new("dev02".to_string(), 9000, Some(sk_pkcs.clone()));
+        let did2 = DID::new("dev","dev02");
+        let mut remote_stack = RTcpStack::new(did2, 9000, Some(sk_pkcs.clone()));
         remote_stack.start().await.unwrap();
 
         let remote_stack_id = "dev02.devices.web3.buckyos.io:9000";
