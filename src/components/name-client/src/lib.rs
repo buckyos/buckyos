@@ -124,11 +124,11 @@ pub async fn resolve_ed25519_auth_key(remote_did: &DID) -> NSResult<[u8; 32]> {
     }
     let did_doc = client.unwrap().resolve_did(remote_did,None).await?;
     let did_doc = parse_did_doc(did_doc)?;
-    let auth_key = did_doc.get_auth_key(None);
-    if auth_key.is_some() {
-        let auth_key = auth_key.unwrap();
-        let auth_key = decoding_key_to_ed25519_sk(&auth_key)?;
-        return Ok(auth_key);
+    let exchange_key = did_doc.get_exchange_key(None);
+    if exchange_key.is_some() {
+        let exchange_key = exchange_key.unwrap();
+        let exchange_key = decoding_key_to_ed25519_sk(&exchange_key)?;
+        return Ok(exchange_key);
     }
     return Err(NSError::NotFound("Invalid did document".to_string()));
 }

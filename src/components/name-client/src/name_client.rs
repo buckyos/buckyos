@@ -78,11 +78,12 @@ impl NameClient {
             }
         }
         let mut real_name = name.to_string();
-        if name.starts_with("did:") {
+        if name.starts_with("did") {
             let name_did = DID::from_str(name);
             if name_did.is_ok() {
                 let name_did = name_did.unwrap();
                 if name_did.method.as_str() == "web" {
+                    info!("resolve did:web is some as resolve host: {}", name_did.id.as_str());
                     real_name = name_did.id.clone();
                 }
             }

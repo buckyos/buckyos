@@ -46,6 +46,23 @@ impl DID {
         None
     }
 
+    pub fn get_auth_key(&self) -> Option<DecodingKey> {
+        if self.method == "dev" {
+           let jwk = json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": self.id,
+           });
+           let jwk = serde_json::from_value(jwk);
+           if jwk.is_err() {
+            return None;
+           }
+           let jwk:Jwk = jwk.unwrap();
+           return Some(DecodingKey::from_jwk(&jwk).unwrap());
+        }
+        None
+    }
+
     pub fn is_self_auth(&self) -> bool {
         self.method == "dev"
     }
@@ -189,6 +206,7 @@ pub trait DIDDocumentTrait {
     fn get_id(&self) -> DID;
     //key id is none means the default key
     fn get_auth_key(&self,kid:Option<&str>) -> Option<DecodingKey>;
+    fn get_exchange_key(&self,kid:Option<&str>) -> Option<DecodingKey>;
 
     fn get_iss(&self) -> Option<String>;
     fn get_exp(&self) -> Option<u64>;

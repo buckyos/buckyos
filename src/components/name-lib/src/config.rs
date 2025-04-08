@@ -103,6 +103,18 @@ impl DIDDocumentTrait for ZoneBootConfig {
         return None;
     }
 
+    fn get_exchange_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+        if self.gateway_devs.is_empty() {
+            return None;
+        }
+        let did = self.gateway_devs[0].clone();
+        let key = did.get_auth_key();
+        if key.is_none() {
+            return None;
+        }
+        return Some(key.unwrap());
+    }
+
     fn get_iss(&self) -> Option<String> {
         return None;
     }
@@ -188,7 +200,7 @@ pub struct ZoneConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,//zone short name
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_list: Option<Vec<String>>,//device did list
+    pub device_list: Option<HashMap<String,DID>>,//gateway device did list
     //ood server endpoints,can be ["ood1","ood2@192.168.32.1","ood3#vlan1]
     pub oods: Vec<String>,    
     //因为所有的Node上的Gateway都是同质的，所以这里可以不用配置？DNS记录解析到哪个Node，哪个Node的Gateway就是ZoneGateway
@@ -373,6 +385,19 @@ impl DIDDocumentTrait for ZoneConfig {
                     return None;
                 }
                 return Some(decoding_key.unwrap());
+            }
+        }
+        return None;
+    }
+
+    fn get_exchange_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+        if self.device_list.is_some() {
+            let device_list = self.device_list.as_ref().unwrap();
+            let did = device_list.get("gateway");
+            if did.is_some() {
+                let did = did.unwrap();
+                let key = did.get_auth_key();
+                return key;
             }
         }
         return None;
@@ -578,12 +603,18 @@ impl DIDDocumentTrait for DeviceConfig {
         return None;
     }
 
+    fn get_exchange_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+        return self.get_auth_key(kid);
+    }
+
     fn get_iss(&self) -> Option<String> {
         return Some(self.iss.clone());
     }
+
     fn get_exp(&self) -> Option<u64> {
         return Some(self.exp)
     }
+
     fn get_iat(&self) -> Option<u64> {
         return Some(self.iat)
     }
@@ -750,6 +781,11 @@ impl DIDDocumentTrait for OwnerConfig {
                 return Some(decoding_key.unwrap());
             }
         }
+        return None;
+    }
+
+    fn get_exchange_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+        //return default zone's exchange key
         return None;
     }
 
