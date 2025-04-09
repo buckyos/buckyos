@@ -74,6 +74,8 @@ def prepare_package(pkg_name,pkg_meta):
         os.makedirs(os.path.join(pkg_tmp_dir, "scripts"), exist_ok=True)
         scripts_dir = os.path.join(src_dir,"rootfs/bin/scripts")
         for item in os.listdir(scripts_dir):
+            if item == "pkg_meta.json":
+                continue
             if item.startswith("."):
                 continue
             s = os.path.join(scripts_dir, item)
@@ -83,15 +85,16 @@ def prepare_package(pkg_name,pkg_meta):
             else:
                 shutil.copy2(s, d)
     
-    print(f"Package {pkg_name} prepared at {pkg_tmp_dir}")
+    print(f"> Package {pkg_name} prepared at {pkg_tmp_dir}")
 
 
 def main():
     # 获取所有包名
     pkg_dirs = glob.glob(os.path.join(src_dir, "publish/buckyos_pkgs/*"))
     for pkg_dir in pkg_dirs:
+        print(f"\n# Processing {pkg_dir}\n")
         pkg_name = os.path.basename(pkg_dir)
-        meta_file = os.path.join(pkg_dir, ".pkg_meta.json")
+        meta_file = os.path.join(pkg_dir, "pkg_meta.json")
         if os.path.exists(meta_file):
             pkg_meta = json.load(open(meta_file))
             pkg_meta["pub_time"] = int(time.time())

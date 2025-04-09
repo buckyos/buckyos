@@ -1029,6 +1029,46 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     }
     
     #[test]
+    fn test_zone_boot_config() {
+        let private_key_pem = r#"
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEIBwApVoYjauZFuKMBRe02wKlKm2B6a1F0/WIPMqDaw5F
+        -----END PRIVATE KEY-----
+        "#;
+        let jwk = json!(
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "qmtOLLWpZeBMzt97lpfj2MxZGWn3QfuDB7Q4uaP3Eok"
+            }
+        );
+        let private_key: EncodingKey = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap();
+        let public_key_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
+        let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
+
+        let zone_boot_config = ZoneBootConfig {
+            id:None,
+            oods:vec!["ood1".to_string()],
+            sn:None,
+            exp:buckyos_get_unix_timestamp() + 3600*24*365*3,
+            iat:buckyos_get_unix_timestamp() as u32,
+            owner:None,
+            owner_key:None,
+            gateway_devs:vec![],
+            extra_info:HashMap::new(),
+        };
+
+        let zone_boot_config_jwt = zone_boot_config.encode(Some(&private_key)).unwrap();
+        println!("zone_boot_config_jwt: {:?}",zone_boot_config_jwt);
+
+        //decode
+        let zone_boot_config_decoded = ZoneBootConfig::decode(&zone_boot_config_jwt,Some(&public_key)).unwrap();
+        println!("zone_boot_config_decoded: {:?}",zone_boot_config_decoded);
+
+        assert_eq!(zone_boot_config,zone_boot_config_decoded);
+    }
+    
+    #[test]
     fn test_zone_config() {
         let private_key_pem = r#"
         -----BEGIN PRIVATE KEY-----
