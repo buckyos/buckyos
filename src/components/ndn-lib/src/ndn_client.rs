@@ -304,8 +304,8 @@ impl NdnClient {
                     return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
                 }
             }
-            let did = DID::from_host_name(url);
-            if did.is_none() {
+            let did = DID::from_str(url);
+            if did.is_err() {
                 return Err(NdnError::InvalidId("invalid did".to_string()));
             }
             let did = did.unwrap();
@@ -443,8 +443,8 @@ impl NdnClient {
                     return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
                 }
             }
-            let did = DID::from_host_name(chunk_url);
-            if did.is_none() {
+            let did = DID::from_str(chunk_url);
+            if did.is_err() {
                 return Err(NdnError::InvalidId("invalid did".to_string()));
             }
             let did = did.unwrap();

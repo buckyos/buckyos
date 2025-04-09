@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv6Addr};
 use std::str::FromStr;
+use jsonwebtoken::jwk::Jwk;
 use tokio::net::UdpSocket;
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
@@ -222,8 +223,11 @@ pub fn ed25519_to_decoding_key(sk: &[u8;32]) -> NSResult<DecodingKey> {
     Ok(public_key)
 }
 
-pub fn decoding_key_to_ed25519_sk(key: &DecodingKey) -> NSResult<[u8;32]> {
-    unimplemented!()
+pub fn jwk_to_ed25519_pk(jwk: &Jwk) -> NSResult<[u8;32]> {
+    let x = get_x_from_jwk(jwk)?;
+    let x_bytes = URL_SAFE_NO_PAD.decode(x).map_err(|_| NSError::Failed("jwk_to_ed25519_pk: Invalid x".to_string()))?;
+    let x_bytes = x_bytes.try_into().map_err(|_| NSError::Failed("jwk_to_ed25519_pk: Invalid x".to_string()))?;
+    Ok(x_bytes)
 }
 
 pub fn encode_ed25519_sk_to_pk(sk: &SigningKey) -> String {
@@ -385,7 +389,7 @@ mod test {
 
         //let sn_public_key 
         let did_str ="8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no.dev.did";
-        let sn_did = DID::from_host_name(did_str).unwrap();
+        let sn_did = DID::from_str(did_str).unwrap();
         let sn_public_key = sn_did.get_ed25519_auth_key().unwrap();
         println!("sn_public_key: {:?}",sn_public_key);
         let sn_x25519_public_key = ed25519_to_curve25519::ed25519_pk_to_curve25519(sn_public_key);

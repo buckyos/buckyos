@@ -88,22 +88,23 @@ impl DIDDocumentTrait for ZoneBootConfig {
         return DID::undefined();
     }
     
-    fn get_auth_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+    fn get_auth_key(&self,kid:Option<&str>) -> Option<(DecodingKey,Jwk)> {
         if kid.is_none() {
             if self.owner_key.is_none() {
                 return None;
             }
-            let result_key = DecodingKey::from_jwk(&self.owner_key.as_ref().unwrap());
+            let owner_key = self.owner_key.as_ref().unwrap().clone();
+            let result_key = DecodingKey::from_jwk(&owner_key);
             if result_key.is_err() {
                 error!("Failed to decode owner key: {:?}",result_key.err().unwrap());
                 return None;
             }
-            return Some(result_key.unwrap());
+            return Some((result_key.unwrap(),owner_key));
         }
         return None;
     }
 
-    fn get_exchange_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+    fn get_exchange_key(&self,kid:Option<&str>) -> Option<(DecodingKey,Jwk)> {
         if self.gateway_devs.is_empty() {
             return None;
         }
@@ -364,7 +365,7 @@ impl DIDDocumentTrait for ZoneConfig {
         return self.id.clone();
     }
 
-    fn get_auth_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+    fn get_auth_key(&self,kid:Option<&str>) -> Option<(DecodingKey,Jwk)> {
         if self.verification_method.is_empty() {
             return None;
         }
@@ -374,7 +375,7 @@ impl DIDDocumentTrait for ZoneConfig {
                 error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
                 return None;
             }
-            return Some(decoding_key.unwrap());
+            return Some((decoding_key.unwrap(),self.verification_method[0].public_key.clone()));
         }
         let kid = kid.unwrap();
         for method in self.verification_method.iter() {
@@ -384,13 +385,13 @@ impl DIDDocumentTrait for ZoneConfig {
                     error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
                     return None;
                 }
-                return Some(decoding_key.unwrap());
+                return Some((decoding_key.unwrap(),method.public_key.clone()));
             }
         }
         return None;
     }
 
-    fn get_exchange_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+    fn get_exchange_key(&self,kid:Option<&str>) ->  Option<(DecodingKey,Jwk)> {
         if self.device_list.is_some() {
             let device_list = self.device_list.as_ref().unwrap();
             let did = device_list.get("gateway");
@@ -577,7 +578,7 @@ impl DIDDocumentTrait for DeviceConfig {
         return self.id.clone();
     }
 
-    fn get_auth_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+    fn get_auth_key(&self,kid:Option<&str>) -> Option<(DecodingKey,Jwk)> {
         if self.verification_method.is_empty() {
             return None;
         }
@@ -587,7 +588,7 @@ impl DIDDocumentTrait for DeviceConfig {
                 error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
                 return None;
             }
-            return Some(decoding_key.unwrap());
+            return Some((decoding_key.unwrap(),self.verification_method[0].public_key.clone()));
         }
         let kid = kid.unwrap();
         for method in self.verification_method.iter() {
@@ -597,13 +598,13 @@ impl DIDDocumentTrait for DeviceConfig {
                     error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
                     return None;
                 }
-                return Some(decoding_key.unwrap());
+                return Some((decoding_key.unwrap(),method.public_key.clone()));
             }
         }
         return None;
     }
 
-    fn get_exchange_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+    fn get_exchange_key(&self,kid:Option<&str>) -> Option<(DecodingKey,Jwk)> {
         return self.get_auth_key(kid);
     }
 
@@ -758,7 +759,7 @@ impl DIDDocumentTrait for OwnerConfig {
     fn get_id(&self) -> DID {
         return self.id.clone();
     }
-    fn get_auth_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+    fn get_auth_key(&self,kid:Option<&str>) -> Option<(DecodingKey,Jwk)> {
         if self.verification_method.is_empty() {
             return None;
         }
@@ -768,7 +769,7 @@ impl DIDDocumentTrait for OwnerConfig {
                 error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
                 return None;
             }
-            return Some(decoding_key.unwrap());
+            return Some((decoding_key.unwrap(),self.verification_method[0].public_key.clone()));
         }
         let kid = kid.unwrap();
         for method in self.verification_method.iter() {
@@ -778,13 +779,13 @@ impl DIDDocumentTrait for OwnerConfig {
                     error!("Failed to decode auth key: {:?}",decoding_key.err().unwrap());
                     return None;
                 }
-                return Some(decoding_key.unwrap());
+                return Some((decoding_key.unwrap(),method.public_key.clone()));
             }
         }
         return None;
     }
 
-    fn get_exchange_key(&self,kid:Option<&str>) -> Option<DecodingKey> {
+    fn get_exchange_key(&self,kid:Option<&str>) -> Option<(DecodingKey,Jwk)> {
         //return default zone's exchange key
         return None;
     }

@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, engine::general_purpose::STANDARD,Engine as _};
-use crate::{NSError, NSResult,decode_jwt_claim_without_verify};
-use crate::config::{OwnerConfig, DeviceConfig,ZoneConfig};
+use crate::{decode_jwt_claim_without_verify, NSError, NSResult};
+use crate::config::{OwnerConfig, DeviceConfig,ZoneConfig,ZoneBootConfig};
 
 #[derive(Clone,Debug,PartialEq,Hash,Eq,PartialOrd,Ord)]
 pub struct DID {
@@ -46,7 +46,7 @@ impl DID {
         None
     }
 
-    pub fn get_auth_key(&self) -> Option<DecodingKey> {
+    pub fn get_auth_key(&self) -> Option<(DecodingKey,Jwk)> {
         if self.method == "dev" {
            let jwk = json!({
             "kty": "OKP",
@@ -58,7 +58,7 @@ impl DID {
             return None;
            }
            let jwk:Jwk = jwk.unwrap();
-           return Some(DecodingKey::from_jwk(&jwk).unwrap());
+           return Some((DecodingKey::from_jwk(&jwk).unwrap(),jwk));
         }
         None
     }
@@ -105,7 +105,14 @@ impl DID {
         format!("{}.{}.did",self.id,self.method)
     }
 
-    pub fn from_host_name(host_name: &str) -> Option<Self> {
+    fn from_host_name(host_name: &str) -> Option<Self> {
+        if host_name.ends_with(".did") {
+            let parts: Vec<&str> = host_name.split('.').collect();
+            if parts.len() == 3 {
+                return Some(DID::new(parts[1].to_string().as_str(), parts[0]));
+            }
+        }
+
         let web3_bridge_config = KNOWN_WEB3_BRIDGE_CONFIG.get();
         if web3_bridge_config.is_some() {
             let web3_bridge_config = web3_bridge_config.unwrap();
@@ -205,8 +212,8 @@ impl EncodedDocument {
 pub trait DIDDocumentTrait {
     fn get_id(&self) -> DID;
     //key id is none means the default key
-    fn get_auth_key(&self,kid:Option<&str>) -> Option<DecodingKey>;
-    fn get_exchange_key(&self,kid:Option<&str>) -> Option<DecodingKey>;
+    fn get_auth_key(&self,kid:Option<&str>) -> Option<(DecodingKey,Jwk)>;
+    fn get_exchange_key(&self,kid:Option<&str>) -> Option<(DecodingKey,Jwk)>;
 
     fn get_iss(&self) -> Option<String>;
     fn get_exp(&self) -> Option<u64>;
@@ -229,6 +236,11 @@ pub static KNOWN_WEB3_BRIDGE_CONFIG:OnceCell<HashMap<String,String>> = OnceCell:
 
 pub fn parse_did_doc(doc: EncodedDocument) -> NSResult<Box<dyn DIDDocumentTrait>> {
     let doc_value = doc.to_json_value()?;
+    if doc_value.get("verificationMethod").is_none() {
+        let zone_boot_config = serde_json::from_value::<ZoneBootConfig>(doc_value).map_err(|e| NSError::Failed(format!("parse zone boot config failed: {}",e)))?;
+        return Ok(Box::new(zone_boot_config));
+    }
+
     if doc_value.get("full_name").is_some() {
         let owner_config = serde_json::from_value::<OwnerConfig>(doc_value).map_err(|e| NSError::Failed(format!("parse owner config failed: {}",e)))?;
         return Ok(Box::new(owner_config));
@@ -237,10 +249,12 @@ pub fn parse_did_doc(doc: EncodedDocument) -> NSResult<Box<dyn DIDDocumentTrait>
         let device_config = serde_json::from_value::<DeviceConfig>(doc_value).map_err(|e| NSError::Failed(format!("parse device config failed: {}",e)))?;
         return Ok(Box::new(device_config));
     }
+
     if doc_value.get("oods").is_some() {
         let zone_config = serde_json::from_value::<ZoneConfig>(doc_value).map_err(|e| NSError::Failed(format!("parse zone config failed: {}",e)))?;
         return Ok(Box::new(zone_config));
     }
+
     Err(NSError::Failed("unknown did document".to_string()))
 }
 
@@ -279,6 +293,13 @@ mod tests {
         assert_eq!(host_name, "buckyos.ai");
         let did_str = did.to_string();
         assert_eq!(did_str, "did:web:buckyos.ai");
+
+
+        let did = DID::from_str("abcdef.dev.did").unwrap();
+        assert_eq!(did.method, "dev");
+        assert_eq!(did.id, "abcdef");
+        let did_str = did.to_string();
+        assert_eq!(did_str, "did:dev:abcdef");
     }
     
 }

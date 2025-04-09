@@ -124,8 +124,9 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
     let result_key : DecodingKey;
     if kid == "root" {
         //load zone config from system config service
-        result_key = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap()
+        let owner_auth_key = VERIFY_SERVICE_CONFIG.lock().await.as_ref().unwrap()
                         .zone_config.get_auth_key(None).ok_or(RPCErrors::ReasonError("Owner public key not found".to_string()))?;
+        result_key = owner_auth_key.0;
         info!("load owner public key from zone config");
     } else {
         //load device config from system config service(not from name-lib)
@@ -139,7 +140,8 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
             return Err(RPCErrors::ReasonError("Device config not found".to_string()));
         }
         let device_config = device_config.unwrap();
-        result_key = device_config.get_auth_key(None).ok_or(RPCErrors::ReasonError("Device public key not found".to_string()))?;
+        let result_device_key = device_config.get_auth_key(None).ok_or(RPCErrors::ReasonError("Device public key not found".to_string()))?;
+        result_key = result_device_key.0;
     }
 
     //kid is device_id,try load device config from system config service

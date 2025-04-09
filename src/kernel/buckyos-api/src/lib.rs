@@ -524,7 +524,7 @@ impl BuckyOSRuntime {
             let device_key = device_config.get_auth_key(None);
             if device_key.is_some() {
                 let kid = device_config.get_id().to_string();
-                let key = device_key.as_ref().unwrap().clone();
+                let key = device_key.as_ref().unwrap().0.clone();
                 self.set_trust_key(kid.as_str(),&key).await;
 
                 let kid = device_config.name.clone();

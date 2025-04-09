@@ -17,7 +17,7 @@
     <div class="container">
         <bucky-checkbox id="chk_enable_bucky_forward" lable="{{t "use_buckyos_sn"}}" check="true"></bucky-checkbox>
         <div style="margin-top: 0px; margin-left: 28px;">
-            * 通过buckyos.io的Web3网桥中转流量到 Personal Server.
+            * 通过buckyos的Web3网桥中转流量到 Personal Server.
             <p>
                 - 简单配置即可让您的Personal Server拥有稳定的公网可访问性。
             </p>

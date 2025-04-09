@@ -67,6 +67,7 @@ impl NsProvider for DnsProvider {
                 name_server_configs,
             );
         }
+        info!("dns query: {}",name);
         //let resolver2 = Resolver::new();
         let resolver = TokioAsyncResolver::tokio(server_config, ResolverOpts::default());
         //resolver.lookup(name, record_type)
@@ -130,7 +131,8 @@ impl NsProvider for DnsProvider {
             RecordType::DID => {
                 let response = resolver.txt_lookup(name).await;
                 if response.is_err() {
-                    return Err(NSError::Failed(format!("lookup txt failed! {}",response.err().unwrap())));
+                    warn!("lookup {} txt record failed! {}",name,response.err().unwrap());
+                    return Err(NSError::Failed(format!("lookup txt failed! {}",name)));
                 }
                 let response = response.unwrap();
                 //let mut did_tx:String;
@@ -195,6 +197,7 @@ impl NsProvider for DnsProvider {
                     
                     let mut zone_boot_config = zone_boot_config.unwrap();
                     zone_boot_config.owner_key = Some(public_key_jwk);
+                    zone_boot_config.id = Some(DID::from_str(name).unwrap());
                     let gateway_devs = name_info.get_gateway_device_list();
                     if gateway_devs.is_some() {
                         zone_boot_config.gateway_devs =  gateway_devs.unwrap();
@@ -202,6 +205,7 @@ impl NsProvider for DnsProvider {
          
                     info!("resolve & verify zone_boot_config from {} TXT record OK.",name);
                     let zone_boot_config_value = serde_json::to_value(&zone_boot_config).unwrap();
+                    //info!("zone_boot_config_value: {:?}",zone_boot_config_value);
                     name_info.did_document = Some(EncodedDocument::JsonLd(zone_boot_config_value));
                 }
                 return Ok(name_info);
@@ -214,6 +218,7 @@ impl NsProvider for DnsProvider {
     }
 
     async fn query_did(&self, did: &DID, fragment: Option<&str>, from_ip: Option<IpAddr>) -> NSResult<EncodedDocument> {
+        info!("query_did: {}",did.to_string());
         let name_info = self.query(&did.to_host_name(), Some(RecordType::DID), None).await?;
         if name_info.did_document.is_some() {
             return Ok(name_info.did_document.unwrap());

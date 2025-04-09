@@ -112,7 +112,7 @@ impl NameInfo {
                 let device_did = DID::from_str(device_did.as_str());
                 if device_did.is_ok() {
                     let device_did = device_did.unwrap();
-                    let pkx_string = format!("1:{};",device_did.id);
+                    let pkx_string = format!("1:{}",device_did.id);
                     pk_x_list.push(pkx_string);
                 }
             }

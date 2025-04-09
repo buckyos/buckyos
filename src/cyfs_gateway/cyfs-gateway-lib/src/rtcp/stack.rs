@@ -80,18 +80,15 @@ impl RTcpStack {
                 "this device ed25519 sk is none".to_string(),
             ));
         }
-        let remote_did = DID::from_host_name(target_hostname.as_str());
-        if remote_did.is_none() {
-            return Err(TunnelError::DocumentError(
-                "invalid target device is not did".to_string(),
-            ));
-        }
-        let remote_did = remote_did.unwrap();
-        let auth_key = resolve_ed25519_auth_key(&remote_did)
+        let remote_did = DID::from_str(target_hostname.as_str()).map_err(|op| {
+            TunnelError::DocumentError(format!("invalid target device is not did: {}",op))
+        })?;
+
+        let exchange_key = resolve_ed25519_exchange_key(&remote_did)
             .await
             .map_err(|op| {
                 let msg = format!(
-                    "cann't resolve target device {} auth key: {}",
+                    "cann't resolve target device {} ed25519 exchange key: {}",
                     target_hostname.as_str(),
                     op
                 );
@@ -100,7 +97,7 @@ impl RTcpStack {
             })?;
 
         //info!("remote ed25519 auth_key: {:?}",auth_key);
-        let remote_x25519_pk = ed25519_to_curve25519::ed25519_pk_to_curve25519(auth_key);
+        let remote_x25519_pk = ed25519_to_curve25519::ed25519_pk_to_curve25519(exchange_key);
         //info!("remote x25519 pk: {:?}",remote_x25519_pk);
 
         let my_secret = EphemeralSecret::random();
@@ -159,14 +156,14 @@ impl RTcpStack {
         token: String,
         from_hostname: String,
     ) -> Result<([u8; 32], [u8; 32]), TunnelError> {
-        let from_did = DID::from_host_name(from_hostname.as_str());
-        if from_did.is_none() {
+        let from_did = DID::from_str(from_hostname.as_str());
+        if from_did.is_err() {
             return Err(TunnelError::DocumentError(
                 "invalid from device is not did".to_string(),
             ));
         }
         let from_did = from_did.unwrap();
-        let ed25519_pk = resolve_ed25519_auth_key(&from_did)
+        let ed25519_pk = resolve_ed25519_exchange_key(&from_did)
             .await
             .map_err(|op| {
                 TunnelError::DocumentError(format!(

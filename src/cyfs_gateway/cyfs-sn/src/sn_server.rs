@@ -57,6 +57,7 @@ impl SNServer {
         let mut device_list: Option<Vec<String>> = None;
         let current_device_config = CURRENT_DEVICE_CONFIG.get();
         if current_device_config.is_some() {
+            info!("current device config (GATEWAY) is set: {:?}",current_device_config.unwrap());
             let current_device_config = current_device_config.unwrap();
             device_list = Some(vec![current_device_config.get_id().to_string()]);
         } 
@@ -443,10 +444,17 @@ impl NsProvider for SNServer {
                     return Ok(result_name_info);
                 },
                 RecordType::TXT => {
+                    let mut gateway_list = Vec::new();
+                    let current_device_config = CURRENT_DEVICE_CONFIG.get();
+                    if current_device_config.is_some() {
+                        let current_device_config = current_device_config.unwrap();
+                        gateway_list.push(current_device_config.get_id().to_string());
+                    }
+                    let gateway_list = Some(gateway_list);
                     //返回当前服务器的zoneconfig和auth_key
                     let result_name_info = NameInfo::from_zone_config_str(name, self.zone_boot_config.as_str(),
                          self.zone_boot_config_pkx.as_str(),
-                         &self.zone_gateway_list);
+                         &gateway_list);
                     return Ok(result_name_info);
                 },
                 _ => {

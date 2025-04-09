@@ -55,7 +55,6 @@ function update_i18n() {
 
 //after dom loaded
 window.onload = async () => {
-    set_sn_api_url("http://web3.buckyos.io/kapi/sn");
     const wizzard_data : ActiveWizzardData = {
         is_direct_connect : false,
         sn_active_code : "",

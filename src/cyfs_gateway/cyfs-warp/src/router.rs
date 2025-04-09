@@ -296,7 +296,7 @@ impl Router {
             let req_path = req.uri().path();
             let tunnel_url = sn_server.select_tunnel_for_http_upstream(host,req_path).await;
             if tunnel_url.is_some() {
-                let tunnel_url   = tunnel_url.unwrap();
+                let tunnel_url = tunnel_url.unwrap();
                 info!("select tunnel: {}",tunnel_url.as_str());
                 return self.handle_upstream(req, &UpstreamRouteConfig{target:tunnel_url, redirect:RedirectType::None}).await;
             }
@@ -310,6 +310,7 @@ impl Router {
     async fn handle_upstream(&self, req: Request<Body>, upstream: &UpstreamRouteConfig) -> Result<Response<Body>> {
         let org_url = req.uri().to_string();
         let url = format!("{}{}", upstream.target, org_url);
+        info!("handle_upstream url: {}", url);
         let upstream_url = Url::parse(upstream.target.as_str());
         if upstream_url.is_err() {
             return Err(anyhow::anyhow!("Failed to parse upstream url: {}", upstream_url.err().unwrap()));
@@ -350,14 +351,23 @@ impl Router {
                 }
             },
             _ => {
-                let tunnel_connector = TunnelConnector;
+                let tunnel_connector = TunnelConnector {
+                    target_stream_url: upstream.target.clone(),
+                };
+
                 let client: Client<TunnelConnector, Body> = Client::builder()
                     .build::<_, hyper::Body>(tunnel_connector);
 
                 let header = req.headers().clone();
+                let mut host_name = "127.0.0.1".to_string();
+                let hname =  req.headers().get("host");
+                if hname.is_some() {
+                    host_name = hname.unwrap().to_str().unwrap().to_string();
+                }
+                let fake_url = format!("http://{}{}", host_name, org_url);
                 let mut upstream_req = Request::builder()
                     .method(req.method())
-                    .uri(&url)
+                    .uri(fake_url)
                     .body(req.into_body())?;
 
                 *upstream_req.headers_mut() = header;
@@ -482,5 +492,21 @@ impl rustls::server::ResolvesServerCert for SNIResolver {
             warn!("No tls config found for server_name: {}", server_name);
             return None;
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parser_stream_url() {
+        let stream_url = "rtcp://sdSKcMuxU_BtGAvqs729BIBwe5H9Jo3T_wj4GdRgCfE.dev.did/:80/static/index.html";
+        let url = Url::parse(stream_url).unwrap();
+        println!("url.path: {}", url.path());
+        assert_eq!(url.scheme(), "rtcp");
+        assert_eq!(url.host_str(), Some("sdSKcMuxU_BtGAvqs729BIBwe5H9Jo3T_wj4GdRgCfE.dev.did"));
+        assert_eq!(url.port(),None);
     }
 }

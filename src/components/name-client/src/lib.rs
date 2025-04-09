@@ -105,12 +105,13 @@ pub async fn resolve_auth_key(did: &DID,kid:Option<&str>) -> NSResult<DecodingKe
     let did_doc = parse_did_doc(did_doc)?;
     let auth_key = did_doc.get_auth_key(kid);
     if auth_key.is_some() {
-        return Ok(auth_key.unwrap());
+        let auth_key = auth_key.unwrap();
+        return Ok(auth_key.0);
     }
     return Err(NSError::NotFound("Invalid kid".to_string()));
 }
 
-pub async fn resolve_ed25519_auth_key(remote_did: &DID) -> NSResult<[u8; 32]> {
+pub async fn resolve_ed25519_exchange_key(remote_did: &DID) -> NSResult<[u8; 32]> {
     //return #auth-key
     if let Some(auth_key) = remote_did.get_ed25519_auth_key() {
         return Ok(auth_key);
@@ -122,12 +123,13 @@ pub async fn resolve_ed25519_auth_key(remote_did: &DID) -> NSResult<[u8; 32]> {
         error!("{}",msg);
         return Err(NSError::InvalidState(msg));
     }
-    let did_doc = client.unwrap().resolve_did(remote_did,None).await?;
+    let client = client.unwrap();
+    let did_doc = client.resolve_did(remote_did,None).await?;
     let did_doc = parse_did_doc(did_doc)?;
     let exchange_key = did_doc.get_exchange_key(None);
     if exchange_key.is_some() {
         let exchange_key = exchange_key.unwrap();
-        let exchange_key = decoding_key_to_ed25519_sk(&exchange_key)?;
+        let exchange_key = jwk_to_ed25519_pk(&exchange_key.1)?;
         return Ok(exchange_key);
     }
     return Err(NSError::NotFound("Invalid did document".to_string()));
@@ -173,8 +175,14 @@ mod tests {
         let web3_bridge_config = get_default_web3_bridge_config();
         buckyos_kit::init_logging(service_name,false);
         init_name_lib(&web3_bridge_config).await.unwrap();
-        let name_info = resolve("test.buckyos.io", crate::provider::RecordType::from_str("DID")).await.unwrap();
+        let name_info = resolve("web3.buckyos.ai", crate::provider::RecordType::from_str("DID")).await.unwrap();
         println!("name_info: {:?}",name_info);
+        let did = DID::from_str("did:web:web3.buckyos.ai").unwrap();
+        let did_doc = resolve_did(&did, None).await.unwrap();
+        println!("did_doc: {:?}",did_doc);
+        let remote_did = DID::from_str("did:web:web3.buckyos.ai").unwrap();
+        let _exchange_key = resolve_ed25519_exchange_key(&remote_did).await.unwrap();
+        //println!("exchange_key: {:?}",exchange_key);
     }
 
 }
