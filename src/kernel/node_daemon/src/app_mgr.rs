@@ -17,7 +17,12 @@ use crate::service_pkg::*;
 //use package_installer::*;
 use buckyos_api::{get_full_appid, get_session_token_env_key, AppServiceInstanceConfig};
 
-
+// 核心逻辑
+// 非docker模式逻辑与标准的service item一致，但脚本调用是由app_loader来完成
+// docker模式下
+// 1. 通过app_loader的status脚本来判断是否存在（以镜像是否存在未标准）
+// 2. 不存在，则要求app_loader安装镜像（可以指定media_info)
+// 3. 由app_loader的start脚本来创建容器，创建的过程中可能会导入镜像
 pub struct AppRunItem {
     pub app_id: String,
     pub app_service_config: AppServiceInstanceConfig,
@@ -70,17 +75,19 @@ impl AppRunItem {
     async fn set_env_var(&self,_is_system_app:bool) -> Result<()> {
         //if self.app_service_config.app_pkg_id.is_some() {
         let env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let instance_pkg_id = self.get_instance_pkg_id(env.is_strict())?;
-        
-        let app_pkg = env.load(instance_pkg_id.as_str()).await;
-        if app_pkg.is_ok() {
-            let app_pkg = app_pkg.unwrap();
-            let media_info_json = json!({
-                "pkg_id": instance_pkg_id,
-                "full_path": app_pkg.full_path.to_string_lossy(),
-            });
-            let media_info_json_str = media_info_json.to_string();
-            std::env::set_var("app_media_info", media_info_json_str);
+        let instance_pkg_id = self.get_instance_pkg_id(env.is_strict());
+        if instance_pkg_id.is_ok() {
+            let instance_pkg_id = instance_pkg_id.unwrap();
+            let app_pkg = env.load(instance_pkg_id.as_str()).await;
+            if app_pkg.is_ok() {
+                let app_pkg = app_pkg.unwrap();
+                let media_info_json = json!({
+                    "pkg_id": instance_pkg_id,
+                    "full_path": app_pkg.full_path.to_string_lossy(),
+                });
+                let media_info_json_str = media_info_json.to_string();
+                    std::env::set_var("app_media_info", media_info_json_str);
+            }
         }
 
         let app_config_str = serde_json::to_string(&self.app_service_config).unwrap();
@@ -122,20 +129,47 @@ impl RunItemControl for AppRunItem {
     }
 
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
+        let is_system_app = self.app_service_config.app_pkg_id.is_some();
+
         let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
         let instance_pkg_id = self.get_instance_pkg_id(env.is_strict())?;
         info!("install app instance pkg {}",instance_pkg_id);
-        env.install_pkg(&instance_pkg_id, true,false).await
+        let install_result = env.install_pkg(&instance_pkg_id, true,false).await
             .map_err(|e| {
                 error!("AppRunItem install pkg {} failed! {}", self.app_id, e);
                 return ControlRuntItemErrors::ExecuteError(
                     "deploy".to_string(),
                     e.to_string(),
                 );
-            })?;
+            });
 
-        warn!("install app instance pkg {} success",instance_pkg_id);
-        Ok(())
+        if install_result.is_ok() {
+            warn!("install app instance pkg {} success",instance_pkg_id);
+        }
+
+        if !is_system_app {
+            self.set_env_var(false).await?;
+            let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
+            let result = self.app_loader.execute_operation("deploy",Some(&real_param)).await.map_err(|err| {
+                return ControlRuntItemErrors::ExecuteError(
+                    "deploy".to_string(),
+                    err.to_string(),
+                );
+            });
+            if result.is_ok() {
+                if result.unwrap() == 0 {
+                    info!("deploy app {} by app_loader success",self.app_id);
+                    return Ok(());
+                }
+            }
+            Ok(())
+        } else {
+            if install_result.is_ok() {
+                return Ok(());
+            } else {
+                return Err(install_result.err().unwrap());
+            }
+        }
     }
 
     async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {

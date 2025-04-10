@@ -79,7 +79,7 @@ impl ServicePkg {
         }
     }
 
-    async fn execute_operation(&self, op_name: &str, params: Option<&Vec<String>>) -> Result<i32> {
+    pub async fn execute_operation(&self, op_name: &str, params: Option<&Vec<String>>) -> Result<i32> {
         //let media_info = self.media_info.clone().unwrap();
         let media_info = self.media_info.lock().await;
         let media_info = media_info.as_ref();

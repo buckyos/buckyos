@@ -224,12 +224,14 @@ impl PackageEnv {
         if config_path.exists() {
             let config = std::fs::read_to_string(config_path);
             if config.is_ok() {
-                let config_result = serde_json::from_str(&config.unwrap());
+                let config = config.unwrap();
+                let config_result = serde_json::from_str(&config);
                 if  config_result.is_ok() {
                     env_config = config_result.unwrap();
+                    info!("env load pkg.cfg.json OK. {}",config);
                 }
             }
-        }
+        } 
         
         Self {
             work_dir,

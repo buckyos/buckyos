@@ -89,7 +89,7 @@ def start_app_with_docker():
                 pull_cmd = f"docker pull {image_full_name}"
             else: 
                 pull_cmd = f"docker pull {image_name}"
-            print(f"Try Pulling docker image from {image_full_name}")
+            print(f"Try Pulling docker image by {pull_cmd}")
             ret = os.system(pull_cmd)
             if ret != 0:
                 print(f"Failed to import  docker image {image_name}")
