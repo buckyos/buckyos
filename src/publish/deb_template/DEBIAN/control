@@ -6,5 +6,5 @@ Architecture: {{architecture}}
 Maintainer: buckyos.org
 Depends: docker.io,python3,curl,openssl,psmisc
 Description: buckyos system software.
- include node_daemon,node_activecyfs_gateway,app_loader,system_config_service,verify_hub.
+ include node_daemon,node_active,cyfs_gateway,app_loader,system_config_service,verify_hub.
  with default config files.

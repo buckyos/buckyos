@@ -308,7 +308,7 @@ impl CyfsWarpServer {
                     Ok(stream) => {
                         match tls_acceptor.accept(stream).await {
                             Ok(tls_stream) => {
-                                info!("tls accept a new tls from tcp stream OK!");
+                                debug!("tls accept a new tls from tcp stream OK!");
                                 Some(Ok::<_, std::io::Error>(tls_stream))
                             }
                             Err(e) => {

@@ -491,8 +491,8 @@ impl RTcpTunnel {
         let seq = self.next_seq();
 
         info!(
-            "RTcp tunnel open stream to {}, {}, can_direct:{}",
-            dest_host.clone().unwrap_or_default(),
+            "RTcp tunnel open stream to {}:{}, can_direct:{}",
+            dest_host.clone().unwrap_or("127.0.0.1".to_string()),
             dest_port,
             self.can_direct
         );

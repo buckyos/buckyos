@@ -86,7 +86,7 @@ impl Service<Uri> for TunnelConnector {
     fn call(&mut self, _uri: Uri) -> Self::Future {
         let target_stream_url = self.target_stream_url.clone();
         Box::pin(async move {
-            info!("TunnelConnector call uri: {}", target_stream_url.as_str());
+            debug!("TunnelConnector call uri: {}", target_stream_url.as_str());
             let tunnel_manager = crate::GATEWAY_TUNNEL_MANAGER.get().unwrap();
             let stream_url = Url::parse(&target_stream_url.to_string()).unwrap();
 

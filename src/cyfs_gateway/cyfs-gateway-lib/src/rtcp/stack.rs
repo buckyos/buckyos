@@ -235,7 +235,7 @@ impl RTcpStack {
         task::spawn(async move {
             loop {
                 let (stream, addr) = rtcp_listener.accept().await.unwrap();
-                info!("RTcp stack accept new tcp stream from {}", addr.clone());
+                debug!("RTcp stack accept new tcp stream from {}", addr.clone());
 
                 let this = this.clone();
                 task::spawn(async move {
