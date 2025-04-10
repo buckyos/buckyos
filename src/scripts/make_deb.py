@@ -28,7 +28,7 @@ temp_dir = "/tmp/"
 
 def prepare_meta_db(rootfs_dir):
     # 1 download base meta db
-    print("# download base meta db from {base_meta_db_url}")
+    print(f"# download base meta db from {base_meta_db_url}")
     root_env_db_path = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env",".pkgs","meta_index.db")
     subprocess.run(["wget",base_meta_db_url,"-O",root_env_db_path], check=True)
     print(f"# download base meta db to {root_env_db_path}")
