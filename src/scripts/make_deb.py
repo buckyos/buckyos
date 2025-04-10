@@ -29,7 +29,8 @@ temp_dir = "/tmp/"
 def prepare_meta_db(rootfs_dir):
     # 1 download base meta db
     print(f"# download base meta db from {base_meta_db_url}")
-    root_env_db_path = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env",".pkgs","meta_index.db")
+    os.makedirs(os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs"), exist_ok=True)
+    root_env_db_path = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs","meta_index.db")
     subprocess.run(["wget",base_meta_db_url,"-O",root_env_db_path], check=True)
     print(f"# download base meta db to {root_env_db_path}")
     # 2 scan packed pkgs dir, add pkg_meta_info to meta db
@@ -49,17 +50,17 @@ def prepare_meta_db(rootfs_dir):
                 subprocess.run([bucky_cli_path,"set_pkg_meta",item_path,root_env_db_path], check=True)
                 print(f"# add pkg_meta_info to meta db from {item_path}")
 
-    fileobj_path = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env",".pkgs", "meta_index.db.fileobj")
+    fileobj_path = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs", "meta_index.db.fileobj")
     fileobj = json.load(open(fileobj_path))
     fileobj["create_time"] = time.time()
     json.dump(fileobj, open(fileobj_path, "w"))
     fileobj_path = os.path.join(rootfs_dir, "data", "repo_service", "default_meta_index.db.fileobj")
     json.dump(fileobj, open(fileobj_path, "w"))
     print(f"# update fileobj create_time to {time.time()} for {fileobj_path}")
-    os.makedirs(os.path.join(rootfs_dir, "bin", ".pkgs"), exist_ok=True)
-    shutil.copy(root_env_db_path, os.path.join(rootfs_dir, "bin", ".pkgs", "meta_index.db"))
+    os.makedirs(os.path.join(rootfs_dir, "bin", "pkgs"), exist_ok=True)
+    shutil.copy(root_env_db_path, os.path.join(rootfs_dir, "bin", "pkgs", "meta_index.db"))
     shutil.copy(root_env_db_path, os.path.join(rootfs_dir, "data", "repo_service", "default_meta_index.db"))
-    print(f"# save meta db to {os.path.join(rootfs_dir, 'bin', '.pkgs', 'meta_index.db')}")
+    print(f"# save meta db to {os.path.join(rootfs_dir, 'bin', 'pkgs', 'meta_index.db')}")
     
 
 def install_pkgs_to_bin(bin_path):
@@ -119,7 +120,7 @@ def make_deb(architecture, version):
     pkg_cfg["parent"] = old_parent
     json.dump(pkg_cfg, open(os.path.join(bin_dir, "pkg.cfg.json"), "w"))
 
-    os.remove(os.path.join(bin_dir, ".pkgs", "meta_index.db"))
+    os.remove(os.path.join(bin_dir, "pkgs", "meta_index.db"))
     print(f"# remove meta_index.db from {bin_dir}")
 
     print(f"run: chmod -R 755 {deb_dir}")

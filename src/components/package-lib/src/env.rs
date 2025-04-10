@@ -3,12 +3,12 @@
 pkg-env的目录结构设计
 在work-dir下有一系列json格式的配置文件
 pkg.cfg.json envd的配置文件，不存在则env使用默认配置
-.pkgs/env.lock 锁文件，保证多进程的情况下只有一个进程可以进行写操作
-.pkgs/meta_index.db 元数据索引数据库
-.pkgs/meta_index.db.old 元数据索引数据库的备份文件
-.pkgs/pkg_nameA/$pkg_id pkg的实体安装目录
-pkg_nameA --> pkg_nameA的默认版本 链接到.pkgs/pkg_nameA$pkg_id目录
-pkg_nameA#1.0.3 --> pkg_nameA的已安装版本 链接到.pkgs/pkg_nameA$pkg_id目录
+pkgs/env.lock 锁文件，保证多进程的情况下只有一个进程可以进行写操作
+pkgs/meta_index.db 元数据索引数据库
+pkgs/meta_index.db.old 元数据索引数据库的备份文件
+pkgs/pkg_nameA/$pkg_id pkg的实体安装目录
+pkg_nameA --> pkg_nameA的默认版本 链接到pkgs/pkg_nameA$pkg_id目录
+pkg_nameA#1.0.3 --> pkg_nameA的已安装版本 链接到pkgs/pkg_nameA$pkg_id目录
 
 # pkg_id有两种格式
 - 语义pkg_id: pkg_nameA#1.0.3
@@ -23,7 +23,7 @@ def env.load(pkg_id):
     if meta_db
         pkg_meta = meta_db.get_pkg_meta(pkg_id)
         if pkg_meta:
-            #得到.pkgs/pkg_nameA/$pkg_id目录
+            #得到pkgs/pkg_nameA/$pkg_id目录
             pkg_strict_dir = get_pkg_strict_dir(pkg_meta)
             if os.exist(pkg_strict_dir)
                 return PkgMediaInfo(pkg_strict_dir)
@@ -502,15 +502,15 @@ impl PackageEnv {
     }
 
     async fn extract_pkg_from_chunk(&self, pkg_meta: &PackageMeta,meta_obj_id: &str,chunk_reader: ChunkReader,force_install: bool) -> PkgResult<()> {
-        //将chunk (这是一个tar.gz文件)解压安装到真实目录 .pkgs/pkg_nameA/$meta_obj_id
+        //将chunk (这是一个tar.gz文件)解压安装到真实目录 pkgs/pkg_nameA/$meta_obj_id
         //注意处理前缀: 如果包名与当前env前缀相同，那么符号链接里只包含无前缀部分
-        //建立符号链接 ./pkg_nameA#version -> .pkgs/pkg_nameA/$meta_obj_id
-        //如果是最新版本，建立符号链接 ./pkg_nameA -> .pkgs/pkg_nameA/$meta_obj_id
+        //建立符号链接 ./pkg_nameA#version -> pkgs/pkg_nameA/$meta_obj_id
+        //如果是最新版本，建立符号链接 ./pkg_nameA -> pkgs/pkg_nameA/$meta_obj_id
         info!("extract pkg {} from chunk",pkg_meta.pkg_name.as_str());
         let buf_reader = BufReader::new(chunk_reader);
         let gz_decoder = GzipDecoder::new(buf_reader);
         let mut archive = Archive::new(gz_decoder);
-        let synlink_target = format!("./.pkgs/{}/{}", pkg_meta.pkg_name, meta_obj_id);
+        let synlink_target = format!("./pkgs/{}/{}", pkg_meta.pkg_name, meta_obj_id);
         let target_dir = self.work_dir.join(synlink_target.clone());
         //如果target_dir存在？则根据是否强制安装决定是否删除后继续
         if force_install {
@@ -640,7 +640,7 @@ impl PackageEnv {
 
 
     fn get_install_dir(&self) -> PathBuf {
-        self.work_dir.join(".pkgs")
+        self.work_dir.join("pkgs")
     }
 
     fn get_meta_db_path(&self) -> PathBuf {
@@ -648,7 +648,7 @@ impl PackageEnv {
         if let Some(index_db_path) = &self.config.index_db_path {
             meta_db_path = PathBuf::from(index_db_path);
         } else {
-            meta_db_path = self.work_dir.join(".pkgs/meta_index.db")
+            meta_db_path = self.work_dir.join("pkgs/meta_index.db")
         }
         meta_db_path
     }
@@ -656,7 +656,7 @@ impl PackageEnv {
 
     fn get_pkg_strict_dir(&self, meta_obj_id: &str,pkg_meta: &PackageMeta) -> PathBuf {
         let pkg_name = pkg_meta.pkg_name.clone();
-        //.pkgs/pkg_nameA/$meta_obj_id
+        //pkgs/pkg_nameA/$meta_obj_id
         self.get_install_dir().join(pkg_name).join(meta_obj_id)
     }
 
@@ -666,7 +666,7 @@ impl PackageEnv {
         let mut pkg_dirs = Vec::new();
         
         if pkg_id.objid.is_some() {
-            pkg_dirs.push(self.get_install_dir().join(".pkgs").join(pkg_name).join(pkg_id.objid.unwrap()));
+            pkg_dirs.push(self.get_install_dir().join("pkgs").join(pkg_name).join(pkg_id.objid.unwrap()));
         } else {
             if pkg_id.version_exp.is_some() {
                //TODO: 要考虑如何结合lock文件进行查找
@@ -682,10 +682,10 @@ impl PackageEnv {
     
     // 添加一个新的私有方法来管理锁文件
     async fn acquire_lock(&self) -> PkgResult<RwLockWriteGuard<File>> {
-        let lock_path = self.work_dir.join(".pkgs/env.lock");
+        let lock_path = self.work_dir.join("pkgs/env.lock");
         
-        // 确保.pkgs目录存在
-        if let Err(e) = tokio_fs::create_dir_all(self.work_dir.join(".pkgs")).await {
+        // 确保pkgs目录存在
+        if let Err(e) = tokio_fs::create_dir_all(self.work_dir.join("pkgs")).await {
             return Err(PkgError::LockError(format!("Failed to create lock directory: {}", e)));
         }
 
@@ -713,7 +713,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let env = PackageEnv::new(temp_dir.path().to_path_buf());
         
-        // 创建.pkgs目录
+        // 创建pkgs目录
         tokio_fs::create_dir_all(env.get_install_dir()).await.unwrap();
         
         (env, temp_dir)
@@ -837,7 +837,7 @@ mod tests {
         env.try_update_index_db(&new_db_path).await.unwrap();
         
         // 验证更新结果
-        let db_path = env.work_dir.join(".pkgs/meta_index.db");
+        let db_path = env.work_dir.join("pkgs/meta_index.db");
         assert!(tokio_fs::metadata(&db_path).await.is_ok());
         assert_eq!(tokio_fs::read_to_string(db_path).await.unwrap(), "test data");
     }

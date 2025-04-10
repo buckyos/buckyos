@@ -53,13 +53,13 @@ pkg_name完整的由2部分组成:perfix.fullname,其中 prefix的典型逻辑�
 3. pkg_id包含准确的版本信息
 展开到 env/pkg_name#version/ 目录，pkg_env的安装流程会建立正确的符号链接，让其指向正确的默认版本。
 4. pkg_id包含准确的objid信息
-展开到env/.pkgs/.pkg_name/pkg_name#objid/ 目录，这通常是一个实体目录
+展开到env/pkgs/.pkg_name/pkg_name#objid/ 目录，这通常是一个实体目录
 
 注意 env.load与env.try_load的区别,env.try_load会无视本地的pkg按照情况，只通过pkg-index-db来获得pkg-meta
 
 ### env.get_pkg_meta(pkg_id);
 注意要与env.load保持一致，要返env.load(pkg_id)所加载pkg的meta信息。因此实现有 2 种
-1. 优先查找路径，比如env/.pkgs/.pkg_name/pkg_name#objid.meta 文件存在，则优先返回该文件的内容
+1. 优先查找路径，比如env/pkgs/pkg_name/pkg_name#objid.meta 文件存在，则优先返回该文件的内容
 2. 在env.pkg-index-db中查找得到pkg-meta
 
 
@@ -184,7 +184,7 @@ node_daemon在boot成功后（定义为能连上zone内的system config),立刻�
 
 ### 开发模式（开发者从通过git获得的版本)
 
-- 开发者模式的ENV通常没有.pkgs目录，都是通过实际的pkg-name目录加载
+- 开发者模式的ENV通常没有pkgs目录，都是通过实际的pkg-name目录加载
 - 开发者模式依旧可以设置ENV的父ENV，父ENV可以是非开发者模式的
 - 默认是不会启用自动升级的，但可以使用app安装。防止自动升级覆盖了用户正在开发的组件
 - 开发模式可以手工激活自动升级
