@@ -215,12 +215,12 @@ impl NdnClient {
         }
         
         let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
-        debug!("get_obj_by_url: cyfs_resp_headers {:?}",cyfs_resp_headers);
+        debug!("get_obj_by_url : cyfs_resp_headers {:?}",cyfs_resp_headers);
         // 获取响应内容
         let obj_str = res.text()
             .await
             .map_err(|e| NdnError::RemoteError(format!("Failed to read response body: {}", e)))?;
-        //info!(":=>RESP obj_content: {}",obj_str);
+        debug!("get_obj_by_url => RESP : {}",obj_str);
        
         if known_obj_id.is_some() {
             let known_obj_id = known_obj_id.unwrap();
@@ -541,6 +541,7 @@ impl NdnClient {
             .map_err(|e| NdnError::IoError(format!("Failed to get file metadata: {}", e)))?
             .len();
 
+        info!("start download remote fileobj!");
         let (obj_id, file_obj_json) = self.get_obj_by_url(url, None).await?;
         let file_obj: FileObject = serde_json::from_value(file_obj_json)
             .map_err(|e| NdnError::Internal(format!("Failed to parse FileObject: {}", e)))?;
@@ -563,6 +564,8 @@ impl NdnClient {
             info!("local_is_better: file size not match, remote:{} local:{}",file_obj.size,file_size);
             return Ok(false);
         }
+
+        info!("start calculate hash!");
 
         let mut hasher = ChunkHasher::new(None)
             .map_err(|e| NdnError::Internal(format!("Failed to create chunk hasher: {}", e)))?;

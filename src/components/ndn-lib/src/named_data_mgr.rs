@@ -873,6 +873,7 @@ impl NamedDataMgr {
             })?;
         debug!("open local_file_path success");
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();
+        file_reader.seek(SeekFrom::Start(0)).await;
         let (chunk_raw_id,chunk_size) = chunk_hasher.calc_from_reader(&mut file_reader).await.unwrap();
     
         let chunk_id = ChunkId::from_sha256_result(&chunk_raw_id);

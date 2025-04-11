@@ -506,6 +506,7 @@ impl RepoServer {
                 "success": true,
             })), req.id));
         }
+        info!("remote is better, will download remote meta-index-db by {}", root_source_url);
         
         ndn_client.download_fileobj_to_local(root_source_url.as_str(),&new_meta_index_db_path, None).await.map_err(|e| {
             error!("download remote meta-index-db by {} failed, err:{}", root_source_url, e);

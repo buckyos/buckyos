@@ -143,18 +143,22 @@ impl ChunkHasher {
         let mut total_read = 0;
         loop {
             let n = reader.read(&mut buffer).await
-            .map_err(|e| {
-                warn!("ChunkHasher: read failed! {}", e.to_string());
-                NdnError::IoError(e.to_string())
-            })?;
-            total_read += n as u64;
-            if n < CACL_HASH_PIECE_SIZE as usize {
+                .map_err(|e| {
+                    warn!("ChunkHasher: read failed! {}", e.to_string());
+                    NdnError::IoError(e.to_string())
+                })?;
+            
+            // 如果读取到0字节，表示已经到达EOF
+            if n == 0 {
                 break;
             }
-            hasher.update(&buffer[..n]); 
+            
+            // 更新哈希计算器
+            hasher.update(&buffer[..n]);
+            total_read += n as u64;
         }
 
-        Ok((hasher.finalize().to_vec(),total_read))
+        Ok((hasher.finalize().to_vec(), total_read))
     }
 
     pub fn calc_from_bytes(&mut self,bytes: &[u8]) -> Vec<u8> {

@@ -56,12 +56,12 @@ def prepare_meta_db(rootfs_dir):
     current_time = int(time.time())
     fileobj["create_time"] = current_time
     json.dump(fileobj, open(fileobj_path, "w"))
-    fileobj_path = os.path.join(rootfs_dir, "data", "repo_service", "default_meta_index.db.fileobj")
+    fileobj_path = os.path.join(rootfs_dir, "data", "repo-service", "default_meta_index.db.fileobj")
     json.dump(fileobj, open(fileobj_path, "w"))
     print(f"# update fileobj create_time to {current_time} for {fileobj_path}")
     os.makedirs(os.path.join(rootfs_dir, "bin", "pkgs"), exist_ok=True)
     shutil.copy(root_env_db_path, os.path.join(rootfs_dir, "bin", "pkgs", "meta_index.db"))
-    shutil.copy(root_env_db_path, os.path.join(rootfs_dir, "data", "repo_service", "default_meta_index.db"))
+    shutil.copy(root_env_db_path, os.path.join(rootfs_dir, "data", "repo-service", "default_meta_index.db"))
     print(f"# save meta db to {os.path.join(rootfs_dir, 'bin', 'pkgs', 'meta_index.db')}")
     
 

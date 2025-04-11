@@ -42,11 +42,11 @@ impl GetObjResult {
         Self { real_obj_id, real_body:body, path_obj_jwt:None }
     }
 
-    pub fn new_value_result(real_body:Value)->Self {
+    pub fn new_value_result(real_obj_id:ObjId,real_body:Value)->Self {
         let body_str = serde_json::to_string(&real_body).unwrap();
         let body = GetObjResultBody::TextRecord(body_str);
-        let fake_obj_id = ObjId::new_by_raw("fake".to_string(),vec![]);
-        Self { real_obj_id:fake_obj_id, real_body:body, path_obj_jwt:None }
+       
+        Self { real_obj_id:real_obj_id, real_body:body, path_obj_jwt:None }
     }
 }
 
@@ -247,7 +247,6 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
     let named_mgr = named_mgr.unwrap();
     let named_mgr2 = named_mgr.clone();
 
-            
     let range_str = req.headers().get(hyper::header::RANGE);
     let mut start = 0;
     if range_str.is_some() {
@@ -303,9 +302,9 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
 
                 if root_obj_id_result.is_ok() {
                    
-                    let (the_root_obj_id,the_path_obj_jwt,the_inner_path) = root_obj_id_result.unwrap();
+                    let (the_root_obj_id,_the_path_obj_jwt,the_inner_path) = root_obj_id_result.unwrap();
                     info!("ndn_router:select_obj_id_by_path_impl success,sub_path:{},inner_path:{} ",sub_path,the_inner_path.clone().unwrap_or("None".to_string()));
-                    path_obj_jwt = the_path_obj_jwt;
+                    
                     if the_inner_path.is_none() {
                         return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not found"));
                     }
@@ -351,7 +350,7 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
     if obj_content.is_some() {
         //root_obj/inner_path = obj_content
         //get_result = get_obj_result(named_mgr2, &obj_id, start, inner_obj_p).await?;     
-        get_result = GetObjResult::new_value_result(obj_content.unwrap());  
+        get_result = GetObjResult::new_value_result(obj_id.unwrap(),obj_content.unwrap());  
     } else {
         if obj_id.is_none() {
             return Err(anyhow::anyhow!("ndn_router:failed to get obj id from request!,request.uri():{}",req.uri()));
