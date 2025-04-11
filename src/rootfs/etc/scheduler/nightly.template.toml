@@ -203,7 +203,7 @@
 {
     "nightly-linux-amd64.node_daemon":"no",
     "nightly-linux-aarch64.node_daemon":"no",
-    "nightly-windows-amd64.node_daemon":"no,
+    "nightly-windows-amd64.node_daemon":"no",
     "nightly-windows-aarch64.node_daemon":"no",
     "nightly-apple-amd64.node_daemon":"no",
     "nightly-apple-aarch64.node_daemon":"no",
@@ -215,7 +215,7 @@
     "nightly-apple-amd64.buckycli":"no",
     "nightly-apple-aarch64.buckycli":"no",
 
-    "buckyos-filebrowser":"no",
+    "buckyos-filebrowser":"no"
 }    
 """
 # node config
