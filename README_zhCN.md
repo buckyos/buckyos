@@ -80,16 +80,32 @@ BuckyOS 使用 systemd 注册服务，如果你的 Linux 没有 systemd，可以
 
 通过源码安装可以更好地了解 BuckyOS，是参与开发的第一步。通过源码安装，你也可以将 BuckyOS 安装在 macOS 上。
 
-（需要完善：目前的脚本中没有包含开发环境的构建，需要安装 Rust 工具链、pkg-config、OpenSSL 等库）
+### 安装开发环境的必要依赖
+首先，我们需要安装编译所需的依赖环境。以下教程是针对类debian环境(debian, ubuntu)的
+1. 安装必要的依赖，执行`sudo apt install -y unzip gcc musl-tools make`
+1. 安装nodejs, 跟随[官方安装页面](https://nodejs.org/en/download/package-manager)的说明即可
+2. 安装pnpm, 编译脚本中使用了pnpm，这是为了更快地构建web应用。因为我们已经安装了nodejs，这里[通过npm安装](https://pnpm.io/installation#using-npm)
+3. 安装rust工具链, 跟随[官方安装页面](https://www.rust-lang.org/tools/install)的说明即可
+4. 安装需要的rust target：执行`. "$HOME/.cargo/env" && rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-gnu`
 
-```bash
-git clone https://github.com/buckyos/buckyos.git && cd buckyos && python3 build_env.py && python3 build.py && python3 make_deb.py
+### 克隆源码
+``` bash
+git clone https://github.com/buckyos/buckyos.git && cd buckyos/src
 ```
 
-如果要从源码构建树莓派的安装包，请执行：
+以下所有的命令都需要在仓库的`src`目录下执行
 
+### 编译源码，安装，并打包成可安装的deb
+小提示：
+- 如果不需要安装到本地，就不需要执行install.py
+- 如果不需要构建deb，就不需要执行make_deb.py
 ```bash
-python3 build_env.py && python3 build_arm.py && python3 make_deb_arm.py
+python3 scripts/build.py --no-install && sudo python3 scripts/install.py && python3 make_deb.py
+```
+
+### 编译并构建用于树莓派的安装包
+```bash
+python3 scripts/build.py aarch64 --no-install && python3 make_deb_arm.py
 ```
 
 在 build 脚本执行完成后，本机已完成安装（为了方便开发，默认包含测试用的身份信息）。通过以下命令可以以初始状态运行 BuckyOS：
@@ -101,8 +117,6 @@ sudo /opt/buckyos/bin/node_daemon --enable_active
 ```
 
 事实上，`build.py` 是日常开发中最常用的脚本。
-
-
 
 ## Why BuckyOS?
 

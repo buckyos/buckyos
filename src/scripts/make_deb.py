@@ -91,6 +91,7 @@ def install_pkgs_to_bin(bin_path):
 def make_deb(architecture, version):
     print(f"make deb with architecture: {architecture}, version: {version}")
     deb_root_dir = os.path.join(temp_dir, "deb_build")
+    print(f"deb_root_dir: {deb_root_dir}")
     deb_dir = os.path.join(deb_root_dir, architecture)
     if os.path.exists(deb_dir):
         shutil.rmtree(deb_dir)

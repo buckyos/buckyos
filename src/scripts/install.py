@@ -1,6 +1,7 @@
 import os
 import shutil
 import platform
+import platform
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 

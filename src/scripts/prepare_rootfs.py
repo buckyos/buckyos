@@ -3,9 +3,14 @@ import shutil
 import sys
 import tempfile
 import platform
+import platform
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 root_bin_dir = os.path.join(src_dir, "rootfs/bin")
+system = platform.system()
+ext = ""
+if system == "Windows":
+    ext = ".exe"
 system = platform.system()
 ext = ""
 if system == "Windows":

@@ -7,4 +7,4 @@ if len(sys.argv) > 1:
 
 print(f"make deb with version: {version}")
 
-make_deb.make_deb("aarch64", version)
+make_deb.make_deb("arm64", version)
