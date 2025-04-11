@@ -34,16 +34,9 @@ use url::Url;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-async fn service_main(config: &str, matches: &clap::ArgMatches) -> Result<()> {
-    // Parse config in json format
-    let json = serde_json::from_str(config).map_err(|e| {
-        let msg = format!("Error parsing config: {} {}", e, config);
-        error!("{}", msg);
-        Box::new(e) as Box<dyn std::error::Error>
-    })?;
-
+async fn service_main(config_json: serde_json::Value, matches: &clap::ArgMatches) -> Result<()> {
     // Load config from json
-    let load_result = config_loader::GatewayConfig::load_from_json_value(json).await;
+    let load_result = config_loader::GatewayConfig::load_from_json_value(config_json).await;
     if load_result.is_err() {
         let msg = format!("Error loading config: {}", load_result.err().unwrap());
         error!("{}", msg);
@@ -70,7 +63,7 @@ async fn service_main(config: &str, matches: &clap::ArgMatches) -> Result<()> {
 }
 
 // Parse config first, then config file if supplied by user
-fn load_config_from_args(matches: &clap::ArgMatches) -> Result<String> {
+async fn load_config_from_args(matches: &clap::ArgMatches) -> Result<serde_json::Value> {
     let default_config = get_buckyos_system_etc_dir().join("cyfs_gateway.json");
     let config_file = matches.get_one::<String>("config_file");
     let real_config_file;
@@ -79,15 +72,16 @@ fn load_config_from_args(matches: &clap::ArgMatches) -> Result<String> {
     } else {
         real_config_file = PathBuf::from(config_file.unwrap());
     }
-    std::fs::read_to_string(real_config_file.clone()).map_err(|e| {
-        let msg = format!(
-            "Error reading config file {}: {}",
-            real_config_file.display(),
-            e
-        );
+
+    let config_dir = real_config_file.parent().ok_or_else(|| {
+        let msg = format!("cannot get config dir: {:?}", real_config_file);
         error!("{}", msg);
-        Box::new(e) as Box<dyn std::error::Error>
-    })
+        msg
+    })?;
+    
+    let config_json = buckyos_kit::ConfigMerger::load_dir_with_root(&config_dir, &real_config_file).await?;
+
+    Ok(config_json)
 }
 
 fn generate_ed25519_key_pair_to_local() {
@@ -110,7 +104,8 @@ fn generate_ed25519_key_pair_to_local() {
     println!("Public key saved to: {:?}", pk_file);
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let matches = Command::new("CYFS Gateway Service")
         .version(buckyos_kit::get_version())
         .arg(
@@ -156,22 +151,16 @@ fn main() {
     init_logging("cyfs_gateway",true);
     info!("cyfs_gateway start...");
 
-    let config: String = load_config_from_args(&matches)
+    let config_json: serde_json::Value = load_config_from_args(&matches)
+        .await
         .map_err(|e| {
             error!("Error loading config: {}", e);
             std::process::exit(1);
         })
         .unwrap();
     
-    let config_json = serde_json::from_str(&config).map_err(|e| {
-        error!("Error parsing gateway config: {}", e);
-        std::process::exit(1);
-    });
-
-    let config_json : Value = config_json.unwrap();
+    //let config_json : Value = config_json.unwrap();
     info!("Gateway config: {}", serde_json::to_string_pretty(&config_json).unwrap());
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
 
     if matches.get_flag("debug") {
         info!("Debug mode enabled");
@@ -179,11 +168,10 @@ fn main() {
         console_subscriber::init();
     }
 
-    rt.block_on(async {
-        if let Err(e) = service_main(&config, &matches).await {
-            error!("Gateway run error: {}", e);
-        }
-    });
+    if let Err(e) = service_main(config_json, &matches).await {
+        error!("Gateway run error: {}", e);
+    }
+
 }
 
 #[cfg(test)]
@@ -244,9 +232,8 @@ mod tests {
             .await
             .unwrap();
 
-        //let tunnel_manager = TunnelManager::new(false);
-
-        let dispatcher = dispatcher::ServiceDispatcher::new(tunnel_manager,dispatcher_cfg);
+        let tunnel_manager = GATEWAY_TUNNEL_MANAGER.get().unwrap();
+        let dispatcher = dispatcher::ServiceDispatcher::new(tunnel_manager.clone(),dispatcher_cfg);
         dispatcher.start().await;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         buckyos_kit::start_tcp_echo_client("127.0.0.1:6001").await;

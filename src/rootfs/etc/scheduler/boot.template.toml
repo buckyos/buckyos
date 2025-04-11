@@ -193,12 +193,31 @@
 "services/repo-service/settings" = """
 {
     "remote_source": {
-        "root":"https://buckyos.io/ndn/repo/meta_index.db"
+        "root":"https://buckyos.ai/ndn/repo/meta_index.db"
     },
     "enable_dev_mode": true
 }
 """
+# 在zone内应该存在的pkg_list,注意是全名,chunk随意
+"services/repo-service/pkg_list" = """
+{
+    "nightly-linux-amd64.node_daemon":"no",
+    "nightly-linux-aarch64.node_daemon":"no",
+    "nightly-windows-amd64.node_daemon":"no,
+    "nightly-windows-aarch64.node_daemon":"no",
+    "nightly-apple-amd64.node_daemon":"no",
+    "nightly-apple-aarch64.node_daemon":"no",
 
+    "nightly-linux-amd64.buckycli":"no",
+    "nightly-linux-aarch64.buckycli":"no",
+    "nightly-windows-amd64.buckycli":"no",
+    "nightly-windows-aarch64.buckycli":"no",
+    "nightly-apple-amd64.buckycli":"no",
+    "nightly-apple-aarch64.buckycli":"no",
+
+    "buckyos-filebrowser":"no",
+}    
+"""
 
 # node config
 "nodes/ood1/config" = """ 

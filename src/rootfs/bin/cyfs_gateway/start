@@ -19,7 +19,7 @@ node_id = args.node_id
 keep_tunnel = args.keep_tunnel
 buckyos_root = util.get_buckyos_root()
 
-config_file = f"{buckyos_root}/etc/node_gateway.json"
+config_file = f"{buckyos_root}/etc/cyfs_gateway.json"
 print(f"Gateway config_file: {config_file}")
 run_cmd = f"{current_dir}/cyfs_gateway --config_file {config_file}"
 if keep_tunnel is not None:

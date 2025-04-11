@@ -59,7 +59,7 @@ async fn main() -> Result<(), String> {
                 Arg::new("src_pkg_path")
                     .index(1)
                     .long("src_pkg_path")
-                    .help("source package path,which dir contain .pkg_meta.json")
+                    .help("source package path,which dir contain pkg_meta.json")
                     .required(true)
             ).arg(
                 Arg::new("target_path")

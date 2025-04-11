@@ -1,4 +1,5 @@
 use super::dir::load_dir;
+use super::dir::load_dir_with_root;
 use json_value_merge::Merge;
 use serde_json::Value;
 use std::path::Path;
@@ -20,6 +21,28 @@ impl ConfigMerger {
             info!("Will merge config: {:?} -> {:?}", config.path, merged.path);
             merged.value.merge(&config.value);
         }
+
+        Ok(merged.value)
+    }
+
+    pub async fn load_dir_with_root(dir: &Path, root_file: &Path) -> Result<Value, Box<dyn std::error::Error>> {
+        info!("Loading config files from directory: {:?} with root file: {:?}", dir, root_file);
+
+        let configs = load_dir_with_root(dir, root_file).await?;
+
+        info!("Loaded {} config files: {:?}", configs.len(), configs);
+
+        if configs.len() == 1 {
+            return Ok(configs[0].value.clone());
+        }
+
+        let mut merged = configs[0].clone();
+        for config in configs.iter().skip(1) {
+            info!("Will merge config: {:?} -> {:?}", config.path, merged.path);
+            merged.value.merge(&config.value);
+        }
+
+        //merged.value.merge(&root.value);
 
         Ok(merged.value)
     }

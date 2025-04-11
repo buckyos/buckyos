@@ -155,6 +155,7 @@ impl RepoServer {
 
         let pin_pkg_list = self.get_pin_pkg_list().await?;
         let mut chunk_list:HashMap<String,WillDownloadPkgInfo> = HashMap::new();
+        let mut deps_metas:HashMap<String,PackageMeta> = HashMap::new();
         for (pkg_id,_chunk_id) in pin_pkg_list.iter() {
             let pkg_meta = meta_index_db.get_pkg_meta(pkg_id.as_str());
             if pkg_meta.is_err() {
@@ -168,6 +169,11 @@ impl RepoServer {
                 return Err(RPCErrors::ReasonError(format!("pkg_meta not found, pkg_id:{}", pkg_id)));
             }
             let (pkg_meta_obj_id,pkg_meta) = pkg_meta.unwrap();
+            meta_index_db.cacl_pkg_deps_metas(&pkg_meta,&mut deps_metas)
+                .map_err(|e| {
+                    error!("cacl_pkg_deps_metas failed, err:{}", e);
+                    RPCErrors::ReasonError(format!("cacl_pkg_deps_metas failed, err:{}", e))
+                })?;
             if pkg_meta.chunk_id.is_some() {
                 chunk_list.insert(pkg_meta.chunk_id.clone().unwrap(),WillDownloadPkgInfo {
                     pkg_name:pkg_meta.pkg_name.clone(),
@@ -177,7 +183,17 @@ impl RepoServer {
                 });
             }
         }
-        
+
+        for (pkg_meta_obj_id,pkg_meta) in deps_metas.iter() {
+            if pkg_meta.chunk_id.is_some() {
+                chunk_list.insert(pkg_meta.chunk_id.clone().unwrap(),WillDownloadPkgInfo {
+                    pkg_name:pkg_meta.pkg_name.clone(),
+                    pkg_version:pkg_meta.version.clone(),
+                    chunk_id:pkg_meta.chunk_id.clone().unwrap(),
+                    chunk_size:pkg_meta.chunk_size.clone().unwrap(),
+                });
+            }
+        }
         return Ok(chunk_list);
     }
 
@@ -339,8 +355,7 @@ impl RepoServer {
 
 
         let pkg_list = req.params.get("pkg_list");
-        let install_task_name = ReqHelper::get_str_param_from_req(&req,"task_name")?;
-        let session_token = ReqHelper::get_session_token(&req)?;
+        let install_task_name = req.get_str_param("task_name")?;
         if pkg_list.is_none() {
             return Err(RPCErrors::ReasonError("pkg_list is none".to_string()));
         }
@@ -383,9 +398,11 @@ impl RepoServer {
             }
             let chunk_id = pkg_meta.chunk_id.unwrap();
             total_size += pkg_meta.chunk_size.unwrap();
-            if chunk_id.as_str() != will_install_chunk_id {
-                error!("chunk_id not match, pkg_id:{}", pkg_id);
-                return Err(RPCErrors::ReasonError(format!("chunk_id not match, pkg_id:{}", pkg_id)));
+            if will_install_chunk_id.len() > 3 {} {
+                if chunk_id.as_str() != will_install_chunk_id {
+                    error!("chunk_id not match, pkg_id:{}", pkg_id);
+                    return Err(RPCErrors::ReasonError(format!("chunk_id not match, pkg_id:{}", pkg_id)));
+                }
             }
         }
         info!("will install pkg_list, total size:{}", total_size);

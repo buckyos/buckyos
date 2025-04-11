@@ -29,6 +29,17 @@ impl RepoClient {
         Ok(())
     }
 
+    // install pkg at current zone
+    // pkg_id -> will_install_chunk_id (can be empty)
+    pub async fn install_pkg(&self,pkg_list: &HashMap<String,String>,install_task_name: &str) -> Result<()> {
+        let params = json!({
+            "pkg_list": pkg_list,
+            "task_name": install_task_name
+        });
+        let _result = self.krpc_client.call("install_pkg", params).await?;
+        Ok(())
+    }
+
     pub async fn sync_from_remote_source(&self) -> Result<()> {
         let params = json!({});
         let _result = self.krpc_client.call("sync_from_remote_source", params).await?;

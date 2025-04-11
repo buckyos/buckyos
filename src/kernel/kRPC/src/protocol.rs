@@ -33,7 +33,7 @@ impl RPCRequest {
         }
     }
 
-    pub fn get_str_param_from_req(self: &RPCRequest, key: &str) -> Result<String, RPCErrors> {
+    pub fn get_str_param(self: &RPCRequest, key: &str) -> Result<String, RPCErrors> {
         self.params
             .get(key)
             .and_then(|value| value.as_str())

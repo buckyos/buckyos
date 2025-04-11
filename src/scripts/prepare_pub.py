@@ -55,7 +55,7 @@ def prepare_package(pkg_name,pkg_meta):
             else:
                 shutil.copy2(s, d)
             
-    pkg_meta_file = os.path.join(pkg_tmp_dir,".pkg_meta.json") 
+    pkg_meta_file = os.path.join(pkg_tmp_dir,"pkg_meta.json") 
     json.dump(pkg_meta, open(pkg_meta_file, "w"))
     # 将 ../rootfs/bin/$app_name 下面的目录复制到 /tmp/buckyos_pkgs/$pkg_name
     app_name = pkg_name
@@ -101,7 +101,11 @@ def main():
             pkg_meta["exp"] = int(time.time()) + 3600 * 24 * 365 * 3
             #pkg_name = pkg_meta["pkg_name"]
             pkg_meta["pkg_name"] = perfix + "." + pkg_name 
-
+            deps = pkg_meta.get("deps",{})
+            new_deps = {}
+            for dep_pkg_name,dep_pkg_version in deps.items():
+                new_deps[perfix + "." + dep_pkg_name] = dep_pkg_version
+            pkg_meta["deps"] = new_deps
             prepare_package(pkg_name,pkg_meta)
 
 if __name__ == "__main__":

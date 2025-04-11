@@ -120,7 +120,23 @@ impl MetaIndexDb {
         ).map_err(|e| PkgError::SqlError(e.to_string()))
     }
 
-
+    pub fn cacl_pkg_deps_metas(&self,pkg_meta: &PackageMeta,
+        deps: &mut HashMap<String,PackageMeta>) -> PkgResult<()> {
+        for (dep_name, dep_version) in pkg_meta.deps.iter() {
+            let dep_id = format!("{}#{}", dep_name, dep_version);
+            let pkg_result = self.get_pkg_meta(&dep_id)?;
+            if pkg_result.is_some() {
+                let (meta_obj_id,dep_meta) = pkg_result.unwrap();
+                self.cacl_pkg_deps_metas(&dep_meta,deps)?;
+                deps.insert(meta_obj_id,dep_meta);
+            } else {
+                warn!("cacl_pkg_deps_metas:pkg_meta {} not found", dep_id);
+                return Err(PkgError::FileNotFoundError(
+                    format!("cacl_pkg_deps_metas:pkg_meta {} not found", dep_id)));
+            }
+        }
+        Ok(())
+    }
     // 关键函数，根据pkg_id获取最新版本
     //return metaobjid,pkg_meta
     pub fn get_pkg_meta(&self, pkg_id: &str) -> PkgResult<Option<(String, PackageMeta)>> {

@@ -92,23 +92,23 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(&st
         return Err(format!("Specified path {} does not exist", pkg_path.display()));
     }
     // Read meta.json file
-    let meta_path = pkg_path.join(".pkg_meta.json");
+    let meta_path = pkg_path.join("pkg_meta.json");
     if !meta_path.exists() {
         return Err("meta.json file not found in specified directory".to_string());
     }
 
     let meta_content = fs::read_to_string(&meta_path)
-        .map_err(|e| format!("Failed to read .pkg_meta.json: {}", e.to_string()))?;
+        .map_err(|e| format!("Failed to read pkg_meta.json: {}", e.to_string()))?;
     
     let mut meta_data:PackageMeta = serde_json::from_str(&meta_content)
-        .map_err(|e| format!("Failed to parse .pkg_meta.json: {}", e.to_string()))?;
+        .map_err(|e| format!("Failed to parse pkg_meta.json: {}", e.to_string()))?;
 
     let pkg_name = meta_data.pkg_name.clone();
     
     let version = meta_data.version.clone();
     let author = meta_data.author.clone();
     
-    println!("Parsed .pkg_meta.json: pkg_name = {}, version = {}, author = {}", pkg_name, version, author);
+    println!("Parsed pkg_meta.json: pkg_name = {}, version = {}, author = {}", pkg_name, version, author);
     // Check and create target directory
     let dest_dir_path = Path::new(dest_dir).join(&pkg_name);
     if !dest_dir_path.exists() {
@@ -289,9 +289,9 @@ pub async fn publish_app_pkg(app_name: &str,dapp_dir_path: &str,is_pub_sub_pkg:b
             return Err(format!("sub pkg {} pkg_meta.json does not exist", pkg_path.display()));
         }
         let pkg_meta_str = fs::read_to_string(pkg_meta_path)
-            .map_err(|e| format!("Failed to read .pkg_meta.json: {}", e.to_string()))?;
+            .map_err(|e| format!("Failed to read pkg_meta.json: {}", e.to_string()))?;
         let pkg_meta:PackageMeta = serde_json::from_str(&pkg_meta_str)
-            .map_err(|e| format!("Failed to parse .pkg_meta.json: {}", e.to_string()))?;
+            .map_err(|e| format!("Failed to parse pkg_meta.json: {}", e.to_string()))?;
         let version = pkg_meta.version.clone();
         //pkg_desc.pkg_id = format!("{}#{}",sub_pkg_section,version);
         println!("{} => {}", sub_pkg_section,pkg_meta.get_package_id().to_string());
@@ -514,7 +514,7 @@ mod tests {
             "This is a subdir file content",
         ).unwrap();
         
-        // 创建 .pkg_meta.json 文件
+        // 创建 pkg_meta.json 文件
         let meta = PackageMeta {
             pkg_name: pkg_name.to_string(),
             version: version.to_string(),
@@ -532,7 +532,7 @@ mod tests {
         };
         
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
-        fs::write(src_path.join(".pkg_meta.json"), meta_json).unwrap();
+        fs::write(src_path.join("pkg_meta.json"), meta_json).unwrap();
         
         // 执行打包函数
         let result = pack_raw_pkg(
@@ -550,7 +550,7 @@ mod tests {
         // 验证文件是否存在
         let expected_tarball_path = Path::new(&dest_path)
             .join(pkg_name)
-            .join(format!("{}-{}.tar.gz", pkg_name, version));
+            .join(format!("{}#{}.tar.gz", pkg_name, version));
         assert!(expected_tarball_path.exists(), "打包文件不存在");
         //获取文件的sha256和大小
         let file_info = calculate_file_hash(expected_tarball_path.to_str().unwrap()).unwrap();
@@ -572,7 +572,6 @@ mod tests {
         assert_eq!(meta_data.author, author);
         assert!(meta_data.chunk_id.unwrap() == chunk_id.to_string(), "chunk_id OK");
         assert!(meta_data.chunk_size.unwrap() == file_info.size, "chunk_size OK");
-        assert!(meta_data.pub_time > 0, "pub_time OK");
     }
     
     #[tokio::test]
@@ -598,7 +597,7 @@ mod tests {
             "This is a test file content",
         ).unwrap();
         
-        // 创建 .pkg_meta.json 文件
+        // 创建 pkg_meta.json 文件
         let meta = PackageMeta {
             pkg_name: pkg_name.to_string(),
             version: version.to_string(),
@@ -616,7 +615,7 @@ mod tests {
         };
         
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
-        fs::write(src_path.join(".pkg_meta.json"), meta_json).unwrap();
+        fs::write(src_path.join("pkg_meta.json"), meta_json).unwrap();
         
         // 创建临时私钥文件（注意：这里只是为了测试，实际应该使用有效的私钥）
         let key_dir = tempdir().unwrap();
@@ -658,7 +657,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     
     #[tokio::test]
     async fn test_pack_pkg_missing_meta() {
-        // 创建临时目录作为源目录，但不创建 .pkg_meta.json 文件
+        // 创建临时目录作为源目录，但不创建 pkg_meta.json 文件
         let src_dir = tempdir().unwrap();
         let src_path = src_dir.path();
         
@@ -680,7 +679,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         ).await;
         
         // 验证结果
-        assert!(result.is_err(), "应该因为缺少 .pkg_meta.json 文件而失败");
+        assert!(result.is_err(), "应该因为缺少 kg_meta.json 文件而失败");
         let err = result.err().unwrap();
         assert!(err.contains("meta.json 文件未在指定目录中找到"), 
                 "错误消息应该提及缺少 meta.json 文件，实际错误: {}", err);

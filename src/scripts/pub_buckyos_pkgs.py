@@ -1,5 +1,5 @@
 # 得到默认的，待发布的pack的pkg目录（默认是 /tmp/buckyos_pkgs/目录）
-# 扫码有正确的.pkg_meta.json的pkg
+# 扫码有正确的pkg_meta.json的pkg
 # 调用命令buckycli pack_pkg到target目录 (默认是  /tmp/buckyos_pkg_out/)，并记录
 # 调用buckycli pub_pkg 命令，将target目录下的pkg发布到当前zone
 # 调用buckycli pub_index 命令，让新的index-db生效
@@ -55,17 +55,17 @@ def pack_packages(pkg_dir, target_dir):
             continue
         print(f"# pack {pkg_path}")
             
-        # 检查是否有有效的.pkg_meta.json
-        meta_file = os.path.join(pkg_path, ".pkg_meta.json")
+        # 检查是否有有效的pkg_meta.json
+        meta_file = os.path.join(pkg_path, "pkg_meta.json")
         if not os.path.exists(meta_file):
-            print(f"跳过 {pkg_path}: 没有找到 .pkg_meta.json")
+            print(f"跳过 {pkg_path}: 没有找到 pkg_meta.json")
             continue
             
         try:
             with open(meta_file, 'r') as f:
                 meta_data = json.load(f)
                 if "pkg_name" not in meta_data or "version" not in meta_data:
-                    print(f"跳过 {pkg_path}: .pkg_meta.json 缺少必要字段")
+                    print(f"跳过 {pkg_path}: pkg_meta.json 缺少必要字段")
                     continue
                     
             # 调用buckycli pack_pkg命令打包

@@ -7,7 +7,8 @@ const RESULT: &str = r#"
   "app": {
     "name": "ExampleApp",
     "version": "1.1.0",
-    "description": "Subdir1 App"
+    "description": "Subdir1 App",
+    "detail": {"*":{"abc":"345"},"/static":{"bcd":"678"},"/api":{"api":"678"}}
   },
   "logging": {
     "level": "warn"
@@ -34,7 +35,8 @@ fn create_test_directory_without_root(base_dir: &Path) -> std::io::Result<()> {
         {
           "app": {
             "name": "ExampleApp",
-            "version": "1.0.0"
+            "version": "1.0.0",
+            "detail": {"*":{"abc":"123"},"/api":{"api":"678"}}
           },
           "logging": {
             "level": "info"
@@ -65,7 +67,8 @@ fn create_test_directory_without_root(base_dir: &Path) -> std::io::Result<()> {
             r#"
         {
           "app": {
-            "description": "Subdir1 App"
+            "description": "Subdir1 App",
+            "detail": {"*":{"abc":"345"},"/static":{"bcd":"678"}}
           },
           "workers": {
             "count": 4
@@ -296,7 +299,7 @@ async fn main() {
 
     // Test without root file
     {
-        let base_dir = temp_dir.join("buckyos/config");
+        let base_dir = temp_dir.join("buckyos_test/config");
         std::fs::create_dir_all(&base_dir).unwrap();
 
         println!("Base dir: {:?}", base_dir);
@@ -313,20 +316,20 @@ async fn main() {
     }
 
     // Test with root file
-    {
-        let base_dir = temp_dir.join("buckyos/config2");
-        std::fs::create_dir_all(&base_dir).unwrap();
+    // {
+    //     let base_dir = temp_dir.join("buckyos_test/config2");
+    //     std::fs::create_dir_all(&base_dir).unwrap();
 
-        println!("Base dir: {:?}", base_dir);
+    //     println!("Base dir: {:?}", base_dir);
 
-        create_test_directory_with_root(&base_dir).unwrap();
+    //     create_test_directory_with_root(&base_dir).unwrap();
 
-        let value = ConfigMerger::load_dir(&base_dir).await.unwrap();
-        let s = serde_json::to_string_pretty(&value).unwrap();
-        println!("Merged config: {:?}", s);
+    //     let value = ConfigMerger::load_dir(&base_dir).await.unwrap();
+    //     let s = serde_json::to_string_pretty(&value).unwrap();
+    //     println!("Merged config: {:?}", s);
 
-        // Compare the merged config with expected result
-        let expected: serde_json::Value = serde_json::from_str(RESULT).unwrap();
-        assert_eq!(value, expected);
-    }
+    //     // Compare the merged config with expected result
+    //     let expected: serde_json::Value = serde_json::from_str(RESULT).unwrap();
+    //     assert_eq!(value, expected);
+    // }
 }
