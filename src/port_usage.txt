@@ -11,5 +11,6 @@
     3400-3500 scheduler [http kapi/scheduler]
 
 4000-5000 frame service
+    4000-4100 repo-service [http kapi/repo]
 
 > 10000 app service

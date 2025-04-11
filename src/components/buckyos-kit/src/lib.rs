@@ -2,13 +2,32 @@ mod path;
 mod process;
 mod time;
 mod log_util;
+mod stream;
+mod json;
+mod test_server;
+mod serde_helper;
+mod config;
+mod channel;
+mod event;
+mod provider;
+mod machine_config;
+
+#[macro_use]
+extern crate log;
 
 pub use path::*;
 pub use process::*;
 pub use time::*;
 pub use log_util::*;
-
-
+pub use stream::*;
+pub use json::*;
+pub use test_server::*;
+pub use serde_helper::*;
+pub use config::*;
+pub use channel::*;
+pub use event::*;
+pub use provider::*;
+pub use machine_config::*;
 #[cfg(test)]
 mod test {
     use std::path::PathBuf;
@@ -47,15 +66,5 @@ mod test {
         //     }
         //     Err(e) => println!("Error: {:?}", e),
         // }
-    }
-    #[tokio::test]
-    async fn test_execute_service_pkg() {
-        // 初始化日志系统
-        let _ = env_logger::builder().is_test(true).try_init();
-
-        let pkg_id = "test2".to_string();
-        let env_path = PathBuf::from("d:\\temp\\");
-        let pkg = ServicePkg::new(pkg_id, env_path);
-        pkg.start(None).await.unwrap();
     }
 }

@@ -1,11 +1,10 @@
 use async_trait::async_trait;
-use buckyos_kit::ServiceState;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::{debug, info, warn};
 use serde_json::Value;
 use serde::{Deserialize, Serialize};
 
-
+use crate::service_pkg::*;
 use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum ControlRuntItemErrors {
@@ -17,6 +16,8 @@ pub enum ControlRuntItemErrors {
     ParserConfigError(String),
     #[error("Network Error: {0}")]
     NetworkError(String),
+    #[error("Pkg not exist: {0}")]
+    PkgNotExist(String),
 }
 
 pub type Result<T> = std::result::Result<T, ControlRuntItemErrors>;
@@ -27,6 +28,15 @@ pub enum RunItemTargetState {
     Stopped, 
 }
 
+impl RunItemTargetState {
+    pub fn from_str(state: &str) -> Result<Self> {
+        match state {
+            "Running" => Ok(RunItemTargetState::Running),
+            "Stopped" => Ok(RunItemTargetState::Stopped),
+            _ => Err(ControlRuntItemErrors::ParserConfigError(format!("invalid target state: {}", state))),
+        }
+    }
+}
 
 
 #[derive(Serialize, Deserialize, Debug,Clone)]
@@ -34,8 +44,9 @@ pub struct RunItemControlOperation {
     pub command : String,
     pub params : Option<Vec<String>>,
 }
+
 #[async_trait]
-pub trait RunItemControl {
+pub trait RunItemControl: Send + Sync {
     fn get_item_name(&self) -> Result<String>;
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()>;
     //async fn remove(&self, params: Option<&RunItemParams>) -> Result<()>;
@@ -44,7 +55,6 @@ pub trait RunItemControl {
 
     async fn start(&self, control_key:&EncodingKey,params:Option<&Vec<String>>) -> Result<()>;
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()>;
-
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState>;
 }
 
@@ -84,8 +94,9 @@ pub async fn control_run_item_to_target_state(
                 Ok(())
             }
             ServiceState::NotExist => {
-                warn!("{} not exist,deploy it!", item_name);
-                item.deploy(None).await?;
+                //warn!("{} not exist,deploy it!", item_name);
+                //item.deploy(None).await?;
+                debug!("{} not exist,do nothing!", item_name);
                 Ok(())
             }
             ServiceState::Stopped => {

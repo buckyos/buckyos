@@ -1,9 +1,20 @@
 import templateContent from './config_gateway_dlg.template?raw';  
 import {BuckyCheckBox} from '../components/checkbox';
 import {BuckyWizzardDlg} from '../components/wizzard-dlg';
-import { GatewayType,ActiveWizzardData,check_sn_active_code } from '../active_lib';
+import { GatewayType,ActiveWizzardData,check_sn_active_code,set_sn_api_url,SN_API_URL,SN_HOST } from '../active_lib';
 import {MdOutlinedTextField} from '@material/web/textfield/outlined-text-field.js';
 import {MdFilledButton} from '@material/web/button/filled-button.js';
+import Handlebars from 'handlebars';
+import i18next from '../i18n';
+
+
+Handlebars.registerHelper('t', function(key, options) {
+    const params = options && options.hash || {};
+
+    let result = i18next.t(key, params);
+    console.log(key,result);
+    return result;
+});
 
 class ConfigGatewayDlg extends HTMLElement {
     constructor() {
@@ -18,6 +29,18 @@ class ConfigGatewayDlg extends HTMLElement {
         const chk_enable_bucky_forward = shadow.getElementById('chk_enable_bucky_forward') as BuckyCheckBox;
         //const chk_enable_port_forward = shadow.getElementById('chk_enable_port_forward') as BuckyCheckBox;
         var txt_bucky_sn_token = shadow.getElementById('txt_bucky_sn_token') as MdOutlinedTextField;
+        var txt_bucky_sn_url = shadow.getElementById('txt_bucky_sn_url') as MdOutlinedTextField;
+        if (txt_bucky_sn_url.value.length > 0) {
+            const url = new URL(txt_bucky_sn_url.value);
+            const host = url.host;  // 包含端口号
+            wizzard_data.sn_url = txt_bucky_sn_url.value;
+            wizzard_data.sn_host = host;
+        } else {
+            wizzard_data.sn_url = SN_API_URL;
+            wizzard_data.sn_host = SN_HOST;
+        }
+        set_sn_api_url(wizzard_data.sn_url);
+
         if (chk_enable_bucky_forward.checked) {
             if (txt_bucky_sn_token.error) {
                 return false;
@@ -29,8 +52,6 @@ class ConfigGatewayDlg extends HTMLElement {
             }
 
             wizzard_data.sn_active_code = txt_bucky_sn_token.value;
-            wizzard_data.sn_url = "http://web3.buckyos.io/kapi/sn";
-            wizzard_data.sn_host = "web3.buckyos.io";
             wizzard_data.gatewy_type = GatewayType.BuckyForward;
         } else {
             wizzard_data.gatewy_type = GatewayType.PortForward;
@@ -49,7 +70,9 @@ class ConfigGatewayDlg extends HTMLElement {
 
     connectedCallback() {
         const template = document.createElement('template');
-        template.innerHTML = templateContent;
+        const template_compiled = Handlebars.compile(templateContent);
+        const params = {}
+        template.innerHTML = template_compiled(params);
         const shadow = this.attachShadow({ mode: 'open' });
         shadow.appendChild(template.content.cloneNode(true));
 

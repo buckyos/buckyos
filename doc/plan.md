@@ -47,24 +47,25 @@ AI-driven media processing. Support for download, streaming, and other traffic s
 
 ## Overall Plan for the Alpha Phase
 
-Functions marked with `*` are those I believe must be completed in the next release version 0.4 (Alpha2). Functions without `*` may depend on some basic components.
+All completed tasks are the task of next release veriosn : Alpha2 (0.4.0).
+Functions marked with `*` are those I believe must be completed in Alpha2. Functions without `*` may depend on some basic components.
 
 - Kernel Models (modules run before(support) system boot)
   - [x] node_daemon (A4 @waterflier)
     - [x] app & service loader (A4 @waterflier), implement formal permission management and container isolation
-    - [ ] *node task execute system (A4), usually used for maintenance tasks; implement if unavoidable
+    - [ ] node OP-Task execute system (A2,@waterflier), usually used for maintenance tasks; implement if unavoidable
   - [x] node_active (A4 @waterflier), System setup web pages and functions
+    - [ ] *i18n support (S1,@alexsunxl), support multiple languages 
   - [x] system config service(A2 @waterflier)
     - [ ] *Support etcd in more than 3 OOD clusters through scalable backends (A2)
     - [x] system-config lib (A2 @waterflier)
-
     - [ ] system config event support (A2 @waterflier), use websocket for config-change notification
-    - [ ] *Integrate with cyfs-gateway's VPN service (A2 @waterflier)
+    - [ ] *Integrate with cyfs-gateway's VPN service (A1 @waterflier)
   - [x] verify_hub service  (A2,@waterflier)
     - [x] rbac libs (A4 @waterflier), basic rbac usage and management
-    - [ ] add "sudo" role
-    - [ ] Detailed permission explanation documentation
-  - system status for system status monitoring
+    - [ ] *add "sudo" role (A1,@waterflier)
+    - [ ] Detailed permission explanation documentation (A1,@waterflier)
+  - [ ] system status monitor
   - kRPC @waterflier
     - [x] rust kRPC libs (A4,@waterflier)
     - [x] typescript kRPC libs (A2,@waterflier)
@@ -74,81 +75,120 @@ Functions marked with `*` are those I believe must be completed in the next rele
     - [x] *boot scheduler (A2,@waterflier), the first scheduler to be implemented, mainly for system initialization
     - [x] *scheduler template support(A1,@waterflier)
     - [ ] *Making scheduling logic for single OOD(A2)
-    - [ ] *Implement the scheduling logic for multi-OOD(A2)
-    - [ ] *When single OOD scale to multiple OOD, realize the scheduling logic with OP task(A4)
+    - [ ] Implement the scheduling logic for multi-OOD(A2)
+    - [ ] When single OOD scale to multiple OOD, realize the scheduling logic with OP task(A4)
   - kLog, a reliable logging library, is the foundation for automatic fault diagnosis in the system.
-    - [ ] *kLog lib (A4), defines the basic interfaces for kLog output and reliable behavior logic, can handle server downtime
-    - [ ] *kLog server (S2), PoC version should implement a simple version to ensure reliability
-  - pkg system
+    - [ ] kLog lib (A4), defines the basic interfaces for kLog output and reliable behavior logic, can handle server downtime
+    - [ ] kLog server (S2), PoC version should implement a simple version to ensure reliability
+  - *pkg system
     - [x] Improve lib (S2,@waterflier) to facilitate use by other components
-    - [ ] Integrate with the task system (A4,@glen0125)
+    - [ ] DID-based trusted package verification flow (A2,@glen0125)
+  - [ ] *ndn-lib, Named Data Network lib (A1,@waterflier)
+    - [ ] Chunk & ChunkId lib（A1,@photosssa）
+      - [ ] MixHash Support(A1,@photosssa)
+    - [ ] Named Object lib(A1,@waterflier)
+      - [ ] Object Collection (A1,@waterflier)
+      - [ ] Object Link
+      - [ ] mtree
+      - [ ] FileObject/DirObject
+    - [ ] Local Chunk/Object Store(A1,@waterflier)
+    - [ ] Chunk/Object Manager(A2,@waterflier)
+    - [ ] cyfs-gateway support ndn-route(A1,@waterflier)
+    - [ ] ndn-client(A1,@waterflier)
 - Kernel Services
-  - [ ] *Task Manager (A4), providing a general stateful background task management service, supporting reliable execution of critical tasks
-  - DFS
-    - [ ] *glusterFS (A2) integrated with rbac
-    - [ ] *glusterFS Support soft RAID: 4 hard disks can damage any hard disk without losing data （A4)
-    - [ ] *glusterFS Support SSD Cache (A2)
+  - [ ] *Task Manager (A4,@alexsunxl), providing a general stateful background task management service, supporting reliable execution of critical tasks
+  - DFS (wugren & photosssa)
+    - [ ] Select the underlying solution and conduct research on key needs(A2,@wugren,@photosssa)
+    - [ ] DFS (A1) integrated with rbac
+    - [ ] DFS Support soft RAID: 4 hard disks can damage any hard disk without losing data (A2)
+    - [ ] DFS expand from 1 node to 2 node (A2)
+    - [ ] DFS expand from 2 node to 3 node (A2)
+    - [ ] DFS Support SSD Read/Write Cache (A2)
     - DCFS (listed separately)
   - *dApp manager, the `apt` tool in BuckyOS, provides basic reliable pkg management capabilities for the system.
-    - [ ] *basic API support (A4,@glen0125), source management, installed management, permission configuration, installer
-    - [ ] *CLI tools (S4,@glen0125), command-line tools similar to apt based on basic API
+    - [ ] *basic API support (A2,@glen0125), source management, installed management, permission configuration, installer
+    - [ ] *CLI tools (S2,@glen0125), command-line tools similar to apt based on basic API
+    - [ ] Integrate with the task system (A2,@glen0125)
     - [ ] *in-zone pkg repo service (S4,@glen0125), a stable repo service running within the zone
-    - [ ] *Installer UI (A4), meets the minimum requirements for dApp permission control in the system
+    - [ ] *BuckyOS Store Web UI (S4)
   - backup system (listed separately)
   - cyfs-gateway (listed separately)
-  - kMQ message queue, supports custom event systems
+  - kMQ message queue, supports custom event systems & user's system inbox,
 - Frame Services
-  - [ ] *smb-service (A2), integrated with ACL
-  - [ ] k8s-service, integrated with ACL
+  - [ ] *smb-service (A1,wugren), integrated with rbac
+  - [ ] k8s-service, integrated with rbac
   - [ ] Notify Manager
-  - [ ] *msg_bus(S4), the user's system inbox, where all applications can send messages
-  - [ ] *dApp Store
-  - [ ] *Control panel (S8) Provide basic system management functions according to the requirements document (including related web pages), can be further divided.
+  - [ ] Device-Sim,When connecting to the mobile phone/computer through the USB-C/Lightning interface, it can simulate it as a high-speed storage device
 - Default dApps
   - [x] Home Station App(A2,@waterflier),home page app for user, (Transform from https://github.com/filebrowser/filebrowser)
-  - [x] System Control Panel App (A1,@waterflier)
-    - [ ] *Account management (S4), mainly local DID account management, much logic can be reused from CYFS wallet
-    - [ ] *Name management (S4), manage friendly names owned
-    - [ ] *Zone management (S2), support relevant requirements of the first version
-    - [ ] *Storage management (S2), pure display in the first version
-  - [ ] CyberChat App (A4), BuckyOS control app modified based on the CYFS wallet app.
+    - [ ] *Use BuckyOS-OAuth to log in
+    - [ ] *When supporting sharing, you can only view the unable to download mode, add the necessary watermark when viewing
+    - [ ] *Integrated system file opening and editing page
+    - [ ] *Integrated system file publishing / share page
+  - [x] System Control Panel App 
+    - [ ] *Complete the framework(A1)  Split System Taskbar and App UI
+    - [ ] *TaskBar(A1)
+    - [ ] *Complete the basic control (A1) in the future is the part of SDK)
+    - [ ] *Account management (S1), mainly local DID account management, much logic can be reused from CYFS wallet
+    - [ ] *Device management (S1),
+    - [ ] Name management (S2), manage friendly names owned
+    - [ ] *Zone Home (S2)
+    - [ ] *Storage management (S1), pure display in the first version
 - Web3 bridge Services(Test: web3.buckyos.io,Officially web3.buckyos.org)
-  - [x] Account management + signature service (A2), including signature history
-  - [x] did resolution and name resolution (S2), mainly implemented in cyfs-gateway, this mainly handles formal online operations
-  - [x] NAME manager (S4), allowing users to easily and freely own a $name.buckyos.org name, obtained during account registration,support d-dns
+  - [x] Account management + signature service (A2,@waterflier), including signature history
+  - [x] did resolution and name resolution (S2,@waterflier), mainly implemented in cyfs-gateway, this mainly handles formal online operations
+  - [x] NAME manager (S4,@waterflier), allowing users to easily and freely own a $name.buckyos.org name, obtained during account registration,support d-dns
   - [x] rtcp network reply service (A2 @waterflier) (subscription management) 
-    - [ ] rtcp network reply service Support billing and subscription (S4)
-  - [ ] *WebUI (S4), a simple web page for users to manage their accounts and names annd subscriptions
-  - [ ] *http backup server (S2), mainly functions from BuckyOS Backup Suite, simple online operation at first (with size restrictions), followed by subscription implementation
-- [ ] *BuckyOS Backup Suite (independent product with separate points, additional rewards from the DMC fund), an independent cross-platform backup software, refer to its independent PRD.
-  - [ ] Backup Service
-  - [ ] UI
-  - [ ] Backup basic libs
-  - [ ] http DAV target client
+    - [ ] rtcp network reply service Support billing and subscription (S3,@wugren)
+  - [ ] *WebUI (S2,@wugren), a simple web page for users to manage their accounts and names annd subscriptions
+  - [ ] *http chunk backup server （backend is S3） (S2), mainly functions from BuckyOS Backup Suite, simple online operation at first (with size restrictions), followed by subscription implementation
+- BuckyOS Backup Suite (independent product with separate points, additional rewards from the DMC fund), an independent cross-platform backup software, refer to its independent PRD.
+  - [ ] *Backup Suite Framework (A4,@waterflier)
+  - [ ] *Backup basic libs (A1,@waterflier)
+  - [ ] *General high-performance dir backup source (A2,@photosssa, @waterflier)
+  - [ ] *Web UI（S3，@streetycat,@waterflier）
+  - [ ] DMC Backup Target (Alpha3) (A6,@photosssa)
   - [ ] http DAV target server
-  - [ ] dmc target client
-  - [ ] dmc target server
+  - [ ] *Installation package (A1,@streetycat)
+  - [ ] *Integrated with BuckyOS (S1,@waterflier)
 - [x] CYFS Gateway (A2,@waterflier) (would be a independent product after 0.4)
   - [x] tunnel framework (A2,@waterflier), A URL-based scalable Tunnel protocol framework, separating the business logic and protocol expansion of CYFS-Gateway
   - [x] rtcp protocol (A6,@waterflier),Based on TCP, a credible encrypted communication is realized based on DID, and OOD after the SN is transformed into NAT provides stable penetration access capabilities
+    - [ ] Improve UDP support (A1,@lurenpluto)
   - [x] cyfs-dns (A1, @waterflier), supporting our name system and did-document system
   - [x] cyfs-warp (A4,@waterflier), A HTTP service that is base on Tunnel Framework can be regarded as Nginx-Lite
-  - [ ] *cyfs-socks service(A3), Through the rules engine, the qualified traffic is forwarded to a specific Tunnel
-  - [ ] *TAP Device-based VPN (A2), allowing needed services to work transparently with the main OOD in the same LAN
-  - [ ] *cyfs protocl (A4), http extension only, support the chunk transfer logic used by backup system.
+  - [ ] *cyfs-socks service(A1,@lurenpluto,), Through the rules engine, the qualified traffic is forwarded to a specific Tunnel
+    - [ ] *Rule-engine (A2,lurenpluto,) Compatible with PAC rules
+  - [ ] Implement the SSR related protocol (A4),Use the Tunnel framework.
+  - [ ] *TAN/TAP Device-based VPN (A2), allowing needed services to work transparently with the main OOD in the same LAN
+  - [ ] *cyfs protocl (A4,@waterflier), http extension only, support the chunk transfer logic used by backup system.
+  - [ ] Build an OPKG package(A1),running on OpenWRT
 - CI/CD Publish Support
   - [x] Nightly CI/CD system (A4,@weiqiushi), based on Github Action
   - [x] deb(include arm) package builder (S2,@waterflier)
-  - [ ] Virtual Machine Image builder (S2,@weiqiushi), based on Packer?
-  - [ ] Rapid cloud development environment setup (A4), referencing Github's CodeSpace
-  - [ ] Rapid independent CI/CD environment setup based on specific branches
-  - [ ] Set up typical responsible test environments
+  - [ ] *One-click to prepare the compile environment(A1,@weiqiushi) ,would try build docker technology, which is the same type as VSCode's Code-Space
+  - [ ] *Windows installer(A1,@weiqiushi) Windows version cannot be installed with applications issued by Docker
+    - [ ] Tray Control Client (S2, @streetycat)
+  - [ ] *Virtual Machine Image builder (S2,@weiqiushi), based on Packer?
+  - [ ] *Increase the compile target of Android (A1,@weiqiushi), and support the construction of Storage-BOX
+  - [ ] Rapid independent CI/CD environment setup based on specific branches (S2,@weiqiushi)
+  - [ ] *Prepare a typical isolation test environment(A2,@weiqiushi), and build the Nightly version after the test environment is completed after completing the test case
+  - [ ] *Implement the Alaway-Run test case, and integrate to the alarm system (S2,@weiqiushi)
 - BuckyOS SDK 
   - [x] TypeScript SDK (A1,@waterflier)
     - [x] Auth Client (A2,@waterflier)
     - [x] kRPC Client (A1,@waterflier)
-    - [ ] *File Share Client
+    - [ ] *File Share Page
+    - [ ] *File Edit/View Page (OnlyOffice)
     - [ ] Payment Gateway
+- Port Apps:Integrated BuckyOS SDK, integrated single sign-on
+  - [ ] Sync Drive App : seafile?
+  - [ ] Photo Library: ?
+  - [ ] Video Library:Jellyfin
+  - [ ] Music App: ?
+  - [ ] Note App: ?
+  - [ ] Download tools: Xunlei,qBittorrent
+  - [ ] Dev tools: VSCode-Server, Jupyter lab
 - *BuckyOS offical website (S2)
 - DCFS Formal architecture design is ongoing based on the Demo phase research results.
 

@@ -1,6 +1,6 @@
 [package]
 name = "verify_hub"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["BuckyOS DAO","@waterflier"]
 
@@ -25,4 +25,4 @@ buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
 
 kRPC ={ path = "../kRPC" }
-sys-config = { path = "../sys-config" }
+buckyos-api = { path = "../buckyos-api" }

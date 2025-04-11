@@ -1,1 +1,0 @@
-// control start etcd server

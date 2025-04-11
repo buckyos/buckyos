@@ -15,10 +15,8 @@ use std::net::IpAddr;
 use once_cell::sync::Lazy;
 use tokio::sync::Mutex;
 use once_cell::sync::OnceCell;
-
-
-pub static CURRENT_ZONE_CONFIG: OnceCell<ZoneConfig> = OnceCell::new();
-pub static CURRENT_DEVICE_CONFIG: OnceCell<DeviceConfig> = OnceCell::new();
+use std::env;
+use log::*;
 
 
 #[cfg(test)]
@@ -32,7 +30,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_device_info() {
-        let mut device_info = DeviceInfo::new("ood1",None);
+        let mut device_info = DeviceInfo::new("ood1",DID::new("bns","ood1"));
         device_info.auto_fill_by_system_info().await.unwrap();
         println!("device_info: {:?}",device_info);
     }

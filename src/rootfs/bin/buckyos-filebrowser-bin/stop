@@ -1,0 +1,13 @@
+#!/usr/bin/python3
+
+#"python3 {script_path} {appid} {username}"
+
+import os
+import sys
+import json
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
+import util
+# 考虑上一个进程可能是卡死的，因此需要先kill掉
+
+util.kill_process("filebrowser")

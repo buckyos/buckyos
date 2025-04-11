@@ -1,52 +1,69 @@
 {
-    "device_key_path":"/opt/buckyos/etc/node_private_key.pem",
-    "servers":{
-        "main_http_server":{
-            "type":"cyfs-warp",
-            "bind":"0.0.0.0",
-            "http_port":80,
-            "tls_port":443,
+    "device_key_path": "./rootfs/etc/node_private_key.pem",
+    "dispatcher": {
+        "tcp://0.0.0.0:443": {
+            "id": "main_http_server",
+            "type": "server"
+        },
+        "tcp://0.0.0.0:80": {
+            "id": "main_http_server",
+            "type": "server"
+        }
+    },
+    "inner_services": {
+        "zone_provider": {
+            "type": "zone-provider"
+        }
+    },
+    "servers": {
+        "main_http_server": {
+            "bind": "0.0.0.0",
             "hosts": {
                 "*": {
-                    "enable_cors":true,
+                    "enable_cors": true,
                     "routes": {
-                        "/kapi/system_config":{
-                            "upstream":"http://127.0.0.1:3200"
+                        "/kapi/system_config": {
+                            "upstream": "http://127.0.0.1:3200"
                         },
-                        "/kapi/verify_hub":{
-                            "upstream":"http://127.0.0.1:3300"
+                        "/kapi/repo": {
+                            "upstream": "http://127.0.0.1:4000"
                         },
-                        "/":{
-                            "upstream":"http://127.0.0.1:20080"
+                        "/kapi/verify_hub": {
+                            "upstream": "http://127.0.0.1:3300"
+                        },
+                        "/resolve": {
+                            "inner_service": "zone_provider"
                         }
                     }
                 },
-                "sys.*":{
-                    "routes":{
-                        "/":{
-                            "local_dir":"/opt/buckyos/bin/control_panel"
+                "home-station.*": {
+                    "routes": {
+                        "/": {
+                            "upstream": "http://127.0.0.1:20080"
                         }
                     }
                 },
-                "test.*":{
-                    "routes":{
-                        "/":{
-                            "local_dir":"/opt/buckyos/bin/sys_test"
+                "sys.*": {
+                    "enable_cors": true,
+                    "routes": {
+                        "/": {
+                            "local_dir": "./rootfs/bin/control_panel"
+                        },
+                        "/kapi/system_config": {
+                            "upstream": "http://127.0.0.1:3200"
+                        },
+                        "/kapi/repo": {
+                            "upstream": "http://127.0.0.1:4000"
+                        },
+                        "/kapi/verify_hub": {
+                            "upstream": "http://127.0.0.1:3300"
                         }
                     }
                 }
-
-            }
-        }
-    },
-    "dispatcher" : {
-        "tcp://0.0.0.0:80":{
-            "type":"server",
-            "id":"main_http_server"
-        },
-        "tcp://0.0.0.0:443":{
-            "type":"server",
-            "id":"main_http_server"
+            },
+            "http_port": 80,
+            "tls_port": 443,
+            "type": "cyfs-warp"
         }
     }
 }

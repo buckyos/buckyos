@@ -1,6 +1,6 @@
 [package]
 name = "kRPC"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["BuckyOS DAO","@waterflier"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -15,3 +15,6 @@ thiserror = "*"
 openssl = { version = "*", features = ["vendored"] }
 reqwest = {version = "*", features = ["json", "rustls-tls"]}
 jsonwebtoken = "*"
+buckyos-kit = { path = "../../components/buckyos-kit" }
+name-lib = { path = "../../components/name-lib" }
+rbac = { path = "../rbac" }

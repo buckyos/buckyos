@@ -1,1 +1,533 @@
-:TODO:
+# users : users/$user_id/setting , user_id is never changed, user_name can changed. User root cann't be deleted and always exists
+"users/root/settings" = '{"type":"root","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
+"users/{{user_name}}/settings" = '{"type":"admin","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
+# devices,set & update by register_device_doc@node_daemon
+"devices/ood1/doc" = ""
+# devices,set & update by update_device_info@node_daemon
+"devices/ood1/info" = "{}"
+
+# system settings
+
+"system/verify_hub/key" = """
+{{verify_hub_key}}
+"""
+# frames & services
+"services/verify_hub/config" = """
+{
+    "name":"verify_hub",
+    "description":"verify hub is SSO service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"buckyos.verify_hub",
+    "port":3300,
+    "node_list":["ood1"],
+    "service_type":"kernel",
+    "state":"Deployed",
+    "instance":1
+}
+"""
+"services/verify_hub/settings" = """
+{
+    "trust_keys" : []
+}
+"""
+"services/scheduler/config" = """
+{
+    "name":"scheduler",
+    "description":"scheduler is the core service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"buckyos.scheduler",
+    "port":3400,
+    "node_list":["ood1"],
+    "service_type":"kernel",
+    "state":"Deployed",
+    "instance":1
+}
+"""
+# info for zone-gateway
+"services/gateway/config" = """
+{
+    "name":"gateway",
+    "description":"gateway is the gateway service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"buckyos.gateway",
+    "port":3100,
+    "node_list":["ood1"],
+    "service_type":"kernel",
+    "state":"Deployed",
+    "instance":1
+}
+"""
+
+"services/gateway/settings" = """
+{
+    "shortcuts": {
+        "www": {
+            "type":"app",
+            "user_id":"{{user_name}}",
+            "app_id":"home-station"
+        },
+        "sys": {
+            "type":"app",
+            "user_id":"{{user_name}}",
+            "app_id":"control-panel"
+        },
+        "test":{
+            "type":"app",
+            "user_id":"{{user_name}}",
+            "app_id":"sys-test"
+        }
+    }
+}
+"""
+
+"users/{{user_name}}/apps/hello-buckyos/config" = """
+{
+    "app_id":"hello-buckyos",
+    "app_doc" : {
+        "app_id":"hello-buckyos",
+        "name" : "Hello BuckyOS",
+        "description" : "Hello BuckyOS, a simple web server implemented by nodejs alway say hello BuckyOS!",
+        "vendor_did" : "did:bns:buckyos",
+        "pkg_id" : "hello_bucky",
+        "pkg_list" : {
+            "amd64_docker_image" : {
+                "pkg_id":"hello_bucky_img_x86",
+                "docker_image_name":"buckyos/hello_bucky"
+            },
+            "aarch64_docker_image" : {
+                "pkg_id":"hello_bucky_img_arm64",
+                "docker_image_name":"buckyos/hello_bucky"
+            }
+        }
+    },
+    "app_index" : 1,
+    "enable" : true,
+    "state":"New",
+    "instance" : 1,
+    "data_mount_point" : "/data/",
+    "cache_mount_point" : "/database/",
+    "local_cache_mount_point" : "/config/",
+    "max_cpu_num" : 1,
+    "max_cpu_percent" : 10,
+    "memory_quota" : 1073741824,
+    "tcp_ports" : {
+        "www":80
+    }
+}
+"""
+
+"services/gateway/base_config" = """
+{
+    "device_key_path":"{{BUCKYOS_ROOT}}/etc/node_private_key.pem",
+    "servers":{
+        "main_http_server":{
+            "type":"cyfs-warp",
+            "bind":"0.0.0.0",
+            "http_port":80,
+            "tls_port":443,
+            "hosts": {
+                "*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/kapi/verify_hub":{
+                            "upstream":"http://127.0.0.1:3300"
+                        },
+                        "/kapi/repo":{
+                            "upstream":"http://127.0.0.1:4000"
+                        }
+                    }
+                },
+                "sys.*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{{BUCKYOS_ROOT}}/bin/control_panel"
+                        },
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/kapi/verify_hub":{
+                            "upstream":"http://127.0.0.1:3300"
+                        },
+                        "/kapi/repo":{
+                            "upstream":"http://127.0.0.1:4000"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "dispatcher" : {
+        "tcp://0.0.0.0:80":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://0.0.0.0:443":{
+            "type":"server",
+            "id":"main_http_server"
+        }
+    }
+}
+"""
+"services/repo/config" = """
+{
+    "name":"repo_service",
+    "description":"repo_service is the repo service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"buckyos.repo",
+    "port":4000,
+    "node_list":["ood1"],
+    "service_type":"frame",
+    "state":"Deployed",
+    "instance":1
+}
+"""
+
+
+"services/repo/settings" = """
+{
+    "source_list":[
+        {
+            "did":"did:bns:ssssss",
+            "name":"ssssss.web3.buckyos.io",
+            "chunk_id":"",
+            "sign":"",
+            "version":""
+        }
+    ]
+}
+"""
+
+# install apps
+"users/{{user_name}}/apps/home-station/config" = """
+{
+    "app_id":"home-station",
+    "app_doc" : {
+        "name" : "Home Station",
+        "description" : "Home Station",
+        "vendor_did" : "did:bns:buckyos",
+        "pkg_id" : "home-station",
+        "pkg_list" : {
+            "amd64_docker_image" : {
+                "pkg_id":"home-station-x86-img",
+                "docker_image_name":"filebrowser/filebrowser:s6"
+            },
+            "aarch64_docker_image" : {
+                "pkg_id":"home-station-arm64-img",
+                "docker_image_name":"filebrowser/filebrowser:s6"
+            },
+            "web_pages" :{
+                "pkg_id" : "home-station-web-page"
+            }
+        }
+    },
+    "app_index" : 0,
+    "enable" : true,
+    "state":"Deployed",
+    "instance" : 2,
+
+    "data_mount_point" : "/srv",
+    "cache_mount_point" : "/database/",
+    "local_cache_mount_point" : "/config/",
+    "max_cpu_num" : 4,
+    "max_cpu_percent" : 80,
+    "memory_quota" : 1073741824,
+    "tcp_ports" : {
+        "www":80
+    }
+}
+"""
+# node config
+"nodes/ood1/config" = """
+{
+    "state:":"Ready",
+    "is_running":true,
+    "revision" : 0,
+    "gateway" : {
+    },
+    "kernel":{
+        "verify_hub" : {
+            "target_state":"Running",
+            "pkg_id":"verify_hub",
+            "operations":{
+                "status":{
+                    "command":"status",
+                    "params":[]
+                },
+                "start":{
+                    "command":"start",
+                    "params":[]
+                },
+                "stop":{
+                    "command":"stop",
+                    "params":[]
+                }
+            }
+        },
+        "scheduler" : {
+            "target_state":"Running",
+            "pkg_id":"scheduler",
+            "operations":{
+                "status":{
+                    "command":"status",
+                    "params":[]
+                },
+                "start":{
+                    "command":"start",
+                    "params":[]
+                },
+                "stop":{
+                    "command":"stop",
+                    "params":[]
+                }
+            }
+        },
+        "smb_service" : {
+            "target_state":"Running",
+            "pkg_id":"smb_service",
+            "operations":{
+                "status":{
+                    "command":"status",
+                    "params":[]
+                },
+                "start":{
+                    "command":"start",
+                    "params":[]
+                },
+                "stop":{
+                    "command":"stop",
+                    "params":[]
+                }
+            }
+        },
+        "repo_service" : {
+            "target_state":"Running",
+            "pkg_id":"repo_service",
+            "operations":{
+                "status":{
+                    "command":"status",
+                    "params":[]
+                },
+                "start":{
+                    "command":"start",
+                    "params":[]
+                },
+                "stop":{
+                    "command":"stop",
+                    "params":[]
+                }
+            }
+        }
+    },
+    "services":{
+    },
+    "apps":{
+        "0":{
+            "target_state":"Running",
+            "app_id":"home-station",
+            "user_id":"{{user_name}}",
+            "docker_image_name" : "filebrowser/filebrowser:s6",
+            "sub_pkg_id":"home-station-x86-img",
+            "data_mount_point" : ["/srv","/database","/config"],
+            "cache_mount_point" : [],
+            "local_cache_mount_point" : [],
+            "max_cpu_num" : 4,
+            "max_cpu_percent" : 80,
+            "memory_quota" : 1073741824,
+            "tcp_ports" : {
+                "20080":80
+            }
+        }
+    }
+}
+"""
+# apps config's key is instance_id ? 
+
+
+"nodes/ood1/gateway_config" = """
+{
+    "device_key_path":"{{BUCKYOS_ROOT}}/etc/node_private_key.pem",
+    "servers":{
+        "main_http_server":{
+            "type":"cyfs-warp",
+            "bind":"0.0.0.0",
+            "http_port":80,
+            "tls_port":443,
+            "hosts": {
+                "*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/kapi/verify_hub":{
+                            "upstream":"http://127.0.0.1:3300"
+                        },
+                        "/kapi/repo":{
+                            "upstream":"http://127.0.0.1:4000"
+                        },
+                        "/":{
+                            "upstream":"http://127.0.0.1:20080"
+                        }
+                    }
+                },
+                "sys.*":{
+                    "routes":{
+                        "/":{
+                            "local_dir":"{{BUCKYOS_ROOT}}/bin/control_panel"
+                        }
+                    }
+                },
+                "test.*":{
+                    "routes":{
+                        "/":{
+                            "local_dir":"{{BUCKYOS_ROOT}}/bin/sys_test"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "dispatcher" : {
+        "tcp://0.0.0.0:80":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://0.0.0.0:443":{
+            "type":"server",
+            "id":"main_http_server"
+        }
+    }
+}
+"""
+
+"system/rbac/model" = """
+[request_definition]
+r = sub,obj,act
+
+[policy_definition]
+p = sub, obj, act, eft
+
+[role_definition]
+g = _, _ # sub, role
+
+[policy_effect]
+e = priority(p.eft) || deny
+
+[matchers]
+m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.sub) || keyGet3(r.obj, p.obj, p.sub) =="") && keyMatch3(r.obj,p.obj)) && regexMatch(r.act, p.act)
+"""
+# 权限有4种:Read,Write,Create,Delete
+"system/rbac/base_policy" = """
+p, kernel, kv://*, read|write,allow
+p, kernel, dfs://*, read|write,allow
+p, owner, kv://*, read|write,allow
+p, owner, dfs://*, read|write,allow
+p, root, kv://*, read|write,allow
+p, root, dfs://*, read|write,allow
+
+p, ood,kv://*,read,allow
+p, ood,kv://nodes/{device}/*,read|write,allow
+
+
+p, admin,kv://users/{user}/*,read|write,allow
+p, admin,dfs://users/{user}/*,read|write,allow
+p, admin,kv://services/*,read|write,allow
+p, admin,dfs://library/*,read|write,allow
+
+p, service,kv://services/{service}/settings,read|write,allow
+p, service,kv://services/{service}/info,read|write,allow
+p, service,kv://system/*,read,allow
+
+p, user,kv://users/{user}/*,read|write,allow
+p, user,dfs://users/{user}/*,read|write,allow
+p, user,dfs://library/*,read|create,allow
+
+p, app, kv://users/*/apps/{app}/settings,read|write,allow
+p, app, kv://users/*/apps/{app}/config,read,allow
+p, app, kv://users/*/apps/{app}/info,read,allow
+
+p, app,  dfs://users/*/appdata/{app}/*, read|write,allow
+p, app,  dfs://users/*/cache/{app}/*, read|write,allow
+
+p, admin, kv://boot/*, read,allow
+p, user, kv://boot/*, read,allow
+p, service, kv://boot/*, read,allow
+p, app, kv://boot/*, read,allow
+
+g, node_daemon, kernel
+g, scheduler, kernel
+g, system_config, kernel
+g, verify_hub, kernel
+g, repo_service, kernel
+g, control_panel, kernel
+
+g, samba,services
+
+"""
+
+"system/rbac/policy" = """
+p, kernel, kv://*, read|write,allow
+p, kernel, dfs://*, read|write,allow
+p, owner, kv://*, read|write,allow
+p, owner, dfs://*, read|write,allow
+p, root, kv://*, read|write,allow
+p, root, dfs://*, read|write,allow
+
+p, ood,kv://*,read,allow
+p, ood,kv://nodes/{device}/*,read|write,allow
+
+
+p, admin,kv://users/{user}/*,read|write,allow
+p, admin,dfs://users/{user}/*,read|write,allow
+p, admin,kv://services/*,read|write,allow
+p, admin,dfs://services/*,read|write,allow
+p, admin,dfs://library/*,read|write,allow
+
+p, service,kv://services/{service}/settings,read|write,allow
+p, service,kv://services/{service}/info,read|write,allow
+p, service,kv://system/*,read,allow
+
+p, user,kv://users/{user}/*,read|write,allow
+p, user,dfs://users/{user}/*,read|write,allow
+p, user,dfs://library/*,read|create,allow
+
+p, app, kv://users/*/apps/{app}/settings,read|write,allow
+p, app, kv://users/*/apps/{app}/config,read,allow
+p, app, kv://users/*/apps/{app}/info,read,allow
+
+p, app,  dfs://users/*/appdata/{app}/*, read|write,allow
+p, app,  dfs://users/*/cache/{app}/*, read|write,allow
+
+p, admin, kv://boot/*, read,allow
+p, user, kv://boot/*, read,allow
+p, service, kv://boot/*, read,allow
+p, app, kv://boot/*, read,allow
+
+g, node_daemon, kernel
+g, scheduler, kernel
+g, system_config, kernel
+g, verify_hub, kernel
+g, repo_service, kernel
+g, control_panel, kernel
+g, samba,services
+
+g, {{user_name}},admin
+
+"""
+
+"boot/config" = """
+{
+    "did":"did:ens:{{user_name}}",
+    "oods":["ood1"],
+    "sn":"{{sn_host}}",
+    "verify_hub_info":{
+        "port":3300,
+        "node_name":"ood1",
+        "public_key":{{verify_hub_public_key}}
+    }
+}
+"""

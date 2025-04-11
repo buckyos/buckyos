@@ -1,380 +1,170 @@
-extern crate core;
+#[allow(unused_mut, dead_code, unused_variables)]
 mod package_cmd;
+mod sys_config;
 
+use std::path::Path;
+use buckyos_api::*;
+use clap::{Arg, Command};
 use package_cmd::*;
 
-use bucky_name_service::{DnsTxtCodec, NSProvider, NameInfo};
-use clap::{value_parser, Arg, ArgMatches, Command};
-use etcd_client::EtcdClient;
-use std::collections::HashMap;
-use std::fs;
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
-use std::process::Command as SystemCommand;
-
-const CONFIG_FILE: &str = "~/.buckycli/config";
-
-fn _take_snapshot(file_path: &str) {
-    println!("Taking snapshot and saving to {}", file_path);
-    let status = SystemCommand::new("etcdctl")
-        .args(["snapshot", "save", file_path])
-        .status()
-        .expect("Failed to execute etcdctl");
-
-    if status.success() {
-        println!("Snapshot successfully saved to {}", file_path);
-    } else {
-        eprintln!("Failed to take snapshot");
-    }
-}
-
-async fn init(zone_id: &str, private_key_path: &str) -> Result<(), String> {
-    // Perform initialization logic, such as saving these values to a config file
-    // Here we just print them for demonstration purposes
-    println!(
-        "Initializing with zone_id: {} and private_key_path: {}",
-        zone_id, private_key_path
-    );
-
-    // Save zone_id and private_key_path to a configuration file
-    save_config(zone_id, private_key_path)?;
-
-    Ok(())
-}
-
-async fn exec(command: &str) -> Result<(), String> {
-    println!("Executing command: {}", command);
-    // Here you would implement the logic to execute the command
-    // For demonstration purposes, we just print the command
-    // In real scenario, you might want to use SystemCommand to run it
-    let output = SystemCommand::new(command)
-        .output()
-        .map_err(|e| format!("Failed to execute command: {}", e))?;
-
-    println!("Command output: {:?}", output);
-
-    Ok(())
-}
-
-fn save_config(zone_id: &str, private_key_path: &str) -> std::result::Result<(), String> {
-    let config = format!("{}\n{}", zone_id, private_key_path);
-    let path = Path::new(CONFIG_FILE);
-
-    // 如果父目录不存在，创建所有必要的目录
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|_e| format!("craete dir {} error!", parent.display()))?;
-    }
-
-    fs::write(CONFIG_FILE, config).map_err(|e| format!("Failed to save config: {}", e))
-}
-
-fn _load_config() -> std::result::Result<(String, String), String> {
-    let config: String;
-    let config1 = fs::read_to_string("./buckycli/config");
-    let config2 = fs::read_to_string(CONFIG_FILE);
-    if config1.is_ok() {
-        config = config1.unwrap();
-    } else {
-        if config2.is_ok() {
-            config = config2.unwrap();
-        } else {
-            return Err("Failed to load config".to_string());
-        }
-    }
-
-    let lines: Vec<&str> = config.lines().collect();
-    if lines.len() != 2 {
-        return Err("Invalid config format".to_string());
-    }
-    Ok((lines[0].to_string(), lines[1].to_string()))
-}
-
-fn encode_file(file_path: &String, txt_limit: usize) -> Result<Vec<String>, String> {
-    let mut file =
-        File::open(file_path).map_err(|_e| format!("Failed to open file: {}", file_path))?;
-    let mut contents = String::new();
-    let read_len = file
-        .read_to_string(&mut contents)
-        .map_err(|_e| format!("Failed to read file: {}", file_path))?;
-
-    let content = match serde_json::from_str::<serde_json::Value>(&contents[..read_len]) {
-        Ok(json) => json.to_string(),
-        Err(_) => contents,
-    };
-    let list = DnsTxtCodec::encode(content.as_str(), txt_limit)
-        .map_err(|_e| format!("Failed to encode text {}", content))?;
-
-    Ok(list)
-}
-
-async fn query(name: &str) -> Result<NameInfo, String> {
-    let dns_provider = bucky_name_service::DNSProvider::new(None);
-
-    let name_info = dns_provider
-        .query(name)
-        .await
-        .map_err(|_e| "Failed to query name".to_string())?;
-    Ok(name_info)
-}
-
-// 将本地配置写入etcd
-async fn write_config(encode_matches: &ArgMatches) -> Result<(), String> {
-    let file_path: Option<&String> = encode_matches.get_one("file");
-    let value: Option<&String> = encode_matches.get_one("value");
-
-    let key: &String = encode_matches.get_one("key").unwrap();
-    let etcd: &String = encode_matches.get_one("etcd").unwrap();
-
-    // 确保 `value` 和 `file` 参数至少有一个
-    if value.is_none() && file_path.is_none() {
-        return Err("Either value or file parameter must be provided".to_string());
-    }
-
-    // 确定使用的数据
-    let data = if let Some(val) = value {
-        val.clone()
-    } else if let Some(path) = file_path {
-        match fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(_) => return Err("Read file error".to_string()),
-        }
-    } else {
-        unreachable!("One of value or file must be present");
-    };
-
-    let etcd_client = EtcdClient::connect(etcd).await;
-    if etcd_client.is_err() {
-        return Err("connect etcd error".to_string());
-    }
-
-    let result = etcd_client.unwrap().set(&key, data.as_str()).await;
-    if result.is_err() {
-        return Err("put etcd error".to_string());
-    }
-
-    println!("write config  to key[{}] success", key);
-    Ok(())
-}
-
-async fn import_node_config(file_path: &str, etcd: &str) -> Result<(), String> {
-    let file = tokio::fs::read(file_path)
-        .await
-        .map_err(|_e| format!("Failed to read file: {}", file_path))?;
-    let config: HashMap<String, serde_json::Value> =
-        serde_json::from_slice(&file).map_err(|_e| "Failed to parse json".to_string())?;
-
-    let etcd_client = EtcdClient::connect(etcd)
-        .await
-        .map_err(|_e| "connect etcd error".to_string())?;
-    for (key, value) in config {
-        etcd_client
-            .set(&format!("nodes/{}", key), &value.to_string())
-            .await
-            .map_err(|_e| "put etcd error".to_string())?;
-    }
-    Ok(())
-}
-
-async fn is_etcd_cluster_running(etcd: &str) -> Result<bool, String> {
-    let etcd_client = EtcdClient::connect(etcd)
-        .await
-        .map_err(|_e| "connect etcd error".to_string())?;
-    let members = etcd_client
-        .members()
-        .await
-        .map_err(|_e| "get etcd members error".to_string())?;
-    for member in members.iter() {
-        if member.client_urls.is_empty() || member.peer_urls.is_empty() {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
 #[tokio::main]
-async fn main() -> std::result::Result<(), String> {
+async fn main() -> Result<(), String> {
+    buckyos_kit::init_logging("buckycli",false);
+
     let matches = Command::new("buckyos control tool")
         .author("buckyos")
         .about("control tools")
         .subcommand_required(true)
         .arg_required_else_help(true)
+        .arg(
+            Arg::new("id")
+                .long("node_id")
+                .help("This node's id")
+                .required(false),
+        )
+        .subcommand(Command::new("version").about("buckycli version"))
         .subcommand(
-            Command::new("init")
-                .about("Initialize with zone_id and private_key_path")
+            Command::new("pub_pkg")
+                .about("publish packed raw package to local repo")
                 .arg(
-                    Arg::new("param")
+                    Arg::new("target_dir")
+                        .long("target_dir")
+                        .help("target dir,which contain packed raw package")
                         .required(true)
-                        .num_args(2)
-                        .value_names(&["ZONE_ID", "PRIVATE_KEY_PATH"]),
-                ),
-        )
-        .subcommand(Command::new("version").about("buckyos version"))
-        .subcommand(
-            Command::new("exec")
-                .about("Execute a command")
-                .disable_help_flag(true)
-                .arg(
-                    Arg::new("command")
-                        .trailing_var_arg(true)
-                        .allow_hyphen_values(true)
-                        .num_args(..)
-                        .help("The command to execute")
-                        .required(true),
-                ),
-        )
-        .subcommand(
-            Command::new("import_zone_config")
-                .about("Import the zone configuration")
-                .arg(
-                    Arg::new("file")
-                        .help("The file to import")
-                        .required(true)
-                        .short('f')
-                        .long("file"),
+                        .index(1)
                 )
-                .arg(
-                    Arg::new("etcd")
-                        .help("The etcd server")
-                        .required(false)
-                        .short('e')
-                        .long("etcd")
-                        .default_value("http://127.0.0.1:2379"),
-                ),
         )
         .subcommand(
-            Command::new("write_config")
-                .about("Import the zone configuration")
+            Command::new("pub_app")
+                .about("update app doc and publish app to local repo")
                 .arg(
-                    Arg::new("file")
-                        .help("The file to import")
-                        .required(false)
-                        .short('f')
-                        .long("file"),
-                )
-                .arg(
-                    Arg::new("key")
-                        .help("Etcd key name")
-                        .required(true)
-                        .long("key"),
-                )
-                .arg(
-                    Arg::new("value")
-                        .help("Etcd key name")
-                        .required(false)
-                        .long("value"),
-                )
-                .arg(
-                    Arg::new("etcd")
-                        .help("The etcd endpoint")
-                        .required(false)
-                        .long("etcd")
-                        .default_value("http://127.0.0.1:2379"),
-                ),
-        )
-        .subcommand(
-            Command::new("check_etcd_cluster")
-                .about("Check whether the etcd cluster is running")
-                .arg(
-                    Arg::new("etcd")
-                        .help("The etcd server")
-                        .required(false)
-                        .short('e')
-                        .long("etcd")
-                        .default_value("http://127.0.0.1:2379"),
-                ),
-        )
-        .subcommand(
-            Command::new("encode_dns")
-                .about("Encode the contents of a file into a DNS configurable record")
-                .arg(
-                    Arg::new("file")
-                        .help("The file to encode")
-                        .required(true)
-                        .short('f')
-                        .long("file"),
-                )
-                .arg(
-                    Arg::new("txt-limit")
-                        .help("The maximum length of a TXT record")
-                        .short('l')
-                        .long("limit")
-                        .value_parser(value_parser!(usize))
-                        .default_value("1024"),
-                ),
-        )
-        .subcommand(
-            Command::new("query_dns")
-                .about("Query the dns configuration of the specified name")
-                .arg(
-                    Arg::new("name")
-                        .help("The name of the service to be queried")
-                        .required(true),
-                ),
-        )
-        .subcommand(
-            Command::new("check_dns")
-                .about("Check whether the dns configuration of the specified zone name is valid")
-                .arg(
-                    Arg::new("name")
-                        .help("The name of the service to be checked")
-                        .required(true),
-                ),
-        )
-        .subcommand(
-            Command::new("pack_package")
-                .about("Pack a dir as a bucky package(.bkz)")
-                .arg(
-                    Arg::new("path")
-                        .help("Specifies the dir path to pack")
-                        .required(true),
-                ),
-        )
-        .subcommand(
-            Command::new("publish_package")
-                .about("Pack a dir to bucky package(.bkz) and publish it to repo server")
-                .arg(
-                    Arg::new("path")
-                        .help("Specifies the dir path to pack")
+                    Arg::new("app_name")
+                        .long("app_name")
+                        .help("app name")
                         .required(true),
                 )
                 .arg(
-                    Arg::new("repo")
-                        .help("Specifies the repo server address")
-                        .required(false)
-                        .default_value("http://47.106.164.184/package/upload"),
-                ),
+                    Arg::new("target_dir")
+                        .long("target_dir")
+                        .help("app output dir,contain app doc and app sub pkgs")
+                        .required(true),
+                )
         )
-        // .arg(
-        //     Arg::new("snapshot")
-        //         .short('s')
-        //         .long("snapshot")
-        //         .help("Takes a snapshot of the etcd server"),
-        // )
-        // .arg(
-        //     Arg::new("save")
-        //         .short('f')
-        //         .long("file")
-        //         .help("Specifies the file path to save the snapshot"),
-        // )
+        .subcommand(
+            Command::new("pub_index")
+                .about("let local repo publish wait-pub-pkg_meta_index database")
+        )
+        .subcommand(
+            Command::new("pack_pkg").about("pack package").arg(
+                Arg::new("src_pkg_path")
+                    .index(1)
+                    .long("src_pkg_path")
+                    .help("source package path,which dir contain pkg_meta.json")
+                    .required(true)
+            ).arg(
+                Arg::new("target_path")
+                    .index(2)
+                    .long("target path")
+                    .help("packed package will store at /target_path/pkg_name/")
+                    .required(true),
+            ),
+        )
+        .subcommand(
+            Command::new("install_pkg")
+                .about("install pkg in current pkg env or target pkg env")
+                .arg(
+                    Arg::new("pkg_id")
+                        .index(1)
+                        .long("pkg_id")
+                        .help("pkg id is pkg name with version")
+                        .required(true),
+                        
+                )
+                .arg(
+                    Arg::new("env")
+                        .long("env")
+                        .help("target env path, default is current dir")
+                        .required(false),
+                )
+        )
+        .subcommand(
+            Command::new("load_pkg")
+                .about("try load pkg in current pkg env,will return pkg media info")
+                .arg(
+                    Arg::new("pkg_id")
+                        .index(1)
+                        .long("pkg_id")
+                        .help("pkg id is pkg name with version")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("env")
+                        .long("env")
+                        .help("target env path, default is current dir")
+                        .required(false),
+                )
+        )
+        .subcommand(
+            Command::new("set_pkg_meta")
+                .about("set(add or update) pkg meta to meta-index-db")
+                .arg(
+                    Arg::new("meta_path")
+                        .index(1)
+                        .long("meta_path")
+                        .help("meta path")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("db_path")
+                        .index(2)
+                        .long("db_path")
+                        .help("db path")
+                        .required(true),
+                )
+        )
+        .subcommand(
+            Command::new("update_index")
+                .about("update zone repo service's meta-index-db from remote source")
+        )
+        .subcommand(
+            Command::new("connect")
+                .about("connect system config as a client")
+                .arg(
+                    Arg::new("target_url")
+                        .long("target_url")
+                        .help("system config service url, default 'http://127.0.0.1:3200/kapi/system_config' ")
+                )
+                .arg(
+                    Arg::new("node_id")
+                        .long("node_id")
+                        .help("node_id in current machine, default 'node'")
+                )
+        )
         .get_matches();
+    
+
+    let mut runtime = init_buckyos_api_runtime("buckycli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
+        println!("Failed to init buckyos runtime: {}", e);
+        return e.to_string();
+    })?;
+
+    //TODO: Support login to verify-hub via command line to obtain a valid session_token, to avoid requiring a private key locally
+
+    runtime.login().await.map_err(|e| {
+        println!("Failed to login: {}", e);
+        return e.to_string();
+    })?;
+    set_buckyos_api_runtime(runtime);
+    let buckyos_runtime = get_buckyos_api_runtime().unwrap();
+    let mut private_key = None;
+    let zone_host_name = buckyos_runtime.zone_id.to_host_name();
+    println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id,zone_host_name);
+    if buckyos_runtime.user_private_key.is_some() {
+        println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
+        private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
+    }
 
     match matches.subcommand() {
-        Some(("init", matches)) => {
-            let values: Vec<&String> = matches.get_many("param").unwrap().collect();
-            let zone_id = values[0];
-            let private_key_path = values[1];
-
-            match init(zone_id, private_key_path).await {
-                Ok(_) => {
-                    println!("Initialization successful");
-                }
-                Err(e) => {
-                    println!("{}", e);
-                }
-            }
-        }
         Some(("version", _)) => {
             let version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");
             // let git_hash = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
@@ -385,125 +175,153 @@ async fn main() -> std::result::Result<(), String> {
                 env!("VERGEN_GIT_DESCRIBE")
             );
         }
-        Some(("exec", matches)) => {
-            let command: Vec<_> = matches
-                .get_many::<String>("command")
-                .unwrap()
-                .map(|v| v.to_string())
-                .collect();
-            match exec(command.join(" ").as_str()).await {
-                Ok(_) => {
-                    println!("Command executed successfully");
-                }
-                Err(e) => {
-                    println!("{}", e);
-                }
+        Some(("pub_pkg", matches)) => {
+            let target_dir = matches.get_one::<String>("target_dir").unwrap();
+            //需要便利target_dir目录下的所有pkg，并发布
+            // 遍历target_dir目录下的所有pkg目录
+            let mut pkg_path_list = Vec::new();
+            let target_path = Path::new(target_dir);
+            
+            if !target_path.exists() || !target_path.is_dir() {
+                return Err(format!("目标目录 {} 不存在或不是一个目录", target_dir));
             }
-        }
-        Some(("encode_dns", encode_matches)) => {
-            let file: &String = encode_matches.get_one("file").unwrap();
-            let txt_limit: usize = *encode_matches.get_one("txt-limit").unwrap();
-            match encode_file(file, txt_limit) {
-                Ok(list) => {
-                    for item in list {
-                        println!("{}", item);
+            
+            // 读取目录下的所有条目
+            let entries = std::fs::read_dir(target_path).map_err(|e| {
+                format!("读取目录 {} 失败: {}", target_dir, e.to_string())
+            })?;
+            
+            // 遍历所有条目，找出所有目录
+            for entry in entries {
+                let entry = entry.map_err(|e| {
+                    format!("读取目录条目失败: {}", e.to_string())
+                })?;
+                
+                let path = entry.path();
+                if path.is_dir() {
+                    // 检查是否包含pkg_meta.jwt文件，这表明它是一个有效的包目录
+                    let pkg_meta_jwt_path = path.join("pkg_meta.jwt");
+                    if pkg_meta_jwt_path.exists() {
+                        println!("找到有效的packed pkg目录: {}", path.display());
+                        pkg_path_list.push(path);
                     }
                 }
-                Err(e) => {
-                    println!("{}", e);
-                }
+            }
+            
+            if pkg_path_list.is_empty() {
+                return Err(format!("在目录 {} 中没有找到有效的包", target_dir));
+            }
+            
+            println!("找到 {} 个包准备发布", pkg_path_list.len());
+            let pub_result = publish_raw_pkg(&pkg_path_list).await;
+            if pub_result.is_err() {
+                println!("Publish pkg failed! {}", pub_result.err().unwrap());
+                return Err("publish pkg failed!".to_string());
+            }
+            println!("############\nPublish pkg success!");
+        }
+        Some(("pub_app", matches)) => {
+            let app_name = matches.get_one::<String>("app_name").unwrap();
+            let app_dir_path = matches.get_one::<String>("target_dir").unwrap();
+            let pub_result = publish_app_pkg(app_name, app_dir_path,true).await;
+            if pub_result.is_err() {
+                println!("Publish app failed! {}", pub_result.err().unwrap());
+                return Err("publish app failed!".to_string());
             }
         }
-        Some(("query_dns", name_matches)) => {
-            let name: &String = name_matches.get_one("name").unwrap();
-            match query(name).await {
-                Ok(name_info) => {
-                    println!("{}", serde_json::to_string_pretty(&name_info).unwrap());
-                }
-                Err(e) => {
-                    println!("{}", e);
-                }
-            }
-        }
-        Some(("check_dns", name_matches)) => {
-            let name: &String = name_matches.get_one("name").unwrap();
-            match query(name).await {
-                Ok(name_info) => {
-                    if name_info.extra.is_some() {
-                        println!("valid");
-                    } else {
-                        println!("invalid");
-                    }
-                }
-                Err(_) => {
-                    println!("invalid");
-                }
-            }
-        }
-        Some(("import_zone_config", encode_matches)) => {
-            let file: &String = encode_matches.get_one("file").unwrap();
-            let etcd: &String = encode_matches.get_one("etcd").unwrap();
-            if let Err(e) = import_node_config(file, etcd).await {
-                println!("{}", e);
-            }
-        }
-        Some(("write_config", encode_matches)) => {
-            if let Err(e) = write_config(encode_matches).await {
-                println!("{}", e);
-            }
-        }
-        Some(("check_etcd_cluster", encode_matches)) => {
-            let etcd: &String = encode_matches.get_one("etcd").unwrap();
-            match is_etcd_cluster_running(etcd).await {
-                Ok(running) => {
-                    if running {
-                        println!("The etcd cluster is healthy");
-                    } else {
-                        println!("The etcd cluster is unhealthy");
-                    }
-                }
-                Err(e) => {
-                    println!("{}", e);
-                }
-            }
-        }
-        Some(("pack_package", encode_matches)) => {
-            let path: &String = encode_matches.get_one("path").unwrap();
+        Some(("pack_pkg", matches)) => {
+            let src_pkg_path = matches.get_one::<String>("src_pkg_path").unwrap();
+            let target_path = matches.get_one::<String>("target_path").unwrap();
 
-            match pack(path).await {
+            match pack_raw_pkg(src_pkg_path, target_path,private_key).await {
                 Ok(_) => {
-                    println!("Package created successfully");
+                    println!("############\nPack package success!");
                 }
                 Err(e) => {
-                    eprintln!("Failed to pack package: {}", e);
+                    println!("############\nPack package failed! {}", e);
+                    return Err("pack package failed!".to_string());
                 }
             }
         }
-        Some(("publish_package", encode_matches)) => {
-            let path: &String = encode_matches.get_one("path").unwrap();
-            let repo: &String = encode_matches.get_one("repo").unwrap();
+        Some(("set_pkg_meta", matches)) => {
+            let meta_path = matches.get_one::<String>("meta_path").unwrap();
+            let db_path = matches.get_one::<String>("db_path").unwrap();
+            let set_result = set_pkg_meta(meta_path, db_path).await;
+            if set_result.is_err() {
+                println!("Set pkg meta failed! {}", set_result.err().unwrap());
+                return Err("set pkg meta failed!".to_string());
+            }
+            println!("############\nSet pkg meta {} to db {} success!", meta_path, db_path);
+        }
+        
+        Some(("install_pkg", matches)) => {
+            let pkg_id = matches.get_one::<String>("pkg_id").unwrap();
+            let target_env = matches.get_one::<String>("env");
+            let real_target_env:String = if target_env.is_some() {
+                target_env.unwrap().to_string()
+            } else {
+                // 获取当前目录作为默认环境
+                std::env::current_dir()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string())
+            };
 
-            match pack(path).await {
+            println!("start install pkg: {} to target env: {}", pkg_id, real_target_env.as_str());
+            
+            match install_pkg(pkg_id, real_target_env.as_str()).await {
                 Ok(_) => {
-                    println!("Package created successfully");
-                    match publish(path, repo).await {
-                        Ok(_) => {
-                            println!("Package published successfully");
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to publish package: {}", e);
-                        }
-                    }
+                    println!("############\nInstall package success!");
                 }
                 Err(e) => {
-                    eprintln!("Failed to pack package: {}", e);
+                    println!("############\nInstall package failed! {}", e);
+                    return Err("install package failed!".to_string());
                 }
             }
         }
-        _ => unreachable!(),
+        Some(("load_pkg", matches)) => {
+            let pkg_id = matches.get_one::<String>("pkg_id").unwrap();
+            let target_env = matches.get_one::<String>("env");
+            let real_target_env:String = if target_env.is_some() {
+                target_env.unwrap().to_string()
+            } else {
+                // 获取当前目录作为默认环境
+                std::env::current_dir()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string())
+            };
+
+            println!("start load pkg: {} to target env: {}", pkg_id, real_target_env.as_str());
+            let load_result = load_pkg(pkg_id, real_target_env.as_str()).await;
+            if load_result.is_err() {
+                println!("Load package failed! {}", load_result.err().unwrap());
+            }
+        }
+        Some(("pub_index", _matches)) => {
+            let pub_result = publish_repo_index().await;
+            if pub_result.is_err() {
+                println!("Publish repo index failed! {}", pub_result.err().unwrap());
+                return Err("publish repo index failed!".to_string());
+            }
+            println!("############\nPublish repo index success!");
+        }
+        Some(("update_index", _matches)) => {
+            let sync_result = sync_from_remote_source().await;
+            if sync_result.is_err() {
+                println!("Sync from remote source failed! {}", sync_result.err().unwrap());
+                return Err("sync from remote source failed!".to_string());
+            }
+        }
+        Some(("connect", _matches)) => {
+            sys_config::connect_into().await;
+        }
+        _ => {
+            println!("unknown command!");
+            return Err("unknown command!".to_string());
+        }
     }
 
     // let _ = handle_matches(matches).await?;
 
     Ok(())
 }
+

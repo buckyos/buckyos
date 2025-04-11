@@ -1,0 +1,28 @@
+[package]
+name = "buckyos-api"
+version = "0.4.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@alexsunxl","@waterflier"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+log = "*"
+serde = "*"
+serde_json = "*"
+lazy_static = "*"
+thiserror = "*"
+rand = "*"
+async-trait = "*"
+chrono = "*"
+once_cell = "*"
+toml = "*"
+tokio = { version = "*", features = ["full"] }
+jsonwebtoken = "*"
+
+buckyos-kit = { path = "../../components/buckyos-kit" }
+package-lib = { path = "../../components/package-lib" }
+name-lib = { path = "../../components/name-lib" }
+name-client = { path = "../../components/name-client" }
+kRPC ={ path = "../kRPC" }
+rbac = { path = "../rbac" }
+

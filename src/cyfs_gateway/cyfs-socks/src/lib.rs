@@ -1,6 +1,12 @@
-mod rule_engine;
-mod socks5;
+#![allow(dead_code)]
 
-pub use rule_engine::*;
-pub use socks5::*;
+mod error;
+mod rule;
+mod socks;
 
+pub use rule::*;
+pub use error::*;
+pub use socks::*;
+
+#[macro_use]
+extern crate log;

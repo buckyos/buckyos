@@ -1,0 +1,29 @@
+{
+    "app_doc" : {
+        "name" : "Hello BuckyOS",
+        "description" : "Hello BuckyOS, a simple web server implemented by nodejs alway say hello BuckyOS!",
+        "vendor_did" : "did:bns:buckyos",
+        "pkg_id" : "hello_bucky",
+        "pkg_list" : {
+            "amd64_docker_image" : {
+                "pkg_id":"hello_bucky_img_x86",
+                "docker_image_name":"buckyos/hello_bucky"
+            },
+            "aarch64_docker_image" : {
+                "pkg_id":"hello_bucky_img_arm64",
+                "docker_image_name":"buckyos/hello_bucky"
+            }
+        }
+    },
+
+    "data_mount_point" : null,
+    "cache_mount_point" : null,
+    "local_cache_mount_point" : null,
+    "max_cpu_num" : 1,
+    "max_cpu_percent" : 10,
+    "memory_quota" : null,
+    "tcp_ports" : {
+        "www":80
+    }
+    
+}

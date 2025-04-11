@@ -1,10 +1,16 @@
 {
+    "device_name":"web3.buckyos.io",
     "device_key_path":"/opt/web3_bridge/device_key.pem",
     "inner_services":{
         "main_sn" : {
-            "type" : "cyfs_sn",
+            "type" : "cyfs-sn",
             "host":"web3.buckyos.io",
-            "ip":"192.168.1.188"
+            "ip":"192.168.1.188",
+            "zone_config_jwt":"TODO",
+            "zone_config_pkx":"TODO"
+        },
+        "zone_provider" : {
+            "type" : "zone-provider"
         }
     },
     "servers":{
@@ -45,6 +51,9 @@
                     "routes": {
                         "/":{
                             "tunnel_selector":"main_sn"
+                        },
+                        "/resolve":{
+                            "inner_service":"zone_provider"
                         }
                     }
                 }

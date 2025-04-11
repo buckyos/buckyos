@@ -1,6 +1,6 @@
 [package]
 name = "node_daemon"
-version = "0.2.1"
+version = "0.4.0"
 edition = "2021"
 authors = ["BuckyOS DAO","@waterflier"]
 
@@ -21,19 +21,20 @@ futures = "*"
 lazy_static = "*"
 jsonwebtoken = "*"  
 num_cpus = "*"
+url = "*"
 time = { version = "^0.3", features = ["formatting"] }
 sysinfo = "*"
-
 cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
 cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
-package-manager = { path = "../../components/package-manager" }
-kRPC = { path = "../../kernel/kRPC" }
-sys-config = { path = "../sys-config" }
+package-lib = { path = "../../components/package-lib" }
+ndn-lib = { path = "../../components/ndn-lib" }
+#package-installer = { path = "../../components/package-installer" }
+kRPC = { path = "../kRPC" }
+buckyos-api = { path = "../buckyos-api" }
 
-
-
-
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
 

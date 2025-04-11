@@ -1,6 +1,6 @@
 [package]
 name = "cyfs_gateway"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["BuckyOS DAO","@waterflier","@lurenpluto"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -19,6 +19,8 @@ clap = "*"
 env_logger = "*"
 bytes = "*"
 dirs = "*"
+once_cell = "*"
+anyhow = "*"
 
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
@@ -28,6 +30,9 @@ name-lib = { path = "../../components/name-lib" }
 cyfs-warp = { path= "../cyfs-warp"}
 cyfs-sn = { path = "../cyfs-sn" }
 cyfs-dns = { path = "../cyfs-dns" }
+cyfs-socks = { path = "../cyfs-socks" }
+
+buckyos-api = { path = "../../kernel/buckyos-api" }
 
 
 

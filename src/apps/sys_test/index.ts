@@ -11,25 +11,27 @@ import '@material/web/radio/radio.js';
 import '@material/web/textfield/outlined-text-field.js';
 import '@material/web/textfield/filled-text-field.js';
 import { MdOutlinedButton } from '@material/web/button/outlined-button.js';
-import buckyos from 'buckyos';
+import {buckyos} from 'buckyos';
 
 
-async function login() : Promise<string> {
+async function login() : Promise<any> {
     //zone host name是当前host的上一级
-    let zone_host_name = window.location.hostname.split('.').slice(1).join('.');
-    console.log("zone_host_name: ", zone_host_name);
-    let auth_client = new buckyos.AuthClient(zone_host_name, "sys_test", null, null);
-    let bucky_token = await auth_client.login();
-    return bucky_token;
+    let account_info = await buckyos.login();
+    if (!account_info) {
+        throw new Error("login failed");
+    }
+    return account_info;
 }
 
 //after dom loaded
 window.onload = async () => {
+    await buckyos.initBuckyOS("sys-test");
+
     let login_button = document.getElementById('btn-login') as MdOutlinedButton;
     login_button.onclick = () => {
         console.log("do login");
-        login().then((bucky_token) => {
-            console.log("bucky_token: ", bucky_token);
+        login().then((account_info) => {
+            console.log("account_info: ", account_info);
         });
 
     }

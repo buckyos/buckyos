@@ -1,95 +1,214 @@
-#!/bin/python3
+#!/usr/bin/python3
 
 import os
 import sys
 import json
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts import util
 
+appid = None
+full_appid = None
+username = None
+app_token = None
+app_instance_config = None
+app_media_info = None
+media_info_str = None
+zone_config = None
+device_info = None
+
+is_support_docker = True
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
 
-appid = sys.argv[1]
-username = sys.argv[2]
-
-full_appid = f"{username}#{appid}"
-app_config = os.getenv(f"{full_appid}.config")
-app_token = os.getenv(f"{full_appid}.token")
+def check_image_exists(image_name):
+    check_image_cmd = f"docker images -q {image_name}"
+    image_exists = os.popen(check_image_cmd).read().strip()
+    return image_exists
 
 
-if app_token is None:
-    print(f"No configuration found for appid: {full_appid}")
-    exit(1)
+def load_image_from_tar(image_tar_path):
+    load_cmd = f"docker load -i {image_tar_path}"
+    ret = os.system(load_cmd)
+    if ret != 0:
+        print(f"Failed to load image from {image_tar_path}")
+        exit(1)
+    print(f"Successfully loaded image from tar file")
+    # 这里并不删除tar文件，而是通过垃圾回收机制删除
+
+def start_app_without_docker():
+    print(f"Start app {appid} without docker")
+    full_path = app_media_info.get("full_path")
+    if not full_path:
+        print(f"No app media full path found for appid: {appid}")
+        exit(1)
+            
+    start_script = f"{full_path}/start"
+    if not os.path.exists(start_script):
+        print(f"No start script found for appid: {appid}")
+        exit(1)
+    os.system(f"python3 {start_script} {appid} {username}")
+
+def start_app_with_docker():
+    # 如果镜像已经在运行，则先停止再启动
+    global app_media_info
+    container_id = full_appid
+    print(f"Before start, try stopping container: {container_id}")
+    docker_command = f"docker kill {container_id}"
+    os.system(docker_command)
+
+    # 得到镜像名
+    image_name = app_instance_config.get("docker_image_name")
+    image_pkg_id = app_instance_config.get("docker_image_pkg_id")
+    if not image_name:
+        print("Image name not found in the configuration")
+        exit(1)
+
+    if not check_image_exists(image_name):
+        print(f"Image {image_name} not installed, trying to import docker image from local tar file")
+        is_imported = False
+        # 如果能import，优先import
+        if media_info_str is not None:
+            app_media_info = json.loads(media_info_str)
+            full_path = app_media_info.get("full_path")
+            if not full_path:
+                print(f"No app media full path found for appid: {appid}")
+                exit(1)
+            if not image_pkg_id:
+                print(f"No image pkg id found for appid: {appid}")
+                exit(1)
+            image_tar_path = f"{full_path}/{appid}.tar"
+            if os.path.exists(image_tar_path):
+                print(f"Try loading docker image from {image_tar_path}")
+                load_image_from_tar(image_tar_path)
+                is_imported = True
+
+        if not is_imported:
+            if zone_docker_repo_base_url:
+                image_full_name = f"{zone_docker_repo_base_url}/{image_name}"
+                pull_cmd = f"docker pull {image_full_name}"
+            else: 
+                pull_cmd = f"docker pull {image_name}"
+            print(f"Try Pulling docker image by {pull_cmd}")
+            ret = os.system(pull_cmd)
+            if ret != 0:
+                print(f"Failed to import  docker image {image_name}")
+                exit(1)
+
+    volume_mapping = ""
+    data_mount_point = app_instance_config.get("data_mount_point",[])
+    if data_mount_point:
+        base_data_dir = util.get_app_data_dir(appid,username)
+        os.makedirs(base_data_dir, exist_ok=True)
+        for mount_point in data_mount_point:
+            volume_mapping += f"-v {base_data_dir}/{mount_point}:{mount_point} "
+
+    cache_mount_point = app_instance_config.get("cache_mount_point", [])
+    if cache_mount_point:
+        base_cache_dir = util.get_app_cache_dir(appid,username)
+        os.makedirs(base_cache_dir, exist_ok=True)
+        for mount_point in cache_mount_point:
+            volume_mapping += f"-v {base_cache_dir}/{mount_point}:{mount_point} "
+
+    local_cache_mount_point = app_instance_config.get("local_cache_mount_point", [])
+    if local_cache_mount_point:
+        base_cache_dir = util.get_app_local_cache_dir(appid,username)
+        os.makedirs(base_cache_dir, exist_ok=True)
+        for mount_point in local_cache_mount_point:
+            volume_mapping += f"-v {base_cache_dir}/{mount_point}:{mount_point} "
+
+
+    #network_settings = config.get("network_settings", "")
+    cpu_quota = app_instance_config.get("cpu_quota", "")
+    memory_quota = app_instance_config.get("memory_quota", "")
+
+    # 端口映射
+    port_cmd = ""
+    tcp_ports = app_instance_config.get("tcp_ports", "")
+    for (k,v) in tcp_ports.items():
+        port = f"-p {k}:{v} "
+        port_cmd += port
+
+
+    # 构造docker命令
+    docker_command = f"docker run --rm {port_cmd} --name {container_id} -e BUCKYOS_ZONE_CONFIG -e {full_appid}_token -d "
+
+    if volume_mapping:
+        docker_command += volume_mapping
+
+    #if network_settings:
+    #    docker_command += f"--network {network_settings} "
+
+    #if cpu_quota:
+    #    docker_command += f"--cpu-quota={cpu_quota} "
+
+    if memory_quota:
+        docker_command += f"--memory={memory_quota} "
+
+    docker_command += f" {image_name}"
+
+
+    print(f"docker craete container command: {docker_command}")
+    os.system(docker_command)
+
+
+def start_app():
+    global appid, full_appid,username, app_token, app_instance_config,app_media_info,media_info_str
+    global zone_config, zone_docker_repo_base_url
+    global device_doc, is_support_docker
     
-if app_config is None:
-    print(f"No configuration found for appid: {full_appid}")
-    exit(1)
-
-config = json.loads(app_config)
-
-# 如果镜像已经在运行，则先停止再启动
-print(f"Before start, try stopping container: {username}-{appid}")
-docker_command = f"docker kill  {full_appid}"
-os.system(docker_command)
-
-# 如果容器已经存在，则直接用docker start命令
-ret = os.system(f"docker start {full_appid}")
-if ret == 0:
-    print(f"Container {full_appid} is already running, skip building")
-    exit(0)
-
-
-
-# 得到镜像名
-image_list = config.get("service_docker_images")
-if image_list is None:
-    print("Image list not found in the configuration")
-    exit(1)
-
-image_name = image_list.get("x86_server")
-if not image_name:
-    print("Image name not found in the configuration")
-    exit(1)
-
-# 通过配置得到镜像的启动参数，包括路径映射，虚拟网络，CPU配额，内存配额
-volume_mapping = ""
-data_mount_point = config.get("data_mount_point", "")
-if data_mount_point:
-    os.makedirs(f"/opt/buckyos/data/{username}/{appid}", exist_ok=True)
-    volume_mapping += f"-v /opt/buckyos/data/{username}/{appid}/:{data_mount_point} "
-
-local_cache_mount_point = config.get("local_cache_mount_point", "")
-if local_cache_mount_point:
-    os.makedirs(f"/opt/buckyos/cache/{username}/{appid}", exist_ok=True)
-    volume_mapping += f"-v /opt/buckyos/cache/{username}/{appid}/:{local_cache_mount_point} "
-
-#network_settings = config.get("network_settings", "")
-cpu_quota = config.get("cpu_quota", "")
-memory_quota = config.get("memory_quota", "")
-
-print(f"Image Name: {image_name}")
-
-port = config.get("port", "")
-org_port = config.get("org_port", "")
-if port:
-    port = f"-p {port}:{org_port} "
-
-# 构造docker命令
-docker_command = f"docker run --rm {port} --name {username}-{appid} -e {full_appid}.config -e {full_appid}.token -d "
-
-if volume_mapping:
-    docker_command += volume_mapping
-
-#if network_settings:
-#    docker_command += f"--network {network_settings} "
-
-#if cpu_quota:
-#    docker_command += f"--cpu-quota={cpu_quota} "
-
-#if memory_quota:
-#    docker_command += f"--memory={memory_quota} "
-docker_command += f" {image_name}"
+    appid = sys.argv[1]
+    username = sys.argv[2]
+    full_appid = util.get_full_appid(appid, username)
+    app_token_env_key = util.get_session_token_env_key(full_appid, True)
+    app_token = os.getenv(app_token_env_key)
+    app_instance_config_str = os.getenv("app_instance_config")
+    media_info_str = os.getenv("app_media_info")
+    zone_config_str = os.getenv(f"BUCKYOS_ZONE_CONFIG")
+    zone_config = None
+    zone_docker_repo_base_url = None
+    device_info_str = os.getenv(f"BUCKYOS_THIS_DEVICE_INFO")
+    device_info = None
+    # 打印所有环境变量用于调试
+    # print("=== 环境变量列表（用于调试）===")
+    # for key, value in os.environ.items():
+    #     print(f"{key}: {value}")
+    # print("=== 环境变量列表结束 ===")
 
 
-print(f"docker craete container command: {docker_command}")
-os.system(docker_command)
+    if zone_config_str:
+        zone_config = json.loads(zone_config_str)
+        docker_repo_base_url = zone_config.get("docker_repo_base_url")
+        if docker_repo_base_url:
+            zone_docker_repo_base_url = docker_repo_base_url
+    
+    if device_info_str:
+        device_info = json.loads(device_info_str)
+
+    if app_token is None:
+        print(f"No session token found for appid: {full_appid},env_key: {app_token_env_key}")
+        exit(1)
+        
+    if app_instance_config_str is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+    app_instance_config = json.loads(app_instance_config_str)
+
+    #container_hash = app_meta_info.get("image_hash")
+    is_support_docker = device_info.get("support_container", True)
+
+    if is_support_docker:
+        print(f"Start app {full_appid} with docker")
+        start_app_with_docker()
+    else:
+        if media_info_str is None:
+            print(f"No media info found for appid: {full_appid}")
+            exit(1)
+            
+        app_media_info = json.loads(media_info_str)
+        print(f"Start app {full_appid} without docker")
+        start_app_without_docker()
+
+if __name__ == "__main__":
+    start_app()
 

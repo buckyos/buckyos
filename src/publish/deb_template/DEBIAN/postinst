@@ -1,14 +1,11 @@
 #!/bin/bash
-pip3 install docker --break-system-packages
-docker pull filebrowser/filebrowser:s6
-
 cat <<EOF > /etc/systemd/system/buckyos.service
 [Unit]
-Description=buckyos system service
+Description=buckyos node daemon
 After=network.target
 
 [Service]
-ExecStart=/opt/buckyos/bin/node_daemon --enable_active
+ExecStart=/opt/buckyos/bin/node_daemon/node_daemon --enable_active
 User=root
 WorkingDirectory=/opt/buckyos/bin
 Restart=always
@@ -18,6 +15,9 @@ WantedBy=multi-user.target
 EOF
 
 
+systemctl stop buckyos.service
 systemctl daemon-reload
 systemctl enable buckyos.service
 systemctl start buckyos.service
+
+echo "BuckyOS install success, open http://127.0.0.1:3180/index.html to start, ENJOY!"

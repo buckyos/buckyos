@@ -1,0 +1,39 @@
+[package]
+name = "repo_service"
+version = "0.4.0"
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+[dependencies]
+time = { version = "^0.3", features = ["formatting"] }
+async-trait = "*"
+log = "*"
+anyhow = "*"
+serde = "*"
+serde_json = "*"
+url = "*"
+tokio = { version = "*", features = ["full"] }
+lazy_static = "*"
+thiserror = "*"
+semver = "*"
+base64 = "*"
+ed25519-dalek = { version = "*", features = ["pkcs8", "pem"] } 
+async-recursion = "*"
+jsonwebtoken = "*" 
+futures-util = "*"
+hex = "*"
+rusqlite =  { version = "*", features = ["bundled"] }
+sha2 = { version = ">=0.11.0-pre.4" }
+reqwest = {version = "*", features = ["json", "rustls-tls"]}
+
+ndn-lib = { path = "../../components/ndn-lib" }
+package-lib = { path = "../../components/package-lib" }
+name-lib = { path = "../../components/name-lib" }
+name-client = { path = "../../components/name-client" }
+cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
+cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
+buckyos-kit = { path = "../../components/buckyos-kit" }
+kRPC ={ path = "../../kernel/kRPC" }
+buckyos-api = { path = "../../kernel/buckyos-api" }
+
+

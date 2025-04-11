@@ -13,20 +13,20 @@
     }
 </style>
 <div class="frame">
-    <h3>1. 设置Personal Server的访问链路</h3>
+    <h3 data-i18n="title_step_1">1. Set up Gateway for your Personal Server</h3>
     <div class="container">
-        <bucky-checkbox id="chk_enable_bucky_forward" lable="使用buckyos.io提供的中转服务" check="true"></bucky-checkbox>
+        <bucky-checkbox id="chk_enable_bucky_forward" lable="{{t "use_buckyos_sn"}}" check="true"></bucky-checkbox>
         <div style="margin-top: 0px; margin-left: 28px;">
-            * 通过buckyos.io的Web3网桥中转流量到 Personal Server.
+            * 通过buckyos的Web3网桥中转流量到 Personal Server.
             <p>
                 - 简单配置即可让您的Personal Server拥有稳定的公网可访问性。
             </p>
             <p>
                 - Personal Server的公网访问性能会受到中转服务器可用带宽的影响。
             </p>
-            <p>- Alpha测试期间,使用buckyos.io的中转服务需要邀请码:</p>
+            
         </div>
-
+       
         <md-outlined-text-field id="txt_bucky_sn_token" placeholder="请输入邀请码" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
     </div>
     <p></p>
@@ -42,7 +42,7 @@
         </div>
     </div>
     <div class="container">
-        <bucky-checkbox id="chk_enable_self_forwoard" lable="使用自己或其它服务商架设的中转服务(Coming Soon)" disabled='true'></bucky-checkbox>
+         <md-outlined-text-field id="txt_bucky_sn_url" placeholder="如不使用buckyos 默认SN，请输入自定义SN的URL"></md-outlined-text-field>
     </div>
     <p></p>
     <p></p>

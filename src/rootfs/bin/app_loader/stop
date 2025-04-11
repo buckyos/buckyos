@@ -1,16 +1,48 @@
-#!/bin/python3
+#!/usr/bin/python3
 
 import os
 import sys
+import json
 
-appid = sys.argv[1]
-username = sys.argv[2]
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts import util
 
-container_id = f"{username}-{appid}"
 
-if os.system(f"docker stop {container_id}") != 0:
-    print(f"Failed to stop container {container_id}")
-    exit(1)
+if __name__ == "__main__":
+    appid = sys.argv[1]
+    username = sys.argv[2]
+    full_appid = util.get_full_appid(appid, username)
+    app_token_env_key = util.get_session_token_env_key(full_appid, True)
+    app_token = os.getenv(app_token_env_key)
+    app_instance_config_str = os.getenv("app_instance_config")
+    media_info_str = os.getenv("app_media_info")
+    device_info_str = os.getenv(f"BUCKYOS_THIS_DEVICE_INFO")
+    device_info = None
 
-print(f"Container {container_id} stopped")
-exit(0)
+    if app_instance_config_str is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+    app_instance_config = json.loads(app_instance_config_str)
+
+    if device_info_str:
+        device_info = json.loads(device_info_str)
+    #container_hash = app_meta_info.get("image_hash")
+    is_support_docker = device_info.get("support_container", True)
+
+    if is_support_docker:
+        container_id = full_appid
+        os.system(f"docker stop {container_id}")
+    else:
+        if media_info_str is None:
+            print(f"No media info found for appid: {full_appid}")
+            exit(1)
+        app_media_info = json.loads(media_info_str)
+        full_path = app_media_info.get("full_path")
+        if not full_path:
+            print(f"No app media full path found for appid: {full_appid}")
+            exit(1)
+        script_path = f"{full_path}/stop"
+        if not os.path.exists(script_path):
+            print(f"No stop script found for appid: {full_appid}")
+            exit(1)
+        exit(os.system(f"python3 {script_path} {appid} {username}"))

@@ -1,40 +1,98 @@
-#!/bin/python3
-
-import docker
+#!/usr/bin/python3
 import sys
+import platform
+import os
+import json
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts import util
 
-appid = sys.argv[1]
-username = sys.argv[2]
+current_dir = os.path.dirname(os.path.abspath(__file__))
 
-container_id = f"{username}-{appid}"
-
-def is_container_running(container_name):
-    # 连接到本地 Docker 客户端
-    client = docker.from_env()
-
+def is_container_running(container_name,docker_image_name,docker_image_hash):
     try:
-        # 获取指定名字的容器
-        container = client.containers.get(container_name)
-
-        # 检查容器是否在运行
-        if container.status == "running":
+        cmd = f"docker ps -q -f name=^{container_name}$"
+        output = os.popen(cmd).read().strip()
+        if output:
             print(f"Container '{container_name}' is running.")
+            if docker_image_hash:
+                cmd = f"docker images --no-trunc -q '{docker_image_name}'"
+                output = os.popen(cmd).read().strip()
+                if output:
+                    if docker_image_hash.startswith(output):
+                        return True
+                    
+                print(f"Container '{container_name}' is running but with wrong image hash.")
+                return False
             return True
-        else:
-            print(f"Container '{container_name}' is not running. Status: {container.status}")
-            return False
-    except docker.errors.NotFound:
-        print(f"Container '{container_name}' not found.")
+        
+        return False
+    except Exception as e:
+        print(f"Error checking container status: {e}")
         return False
 
 def check_port() -> bool:
     return True
 
+
 if __name__ == "__main__":
-    if is_container_running(container_id):
-        if check_port():
-            print(f"app {container_id} is running")
+    appid = sys.argv[1]
+    username = sys.argv[2]
+    full_appid = util.get_full_appid(appid, username)
+    container_id = full_appid
+
+    app_token_env_key = util.get_session_token_env_key(full_appid, True)
+    app_token = os.getenv(app_token_env_key)
+    app_instance_config_str = os.getenv("app_instance_config")
+    media_info_str = os.getenv("app_media_info")
+    device_info_str = os.getenv(f"BUCKYOS_THIS_DEVICE_INFO")
+    device_info = None
+
+    if app_instance_config_str is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+    app_instance_config = json.loads(app_instance_config_str)
+
+    if device_info_str:
+        device_info = json.loads(device_info_str)
+
+    if app_instance_config_str is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+    app_instance_config = json.loads(app_instance_config_str)
+
+    #container_hash = app_meta_info.get("image_hash")
+    is_support_docker = device_info.get("support_container", True)
+
+    if is_support_docker:
+        # check docker container status
+        docker_image_hash = app_instance_config.get("docker_image_hash")
+        docker_image_name = app_instance_config.get("docker_image_name")
+        if is_container_running(container_id,docker_image_name,docker_image_hash):
             exit(0)
-    print(f"app {container_id} is not running")
-    exit(1)
+        print(f"app's container {container_id} is not running")
+        exit(1)
+    else:
+        if media_info_str is None:
+            print(f"No media info found for appid: {full_appid}")
+            exit(1)
+        
+        app_media_info = json.loads(media_info_str)
+        full_path = app_media_info.get("full_path")
+        if not full_path:
+            print(f"No app media full path found for appid: {full_appid}")
+            exit(1)
+
+        script_path = f"{full_path}/status"
+        if not os.path.exists(script_path):
+            print(f"No status script found for appid: {full_appid}")
+            exit(1)
+
+        sresult = os.system(f"python3 {script_path} {appid} {username}")
+        if sresult == 0:
+            print(f"app {full_appid} is running")
+            exit(0)
+        else:
+            print(f"app {full_appid} is not running")
+            exit(1)
+
 

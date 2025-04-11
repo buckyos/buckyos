@@ -8,7 +8,6 @@ use rusqlite::{params, Connection, OptionalExtension, Result};
 use rand::Rng;
 use std::{path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
 use log::*;
-use buckyos_kit::*;
 
 pub fn get_sn_db_conn() -> Result<Connection> {
     let base_dir = PathBuf::from("/opt/web3_bridge/");
@@ -32,11 +31,7 @@ pub fn generate_activation_codes(conn: &Connection, count: usize) -> Result<Vec<
     let mut codes: Vec<String> = Vec::new();
     let mut stmt = conn.prepare("INSERT INTO activation_codes (code, used) VALUES (?1, 0)")?;
     for _ in 0..count {
-        let code: String = rand::thread_rng()
-            .sample_iter(&rand::distributions::Alphanumeric)
-            .take(32)
-            .map(char::from)
-            .collect();
+        let code: String = rand::rng().random_range(0..1000000).to_string();
         codes.push(code.clone());
         stmt.execute(params![code])?;
     }
@@ -211,9 +206,9 @@ mod tests {
     
     #[test]
     fn test_main() -> Result<()> {
-        //let base_dir = PathBuf::from("/opt/web3_bridge/");
-        //let db_path = base_dir.join("sn_db.sqlite3");
-        //println!("db_path: {}",db_path.to_str().unwrap());
+        let base_dir = PathBuf::from("/opt/web3_bridge/");
+        let db_path = base_dir.join("sn_db.sqlite3");
+        println!("db_path: {}",db_path.to_str().unwrap());
         //remove db file
         let _ = std::fs::remove_file(db_path);
 

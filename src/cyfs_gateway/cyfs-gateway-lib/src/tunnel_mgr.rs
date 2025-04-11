@@ -1,119 +1,159 @@
-
-#![allow(unused)]
-
-use crate::{DatagramServer, DatagramServerBox, RTcpStack, StreamListener, Tunnel, TunnelBox, TunnelBuilder, TunnelError, TunnelResult};
-use serde_json::Value;
-use url::Url;
-use std::collections::HashMap;
-use std::sync::{Arc};
-use tokio::sync::Mutex;
-use lazy_static::lazy_static;
+use crate::ip::IPTunnelBuilder;
+use crate::socks::SocksTunnelBuilder;
+use crate::DatagramClientBox;
+use crate::{
+    DatagramServerBox, GatewayDeviceRef, RTcpStackManager, StreamListener, StreamProbe,
+    StreamSelector, TunnelBox, TunnelBuilder, TunnelError, TunnelResult,
+};
+use buckyos_kit::AsyncStream;
 use log::*;
-use name_lib::*;
-use once_cell::sync::OnceCell;
-lazy_static!{
-    static ref RTCP_STACK_MAP:Arc<Mutex<HashMap<String, RTcpStack >>> = Arc::new(Mutex::new(HashMap::new()));
-}
+use url::Url;
 
-pub static CURRENT_DEVICE_RRIVATE_KEY: OnceCell<[u8;48]> = OnceCell::new();
-
-#[derive(Debug,PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ProtocolCategory {
     Stream,
     Datagram,
     //Named Object
 }
 
-pub fn get_protocol_category(str_protocol:&str) -> TunnelResult<ProtocolCategory> {
+pub fn get_protocol_category(str_protocol: &str) -> TunnelResult<ProtocolCategory> {
     //lowercase
     let str_protocol = str_protocol.to_lowercase();
     match str_protocol.as_str() {
         "tcp" => Ok(ProtocolCategory::Stream),
         "rtcp" => Ok(ProtocolCategory::Stream),
         "udp" => Ok(ProtocolCategory::Datagram),
-        _ => Err(TunnelError::UnknowProtocol(str_protocol)),
-    }
-}
-
-
-
-pub async fn get_tunnel_builder_by_protocol(protocol:&str) -> TunnelResult<Box<dyn TunnelBuilder>> {
-    match protocol {
-        "tcp" => {
-            return Ok(Box::new(crate::IPTunnelBuilder::new()))
-        },
-        "udp" => {
-            return Ok(Box::new(crate::IPTunnelBuilder::new()))
-        },
-        "rtcp" => {
-
-            //info!("this_device_private_key: {:?}",this_device_private_key);
-            let this_device_config = CURRENT_DEVICE_CONFIG.get();
-            if this_device_config.is_none()  {
-                return Err(TunnelError::BindError("CURRENT_DEVICE_CONFIG not set".to_string()));
-            }
-            let this_device_config = this_device_config.unwrap();
-            let this_device_hostname:String;
-            let this_device_did = DID::from_str(this_device_config.did.as_str());
-            if this_device_did.is_none() {
-                this_device_hostname = this_device_config.did.clone();
-            } else {
-                this_device_hostname = this_device_did.unwrap().to_host_name();
-            }
-
-            let mut rtcp_stack_map = RTCP_STACK_MAP.lock().await;
-            let rtcp_stack = rtcp_stack_map.get(this_device_hostname.as_str());
-            if rtcp_stack.is_some() {
-                let result_builder = rtcp_stack.unwrap().to_owned();
-                return Ok(Box::new(result_builder));
-            }
-            //let device_did = device_did.replace(":", ".");
-            info!("create rtcp stack for {}",this_device_hostname.as_str());
-            let this_device_private_key = CURRENT_DEVICE_RRIVATE_KEY.get();
-            if this_device_private_key.is_none() {
-                return Err(TunnelError::BindError("CURRENT_DEVICE_PRIVATE_KEY not set".to_string()));
-            }
-
-            info!("RTCP stack will init by this_device_config: {:?}",this_device_config);
-            let this_device_private_key = this_device_private_key.unwrap().clone();
-
-            let mut result_rtcp_stack = crate::RTcpStack::new(this_device_hostname.clone(),2980,Some(this_device_private_key));
-            result_rtcp_stack.start().await;
-            rtcp_stack_map.insert(this_device_hostname.clone(),result_rtcp_stack.clone());
-            return Ok(Box::new(result_rtcp_stack));
+        "rudp" => Ok(ProtocolCategory::Datagram),
+        "socks" => Ok(ProtocolCategory::Stream),
+        _ => {
+            let msg = format!("Unknown protocol: {}", str_protocol);
+            error!("{}", msg);
+            Err(TunnelError::UnknownProtocol(msg))
         }
-        _ => return Err(TunnelError::UnknowProtocol(protocol.to_string()))
     }
 }
 
-lazy_static!{
-    static ref TUNNEL_MAP:Arc<Mutex<HashMap<String,Box<dyn TunnelBox>>>> = {
-        Arc::new(Mutex::new(HashMap::new()))
-    };
+#[derive(Clone)]
+pub struct TunnelManager {
+    device: GatewayDeviceRef,
+    rtcp_stack_manager: RTcpStackManager,
 }
 
-pub async fn get_tunnel(target_url:&Url,enable_tunnel:Option<Vec<String>>) 
-    -> TunnelResult<Box<dyn TunnelBox>> 
-{
+impl TunnelManager {
+    pub fn new(device: GatewayDeviceRef) -> Self {
+        Self {
+            device: device.clone(),
+            rtcp_stack_manager: RTcpStackManager::new(device),
+        }
+    }
 
-    info!("try create tunnel for {}", target_url);
-    //url like tcp://deviceid 
-    let builder = get_tunnel_builder_by_protocol(target_url.scheme()).await?;
-    let tunnel = builder.create_tunnel(target_url).await?;
+    pub async fn get_tunnel_builder_by_protocol(
+        &self,
+        protocol: &str,
+    ) -> TunnelResult<Box<dyn TunnelBuilder>> {
+        match protocol {
+            "tcp" => return Ok(Box::new(IPTunnelBuilder::new())),
+            "udp" => return Ok(Box::new(IPTunnelBuilder::new())),
+            "rtcp" => {
+                let stack = self.rtcp_stack_manager.get_current_device_stack().await?;
+                Ok(Box::new(stack))
+            }
+            "rudp" => {
+                let stack = self.rtcp_stack_manager.get_current_device_stack().await?;
+                Ok(Box::new(stack))
+            }
+            "socks" => {
+                let builder = SocksTunnelBuilder::new();
+                Ok(Box::new(builder))
+            }
+            _ => {
+                let msg = format!("Unknown protocol: {}", protocol);
+                error!("{}", msg);
+                Err(TunnelError::UnknownProtocol(msg))
+            }
+        }
+    }
 
-    info!("create tunnel for {} success,add to tunnel cache", target_url);
-    return Ok(tunnel);
-}
+    pub fn get_stream_probe(&self, _probe_id: &str) -> TunnelResult<Box<dyn StreamProbe + Send>> {
+        unimplemented!()
+    }
 
+    pub fn get_stream_selector(
+        &self,
+        _selector_id: &str,
+    ) -> TunnelResult<Box<dyn StreamSelector + Send>> {
+        unimplemented!()
+    }
 
-pub async fn create_listner_by_url(bind_url:&Url) -> TunnelResult<Box<dyn StreamListener>> {
-    let builder = get_tunnel_builder_by_protocol(bind_url.scheme()).await?;
-    let listener = builder.create_listener(bind_url).await?;
-    return Ok(listener);
-}
+    pub async fn get_tunnel(
+        &self,
+        target_url: &Url,
+        _enable_tunnel: Option<Vec<String>>,
+    ) -> TunnelResult<Box<dyn TunnelBox>> {
+        let builder = self
+            .get_tunnel_builder_by_protocol(target_url.scheme())
+            .await?;
+        let tunnel = builder.create_tunnel(target_url.host_str()).await?;
 
-pub async fn create_datagram_server_by_url(bind_url:&Url) -> TunnelResult<Box<dyn DatagramServerBox>> {
-    let builder = get_tunnel_builder_by_protocol(bind_url.scheme()).await?;
-    let server = builder.create_datagram_server(bind_url).await?;
-    return Ok(server);
+        info!("Get tunnel for {} success", target_url);
+        return Ok(tunnel);
+    }
+
+    pub async fn create_listener_by_url(
+        &self,
+        bind_url: &Url,
+    ) -> TunnelResult<Box<dyn StreamListener>> {
+        let builder = self
+            .get_tunnel_builder_by_protocol(bind_url.scheme())
+            .await?;
+        let listener = builder.create_stream_listener(bind_url).await?;
+        return Ok(listener);
+    }
+
+    pub async fn create_datagram_server_by_url(
+        &self,
+        bind_url: &Url,
+    ) -> TunnelResult<Box<dyn DatagramServerBox>> {
+        let builder = self
+            .get_tunnel_builder_by_protocol(bind_url.scheme())
+            .await?;
+        let server = builder.create_datagram_server(bind_url).await?;
+        return Ok(server);
+    }
+
+    //$tunnel_schema://$tunnel_stack_id/$target_stream_id
+    pub async fn open_stream_by_url(&self, url: &Url) -> TunnelResult<Box<dyn AsyncStream>> {
+        let builder = self.get_tunnel_builder_by_protocol(url.scheme()).await?;
+        let auth_str = url.authority();
+        let tunnel;
+        if auth_str.is_empty() {
+            tunnel = builder.create_tunnel(None).await?;
+        } else {
+            tunnel = builder.create_tunnel(Some(auth_str)).await?;
+        }
+        let path = url.path();
+        debug!("Open stream by url.path: {}", path);
+        let stream = tunnel.open_stream(path).await.map_err(|e| {
+            error!("Open stream by url failed: {}", e);
+            TunnelError::ConnectError(format!("Open stream by url failed: {}", e))
+        })?;
+
+        return Ok(stream);
+    }
+
+    pub async fn create_datagram_client_by_url(
+        &self,
+        url: &Url,
+    ) -> TunnelResult<Box<dyn DatagramClientBox>> {
+        let builder = self.get_tunnel_builder_by_protocol(url.scheme()).await?;
+        let tunnel = builder.create_tunnel(url.host_str()).await?;
+        let client = tunnel
+            .create_datagram_client(url.path())
+            .await
+            .map_err(|e| {
+                error!("Create datagram client by url failed: {}", e);
+                TunnelError::ConnectError(format!("Create datagram client by url failed: {}", e))
+            })?;
+        return Ok(client);
+    }
 }

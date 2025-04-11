@@ -1,3 +1,5 @@
+
+
 import '@material/web/icon/icon.js';
 import '@material/web/iconbutton/icon-button.js';
 import '@material/web/iconbutton/filled-icon-button.js';
@@ -19,7 +21,37 @@ import "./dlg/config_system_dlg";
 import "./dlg/final_check_dlg";
 import "./dlg/active_result_dlg";
 
-import {GatewayType, ActiveWizzardData} from './active_lib';
+import {GatewayType, ActiveWizzardData,SN_API_URL,set_sn_api_url} from './active_lib';
+import i18next from './i18n';
+import Handlebars from 'handlebars';
+
+function update_i18n() {
+
+    function updateElementAndShadowRoots(root: Document | Element | ShadowRoot) {
+
+        root.querySelectorAll('[data-i18n]').forEach(element => {
+            const key = element.getAttribute('data-i18n');
+            const options = element.getAttribute('data-i18n-options');
+            
+            if (key?.startsWith('[html]')) {
+                const actualKey = key.replace('[html]', '');
+                element.innerHTML = i18next.t(actualKey, JSON.parse(options || '{}'));
+            } else {
+                element.textContent = i18next.t(key, JSON.parse(options || '{}'));
+            }
+        });
+
+
+        root.querySelectorAll('*').forEach(element => {
+            if (element.shadowRoot) {
+                updateElementAndShadowRoots(element.shadowRoot);
+            }
+        });
+    }
+
+    // 从文档根节点开始遍历
+    updateElementAndShadowRoots(document);
+}
 
 //after dom loaded
 window.onload = async () => {
@@ -36,11 +68,17 @@ window.onload = async () => {
         owner_public_key : "",
         owner_private_key : "",
         zone_config_jwt : "",
-        sn_url : "",
+        sn_url : SN_API_URL,
         sn_host : "",
     }
     
     const activeWizzard = document.getElementById('active-wizzard') as BuckyWizzardDlg;
+    activeWizzard.pushDlg(document.createElement('config-gateway-dlg'));
     activeWizzard.wizzard_data = wizzard_data;
-    //activeWizzard.pushDlg(document.createElement('config-gateway-dlg'));
+
+    i18next.on('initialized', function(options:any) {
+
+        update_i18n();
+    });
+
 }
