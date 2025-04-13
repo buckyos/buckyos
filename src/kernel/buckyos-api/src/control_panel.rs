@@ -295,7 +295,7 @@ impl ControlPanelClient {
         let zone_config_path = "boot/config";
         let zone_config_result = self.system_config_client.get(zone_config_path).await;
         if zone_config_result.is_err() {
-            return Err(RPCErrors::ReasonError("boot config(Zone config) not found".to_string()));
+            return Err(RPCErrors::ReasonError(format!("get boot config(Zone config) failed:{}",zone_config_result.err().unwrap())));
         }
         let (zone_config_str,_version) = zone_config_result.unwrap();
         let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str)

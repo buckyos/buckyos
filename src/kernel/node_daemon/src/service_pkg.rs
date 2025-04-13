@@ -91,7 +91,7 @@ impl ServicePkg {
         let op_file = media_info.full_path.join(op_name);
         let (result, output) = execute(
             &op_file,
-            5,
+            1200,
             params,
             self.current_dir.as_ref(),
             Some(&self.env_vars),

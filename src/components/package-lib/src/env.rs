@@ -150,6 +150,7 @@ use crate::meta_index_db::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageEnvConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prefix: Option<String>, //如果指定了，那么加载无 . 的pkg_name时，会自动补上prefix,变成加载 $prefix.$pkg_name
     pub enable_link: bool,
     pub enable_strict_mode: bool,
@@ -157,6 +158,8 @@ pub struct PackageEnvConfig {
     pub parent: Option<PathBuf>, //parent package env work_dir
     pub ready_only: bool,//read only env cann't install any new pkgs
     pub named_mgr_name: Option<String>, //如果指定了，则使用named_mgr_name作为默认read chunk的named_mgr
+    #[serde(skip_serializing_if = "HashSet::is_empty")]
+    #[serde(default)]
     pub installed:HashSet<String>, //pkg_id列表，表示已经安装的pkg
 }
 
@@ -228,7 +231,9 @@ impl PackageEnv {
                 let config_result = serde_json::from_str(&config);
                 if  config_result.is_ok() {
                     env_config = config_result.unwrap();
-                    info!("env load pkg.cfg.json OK. {}",config);
+                    info!("env load pkg.cfg.json OK.");
+                } else {
+                    info!("env load pkg.cfg.json failed. {}",config_result.err().unwrap());
                 }
             }
         } 
@@ -303,8 +308,10 @@ impl PackageEnv {
     pub async fn load(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
         match self.load_strictly(pkg_id_str).await {
             Ok(media_info) => Ok(media_info),
-            Err(_) => {
-                if self.config.enable_strict_mode {
+            Err(error) => {
+                info!("load strict pkg {} failed:{}", pkg_id_str,error.to_string());
+
+                if self.is_strict() {
                     if let Some(parent_path) = &self.config.parent {
                         let parent_env = PackageEnv::new(parent_path.clone());
                         // 使用 Box::pin 来处理递归的异步调用
@@ -327,12 +334,12 @@ impl PackageEnv {
                         }
                     }
                 }
-
-                info!("load pkg {} failed.", pkg_id_str);
+                
                 Err(PkgError::LoadError(
                     pkg_id_str.to_owned(),
-                    "Package metadata not found".to_owned(),
+                    format!("Package {} metadata not found : {}",pkg_id_str,error.to_string()),
                 ))
+
             }
         }
     }
@@ -616,7 +623,7 @@ impl PackageEnv {
         
         Err(PkgError::LoadError(
             pkg_id_str.to_owned(),
-            "包在严格模式下未找到".to_owned(),
+            "pkg not found in strict mode".to_owned(),
         ))
     }
 
@@ -721,6 +728,8 @@ mod tests {
         (env, temp_dir)
     }
 
+
+
     async fn create_test_package(env: &PackageEnv, pkg_name: &str, version: &str) -> PathBuf {
         let pkg_dir = env.get_install_dir().join(format!("{}#{}", pkg_name, version));
         tokio_fs::create_dir_all(&pkg_dir).await.unwrap();
@@ -746,6 +755,14 @@ mod tests {
         tokio_fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).await.unwrap();
         
         pkg_dir
+    }
+    #[tokio::test]
+    async fn test_load_env_config() {
+        let config_str = r#"
+{"enable_link": true, "enable_strict_mode": true, "parent": "/opt/buckyos/local/node_daemon/root_pkg_env", "ready_only": false, "prefix": "nightly-linux-amd64"}
+        "#;
+        let config = serde_json::from_str::<PackageEnvConfig>(config_str).unwrap();
+        println!("config: {:?}", config);
     }
 
     #[tokio::test]

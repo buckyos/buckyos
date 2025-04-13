@@ -180,8 +180,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
     let mut pkg_meta_jwt_map = HashMap::new();
     let runtime = get_buckyos_api_runtime().unwrap();
     let zone_host_name = runtime.zone_id.to_host_name();
-
-    let base_url = format!("http://{}/ndn/",zone_host_name.as_str());
+    let base_url = runtime.get_zone_ndn_base_url();
     let ndn_client = NdnClient::new(base_url,None,None);
     //let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(None).await.unwrap();
     for pkg_path in pkg_pack_path_list {

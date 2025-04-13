@@ -841,6 +841,14 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
+    pub fn get_zone_ndn_base_url(&self) -> String {
+        let mut schema = "http";
+        if self.force_https {
+            schema = "https";
+        }
+        format!("{}://{}/ndn/",schema,self.zone_id.to_host_name())
+    }
+
     //if http_only is false, return the url with tunnel protocol
     pub fn get_zone_service_url(&self,service_name: &str,https_only: bool) -> Result<String> {
         let mut schema = "http";
