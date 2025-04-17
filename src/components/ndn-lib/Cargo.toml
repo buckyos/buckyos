@@ -44,6 +44,7 @@ hash-db = "*"
 memory-db = "*"
 trie-db = { version = "0.29", features = ["std"] }
 sp-trie = "38.0"
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "*"

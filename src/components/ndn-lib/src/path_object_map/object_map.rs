@@ -73,7 +73,7 @@ impl PathObjectMap {
     pub async fn get_root_hash(&self) -> Vec<u8> {
         self.db.root().await
     }
-    
+
     pub async fn get_obj_id(&self) -> ObjId {
         let root_hash = self.db.root().await;
         ObjId::new_by_raw(OBJ_TYPE_OBJMAPT.to_owned(), root_hash)
@@ -176,5 +176,58 @@ impl PathObjectMapProofVerifier {
         };
 
         self.verify(key, value.as_deref(), proof)
+    }
+}
+
+use base64::prelude::*;
+
+// Proof nodes in base64 string format
+#[derive(Serialize, Deserialize)]
+struct ProofNodes {
+    nodes: Vec<String>,
+}
+
+pub struct PathObjectMapProofNodesCodec {}
+
+impl PathObjectMapProofNodesCodec {
+    pub fn encode(proof_nodes: &[Vec<u8>]) -> NdnResult<String> {
+        let mut ret = Vec::new();
+        for node in proof_nodes {
+            let s = BASE64_STANDARD.encode(node);
+            ret.push(s);
+        }
+
+        let nodes = ProofNodes { nodes: ret };
+
+        // Encode to json string
+        let ret = serde_json::to_string(&nodes).map_err(|e| {
+            let msg = format!("Error serializing ProofNodes: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        Ok(ret)
+    }
+
+    pub fn decode(proof_nodes: &str) -> NdnResult<Vec<Vec<u8>>> {
+        let mut ret = Vec::new();
+
+        // First decode from json string
+        let nodes: ProofNodes = serde_json::from_str(proof_nodes).map_err(|e| {
+            let msg = format!("Error deserializing ProofNodes: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        for node in nodes.nodes {
+            let s = BASE64_STANDARD.decode(node).map_err(|e| {
+                let msg = format!("Error decoding base64 string: {}", e);
+                error!("{}", msg);
+                NdnError::InvalidData(msg)
+            })?;
+            ret.push(s);
+        }
+
+        Ok(ret)
     }
 }
