@@ -4,7 +4,7 @@ use super::storage::{
 };
 use crate::hash::HashMethod;
 use crate::object::ObjId;
-use crate::OBJ_TYPE_OBJMAPT;
+use crate::{PathObject, OBJ_TYPE_MTREE, OBJ_TYPE_OBJMAPT};
 use crate::{NdnError, NdnResult};
 use bincode::de;
 use crypto_common::Key;
@@ -54,6 +54,29 @@ pub struct PathObjectMapItemProof {
     pub root_hash: Vec<u8>,
     // TODO: should we add the item to the proof?
     // pub item: Option<PathObjectMapItem>,
+}
+
+impl PathObjectMapItemProof {
+    // Only encode the nodes to a base64 string, ignore the root hash
+    pub fn encode_nodes(&self) -> NdnResult<String> {
+        let proof_nodes = PathObjectMapProofNodesCodec::encode(&self.proof_nodes)?;
+       
+        Ok(proof_nodes)
+    }
+
+    pub fn decode_nodes(proof_nodes: &str, root_hash: &ObjId) -> NdnResult<Self> {
+        let proof_nodes = PathObjectMapProofNodesCodec::decode(proof_nodes)?;
+        let root_hash = root_hash.obj_hash.clone();
+        let proof = PathObjectMapItemProof {
+            proof_nodes,
+            root_hash,
+        };
+        Ok(proof)
+    }
+
+    pub fn root_id(&self) -> ObjId {
+        ObjId::new_by_raw(OBJ_TYPE_MTREE.to_owned(), self.root_hash.clone())
+    }
 }
 
 #[derive(Clone)]

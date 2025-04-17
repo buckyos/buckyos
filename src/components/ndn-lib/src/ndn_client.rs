@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use futures::Future;
 use rand::RngCore;
 
-use crate::{build_named_object_by_json, build_obj_id, copy_chunk, cyfs_get_obj_id_from_url, get_cyfs_resp_headers, verify_named_object, CYFSHttpRespHeaders, ChunkState, FileObject, PathObject};
+use crate::{build_named_object_by_json, build_obj_id, copy_chunk, cyfs_get_obj_id_from_url, get_cyfs_resp_headers, verify_named_object, CYFSHttpRespHeaders, ChunkState, FileObject, HashMethod, PathObject};
 
 
 pub enum ChunkWorkState {
@@ -97,9 +97,46 @@ impl NdnClient {
     }
 
     fn verify_inner_path_to_obj(resp_headers:&CYFSHttpRespHeaders,inner_path:&str)->NdnResult<()> {
-        //let root_hash = calc_mtree_root_hash(resp_headers.obj_id.unwrap(), inner_path, resp_headers.mtree_path);
-        //return root_hash == resp_headers.root_obj_id.unwrap()
-        Ok(())
+        use crate::path_object_map::{PathObjectMapItemProof, PathObjectMapProofVerifier, PathObjectMapProofVerifyResult};
+        use crate::hash::HashMethod;
+
+        // First get root_obj_id and obj_id from resp_headers, if any one is None, then we can not verify?
+        if resp_headers.root_obj_id.is_none() {
+            let msg = format!("no root obj id in resp_headers, inner_path: {}", inner_path);
+            warn!("{}",msg);
+            return Err(NdnError::InvalidId(msg));
+        }
+
+        if resp_headers.obj_id.is_none() {
+            let msg = format!("no obj id in resp_headers, inner_path: {}", inner_path);
+            warn!("{}",msg);
+            return Err(NdnError::InvalidId(msg));
+        }
+
+        let proof= PathObjectMapItemProof::decode_nodes(
+            &resp_headers.mtree_path, 
+            resp_headers.root_obj_id.as_ref().unwrap()
+        )?;
+        
+        // FIXME: Should we allow multiple hash methods? or just use the default one?
+        let verifier = PathObjectMapProofVerifier::new(HashMethod::Keccak256);
+        let ret = verifier.verify_object(
+            inner_path, 
+            resp_headers.obj_id.as_ref().unwrap(),
+            None, 
+            &proof,
+        )?;
+        
+        match ret {
+            PathObjectMapProofVerifyResult::Ok => {
+                return Ok(());
+            },
+            _ => {
+                let msg = format!("verify inner path failed, url: {}, ret: {:?}", inner_path, ret);
+                warn!("{}",msg);
+                return Err(NdnError::VerifyError(msg));
+            }
+        }
     }
 
     pub async fn query_chunk_state(&self,chunk_id:ChunkId,target_url:Option<String>)->NdnResult<ChunkState> {

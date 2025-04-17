@@ -256,7 +256,7 @@ where
             &vec![(key, Some(value))], // The data to be verified, if the data is None, it means to check the existence of the key
         );
 
-        println!("Verify proof: key = {:?}, root = {:?}, ret = {:?}", key, root_hash, ret);
+        // println!("Verify proof: key = {:?}, root = {:?}, ret = {:?}", key, root_hash, ret);
         let ret = match ret {
             Ok(_) => {
                 PathObjectMapProofVerifyResult::Ok
