@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use crate::ObjId;
-use super::object_map::{PathObjectMap, PathObjectMapProofVerifier, PathObjectMapProofVerifyResult};
+use super::object_map::{PathObjectMap, PathObjectMapProofVerifier, PathObjectMapProofVerifyResult, PathObjectMapProofNodesCodec};
 use crate::OBJ_TYPE_FILE;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -91,6 +91,9 @@ async fn test_path_object_map() {
         assert_eq!(proof.root_hash.len() > 0, true);
         println!("Get object proof path success: {}", key);
 
+        println!("Proof nodes: {:?}", proof.proof_nodes);
+        println!("Root hash: {:?}", proof.root_hash);
+
         // Test proof path with invalid key
         let key1 = format!("{}/1000", key);
         let proof1 = obj_map.get_object_proof_path(&key1).await.unwrap();
@@ -101,17 +104,24 @@ async fn test_path_object_map() {
         // Test verification
         let verifier = PathObjectMapProofVerifier::new(obj_map.hash_method());
         
-        // First test verify without value
-        let ret = verifier.verify_object(&key, None, &proof).unwrap();
-        assert_eq!(ret, PathObjectMapProofVerifyResult::Inclusion);
+        // First test verify with right value
+        let ret = verifier.verify_object(&key, &obj_id, Some(&meta), &proof).unwrap();
+        assert_eq!(ret, PathObjectMapProofVerifyResult::Ok);
 
-        // Test verification with value
-        let ret = verifier.verify_object(&key, Some((obj_id.clone(), Some(meta.clone()))), &proof).unwrap();
-        assert_eq!(ret, PathObjectMapProofVerifyResult::Inclusion);
+        // Test verification without meta
+        let ret = verifier.verify_object(&key, &obj_id, None, &proof).unwrap();
+        assert_eq!(ret, PathObjectMapProofVerifyResult::RootMismatch);
+
+        // Test verification with error value
+        let mut error_meta = meta.clone();
+        error_meta[0] = if error_meta[0] == 0 { 1 } else { 0 };
+
+        let ret = verifier.verify_object(&key, &obj_id, Some(&error_meta), &proof).unwrap();
+        assert_eq!(ret, PathObjectMapProofVerifyResult::RootMismatch);
 
         // Test verification with invalid value
-        let ret = verifier.verify_object(&key1, None, &proof1).unwrap();
-        assert_eq!(ret, PathObjectMapProofVerifyResult::NonInclusion);
+        let ret = verifier.verify_object(&key1, &obj_id, Some(&meta), &proof1).unwrap();
+        assert_eq!(ret, PathObjectMapProofVerifyResult::ValueMismatch);
 
 
         // Test remove
@@ -120,18 +130,28 @@ async fn test_path_object_map() {
         if i % 2 == 0 {
             let ret = obj_map.remove_object(&key).await.unwrap().unwrap();
             assert_eq!(ret.0, obj_id);
-            assert_eq!(ret.1, Some(meta));
+            assert_eq!(ret.1, Some(meta.clone()));
 
             println!("Remove object success: {}", key);
+        } else {
+            continue;   
         }
+
         // Test root hash after remove
         let root_hash = obj_map.get_root_hash().await;
-        assert_eq!(prev_root_hash != root_hash, true);
+        assert_ne!(prev_root_hash, root_hash);
+        println!("Root hash changed after remove: {:?} -> {:?}", prev_root_hash, root_hash);
 
         // Test verification after remove
         proof.root_hash = root_hash.clone();
-        let ret = verifier.verify(&key, None, &proof).unwrap();
-        assert_eq!(ret, PathObjectMapProofVerifyResult::NonInclusion);
+        let ret = verifier.verify_object(&key, &obj_id, Some(&meta), &proof).unwrap();
+        assert_eq!(ret, PathObjectMapProofVerifyResult::RootMismatch);
         println!("Verify after remove success: {}", key);
+
+        // Test codec
+        let s = PathObjectMapProofNodesCodec::encode(&proof.proof_nodes).unwrap();
+        println!("Proof nodes encoded: {}", s);
+        let proof_nodes = PathObjectMapProofNodesCodec::decode(&s).unwrap();
+        assert_eq!(proof_nodes.len(), proof.proof_nodes.len());
     }
 }

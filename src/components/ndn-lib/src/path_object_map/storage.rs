@@ -169,9 +169,15 @@ pub type Keccak256MemoryStorage = GenericMemoryStorage<Keccak256Hasher>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum PathObjectMapProofVerifyResult {
-    Inclusion,
-    NonInclusion,
-    Error,
+    Ok,
+    ExtraneousNode,
+    ExtraneousValue,
+    ExtraneousHashReference,
+    InvalidChildReference,
+    ValueMismatch,
+    IncompleteProof,
+    RootMismatch,
+    Other,
 }
 
 pub trait PathObjectMapProofVerifier: Send + Sync {
@@ -180,7 +186,7 @@ pub trait PathObjectMapProofVerifier: Send + Sync {
         proof_nodes: &Vec<Vec<u8>>,
         root_hash: &[u8],
         key: &[u8],
-        value: Option<&[u8]>,
+        value: &[u8],
     ) -> NdnResult<PathObjectMapProofVerifyResult>;
 }
 
@@ -238,54 +244,54 @@ where
         proof_nodes: &Vec<Vec<u8>>,
         root_hash: &[u8],
         key: &[u8],
-        value: Option<&[u8]>,
+        value: &[u8],
     ) -> NdnResult<PathObjectMapProofVerifyResult> {
         use trie_db::proof::{verify_proof, VerifyError};
 
         let root_hash: H::Out = H::Out::from_slice(root_hash)?;
 
-        let value_is_empty = value.is_none();
         let ret = verify_proof::<GenericLayout<H>, _, _, &[u8]>(
             &root_hash,
             proof_nodes,
-            &vec![(key, value)], // The data to be verified, if the data is None, it means to check the existence of the key
+            &vec![(key, Some(value))], // The data to be verified, if the data is None, it means to check the existence of the key
         );
 
-        println!("Verify proof: {:?}, {:?}", key, ret);
-        match ret {
+        println!("Verify proof: key = {:?}, root = {:?}, ret = {:?}", key, root_hash, ret);
+        let ret = match ret {
             Ok(_) => {
-                if value_is_empty {
-                    Ok(PathObjectMapProofVerifyResult::NonInclusion)
-                } else {
-                    Ok(PathObjectMapProofVerifyResult::Inclusion)
-                }
+                PathObjectMapProofVerifyResult::Ok
             }
             Err(e) => match &e {
+                VerifyError::ExtraneousNode => {
+                    PathObjectMapProofVerifyResult::ExtraneousNode
+                }
+                VerifyError::ExtraneousValue(_) => {
+                    PathObjectMapProofVerifyResult::ExtraneousValue
+                }
+                VerifyError::ExtraneousHashReference(_) => {
+                    PathObjectMapProofVerifyResult::ExtraneousHashReference
+                }
                 VerifyError::ValueMismatch(_) => {
-                    if value_is_empty {
-                        // We only check the existence of the key, so we don't care about the value
-                        Ok(PathObjectMapProofVerifyResult::Inclusion)
-                    } else {
-                        Ok(PathObjectMapProofVerifyResult::NonInclusion)
-                    }
+                    PathObjectMapProofVerifyResult::ValueMismatch
                 }
-                VerifyError::DecodeError(_) => {
-                    let msg = format!("Error decoding proof: {:?}", e);
-                    error!("{}", msg);
-                    Err(NdnError::InvalidData(msg))
+                VerifyError::RootMismatch(_) => {
+                    PathObjectMapProofVerifyResult::RootMismatch
                 }
-                VerifyError::DuplicateKey(_key) => {
-                    let msg = format!("Error verifying proof: {:?}", e);
-                    error!("{}", msg);
-                    Err(NdnError::InvalidData(msg))
+                VerifyError::InvalidChildReference(_) => {
+                    PathObjectMapProofVerifyResult::InvalidChildReference
+                }
+                VerifyError::IncompleteProof => {
+                    PathObjectMapProofVerifyResult::IncompleteProof
                 }
                 _ => {
                     let msg = format!("Verification error: {:?}, {:?}", key, e);
                     info!("{}", msg);
-                    Ok(PathObjectMapProofVerifyResult::Error)
+                    PathObjectMapProofVerifyResult::Other
                 }
             },
-        }
+        };
+
+        Ok(ret)
     }
 }
 

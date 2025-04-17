@@ -153,7 +153,7 @@ impl PathObjectMapProofVerifier {
     pub fn verify(
         &self,
         key: &str,
-        value: Option<&[u8]>,
+        value: &[u8],
         proof: &PathObjectMapItemProof,
     ) -> NdnResult<PathObjectMapProofVerifyResult> {
         let key_bytes = key.as_bytes();
@@ -164,18 +164,15 @@ impl PathObjectMapProofVerifier {
     pub fn verify_object(
         &self,
         key: &str,
-        value: Option<(ObjId, Option<Vec<u8>>)>, // (obj_id, meta)
+        obj_id: &ObjId,
+        meta: Option<&[u8]>,
         proof: &PathObjectMapItemProof,
     ) -> NdnResult<PathObjectMapProofVerifyResult> {
-        let value = match value {
-            Some((obj_id, meta)) => {
-                let item = PathObjectMapItem::new(obj_id.clone(), meta.clone());
-                Some(item.encode()?)
-            }
-            None => None,
-        };
-
-        self.verify(key, value.as_deref(), proof)
+        
+        let item = PathObjectMapItem::new(obj_id.clone(), meta.map(|m| m.to_vec()));
+        let value = item.encode()?;
+            
+        self.verify(key, value.as_ref(), proof)
     }
 }
 
