@@ -9,13 +9,15 @@ fn main() {
     let platform_source = "macos";
 
     let mut build = cc::Build::new();
-    build
-        .cpp(true)
-        .file(format!("src/{}/entry.cpp", platform_source))
-        .file(format!("src/{}/TrayMenu.cpp", platform_source));
 
     #[cfg(windows)]
     {
+
+        build
+            .cpp(true)
+            .file(format!("src/{}/entry.cpp", platform_source))
+            .file(format!("src/{}/TrayMenu.cpp", platform_source));
+
         build
             .define("_UNICODE", None)
             .define("UNICODE", None)
