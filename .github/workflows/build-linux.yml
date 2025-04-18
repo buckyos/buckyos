@@ -43,7 +43,7 @@ jobs:
       run: python3 scripts/build_web_apps.py
     - name: build bin
       working-directory: ./src
-      run: python3 scripts/build.py --no-build-web-apps --no-install  --tray-controller --auto-win-sdk --target=${{matrix.arch}}-unknown-linux-musl
+      run: python3 scripts/build.py --no-build-web-apps --no-install  --tray-controller --auto-win-sdk --target=${{inputs.arch}}-unknown-linux-musl
     - name: Upload
       uses: actions/upload-artifact@v4
       id: upload

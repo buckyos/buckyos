@@ -37,7 +37,7 @@ jobs:
     - name: Setup MSVC
       uses: ilammy/msvc-dev-cmd@v1
       with:
-        arch: ${{inputs.arch}}
+        arch: ${{ inputs.arch == 'aarch64' && 'amd64_arm64' || 'amd64' }}
     - name: build web apps
       working-directory: ./src
       run: python3 scripts/build_web_apps.py
