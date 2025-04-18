@@ -21,6 +21,6 @@ jobs:
             - name: Build ${{matrix.arch}} ${{matrix.os}} Buckyos Components
               uses: jenseng/dynamic-uses@v1
               with:
-                uses: ./build/${{ matrix.os }}.yml
+                uses: ./build-${{ matrix.os }}
                 with: '{"version": ${{inputs.version}}, "arch": "${{ matrix.arch }}"}'
     
