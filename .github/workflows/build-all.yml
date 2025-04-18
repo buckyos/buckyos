@@ -35,12 +35,3 @@ jobs:
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
-
-  collect-build-result:
-    needs: [build-windows, build-linux, build-macos]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: cloudposse/github-action-matrix-outputs-read@v1
-        id: read
-        with:
-          matrix-step-name: build

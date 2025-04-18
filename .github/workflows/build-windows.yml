@@ -8,10 +8,6 @@ on:
             arch:
                 required: true
                 type: string
-        outputs:
-            upload:
-                description: 'build result'
-                value: ${{ jobs.build.outputs }}
 
 jobs:
   build:
@@ -55,5 +51,3 @@ jobs:
         name: buckyos-windows-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
         path: ./rootfs
         if-no-files-found: error
-    outputs:
-      upload: ${{ steps.upload.outputs }}

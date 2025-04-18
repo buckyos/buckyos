@@ -8,17 +8,10 @@ on:
             arch:
                 required: true
                 type: string
-        outputs:
-            result:
-                description: 'build result'
-                value: ${{ jobs.build.outputs.uploaded }}
 
 
 jobs:
   build:
-    strategy:
-      matrix:
-        arch: ["x86_64", "aarch64"]
     name: build
     runs-on: ubuntu-latest
     steps:
@@ -40,7 +33,7 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
-        targets: ${{matrix.arch}}-unknown-linux-musl
+        targets: ${{inputs.arch}}-unknown-linux-musl
     - name: Setup Needed Packages
       run: |
           sudo apt update
@@ -55,17 +48,7 @@ jobs:
       uses: actions/upload-artifact@v4
       id: upload
       with:
-        name: buckyos-linux-${{matrix.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        name: buckyos-linux-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
         path: src/rootfs
         if-no-files-found: error
-    - uses: cloudposse/github-action-matrix-outputs-write@v1
-      id: out
-      with:
-        matrix-step-name: build
-        matrix-key: ${{inputs.arch}}
-        outputs: |-
-            name: buckyos-linux-${{matrix.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
-            url: ${{ steps.upload.outputs.artifact-url }}
-    outputs:
-      result: ${{steps.out.outputs}}
 
