@@ -1,26 +1,35 @@
 name: Build All
 
 on:
-    workflow_dispatch:
-        inputs:
-            version:
-                description: 'Version number'
-                required: true
-                type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number'
+        required: true
+        type: string
 
 jobs:
-    build:
-        strategy:
-            matrix:
-                arch: [x86_64, aarch64]
-                os: [ubuntu, windows, macos]
-        runs-on: ${{ matrix.os }}-latest
-        steps: 
-            - name: Checkout
-              uses: actions/checkout@v4
-            - name: Build ${{matrix.arch}} ${{matrix.os}} Buckyos Components
-              uses: jenseng/dynamic-uses@v1
-              with:
-                uses: ./build-${{ matrix.os }}
-                with: '{"version": ${{inputs.version}}, "arch": "${{ matrix.arch }}"}'
-    
+  build-windows:
+    strategy:
+      matrix:
+        arch: ["x86_64", "aarch64"]
+    uses: ./.github/workflows/build/windows.yml
+    with:
+      version: ${{ inputs.version }}
+      arch: ${{ matrix.arch }}
+  build-linux:
+    strategy:
+      matrix:
+        arch: ["x86_64", "aarch64"]
+    uses: ./.github/workflows/build/linux.yml
+    with:
+      version: ${{ inputs.version }}
+      arch: ${{ matrix.arch }}
+  build-macos:
+    strategy:
+      matrix:
+        arch: ["x86_64", "aarch64"]
+    uses: ./.github/workflows/build/macos.yml
+    with:
+      version: ${{ inputs.version }}
+      arch: ${{ matrix.arch }}

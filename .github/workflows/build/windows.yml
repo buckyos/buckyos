@@ -1,4 +1,4 @@
-name: Build Buckyos Linux Components
+name: Build Buckyos Windows Components
 on: 
     workflow_call:
         inputs:
@@ -13,21 +13,16 @@ on:
                 description: 'build result'
                 value: ${{ jobs.upload.outputs.outputs }}
 
-
 jobs:
   build:
     name: build
-    runs-on: ubuntu-latest
-    strategy:
-        martrix:
-            arch:
-                - x86_64
-                - aarch64
+    runs-on: windows-latest
     steps:
-    - uses: Kaven-Universe/github-action-current-date-time@v1
-        id: date
-        with:
-            format: 'YYYYMMDD'
+    - name: Set up current date and time
+      uses: Kaven-Universe/github-action-current-date-time@v1
+      id: date
+      with:
+        format: 'YYYYMMDD'
     - name: Checkout
       uses: actions/checkout@v4
     - name: Setup pnpm
@@ -42,21 +37,20 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
-        targets: ${{martrix.arch}}-unknown-linux-musl
-    - name: Setup Needed Packages
-        run: |
-          sudo apt update
-          sudo apt install -y musl-tools gcc-aarch64-linux-gnu
+        targets: ${{inputs.arch}}-pc-windows-msvc
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{inputs.arch}}
     - name: build web apps
       working-directory: ./src
       run: python3 scripts/build_web_apps.py
     - name: build bin
       working-directory: ./src
-      run: python3 scripts/build.py --no-build-web-apps --no-install  --tray-controller --auto-win-sdk --target=${{martrix.arch}}-unknown-linux-musl
+      run: python3 scripts/build.py --no-build-web-apps --no-install  --tray-controller --auto-win-sdk --target=${{inputs.arch}}-pc-windows-msvc
     - name: Upload installer
       uses: actions/upload-artifact@v4
-      id: upload
       with:
-        name: buckyos-linux-${{martrix.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
-        path: src/rootfs
+        name: buckyos-windows-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        path: ./rootfs
         if-no-files-found: error

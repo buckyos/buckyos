@@ -1,20 +1,23 @@
-name: Build Buckyos Windows Components
+name: Build Buckyos Linux Components
 on: 
     workflow_call:
         inputs:
             version:
                 required: true
                 type: string
+            arch:
+                required: true
+                type: string
+        outputs:
+            upload:
+                description: 'build result'
+                value: ${{ jobs.upload.outputs.outputs }}
+
 
 jobs:
   build:
     name: build
-    runs-on: windows-latest
-    strategy:
-        martrix:
-            arch:
-                - x86_64
-                - aarch64
+    runs-on: ubuntu-latest
     steps:
     - uses: Kaven-Universe/github-action-current-date-time@v1
         id: date
@@ -34,20 +37,21 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
-        targets: ${{martrix.arch}}-pc-windows-msvc
-    - name: Setup MSVC
-      uses: ilammy/msvc-dev-cmd@v1
-      with:
-        arch: ${{martrix.arch}}
+        targets: ${{inputs.arch}}-unknown-linux-musl
+    - name: Setup Needed Packages
+        run: |
+          sudo apt update
+          sudo apt install -y musl-tools gcc-aarch64-linux-gnu
     - name: build web apps
       working-directory: ./src
       run: python3 scripts/build_web_apps.py
     - name: build bin
       working-directory: ./src
-      run: python3 scripts/build.py --no-build-web-apps --no-install  --tray-controller --auto-win-sdk --target=${{martrix.arch}}-pc-windows-msvc
+      run: python3 scripts/build.py --no-build-web-apps --no-install  --tray-controller --auto-win-sdk --target=${{inputs.arch}}-unknown-linux-musl
     - name: Upload installer
       uses: actions/upload-artifact@v4
+      id: upload
       with:
-        name: buckyos-windows-${{martrix.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
-        path: ./rootfs
+        name: buckyos-linux-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        path: src/rootfs
         if-no-files-found: error
