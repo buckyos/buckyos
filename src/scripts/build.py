@@ -66,6 +66,8 @@ if __name__ == "__main__":
             auto_win_sdk = True
         if arg == "--tray-controller":
             with_tray_controller = True
+        if arg.startswith("--target="):
+            target = arg.split("=")[1]
 
 
     print(f"will build buckyos: with_tray_controller={with_tray_controller}, auto_win_sdk={auto_win_sdk}")
