@@ -11,7 +11,7 @@ on:
         outputs:
             upload:
                 description: 'build result'
-                value: ${{ jobs.upload.outputs.outputs }}
+                value: ${{ jobs.build.outputs }}
 
 jobs:
   build:
@@ -44,9 +44,12 @@ jobs:
     - name: build bin
       working-directory: ./src
       run: python3 scripts/build.py --no-build-web-apps --no-install  --tray-controller --auto-win-sdk --target=${{inputs.arch}}-apple-darwin
-    - name: Upload installer
+    - name: Upload
+      id: upload
       uses: actions/upload-artifact@v4
       with:
         name: buckyos-macos-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
         path: ./rootfs
         if-no-files-found: error
+    outputs:
+      upload: ${{ steps.upload.outputs }}
