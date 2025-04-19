@@ -33,7 +33,7 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
-        targets: ${{inputs.arch}}-unknown-linux-${{inputs.arch == 'aarch64' && 'gcc' || 'musl'}}
+        targets: ${{inputs.arch}}-unknown-linux-${{inputs.arch == 'aarch64' && 'gnu' || 'musl'}}
     - name: Setup Needed Packages
       run: |
           sudo apt update
@@ -43,7 +43,7 @@ jobs:
       run: python3 scripts/build_web_apps.py
     - name: build bin
       working-directory: ./src
-      run: python3 scripts/build.py --no-build-web-apps --no-install  --tray-controller --auto-win-sdk --target=${{inputs.arch}}-unknown-linux-${{inputs.arch == 'aarch64' && 'gcc' || 'musl'}}
+      run: python3 scripts/build.py --no-build-web-apps --no-install  --tray-controller --target=${{inputs.arch}}-unknown-linux-${{inputs.arch == 'aarch64' && 'gcc' || 'musl'}}
     - name: Upload
       uses: actions/upload-artifact@v4
       id: upload
