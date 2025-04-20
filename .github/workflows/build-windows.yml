@@ -49,5 +49,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: buckyos-windows-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
-        path: ./rootfs
+        path: src/rootfs
         if-no-files-found: error
