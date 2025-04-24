@@ -1,0 +1,28 @@
+name: Build MACOS DMG Installer
+on: 
+    workflow_dispatch:
+        inputs:
+            version:
+                required: true
+                type: string
+            build_time:
+                required: true
+                type: string
+            run_id:
+                required: true
+                type: number
+jobs:
+    pack:
+        runs-on: macos-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+            - name: clean old rootfs
+              runs: rm -rf ./src/rootfs 
+            - name: Download Artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: buckyos-macos-${{matrix.arch}}-${{inputs.version}}-${{ inputs.build_time }}
+                  path: ./src/rootfs
+                  github-token: ${{ secrets.GH_PAT }}
+                  run-id: ${{inputs.run_id}}

@@ -7,6 +7,15 @@ on:
         description: 'Version number'
         required: true
         type: string
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version number'
+        required: true
+        type: string
+    outputs:
+      build_time:
+        value: ${{jobs.build-linux.outputs.build_time}}
 
 jobs:
   build-windows:

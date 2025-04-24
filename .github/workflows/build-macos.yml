@@ -8,6 +8,9 @@ on:
             arch:
                 required: true
                 type: string
+        outputs:
+            build_time:
+                value: ${{steps.date.outputs.time}}
 
 jobs:
   build:

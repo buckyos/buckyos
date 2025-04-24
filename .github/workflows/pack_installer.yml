@@ -1,0 +1,12 @@
+name: Pack Installer
+on:
+    workflow_dispatch:
+      inputs:
+        version:
+          description: 'Version number'
+          required: true
+          type: string
+
+jobs:
+    pack-windows:
+        step:
