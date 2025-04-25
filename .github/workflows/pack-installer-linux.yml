@@ -8,9 +8,6 @@ on:
             build_time:
                 required: true
                 type: string
-            run_id:
-                required: true
-                type: number
     workflow_dispatch:
         inputs:
             version:
@@ -33,7 +30,7 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v4
             - name: clean old rootfs
-              runs: rm -rf ./src/rootfs 
+              run: rm -rf ./src/rootfs 
             - name: Download Artifact
               uses: actions/download-artifact@v4
               with:

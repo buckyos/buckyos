@@ -30,7 +30,7 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v4
             - name: clean old rootfs
-              runs: rm -rf ./src/rootfs 
+              run: rm -rf ./src/rootfs 
             - name: Download Artifact
               uses: actions/download-artifact@v4
               with:
@@ -40,12 +40,12 @@ jobs:
                   run-id: ${{inputs.run_id}}
             - name: Prepare Installer
               working-directory: ./src
-              run: python3 sctipts/prepare_installer.py windows ${{martix.arch}}
+              run: python3 sctipts/prepare_installer.py windows ${{matrix.arch}}
             - name: Prepare Installer
               working-directory: ./src
               run: python3 scripts/make_win_installer.py ${{inputs.version}} --no-build
             - name: Build Installer
-              uses: Minionguyjpro/Inno-Setup-Action@v1.0.0
+              uses: ImagineBoom/Inno-Setup-Action@v1.0.0
               with:
                 path: src/buckyos_installer/installer.iss
                 options: /DMyAppVersion=\"${{inputs.version}}\"

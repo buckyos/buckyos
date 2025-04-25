@@ -1,5 +1,13 @@
 name: Build MACOS DMG Installer
 on: 
+    workflow_call:
+        inputs:
+            version:
+                required: true
+                type: string
+            build_time:
+                required: true
+                type: string
     workflow_dispatch:
         inputs:
             version:
@@ -14,11 +22,14 @@ on:
 jobs:
     pack:
         runs-on: macos-latest
+        strategy:
+            matrix:
+                arch: ["aarch64"]
         steps:
             - name: Checkout
               uses: actions/checkout@v4
             - name: clean old rootfs
-              runs: rm -rf ./src/rootfs 
+              run: rm -rf ./src/rootfs 
             - name: Download Artifact
               uses: actions/download-artifact@v4
               with:

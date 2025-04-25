@@ -6,7 +6,23 @@ on:
           description: 'Version number'
           required: true
           type: string
+        build_time:
+          required: true
+          type: string
 
 jobs:
     pack-windows:
-        step:
+        uses: ./.github/workflows/pack-installer-windows.yml
+        with:
+            version: ${{ inputs.version }}
+            build_time: ${{ inputs.build_time }}
+    pack-linux:
+        uses: ./.github/workflows/pack-installer-linux.yml
+        with:
+            version: ${{ inputs.version }}
+            build_time: ${{ inputs.build_time }}
+    pack-macos:
+        uses: ./.github/workflows/pack-installer-macos.yml
+        with:
+            version: ${{ inputs.version }}
+            build_time: ${{ inputs.build_time }}
