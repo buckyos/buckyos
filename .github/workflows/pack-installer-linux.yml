@@ -35,7 +35,6 @@ jobs:
               uses: actions/download-artifact@v4
               with:
                   name: buckyos-linux-${{matrix.arch}}-${{inputs.version}}-${{ inputs.build_time }}
-                  path: ./src/rootfs
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   run-id: ${{inputs.run_id}}
             - name: untar rootfs
