@@ -10,7 +10,7 @@ on:
                 type: string
         outputs:
             build_time:
-                value: ${{steps.date.outputs.time}}
+                value: ${{jobs.build.outputs.build_time}}
 
 jobs:
   build:
@@ -54,3 +54,5 @@ jobs:
         name: buckyos-windows-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
         path: src/rootfs
         if-no-files-found: error
+    outputs:
+      build_time: ${{ steps.date.outputs.time }}
