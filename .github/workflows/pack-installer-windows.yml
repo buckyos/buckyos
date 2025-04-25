@@ -36,7 +36,7 @@ jobs:
               with:
                   name: buckyos-windows-${{matrix.arch}}-${{inputs.version}}-${{ inputs.build_time }}
                   path: ./src/rootfs
-                  github-token: ${{ secrets.GH_PAT }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
                   run-id: ${{inputs.run_id}}
             - name: Prepare Installer
               working-directory: ./src

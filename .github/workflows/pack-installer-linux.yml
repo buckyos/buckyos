@@ -36,7 +36,7 @@ jobs:
               with:
                   name: buckyos-linux-${{matrix.arch}}-${{inputs.version}}-${{ inputs.build_time }}
                   path: ./src/rootfs
-                  github-token: ${{ secrets.GH_PAT }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
                   run-id: ${{inputs.run_id}}
             - name: make deb
               working-directory: ./src
