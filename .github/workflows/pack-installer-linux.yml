@@ -38,7 +38,7 @@ jobs:
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   run-id: ${{inputs.run_id}}
             - name: untar rootfs
-              run: tar -xvf rootfs.tar -C ./src/rootfs
+              run: tar -xvf rootfs.tar
             - name: check rootfs
               run: ls -l ./src/rootfs
             - name: make deb
