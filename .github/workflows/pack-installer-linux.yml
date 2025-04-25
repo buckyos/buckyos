@@ -38,6 +38,10 @@ jobs:
                   path: ./src/rootfs
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   run-id: ${{inputs.run_id}}
+            - name: untar rootfs
+              run: tar -xvf rootfs.tar -C ./src/rootfs
+            - name: check rootfs
+              run: ls -l ./src/rootfs
             - name: make deb
               working-directory: ./src
               run: python3 scripts/make_deb.py ${{matrix.arch}} ${{inputs.version}}

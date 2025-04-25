@@ -43,10 +43,12 @@ jobs:
     - name: build bin
       working-directory: ./src
       run: python3 scripts/build.py --no-build-web-apps --no-install --target=${{inputs.arch}}-apple-darwin
+    - name: Tar Rootfs
+      run: tar -cvf rootfs.tar ./src/rootfs
     - name: Upload
       id: upload
       uses: actions/upload-artifact@v4
       with:
         name: buckyos-macos-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
-        path: src/rootfs
+        path: rootfs.tar
         if-no-files-found: error
