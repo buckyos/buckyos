@@ -7,6 +7,7 @@ import os
 import platform
 
 import prepare_packages
+from datetime import datetime
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 channel = "nightly"
@@ -16,4 +17,5 @@ machine_name = platform.machine()
 print(f"machine_name: {machine_name}")
 
 if __name__ == "__main__":
-    prepare_packages.perpare_all(channel, platform_name, machine_name, "0.4.0", "date")
+    date = datetime.now().strftime("%Y%m%d")
+    prepare_packages.perpare_all(channel, platform_name, machine_name, "0.4.0", date)

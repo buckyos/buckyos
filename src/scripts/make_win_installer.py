@@ -4,6 +4,7 @@ import tempfile
 import shutil
 import subprocess
 import perpare_installer
+from datetime import datetime
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 rootfs_dir = os.path.join(src_dir, "rootfs")
@@ -18,7 +19,8 @@ def make_installer(version, onlyBuild, noBuild):
         os.makedirs(root_dir)
         shutil.copy(installer_script, os.path.join(root_dir, "installer.iss"))
 
-        perpare_installer.prepare_installer(dest_dir, "windows", "amd64")
+        date = datetime.now().strftime("%Y%m%d")
+        perpare_installer.prepare_installer(dest_dir, "nightly", "windows", "amd64", version, date)
 
         print(f"download home-station...")
         app_bin_dir = os.path.join(dest_dir, "bin", "home-station")

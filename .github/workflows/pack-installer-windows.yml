@@ -43,9 +43,6 @@ jobs:
                   run-id: ${{inputs.run_id}}
             - name: Prepare Installer
               working-directory: ./src
-              run: python3 sctipts/prepare_installer.py windows ${{matrix.arch}}
-            - name: Prepare Installer
-              working-directory: ./src
               run: python3 scripts/make_win_installer.py ${{inputs.version}} --no-build
             - name: Build Installer
               uses: ImagineBoom/Inno-Setup-Action@v1.0.0

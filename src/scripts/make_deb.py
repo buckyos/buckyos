@@ -34,7 +34,7 @@ def make_deb(architecture, version):
     adjust_control_file(deb_dir, version, architecture)
     dest_dir = os.path.join(deb_dir, "opt", "buckyos")
 
-    perpare_installer.prepare_installer(dest_dir, "linux", architecture)
+    perpare_installer.prepare_installer(dest_dir, "nightly", "linux", architecture, version)
 
     print(f"run: chmod -R 755 {deb_dir}")
     subprocess.run(["chmod", "-R", "755", deb_dir], check=True)

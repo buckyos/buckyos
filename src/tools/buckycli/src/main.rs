@@ -20,13 +20,8 @@ async fn login() -> Result<(), String> {
         })?;
         set_buckyos_api_runtime(runtime);
         let buckyos_runtime = get_buckyos_api_runtime().unwrap();
-        let mut private_key = None;
         let zone_host_name = buckyos_runtime.zone_id.to_host_name();
         println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id, zone_host_name);
-        if buckyos_runtime.user_private_key.is_some() {
-            println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
-            private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
-        }
     }
     Ok(())
 }
