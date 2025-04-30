@@ -73,7 +73,7 @@ impl ChunkId {
         None
     }    
 
-    pub fn verify_chunk(&self, hash_bytes: &[u8])->bool {
+    pub fn equal(&self, hash_bytes: &[u8])->bool {
         self.hash_result == hash_bytes
     }
 }
@@ -290,6 +290,8 @@ where
     let mut total_copied: u64 = 0;
     let mut buffer = vec![0u8; COPY_CHUNK_BUFFER_SIZE]; 
 
+
+
     loop {
         let n = tokio::io::AsyncReadExt::read(&mut chunk_reader, &mut buffer).await
             .map_err(|e| NdnError::IoError(e.to_string()))?;
@@ -298,7 +300,11 @@ where
         }
 
         if let Some(ref mut hasher) = hasher {
-            hasher.update_from_bytes(&buffer[..n]);
+            if hasher.hash_type == chunk_id.hash_type {
+                hasher.update_from_bytes(&buffer[..n]);
+            } else {
+                return Err(NdnError::Internal(format!("hash type mismatch:{}",hasher.hash_type)));
+            }
         }
 
         tokio::io::AsyncWriteExt::write_all(&mut chunk_writer, &buffer[..n]).await

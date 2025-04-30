@@ -888,7 +888,7 @@ impl NamedDataStore {
         if need_verify {
             let mut chunk_hasher = ChunkHasher::new(Some(chunk_id.hash_type.as_str()))?;
             let hash_bytes = chunk_hasher.calc_from_bytes(&chunk_data);
-            if !chunk_id.verify_chunk(&hash_bytes) {
+            if !chunk_id.equal(&hash_bytes) {
                 warn!("put_chunk: chunk_id not equal hash_bytes! {}",chunk_id.to_string());
                 return Err(NdnError::InvalidId(format!("chunk_id not equal hash_bytes! {}",chunk_id.to_string())));
             }
