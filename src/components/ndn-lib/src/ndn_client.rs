@@ -484,7 +484,7 @@ impl NdnClient {
         let real_named_mgr = named_mgr.lock().await;
         let (mut chunk_reader, chunk_size) = real_named_mgr.open_chunk_reader_impl(&chunk_id, SeekFrom::Start(0), true).await
             .map_err(|e| NdnError::Internal(format!("Failed to get chunk reader: {}", e)))?;    
-        // 复制数据到本地文件
+        // 复制数据到本地文件（TODO：要验证 chunkid)
         drop(real_named_mgr);
         tokio::io::copy(&mut chunk_reader, &mut file)
             .await
