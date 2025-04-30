@@ -2,12 +2,12 @@ use serde::{Serialize, Deserialize};
 use crate::NdnResult;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InnerStorageStat {
+pub struct ObjectMapInnerStorageStat {
     pub total_count: u64,
 }
 
 #[async_trait::async_trait]
-pub trait InnerStorage: Send + Sync {
+pub trait ObjectMapInnerStorage: Send + Sync {
     // Use to store object data
     async fn put(&mut self, key: &str, value: &[u8]) -> NdnResult<()>;
     async fn get(&self, key: &str) -> NdnResult<Option<(Vec<u8>, Option<u64>)>>;
@@ -15,7 +15,7 @@ pub trait InnerStorage: Send + Sync {
     async fn is_exist(&self, key: &str) -> NdnResult<bool>;
 
     async fn list(&self, page_index: usize, page_size: usize) -> NdnResult<Vec<String>>;
-    async fn stat(&self) -> NdnResult<InnerStorageStat>;
+    async fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat>;
 
     // Use to store meta data
     async fn put_meta(&mut self,value: &[u8]) -> NdnResult<()>;

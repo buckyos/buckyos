@@ -1,4 +1,4 @@
-use super::storage::InnerStorage;
+use super::storage::ObjectMapInnerStorage;
 use crate::mtree::{MerkleTreeObject, MerkleTreeObjectGenerator};
 use crate::mtree::{
     MtreeReadSeek, MtreeReadWriteSeekWithSharedBuffer, MtreeWriteSeek, SharedBuffer,
@@ -69,7 +69,7 @@ pub struct ObjectMapItemProof {
 pub struct ObjectMap {
     pub meta: ObjectMapMeta,
     pub is_dirty: bool,
-    pub storage: Box<dyn InnerStorage>,
+    pub storage: Box<dyn ObjectMapInnerStorage>,
     pub mtree: Option<MerkleTreeObject>,
 }
 
@@ -77,7 +77,7 @@ impl ObjectMap {
     // Create empty object map
     pub async fn new(
         hash_method: HashMethod,
-        mut storage: Box<dyn InnerStorage>,
+        mut storage: Box<dyn ObjectMapInnerStorage>,
     ) -> NdnResult<Self> {
         let meta = ObjectMapMeta { hash_method };
 
@@ -98,7 +98,7 @@ impl ObjectMap {
     }
 
     // Load object map from storage
-    pub async fn load(storage: Box<dyn InnerStorage>) -> NdnResult<Self> {
+    pub async fn load(storage: Box<dyn ObjectMapInnerStorage>) -> NdnResult<Self> {
         // First load meta from storage
         let ret = storage.get_meta().await.map_err(|e| {
             let msg = format!("Error getting object map meta: {}", e);

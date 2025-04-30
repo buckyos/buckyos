@@ -1,4 +1,4 @@
-use super::storage::{InnerStorage, InnerStorageStat};
+use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat};
 use crate::{NdnError, NdnResult};
 use std::collections::BTreeMap;
 
@@ -24,7 +24,7 @@ impl MemoryStorage {
 }
 
 #[async_trait::async_trait]
-impl InnerStorage for MemoryStorage {
+impl ObjectMapInnerStorage for MemoryStorage {
     async fn put(&mut self, key: &str, value: &[u8]) -> NdnResult<()> {
         self.storage.insert(
             key.to_string(),
@@ -71,8 +71,8 @@ impl InnerStorage for MemoryStorage {
         Ok(list)
     }
 
-    async fn stat(&self) -> NdnResult<InnerStorageStat> {
-        Ok(InnerStorageStat {
+    async fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat> {
+        Ok(ObjectMapInnerStorageStat {
             total_count: self.storage.len() as u64,
         })
     }

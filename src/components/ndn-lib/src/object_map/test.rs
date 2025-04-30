@@ -16,7 +16,7 @@ fn generate_random_buf(seed: &str, len: usize) -> Vec<u8> {
 
 #[test]
 async fn test_object_map() {
-    let storage = Box::new(MemoryStorage::new()) as Box<dyn InnerStorage>;
+    let storage = Box::new(MemoryStorage::new()) as Box<dyn ObjectMapInnerStorage>;
     let mut obj_map = ObjectMap::new(HashMethod::Sha256, storage).await.unwrap();
 
     let count = 100;
