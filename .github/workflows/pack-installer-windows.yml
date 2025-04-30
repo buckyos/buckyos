@@ -8,6 +8,9 @@ on:
             build_time:
                 required: true
                 type: string
+            run_id:
+                required: true
+                type: number
     workflow_dispatch:
         inputs:
             version:

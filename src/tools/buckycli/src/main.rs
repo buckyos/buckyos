@@ -57,10 +57,6 @@ async fn main() -> Result<(), String> {
                         .required(true)
                         .index(1)
                 )
-                .arg(Arg::new("login")
-                    .action(ArgAction::SetTrue)
-                    .default_value("true")
-                    .help("no need to set manually"))
         )
         .subcommand(
             Command::new("pub_app")
@@ -77,10 +73,6 @@ async fn main() -> Result<(), String> {
                         .help("app output dir,contain app doc and app sub pkgs")
                         .required(true),
                 )
-                .arg(Arg::new("login")
-                    .action(ArgAction::SetTrue)
-                    .default_value("true")
-                    .help("no need to set manually"))
         )
         .subcommand(
             Command::new("pub_index")
@@ -161,10 +153,6 @@ async fn main() -> Result<(), String> {
         .subcommand(
             Command::new("update_index")
                 .about("update zone repo service's meta-index-db from remote source")
-                .arg(Arg::new("login")
-                    .action(ArgAction::SetTrue)
-                    .default_value("true")
-                    .help("no need to set manually"))
         )
         .subcommand(
             Command::new("connect")
@@ -179,18 +167,8 @@ async fn main() -> Result<(), String> {
                         .long("node_id")
                         .help("node_id in current machine, default 'node'")
                 )
-                .arg(Arg::new("login")
-                    .action(ArgAction::SetTrue)
-                    .default_value("true")
-                    .help("no need to set manually"))
         )
         .get_matches();
-
-    if let Some((_, args)) = matches.subcommand() {
-        if args.get_flag("login") {
-            login().await?;
-        }
-    }
 
     match matches.subcommand() {
         Some(("version", _)) => {
@@ -205,6 +183,8 @@ async fn main() -> Result<(), String> {
         }
         Some(("pub_pkg", matches)) => {
             // need login
+            login().await?;
+
             let target_dir = matches.get_one::<String>("target_dir").unwrap();
             // 需要便利target_dir目录下的所有pkg，并发布
             // 遍历target_dir目录下的所有pkg目录
@@ -251,6 +231,8 @@ async fn main() -> Result<(), String> {
         }
         Some(("pub_app", matches)) => {
             // need login
+            login().await?;
+
             let app_name = matches.get_one::<String>("app_name").unwrap();
             let app_dir_path = matches.get_one::<String>("target_dir").unwrap();
             let pub_result = publish_app_pkg(app_name, app_dir_path,true).await;
@@ -260,6 +242,9 @@ async fn main() -> Result<(), String> {
             }
         }
         Some(("pack_pkg", matches)) => {
+            // need login
+            login().await?;
+
             let src_pkg_path = matches.get_one::<String>("src_pkg_path").unwrap();
             let target_path = matches.get_one::<String>("target_path").unwrap();
             // only need optional user private key
@@ -334,6 +319,8 @@ async fn main() -> Result<(), String> {
         }
         Some(("pub_index", _matches)) => {
             // need login
+            login().await?;
+
             let pub_result = publish_repo_index().await;
             if pub_result.is_err() {
                 println!("Publish repo index failed! {}", pub_result.err().unwrap());
@@ -343,6 +330,8 @@ async fn main() -> Result<(), String> {
         }
         Some(("update_index", _matches)) => {
             // need login
+            login().await?;
+
             let sync_result = sync_from_remote_source().await;
             if sync_result.is_err() {
                 println!("Sync from remote source failed! {}", sync_result.err().unwrap());
@@ -351,6 +340,8 @@ async fn main() -> Result<(), String> {
         }
         Some(("connect", _matches)) => {
             // need login
+            login().await?;
+
             sys_config::connect_into().await;
         }
         _ => {

@@ -1,5 +1,17 @@
 name: Pack Installer
 on:
+    workflow_call:
+      inputs:
+        version:
+          description: 'Version number'
+          required: true
+          type: string
+        build_time:
+          required: true
+          type: string
+        run_id:
+          required: true
+          type: number
     workflow_dispatch:
       inputs:
         version:
@@ -9,6 +21,9 @@ on:
         build_time:
           required: true
           type: string
+        run_id:
+          required: true
+          type: number
 
 jobs:
     pack-windows:
@@ -16,13 +31,16 @@ jobs:
         with:
             version: ${{ inputs.version }}
             build_time: ${{ inputs.build_time }}
+            run_id: ${{ inputs.run_id }}
     pack-linux:
         uses: ./.github/workflows/pack-installer-linux.yml
         with:
             version: ${{ inputs.version }}
             build_time: ${{ inputs.build_time }}
+            run_id: ${{ inputs.run_id }}
     pack-macos:
         uses: ./.github/workflows/pack-installer-macos.yml
         with:
             version: ${{ inputs.version }}
             build_time: ${{ inputs.build_time }}
+            run_id: ${{ inputs.run_id }}
