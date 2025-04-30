@@ -144,9 +144,6 @@ extern "C" fn bucky_status_scaner_scan(
                         let node_daemon_process = "node_daemon".to_string() + ext_path;
 
                         for process in system.processes().values() {
-                            #[cfg(windows)]
-                            let name = process.name().to_ascii_lowercase().to_owned();
-                            #[cfg(not(any(windows, target_os = "macos")))]
                             let name = process.name().to_ascii_lowercase().into_string().unwrap();
 
                             if node_daemon_process == name {
