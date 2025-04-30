@@ -318,7 +318,7 @@ impl RepoServer {
                 error!("parse chunk_id failed, err:{}", e);
                 RPCErrors::ReasonError(format!("parse chunk_id failed, err:{}", e))
             })?;
-            named_mgr.set_file_impl(format!("/repo/install_pkg/{}/{}",pkg_id,chunk_id).as_str(),&chunk_obj_id,
+            named_mgr.set_file_impl(format!("/repo/install_pkg/{}",pkg_id).as_str(),&chunk_obj_id,
             "repo_service","root").await
             .map_err(|e| {
                 error!("set NDN file failed, err:{}", e);
