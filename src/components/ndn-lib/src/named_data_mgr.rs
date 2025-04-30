@@ -1,6 +1,7 @@
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_by_json_path, get_relative_path};
 use name_lib::decode_jwt_claim_without_verify;
 use serde::{Serialize,Deserialize};
+use serde_json::json;
 //chunk_mgr默认是机器级别的，即多个进程可以共享同一个chunk_mgr
 //chunk_mgr使用共享内存/filemap等技术来实现跨进程的读数据共享，比使用127.0.0.1的http协议更高效
 //从实现简单的角度考虑，先用http协议实现写数据？
@@ -82,13 +83,16 @@ impl NamedDataMgrDB {
         let record: (String, String,Option<String>) = stmt.query_row([path], |row| {
             Ok((row.get(0)?, row.get(1)?,row.get(2)?))
         }).map_err(|e| {
-            warn!("NamedDataMgrDB: query path obj id failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: query {} obj id failed! {}",path, e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         let result_path = record.0;
         let obj_id_str = record.1;
         let path_obj_jwt = record.2;
+        if path_obj_jwt.is_some() {
+            info!("NamedDataMgrDB: find_longest_matching_path, path_obj_jwt {}", path_obj_jwt.as_ref().unwrap());
+        }
         let obj_id = ObjId::new(&obj_id_str)?;
         let relative_path = get_relative_path(&result_path, path);
         Ok((result_path, obj_id,path_obj_jwt,Some(relative_path)))
@@ -105,7 +109,7 @@ impl NamedDataMgrDB {
         let (obj_id_str,path_obj_jwt): (String,Option<String>) = stmt.query_row([path], |row| {
             Ok((row.get(0)?, row.get(1)?))
         }).map_err(|e| {
-            warn!("NamedDataMgrDB: query path target obj failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: query {} target obj failed! {}", path, e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
@@ -153,7 +157,7 @@ impl NamedDataMgrDB {
         Ok(())
     }
 
-    pub fn set_path(&self, path: &str,new_obj_id:&ObjId,app_id:&str,user_id:&str) -> NdnResult<()> {
+    pub fn set_path(&self, path: &str,new_obj_id:&ObjId,path_obj_str:String,app_id:&str,user_id:&str) -> NdnResult<()> {
         //如果不存在路径则创建，否则更新已经存在的路径指向的chunk
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| {
@@ -174,8 +178,8 @@ impl NamedDataMgrDB {
             Ok(obj_id) => {
                 // Path exists, update the obj_id
                 tx.execute(
-                    "UPDATE paths SET obj_id = ?1, app_id = ?2, user_id = ?3 WHERE path = ?4",
-                    [obj_id_str.as_str(), app_id, user_id, &path],
+                    "UPDATE paths SET obj_id = ?1, path_obj_jwt = ?2, app_id = ?3, user_id = ?4 WHERE path = ?5",
+                    [obj_id_str.as_str(), path_obj_str.as_str(), app_id, user_id, &path],
                 ).map_err(|e| {
                     warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
                     NdnError::DbError(e.to_string())
@@ -185,8 +189,8 @@ impl NamedDataMgrDB {
             Err(_) => {
                 // Path does not exist, create a new path
                 tx.execute(
-                    "INSERT INTO paths (path, obj_id, app_id, user_id) VALUES (?1, ?2, ?3, ?4)",
-                    [&path, obj_id_str.as_str(), app_id, user_id],
+                    "INSERT INTO paths (path, obj_id, path_obj_jwt, app_id, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    [&path, obj_id_str.as_str(), path_obj_str.as_str(), app_id, user_id],
                 ).map_err(|e| {
                     warn!("NamedDataMgrDB: set path failed! {}", e.to_string());
                     NdnError::DbError(e.to_string())
@@ -333,7 +337,7 @@ impl NamedDataMgr {
         }
 
         info!("NamedDataMgr: auto create new named data mgr for mgr_id:{}", named_mgr_key);
-        let root_path = get_buckyos_named_data_dir(named_data_mgr_id);
+        let root_path = get_buckyos_named_data_dir(named_mgr_key.as_str());
         //make sure the root path dir exists
         if !root_path.exists() {
             fs::create_dir_all(root_path.clone()).await.unwrap();
@@ -576,7 +580,9 @@ impl NamedDataMgr {
     }
 
     pub async fn set_file_impl(&self, path:&str,new_obj_id:&ObjId,app_id:&str,user_id:&str)->NdnResult<()> {
-        self.db.set_path(path, &new_obj_id, app_id, user_id).map_err(|e| {
+        let path_obj = PathObject::new(path.to_string(),new_obj_id.clone());
+        let path_obj_str = serde_json::to_string(&path_obj).unwrap();
+        self.db.set_path(path, &new_obj_id, path_obj_str,app_id, user_id).map_err(|e| {
             warn!("update_file: update path failed! {}", e.to_string());
             e
         })?;
@@ -706,7 +712,7 @@ impl NamedDataMgr {
             }
         }
 
-        warn!("get_chunk_reader: CACHE MISS :{}", chunk_id.to_string());
+        debug!("get_chunk_reader: CACHE MISS :{}", chunk_id.to_string());
         if self.local_cache.is_some() {
             let local_cache = self.local_cache.as_ref().unwrap();
             let local_reader = local_cache.open_chunk_reader(chunk_id,seek_from).await;
@@ -716,7 +722,7 @@ impl NamedDataMgr {
             }
         }
 
-        warn!("get_chunk_reader: no cache file:{}", chunk_id.to_string());
+        debug!("get_chunk_reader: no cache file:{}", chunk_id.to_string());
         for local_store in self.local_store_list.iter() {
             let local_reader = local_store.open_chunk_reader(chunk_id,seek_from).await;
             if local_reader.is_ok() {
@@ -859,38 +865,48 @@ impl NamedDataMgr {
         }
         let named_mgr = named_mgr.unwrap();
         //TODO：优化，边算边传，支持断点续传
+        debug!("start pub local_file_as_fileobj, local_file_path:{}", local_file_path.display());
         let mut file_reader =tokio::fs::File::open(local_file_path).await
             .map_err(|e| {
                 error!("open local_file_path failed, err:{}", e);
                 NdnError::IoError(format!("open local_file_path failed, err:{}", e))
             })?;
-        
+        debug!("open local_file_path success");
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();
+        file_reader.seek(SeekFrom::Start(0)).await;
         let (chunk_raw_id,chunk_size) = chunk_hasher.calc_from_reader(&mut file_reader).await.unwrap();
+    
         let chunk_id = ChunkId::from_sha256_result(&chunk_raw_id);
+        info!("pub_local_file_as_fileobj:calc chunk_id success,chunk_id:{},chunk_size:{}", chunk_id.to_string(),chunk_size);
         let real_named_mgr = named_mgr.lock().await;
         let is_exist = real_named_mgr.is_chunk_exist_impl(&chunk_id).await.unwrap();
         if !is_exist {
             let (mut chunk_writer, _) = real_named_mgr.open_chunk_writer_impl(&chunk_id, chunk_size, 0).await?;
             drop(real_named_mgr);
             file_reader.seek(std::io::SeekFrom::Start(0)).await.unwrap();
-            tokio::io::copy(&mut file_reader, &mut chunk_writer).await
+            let copy_bytes = tokio::io::copy(&mut file_reader, &mut chunk_writer).await
                 .map_err(|e| {
                     error!("copy local_file {:?} to named-mgr failed, err:{}", local_file_path, e);
                     NdnError::IoError(format!("copy local_file to named-mgr failed, err:{}", e))
                 })?;
+
+            info!("pub_local_file_as_fileobj:copy local_file {:?} to named-mgr's chunk success,copy_bytes:{}", local_file_path, copy_bytes);
             let real_named_mgr = named_mgr.lock().await;
             real_named_mgr.complete_chunk_writer_impl(&chunk_id).await?;
+        } else {
+            drop(real_named_mgr);
         }
 
         fileobj_template.content = chunk_id.to_string();
         fileobj_template.size = chunk_size;
+        fileobj_template.create_time = Some(buckyos_get_unix_timestamp());
+        
         let (file_obj_id,file_obj_str) = fileobj_template.gen_obj_id();
         let chunk_obj_id = chunk_id.to_obj_id();
         let real_named_mgr = named_mgr.lock().await;
         real_named_mgr.put_object_impl(&file_obj_id, file_obj_str.as_str()).await?;
-        real_named_mgr.create_file_impl(ndn_path, &file_obj_id, app_id, user_id).await?;
-        real_named_mgr.create_file_impl(ndn_content_path, &chunk_obj_id, app_id, user_id).await?;
+        real_named_mgr.set_file_impl(ndn_path, &file_obj_id, app_id, user_id).await?;
+        real_named_mgr.set_file_impl(ndn_content_path, &chunk_obj_id, app_id, user_id).await?;
         Ok(())
     }
 
@@ -951,7 +967,7 @@ mod tests {
     #[tokio::test]
     async fn test_base_operations() -> NdnResult<()> {
         // Create a temporary directory for testing
-        init_logging("ndn-lib test");
+        init_logging("ndn-lib test",false);
         let test_dir = tempdir().unwrap();
         let config = NamedDataMgrConfig {
             local_stores: vec![test_dir.path().to_str().unwrap().to_string()],
@@ -1073,7 +1089,7 @@ mod tests {
     #[tokio::test]
     async fn test_find_longest_matching_path() -> NdnResult<()> {
         // Create a temporary directory for testing
-        init_logging("ndn-lib test");
+        init_logging("ndn-lib test",false);
         let test_dir = tempdir().unwrap();
         let config = NamedDataMgrConfig {
             local_stores: vec![test_dir.path().to_str().unwrap().to_string()],

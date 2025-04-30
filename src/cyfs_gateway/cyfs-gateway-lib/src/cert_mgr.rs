@@ -417,9 +417,9 @@ impl<R: 'static + AcmeChallengeEntry> CertManager<R> {
             return Ok(());
         }
 
-        if !tls_config.enable_acme && (tls_config.cert_path.is_none() || tls_config.key_path.is_none()) {
-            return Ok(());
-        }
+        // if !tls_config.enable_acme && (tls_config.cert_path.is_none() || tls_config.key_path.is_none()) {
+        //     return Ok(());
+        // }
 
         let keystore_path = buckyos_kit::path_join(&self.inner.config.keystore_path, &sanitize_path_component(&host));
         if let Err(e) = std::fs::create_dir_all(&keystore_path) {

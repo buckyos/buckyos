@@ -79,7 +79,7 @@ impl ServicePkg {
         }
     }
 
-    async fn execute_operation(&self, op_name: &str, params: Option<&Vec<String>>) -> Result<i32> {
+    pub async fn execute_operation(&self, op_name: &str, params: Option<&Vec<String>>) -> Result<i32> {
         //let media_info = self.media_info.clone().unwrap();
         let media_info = self.media_info.lock().await;
         let media_info = media_info.as_ref();
@@ -96,14 +96,18 @@ impl ServicePkg {
             self.current_dir.as_ref(),
             Some(&self.env_vars),
         )
-        .await
-        .map_err(|e| {
-            error!("execute {} failed! {}", op_file.display(), e);
-            return ServiceControlError::ReasonError(e.to_string());
-        })?;
+            .await
+            .map_err(|e| {
+                error!("# execute {} failed! {}", op_file.display(), e);
+                return ServiceControlError::ReasonError(e.to_string());
+            })?;
+
+        let params_str = params.map(|p| p.join(" ")).unwrap_or_default();
+
         info!(
-            "execute {} ==> result: {} \n\t {}",
+            "# {} {} => {} \n\t {}",
             op_file.display(),
+            params_str,
             result,
             String::from_utf8_lossy(&output)
         );

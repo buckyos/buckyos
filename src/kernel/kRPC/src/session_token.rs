@@ -5,6 +5,7 @@ use jsonwebtoken::{encode,decode,Header, Algorithm, Validation, EncodingKey, Dec
 use log::*;
 use crate::{Result,RPCErrors};
 use buckyos_kit::buckyos_get_unix_timestamp;
+use name_lib::decode_jwt_claim_without_verify;
 
 #[derive(Clone, Debug, Serialize, Deserialize,PartialEq)]
 pub enum RPCSessionTokenType {
@@ -36,9 +37,9 @@ pub struct RPCSessionToken {
 }
 
 impl RPCSessionToken {
-    pub fn generate_jwt_token(user_id:&str,app_id:&str,kid:Option<String>,private_key:&EncodingKey) -> Result<String> {
+    pub fn generate_jwt_token(user_id:&str,app_id:&str,kid:Option<String>,private_key:&EncodingKey) -> Result<(String,RPCSessionToken)> {
         let timestamp = buckyos_get_unix_timestamp();
-        let session_token = RPCSessionToken {   
+        let mut session_token = RPCSessionToken {   
             token_type : RPCSessionTokenType::JWT,
             token: None,
             appid: Some(app_id.to_string()),
@@ -49,7 +50,9 @@ impl RPCSessionToken {
         };
         let result_str = session_token.generate_jwt(kid,private_key)
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to generate session token: {}", e)))?;
-        Ok(result_str)
+
+        session_token.token = Some(result_str.clone());
+        Ok((result_str,session_token))
     }
 
     pub fn from_string(token: &str) -> Result<Self> {
@@ -65,16 +68,12 @@ impl RPCSessionToken {
                 exp: None,
             });
         } else {
-            return Ok(RPCSessionToken {
-                token_type : RPCSessionTokenType::JWT,
-                nonce: None,
-                appid: None,
-                userid: None,
-                token: Some(token.to_string()),
-                iss: None,
-                exp: None,
-            });
-           
+            let payload = decode_jwt_claim_without_verify(token)
+                .map_err(|e| RPCErrors::ReasonError(format!("Failed to decode session token: {}", e)))?;
+            let mut session_token = serde_json::from_value::<RPCSessionToken>(payload)
+                .map_err(|e| RPCErrors::ReasonError(format!("Failed to decode session token: {}", e)))?;
+            session_token.token = Some(token.to_string());
+            return Ok(session_token);
         }
     }
 
@@ -203,7 +202,7 @@ impl RPCSessionToken {
 
         let kid:String;
         if header.kid.is_none() {
-            kid = "{verify_hub}".to_string();
+            kid = "$default".to_string();
         } else {
             kid = header.kid.unwrap();
         }    

@@ -1,5 +1,5 @@
 use buckyos_kit::get_relative_path;
-use name_lib::{decode_json_from_jwt_with_pk, decode_jwt_claim_without_verify};
+use name_lib::{decode_json_from_jwt_with_pk, decode_jwt_claim_without_verify, DID};
 use name_client::resolve_auth_key;
 use tokio::io::{AsyncRead,AsyncWrite,AsyncWriteExt,AsyncReadExt};
 use url::Url;
@@ -215,11 +215,12 @@ impl NdnClient {
         }
         
         let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
+        debug!("get_obj_by_url : cyfs_resp_headers {:?}",cyfs_resp_headers);
         // 获取响应内容
         let obj_str = res.text()
             .await
             .map_err(|e| NdnError::RemoteError(format!("Failed to read response body: {}", e)))?;
-        //info!(":=>RESP obj_content: {}",obj_str);
+        debug!("get_obj_by_url => RESP : {}",obj_str);
        
         if known_obj_id.is_some() {
             let known_obj_id = known_obj_id.unwrap();
@@ -259,7 +260,7 @@ impl NdnClient {
             let real_target_obj = NdnClient::verify_obj_id(&obj_id,&obj_str)?;
             //let real_path = 
 
-            if url.starts_with("https://")  || self.force_trust_remote {
+            if url.starts_with("http://127.0.0.1/") || url.starts_with("https://")  || self.force_trust_remote {
                 return Ok((obj_id,real_target_obj));
             }
 
@@ -303,7 +304,12 @@ impl NdnClient {
                     return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
                 }
             }
-            let pk = resolve_auth_key(url).await
+            let did = DID::from_str(url);
+            if did.is_err() {
+                return Err(NdnError::InvalidId("invalid did".to_string()));
+            }
+            let did = did.unwrap();
+            let pk = resolve_auth_key(&did,None).await
                 .map_err(|e|NdnError::InvalidId(format!("resolve auth key failed:{}",e.to_string())))?;
             //veirfy path_obj is signed by pk
             let path_obj_result = decode_json_from_jwt_with_pk(&path_obj_jwt,&pk);
@@ -437,7 +443,12 @@ impl NdnClient {
                     return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
                 }
             }
-            let pk = resolve_auth_key(chunk_url).await
+            let did = DID::from_str(chunk_url);
+            if did.is_err() {
+                return Err(NdnError::InvalidId("invalid did".to_string()));
+            }
+            let did = did.unwrap();
+            let pk = resolve_auth_key(&did,None).await
                 .map_err(|e|NdnError::InvalidId(format!("resolve auth key failed:{}",e.to_string())))?;
             //veirfy path_obj is signed by pk
             let path_obj_result = decode_json_from_jwt_with_pk(&path_obj_jwt,&pk);
@@ -498,6 +509,7 @@ impl NdnClient {
         
         // 构建content chunk的URL
         let content_chunk_url = self.gen_chunk_url(&content_chunk_id, None);
+        info!("download_fileobj_to_local: content_chunk_url {}",content_chunk_url);
         
         // 3. 使用download_chunk_to_local将chunk下载到本地指定文件
         let (_, chunk_size) = self.download_chunk_to_local(&content_chunk_url, content_chunk_id, local_path, no_verify).await?;
@@ -513,29 +525,47 @@ impl NdnClient {
         Ok((obj_id, file_obj))
     }
 
-    pub async fn verify_remote_is_same_as_local_file(&self,url:&str,local_path:&PathBuf) -> NdnResult<bool> {
+    pub async fn local_is_better(&self,url:&str,local_path:&PathBuf) -> NdnResult<bool> {
         // 1. 通过url下载fileojbect对象
         // 2. 计算本地文件的hash 
         // 3. 比较fileobj的hcontent和本地文件的hash
 
         if !local_path.exists() {
-            return Err(NdnError::Internal(format!("Local file does not exist: {:?}", local_path)));
+            warn!("local_is_better: local file does not exist: {:?}", local_path);
+            return Ok(false);
         }
+
         let mut file = tokio::fs::File::open(local_path).await
             .map_err(|e| NdnError::IoError(format!("Failed to open local file: {}", e)))?;
         let file_size = file.metadata().await
             .map_err(|e| NdnError::IoError(format!("Failed to get file metadata: {}", e)))?
             .len();
 
+        info!("start download remote fileobj!");
         let (obj_id, file_obj_json) = self.get_obj_by_url(url, None).await?;
         let file_obj: FileObject = serde_json::from_value(file_obj_json)
             .map_err(|e| NdnError::Internal(format!("Failed to parse FileObject: {}", e)))?;
         let content_chunk_id = ChunkId::new(file_obj.content.as_str())
-        .map_err(|e| NdnError::Internal(format!("Failed to parse content chunk id: {}", e)))?;
+            .map_err(|e| NdnError::Internal(format!("Failed to parse content chunk id: {}", e)))?;
+
+        let local_fileobj_file = PathBuf::from(format!("{}.fileobj",local_path.to_string_lossy()));
+        if local_fileobj_file.exists() {
+            info!("local_is_better: local fileobj file exists: {:?}", local_fileobj_file);
+            let local_fileobj = tokio::fs::read_to_string(local_path.with_extension("fileobj")).await
+                .map_err(|e| NdnError::IoError(format!("Failed to read local fileobj file: {}", e)))?;
+            let local_fileobj: FileObject = serde_json::from_str(&local_fileobj)
+                .map_err(|e| NdnError::Internal(format!("Failed to parse local fileobj file: {}", e)))?;
+            if local_fileobj.create_time >= file_obj.create_time {
+                return Ok(true);
+            }
+        }
 
         if file_size != file_obj.size {
+            info!("local_is_better: file size not match, remote:{} local:{}",file_obj.size,file_size);
             return Ok(false);
         }
+
+        info!("start calculate hash!");
 
         let mut hasher = ChunkHasher::new(None)
             .map_err(|e| NdnError::Internal(format!("Failed to create chunk hasher: {}", e)))?;
@@ -564,7 +594,7 @@ impl NdnClient {
         let mut reader = None;
         match chunk_state {
             ChunkState::Completed => {
-                warn!("pull_chunk: chunk {} already exists at named_mgr:{}",chunk_id.to_string(),mgr_id.unwrap());
+                warn!("pull_chunk: chunk {} already exists at named_mgr:{:?}",chunk_id.to_string(),&mgr_id);
                 return Ok(0);
             },
             ChunkState::NotExist => {
@@ -677,7 +707,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_chunk() {
-        init_logging("ndn_client_test");
+        init_logging("ndn_client_test",false);
         let test_server_config = json!({
             "tls_port":3243,
             "http_port":3280,

@@ -33,6 +33,7 @@ async-fd-lock = "*"
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 tokio-tar = "*"
 ndn-lib = { path = "../ndn-lib" }
+name-lib = { path = "../name-lib" }
 
 [dev-dependencies]
 tempfile = "*"

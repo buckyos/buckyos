@@ -837,6 +837,7 @@ impl NamedDataStore {
         let mut chunk_item = chunk_item.unwrap();
         chunk_item.chunk_state = ChunkState::Completed;
         chunk_item.progress = "".to_string();
+        info!("complete_chunk_writer: complete chunk {} success itemsize:{}",chunk_id.to_string(),chunk_item.chunk_size);
         self.named_db.set_chunk_item(&chunk_item).await?;
         Ok(())
     }
@@ -916,7 +917,7 @@ mod tests {
     // Helper function to create a test ChunkStore
 
     async fn create_test_store() -> NdnResult<NamedDataStore> {
-        init_logging("ndn-lib test");
+        init_logging("ndn-lib test",false);
         //let random_str = Alphanumeric.sample_string(&mut rand::thread_rng(), 6);
         let random_str = format!("{:x}", rand::random::<u32>());
         let temp_dir = format!("/opt/ndn_test/{}", random_str);

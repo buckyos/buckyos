@@ -1,10 +1,10 @@
 use crate::error::{PkgError, PkgResult};
 use semver::*;
 use serde::{Deserialize, Serialize};
-use version_compare::Cmp;
 use std::str::FromStr;
+use version_compare::Cmp;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionExpType {
     None,
     Req(VersionReq),
@@ -39,7 +39,7 @@ impl FromStr for VersionExpType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionExp {
     pub tag: Option<String>,
     pub version_exp: VersionExpType,
@@ -47,7 +47,10 @@ pub struct VersionExp {
 
 impl Default for VersionExp {
     fn default() -> Self {
-        VersionExp { tag: None, version_exp: VersionExpType::None }
+        VersionExp {
+            tag: None,
+            version_exp: VersionExpType::None,
+        }
     }
 }
 
@@ -59,15 +62,24 @@ impl FromStr for VersionExp {
         match parts.len() {
             1 => {
                 let version_exp = VersionExpType::from_str(parts[0])?;
-                return Ok(VersionExp { tag: None, version_exp });
+                return Ok(VersionExp {
+                    tag: None,
+                    version_exp,
+                });
             }
             2 => {
                 let tag = parts[1].to_string();
                 let version_exp = VersionExpType::from_str(parts[0])?;
-                return Ok(VersionExp { tag: Some(tag), version_exp });
+                return Ok(VersionExp {
+                    tag: Some(tag),
+                    version_exp,
+                });
             }
             _ => {
-                return Err(PkgError::ParseError(s.to_string(), "Invalid version expression".to_string()));
+                return Err(PkgError::ParseError(
+                    s.to_string(),
+                    "Invalid version expression".to_string(),
+                ));
             }
         }
     }
@@ -82,7 +94,7 @@ impl ToString for VersionExp {
         }
     }
 }
- 
+
 impl VersionExp {
     pub fn is_version(&self) -> bool {
         matches!(self.version_exp, VersionExpType::Version(_))
@@ -90,48 +102,54 @@ impl VersionExp {
 
     pub fn to_range_int(&self) -> PkgResult<(u64, u64)> {
         match &self.version_exp {
-            VersionExpType::Req(req) => {
-                match req.comparators.len() {
-                    1 => {
-                        let comparator = &req.comparators[0];
-                        match comparator.op {
-                            Op::Greater | Op::GreaterEq => {
-                                let min = Self::comparator_to_int(comparator)?;
-                                let max = u64::MAX;
-                                Ok((min, max))
-                            }
-                            Op::Less | Op::LessEq => {
-                                let min = u64::MIN;
-                                let max = Self::comparator_to_int(comparator)?;
-                                Ok((min, max))
-                            }
-                            _ => {
-                                return Err(PkgError::ParseError(self.to_string(), "VersionExp can not be converted to range int".to_string()));
-                            }
+            VersionExpType::Req(req) => match req.comparators.len() {
+                1 => {
+                    let comparator = &req.comparators[0];
+                    match comparator.op {
+                        Op::Greater | Op::GreaterEq => {
+                            let min = Self::comparator_to_int(comparator)?;
+                            let max = i64::MAX;
+                            Ok((min as u64, max as u64))
                         }
-                    },
-                    2 => {
-                        let comparator1 = &req.comparators[0];
-                        let comparator2 = &req.comparators[1];
-                        let min = Self::comparator_to_int(comparator1)?;
-                        let max = Self::comparator_to_int(comparator2)?;
-                        if min > max {
-                            return Ok((max, min));
+                        Op::Less | Op::LessEq => {
+                            let min = i64::MIN;
+                            let max = Self::comparator_to_int(comparator)?;
+                            Ok((min as u64, max as u64))
                         }
-                        Ok((min, max))
-
-                    },
-                    _ => {
-                        return Err(PkgError::ParseError(self.to_string(), "VersionExp can not be converted to range int".to_string()));
+                        _ => {
+                            return Err(PkgError::ParseError(
+                                self.to_string(),
+                                "VersionExp can not be converted to range int".to_string(),
+                            ));
+                        }
                     }
+                }
+                2 => {
+                    let comparator1 = &req.comparators[0];
+                    let comparator2 = &req.comparators[1];
+                    let min = Self::comparator_to_int(comparator1)?;
+                    let max = Self::comparator_to_int(comparator2)?;
+                    if min > max {
+                        return Ok((max, min));
+                    }
+                    Ok((min, max))
+                }
+                _ => {
+                    return Err(PkgError::ParseError(
+                        self.to_string(),
+                        "VersionExp can not be converted to range int".to_string(),
+                    ));
                 }
             },
             _ => {
-                return Err(PkgError::ParseError(self.to_string(), "VersionExp can not be converted to range int".to_string()));
+                return Err(PkgError::ParseError(
+                    self.to_string(),
+                    "VersionExp can not be converted to range int".to_string(),
+                ));
             }
         }
     }
-    
+
     pub fn comparator_to_int(comparator: &Comparator) -> PkgResult<u64> {
         let major = comparator.major;
         let minor = comparator.minor.unwrap_or(0);
@@ -139,25 +157,29 @@ impl VersionExp {
         let build_str = comparator.pre.to_string();
         let digits_only = build_str.trim_start_matches(|c: char| !c.is_digit(10));
         let build = digits_only.parse::<u64>().unwrap_or(0);
-        
-        let version_int = (major as u64) << 56 | (minor as u64) << 40 | (patch as u64) << 24 | build as u64;   
+
+        let version_int =
+            (major as u64) << 56 | (minor as u64) << 40 | (patch as u64) << 24 | build as u64;
         Ok(version_int)
     }
 
     // 将版本号转换为整数表示
     pub fn version_to_int(version: &str) -> PkgResult<u64> {
         // 处理semver格式，先移除预发布版本和构建元数据部分
-        let build_pos = version.find(|c| c == '-' || c == '+'); 
+        let build_pos = version.find(|c| c == '-' || c == '+');
         let version_core = if let Some(pos) = build_pos {
             &version[0..pos]
         } else {
             version
         };
         let mut parts: Vec<&str> = version_core.split('.').collect();
-        
+
         // 基本格式检查
         if parts.len() < 1 || parts.len() > 4 {
-            return Err(PkgError::VersionError(format!("无效的版本格式: {}", version)));
+            return Err(PkgError::VersionError(format!(
+                "Invalid version format: {}",
+                version
+            )));
         }
 
         if parts.len() == 3 {
@@ -166,41 +188,65 @@ impl VersionExp {
                 parts.push(build_str);
             }
         }
-        
+
         // 解析各部分
-        let major = parts.get(0).and_then(|v| {
-            // 忽略第一个数字前的其它字符
-            let digits_only = v.trim_start_matches(|c: char| !c.is_digit(10));
-            digits_only.parse::<u64>().ok()
-        }).unwrap_or(0);
+        let major = parts
+            .get(0)
+            .and_then(|v| {
+                // 忽略第一个数字前的其它字符
+                let digits_only = v.trim_start_matches(|c: char| !c.is_digit(10));
+                digits_only.parse::<u64>().ok()
+            })
+            .unwrap_or(0);
         if major > 0xff {
-            return Err(PkgError::VersionError(format!("主版本号超出范围: {}", version)));
+            return Err(PkgError::VersionError(format!(
+                "Major version out of range: {}",
+                version
+            )));
         }
 
-        let minor = parts.get(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        let minor = parts
+            .get(1)
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
         if minor > 0xffff {
-            return Err(PkgError::VersionError(format!("次版本号超出范围: {}", version)));
+            return Err(PkgError::VersionError(format!(
+                "Minor version out of range: {}",
+                version
+            )));
         }
-        
-        let patch = parts.get(2).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+
+        let patch = parts
+            .get(2)
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
         if patch > 0xffff {
-            return Err(PkgError::VersionError(format!("补丁版本号超出范围: {}", version)));
-        }   
-        
-        let build =  parts.get(3).and_then(|v| {
-            // 忽略第一个数字前的其它字符
-            let digits_only = v.trim_start_matches(|c: char| !c.is_digit(10));
-            digits_only.parse::<u64>().ok()
-        }).unwrap_or(0);
+            return Err(PkgError::VersionError(format!(
+                "Patch version out of range: {}",
+                version
+            )));
+        }
+
+        let build = parts
+            .get(3)
+            .and_then(|v| {
+                // Ignore any non-digit characters before the first digit
+                let digits_only = v.trim_start_matches(|c: char| !c.is_digit(10));
+                digits_only.parse::<u64>().ok()
+            })
+            .unwrap_or(0);
         if build > 0xffffff {
-            return Err(PkgError::VersionError(format!("构建号超出范围: {}", version)));
+            return Err(PkgError::VersionError(format!(
+                "Build number out of range: {}",
+                version
+            )));
         }
         //0xff , 0xffff, 0xffff, 0xffffff ,build号用24位，支持 15-12-25 这样的6位日期
-        let version_int = (major as u64) << 56 | (minor as u64) << 40 | (patch as u64) << 24 | build as u64;
-        
+        let version_int =
+            (major as u64) << 56 | (minor as u64) << 40 | (patch as u64) << 24 | build as u64;
+
         Ok(version_int)
     }
-
 
     pub fn compare_versions(v1: &str, v2: &str) -> std::cmp::Ordering {
         match (semver::Version::parse(v1), semver::Version::parse(v2)) {
@@ -211,7 +257,7 @@ impl VersionExp {
                 match (Self::version_to_int(v1), Self::version_to_int(v2)) {
                     (Ok(v1_int), Ok(v2_int)) => v1_int.cmp(&v2_int),
                     // 如果转换失败，则按字符串比较
-                    _ => v1.cmp(v2)
+                    _ => v1.cmp(v2),
                 }
             }
         }
@@ -227,13 +273,12 @@ pkg_name#>0.1.4,<=0.1.6:stable : 指定范围版本里的,有stable tag的版本
 pkg_name#$objid : 指定一个精确版本
 pkg_name#0.1.5#$objid : 语义更强的指定一个精确版本，在加载的时候会对版本号进行验证
  */
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageId {
     pub name: String,
     pub version_exp: Option<VersionExp>,
     pub objid: Option<String>,
 }
-
 
 impl FromStr for PackageId {
     type Err = PkgError;
@@ -269,6 +314,24 @@ impl PackageId {
         }
     }
 
+    pub fn get_pkg_id_simple_name(pkg_id: &str) -> String {
+        let the_pkg_id = PackageId::parse(pkg_id);
+        if the_pkg_id.is_err() {
+            return pkg_id.to_string();
+        }
+        let the_pkg_id = the_pkg_id.unwrap();
+        the_pkg_id.to_simple_name()
+    }
+
+    pub fn to_simple_name(&self) -> String {
+        //after . and before #
+        let mut result = self.name.clone();
+        if let Some(pos) = result.find('.') {
+            result = result[pos + 1..].to_string();
+        }
+        result
+    }
+
     pub fn parse(pkg_id: &str) -> PkgResult<PackageId> {
         let parts = pkg_id.split('#').collect::<Vec<&str>>();
         match parts.len() {
@@ -278,11 +341,14 @@ impl PackageId {
                     version_exp: None,
                     objid: None,
                 });
-            },
+            }
             2 => {
                 let name = parts[0].to_string();
                 let version_part = parts[1].to_string();
-                if version_part.contains(".") || version_part.contains(":") || version_part.contains("*") {
+                if version_part.contains(".")
+                    || version_part.contains(":")
+                    || version_part.contains("*")
+                {
                     let version_exp = VersionExp::from_str(&version_part)?;
                     return Ok(PackageId {
                         name: name,
@@ -296,8 +362,8 @@ impl PackageId {
                         objid: Some(version_part),
                     });
                 }
-            },
-            3=>{
+            }
+            3 => {
                 let name = parts[0].to_string();
                 let version_part = parts[1].to_string();
                 let objid_part = parts[2].to_string();
@@ -309,12 +375,14 @@ impl PackageId {
                 });
             }
             _ => {
-                return Err(PkgError::ParseError(pkg_id.to_string(), "Invalid package id".to_string()));
+                return Err(PkgError::ParseError(
+                    pkg_id.to_string(),
+                    "Invalid package id".to_string(),
+                ));
             }
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -333,9 +401,27 @@ mod tests {
         let pkg_id = "a#0.1.0:stable";
         let result = PackageId::parse(pkg_id).unwrap();
         assert_eq!(&result.name, "a");
-        assert_eq!(result.version_exp.as_ref().unwrap().to_string(), "0.1.0:stable".to_string());
+        assert_eq!(
+            result.version_exp.as_ref().unwrap().to_string(),
+            "0.1.0:stable".to_string()
+        );
+        assert_eq!(
+            result.version_exp.as_ref().unwrap().tag,
+            Some("stable".to_string())
+        );
         let pkg_id2 = result.to_string();
         assert_eq!(pkg_id, pkg_id2);
+
+        let pkg_id = "nightly-linux-amd64.buckyos-filebrowser#0.4.0";
+        let result = PackageId::parse(pkg_id).unwrap();
+        assert_eq!(&result.name, "nightly-linux-amd64.buckyos-filebrowser");
+        assert_eq!(
+            result.version_exp.as_ref().unwrap().to_string(),
+            "0.4.0".to_string()
+        );
+        assert_eq!(result.version_exp.as_ref().unwrap().tag, None);
+        let simple_name = result.to_simple_name();
+        assert_eq!(simple_name, "buckyos-filebrowser".to_string());
 
         let pkg_id = "a#1234567890";
         let result = PackageId::parse(pkg_id).unwrap();
@@ -347,7 +433,10 @@ mod tests {
         let pkg_id = "a#>0.1.0";
         let result = PackageId::parse(pkg_id).unwrap();
         assert_eq!(&result.name, "a");
-        assert_eq!(result.version_exp.as_ref().unwrap().to_string(), ">0.1.0".to_string());
+        assert_eq!(
+            result.version_exp.as_ref().unwrap().to_string(),
+            ">0.1.0".to_string()
+        );
         let pkg_id2 = result.to_string();
         assert_eq!(pkg_id, pkg_id2);
 
@@ -355,7 +444,10 @@ mod tests {
         let result = PackageId::parse(pkg_id).unwrap();
         assert_eq!(&result.name, "a");
         //println!("result.version_exp: {:?}", result.version_exp.as_ref().unwrap().to_string());
-        assert_eq!(result.version_exp.as_ref().unwrap().to_string(), ">0.1.0, <0.1.2:stable".to_string());
+        assert_eq!(
+            result.version_exp.as_ref().unwrap().to_string(),
+            ">0.1.0, <0.1.2:stable".to_string()
+        );
         let pkg_id2 = result.to_string();
         assert_eq!(pkg_id, pkg_id2);
     }
@@ -377,8 +469,12 @@ mod tests {
         ];
 
         for (version, expected) in &test_cases {
-            let result =  VersionExp::version_to_int(version)?;
-            assert_eq!(result, *expected, "版本 {} 转换为整数应该是 {:#X}, 但得到了 {:#X}", version, expected, result);
+            let result = VersionExp::version_to_int(version)?;
+            assert_eq!(
+                result, *expected,
+                "Version {} should convert to integer {:#X}, but got {:#X}",
+                version, expected, result
+            );
         }
 
         Ok(())
@@ -386,11 +482,18 @@ mod tests {
 
     #[test]
     fn test_comparator_to_int() -> PkgResult<()> {
-        let comparator = VersionExp::comparator_to_int(&Comparator::parse(">1.0.3-build250326").unwrap()).unwrap();
+        let comparator =
+            VersionExp::comparator_to_int(&Comparator::parse(">1.0.3-build250326").unwrap())
+                .unwrap();
         assert_eq!(comparator, 0x01_0000_0003_03d1d6);
 
         let package_id = PackageId::parse("a#>1.0.3-build250326, <=1.0.4-build250426").unwrap();
-        let range = package_id.version_exp.as_ref().unwrap().to_range_int().unwrap();
+        let range = package_id
+            .version_exp
+            .as_ref()
+            .unwrap()
+            .to_range_int()
+            .unwrap();
         assert_eq!(range, (0x01_0000_0003_03d1d6, 0x01_0000_0004_03d23a));
         Ok(())
     }
@@ -415,7 +518,11 @@ mod tests {
 
         for (v1, v2, expected) in semver_test_cases {
             let result = VersionExp::compare_versions(v1, v2);
-            assert_eq!(result, expected, "比较 {} 和 {} 应该得到 {:?}, 但得到了 {:?}", v1, v2, expected, result);
+            assert_eq!(
+                result, expected,
+                "Comparison between {} and {}, expect {:?}, but got {:?}",
+                v1, v2, expected, result
+            );
         }
 
         // 测试非标准格式的版本比较（使用我们的自定义逻辑）
@@ -438,7 +545,11 @@ mod tests {
 
         for (v1, v2, expected) in custom_test_cases {
             let result = VersionExp::compare_versions(v1, v2);
-            assert_eq!(result, expected, "比较 {} 和 {} 应该得到 {:?}, 但得到了 {:?}", v1, v2, expected, result);
+            assert_eq!(
+                result, expected,
+                "Comparison between {} and {}, expect {:?}, but got {:?}",
+                v1, v2, expected, result
+            );
         }
 
         Ok(())

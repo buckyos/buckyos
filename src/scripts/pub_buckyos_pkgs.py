@@ -1,5 +1,5 @@
 # 得到默认的，待发布的pack的pkg目录（默认是 /tmp/buckyos_pkgs/目录）
-# 扫码有正确的.pkg_meta.json的pkg
+# 扫码有正确的pkg_meta.json的pkg
 # 调用命令buckycli pack_pkg到target目录 (默认是  /tmp/buckyos_pkg_out/)，并记录
 # 调用buckycli pub_pkg 命令，将target目录下的pkg发布到当前zone
 # 调用buckycli pub_index 命令，让新的index-db生效
@@ -10,11 +10,21 @@ import tempfile
 import platform
 import sys
 import json
-
+import shutil
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 buckycli_path = os.path.join(src_dir, "rootfs/bin/buckycli", "buckycli")
+
+
 if platform.system() == "Windows":
     buckycli_path += ".exe"
+
+def get_deb_rootfs_dir():
+    """获取deb的rootfs目录"""
+    if platform.system() == "Windows":
+        sys_temp_dir = tempfile.gettempdir()
+    else:
+        sys_temp_dir = "/tmp/"
+    return os.path.join(sys_temp_dir, "buckyos_deb_build")
 
 def get_default_pkg_dir():
     """获取默认的待发布的pack的pkg目录"""
@@ -43,18 +53,19 @@ def pack_packages(pkg_dir, target_dir):
     for pkg_path in pkg_dirs:
         if not os.path.isdir(pkg_path):
             continue
+        print(f"# pack {pkg_path}")
             
-        # 检查是否有有效的.pkg_meta.json
-        meta_file = os.path.join(pkg_path, ".pkg_meta.json")
+        # 检查是否有有效的pkg_meta.json
+        meta_file = os.path.join(pkg_path, "pkg_meta.json")
         if not os.path.exists(meta_file):
-            print(f"跳过 {pkg_path}: 没有找到 .pkg_meta.json")
+            print(f"跳过 {pkg_path}: 没有找到 pkg_meta.json")
             continue
             
         try:
             with open(meta_file, 'r') as f:
                 meta_data = json.load(f)
                 if "pkg_name" not in meta_data or "version" not in meta_data:
-                    print(f"跳过 {pkg_path}: .pkg_meta.json 缺少必要字段")
+                    print(f"跳过 {pkg_path}: pkg_meta.json 缺少必要字段")
                     continue
                     
             # 调用buckycli pack_pkg命令打包
@@ -101,6 +112,8 @@ def publish_index():
     else:
         print(f"发布索引失败: {result.stderr}")
         return False
+    
+
 
 def main():
     # 获取默认目录
@@ -135,6 +148,7 @@ def main():
         
     print("所有操作完成")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

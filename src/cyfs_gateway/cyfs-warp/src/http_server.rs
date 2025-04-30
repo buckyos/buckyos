@@ -1,13 +1,13 @@
-use crate::cert::*;
+
 use crate::router::*;
 use anyhow::Result;
-use buckyos_kit::get_buckyos_service_data_dir;
 use cyfs_gateway_lib::*;
 use futures::stream::StreamExt;
 use hyper::server::accept::from_stream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::*;
+use rustls::Certificate;
 use rustls::ServerConfig;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -16,7 +16,9 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::TcpListenerStream;
-
+use rustls_pemfile::pkcs8_private_keys;
+use std::fs::File;
+use std::io::BufReader;
 pub struct CyfsWarpServer {
     config: WarpServerConfig,
 
@@ -83,31 +85,31 @@ impl CyfsWarpServer {
             },
         )));
 
-        // Cert manager for HTTPS
-        let root_path = get_buckyos_service_data_dir("cyfs-warp");
-        info!("Will use cyfs-warp data directory: {}", root_path.display());
-        if !root_path.exists() {
-            info!("Creating cyfs-warp data directory: {}", root_path.display());
-            if let Err(e) = std::fs::create_dir_all(&root_path) {
-                let msg = format!(
-                    "Failed to create cyfs-warp data directory: {}, {}",
-                    e,
-                    root_path.display()
-                );
-                error!("{}", msg);
-                return Err(anyhow::anyhow!(msg));
-            }
-        }
+        // // Cert manager for HTTPS
+        // let root_path = get_buckyos_service_data_dir("cyfs-warp");
+        // info!("Will use cyfs-warp data directory: {}", root_path.display());
+        // if !root_path.exists() {
+        //     info!("Creating cyfs-warp data directory: {}", root_path.display());
+        //     if let Err(e) = std::fs::create_dir_all(&root_path) {
+        //         let msg = format!(
+        //             "Failed to create cyfs-warp data directory: {}, {}",
+        //             e,
+        //             root_path.display()
+        //         );
+        //         error!("{}", msg);
+        //         return Err(anyhow::anyhow!(msg));
+        //     }
+        // }
 
-        let mut cert_mgr_config = CertManagerConfig::default();
-        cert_mgr_config.keystore_path = root_path.to_string_lossy().to_string();
+        // let mut cert_mgr_config = CertManagerConfig::default();
+        // cert_mgr_config.keystore_path = root_path.to_string_lossy().to_string();
 
-        let cert_mgr =
-            CertManager::new(cert_mgr_config, ChallengeEntry::new(http_router.clone())).await?;
+        // let cert_mgr =
+        //     CertManager::new(cert_mgr_config, ChallengeEntry::new(http_router.clone())).await?;
 
-        for (host, host_config) in self.config.hosts.iter() {
-            cert_mgr.insert_config(host.clone(), host_config.tls.clone())?;
-        }
+        // for (host, host_config) in self.config.hosts.iter() {
+        //     cert_mgr.insert_config(host.clone(), host_config.tls.clone())?;
+        // }
 
         // Start all servers
         let bind = self.config.bind.clone().unwrap_or("0.0.0.0".to_string());
@@ -115,7 +117,7 @@ impl CyfsWarpServer {
         for bind_addr in bind_addrs {
             let http_router = http_router.clone();
             let https_router = https_router.clone();
-            let cert_mgr = cert_mgr.clone();
+
 
             let formatted_bind_addr = if bind_addr.contains(":") && !bind_addr.starts_with("[") {
                 format!("[{}]", bind_addr)
@@ -133,21 +135,22 @@ impl CyfsWarpServer {
                     error!("Failed to start HTTP server: {}", e);
                 }
             }
-
-            let bind_addr_https = format!("{}:{}", formatted_bind_addr, self.config.tls_port);
-            match Self::start_listen_https(
-                bind_addr_https,
-                https_router,
-                Arc::new(cert_mgr.clone()),
-            )
-            .await
-            {
-                Ok(server_task) => {
-                    self.https_servers.lock().await.push(server_task);
-                }
-                Err(e) => {
-                    // FIXME: should we return error here or just log it?
-                    error!("Failed to start HTTPS server: {}", e);
+            if self.config.tls_port > 0 {
+                let bind_addr_https = format!("{}:{}", formatted_bind_addr, self.config.tls_port);
+                match Self::start_listen_https(
+                    bind_addr_https,
+                    https_router,
+                    &self.config,
+                )
+                .await
+                {
+                    Ok(server_task) => {
+                        self.https_servers.lock().await.push(server_task);
+                    }
+                    Err(e) => {
+                        // FIXME: should we return error here or just log it?
+                        error!("Failed to start HTTPS server: {}", e);
+                    }
                 }
             }
         }
@@ -178,8 +181,8 @@ impl CyfsWarpServer {
     ) -> Result<Response<Body>, hyper::Error> {
         match router.route(req, client_ip).await {
             Ok(response) => Ok(response),
-            Err(e) => {
-                error!("Error handling request: {:?}", e);
+            Err(_e) => {
+                //error!("Error handling request: {}", e.to_string());
                 Ok(Response::builder()
                     .status(500)
                     .body(Body::from("Internal Server Error"))
@@ -235,13 +238,53 @@ impl CyfsWarpServer {
     async fn start_listen_https(
         https_bind_addr: String,
         https_router: Router,
-        cert_mgr: Arc<CertManager<ChallengeEntry>>,
+        server_config: &WarpServerConfig,
     ) -> Result<tokio::task::JoinHandle<()>> {
+        let mut tls_cfg_map = HashMap::new();
+        for (host, host_config) in server_config.hosts.iter() {
+            if host_config.tls.disable_tls {
+                continue;
+            }
+            if host_config.tls.cert_path.is_some() && host_config.tls.key_path.is_some() {
+                let cert_file = File::open(&host_config.tls.cert_path.as_ref().unwrap()).map_err(|e| {
+                    error!("Failed to open cert file: {}", e);
+                    anyhow::anyhow!("Failed to open cert file: {}", e)
+                })?;
+                let mut cert_file = BufReader::new(cert_file);
+                let certs = rustls_pemfile::certs(&mut cert_file).unwrap();
+                if certs.is_empty() {
+                    error!("No certificates found in cert file");
+                    return Err(anyhow::anyhow!("No certificates found in cert file"));
+                }
+                let cert:Vec<Certificate> = certs.into_iter().map(Certificate).collect();
+                //let cert = cert.remove(0);
+                debug!("load tls cert: {:?} OK",cert);
+                let key_file = File::open(&host_config.tls.key_path.as_ref().unwrap()).map_err(|e| {
+                    error!("Failed to open key file: {}", e);
+                    anyhow::anyhow!("Failed to open key file: {}", e)
+                })?;
+                let mut key_file = BufReader::new(key_file);
+                let mut keys = pkcs8_private_keys(&mut key_file).unwrap();
+                if keys.is_empty() {
+                    error!("No private keys found in key file");
+                    return Err(anyhow::anyhow!("No private keys found in key file"));
+                }
+                let key = rustls::PrivateKey(keys.remove(0));
+                let mut config = ServerConfig::builder()
+                    .with_safe_defaults()
+                    .with_no_client_auth()
+                    .with_single_cert(cert, key)
+                    .unwrap();
+                config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+                tls_cfg_map.insert(host.clone(), Arc::new(config));
+            }
+        }
+
         let tls_cfg = Arc::new(
             ServerConfig::builder()
                 .with_safe_defaults()
                 .with_no_client_auth()
-                .with_cert_resolver(cert_mgr),
+                .with_cert_resolver(Arc::new(SNIResolver::new(tls_cfg_map))),
         );
         let tls_acceptor = TlsAcceptor::from(tls_cfg.clone());
         let listener = TcpListener::bind(https_bind_addr.clone()).await;
@@ -258,14 +301,14 @@ impl CyfsWarpServer {
         let listener = listener.unwrap();
         let listener_stream = TcpListenerStream::new(listener);
         let incoming_tls_stream = listener_stream.filter_map(move |conn| {
-            info!("tls accept a new tcp stream ...");
+            debug!("tls accept a new tcp stream ...");
             let tls_acceptor = tls_acceptor.clone();
             async move {
                 match conn {
                     Ok(stream) => {
                         match tls_acceptor.accept(stream).await {
                             Ok(tls_stream) => {
-                                info!("tls accept a new tls from tcp stream OK!");
+                                debug!("tls accept a new tls from tcp stream OK!");
                                 Some(Ok::<_, std::io::Error>(tls_stream))
                             }
                             Err(e) => {

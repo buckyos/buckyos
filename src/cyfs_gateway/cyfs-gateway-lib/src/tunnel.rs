@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn test_get_dest_info_from_url_path() {
         std::env::set_var("BUCKY_LOG", "debug");
-        buckyos_kit::init_logging("test_get_dest_info_from_url_path");
+        buckyos_kit::init_logging("test_get_dest_info_from_url_path",false);
         let (host, port) = get_dest_info_from_url_path("127.0.0.1:8080").unwrap();
         assert_eq!(host, Some("127.0.0.1".to_string()));
         assert_eq!(port, 8080);
@@ -216,5 +216,8 @@ mod tests {
         assert_eq!(ipv4_addr, true);
         let ipv6_addr = is_ipv4_addr_str("::1").unwrap();
         assert_eq!(ipv6_addr, false);
+
+        let upstream_url = Url::parse("rtcp://TeVOLYpilvPwXNVh4dSRH4VQ6y-4t-sawmn3thKOqJM.dev.did/:80").unwrap();
+        assert_eq!(upstream_url.host_str().unwrap(), "TeVOLYpilvPwXNVh4dSRH4VQ6y-4t-sawmn3thKOqJM.dev.did");
     }
 }

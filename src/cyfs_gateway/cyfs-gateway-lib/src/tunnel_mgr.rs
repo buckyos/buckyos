@@ -131,8 +131,9 @@ impl TunnelManager {
         } else {
             tunnel = builder.create_tunnel(Some(auth_str)).await?;
         }
-
-        let stream = tunnel.open_stream(url.path()).await.map_err(|e| {
+        let path = url.path();
+        debug!("Open stream by url.path: {}", path);
+        let stream = tunnel.open_stream(path).await.map_err(|e| {
             error!("Open stream by url failed: {}", e);
             TunnelError::ConnectError(format!("Open stream by url failed: {}", e))
         })?;

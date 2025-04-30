@@ -1,11 +1,12 @@
-#!/bin/python3
+#!/usr/bin/python3
 import sys
 import os
 import argparse
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts import util
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
 
 print("try to kill cyfs_gateway")
 util.kill_process("cyfs_gateway")
@@ -16,12 +17,13 @@ parser.add_argument("--keep_tunnel", type=str,required=False, help="keep tunnel"
 args = parser.parse_args()
 node_id = args.node_id
 keep_tunnel = args.keep_tunnel
-config_file = f"{current_dir}/../../etc/node_gateway.json"
-config_file = os.path.abspath(config_file)
+buckyos_root = util.get_buckyos_root()
+
+config_file = f"{buckyos_root}/etc/cyfs_gateway.json"
 print(f"Gateway config_file: {config_file}")
 run_cmd = f"{current_dir}/cyfs_gateway --config_file {config_file}"
 if keep_tunnel is not None:
     run_cmd += f" --keep_tunnel {keep_tunnel}"
 util.nohup_start(run_cmd)
     
-print("cyfs_gateway service started")
+print("start cyfs_gateway service success@!")

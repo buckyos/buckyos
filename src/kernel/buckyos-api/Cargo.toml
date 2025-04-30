@@ -24,4 +24,5 @@ package-lib = { path = "../../components/package-lib" }
 name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
 kRPC ={ path = "../kRPC" }
+rbac = { path = "../rbac" }
 

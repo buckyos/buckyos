@@ -4,7 +4,7 @@ import {WizzardDlg} from '../components/wizzard-dlg/index';
 import {MdOutlinedTextField} from '@material/web/textfield/outlined-text-field.js';
 import {MdFilledButton} from '@material/web/button/filled-button.js';
 import {MdFilledTextField} from '@material/web/textfield/filled-text-field.js';
-import { GatewayType,ActiveWizzardData,generate_key_pair,check_bucky_username,isValidDomain,generate_zone_config_jwt,check_sn_active_code } from '../active_lib';
+import { GatewayType,ActiveWizzardData,generate_key_pair,check_bucky_username,isValidDomain,generate_zone_boot_config_jwt,check_sn_active_code } from '../active_lib';
 
 class ConfigZoneIdDlg extends HTMLElement {
     constructor() {
@@ -102,7 +102,7 @@ class ConfigZoneIdDlg extends HTMLElement {
                     });
                 }
 
-                generate_zone_config_jwt(txt_name.value,wizzard_data.sn_host,wizzard_data.owner_private_key).then((zone_config_jwt) => {
+                generate_zone_boot_config_jwt(wizzard_data.sn_host,wizzard_data.owner_private_key).then((zone_config_jwt) => {
                     let txt_zone_config = shadow.getElementById('txt_zone_id_value') as MdFilledTextField;
                     txt_zone_config.value = "DID="+zone_config_jwt+";";
                     wizzard_data.zone_config_jwt = zone_config_jwt;

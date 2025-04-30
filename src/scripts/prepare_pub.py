@@ -16,9 +16,13 @@ channel = "nightly"
 platform_name = platform.system().lower()
 if platform_name == "darwin":
     platform_name = "apple"
+    
 machine_name = platform.machine()
+print(f"machine_name: {machine_name}")
 if machine_name == "arm64":
     machine_name = "aarch64"
+if machine_name == "x86_64":
+    machine_name = "amd64"
 
 perfix = channel + "-" + platform_name + "-" + machine_name
 
@@ -51,7 +55,7 @@ def prepare_package(pkg_name,pkg_meta):
             else:
                 shutil.copy2(s, d)
             
-    pkg_meta_file = os.path.join(pkg_tmp_dir,".pkg_meta.json") 
+    pkg_meta_file = os.path.join(pkg_tmp_dir,"pkg_meta.json") 
     json.dump(pkg_meta, open(pkg_meta_file, "w"))
     # 将 ../rootfs/bin/$app_name 下面的目录复制到 /tmp/buckyos_pkgs/$pkg_name
     app_name = pkg_name
@@ -65,22 +69,43 @@ def prepare_package(pkg_name,pkg_meta):
                 shutil.copytree(s, d)
             else:
                 shutil.copy2(s, d)
+
+        print(f"Copying scripts to {pkg_tmp_dir}/scripts")
+        os.makedirs(os.path.join(pkg_tmp_dir, "scripts"), exist_ok=True)
+        scripts_dir = os.path.join(src_dir,"rootfs/bin/scripts")
+        for item in os.listdir(scripts_dir):
+            if item == "pkg_meta.json":
+                continue
+            if item.startswith("."):
+                continue
+            s = os.path.join(scripts_dir, item)
+            d = os.path.join(pkg_tmp_dir, "scripts",item)
+            if os.path.isdir(s):
+                shutil.copytree(s, d)
+            else:
+                shutil.copy2(s, d)
     
-    print(f"Package {pkg_name} prepared at {pkg_tmp_dir}")
+    print(f"> Package {pkg_name} prepared at {pkg_tmp_dir}")
+
 
 def main():
     # 获取所有包名
     pkg_dirs = glob.glob(os.path.join(src_dir, "publish/buckyos_pkgs/*"))
     for pkg_dir in pkg_dirs:
+        print(f"\n# Processing {pkg_dir}\n")
         pkg_name = os.path.basename(pkg_dir)
-        meta_file = os.path.join(pkg_dir, ".pkg_meta.json")
+        meta_file = os.path.join(pkg_dir, "pkg_meta.json")
         if os.path.exists(meta_file):
             pkg_meta = json.load(open(meta_file))
             pkg_meta["pub_time"] = int(time.time())
             pkg_meta["exp"] = int(time.time()) + 3600 * 24 * 365 * 3
-            pkg_name = pkg_meta["pkg_name"]
+            #pkg_name = pkg_meta["pkg_name"]
             pkg_meta["pkg_name"] = perfix + "." + pkg_name 
-
+            deps = pkg_meta.get("deps",{})
+            new_deps = {}
+            for dep_pkg_name,dep_pkg_version in deps.items():
+                new_deps[perfix + "." + dep_pkg_name] = dep_pkg_version
+            pkg_meta["deps"] = new_deps
             prepare_package(pkg_name,pkg_meta)
 
 if __name__ == "__main__":

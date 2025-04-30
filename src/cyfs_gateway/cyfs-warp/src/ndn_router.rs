@@ -26,6 +26,7 @@ enum GetObjResultBody {
 struct GetObjResult {
     pub real_obj_id:ObjId,
     pub real_body:GetObjResultBody,
+    pub path_obj_jwt:Option<String>,
 }
 
 
@@ -33,19 +34,19 @@ struct GetObjResult {
 impl GetObjResult {
     pub fn new_chunk_result(real_obj_id:ObjId,real_body:ChunkReader,chunk_size:u64)->Self {
         let body = GetObjResultBody::Reader(real_body,chunk_size);
-        Self { real_obj_id, real_body:body }
+        Self { real_obj_id, real_body:body, path_obj_jwt:None }
     }
 
     pub fn new_named_obj_result(real_obj_id:ObjId,real_body:Value)->Self {
         let body = GetObjResultBody::NamedObj(real_body);
-        Self { real_obj_id, real_body:body }
+        Self { real_obj_id, real_body:body, path_obj_jwt:None }
     }
 
-    pub fn new_value_result(real_body:Value)->Self {
+    pub fn new_value_result(real_obj_id:ObjId,real_body:Value)->Self {
         let body_str = serde_json::to_string(&real_body).unwrap();
         let body = GetObjResultBody::TextRecord(body_str);
-        let fake_obj_id = ObjId::new_by_raw("fake".to_string(),vec![]);
-        Self { real_obj_id:fake_obj_id, real_body:body }
+       
+        Self { real_obj_id:real_obj_id, real_body:body, path_obj_jwt:None }
     }
 }
 
@@ -72,7 +73,6 @@ async fn get_obj_result(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,
 pub struct InnerPathInfo {
     pub root_obj_id:ObjId,
     pub inner_obj_path:String,
-    pub path_obj_jwt:Option<String>,
     pub mtree_path:Option<String>,
 }
 
@@ -84,12 +84,14 @@ async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,
     if inner_path_info.is_some() {
         let inner_path_info = inner_path_info.unwrap();
         result = result.header("cyfs-root-obj-id", inner_path_info.root_obj_id.to_base32());
-        if inner_path_info.path_obj_jwt.is_some() {
-            result = result.header("cyfs-path-obj", inner_path_info.path_obj_jwt.unwrap());
-        }
+
         if inner_path_info.mtree_path.is_some() {
             result = result.header("cyfs-mtree-path", inner_path_info.mtree_path.unwrap());
         }
+    }
+
+    if obj_get_result.path_obj_jwt.is_some() {
+        result = result.header("cyfs-path-obj", obj_get_result.path_obj_jwt.unwrap());
     }
 
     match obj_get_result.real_body {
@@ -245,7 +247,6 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
     let named_mgr = named_mgr.unwrap();
     let named_mgr2 = named_mgr.clone();
 
-            
     let range_str = req.headers().get(hyper::header::RANGE);
     let mut start = 0;
     if range_str.is_some() {
@@ -260,7 +261,7 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
     //let chunk_id_result;
     let mut obj_id:Option<ObjId> = None;
     let mut obj_content:Option<Value> = None;
-    let mut inner_obj_path:Option<String> = None;
+    let mut _inner_obj_path:Option<String> = None;
     let path = req.uri().path();
     let _user_id = "guest";//TODO: session_token from cookie
     let _app_id = "unknown";
@@ -271,7 +272,7 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
         if obj_id_result.is_ok() {
             let (the_obj_id,the_obj_path) = obj_id_result.unwrap();
             obj_id = Some(the_obj_id);
-            inner_obj_path = the_obj_path;
+            _inner_obj_path = the_obj_path;
         }
     } else {
         //get chunkid by hostname
@@ -290,28 +291,34 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
             let sub_path = buckyos_kit::get_relative_path(route_path, path);
             let target_obj_result = real_named_mgr.get_obj_id_by_path_impl(&sub_path).await;
             if target_obj_result.is_ok() {
+                info!("ndn_router:get_obj_id_by_path_impl success,sub_path:{}",sub_path);
                 // will return (obj_id,obj_json_str)
-                let (target_obj_id,_) = target_obj_result.unwrap();
+                let (target_obj_id,the_path_obj_jwt) = target_obj_result.unwrap();
+                path_obj_jwt = the_path_obj_jwt;
                 obj_id = Some(target_obj_id);
             } else {
                 //root_obj/inner_path = obj_id,
                 let root_obj_id_result = real_named_mgr.select_obj_id_by_path_impl(&sub_path).await;
 
                 if root_obj_id_result.is_ok() {
-                    let (the_root_obj_id,the_path_obj_jwt,the_inner_path) = root_obj_id_result.unwrap();
-                    path_obj_jwt = the_path_obj_jwt;
+                   
+                    let (the_root_obj_id,_the_path_obj_jwt,the_inner_path) = root_obj_id_result.unwrap();
+                    info!("ndn_router:select_obj_id_by_path_impl success,sub_path:{},inner_path:{} ",sub_path,the_inner_path.clone().unwrap_or("None".to_string()));
+                    
                     if the_inner_path.is_none() {
                         return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not found"));
                     }
-                    inner_obj_path = the_inner_path.clone();
+                    _inner_obj_path = the_inner_path.clone();
                     if the_root_obj_id.is_chunk() {
                         return Err(anyhow::anyhow!("ndn_router:chunk is not supported to be root obj"));
                     }
                     if the_root_obj_id.is_big_container() {
                         //TODO: not support now
+                        warn!("ndn_router:big container is not supported to be root obj");
+                        return Err(anyhow::anyhow!("ndn_router:big container is not supported to be root obj"));
                     } else {
                         let root_obj_json = real_named_mgr.get_object_impl(&the_root_obj_id, None).await?;
-                        let obj_filed = get_by_json_path(&root_obj_json, &inner_obj_path.clone().unwrap());
+                        let obj_filed = get_by_json_path(&root_obj_json, &_inner_obj_path.clone().unwrap());
                         if obj_filed.is_none() {
                             return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not valid"));
                         }
@@ -331,7 +338,6 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
                         inner_path_obj = Some(InnerPathInfo {
                             root_obj_id: the_root_obj_id,
                             inner_obj_path: the_inner_path.unwrap(),
-                            path_obj_jwt: path_obj_jwt,
                             mtree_path: None,
                         });
                     }
@@ -339,11 +345,12 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
             }
         } 
     }
-    let get_result:GetObjResult;
+
+    let mut get_result:GetObjResult;
     if obj_content.is_some() {
         //root_obj/inner_path = obj_content
         //get_result = get_obj_result(named_mgr2, &obj_id, start, inner_obj_p).await?;     
-        get_result = GetObjResult::new_value_result(obj_content.unwrap());  
+        get_result = GetObjResult::new_value_result(obj_id.unwrap(),obj_content.unwrap());  
     } else {
         if obj_id.is_none() {
             return Err(anyhow::anyhow!("ndn_router:failed to get obj id from request!,request.uri():{}",req.uri()));
@@ -351,6 +358,8 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
         let obj_id = obj_id.unwrap();
         get_result = get_obj_result(named_mgr2, &obj_id, start).await?;
     }
+    get_result.path_obj_jwt = path_obj_jwt;
+    //info!("ndn_router:get_result.path_obj_jwt {:?}", get_result.path_obj_jwt.as_ref());
     let response = build_response_by_obj_get_result(get_result, start,inner_path_obj).await?;
     Ok(response)
 }
@@ -393,7 +402,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ndn_basic_op() {
-        init_logging("ndn_client_test");
+        init_logging("ndn_client_test",false);
         let test_server_config = json!({
             "tls_port":3243,
             "http_port":3280,

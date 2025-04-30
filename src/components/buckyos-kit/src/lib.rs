@@ -10,6 +10,7 @@ mod config;
 mod channel;
 mod event;
 mod provider;
+mod machine_config;
 
 #[macro_use]
 extern crate log;
@@ -26,6 +27,7 @@ pub use config::*;
 pub use channel::*;
 pub use event::*;
 pub use provider::*;
+pub use machine_config::*;
 #[cfg(test)]
 mod test {
     use std::path::PathBuf;

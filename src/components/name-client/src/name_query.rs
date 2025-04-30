@@ -45,10 +45,10 @@ impl NameQuery {
         Err(NSError::NotFound(String::from(name)))
     }
 
-    pub async fn query_did(&self, did: &str) -> NSResult<EncodedDocument> {
+    pub async fn query_did(&self, did: &DID) -> NSResult<EncodedDocument> {
         let providers = self.providers.read().await;
         if providers.len() == 0 {
-            return Err(NSError::Failed(format!("no provider for {}", did)));
+            return Err(NSError::Failed(format!("no provider for {}", did.to_host_name())));
         }
 
         for provider in providers.iter() {
@@ -62,6 +62,6 @@ impl NameQuery {
                 }
             }
         }
-        Err(NSError::NotFound(String::from(did)))
+        Err(NSError::NotFound(did.to_host_name()))
     }
 }

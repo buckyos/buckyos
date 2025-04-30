@@ -1,8 +1,18 @@
-理解buckyos的身份体系
+# 理解buckyos的身份体系
+
+## 自验证流程
 
 objid->namedobject , hash验证,objid里是内容相关的，和授权部分（签名段）无关
-did->did_document ，授权验证（提供了可验证的身份体系），did_document中可以包含一个namedobject
+did->did_document ，授权验证（提供了可验证的身份体系）
 
+
+## 常见的业务验证需要
+
+一个业务在处理请求的时候，需要得到请求的下面关键要素
+- action
+- target resource path list
+- operation userid
+- operation appid
 
 OOD/设备启动的时候，首先就是要知道自己所在的zone情况
     通过阅读设备配置文件，可以知晓：自己所在的zoneid,设备的owner,设备本身的did/device_info,设备自己的私钥
@@ -17,11 +27,5 @@ OOD/设备启动的时候，首先就是要知道自己所在的zone情况
         黑客攻击得到了zone管理密钥：不会修改
 
         
-
-进行跨zone通信时的验证：可信的通过一个RLink下载文件
-    根据RLink得到FileObject
-    FileObject的Owner是zone-id
-    根据zone-id得到zone_config（注意验证），zone_owner_pk
-    用zone_owner_pk验证fileobject的签名
 
 

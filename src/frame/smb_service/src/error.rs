@@ -11,4 +11,5 @@ pub enum SmbErrorCode {
 }
 
 pub type SmbResult<T> = sfo_result::Result<T, SmbErrorCode>;
+#[allow(dead_code)]
 pub type SmbError = sfo_result::Error<SmbErrorCode>;

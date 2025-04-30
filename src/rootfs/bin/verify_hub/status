@@ -1,4 +1,4 @@
-#!/bin/python3
+#!/usr/bin/python3
 
 import os
 import sys
@@ -7,7 +7,8 @@ from scripts import util
 
 if __name__ == "__main__":
     process_name = "verify_hub"
-    if util.check_process_exists(process_name):
+    process_full_path = os.path.abspath(os.path.join(os.path.dirname(__file__), process_name))
+    if util.check_process_exists(process_full_path):
         if util.check_port(3300):
             print(f"{process_name} is running")
             exit(0)

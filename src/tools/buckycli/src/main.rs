@@ -1,26 +1,20 @@
 #[allow(unused_mut, dead_code, unused_variables)]
-extern crate core;
 mod package_cmd;
-mod util;
 mod sys_config;
-use std::path::Path;
 
+use std::path::Path;
 use buckyos_api::*;
 use clap::{Arg, Command};
-use name_lib::{decode_json_from_jwt_with_default_pk, DeviceConfig, CURRENT_DEVICE_CONFIG};
 use package_cmd::*;
-use crate::package_cmd::*;
-
-
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    buckyos_kit::init_logging("buckycli");
+    buckyos_kit::init_logging("buckycli",false);
 
     let matches = Command::new("buckyos control tool")
         .author("buckyos")
         .about("control tools")
-        .subcommand_required(true)
+        // .subcommand_required(true)  //  即可以subcommand也可以arg
         .arg_required_else_help(true)
         .arg(
             Arg::new("id")
@@ -51,8 +45,8 @@ async fn main() -> Result<(), String> {
                 )
                 .arg(
                     Arg::new("target_dir")
-                        .long("app_path")
-                        .help("app dir path")
+                        .long("target_dir")
+                        .help("app output dir,contain app doc and app sub pkgs")
                         .required(true),
                 )
         )
@@ -65,7 +59,7 @@ async fn main() -> Result<(), String> {
                 Arg::new("src_pkg_path")
                     .index(1)
                     .long("src_pkg_path")
-                    .help("source package path,which dir contain .pkg_meta.json")
+                    .help("source package path,which dir contain pkg_meta.json")
                     .required(true)
             ).arg(
                 Arg::new("target_path")
@@ -77,31 +71,60 @@ async fn main() -> Result<(), String> {
         )
         .subcommand(
             Command::new("install_pkg")
-                .about("install pkg")
+                .about("install pkg in current pkg env or target pkg env")
                 .arg(
-                    Arg::new("pkg_name")
-                        .long("pkg_name")
-                        .help("pkg name")
+                    Arg::new("pkg_id")
+                        .index(1)
+                        .long("pkg_id")
+                        .help("pkg id is pkg name with version")
+                        .required(true),
+                        
+                )
+                .arg(
+                    Arg::new("env")
+                        .long("env")
+                        .help("target env path, default is current dir")
+                        .required(false),
+                )
+        )
+        .subcommand(
+            Command::new("load_pkg")
+                .about("try load pkg in current pkg env,will return pkg media info")
+                .arg(
+                    Arg::new("pkg_id")
+                        .index(1)
+                        .long("pkg_id")
+                        .help("pkg id is pkg name with version")
                         .required(true),
                 )
                 .arg(
-                    Arg::new("version")
-                        .long("version")
-                        .help("index version")
+                    Arg::new("env")
+                        .long("env")
+                        .help("target env path, default is current dir")
+                        .required(false),
+                )
+        )
+        .subcommand(
+            Command::new("set_pkg_meta")
+                .about("set(add or update) pkg meta to meta-index-db")
+                .arg(
+                    Arg::new("meta_path")
+                        .index(1)
+                        .long("meta_path")
+                        .help("meta path")
                         .required(true),
                 )
                 .arg(
-                    Arg::new("dest_dir")
-                        .long("dest_dir")
-                        .help("dest dir")
+                    Arg::new("db_path")
+                        .index(2)
+                        .long("db_path")
+                        .help("db path")
                         .required(true),
                 )
-                .arg(
-                    Arg::new("url")
-                        .long("url")
-                        .help("local repo url")
-                        .required(true),
-                ),
+        )
+        .subcommand(
+            Command::new("update_index")
+                .about("update zone repo service's meta-index-db from remote source")
         )
         .subcommand(
             Command::new("connect")
@@ -117,29 +140,81 @@ async fn main() -> Result<(), String> {
                         .help("node_id in current machine, default 'node'")
                 )
         )
+        .arg(
+            Arg::new("get_config")
+                .long("get_config")
+                .value_name("key")                 // 控制占位符名称
+                .help("get system config, buckycli --get_config $key")
+        )
+        .arg(
+            Arg::new("set_config")
+                .long("set_config")
+                .value_name("key value")
+                .help("set system config,
+    buckycli --set_config $key $value
+    buckycli --set_config $key --file filename.")
+        )
+        .arg(
+            Arg::new("file")
+                .long("file")
+                .value_name("filename")
+                .num_args(1)
+                .help("set system config with file content. filename = file path.
+    buckycli --set_config $key --file filename")
+        )
         .get_matches();
+    
 
-    init_buckyos_api_by_load_config("buckyos-cli",BuckyOSRuntimeType::AppClient).await.map_err(|e| {
-        let err_msg = format!("init_global_buckyos_value_by_load_identity_configfailed! {}", e);
-        println!("{}", err_msg.as_str());
-        err_msg
+    let mut runtime = init_buckyos_api_runtime("buckycli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
+        println!("Failed to init buckyos runtime: {}", e);
+        return e.to_string();
     })?;
 
     //TODO: Support login to verify-hub via command line to obtain a valid session_token, to avoid requiring a private key locally
 
-
-    let buckyos_runtime = get_buckyos_api_runtime().unwrap();
-    let _session_token = buckyos_runtime.generate_session_token().await.map_err(|e| {
-        println!("Failed to get session token: {}", e);
+    runtime.login().await.map_err(|e| {
+        println!("Failed to login: {}", e);
         return e.to_string();
     })?;
+    set_buckyos_api_runtime(runtime);
+    let buckyos_runtime = get_buckyos_api_runtime().unwrap();
     let mut private_key = None;
-    println!("Connect to {:?} @ {:?}",buckyos_runtime.user_did,buckyos_runtime.zone_config.name);
+    let zone_host_name = buckyos_runtime.zone_id.to_host_name();
+    println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id,zone_host_name);
     if buckyos_runtime.user_private_key.is_some() {
         println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
-        private_key = Some((buckyos_runtime.user_did.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
+        private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
     }
 
+
+    // 如果有参数，而不是子命令
+    // eg. buckycli --get_config $key
+    if let Some(key) = matches.get_one::<String>("get_config") {
+        println!("Get config, key[{}]", key);
+        sys_config::get_config(key).await;
+        return Ok(());
+    }
+    if let Some(key) = matches.get_one::<String>("set_config") {
+        if let Some(file) = matches.get_one::<String>("file") {
+            // 读取文件内容
+            let content = std::fs::read_to_string(file)
+                .unwrap_or_else(|_| panic!("无法读取文件: {}", file));
+            sys_config::set_config(key, &content).await;
+            return Ok(());
+        }
+
+
+        let config_values: Vec<&String> = matches
+            .get_many::<String>("set_config")
+            .expect("必须提供 key 和 value 参数")
+            .collect();
+        let key = config_values[0];
+        let value = config_values[1];
+        sys_config::set_config(key, value).await;
+        return Ok(());
+    }
+
+    // 处理子命令
     match matches.subcommand() {
         Some(("version", _)) => {
             let version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");
@@ -199,7 +274,7 @@ async fn main() -> Result<(), String> {
         Some(("pub_app", matches)) => {
             let app_name = matches.get_one::<String>("app_name").unwrap();
             let app_dir_path = matches.get_one::<String>("target_dir").unwrap();
-            let pub_result = publish_app_pkg(app_name, app_dir_path,false).await;
+            let pub_result = publish_app_pkg(app_name, app_dir_path,true).await;
             if pub_result.is_err() {
                 println!("Publish app failed! {}", pub_result.err().unwrap());
                 return Err("publish app failed!".to_string());
@@ -219,13 +294,32 @@ async fn main() -> Result<(), String> {
                 }
             }
         }
+        Some(("set_pkg_meta", matches)) => {
+            let meta_path = matches.get_one::<String>("meta_path").unwrap();
+            let db_path = matches.get_one::<String>("db_path").unwrap();
+            let set_result = set_pkg_meta(meta_path, db_path).await;
+            if set_result.is_err() {
+                println!("Set pkg meta failed! {}", set_result.err().unwrap());
+                return Err("set pkg meta failed!".to_string());
+            }
+            println!("############\nSet pkg meta {} to db {} success!", meta_path, db_path);
+        }
         
         Some(("install_pkg", matches)) => {
-            let pkg_name = matches.get_one::<String>("pkg_name").unwrap();
-            let version = matches.get_one::<String>("version").unwrap();
-            let dest_dir = matches.get_one::<String>("dest_dir").unwrap();
-            let url = matches.get_one::<String>("url").unwrap();
-            match install_pkg(pkg_name, version, dest_dir, url).await {
+            let pkg_id = matches.get_one::<String>("pkg_id").unwrap();
+            let target_env = matches.get_one::<String>("env");
+            let real_target_env:String = if target_env.is_some() {
+                target_env.unwrap().to_string()
+            } else {
+                // 获取当前目录作为默认环境
+                std::env::current_dir()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string())
+            };
+
+            println!("start install pkg: {} to target env: {}", pkg_id, real_target_env.as_str());
+            
+            match install_pkg(pkg_id, real_target_env.as_str()).await {
                 Ok(_) => {
                     println!("############\nInstall package success!");
                 }
@@ -235,13 +329,38 @@ async fn main() -> Result<(), String> {
                 }
             }
         }
+        Some(("load_pkg", matches)) => {
+            let pkg_id = matches.get_one::<String>("pkg_id").unwrap();
+            let target_env = matches.get_one::<String>("env");
+            let real_target_env:String = if target_env.is_some() {
+                target_env.unwrap().to_string()
+            } else {
+                // 获取当前目录作为默认环境
+                std::env::current_dir()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string())
+            };
+
+            println!("start load pkg: {} to target env: {}", pkg_id, real_target_env.as_str());
+            let load_result = load_pkg(pkg_id, real_target_env.as_str()).await;
+            if load_result.is_err() {
+                println!("Load package failed! {}", load_result.err().unwrap());
+            }
+        }
         Some(("pub_index", _matches)) => {
-            let pub_result =publish_repo_index().await;
+            let pub_result = publish_repo_index().await;
             if pub_result.is_err() {
                 println!("Publish repo index failed! {}", pub_result.err().unwrap());
                 return Err("publish repo index failed!".to_string());
             }
             println!("############\nPublish repo index success!");
+        }
+        Some(("update_index", _matches)) => {
+            let sync_result = sync_from_remote_source().await;
+            if sync_result.is_err() {
+                println!("Sync from remote source failed! {}", sync_result.err().unwrap());
+                return Err("sync from remote source failed!".to_string());
+            }
         }
         Some(("connect", _matches)) => {
             sys_config::connect_into().await;

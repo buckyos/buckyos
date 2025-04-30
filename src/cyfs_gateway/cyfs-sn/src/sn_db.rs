@@ -206,9 +206,9 @@ mod tests {
     
     #[test]
     fn test_main() -> Result<()> {
-        //let base_dir = PathBuf::from("/opt/web3_bridge/");
-        //let db_path = base_dir.join("sn_db.sqlite3");
-        //println!("db_path: {}",db_path.to_str().unwrap());
+        let base_dir = PathBuf::from("/opt/web3_bridge/");
+        let db_path = base_dir.join("sn_db.sqlite3");
+        println!("db_path: {}",db_path.to_str().unwrap());
         //remove db file
         let _ = std::fs::remove_file(db_path);
 

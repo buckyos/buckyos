@@ -48,6 +48,14 @@ pub fn split_json_path(path: &str) -> Vec<String> {
         .collect()
 }
 
+// pub fn set_json_by_path(data: &mut Value, path: &str, value: Option<&Value>) {
+//     if value.is_some() {
+//         let _ = data.merge_in(path, &value.unwrap());
+//     } else {
+//         let _ = data.merge_in(path, &json!(null));
+//     }
+// } 
+
 pub fn set_json_by_path(data: &mut Value, path: &str, value: Option<&Value>) {
     // 使用新的路径解析方法
     let parts = split_json_path(path);

@@ -145,7 +145,7 @@ extern "C" fn bucky_status_scaner_scan(
 
                         for process in system.processes().values() {
                             #[cfg(windows)]
-                            let name = process.name().to_ascii_lowercase().to_str().unwrap().to_owned();
+                            let name = process.name().to_ascii_lowercase().to_owned();
                             #[cfg(not(any(windows, target_os = "macos")))]
                             let name = process.name().to_ascii_lowercase().into_string().unwrap();
 
@@ -557,7 +557,7 @@ async fn looking_zone_config(
         }
     }
 
-    let mut zone_did = node_identity.zone_name.clone();
+    let mut zone_did = name_lib::DID::undefined();
     log::info!(
         "node_identity.owner_public_key: {:?}",
         node_identity.owner_public_key
@@ -592,19 +592,24 @@ async fn looking_zone_config(
                 return "parse zone config failed!".to_string();
             })?;
 
-        zone_did = zone_config.did.clone();
-        zone_config.owner_name = Some(node_identity.owner_name.clone());
+        zone_did = zone_config.id.clone();
+        zone_config.name = Some(node_identity.owner_name.clone());
         zone_config.name = Some(node_identity.zone_name.clone());
         let zone_config_json = serde_json::to_value(zone_config).unwrap();
         let cache_did_doc = name_lib::EncodedDocument::JsonLd(zone_config_json);
-        name_client::add_did_cache(zone_did.as_str(), cache_did_doc)
+        name_client::add_did_cache(zone_did.clone(), cache_did_doc)
             .await
             .unwrap();
-        log::info!("add zone did {}  to cache success!", zone_did);
+        log::info!("add zone did {:?}  to cache success!", zone_did);
+    } else {
+        zone_did = name_lib::DID::from_str(node_identity.zone_name.as_str()).map_err(|err| {
+            log::error!("parse did failed! {}", err);
+            "parse did failed!".to_string()
+        })?;
     }
 
     //try load lasted document from name_lib
-    let zone_doc: name_lib::EncodedDocument = name_client::resolve_did(zone_did.as_str(), None)
+    let zone_doc: name_lib::EncodedDocument = name_client::resolve_did(&zone_did, None)
         .await
         .map_err(|err| {
             log::error!("resolve zone did failed! {}", err);
@@ -684,7 +689,7 @@ async fn select_node() -> Result<Option<NodeInfomationObj>, String> {
             String::from("load device private key failed!")
         })?;
         let device_session_token_jwt = device_session_token
-            .generate_jwt(Some(device_doc.did.clone()), &device_private_key)
+            .generate_jwt(Some(device_doc.id.to_string()), &device_private_key)
             .map_err(|err| {
                 log::error!("generate device session token failed! {}", err);
                 return String::from("generate device session token failed!");

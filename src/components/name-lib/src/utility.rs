@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv6Addr};
 use std::str::FromStr;
+use jsonwebtoken::jwk::Jwk;
 use tokio::net::UdpSocket;
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,8 @@ pub enum NSError {
     Failed(String),
     #[error("Invalid response")]
     InvalidData,
+    #[error("Invalid did: {0}")]
+    InvalidDID(String),
     #[error("{0} not found")]
     NotFound(String),
     #[error("decode txt record error")]
@@ -48,7 +51,7 @@ pub type NSResult<T> = Result<T, NSError>;
 pub fn is_did(identifier: &str) -> bool {
     if identifier.starts_with("did:") {
         let parts: Vec<&str> = identifier.split(':').collect();
-        return parts.len() == 3 && !parts[1].is_empty() && !parts[2].is_empty();
+        return parts.len() >= 3 && !parts[1].is_empty() && !parts[2].is_empty();
     }
     false
 }
@@ -205,7 +208,7 @@ pub fn generate_ed25519_key() -> (SigningKey, [u8;48]) {
 }
 
 // Encode the Ed25519 public key to a JWK
-pub fn encode_ed25519_sk_to_pk_jwt(sk: &SigningKey) -> serde_json::Value {
+pub fn encode_ed25519_sk_to_pk_jwk(sk: &SigningKey) -> serde_json::Value {
     let public_key_jwk = json!({
         "kty": "OKP",
         "crv": "Ed25519",
@@ -213,6 +216,18 @@ pub fn encode_ed25519_sk_to_pk_jwt(sk: &SigningKey) -> serde_json::Value {
     });
 
     public_key_jwk
+}
+
+pub fn ed25519_to_decoding_key(sk: &[u8;32]) -> NSResult<DecodingKey> {
+    let public_key = DecodingKey::from_ed_der(sk);
+    Ok(public_key)
+}
+
+pub fn jwk_to_ed25519_pk(jwk: &Jwk) -> NSResult<[u8;32]> {
+    let x = get_x_from_jwk(jwk)?;
+    let x_bytes = URL_SAFE_NO_PAD.decode(x).map_err(|_| NSError::Failed("jwk_to_ed25519_pk: Invalid x".to_string()))?;
+    let x_bytes = x_bytes.try_into().map_err(|_| NSError::Failed("jwk_to_ed25519_pk: Invalid x".to_string()))?;
+    Ok(x_bytes)
 }
 
 pub fn encode_ed25519_sk_to_pk(sk: &SigningKey) -> String {
@@ -235,7 +250,7 @@ pub fn generate_ed25519_key_pair() -> (String, serde_json::Value) {
         STANDARD.encode(&pkcs8_bytes)
     );
 
-    let public_key_jwk = encode_ed25519_sk_to_pk_jwt(&signing_key);
+    let public_key_jwk = encode_ed25519_sk_to_pk_jwk(&signing_key);
 
     (private_key_pem, public_key_jwk)
 }
@@ -344,7 +359,8 @@ mod test {
 
     #[test]
     fn test_load_pem_private_key() {
-        let private_key = load_raw_private_key("d:\\temp\\device_key.pem").unwrap();
+        let key_path = Path::new("d:\\temp\\device_key.pem");
+        let private_key = load_raw_private_key(&key_path).unwrap();
         println!("private_key: {:?}",private_key);
         let private_key_der = from_pkcs8(&private_key).unwrap();
         println!("private_key_der: {:?}",private_key_der);
@@ -373,8 +389,8 @@ mod test {
 
         //let sn_public_key 
         let did_str ="8vlobDX73HQj-w5TUjC_ynr_ljsWcDAgVOzsqXCw7no.dev.did";
-        let sn_did = DID::from_host_name(did_str).unwrap();
-        let sn_public_key = sn_did.get_auth_key().unwrap();
+        let sn_did = DID::from_str(did_str).unwrap();
+        let sn_public_key = sn_did.get_ed25519_auth_key().unwrap();
         println!("sn_public_key: {:?}",sn_public_key);
         let sn_x25519_public_key = ed25519_to_curve25519::ed25519_pk_to_curve25519(sn_public_key);
         println!("sn_x_public_key: {:?}",sn_x25519_public_key);

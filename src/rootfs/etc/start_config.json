@@ -1,21 +1,21 @@
 {
-    "admin_password_hash": "o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4=",
-    "device_private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG\n-----END PRIVATE KEY-----\n",
-    "device_public_key": {
-        "crv": "Ed25519",
-        "kty": "OKP",
-        "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
-    },
-    "friend_passcode": "sdfsdfsdf",
-    "gateway_type": "PortForward",
-    "guest_access": true,
-    "private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr\n-----END PRIVATE KEY-----\n",
-    "public_key": {
-        "crv": "Ed25519",
-        "kty": "OKP",
-        "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
-    },
-    "user_name": "devtest",
-    "zone_name": "test.buckyos.io",
-    "BUCKYOS_ROOT":"/opt/buckyos"
+  "BUCKYOS_ROOT": "/opt/buckyos",
+  "admin_password_hash": "o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4=",
+  "device_private_key": "\n-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp\n-----END PRIVATE KEY-----\n        ",
+  "device_public_key": {
+    "crv": "Ed25519",
+    "kty": "OKP",
+    "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
+  },
+  "friend_passcode": "sdfsdfsdf",
+  "gateway_type": "PortForward",
+  "guest_access": true,
+  "private_key": "\n-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr\n-----END PRIVATE KEY-----\n        ",
+  "public_key": {
+    "crv": "Ed25519",
+    "kty": "OKP",
+    "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
+  },
+  "user_name": "devtest",
+  "zone_name": "test.buckyos.io"
 }

@@ -3,9 +3,14 @@ import shutil
 import sys
 import tempfile
 import platform
+import platform
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 root_bin_dir = os.path.join(src_dir, "rootfs/bin")
+system = platform.system()
+ext = ""
+if system == "Windows":
+    ext = ".exe"
 system = platform.system()
 ext = ""
 if system == "Windows":
@@ -19,7 +24,7 @@ def strip_and_copy_rust_file(rust_target_dir, name, dest, need_dir=False):
     shutil.copy(src_file+ext, dest)
 
     # no need strip symbol on windows
-    if system == "Linux":
+    if system != "Windows":
         os.system(f"strip {os.path.join(dest, name)}")
 
 def copy_web_apps(src, target):
@@ -33,7 +38,7 @@ def copy_web_apps(src, target):
 def copy_files(rust_target_dir):
     print("Copying files...")
     # code to copy files
-    strip_and_copy_rust_file(rust_target_dir, "node_daemon", root_bin_dir)
+    strip_and_copy_rust_file(rust_target_dir, "node_daemon", root_bin_dir,True)
     strip_and_copy_rust_file(rust_target_dir, "system_config", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "verify_hub", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "scheduler", root_bin_dir, True)

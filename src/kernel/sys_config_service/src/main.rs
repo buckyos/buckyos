@@ -141,6 +141,8 @@ async fn handle_create(params:Value,session_token:&RPCSessionToken) -> Result<Va
     info!("Create key:[{}] to value:[{}]",key,new_value);
     store.create(key,new_value).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
+    //if key is boot/config,will update trust_keys
+
     return Ok(Value::Null);
 }
 
@@ -353,10 +355,52 @@ async fn handle_list(params:Value,session_token:&RPCSessionToken) -> Result<Valu
     Ok(Value::Array(result.iter().map(|v| Value::String(v.clone())).collect()))
 }
 
+async fn handle_refresh_trust_keys() -> Result<Value> {
+    let store = SYS_STORE.lock().await;
+    let zone_config = store.get("boot/config".to_string()).await;
+    if zone_config.is_ok() {
+        let zone_config = zone_config.unwrap();
+        if zone_config.is_some() {
+            let zone_config_str = zone_config.unwrap();
+            //info!("boot_info: {}",boot_info_str);
+            let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str).map_err(|err| {
+                error!("Failed to parse zone config from boot/config: {}",err);
+                RPCErrors::ReasonError(err.to_string())
+            })? ;
+
+            if zone_config.verify_hub_info.is_some() {
+                let verify_hub_info = zone_config.verify_hub_info.as_ref().unwrap();
+                let verify_hub_public_key = DecodingKey::from_jwk(&verify_hub_info.public_key).map_err(|err| {
+                    error!("Failed to parse verify_hub_public_key from zone_config: {}",err);
+                    RPCErrors::ReasonError(err.to_string())
+                })?;
+                TRUST_KEYS.lock().await.insert("verify-hub".to_string(),verify_hub_public_key.clone());
+                info!("update verify_hub_public_key to trust keys");
+            }
+            if zone_config.owner.is_some() {
+                let owner_key = zone_config.get_default_key();
+                let owner_did = zone_config.owner.as_ref().unwrap().clone();
+                if owner_key.is_some() {
+                    let owner_key = owner_key.unwrap();
+                    let owner_public_key = DecodingKey::from_jwk(&owner_key).map_err(|err| {
+                        error!("Failed to parse owner_public_key from zone_config: {}",err);
+                        RPCErrors::ReasonError(err.to_string())
+                    })?;
+                    TRUST_KEYS.lock().await.insert(owner_did.to_string(),owner_public_key.clone());
+                    TRUST_KEYS.lock().await.insert(owner_did.id.clone(),owner_public_key.clone());
+                    info!("update owner_public_key [{}],[{}] to trust keys",owner_did.to_string(),owner_did.id);
+                }
+            }
+            
+        }
+    }
+
+    Ok(Value::Null)
+}
 
 async fn dump_configs_for_scheduler(_params:Value,session_token:&RPCSessionToken) -> Result<Value> {
     let appid = session_token.appid.as_deref().unwrap();
-    if appid != "kernel" {
+    if appid != "scheduler" && appid != "kernel" {
         return Err(RPCErrors::NoPermission("No permission".to_string()));
     }
 
@@ -429,6 +473,9 @@ async fn process_request(method:String,param:Value,session_token:Option<String>)
             },
             "dump_configs_for_scheduler" => {
                 return dump_configs_for_scheduler(param,&rpc_session_token).await;
+            },
+            "sys_refresh_trust_keys" => {
+                return handle_refresh_trust_keys().await;
             },
             // Add more methods here
             _ => Err(RPCErrors::UnknownMethod(String::from(method))),
@@ -510,14 +557,19 @@ async fn init_by_boot_config()->Result<()> {
     if device_doc_str.is_ok() {
         let device_doc_str = device_doc_str.unwrap();
         let device_doc:DeviceConfig = serde_json::from_str(&device_doc_str).unwrap();
-        let device_key_str = serde_json::to_string(&device_doc.auth_key).unwrap();
-        let devcie_key = device_doc.get_auth_key();
+        //device_doc.iss
+        let devcie_key = device_doc.get_default_key();
+   
         if devcie_key.is_some() {
+
             let devcie_key = devcie_key.unwrap();
-            TRUST_KEYS.lock().await.insert(device_doc.name.clone(),devcie_key.clone());
+            let device_key_str = serde_json::to_string(&devcie_key).unwrap();
+            let real_key = DecodingKey::from_jwk(&devcie_key).unwrap();
+            TRUST_KEYS.lock().await.insert(device_doc.name.clone(),real_key.clone());
             info!("Insert device name:[{}] - key:[{}] to trust keys",device_doc.name,device_key_str);
-            TRUST_KEYS.lock().await.insert(device_doc.did.clone(),devcie_key);
-            info!("Insert device did:[{}] - key:[{}] to trust keys",device_doc.did,device_key_str);
+
+            TRUST_KEYS.lock().await.insert(device_doc.id.to_string(),real_key);
+            info!("Insert device did:[{}] - key:[{}] to trust keys",device_doc.id.to_string(),device_key_str);
         }
     } else {
         error!("Missing BUCKYOS_THIS_DEVICE");
@@ -527,38 +579,17 @@ async fn init_by_boot_config()->Result<()> {
         let zone_owner_key_str  = zone_owner_str.unwrap();
         let zone_owner_key : jsonwebtoken::jwk::Jwk = serde_json::from_str(&zone_owner_key_str).unwrap();
         let zone_owner_key = DecodingKey::from_jwk(&zone_owner_key).unwrap();
-        TRUST_KEYS.lock().await.insert("{owner}".to_string(),zone_owner_key.clone());
-        info!("Insert zone owner key:[{}] to trust keys",zone_owner_key_str);
+        TRUST_KEYS.lock().await.insert("root".to_string(),zone_owner_key.clone());
+        info!("Insert zone owner (root) key:[{}] to trust keys",zone_owner_key_str);
         //TRUST_KEYS.lock().await.insert("{owner}".to_string(),zone_owner_key);
     } else {
         error!("Missing BUCKY_ZONE_OWNER");
     }
-
-    let boot_info = store.get("boot/config".to_string()).await;
-    if boot_info.is_ok() {
-        let boot_info = boot_info.unwrap();
-        if boot_info.is_some() {
-            let boot_info_str = boot_info.unwrap();
-            //info!("boot_info: {}",boot_info_str);
-            let boot_info:Value = serde_json::from_str(&boot_info_str).unwrap();
-            let verify_hub_info = boot_info.get("verify_hub_info");
-            if verify_hub_info.is_some() {
-                let verify_hub_info = verify_hub_info.unwrap();
-            
-                let verify_hub_public_key = verify_hub_info.get("public_key");
-                if verify_hub_public_key.is_some() {
-                    let verify_hub_public_key = verify_hub_public_key.unwrap();
-                    let verify_hub_public_key:jsonwebtoken::jwk::Jwk = serde_json::from_value(verify_hub_public_key.clone()).unwrap();
-                    let verify_hub_public_key = DecodingKey::from_jwk(&verify_hub_public_key).unwrap();
-                    TRUST_KEYS.lock().await.insert("{verify_hub}".to_string(),verify_hub_public_key.clone());
-                    info!("Insert verify_hub_public_key to trust keys");
-                }
-            }
-        } else {
-            error!("Missing verify_hub_info in boot/config");
-        }
-    } else {
-        error!("Missing boot/config");
+    drop(store);
+    
+    let r = handle_refresh_trust_keys().await;
+    if r.is_err() {
+        error!("Failed to refresh trust keys: {}",r.err().unwrap());
     }
 
     Ok(())
@@ -594,16 +625,16 @@ async fn service_main() {
             Ok(result) => {
                 rpc_response = RPCResponse {
                     result: RPCResult::Success(result),
-                    seq: req.seq,
+                    seq: req.id,
                     token: None,
                     trace_id: req.trace_id.clone()
                 };
-                info!("<==|Response: OK {} {}", req.seq,req.trace_id.as_deref().unwrap_or(""));
+                info!("<==|Response: OK {} {}", req.id,req.trace_id.as_deref().unwrap_or(""));
             },
             Err(err) => {
                 rpc_response = RPCResponse {
                     result: RPCResult::Failed(err.to_string()),
-                    seq: req.seq,
+                    seq: req.id,
                     token: None,
                     trace_id: req.trace_id
                 };
