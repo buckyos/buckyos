@@ -113,6 +113,10 @@ pub fn set_buckyos_api_runtime(runtime: BuckyOSRuntime) {
     CURRENT_BUCKYOS_RUNTIME.set(runtime);
 }
 
+pub fn is_buckyos_api_runtime_set() -> bool {
+    CURRENT_BUCKYOS_RUNTIME.get().is_some()
+}
+
 pub fn get_full_appid(app_id: &str,owner_user_id: &str) -> String {
     format!("{}-{}",owner_user_id,app_id)
 }

@@ -4,8 +4,32 @@ mod sys_config;
 
 use std::path::Path;
 use buckyos_api::*;
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 use package_cmd::*;
+
+async fn login() -> Result<(), String> {
+    if !is_buckyos_api_runtime_set() {
+        let mut runtime = init_buckyos_api_runtime("buckycli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
+            println!("Failed to init buckyos runtime: {}", e);
+            return e.to_string();
+        })?;
+
+        runtime.login().await.map_err(|e| {
+            println!("Failed to login: {}", e);
+            return e.to_string();
+        })?;
+        set_buckyos_api_runtime(runtime);
+        let buckyos_runtime = get_buckyos_api_runtime().unwrap();
+        let mut private_key = None;
+        let zone_host_name = buckyos_runtime.zone_id.to_host_name();
+        println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id, zone_host_name);
+        if buckyos_runtime.user_private_key.is_some() {
+            println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
+            private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
+        }
+    }
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
@@ -33,6 +57,10 @@ async fn main() -> Result<(), String> {
                         .required(true)
                         .index(1)
                 )
+                .arg(Arg::new("login")
+                    .action(ArgAction::SetTrue)
+                    .default_value("true")
+                    .help("no need to set manually"))
         )
         .subcommand(
             Command::new("pub_app")
@@ -49,10 +77,18 @@ async fn main() -> Result<(), String> {
                         .help("app output dir,contain app doc and app sub pkgs")
                         .required(true),
                 )
+                .arg(Arg::new("login")
+                    .action(ArgAction::SetTrue)
+                    .default_value("true")
+                    .help("no need to set manually"))
         )
         .subcommand(
             Command::new("pub_index")
                 .about("let local repo publish wait-pub-pkg_meta_index database")
+                .arg(Arg::new("login")
+                    .action(ArgAction::SetTrue)
+                    .default_value("true")
+                    .help("no need to set manually"))
         )
         .subcommand(
             Command::new("pack_pkg").about("pack package").arg(
@@ -125,6 +161,10 @@ async fn main() -> Result<(), String> {
         .subcommand(
             Command::new("update_index")
                 .about("update zone repo service's meta-index-db from remote source")
+                .arg(Arg::new("login")
+                    .action(ArgAction::SetTrue)
+                    .default_value("true")
+                    .help("no need to set manually"))
         )
         .subcommand(
             Command::new("connect")
@@ -139,29 +179,17 @@ async fn main() -> Result<(), String> {
                         .long("node_id")
                         .help("node_id in current machine, default 'node'")
                 )
+                .arg(Arg::new("login")
+                    .action(ArgAction::SetTrue)
+                    .default_value("true")
+                    .help("no need to set manually"))
         )
         .get_matches();
-    
 
-    let mut runtime = init_buckyos_api_runtime("buckycli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
-        println!("Failed to init buckyos runtime: {}", e);
-        return e.to_string();
-    })?;
-
-    //TODO: Support login to verify-hub via command line to obtain a valid session_token, to avoid requiring a private key locally
-
-    runtime.login().await.map_err(|e| {
-        println!("Failed to login: {}", e);
-        return e.to_string();
-    })?;
-    set_buckyos_api_runtime(runtime);
-    let buckyos_runtime = get_buckyos_api_runtime().unwrap();
-    let mut private_key = None;
-    let zone_host_name = buckyos_runtime.zone_id.to_host_name();
-    println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id,zone_host_name);
-    if buckyos_runtime.user_private_key.is_some() {
-        println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
-        private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
+    if let Some((_, args)) = matches.subcommand() {
+        if args.get_flag("login") {
+            login().await?;
+        }
     }
 
     match matches.subcommand() {
@@ -176,8 +204,9 @@ async fn main() -> Result<(), String> {
             );
         }
         Some(("pub_pkg", matches)) => {
+            // need login
             let target_dir = matches.get_one::<String>("target_dir").unwrap();
-            //需要便利target_dir目录下的所有pkg，并发布
+            // 需要便利target_dir目录下的所有pkg，并发布
             // 遍历target_dir目录下的所有pkg目录
             let mut pkg_path_list = Vec::new();
             let target_path = Path::new(target_dir);
@@ -221,6 +250,7 @@ async fn main() -> Result<(), String> {
             println!("############\nPublish pkg success!");
         }
         Some(("pub_app", matches)) => {
+            // need login
             let app_name = matches.get_one::<String>("app_name").unwrap();
             let app_dir_path = matches.get_one::<String>("target_dir").unwrap();
             let pub_result = publish_app_pkg(app_name, app_dir_path,true).await;
@@ -232,7 +262,13 @@ async fn main() -> Result<(), String> {
         Some(("pack_pkg", matches)) => {
             let src_pkg_path = matches.get_one::<String>("src_pkg_path").unwrap();
             let target_path = matches.get_one::<String>("target_path").unwrap();
-
+            // only need optional user private key
+            let buckyos_runtime = get_buckyos_api_runtime().unwrap();
+            let mut private_key = None;
+            if buckyos_runtime.user_private_key.is_some() {
+                println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
+                private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
+            }
             match pack_raw_pkg(src_pkg_path, target_path,private_key).await {
                 Ok(_) => {
                     println!("############\nPack package success!");
@@ -297,6 +333,7 @@ async fn main() -> Result<(), String> {
             }
         }
         Some(("pub_index", _matches)) => {
+            // need login
             let pub_result = publish_repo_index().await;
             if pub_result.is_err() {
                 println!("Publish repo index failed! {}", pub_result.err().unwrap());
@@ -305,6 +342,7 @@ async fn main() -> Result<(), String> {
             println!("############\nPublish repo index success!");
         }
         Some(("update_index", _matches)) => {
+            // need login
             let sync_result = sync_from_remote_source().await;
             if sync_result.is_err() {
                 println!("Sync from remote source failed! {}", sync_result.err().unwrap());
@@ -312,6 +350,7 @@ async fn main() -> Result<(), String> {
             }
         }
         Some(("connect", _matches)) => {
+            // need login
             sys_config::connect_into().await;
         }
         _ => {
