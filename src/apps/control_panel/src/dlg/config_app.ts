@@ -31,7 +31,7 @@ export class ConfigAppContent extends LitElement {
 
   getAppConfig() : AppConfig | null {
     let app_config: AppConfig = {
-      app_id: this.app_doc.app_id,
+      app_id: this.app_doc.pkg_name,
       app_doc: this.app_doc,
       app_index: 3,
       enable: true,

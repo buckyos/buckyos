@@ -75,7 +75,7 @@ pub fn get_cyfs_resp_headers(headers:&HeaderMap)->NdnResult<CYFSHttpRespHeaders>
     }
 
     let mut real_path_obj_jwt = None;
-    let path_obj_jwt = headers.get("cyfs-path-obj ");
+    let path_obj_jwt = headers.get("cyfs-path-obj");
     if path_obj_jwt.is_some() {
         let path_obj_jwt = path_obj_jwt.unwrap().to_str().unwrap();
         real_path_obj_jwt = Some(path_obj_jwt.to_string());

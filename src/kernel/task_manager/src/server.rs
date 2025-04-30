@@ -28,45 +28,45 @@ impl TaskManagerServer {
             Value::Object(_) => req.params,
             _ => {
                 error!("Invalid params type");
-                return self.error(req.seq, "Invalid params type".to_string());
+                return self.error(req.id, "Invalid params type".to_string());
             }
         };
 
         let name = match params.get("name") {
             Some(Value::String(s)) => s,
             Some(_) => {
-                return self.error(req.seq, "'name' field is not a string".to_string());
+                return self.error(req.id, "'name' field is not a string".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'name' field in params".to_string());
+                return self.error(req.id, "Missing 'name' field in params".to_string());
             }
         };
         let title = match params.get("title") {
             Some(Value::String(s)) => s,
             Some(_) => {
-                return self.error(req.seq, "'title' field is not a string".to_string());
+                return self.error(req.id, "'title' field is not a string".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'title' field in params".to_string());
+                return self.error(req.id, "Missing 'title' field in params".to_string());
             }
         };
 
         let app_name = match params.get("app_name") {
             Some(Value::String(s)) => s,
             Some(_) => {
-                return self.error(req.seq, "'app_name' field is not a string".to_string());
+                return self.error(req.id, "'app_name' field is not a string".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'app_name' field in params".to_string());
+                return self.error(req.id, "Missing 'app_name' field in params".to_string());
             }
         };
         let task_type = match params.get("task_type") {
             Some(Value::String(s)) => s,
             Some(_) => {
-                return self.error(req.seq, "'task_type' field is not a string".to_string());
+                return self.error(req.id, "'task_type' field is not a string".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'task_type' field in params".to_string());
+                return self.error(req.id, "Missing 'task_type' field in params".to_string());
             }
         };
 
@@ -95,12 +95,12 @@ impl TaskManagerServer {
                         "code": "0",
                         "task_id": task_id
                     })),
-                    req.seq,
+                    req.id,
                 ));
             }
             Err(e) => {
                 let error_message = e.to_string();
-                return self.error(req.seq, error_message);
+                return self.error(req.id, error_message);
             }
         }
     }
@@ -114,17 +114,17 @@ impl TaskManagerServer {
             Value::Object(_) => req.params,
             _ => {
                 error!("Invalid params type");
-                return self.error(req.seq, "Invalid params type".to_string());
+                return self.error(req.id, "Invalid params type".to_string());
             }
         };
 
         let id = match params.get("id") {
             Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
-                return self.error(req.seq, "'id' field is not a number".to_string());
+                return self.error(req.id, "'id' field is not a number".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'id' field in params".to_string());
+                return self.error(req.id, "Missing 'id' field in params".to_string());
             }
         };
 
@@ -138,15 +138,15 @@ impl TaskManagerServer {
                         "code": "0",
                         "task": task_json
                     })),
-                    req.seq,
+                    req.id,
                 ));
             }
             Ok(None) => {
-                return self.error(req.seq, format!("Task with id {} not found", id));
+                return self.error(req.id, format!("Task with id {} not found", id));
             }
             Err(e) => {
                 let error_message = e.to_string();
-                return self.error(req.seq, error_message);
+                return self.error(req.id, error_message);
             }
         }
     }
@@ -160,7 +160,7 @@ impl TaskManagerServer {
             Value::Object(_) => req.params,
             _ => {
                 error!("Invalid params type");
-                return self.error(req.seq, "Invalid params type".to_string());
+                return self.error(req.id, "Invalid params type".to_string());
             }
         };
 
@@ -175,7 +175,7 @@ impl TaskManagerServer {
             match TaskStatus::from_str(status_str) {
                 Ok(status) => db_manager.list_tasks_by_status(status).await,
                 Err(_) => {
-                    return self.error(req.seq, format!("Invalid status: {}", status_str));
+                    return self.error(req.id, format!("Invalid status: {}", status_str));
                 }
             }
         } else {
@@ -190,12 +190,12 @@ impl TaskManagerServer {
                         "code": "0",
                         "tasks": tasks_json
                     })),
-                    req.seq,
+                    req.id,
                 ));
             }
             Err(e) => {
                 let error_message = e.to_string();
-                return self.error(req.seq, error_message);
+                return self.error(req.id, error_message);
             }
         }
     }
@@ -209,34 +209,34 @@ impl TaskManagerServer {
             Value::Object(_) => req.params,
             _ => {
                 error!("Invalid params type");
-                return self.error(req.seq, "Invalid params type".to_string());
+                return self.error(req.id, "Invalid params type".to_string());
             }
         };
 
         let id = match params.get("id") {
             Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
-                return self.error(req.seq, "'id' field is not a number".to_string());
+                return self.error(req.id, "'id' field is not a number".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'id' field in params".to_string());
+                return self.error(req.id, "Missing 'id' field in params".to_string());
             }
         };
 
         let status_str = match params.get("status") {
             Some(Value::String(s)) => s,
             Some(_) => {
-                return self.error(req.seq, "'status' field is not a string".to_string());
+                return self.error(req.id, "'status' field is not a string".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'status' field in params".to_string());
+                return self.error(req.id, "Missing 'status' field in params".to_string());
             }
         };
 
         let status = match TaskStatus::from_str(status_str) {
             Ok(status) => status,
             Err(_) => {
-                return self.error(req.seq, format!("Invalid status: {}", status_str));
+                return self.error(req.id, format!("Invalid status: {}", status_str));
             }
         };
 
@@ -249,12 +249,12 @@ impl TaskManagerServer {
                         "code": "0",
                         "message": "Task status updated successfully"
                     })),
-                    req.seq,
+                    req.id,
                 ));
             }
             Err(e) => {
                 let error_message = e.to_string();
-                return self.error(req.seq, error_message);
+                return self.error(req.id, error_message);
             }
         }
     }
@@ -268,37 +268,37 @@ impl TaskManagerServer {
             Value::Object(_) => req.params,
             _ => {
                 error!("Invalid params type");
-                return self.error(req.seq, "Invalid params type".to_string());
+                return self.error(req.id, "Invalid params type".to_string());
             }
         };
 
         let id = match params.get("id") {
             Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
-                return self.error(req.seq, "'id' field is not a number".to_string());
+                return self.error(req.id, "'id' field is not a number".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'id' field in params".to_string());
+                return self.error(req.id, "Missing 'id' field in params".to_string());
             }
         };
 
         let completed_items = match params.get("completed_items") {
             Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
-                return self.error(req.seq, "'completed_items' field is not a number".to_string());
+                return self.error(req.id, "'completed_items' field is not a number".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'completed_items' field in params".to_string());
+                return self.error(req.id, "Missing 'completed_items' field in params".to_string());
             }
         };
 
         let total_items = match params.get("total_items") {
             Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
-                return self.error(req.seq, "'total_items' field is not a number".to_string());
+                return self.error(req.id, "'total_items' field is not a number".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'total_items' field in params".to_string());
+                return self.error(req.id, "Missing 'total_items' field in params".to_string());
             }
         };
 
@@ -317,12 +317,12 @@ impl TaskManagerServer {
                         "code": "0",
                         "message": "Task progress updated successfully"
                     })),
-                    req.seq,
+                    req.id,
                 ));
             }
             Err(e) => {
                 let error_message = e.to_string();
-                return self.error(req.seq, error_message);
+                return self.error(req.id, error_message);
             }
         }
     }
@@ -336,27 +336,27 @@ impl TaskManagerServer {
             Value::Object(_) => req.params,
             _ => {
                 error!("Invalid params type");
-                return self.error(req.seq, "Invalid params type".to_string());
+                return self.error(req.id, "Invalid params type".to_string());
             }
         };
 
         let id = match params.get("id") {
             Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
-                return self.error(req.seq, "'id' field is not a number".to_string());
+                return self.error(req.id, "'id' field is not a number".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'id' field in params".to_string());
+                return self.error(req.id, "Missing 'id' field in params".to_string());
             }
         };
 
         let error_message = match params.get("error_message") {
             Some(Value::String(s)) => s,
             Some(_) => {
-                return self.error(req.seq, "'error_message' field is not a string".to_string());
+                return self.error(req.id, "'error_message' field is not a string".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'error_message' field in params".to_string());
+                return self.error(req.id, "Missing 'error_message' field in params".to_string());
             }
         };
 
@@ -369,12 +369,12 @@ impl TaskManagerServer {
                         "code": "0",
                         "message": "Task error updated successfully"
                     })),
-                    req.seq,
+                    req.id,
                 ));
             }
             Err(e) => {
                 let error_message = e.to_string();
-                return self.error(req.seq, error_message);
+                return self.error(req.id, error_message);
             }
         }
     }
@@ -388,17 +388,17 @@ impl TaskManagerServer {
             Value::Object(_) => req.params,
             _ => {
                 error!("Invalid params type");
-                return self.error(req.seq, "Invalid params type".to_string());
+                return self.error(req.id, "Invalid params type".to_string());
             }
         };
 
         let id = match params.get("id") {
             Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
-                return self.error(req.seq, "'id' field is not a number".to_string());
+                return self.error(req.id, "'id' field is not a number".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'id' field in params".to_string());
+                return self.error(req.id, "Missing 'id' field in params".to_string());
             }
         };
 
@@ -406,10 +406,10 @@ impl TaskManagerServer {
             Some(Value::String(s)) => s.to_string(),
             Some(Value::Object(o)) => serde_json::to_string(o).unwrap(),
             Some(_) => {
-                return self.error(req.seq, "'data' field is not a string or object".to_string());
+                return self.error(req.id, "'data' field is not a string or object".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'data' field in params".to_string());
+                return self.error(req.id, "Missing 'data' field in params".to_string());
             }
         };
 
@@ -422,12 +422,12 @@ impl TaskManagerServer {
                         "code": "0",
                         "message": "Task data updated successfully"
                     })),
-                    req.seq,
+                    req.id,
                 ));
             }
             Err(e) => {
                 let error_message = e.to_string();
-                return self.error(req.seq, error_message);
+                return self.error(req.id, error_message);
             }
         }
     }
@@ -441,17 +441,17 @@ impl TaskManagerServer {
             Value::Object(_) => req.params,
             _ => {
                 error!("Invalid params type");
-                return self.error(req.seq, "Invalid params type".to_string());
+                return self.error(req.id, "Invalid params type".to_string());
             }
         };
 
         let id = match params.get("id") {
             Some(Value::Number(n)) => n.as_i64().unwrap(),
             Some(_) => {
-                return self.error(req.seq, "'id' field is not a number".to_string());
+                return self.error(req.id, "'id' field is not a number".to_string());
             }
             None => {
-                return self.error(req.seq, "Missing 'id' field in params".to_string());
+                return self.error(req.id, "Missing 'id' field in params".to_string());
             }
         };
 
@@ -464,12 +464,12 @@ impl TaskManagerServer {
                         "code": "0",
                         "message": "Task deleted successfully"
                     })),
-                    req.seq,
+                    req.id,
                 ));
             }
             Err(e) => {
                 let error_message = e.to_string();
-                return self.error(req.seq, error_message);
+                return self.error(req.id, error_message);
             }
         }
     }
@@ -483,7 +483,7 @@ impl TaskManagerServer {
 }
 
 #[async_trait]
-impl kRPCHandler for TaskManagerServer {
+impl InnerServiceHandler for TaskManagerServer {
     async fn handle_rpc_call(
         &self,
         req: RPCRequest,
@@ -501,6 +501,10 @@ impl kRPCHandler for TaskManagerServer {
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }
     }
+    
+    async fn handle_http_get(&self, req_path:&str,_ip_from:IpAddr) -> Result<String,RPCErrors> {
+        return Err(RPCErrors::UnknownMethod(req_path.to_string()));
+    }
 }
 
 pub async fn start_task_manager_service() {
@@ -514,7 +518,7 @@ pub async fn start_task_manager_service() {
         "*": {
           "enable_cors":true,
           "routes": {
-            "/kapi/task_manager" : {
+            "/kapi/task-manager" : {
                 "inner_service":"task_manager"
             }
           }
@@ -544,7 +548,7 @@ mod tests {
         RPCRequest {
             method: method.to_string(),
             params,
-            seq: 1,
+            id: 1,
             token: Some("".to_string()),
             trace_id: Some("".to_string()),
         }

@@ -1,0 +1,22 @@
+{
+    "pkg_name": "node_daemon",
+    "version": "0.4.0",
+    "author": "buckyos.io",
+    "description": {
+        "detail": "node daemon"
+    },
+    "deps": {
+        "app_loader": "*",
+        "control_panel": "*",
+        "cyfs_gateway": "*",
+        "node_active": "*",
+        "repo_service": "*",
+        "scheduler": "*",
+        "smb_service": "*",
+        "sys_test": "*",
+        "system_config": "*",
+        "verify_hub": "*"
+    },
+    "category": "sys_module",
+    "pub_time": 1742410439
+}

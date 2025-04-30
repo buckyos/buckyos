@@ -32,11 +32,11 @@ use crate::ndn_router::*;
 use crate::*;
 
 lazy_static!{
-    static ref INNER_SERVICES_BUILDERS: Arc<Mutex< HashMap<String, Arc<dyn Fn () -> Box<dyn kRPCHandler + Send + Sync>+ Send + Sync>>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref INNER_SERVICES_BUILDERS: Arc<Mutex< HashMap<String, Arc<dyn Fn () -> Box<dyn InnerServiceHandler + Send + Sync>+ Send + Sync>>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 pub async fn register_inner_service_builder<F>(inner_service_name: &str, constructor : F)
-    where F: Fn () -> Box<dyn kRPCHandler + Send + Sync> + 'static + Send + Sync,
+    where F: Fn () -> Box<dyn InnerServiceHandler + Send + Sync> + 'static + Send + Sync,
 {
     let mut inner_service_builder = INNER_SERVICES_BUILDERS.lock().await;
     inner_service_builder.insert(inner_service_name.to_string(), Arc::new(constructor));
@@ -58,7 +58,7 @@ impl Clone for Router {
 
 struct RouterInner {
     hosts: RwLock<HashMap<String, HashMap<String, Arc<RouteConfig>> >>,
-    inner_service: OnceCell<Box<dyn kRPCHandler + Send + Sync> >,
+    inner_service: OnceCell<Box<dyn InnerServiceHandler + Send + Sync> >,
 }
 
 impl Router {
@@ -163,7 +163,7 @@ impl Router {
         let (route_path, route_config) = route_config.unwrap();
         debug!("route_config: {:?}", route_config);
 
-        match &*route_config {
+        let real_resp = match &*route_config {
             RouteConfig {
                 response: Some(response),
                 ..
@@ -218,7 +218,16 @@ impl Router {
                 header.insert(hyper::header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("Content-Type, Authorization"));
             }
             resp
-        })
+        });
+
+        if real_resp.is_err() {
+            let err_msg = real_resp.as_ref().unwrap_err().to_string();
+            error!("{} <==| {}",client_ip.to_string(),err_msg);
+        } else {
+            info!("{} <==| {}",client_ip.to_string(),real_resp.as_ref().unwrap().status());
+        }
+
+        return real_resp;
     }
 
 
@@ -229,6 +238,10 @@ impl Router {
         if inner_service.is_none() {
             let inner_service_builder_map = INNER_SERVICES_BUILDERS.lock().await;
             let inner_service_builder = inner_service_builder_map.get(inner_service_name);
+            if inner_service_builder.is_none() {
+                return Err(anyhow::anyhow!("Inner service not found: {}", inner_service_name));
+            }
+
             let inner_service_builder = inner_service_builder.unwrap();
             let inner_service = inner_service_builder();
             let _ =self.inner.inner_service.set(inner_service);
@@ -237,24 +250,42 @@ impl Router {
             true_service = inner_service.unwrap();
         }
 
-        let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
-            anyhow::anyhow!("Failed to read body: {}", e)
-        })?;
+        //先判断请求的类型，有2种，1种是标准的krpc请求，另一种是标准的HTTP RESETful API请求
+        let method = req.method();
+        match *method {
+            hyper::Method::POST => {
+                let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
+                    anyhow::anyhow!("Failed to read body: {}", e)
+                })?;
 
-        let body_str = String::from_utf8(body_bytes.to_vec()).map_err(|e| {
-            anyhow::anyhow!("Failed to convert body to string: {}", e)
-        })?;
+                let body_str = String::from_utf8(body_bytes.to_vec()).map_err(|e| {
+                    anyhow::anyhow!("Failed to convert body to string: {}", e)
+                })?;
 
-        info!("|==>recv kRPC req: {}",body_str);
+                info!("|==>recv kRPC req: {}",body_str);
 
-        //parse req to RPCRequest
-        let rpc_request: RPCRequest = serde_json::from_str(body_str.as_str()).map_err(|e| {
-            anyhow::anyhow!("Failed to parse request body to RPCRequest: {}", e)
-        })?;
+                //parse req to RPCRequest
+                let rpc_request: RPCRequest = serde_json::from_str(body_str.as_str()).map_err(|e| {
+                    anyhow::anyhow!("Failed to parse request body to RPCRequest: {}", e)
+                })?;
 
-        let resp = true_service.handle_rpc_call(rpc_request,client_ip).await?;
-        //parse resp to Response<Body>
-        Ok(Response::new(Body::from(serde_json::to_string(&resp)?)))
+                let resp = true_service.handle_rpc_call(rpc_request,client_ip).await?;
+                //parse resp to Response<Body>
+                Ok(Response::new(Body::from(serde_json::to_string(&resp)?)))
+            }
+            hyper::Method::GET => {
+                let resp = true_service.handle_http_get(req.uri().path(),client_ip).await;
+                if resp.is_err() {
+                    return Err(anyhow::anyhow!("Failed to handle http get: {}", resp.as_ref().unwrap_err()));
+                }
+                let resp = resp.unwrap();
+                Ok(Response::new(Body::from(resp)))
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Not supported request method: {}", req.method()));
+            }
+        }
+        
     }
 
     async fn handle_upstream_selector(&self, selector_id:&str,req: Request<Body>,host:&str, client_ip:IpAddr) -> Result<Response<Body>> {
@@ -265,7 +296,7 @@ impl Router {
             let req_path = req.uri().path();
             let tunnel_url = sn_server.select_tunnel_for_http_upstream(host,req_path).await;
             if tunnel_url.is_some() {
-                let tunnel_url   = tunnel_url.unwrap();
+                let tunnel_url = tunnel_url.unwrap();
                 info!("select tunnel: {}",tunnel_url.as_str());
                 return self.handle_upstream(req, &UpstreamRouteConfig{target:tunnel_url, redirect:RedirectType::None}).await;
             }
@@ -278,7 +309,8 @@ impl Router {
 
     async fn handle_upstream(&self, req: Request<Body>, upstream: &UpstreamRouteConfig) -> Result<Response<Body>> {
         let org_url = req.uri().to_string();
-        let url = format!("{}{}", upstream.target, req.uri().path_and_query().map_or("", |x| x.as_str()));
+        let url = format!("{}{}", upstream.target, org_url);
+        info!("handle_upstream url: {}", url);
         let upstream_url = Url::parse(upstream.target.as_str());
         if upstream_url.is_err() {
             return Err(anyhow::anyhow!("Failed to parse upstream url: {}", upstream_url.err().unwrap()));
@@ -319,15 +351,24 @@ impl Router {
                 }
             },
             _ => {
-                let tunnel_connector = TunnelConnector;
+                let tunnel_connector = TunnelConnector {
+                    target_stream_url: upstream.target.clone(),
+                };
+
                 let client: Client<TunnelConnector, Body> = Client::builder()
                     .build::<_, hyper::Body>(tunnel_connector);
 
                 let header = req.headers().clone();
+                let mut host_name = "127.0.0.1".to_string();
+                let hname =  req.headers().get("host");
+                if hname.is_some() {
+                    host_name = hname.unwrap().to_str().unwrap().to_string();
+                }
+                let fake_url = format!("http://{}{}", host_name, org_url);
                 let mut upstream_req = Request::builder()
-                .method(req.method())
-                .uri(&org_url)
-                .body(req.into_body())?;
+                    .method(req.method())
+                    .uri(fake_url)
+                    .body(req.into_body())?;
 
                 *upstream_req.headers_mut() = header;
                 let resp = client.request(upstream_req).await?;
@@ -405,3 +446,67 @@ impl Router {
     }
 }
 
+pub struct SNIResolver {
+    configs: HashMap<String, Arc<ServerConfig>>,
+}
+
+impl SNIResolver {
+    pub fn new(configs: HashMap<String, Arc<ServerConfig>>) -> Self {
+        SNIResolver { configs }
+    }
+
+    fn get_config_by_host(&self,host:&str) -> Option<&Arc<ServerConfig>> {
+        let host_config = self.configs.get(host);
+        if host_config.is_some() {
+            debug!("find tls config for host: {}",host);
+            return host_config;
+        }
+
+        for (key,value) in self.configs.iter() {
+            if key.starts_with("*.") {
+                if host.ends_with(&key[2..]) {
+                    debug!("find tls config for host: {} ==> key:{}",host,key);
+                    return Some(value);
+                }
+            }
+        }
+
+        return self.configs.get("*");
+    }
+}
+
+impl rustls::server::ResolvesServerCert for SNIResolver {
+    fn resolve(&self, client_hello: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        let server_name = client_hello.server_name();
+        if server_name.is_none() {
+            warn!("No server name found in sni-client hello");
+            return None;
+        }
+        let server_name = server_name.unwrap();
+        debug!("try reslove tls certifiled key for : {}", server_name);
+
+        let config = self.get_config_by_host(&server_name);
+        if config.is_some() {
+            return config.unwrap().cert_resolver.resolve(client_hello);
+        } else {
+            warn!("No tls config found for server_name: {}", server_name);
+            return None;
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parser_stream_url() {
+        let stream_url = "rtcp://sdSKcMuxU_BtGAvqs729BIBwe5H9Jo3T_wj4GdRgCfE.dev.did/:80/static/index.html";
+        let url = Url::parse(stream_url).unwrap();
+        println!("url.path: {}", url.path());
+        assert_eq!(url.scheme(), "rtcp");
+        assert_eq!(url.host_str(), Some("sdSKcMuxU_BtGAvqs729BIBwe5H9Jo3T_wj4GdRgCfE.dev.did"));
+        assert_eq!(url.port(),None);
+    }
+}

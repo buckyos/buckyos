@@ -92,7 +92,7 @@ impl Tunnel for SocksTunnel {
     ) -> Result<Box<dyn AsyncStream>, std::io::Error> {
         debug!("socks_tunnel open_stream_by_dest: {:?}:{}", dest_host, dest_port);
         // FIXME what should we do if dest_host is None or the port is 0?
-        let dest_host = dest_host.unwrap_or("0.0.0.0".to_string());
+        let dest_host = dest_host.unwrap_or("127.0.0.1".to_string());
         let dest_port = if dest_port == 0 { 80 } else { dest_port };
 
         match self.socks_server {

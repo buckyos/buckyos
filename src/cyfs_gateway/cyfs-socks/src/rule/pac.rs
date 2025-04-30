@@ -688,7 +688,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pac_script_manager() {
-        buckyos_kit::init_logging("test_pac_script_manager");
+        buckyos_kit::init_logging("test_pac_script_manager",false);
 
         let src = r#"
             Math.abs(-1);

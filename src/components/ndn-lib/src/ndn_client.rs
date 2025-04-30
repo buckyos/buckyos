@@ -1,5 +1,5 @@
 use buckyos_kit::get_relative_path;
-use name_lib::{decode_json_from_jwt_with_pk, decode_jwt_claim_without_verify};
+use name_lib::{decode_json_from_jwt_with_pk, decode_jwt_claim_without_verify, DID};
 use name_client::resolve_auth_key;
 use tokio::io::{AsyncRead,AsyncWrite,AsyncWriteExt,AsyncReadExt};
 use url::Url;
@@ -155,7 +155,7 @@ impl NdnClient {
         let head_res = client.head(&chunk_url)
             .send()
             .await
-            .map_err(|e| NdnError::GetFromRemoteError(format!("HEAD request failed: {}", e)))?;
+            .map_err(|e| NdnError::RemoteError(format!("HEAD request failed: {}", e)))?;
         debug!("SEND HEAD request, head_res:{}",head_res.status());
         // 如果chunk已存在，则不需要再次上传
         match head_res.status() {
@@ -169,7 +169,7 @@ impl NdnClient {
                 return Ok(ChunkState::Incompleted);
             },
             _ => {
-                return Err(NdnError::GetFromRemoteError(format!("HEAD request failed: {}", head_res.status())));
+                return Err(NdnError::RemoteError(format!("HEAD request failed: {}", head_res.status())));
             }
         }
     }       
@@ -178,7 +178,8 @@ impl NdnClient {
         let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.default_ndn_mgr_id.as_deref()).await
             .ok_or_else(|| NdnError::Internal("No named data manager available".to_string()))?;
         let real_named_mgr = named_mgr.lock().await;
-        let (mut chunk_reader,len) = real_named_mgr.open_chunk_reader(&chunk_id,SeekFrom::Start(0),false).await?;
+        let (mut chunk_reader,len) = real_named_mgr.open_chunk_reader_impl(&chunk_id,SeekFrom::Start(0),false).await?;
+        debug!("push_chunk:local chunk_reader open success");
         drop(real_named_mgr);
         
         let chunk_url;
@@ -190,6 +191,7 @@ impl NdnClient {
 
         let chunk_state = self.query_chunk_state(chunk_id,Some(chunk_url.clone())).await?;
         if chunk_state == ChunkState::Completed {
+            info!("push_chunk:remote chunk already exists, skip");
             return Ok(());
         }
 
@@ -203,17 +205,17 @@ impl NdnClient {
             .map_err(|e| NdnError::Internal(format!("Failed to create client: {}", e)))?;
 
         let stream = tokio_util::io::ReaderStream::new(chunk_reader);
-        debug!("SEND PUT request, chunk_url:{}",chunk_url);
+        info!("SEND PUT chunk request, chunk_url:{}",chunk_url);
         let res = client.put(chunk_url.clone())
             .header("Content-Type", "application/octet-stream")
             .header("cyfs-chunk-size", len.to_string())
             .body(Body::wrap_stream(stream))
             .send()
             .await
-            .map_err(|e| NdnError::GetFromRemoteError(format!("Request failed: {}", e)))?;
+            .map_err(|e| NdnError::RemoteError(format!("Request failed: {}", e)))?;
 
         if !res.status().is_success() {
-            return Err(NdnError::GetFromRemoteError(
+            return Err(NdnError::RemoteError(
                 format!("HTTP error: {} for {}", res.status(), chunk_url)
             ));
         }
@@ -241,20 +243,21 @@ impl NdnClient {
         let res = client.get(url)
             .send()
             .await
-            .map_err(|e| NdnError::GetFromRemoteError(format!("Request failed: {}", e)))?;
+            .map_err(|e| NdnError::RemoteError(format!("Request failed: {}", e)))?;
         
         if !res.status().is_success() {
-            return Err(NdnError::GetFromRemoteError(
+            return Err(NdnError::RemoteError(
                 format!("HTTP error: {} for {}", res.status(), url)
             ));
         }
         
         let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
+        debug!("get_obj_by_url : cyfs_resp_headers {:?}",cyfs_resp_headers);
         // 获取响应内容
         let obj_str = res.text()
             .await
-            .map_err(|e| NdnError::GetFromRemoteError(format!("Failed to read response body: {}", e)))?;
-        //info!(":=>RESP obj_content: {}",obj_str);
+            .map_err(|e| NdnError::RemoteError(format!("Failed to read response body: {}", e)))?;
+        debug!("get_obj_by_url => RESP : {}",obj_str);
        
         if known_obj_id.is_some() {
             let known_obj_id = known_obj_id.unwrap();
@@ -294,7 +297,7 @@ impl NdnClient {
             let real_target_obj = NdnClient::verify_obj_id(&obj_id,&obj_str)?;
             //let real_path = 
 
-            if url.starts_with("https://")  || self.force_trust_remote {
+            if url.starts_with("http://127.0.0.1/") || url.starts_with("https://")  || self.force_trust_remote {
                 return Ok((obj_id,real_target_obj));
             }
 
@@ -338,7 +341,12 @@ impl NdnClient {
                     return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
                 }
             }
-            let pk = resolve_auth_key(url).await
+            let did = DID::from_str(url);
+            if did.is_err() {
+                return Err(NdnError::InvalidId("invalid did".to_string()));
+            }
+            let did = did.unwrap();
+            let pk = resolve_auth_key(&did,None).await
                 .map_err(|e|NdnError::InvalidId(format!("resolve auth key failed:{}",e.to_string())))?;
             //veirfy path_obj is signed by pk
             let path_obj_result = decode_json_from_jwt_with_pk(&path_obj_jwt,&pk);
@@ -377,17 +385,17 @@ impl NdnClient {
         let res = client.get(chunk_url)
             .send()
             .await
-            .map_err(|e| NdnError::GetFromRemoteError(format!("Request failed: {}", e)))?;
+            .map_err(|e| NdnError::RemoteError(format!("Request failed: {}", e)))?;
         
         if !res.status().is_success() {
-            return Err(NdnError::GetFromRemoteError(
+            return Err(NdnError::RemoteError(
                 format!("HTTP error: {} for {}", res.status(), chunk_url)
             ));
         }
         let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
         let content_length = res.content_length();
         if content_length.is_none() {
-            return Err(NdnError::GetFromRemoteError(format!("content length not found for {}", chunk_url)));
+            return Err(NdnError::RemoteError(format!("content length not found for {}", chunk_url)));
         }
         let content_length = content_length.unwrap();
 
@@ -472,7 +480,12 @@ impl NdnClient {
                     return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
                 }
             }
-            let pk = resolve_auth_key(chunk_url).await
+            let did = DID::from_str(chunk_url);
+            if did.is_err() {
+                return Err(NdnError::InvalidId("invalid did".to_string()));
+            }
+            let did = did.unwrap();
+            let pk = resolve_auth_key(&did,None).await
                 .map_err(|e|NdnError::InvalidId(format!("resolve auth key failed:{}",e.to_string())))?;
             //veirfy path_obj is signed by pk
             let path_obj_result = decode_json_from_jwt_with_pk(&path_obj_jwt,&pk);
@@ -506,9 +519,10 @@ impl NdnClient {
         let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.default_ndn_mgr_id.as_deref()).await
             .ok_or_else(|| NdnError::Internal("No named data manager available".to_string()))?;
         let real_named_mgr = named_mgr.lock().await;
-        let (mut chunk_reader, chunk_size) = real_named_mgr.open_chunk_reader(&chunk_id, SeekFrom::Start(0), true).await
+        let (mut chunk_reader, chunk_size) = real_named_mgr.open_chunk_reader_impl(&chunk_id, SeekFrom::Start(0), true).await
             .map_err(|e| NdnError::Internal(format!("Failed to get chunk reader: {}", e)))?;    
-        // 复制数据到本地文件
+        // 复制数据到本地文件（TODO：要验证 chunkid)
+        drop(real_named_mgr);
         tokio::io::copy(&mut chunk_reader, &mut file)
             .await
             .map_err(|e| NdnError::IoError(format!("Failed to copy data to file: {}", e)))?;
@@ -520,11 +534,6 @@ impl NdnClient {
     //使用这种模式是发布方承诺用 R-Link发布FileObject,用O-Link发布chunk的模式
     //返回下载成功的FileObj和obj_id，下载成功后named mgr中chunk存在于cache中
     pub async fn download_fileobj_to_local(&self,fileobj_url:&str,local_path:&PathBuf,no_verify:Option<bool>) -> NdnResult<(ObjId,FileObject)> {
-    
-        // 1. 通过fileobj-url下载并验证fileobj （使用get_obj_by_url）
-        // 2. 得到fileobj的content chunkid
-        // 3. 使用download_chunk_to_local将chunk下载到本地指定文件
-        // 1. 通过fileobj-url下载并验证fileobj
         let (obj_id, file_obj_json) = self.get_obj_by_url(fileobj_url, None).await?;
         
         // 解析FileObject
@@ -537,6 +546,7 @@ impl NdnClient {
         
         // 构建content chunk的URL
         let content_chunk_url = self.gen_chunk_url(&content_chunk_id, None);
+        info!("download_fileobj_to_local: content_chunk_url {}",content_chunk_url);
         
         // 3. 使用download_chunk_to_local将chunk下载到本地指定文件
         let (_, chunk_size) = self.download_chunk_to_local(&content_chunk_url, content_chunk_id, local_path, no_verify).await?;
@@ -552,29 +562,47 @@ impl NdnClient {
         Ok((obj_id, file_obj))
     }
 
-    pub async fn verify_remote_is_same_as_local_file(&self,url:&str,local_path:&PathBuf) -> NdnResult<bool> {
+    pub async fn local_is_better(&self,url:&str,local_path:&PathBuf) -> NdnResult<bool> {
         // 1. 通过url下载fileojbect对象
         // 2. 计算本地文件的hash 
         // 3. 比较fileobj的hcontent和本地文件的hash
 
         if !local_path.exists() {
-            return Err(NdnError::Internal(format!("Local file does not exist: {:?}", local_path)));
+            warn!("local_is_better: local file does not exist: {:?}", local_path);
+            return Ok(false);
         }
+
         let mut file = tokio::fs::File::open(local_path).await
             .map_err(|e| NdnError::IoError(format!("Failed to open local file: {}", e)))?;
         let file_size = file.metadata().await
             .map_err(|e| NdnError::IoError(format!("Failed to get file metadata: {}", e)))?
             .len();
 
+        info!("start download remote fileobj!");
         let (obj_id, file_obj_json) = self.get_obj_by_url(url, None).await?;
         let file_obj: FileObject = serde_json::from_value(file_obj_json)
             .map_err(|e| NdnError::Internal(format!("Failed to parse FileObject: {}", e)))?;
         let content_chunk_id = ChunkId::new(file_obj.content.as_str())
-        .map_err(|e| NdnError::Internal(format!("Failed to parse content chunk id: {}", e)))?;
+            .map_err(|e| NdnError::Internal(format!("Failed to parse content chunk id: {}", e)))?;
+
+        let local_fileobj_file = PathBuf::from(format!("{}.fileobj",local_path.to_string_lossy()));
+        if local_fileobj_file.exists() {
+            info!("local_is_better: local fileobj file exists: {:?}", local_fileobj_file);
+            let local_fileobj = tokio::fs::read_to_string(local_path.with_extension("fileobj")).await
+                .map_err(|e| NdnError::IoError(format!("Failed to read local fileobj file: {}", e)))?;
+            let local_fileobj: FileObject = serde_json::from_str(&local_fileobj)
+                .map_err(|e| NdnError::Internal(format!("Failed to parse local fileobj file: {}", e)))?;
+            if local_fileobj.create_time >= file_obj.create_time {
+                return Ok(true);
+            }
+        }
 
         if file_size != file_obj.size {
+            info!("local_is_better: file size not match, remote:{} local:{}",file_obj.size,file_size);
             return Ok(false);
         }
+
+        info!("start calculate hash!");
 
         let mut hasher = ChunkHasher::new(None)
             .map_err(|e| NdnError::Internal(format!("Failed to create chunk hasher: {}", e)))?;
@@ -595,7 +623,7 @@ impl NdnClient {
 
         let mut chunk_size:u64 = 0;
         // query chunk state from named_mgr (if chunk is completed, return already exists)
-        let (chunk_state,_chunk_size,progress) = real_named_mgr.query_chunk_state(&chunk_id).await?;
+        let (chunk_state,_chunk_size,progress) = real_named_mgr.query_chunk_state_impl(&chunk_id).await?;
         drop(real_named_mgr);
 
         let mut real_hash_state = None;
@@ -603,7 +631,7 @@ impl NdnClient {
         let mut reader = None;
         match chunk_state {
             ChunkState::Completed => {
-                warn!("pull_chunk: chunk {} already exists at named_mgr:{}",chunk_id.to_string(),mgr_id.unwrap());
+                warn!("pull_chunk: chunk {} already exists at named_mgr:{:?}",chunk_id.to_string(),&mgr_id);
                 return Ok(0);
             },
             ChunkState::NotExist => {
@@ -655,7 +683,7 @@ impl NdnClient {
         }
         // open chunk writer with progress info
         let real_named_mgr = named_mgr.lock().await;
-        let (mut chunk_writer,progress_info) = real_named_mgr.open_chunk_writer(&chunk_id,chunk_size,download_pos).await?;
+        let (mut chunk_writer,progress_info) = real_named_mgr.open_chunk_writer_impl(&chunk_id,chunk_size,download_pos).await?;
         drop(real_named_mgr);
         let named_mgr2 = named_mgr.clone();
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
@@ -675,7 +703,7 @@ impl NdnClient {
                     if count % 16 == 0 {
                         if !json_progress_str.is_empty() {
                             let mut real_named_mgr = named_mgr2.lock().await;
-                            real_named_mgr.update_chunk_progress(&this_chunk_id,json_progress_str).await?;
+                            real_named_mgr.update_chunk_progress_impl(&this_chunk_id,json_progress_str).await?;
                         }
                     }
                     Ok(())
@@ -685,7 +713,7 @@ impl NdnClient {
 
         let reader = reader.unwrap();
         let copy_result = copy_chunk(chunk_id.clone(), reader, chunk_writer, real_hash_state, progress_callback).await?;
-        named_mgr.lock().await.complete_chunk_writer(&chunk_id).await?;
+        named_mgr.lock().await.complete_chunk_writer_impl(&chunk_id).await?;
         return Ok(copy_result);
     }
 
@@ -716,7 +744,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_chunk() {
-        init_logging("ndn_client_test");
+        init_logging("ndn_client_test",false);
         let test_server_config = json!({
             "tls_port":3243,
             "http_port":3280,
@@ -765,10 +793,9 @@ mod tests {
         let hash_a = hasher.calc_from_bytes(&chunk_a);
         let chunk_id_a = ChunkId::from_sha256_result(&hash_a);
         info!("chunk_id_a:{}",chunk_id_a.to_string());
-        let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer(&chunk_id_a, chunk_a_size, 0).await.unwrap();
+        let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_a, chunk_a_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_a).await.unwrap();
-        drop(chunk_writer);
-        named_mgr.complete_chunk_writer(&chunk_id_a).await.unwrap();
+        named_mgr.complete_chunk_writer_impl(&chunk_id_a).await.unwrap();
 
 
         let chunk_b_size:u64 = 1024*1024*3 + 321*71;
@@ -777,10 +804,9 @@ mod tests {
         let hash_b = hasher.calc_from_bytes(&chunk_b);
         let chunk_id_b = ChunkId::from_sha256_result(&hash_b);
         info!("chunk_id_b:{}",chunk_id_b.to_string());
-        let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer(&chunk_id_b, chunk_b_size, 0).await.unwrap();
+        let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_b, chunk_b_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_b).await.unwrap();
-        drop(chunk_writer);
-        named_mgr.complete_chunk_writer(&chunk_id_b).await.unwrap();
+        named_mgr.complete_chunk_writer_impl(&chunk_id_b).await.unwrap();
 
         let chunk_c_size:u64 = 1024*1024*3 + 321*71;
         let chunk_c = generate_random_bytes(chunk_c_size);
@@ -788,10 +814,10 @@ mod tests {
         let hash_c = hasher.calc_from_bytes(&chunk_c);
         let chunk_id_c = ChunkId::from_sha256_result(&hash_c);
         info!("chunk_id_c:{}",chunk_id_c.to_string());
-        let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer(&chunk_id_c, chunk_c_size, 0).await.unwrap();
+        let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_c, chunk_c_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_c).await.unwrap();
         drop(chunk_writer);
-        named_mgr.complete_chunk_writer(&chunk_id_b).await.unwrap();
+        named_mgr.complete_chunk_writer_impl(&chunk_id_c).await.unwrap();
         
         
         info!("named_mgr [test] init OK!");
@@ -823,7 +849,7 @@ mod tests {
 
         let named_mgr_client = NamedDataMgr::get_named_data_mgr_by_id(Some("test_client")).await.unwrap();
         let real_named_mgr_client = named_mgr_client.lock().await;
-        let (mut reader,len) = real_named_mgr_client.open_chunk_reader(&chunk_id_a,SeekFrom::Start(0),false).await.unwrap();
+        let (mut reader,len) = real_named_mgr_client.open_chunk_reader_impl(&chunk_id_a,SeekFrom::Start(0),false).await.unwrap();
         assert_eq!(len,chunk_a_size);
         drop(real_named_mgr_client);
         let mut buffer = vec![0u8;chunk_a_size as usize];

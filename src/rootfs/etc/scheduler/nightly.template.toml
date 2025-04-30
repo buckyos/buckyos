@@ -1,0 +1,472 @@
+# users : users/$user_id/setting , user_id is never changed, user_name can changed. User root cann't be deleted and always exists
+# password_hash : shaObj.update(org_password+username+".buckyos");，shaObj.getHash("B64")
+# password_hash : echo -n "org_password+username+.buckyos" | openssl dgst -sha256 -binary | openssl base64
+
+"users/root/settings" = '{"type":"root","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
+"users/{{user_name}}/settings" = '{"type":"admin","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
+"users/{{user_name}}/doc" = """
+{
+  "@context": "https://www.w3.org/ns/did/v1",
+  "id": "did:bns:{{user_name}}",
+  "verificationMethod": [
+    {
+      "type": "Ed25519VerificationKey2020",
+      "id": "#main_key",
+      "controller": "did:bns:devtest",
+      "publicKeyJwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x":  {{public_key.x}}
+      }
+    }
+  ],
+  "authentication": [
+    "#main_key"
+  ],
+  "assertion_method": [
+    "#main_key"
+  ],
+  "exp": 2058851072,
+  "iat": 1743491072,
+  "name": "{{user_name}}",
+  "full_name": "{{user_name}}"
+}
+"""
+# user install apps
+"users/{{user_name}}/apps/buckyos-filebrowser/config" = """
+{
+    "app_id":"buckyos-filebrowser",
+    "app_doc" : {
+        "pkg_name": "buckyos-filebrowser",
+        "version": "0.4.0",
+        "tag": "latest",
+        "app_name": "BuckyOS File Browser",
+        "description": {
+            "detail": "BuckyOS File Browser"
+        },
+        "author": "did:web:buckyos.io",
+        "pub_time": 1743008063,
+        "exp": 1837616063,
+        "pkg_list": {
+            "amd64_docker_image": {
+                "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.0-amd64",
+                "pkg_id": "nightly-linux-amd64.buckyos-filebrowser-img#0.4.0",
+                "docker_image_hash": "sha256:ab004b6d5c60ec9aa5fbb5a8a46cf4c81137333091af3b18ba0858555ab5e5b7"
+            },
+            "aarch64_docker_image": {
+                "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.0-aarch64",
+                "pkg_id": "nightly-linux-aarch64.buckyos-filebrowser-img#0.4.0",
+                "docker_image_hash": "sha256:237c67af98da4a0d6f26de1bb9acd82e1f18e9d75684c82961b5754197a5b81b"
+            },
+            "amd64_win_app": {
+                "pkg_id": "nightly-windows-amd64.buckyos-filebrowser-bin#0.4.0"
+            },
+            "aarch64_apple_app": {
+                "pkg_id": "nightly-apple-aarch64.buckyos-filebrowser-bin#0.4.0"
+            },
+            "amd64_apple_app": {
+                "pkg_id": "nightly-apple-amd64.buckyos-filebrowser-bin#0.4.0"
+            }
+        },
+        "deps": {
+            "nightly-linux-amd64.buckyos-filebrowser-img": "0.4.0",
+            "nightly-linux-aarch64.buckyos-filebrowser-img": "0.4.0",
+            "nightly-windows-amd64.buckyos-filebrowser-bin": "0.4.0",
+            "nightly-apple-amd64.buckyos-filebrowser-bin": "0.4.0",
+            "nightly-apple-aarch64.buckyos-filebrowser-bin": "0.4.0"
+        },
+        "install_config": {
+            "data_mount_point": [
+                "/srv/",
+                "/database/",
+                "/config/"
+            ],
+            "cache_mount_point": [],
+            "local_cache_mount_point": [],
+            "tcp_ports": {
+                "www": 80
+            },
+            "udp_ports": {}
+        }
+    },
+    "app_index" : 0,
+    "enable" : true,
+    "state":"New",
+    "instance" : 1,
+    "data_mount_point" : ["/srv/","/database/","/config/"],
+    "cache_mount_point" :[],
+    "local_cache_mount_point" : [],
+    "max_cpu_num" : 2,
+    "max_cpu_percent" : 20,
+    "memory_quota" : 1073741824,
+    "tcp_ports" : {
+        "www":80
+    },
+    "udp_ports" : {
+    }
+}
+"""
+
+# devices,set & update by register_device_doc@node_daemon
+"devices/ood1/doc" = "eyJhbGciOiJFZERTQSJ9.eyJkaWQiOiJkaWQ6ZGV2Omd1YlZJc3p3LXVfZDVQVlRoLW9jOENLQWhNOUMtbmU1R195VUs1QkRhWGMiLCJuYW1lIjoib29kMSIsImRldmljZV90eXBlIjoib29kIiwiYXV0aF9rZXkiOnsia3R5IjoiT0tQIiwiY3J2IjoiRWQyNTUxOSIsIngiOiJndWJWSXN6dy11X2Q1UFZUaC1vYzhDS0FoTTlDLW5lNUdfeVVLNUJEYVhjIn0sImlzcyI6Imx6YyIsImV4cCI6MjA1MjE5MjM2NSwiaWF0IjoxNzM2ODMyMzY1fQ.yOUIeaG9uHsj_36Dsb8waehmFpeRpe3MRUab9wKPivg_fvqr4MLW36T49p8Iq14QebVIRRegfvBs__eJqqOKBA"
+# devices,set & update by update_device_info@node_daemon
+#"devices/ood1/info" = "{}"
+
+# system settings
+"system/system_pkgs"= """
+{
+}
+"""
+
+"system/verify-hub/key" = """
+{{verify_hub_key}}
+"""
+# frames & services
+"services/verify-hub/config" = """
+{
+    "name":"verify_hub",
+    "description":"verify hub is SSO service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"verify_hub",
+    "port":3300,
+    "node_list":["ood1"],
+    "service_type":"kernel",
+    "state":"New",
+    "instance":1
+}
+"""
+"services/verify-hub/settings" = """
+    "trust_keys" : []
+}
+"""
+"services/scheduler/config" = """
+{
+    "name":"scheduler",
+    "description":"scheduler is the core service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"scheduler",
+    "port":3400,
+    "node_list":["ood1"],
+    "service_type":"kernel",
+    "state":"New",
+    "instance":1
+}
+"""
+
+"services/gateway/settings" = """
+{
+    "shortcuts": {
+        "www": {
+            "type":"app",
+            "user_id":"{{user_name}}",
+            "app_id":"buckyos-filebrowser"
+        },
+        "sys": {
+            "type":"app",
+            "user_id":"{{user_name}}",
+            "app_id":"control-panel"
+        },
+        "sys_test":{
+            "type":"app",
+            "user_id":"{{user_name}}",
+            "app_id":"sys-test"
+        }
+    }
+}
+"""
+
+"services/repo-service/config" = """
+{
+    "name":"repo-service",
+    "description":"repo service is the repo service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"repo_service",
+    "port":4000,
+    "node_list":["ood1"],
+    "service_type":"frame",
+    "state":"New",
+    "instance":1
+}
+"""
+
+# root 源必须设置
+"services/repo-service/settings" = """
+{
+    "remote_source": {
+        "root":"https://buckyos.ai/ndn/repo/meta_index.db"
+    },
+    "enable_dev_mode": true
+}
+"""
+# 在zone内应该存在的pkg_list,注意是全名,chunk随意
+"services/repo-service/pkg_list" = """
+{
+    "nightly-linux-amd64.node_daemon":"no",
+    "nightly-linux-aarch64.node_daemon":"no",
+    "nightly-windows-amd64.node_daemon":"no",
+    "nightly-windows-aarch64.node_daemon":"no",
+    "nightly-apple-amd64.node_daemon":"no",
+    "nightly-apple-aarch64.node_daemon":"no",
+
+    "nightly-linux-amd64.buckycli":"no",
+    "nightly-linux-aarch64.buckycli":"no",
+    "nightly-windows-amd64.buckycli":"no",
+    "nightly-windows-aarch64.buckycli":"no",
+    "nightly-apple-amd64.buckycli":"no",
+    "nightly-apple-aarch64.buckycli":"no",
+
+    "buckyos-filebrowser":"no"
+}    
+"""
+# node config
+"nodes/ood1/config" = """ 
+{
+    "state:":"Ready",
+    "is_running":true,
+    "revision" : 0,
+    "kernel":{
+
+    },
+    "frame_services":{
+    },
+    "apps":{
+    }
+}
+"""
+# apps config's key is instance_id ? 
+
+"nodes/ood1/gateway_config" = """
+{
+    "inner_services": {
+        "zone_provider": {
+            "type": "zone-provider"
+        }
+    },
+    "servers":{
+        "main_http_server":{
+            "type":"cyfs-warp",
+            "bind":"0.0.0.0",
+            "http_port":80,
+            "hosts": {
+                "*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/ndn/": {
+                            "named_mgr": {
+                                "named_data_mgr_id":"default",
+                                "read_only":false,
+                                "guest_access":true,
+                                "is_chunk_id_in_path":true,
+                                "enable_mgr_file_path":true
+                            }
+                        }, 
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/resolve": {
+                            "inner_service": "zone_provider"
+                        }
+                    }
+                },
+                "sys.*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{{BUCKYOS_ROOT}}/bin/control_panel"
+                        },
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/kapi/verify_hub":{
+                            "upstream":"http://127.0.0.1:3300"
+                        }
+                    }
+                },
+                "sys_test.*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{{BUCKYOS_ROOT}}/bin/sys_test"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "dispatcher" : {
+        "tcp://0.0.0.0:80":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://0.0.0.0:443":{
+            "type":"server",
+            "id":"main_http_server"
+        }
+    }
+}
+"""
+
+"system/rbac/model" = """
+[request_definition]
+r = sub,obj,act
+
+[policy_definition]
+p = sub, obj, act, eft
+
+[role_definition]
+g = _, _ # sub, role
+
+[policy_effect]
+e = priority(p.eft) || deny
+
+[matchers]
+m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.sub) || keyGet3(r.obj, p.obj, p.sub) =="") && keyMatch3(r.obj,p.obj)) && regexMatch(r.act, p.act)
+"""
+
+# 添加用户增加
+#g, bob,user
+#p, su_bob,kv://users/bob/*,read|write,allow
+
+# 添加服务节点
+#g, ood2,ood
+
+# 添加客户端设备
+#g, lzc-laptop,client
+
+# 添加应用
+#g, buckyos-app1,app
+
+"system/rbac/base_policy" = """
+p, *, kv://boot/*, read,allow
+
+p, kernel, kv://*, read|write,allow
+p, kernel, dfs://*, read|write,allow
+p, kernel, ndn://*, read|write,allow
+p, root, kv://*, read|write,allow
+p, root, dfs://*, read|write,allow
+p, root, ndn://*, read|write,allow
+
+p, ood,kv://*,read,allow
+p, ood,kv://nodes/{device}/*,read|write,allow
+
+p, client,kv://devices/{device}/*,read,allow
+p, client,kv://devices/{device}/info,read|write,allow
+
+p, service,kv://services/{service}/*,read|write,allow
+p, service,kv://system/*,read,allow
+p, service,dfs://system/data/{service}/*,read|write,allow
+p, service,dfs://system/cache/{service}/*,read|write,allow
+
+p, app, kv://users/*/apps/{app}/settings,read|write,allow
+p, app, kv://users/*/apps/{app}/config,read,allow
+p, app, kv://users/*/apps/{app}/info,read,allow
+p, app, dfs://users/*/appdata/{app}/*, read|write,allow
+p, app, dfs://users/*/cache/{app}/*, read|write,allow
+
+
+p, admin,kv://users/{user}/*,read,allow
+p, admin,dfs://users/{user}/*,read|write,allow
+p, admin,kv://services/*,read|write,allow
+p, admin,dfs://library/*,read|write,allow
+
+p, user,kv://users/{user}/*,read,allow
+p, user,kv://users/{user}/apps/*/*,read|write,allow
+p, user,dfs://users/{user}/*,read|write,allow
+p, user,dfs://users/{user}/home/*,read|write,allow
+p, user,dfs://library/*,read,allow
+
+g, node-daemon, kernel
+g, scheduler, kernel
+g, system-config, kernel
+g, verify-hub, kernel
+g, control-panel, kernel
+g, repo-service, kernel
+g, buckycli,kernel
+g, samba-service,services
+"""
+
+"system/rbac/policy" = """
+p, *, kv://boot/*, read,allow
+
+p, kernel, kv://*, read|write,allow
+p, kernel, dfs://*, read|write,allow
+p, kernel, ndn://*, read|write,allow
+p, root, kv://*, read|write,allow
+p, root, dfs://*, read|write,allow
+p, root, ndn://*, read|write,allow
+
+p, ood,kv://*,read,allow
+p, ood,kv://nodes/{device}/*,read|write,allow
+
+p, client,kv://devices/{device}/*,read,allow
+p, client,kv://devices/{device}/info,read|write,allow
+
+p, service,kv://services/{service}/*,read|write,allow
+p, service,kv://system/*,read,allow
+p, service,dfs://system/data/{service}/*,read|write,allow
+p, service,dfs://system/cache/{service}/*,read|write,allow
+
+p, app, kv://users/*/apps/{app}/settings,read|write,allow
+p, app, kv://users/*/apps/{app}/config,read,allow
+p, app, kv://users/*/apps/{app}/info,read,allow
+p, app, dfs://users/*/appdata/{app}/*, read|write,allow
+p, app, dfs://users/*/cache/{app}/*, read|write,allow
+
+p, admin,kv://users/{user}/*,read,allow
+p, admin,dfs://users/{user}/*,read|write,allow
+p, admin,kv://services/*,read|write,allow
+p, admin,dfs://library/*,read|write,allow
+
+p, user,kv://users/{user}/*,read,allow
+p, user,kv://users/{user}/apps/*/*,read|write,allow
+p, user,dfs://users/{user}/*,read|write,allow
+p, user,dfs://users/{user}/home/*,read|write,allow
+p, user,dfs://library/*,read,allow
+
+g, node-daemon, kernel
+g, scheduler, kernel
+g, system-config, kernel
+g, verify-hub, kernel
+g, control-panel, kernel
+g, repo-service, kernel
+g, buckycli,kernel
+g, samba-service,services
+
+
+g, sys-test, app
+g, buckyos-filebrowser, app
+g, ood1, ood
+g, {{user_name}},admin
+"""
+
+# boot config will merge with zone_boot_config
+# todo:
+"boot/config" = """
+{
+  "@context": "https://www.w3.org/ns/did/v1",
+  "id": "did:null:null",
+  "verificationMethod": [
+    {
+      "type": "Ed25519VerificationKey2020",
+      "id": "#main_key",
+      "controller": "did:bns:{{user_name}}",
+      "publicKeyJwk": {
+        "crv": "Ed25519",
+        "kty": "OKP",
+        "x": "{{public_key.x}}"
+      }
+    }
+  ],
+  "authentication": [
+    "#main_key"
+  ],
+  "assertionMethod": [
+    "#main_key"
+  ],
+  "exp": 0,
+  "iat": 0,
+  "owner": "did:bns:{{user_name}}",
+  "oods": [
+  ]
+}
+"""

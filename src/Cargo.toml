@@ -32,9 +32,9 @@ members = [
     "./frame/smb_service",
 
     "./tools/buckycli", 
-    #"./apps/tray-controller"
 ]
 
 exclude = [
     "./tools/ns-tool",
+    "./apps/tray-controller"
 ]

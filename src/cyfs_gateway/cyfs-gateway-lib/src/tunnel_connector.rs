@@ -69,7 +69,9 @@ impl AsyncWrite for TunnelStreamConnection {
 
 
 #[derive(Clone)]
-pub struct TunnelConnector;
+pub struct TunnelConnector {
+    pub target_stream_url: String
+}
 
 //open stream by url
 impl Service<Uri> for TunnelConnector {
@@ -81,12 +83,15 @@ impl Service<Uri> for TunnelConnector {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, uri: Uri) -> Self::Future {
+    fn call(&mut self, _uri: Uri) -> Self::Future {
+        let target_stream_url = self.target_stream_url.clone();
         Box::pin(async move {
+            debug!("TunnelConnector call uri: {}", target_stream_url.as_str());
             let tunnel_manager = crate::GATEWAY_TUNNEL_MANAGER.get().unwrap();
-            let stream_url = Url::parse(&uri.to_string()).unwrap();
+            let stream_url = Url::parse(&target_stream_url.to_string()).unwrap();
+
             let target_stream = tunnel_manager.open_stream_by_url(&stream_url).await.map_err(|e| {
-                warn!("TunnelConnector open_stream_by_url  failed! {}", e);
+                warn!("TunnelConnector open_stream_by_url {} failed! {}", stream_url, e);
                 Box::new(e) as Box<dyn StdError + Send + Sync>
             })?;
                 

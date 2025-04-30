@@ -8,7 +8,7 @@ use buckyos_kit::*;
 
 
 
-#[derive(PartialEq)]
+#[derive(PartialEq,Debug)]
 pub enum ServiceState {
     //InstllDeps,
     Deploying,
@@ -79,7 +79,7 @@ impl ServicePkg {
         }
     }
 
-    async fn execute_operation(&self, op_name: &str, params: Option<&Vec<String>>) -> Result<i32> {
+    pub async fn execute_operation(&self, op_name: &str, params: Option<&Vec<String>>) -> Result<i32> {
         //let media_info = self.media_info.clone().unwrap();
         let media_info = self.media_info.lock().await;
         let media_info = media_info.as_ref();
@@ -91,19 +91,23 @@ impl ServicePkg {
         let op_file = media_info.full_path.join(op_name);
         let (result, output) = execute(
             &op_file,
-            5,
+            1200,
             params,
             self.current_dir.as_ref(),
             Some(&self.env_vars),
         )
-        .await
-        .map_err(|e| {
-            error!("execute {} failed! {}", op_file.display(), e);
-            return ServiceControlError::ReasonError(e.to_string());
-        })?;
+            .await
+            .map_err(|e| {
+                error!("# execute {} failed! {}", op_file.display(), e);
+                return ServiceControlError::ReasonError(e.to_string());
+            })?;
+
+        let params_str = params.map(|p| p.join(" ")).unwrap_or_default();
+
         info!(
-            "execute {} ==> result: {} \n\t {}",
+            "# {} {} => {} \n\t {}",
             op_file.display(),
+            params_str,
             result,
             String::from_utf8_lossy(&output)
         );
@@ -132,6 +136,7 @@ impl ServicePkg {
         let media_info = media_info.unwrap();
         let mut media_info_lock = self.media_info.lock().await;
         *media_info_lock = Some(media_info);
+        drop(media_info_lock);
         let result = self.execute_operation("status", params).await?;
         match result {
             0 => Ok(ServiceState::Started),

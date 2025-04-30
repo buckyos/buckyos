@@ -146,7 +146,7 @@ impl Default for TlsConfig {
 
 
 fn default_tls_port() -> u16 {
-    443
+    0
 }
 
 fn default_http_port() -> u16 {

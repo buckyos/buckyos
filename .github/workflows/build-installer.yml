@@ -34,7 +34,7 @@ jobs:
       run: python3 scripts/build_web_apps.py
     - name: build x64 bin
       working-directory: ./src
-      run: python3 scripts/build.py --no-build-web-apps --no-install
+      run: python3 scripts/build.py --no-build-web-apps --no-install  --tray-controller --auto-win-sdk
     - name: make installer
       working-directory: ./src
       run: python3 scripts/make_win_installer.py ${{inputs.version}}

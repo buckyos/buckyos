@@ -117,7 +117,7 @@ pub async fn execute(
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
-    info!("Executing: {:?}", command);
+    debug!("Executing: {:?}", command);
 
     let mut child = command
         .spawn()

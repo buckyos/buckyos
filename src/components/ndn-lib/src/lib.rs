@@ -35,7 +35,7 @@ extern crate log;
 pub enum NdnError {
     #[error("internal error: {0}")]
     Internal(String),
-    #[error("invalid chunk id format: {0}")]
+    #[error("invalid object id format: {0}")]
     InvalidId(String),
     #[error("invalid object link: {0}")]
     InvalidLink(String),
@@ -51,8 +51,8 @@ pub enum NdnError {
     DbError(String),
     #[error("chunk not completed: {0}")]
     InComplete(String),
-    #[error("get from url failed: {0}")]
-    GetFromRemoteError(String),
+    #[error("remote error: {0}")]
+    RemoteError(String),
     #[error("decode error: {0}")]
     DecodeError(String),
     #[error("offset too large: {0}")]
@@ -76,11 +76,13 @@ pub type NdnResult<T> = std::result::Result<T, NdnError>;
 
 pub const OBJ_TYPE_FILE: &str = "cyfile";
 pub const OBJ_TYPE_DIR: &str = "cydir";
-
+pub const OBJ_TYPE_PATH: &str = "cypath";
 pub const OBJ_TYPE_MTREE: &str = "cytree";
 pub const OBJ_TYPE_OBJMAPT: &str = "cymap"; // object map
 pub const OBJ_TYPE_PACK: &str = "cypack"; // object set
 pub const OBJ_TYPE_LIST: &str = "cylist"; // object list
+
+pub const OBJ_TYPE_PKG: &str = "pkg"; // package
 // mod http;
 // pub use http::*;
 

@@ -39,6 +39,8 @@ pub enum Error {
     InvalidRecordType(String),
     #[error("IO error: {0:}")]
     Io(#[from] std::io::Error),
+    #[error("Proto error: {0:}")]
+    Proto(#[from] hickory_proto::ProtoError),
 }
 
 #[derive(Clone)]
@@ -161,13 +163,11 @@ fn nameinfo_to_rdata(record_type: &str, name_info: &NameInfo) -> Result<Vec<RDat
 
             if name_info.did_document.is_some() {
                 let did_string = name_info.did_document.as_ref().unwrap().to_string();
-                let mut records = Vec::new();
                 records.push(RData::TXT(TXT::new(vec![format!("DID={};", did_string)])));
             }
 
             if name_info.pk_x_list.is_some() {
                 let pk_x_list = name_info.pk_x_list.as_ref().unwrap();
-                let mut records = Vec::new();
                 for pk_x in pk_x_list.iter() {
                     records.push(RData::TXT(TXT::new(vec![format!("PKX={};", pk_x)])));
                 }
@@ -280,9 +280,9 @@ impl DNSServer {
 
         // WARN!!!
         // Be careful to handle the request that may be delivered to the DNS-Server again to avoid the dead cycle
-
-        let name = request.query().name().to_string();
-        let record_type_str = request.query().query_type().to_string();
+        let reqeust_info = request.request_info()?;
+        let name = reqeust_info.query.name().to_string();
+        let record_type_str = reqeust_info.query.query_type().to_string();
         let record_type = RecordType::from_str(&record_type_str)
             .ok_or_else(|| Error::InvalidRecordType(record_type_str))?;
 
@@ -315,7 +315,7 @@ impl DNSServer {
             let mut ttl = name_info.ttl.unwrap_or(600);
             let records = rdata_vec
                 .into_iter()
-                .map(|rdata| Record::from_rdata(request.query().name().into(), ttl, rdata))
+                .map(|rdata| Record::from_rdata(reqeust_info.query.name().into(), ttl, rdata))
                 .collect::<Vec<_>>();
             let mut message = builder.build(header, records.iter(), &[], &[], &[]);
             response.send_response(message).await;

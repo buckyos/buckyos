@@ -1,9 +1,8 @@
 use std::net::IpAddr;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize,Serializer};
-use serde_json::{Value};
 use serde::ser::SerializeStruct;
+use serde_json::Value;
 use crate::RPCErrors;
 pub enum RPCProtoclType {
     HttpPostJson,
@@ -17,7 +16,7 @@ pub struct RPCRequest {
     //0: seq,1:token(option),2:trace_id(option)
     //pub sys:  Option<Vec<Value>>,
 
-    pub seq:u64,
+    pub id:u64,
     pub token:Option<String>,
     pub trace_id:Option<String>,
 }
@@ -28,11 +27,23 @@ impl RPCRequest {
         RPCRequest {
             method: method.to_string(),
             params: params,
-            seq:0,
+            id:0,
             token:None,
             trace_id:None,
         }
     }
+
+    pub fn get_str_param(self: &RPCRequest, key: &str) -> Result<String, RPCErrors> {
+        self.params
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string())
+            .ok_or(RPCErrors::ParseRequestError(format!(
+                "Failed to get {} from params",
+                key
+            )))
+    }
+
 }
 
 fn array_remove_none_value(array:&mut Vec<Value>) {
@@ -55,7 +66,7 @@ impl Serialize for RPCRequest {
         state.serialize_field("method", &self.method)?;
         state.serialize_field("params", &self.params)?;
         let mut sys_vec = serde_json::json! {
-            [self.seq,self.token,self.trace_id]
+            [self.id,self.token,self.trace_id]
         };
         array_remove_none_value(&mut sys_vec.as_array_mut().unwrap());
         state.serialize_field("sys", &sys_vec)?;
@@ -102,7 +113,7 @@ impl<'de> Deserialize<'de> for RPCRequest {
         Ok(RPCRequest {
             method: method.to_string(),
             params: params.clone(),
-            seq:seq,
+            id:seq,
             token:token,
             trace_id:trace_id,
         })      
@@ -219,7 +230,8 @@ impl<'de> Deserialize<'de> for RPCResponse {
 }
 
 #[async_trait]
-pub trait kRPCHandler {
+pub trait InnerServiceHandler {
     async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors>;
+    async fn handle_http_get(&self, req_path:&str,ip_from:IpAddr) -> Result<String,RPCErrors>;
 }
 

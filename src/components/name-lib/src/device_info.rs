@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::net::{IpAddr, Ipv6Addr};
 use std::str::FromStr;
 use tokio::net::UdpSocket;
@@ -8,7 +9,7 @@ use thiserror::Error;
 use buckyos_kit::*;
 
 use crate::config::DeviceConfig;
-use crate::{NSResult,NSError};
+use crate::{NSError, NSResult, DID};
 use sysinfo::{Components, Disks, Networks, System};
 use nvml_wrapper::*;
 use nvml_wrapper::enum_wrappers::device::Clock;
@@ -18,22 +19,14 @@ use nvml_wrapper::enum_wrappers::device::Clock;
 // describe a device runtime info
 #[derive(Clone, Serialize, Deserialize,Debug,PartialEq)]
 pub struct DeviceInfo {
-    pub hostname:String,
-    pub device_type:String,
-    #[serde(skip_serializing_if = "is_true", default = "bool_default_true")]
-    pub support_container:bool,
+    #[serde(flatten)]    
+    pub device_doc:DeviceConfig,
+    pub arch: String,
+    pub os:String, //linux,windows,apple
+    pub update_time:u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state:Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arch:Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub did:Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ip:Option<IpAddr>,//main_ip from device's self knowledge
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub main_net_interface:Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub net_id:Option<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sys_hostname : Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,24 +66,62 @@ pub struct DeviceInfo {
     
 }
 
+impl Deref for DeviceInfo {
+    type Target = DeviceConfig;
+    
+    fn deref(&self) -> &Self::Target {
+        &self.device_doc
+    }
+}
+
 impl DeviceInfo {
     pub fn from_device_doc(device_doc:&DeviceConfig) -> Self {
-        let mut device_info = DeviceInfo::new(device_doc.name.as_str(),Some(device_doc.did.clone()));
-        //device_info.did = Some(device_doc.did.clone());
-        device_info.device_type = device_doc.device_type.clone();
-        device_info.ip = device_doc.ip.clone();
-        device_info.net_id = device_doc.net_id.clone();
-        device_info.support_container = device_doc.support_container;
-        return device_info;
+        #[cfg(all(target_os = "macos"))]
+        let os_type = "apple";
+        #[cfg(all(target_os = "linux"))]
+        let os_type = "linux";
+        #[cfg(all(target_os = "windows"))]
+        let os_type = "windows";
+
+        #[cfg(all(target_arch = "x86_64"))]
+        let arch = "amd64";
+        #[cfg(all(target_arch = "aarch64"))]
+        let arch = "aarch64";
+
+        let result_info = DeviceInfo {
+            device_doc:device_doc.clone(),
+            arch:arch.to_string(),
+            os:os_type.to_string(),
+            update_time:buckyos_get_unix_timestamp(),
+            state:None,
+            sys_hostname:None,
+            base_os_info:None,
+            cpu_info:None,
+            cpu_num:None,
+            cpu_mhz:None,
+            cpu_ratio:None,
+            cpu_usage:None,
+            total_mem:None,
+            mem_usage:None,
+            total_space:None,
+            disk_usage:None,
+            gpu_info:None,
+            gpu_tflops:None,
+            gpu_total_mem:None,
+            gpu_used_mem:None,
+            gpu_load:None,
+        };
+
+        return result_info;
     }
 
-    pub fn new(ood_string:&str,did:Option<String>) -> Self {
-        //device_string format: hostname@[ip]#[netid]
+    //return (short_name,net_id,ip_addr)
+    pub fn get_net_info_from_ood_desc_string(ood_desc_string:&str) -> (String,Option<String>,Option<IpAddr>){
         let ip :Option<IpAddr>;
         let net_id :Option<String>;
-        let parts: Vec<&str> = ood_string.split('@').collect();
+       
+        let parts: Vec<&str> = ood_desc_string.split('@').collect();
         let hostname = parts[0];
-
         if parts.len() > 1 {
             let ip_str = parts[1];
             let ip_result = IpAddr::from_str(ip_str);
@@ -103,23 +134,42 @@ impl DeviceInfo {
             ip = None;
         }
 
-        let parts: Vec<&str> = ood_string.split('#').collect();
+        let parts: Vec<&str> = ood_desc_string.split('#').collect();
         if parts.len() == 2{
             net_id = Some(parts[1].to_string());
         } else {
             net_id = None;
         }   
+        return (hostname.to_string(),net_id,ip);
+    }
+
+    pub fn new(ood_string:&str,did:DID) -> Self {
+        //device_string format: hostname@[ip]#[netid]
+        let (hostname,net_id,ip) = Self::get_net_info_from_ood_desc_string(ood_string);
+        
+        #[cfg(all(target_os = "macos"))]
+        let os_type = "apple";
+        #[cfg(all(target_os = "linux"))]
+        let os_type = "linux";
+        #[cfg(all(target_os = "windows"))]
+        let os_type = "windows";
+
+        #[cfg(all(target_arch = "x86_64"))]
+        let arch = "amd64";
+        #[cfg(all(target_arch = "aarch64"))]
+        let arch = "aarch64";
+
+        let mut config = DeviceConfig::new(hostname.as_str(),did.id.to_string());
+        config.ip = ip;
+        config.net_id = net_id;
+        config.device_type = "ood".to_string();
 
         DeviceInfo {
-            hostname:hostname.to_string(),
-            device_type:"ood".to_string(),
+            device_doc:config,
             state:Some("Ready".to_string()),
-            support_container:true,
-            arch:None,
-            ip:ip,
-            did:did,
-            main_net_interface:None,
-            net_id:net_id,
+            arch:arch.to_string(),
+            os:os_type.to_string(),
+            update_time:buckyos_get_unix_timestamp(),
             base_os_info:None,
             cpu_info:None,
             cpu_num:None,
@@ -148,12 +198,11 @@ impl DeviceInfo {
             let test_socket = test_socket.unwrap();
             test_socket.connect("8.8.8.8:80").await;
             let local_addr = test_socket.local_addr().unwrap();
-            self.ip = Some(local_addr.ip());
+            self.device_doc.ip = Some(local_addr.ip());
         }
 
         // Get OS information
         self.base_os_info = Some(format!("{} {} {}",System::name().unwrap_or_default(), System::os_version().unwrap_or_default(), System::kernel_version().unwrap_or_default()));
-
         // Get CPU information
         let mut cpu_usage = 0.0;
         let mut cpu_mhz:u32 = 0;
@@ -165,6 +214,10 @@ impl DeviceInfo {
             cpu_usage += cpu.cpu_usage();
             cpu_mhz += cpu.frequency() as u32;
             cpu_mhz_last = cpu.frequency() as u32;
+        }
+        if cpu_mhz < 1000 {
+            cpu_mhz = 2000*sys.cpus().len() as u32;
+            cpu_mhz_last = 2000;
         }
         self.cpu_info = Some(format!("{} @ {} MHz,({} cores)", cpu_brand, cpu_mhz_last, sys.cpus().len()));
         self.cpu_num = Some(sys.cpus().len() as u32);
@@ -275,9 +328,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_device_info() {
-        let mut device_info = DeviceInfo::new("ood1@192.168.1.1#wan1", Some("did:bns:ood1".to_string()));
+        let mut device_info = DeviceInfo::new("ood1@192.168.1.1#wan1", DID::new("bns","ood1"));
         device_info.auto_fill_by_system_info().await.unwrap();
-        println!("{:?}", device_info);
+        let device_info_json = serde_json::to_string_pretty(&device_info).unwrap();
+        println!("{}", device_info_json);
     }
 }
 

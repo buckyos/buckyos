@@ -1,7 +1,7 @@
 import templateContent from './config_gateway_dlg.template?raw';  
 import {BuckyCheckBox} from '../components/checkbox';
 import {BuckyWizzardDlg} from '../components/wizzard-dlg';
-import { GatewayType,ActiveWizzardData,check_sn_active_code,set_sn_api_url } from '../active_lib';
+import { GatewayType,ActiveWizzardData,check_sn_active_code,set_sn_api_url,SN_API_URL,SN_HOST } from '../active_lib';
 import {MdOutlinedTextField} from '@material/web/textfield/outlined-text-field.js';
 import {MdFilledButton} from '@material/web/button/filled-button.js';
 import Handlebars from 'handlebars';
@@ -36,8 +36,8 @@ class ConfigGatewayDlg extends HTMLElement {
             wizzard_data.sn_url = txt_bucky_sn_url.value;
             wizzard_data.sn_host = host;
         } else {
-            wizzard_data.sn_url = "http://web3.buckyos.io/kapi/sn";
-            wizzard_data.sn_host = "web3.buckyos.io";
+            wizzard_data.sn_url = SN_API_URL;
+            wizzard_data.sn_host = SN_HOST;
         }
         set_sn_api_url(wizzard_data.sn_url);
 

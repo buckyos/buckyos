@@ -42,6 +42,7 @@ impl SystemConfigClient {
         //let default_sys_config_url = 
         let client = kRPC::new(service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"), real_session_token.clone());
         let client = Arc::new(client);
+        info!("system config client is created,service_url:{},session_token:{}",service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"),real_session_token.clone().unwrap_or("None".to_string()));
 
         SystemConfigClient {
             client:OnceCell::new_with(Some(client)),

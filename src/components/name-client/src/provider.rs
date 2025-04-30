@@ -93,26 +93,26 @@ impl NameInfo {
     pub fn from_address(name:&str,address:IpAddr) -> Self {
         let ttl = 5*60;
         Self {name:name.to_string(),address:vec![address],cname:None,txt:None,
-            did_document:None,pk_x_list:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
+            did_document:None,pk_x_list:None,proof_type:NameProof::ServerProof,create_time:0,ttl:Some(ttl)}
     }
 
     pub fn from_address_vec(name:&str,address_vec:Vec<IpAddr>) -> Self {
         let ttl = 5*60;
         Self {name:name.to_string(),address:address_vec,cname:None,txt:None,
-            did_document:None,pk_x_list:None,proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
+            did_document:None,pk_x_list:None,proof_type:NameProof::ServerProof,create_time:0,ttl:Some(ttl)}
     }
 
-    pub fn from_zone_config_str(name:&str,zone_config_jwt:&str,zone_config_pkx:&str,device_list:&Option<Vec<String>>) -> Self {
+    pub fn from_zone_config_str(name:&str,zone_config_jwt:&str,zone_config_pkx:&str,zone_gateway_device_list:&Option<Vec<String>>) -> Self {
         //let txt_string = format!("DID={};",zone_config_jwt);
         let ttl = 3600;
-        let pkx_string = format!("0:{};",zone_config_pkx);
+        let pkx_string = format!("0:{}",zone_config_pkx);
         let mut pk_x_list = vec![pkx_string];
-        if let Some(device_list) = device_list {
+        if let Some(device_list) = zone_gateway_device_list {
             for device_did in device_list {
                 let device_did = DID::from_str(device_did.as_str());
-                if device_did.is_some() {
+                if device_did.is_ok() {
                     let device_did = device_did.unwrap();
-                    let pkx_string = format!("1:{};",device_did.id);
+                    let pkx_string = format!("1:{}",device_did.id);
                     pk_x_list.push(pkx_string);
                 }
             }
@@ -120,7 +120,7 @@ impl NameInfo {
         
         Self {name:name.to_string(),address:vec![],cname:None,txt:None,
             did_document:Some(EncodedDocument::from_str(zone_config_jwt.to_string()).unwrap()),
-            pk_x_list:Some(pk_x_list),proof_type:NameProof::None,create_time:0,ttl:Some(ttl)}
+            pk_x_list:Some(pk_x_list),proof_type:NameProof::ServerProof,create_time:0,ttl:Some(ttl)}
     }
 
      pub fn get_owner_pk(&self) -> Option<Jwk> {
@@ -147,14 +147,15 @@ impl NameInfo {
         None
      }
 
-     pub fn get_device_list(&self) -> Option<Vec<String>> {
+     pub fn get_gateway_device_list(&self) -> Option<Vec<DID>> {
         if self.pk_x_list.is_some() {
             let mut device_list = vec![];
             let pkx_list = self.pk_x_list.as_ref().unwrap();
             for pkx in pkx_list {
                 if pkx.starts_with("1:") {
                     let pkx = pkx.split(":").nth(1).unwrap();
-                    let device_did = format!("did:dev:{}",pkx);
+                    //let device_did = format!("did:dev:{}",pkx);
+                    let device_did = DID::new("dev",pkx);
                     device_list.push(device_did);
                 }
             }
@@ -170,7 +171,7 @@ impl NameInfo {
 pub trait NsProvider: 'static + Send + Sync {
     fn get_id(&self) -> String;
     async fn query(&self, name: &str, record_type: Option<RecordType>, from_ip: Option<IpAddr>) -> NSResult<NameInfo>;
-    async fn query_did(&self, did: &str, fragment: Option<&str>, from_ip: Option<IpAddr>) -> NSResult<EncodedDocument>;
+    async fn query_did(&self, did: &DID, fragment: Option<&str>, from_ip: Option<IpAddr>) -> NSResult<EncodedDocument>;
 }
 
 #[async_trait::async_trait]

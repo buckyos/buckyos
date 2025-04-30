@@ -1,3 +1,4 @@
+use std::ops::Deref;
 //system control panel client
 use std::sync::Arc;
 use name_lib::DeviceConfig;
@@ -10,13 +11,36 @@ use serde_json::json;
 use log::*;
 use ::kRPC::*;
 use crate::system_config::*;
+use package_lib::PackageMeta;
 
+#[derive(Serialize, Deserialize)]
+pub struct InstallConfig {
+    pub data_mount_point: Vec<String>,
+    pub cache_mount_point: Vec<String>,
+    pub local_cache_mount_point: Vec<String>,
+    pub tcp_ports: HashMap<String,u16>,
+    pub udp_ports: HashMap<String,u16>,
+} 
+
+impl Default for InstallConfig {
+    fn default() -> Self {
+        Self {
+            data_mount_point: vec![],
+            cache_mount_point: vec![],
+            local_cache_mount_point: vec![],
+            tcp_ports: HashMap::new(),
+            udp_ports: HashMap::new(),
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct SubPkgDesc {
     pub pkg_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_image_name:Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_image_hash:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_url:Option<String>,
     #[serde(flatten)]
@@ -26,20 +50,45 @@ pub struct SubPkgDesc {
 //App info is store at Index-db, publish to bucky store
 #[derive(Serialize, Deserialize)]
 pub struct AppDoc {
-    pub app_id: String,
-    pub name: String,
-    pub description: String,
-    pub vendor_did: String,
-    pub pkg_id: String,
+    #[serde(flatten)]    
+    pub meta: PackageMeta,
+    pub app_name: String, // just for display, app_id is meta.pkg_name (like "buckyos-filebrowser")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_icon_url: Option<String>,
+    pub install_config:InstallConfig,
+
     //service name -> full image url
     // 命名逻辑:<arch>_<runtimne_type>_<media_type>, 
     //"amd64_docker_image" 
     //"aarch64_docker_image"
     //"amd64_win_app"
-    //"amd64_linux_app"
-    //"aarch64_linux_app"
-    //"aarch64_macos_app"
+    //"aarch64_apple_app"
+    //"amd64_apple_app"
     pub pkg_list: HashMap<String, SubPkgDesc>,
+}
+
+impl AppDoc {
+    pub fn from_pkg_meta(pkg_meta: &PackageMeta) -> Result<Self> {
+        let pkg_json = serde_json::to_value(pkg_meta).unwrap();
+        let result_self  = serde_json::from_value(pkg_json)
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        Ok(result_self) 
+    }
+
+    pub fn to_pkg_meta(&self) -> Result<PackageMeta> {
+        let pkg_json = serde_json::to_value(self).unwrap();
+        let result_pkg_meta = serde_json::from_value(pkg_json)
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        Ok(result_pkg_meta)
+    }
+}
+
+impl Deref for AppDoc {
+    type Target = PackageMeta;
+    
+    fn deref(&self) -> &Self::Target {
+        &self.meta
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -65,14 +114,10 @@ pub struct AppConfig {
     pub instance: u32,//期望的instance数量
     pub state: String,
     //mount pint
-    pub data_mount_point: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_mount_point: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_cache_mount_point: Option<String>,
+    pub data_mount_point: Vec<String>,
+    pub cache_mount_point: Vec<String>,
+    pub local_cache_mount_point: Vec<String>,
     //extra mount pint, real_path:docker_inner_path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extra_mounts: Option<HashMap<String,String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cpu_num: Option<u32>,
     // 0 - 100
@@ -84,8 +129,7 @@ pub struct AppConfig {
     
     //network resource, name:docker_inner_port
     pub tcp_ports: HashMap<String,u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub udp_ports: Option<HashMap<String,u16>>,
+    pub udp_ports: HashMap<String,u16>
 }
 
 
@@ -95,20 +139,17 @@ pub struct AppConfig {
 pub struct AppServiceInstanceConfig {
     pub target_state: String,
     pub app_id: String,
-    pub user_id: String,
+    pub user_id: String,//owner user id
 
-    pub image_pkg_id: Option<String>,
+    pub app_pkg_id: Option<String>,
+    pub docker_image_pkg_id: Option<String>,
     pub docker_image_name : Option<String>,//TODO:能否从pkg_id中推断出docker_image_name?
     pub docker_image_hash: Option<String>,
-    pub direct_image: Option<String>,         // 现在这里只要是Some就可以，以后可以放二进制包的url
-    pub data_mount_point: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_mount_point: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_cache_mount_point: Option<String>,
-    //extra mount pint, real_path:docker_inner_path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extra_mounts: Option<HashMap<String,String>>,
+    pub service_pkg_id: Option<String>,    
+
+    pub data_mount_point: Vec<String>,
+    pub cache_mount_point: Vec<String>,
+    pub local_cache_mount_point: Vec<String>,
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cpu_num: Option<u32>,
@@ -120,8 +161,7 @@ pub struct AppServiceInstanceConfig {
 
     // target port ==> real port in docker
     pub tcp_ports: HashMap<u16,u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub udp_ports: Option<HashMap<u16,u16>>,
+    pub udp_ports: HashMap<u16,u16>,
     //pub service_image_name : String, // support mutil platform image name (arm/x86...)
 }
 
@@ -133,19 +173,19 @@ impl AppServiceInstanceConfig {
             target_state: "Running".to_string(),
             app_id: app_config.app_id.clone(),
             user_id:owner_user_id.to_string(),
-            image_pkg_id: None,
+            app_pkg_id: None,
+            docker_image_pkg_id: None,
             docker_image_name: None,
             docker_image_hash: None,
-            direct_image: None,
+            service_pkg_id: None,
             data_mount_point: app_config.data_mount_point.clone(),
             cache_mount_point: app_config.cache_mount_point.clone(),
             local_cache_mount_point: app_config.local_cache_mount_point.clone(),
-            extra_mounts: app_config.extra_mounts.clone(),
             max_cpu_num: app_config.max_cpu_num.clone(),
             max_cpu_percent: app_config.max_cpu_percent.clone(),
             memory_quota: app_config.memory_quota.clone(),
             tcp_ports: HashMap::new(),//TODO
-            udp_ports: None,
+            udp_ports: HashMap::new(),
         }
     }
 
@@ -233,17 +273,34 @@ impl ControlPanelClient {
     pub fn new(system_config_client: SystemConfigClient) -> Self {
         Self { system_config_client }
     }
+    //return (rbac_model,rbac_policy)
+    pub async fn load_rbac_config(&self) -> Result<(String,String)> {
+        let rbac_model_path = "system/rbac/model";
+        let rbac_model_result = self.system_config_client.get(rbac_model_path).await;
+        if rbac_model_result.is_err() {
+            return Err(RPCErrors::ReasonError("rbac model not found".to_string()));
+        }
+        let rbac_model_result = rbac_model_result.unwrap();
 
-    pub async fn load_zone_config(&self) -> Result<String> {
+        let rbac_policy_path = "system/rbac/policy";
+        let rbac_policy_result = self.system_config_client.get(rbac_policy_path).await;
+        if rbac_policy_result.is_err() {
+            return Err(RPCErrors::ReasonError("rbac policy not found".to_string()));
+        }
+        let rbac_policy_result = rbac_policy_result.unwrap();
+        return Ok((rbac_model_result.0,rbac_policy_result.0));   
+    }
+
+    pub async fn load_zone_config(&self) -> Result<ZoneConfig> {
         let zone_config_path = "boot/config";
         let zone_config_result = self.system_config_client.get(zone_config_path).await;
         if zone_config_result.is_err() {
-            return Err(RPCErrors::ReasonError("boot config(Zone config) not found".to_string()));
+            return Err(RPCErrors::ReasonError(format!("get boot config(Zone config) failed:{}",zone_config_result.err().unwrap())));
         }
         let (zone_config_str,_version) = zone_config_result.unwrap();
-        //let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str)
-        //    .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        Ok(zone_config_str)
+        let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        Ok(zone_config)
     }
 
     pub async fn get_device_info(&self,device_id:&str) -> Result<DeviceInfo> {
@@ -352,5 +409,53 @@ impl ControlPanelClient {
 
     pub async fn disable_app(&self,appid:&str) -> Result<u64> {
         unimplemented!();
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system_config::*;
+    use crate::control_panel::*;
+    use serde_json::json;
+    #[tokio::test]
+    async fn test_get_parse_app_doc() {
+        let app_doc = json!({
+            "pkg_name":"buckyos.home-station",
+            "version":"1.0.0",
+            "tag":"latest",
+            "app_name" : "Home Station",
+            "description" : "Home Station",
+            "author" : "did:bns:buckyos",
+            "pub_time":1715760000,
+            "pkg_list" : {
+                "amd64_docker_image" : {
+                    "pkg_id":"home-station-x86-img",
+                    "docker_image_name":"filebrowser/filebrowser:s6"
+                },
+                "aarch64_docker_image" : {
+                    "pkg_id":"home-station-arm64-img",
+                    "docker_image_name":"filebrowser/filebrowser:s6"
+                },
+                "web_pages" :{
+                    "pkg_id" : "home-station-web-page"
+                },
+                "amd64_direct_image" :{
+                    "pkg_id" : "home-station-web-page",
+                    "package_url": "https://web3.buckyos.io/static/home-station-win.zip"
+                },
+                "amd64_win_app" :{
+                    "pkg_id" : "home-station-win-app"
+                },
+                "amd64_linux_app" :{
+                    "pkg_id" : "home-station-linux-app"
+                }
+            }
+        });
+        let app_doc:AppDoc = serde_json::from_value(app_doc).unwrap();
+        println!("{}#{}", app_doc.pkg_name, app_doc.version);
+        let app_doc_str = serde_json::to_string_pretty(&app_doc).unwrap();
+        println!("{}", app_doc_str);
     }
 }

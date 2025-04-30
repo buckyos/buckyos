@@ -23,21 +23,18 @@ def install_rust_toolchain():
     """Install Rust toolchain and cross-compilation support"""
     # Install basic development tools and OpenSSL dev library
     run_command("apt-get update")
-    run_command("apt-get install -y build-essential curl wget git pkg-config libssl-dev docker.io")
+    run_command("apt-get install -y build-essential curl wget git pkg-config libssl-dev docker.io rustup")
     
-    # Install Rust using rustup (instead of apt)
-    run_command('curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y')
-    
-    # Reload environment variables to make rustup available
-    run_command('source $HOME/.cargo/env', exit_on_error=False)
+
     
     # Install cross-compilation tools
     run_command("apt-get install -y musl-tools")
     run_command("apt-get install -y gcc-aarch64-linux-gnu")
+    run_command("rustup toolchain install stable")
     
     # Add Rust targets
-    run_command("$HOME/.cargo/bin/rustup target add x86_64-unknown-linux-musl")
-    run_command("$HOME/.cargo/bin/rustup target add aarch64-unknown-linux-gnu")
+    run_command("rustup target add x86_64-unknown-linux-musl")
+    run_command("rustup target add aarch64-unknown-linux-gnu")
 
 def install_nodejs():
     """Install latest version of Node.js and pnpm"""

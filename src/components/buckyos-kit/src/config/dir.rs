@@ -131,6 +131,8 @@ async fn load_file(file: &Path) -> Result<JsonValue, Box<dyn std::error::Error>>
 ///   ]
 /// }
 ///
+/// 
+
 
 pub async fn load_dir_with_root(
     dir: &Path,
@@ -140,7 +142,7 @@ pub async fn load_dir_with_root(
 
     let root_value = load_file(root_file).await?;
 
-    let root_config: RootConfig = serde_json::from_value(root_value).map_err(|e| {
+    let root_config: RootConfig = serde_json::from_value(root_value.clone()).map_err(|e| {
         let msg = format!("Failed to parse root config: {:?}", e);
         error!("{}", msg);
         msg
@@ -169,6 +171,10 @@ pub async fn load_dir_with_root(
             });
         }
     }
+    config.push(ConfigItem {
+        path: root_file.to_path_buf(),
+        value: root_value,
+    });
 
     Ok(config)
 }

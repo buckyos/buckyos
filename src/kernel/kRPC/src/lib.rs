@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use thiserror::Error;
 
+//TODO:整体设计基本与jsonrpc2.0一致，要考虑是否完全兼容
+
 #[derive(Error, Debug)]
 pub enum RPCErrors {
     #[error("Failed due to reason: {0}")]
@@ -148,7 +150,7 @@ mod test {
         let req = RPCRequest {
             method: "add".to_string(),
             params: json!({"a":1,"b":2}),
-            seq: 100,
+            id: 100,
             token: Some("$dsdsd".to_string()),
             trace_id: Some("$trace_id".to_string()),
         };

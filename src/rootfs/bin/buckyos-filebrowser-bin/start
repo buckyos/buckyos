@@ -1,0 +1,97 @@
+#!/usr/bin/python3
+import os
+import sys
+import json
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
+import util
+
+# os.system(f"python3 {start_script} {appid} {username}")
+# 命令行参数类似标准的system service, 主要通过环境变量来传递复杂参数
+# 本脚本将读取buckeyes的环境变量转化为filebrowser支持的命令行参数
+# filebrowser -r /path/to/your/files -d /var/lib/filebrowser/filebrowser.db -c /etc/filebrowser/config.json -p 8080 -a 0.0.0.0
+
+appid = None
+full_appid = None
+owner_userid = None
+app_token = None
+app_instance_config = None
+zone_config = None
+device_info = None
+
+def get_app_bin_path(appid):
+    bin_path = os.path.join(current_dir, appid)
+    if util.ext:
+        bin_path += util.ext
+    return bin_path
+
+def load_app_instance_cfg():
+    global appid, full_appid,owner_userid, app_token, app_instance_config
+    global zone_config,device_info
+
+
+    app_token_env_key = util.get_session_token_env_key(full_appid, True)
+    app_token = os.getenv(app_token_env_key)
+    app_instance_config_str = os.getenv("app_instance_config")
+    zone_config_str = os.getenv(f"BUCKYOS_ZONE_CONFIG")
+    zone_config = None
+    device_info_str = os.getenv(f"BUCKYOS_THIS_DEVICE_INFO")
+    device_info = None
+
+    if zone_config_str:
+        zone_config = json.loads(zone_config_str)
+        docker_repo_base_url = zone_config.get("docker_repo_base_url")
+        if docker_repo_base_url:
+            zone_docker_repo_base_url = docker_repo_base_url
+    
+    if device_info_str:
+        device_info = json.loads(device_info_str)
+
+    if app_token is None:
+        print(f"No session token found for appid: {full_appid}")
+        exit(1)
+        
+    if app_instance_config_str is None:
+        print(f"No configuration found for appid: {full_appid}")
+        exit(1)
+    app_instance_config = json.loads(app_instance_config_str)
+    return app_instance_config
+
+def start_app(instance_cfg):
+    tcp_ports = instance_cfg.get("tcp_ports")
+    if tcp_ports is None:
+        print(f"No tcp_ports found for appid: {full_appid}")
+        exit(1)
+        
+    will_use_port = 0
+    for real_port, docker_port in tcp_ports.items():
+        if docker_port == 80:
+            will_use_port = real_port
+            break
+
+    if will_use_port == 0:  
+        print(f"No tcp_ports found for appid: {full_appid}")
+        exit(1)
+    
+    data_dir = os.path.join(util.get_app_data_dir(appid,owner_userid),"srv")
+    config_dir = os.path.join(util.get_app_data_dir(appid,owner_userid),"config")
+    db_dir = os.path.join(util.get_app_data_dir(appid,owner_userid),"database")
+    bin_path = get_app_bin_path("filebrowser")
+    params = f"-r {data_dir} -c {config_dir}/config.json -d {db_dir}/filebrowser.db -p {will_use_port} -a 127.0.0.1"
+    cmd = f"{bin_path} {params}"
+    util.nohup_start(cmd, env_vars=None)
+
+def try_stop_app(cfg):
+    util.kill_process("filebrowser")
+
+if __name__ == "__main__":
+    appid = sys.argv[1]
+    owner_userid = sys.argv[2]
+    full_appid = util.get_full_appid(appid, owner_userid)
+    bin_path = get_app_bin_path("filebrowser")
+    instance_cfg = load_app_instance_cfg()
+    try_stop_app(instance_cfg)
+    start_app(instance_cfg)
+
+
+    

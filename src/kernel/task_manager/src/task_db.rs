@@ -407,7 +407,6 @@ lazy_static::lazy_static! {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use std::fs;
     use tempfile::tempdir;
 
     // 创建测试任务的辅助函数
@@ -472,7 +471,7 @@ mod tests {
         
         // 获取并验证任务
         let retrieved_task = db.get_task(id).await.unwrap().unwrap();
-        assert_eq!(retrieved_task.id, id);
+        assert_eq!(retrieved_task.id, id as i32);
         assert_eq!(retrieved_task.name, "task1");
         assert_eq!(retrieved_task.title, "Test Task task1");
         assert_eq!(retrieved_task.status, TaskStatus::Pending);

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use version_compare::Cmp;
 use std::str::FromStr;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionExpType {
     None,
     Req(VersionReq),
@@ -39,7 +39,7 @@ impl FromStr for VersionExpType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionExp {
     pub tag: Option<String>,
     pub version_exp: VersionExpType,
@@ -97,13 +97,13 @@ impl VersionExp {
                         match comparator.op {
                             Op::Greater | Op::GreaterEq => {
                                 let min = Self::comparator_to_int(comparator)?;
-                                let max = u64::MAX;
-                                Ok((min, max))
+                                let max = i64::MAX;
+                                Ok((min as u64, max as u64))
                             }
                             Op::Less | Op::LessEq => {
-                                let min = u64::MIN;
+                                let min = i64::MIN;
                                 let max = Self::comparator_to_int(comparator)?;
-                                Ok((min, max))
+                                Ok((min as u64, max as u64))
                             }
                             _ => {
                                 return Err(PkgError::ParseError(self.to_string(), "VersionExp can not be converted to range int".to_string()));
@@ -227,7 +227,7 @@ pkg_name#>0.1.4,<=0.1.6:stable : 指定范围版本里的,有stable tag的版本
 pkg_name#$objid : 指定一个精确版本
 pkg_name#0.1.5#$objid : 语义更强的指定一个精确版本，在加载的时候会对版本号进行验证
  */
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageId {
     pub name: String,
     pub version_exp: Option<VersionExp>,
@@ -267,6 +267,24 @@ impl PackageId {
         } else {
             return None;
         }
+    }
+
+    pub fn get_pkg_id_simple_name(pkg_id: &str) -> String {
+        let the_pkg_id = PackageId::parse(pkg_id);
+        if the_pkg_id.is_err() {
+            return pkg_id.to_string();
+        }
+        let the_pkg_id = the_pkg_id.unwrap();
+        the_pkg_id.to_simple_name()
+    }
+
+    pub fn to_simple_name(&self) -> String {
+        //after . and before #
+        let mut result = self.name.clone();
+        if let Some(pos) = result.find('.') {
+            result = result[pos + 1..].to_string();
+        }
+        result
     }
 
     pub fn parse(pkg_id: &str) -> PkgResult<PackageId> {
@@ -334,8 +352,17 @@ mod tests {
         let result = PackageId::parse(pkg_id).unwrap();
         assert_eq!(&result.name, "a");
         assert_eq!(result.version_exp.as_ref().unwrap().to_string(), "0.1.0:stable".to_string());
+        assert_eq!(result.version_exp.as_ref().unwrap().tag,Some("stable".to_string()));
         let pkg_id2 = result.to_string();
         assert_eq!(pkg_id, pkg_id2);
+
+        let pkg_id = "nightly-linux-amd64.buckyos-filebrowser#0.4.0";
+        let result = PackageId::parse(pkg_id).unwrap();
+        assert_eq!(&result.name, "nightly-linux-amd64.buckyos-filebrowser");
+        assert_eq!(result.version_exp.as_ref().unwrap().to_string(), "0.4.0".to_string());
+        assert_eq!(result.version_exp.as_ref().unwrap().tag,None);
+        let simple_name = result.to_simple_name();
+        assert_eq!(simple_name, "buckyos-filebrowser".to_string());
 
         let pkg_id = "a#1234567890";
         let result = PackageId::parse(pkg_id).unwrap();
@@ -358,6 +385,8 @@ mod tests {
         assert_eq!(result.version_exp.as_ref().unwrap().to_string(), ">0.1.0, <0.1.2:stable".to_string());
         let pkg_id2 = result.to_string();
         assert_eq!(pkg_id, pkg_id2);
+
+
     }
 
     #[test]

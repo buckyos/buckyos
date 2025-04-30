@@ -12,6 +12,7 @@ use serde_json::from_value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use url::Url;
+use buckyos_api::ZONE_PROVIDER;
 
 pub struct GatewayConfig {
     pub dispatcher: HashMap<Url, DispatcherConfig>,
@@ -131,17 +132,18 @@ impl GatewayConfig {
     pub async fn load_from_json_value(json_value: serde_json::Value) -> Result<Self, String> {
         let mut device_key_path = PathBuf::new();
         if let Some(Some(path)) = json_value.get("device_key_path").map(|p| p.as_str()) {
-            device_key_path =
-                adjust_path(path).map_err(|e| format!("adjust path failed! {}", e))?;
+            device_key_path = adjust_path(path).
+                map_err(|e| format!("adjust path failed! {}", e))?;
+
             info!(
                 "adjust device key path {} to {}",
-                path,
-                device_key_path.display()
+                path,device_key_path.display()
             );
         }
 
         let device_name:Option<String> = json_value.get("device_name").map(|v| v.as_str()).flatten().map(|s| s.to_string());
         // register inner services
+        //TODO:需要通过插件优化，否则每次添加一个新的类型都要在这里添加注册函数
         if let Some(Some(inner_services)) = json_value.get("inner_services").map(|v| v.as_object())
         {
             for (server_id, server_config) in inner_services.iter() {
@@ -155,18 +157,24 @@ impl GatewayConfig {
                 }
                 let server_type = server_type.unwrap();
                 match server_type {
-                    "cyfs_sn" => {
+                    "cyfs-sn" => {
                         let sn_config =
                             serde_json::from_value::<SNServerConfig>(server_config.clone());
                         if sn_config.is_err() {
                             return Err(format!("Invalid sn config: {}", sn_config.err().unwrap()));
                         }
                         let sn_config = sn_config.unwrap();
-                        let sn_server = SNServer::new(Some(sn_config));
+                        let sn_server = SNServer::new(sn_config);
                         register_sn_server(server_id, sn_server.clone()).await;
                         info!("Register sn server: {:?}", server_id);
                         register_inner_service_builder(server_id, move || {
                             Box::new(sn_server.clone())
+                        })
+                        .await;
+                    }
+                    "zone-provider" => {
+                        register_inner_service_builder(server_id, move || {
+                            Box::new(ZONE_PROVIDER.clone())
                         })
                         .await;
                     }

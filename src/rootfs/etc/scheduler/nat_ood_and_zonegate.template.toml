@@ -331,11 +331,9 @@
             "user_id":"{{user_name}}",
             "docker_image_name" : "filebrowser/filebrowser:s6",
             "sub_pkg_id":"home-station-x86-img",
-            "data_mount_point" : "/srv",
-            "cache_mount_point" : "/database/",
-            "extra_mounts" : {
-                "/opt/buckyos/data/{{user_name}}/home-station/config":"/config"
-            },
+            "data_mount_point" : ["/srv","/database","/config"],
+            "cache_mount_point" : [],
+            "local_cache_mount_point" : [],
             "max_cpu_num" : 4,
             "max_cpu_percent" : 80,
             "memory_quota" : 1073741824,

@@ -55,100 +55,34 @@ use anyhow::Result;
 
 pub const DEFAULT_RTCP_STACK_PORT: u16 = 2980;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum RTcpTargetId {
-    DeviceName(String),
-    DeviceDid(DID),
-}
-
-impl RTcpTargetId {
-    pub fn from_str(value: &str) -> Option<Self> {
-        if value.ends_with(".did") {
-            let did = DID::from_host_name(value)?;
-            return Some(RTcpTargetId::DeviceDid(did));
-        }
-        if value.starts_with("did:") {
-            let did = DID::from_str(value)?;
-            return Some(RTcpTargetId::DeviceDid(did));
-        }
-        Some(RTcpTargetId::DeviceName(value.to_string()))
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct RTcpTargetStackId {
-    pub id: RTcpTargetId,
+pub(crate) struct RTcpTargetStackEP {
+    pub did: DID,
     pub stack_port: u16
 }
 
-impl RTcpTargetStackId {
-    pub fn new(hostname: &str, stack_port: u16) -> Result<Self> {
-        let id = RTcpTargetId::from_str(hostname);
-        if id.is_none() {
-            return Err(anyhow::anyhow!("invalid hostname:{}", hostname));
-        }
-        Ok(RTcpTargetStackId {
-            id: id.unwrap(),
+impl RTcpTargetStackEP {
+    pub fn new(target_did: DID, stack_port: u16) -> Result<Self> {
+        Ok(RTcpTargetStackEP {
+            did: target_did,
             stack_port
         })
-    }
-
-    pub fn from_did_str(did: String) -> Self {
-        let did = DID::from_str(&did).unwrap();
-        RTcpTargetStackId {
-            id: RTcpTargetId::DeviceDid(did),
-            stack_port: DEFAULT_RTCP_STACK_PORT,
-        }
-    }
-
-    pub fn from_hostname(name: String) -> Self {
-        RTcpTargetStackId {
-            id: RTcpTargetId::DeviceName(name),
-            stack_port: DEFAULT_RTCP_STACK_PORT,
-        }
-    }
-
-    pub fn get_id_str(&self) -> String {
-        match self.id {
-            RTcpTargetId::DeviceName(ref name) => name.clone(),
-            RTcpTargetId::DeviceDid(ref did) => did.to_host_name(),
-        }
     }
 }
 
 // xxx.dev.did:2980 or xxx:2980 
-pub(crate) fn parse_rtcp_stack_id(stack_id: &str) -> Option<RTcpTargetStackId> {
-    let mut stack_port = DEFAULT_RTCP_STACK_PORT;
-    let mut target_host_name = stack_id.to_string();
-    let parts = stack_id.split(":").collect::<Vec<&str>>();
-    if parts.len() > 2 {
+pub(crate) fn parse_rtcp_stack_id(stack_id: &str) -> Option<RTcpTargetStackEP> {
+    let stack_port = DEFAULT_RTCP_STACK_PORT;
+    //let mut target_host_name = stack_id.to_string();
+    let target_did = DID::from_str(stack_id);
+    if target_did.is_err() {
         return None;
     }
+    let target_did = target_did.unwrap();
 
-    if parts.len() == 2 {
-        let _port = parts[1].parse::<u16>();
-        if _port.is_ok() {
-            stack_port = _port.unwrap();
-        } else {
-            return None;
-        }
-        target_host_name = parts[0].to_string();
-    }
-    if target_host_name.len() < 2 {
-        return None;
-    }
-
-    let result_id: RTcpTargetId;
-
-    let target_did = DID::from_host_name(target_host_name.as_str());
-    if target_did.is_some() {
-        result_id = RTcpTargetId::DeviceDid(target_did.unwrap());
-    } else {
-        result_id = RTcpTargetId::DeviceName(target_host_name);
-    }
-
-    let target = RTcpTargetStackId {
-        id: result_id,
+    let target = RTcpTargetStackEP {
+        did: target_did,
         stack_port: stack_port,
     };
 

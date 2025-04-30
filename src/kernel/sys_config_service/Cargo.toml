@@ -24,7 +24,6 @@ jsonwebtoken = "*"
 # rocksdb = "*"
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
-buckyos-api = { path = "../buckyos-api" }
 kRPC ={ path = "../kRPC" }
 rbac = { path = "../rbac" }
 

@@ -232,7 +232,7 @@ impl NsProvider for CloudflareProvider {
         Ok(name_info)
     }
 
-    async fn query_did(&self, _did: &str, _fragment: Option<&str>, _from_ip: Option<IpAddr>) -> NSResult<EncodedDocument> {
+    async fn query_did(&self, _did: &DID, _fragment: Option<&str>, _from_ip: Option<IpAddr>) -> NSResult<EncodedDocument> {
         Err(NSError::Failed("DID query not supported by Cloudflare provider".to_string()))
     }
 }
