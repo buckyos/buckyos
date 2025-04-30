@@ -14,7 +14,7 @@ async fn main() -> Result<(), String> {
     let matches = Command::new("buckyos control tool")
         .author("buckyos")
         .about("control tools")
-        .subcommand_required(true)
+        // .subcommand_required(true)  //  即可以subcommand也可以arg
         .arg_required_else_help(true)
         .arg(
             Arg::new("id")
@@ -140,6 +140,28 @@ async fn main() -> Result<(), String> {
                         .help("node_id in current machine, default 'node'")
                 )
         )
+        .arg(
+            Arg::new("get_config")
+                .long("get_config")
+                .value_name("key")                 // 控制占位符名称
+                .help("get system config, buckycli --get_config $key")
+        )
+        .arg(
+            Arg::new("set_config")
+                .long("set_config")
+                .value_name("key value")
+                .help("set system config,
+    buckycli --set_config $key $value
+    buckycli --set_config $key --file filename.")
+        )
+        .arg(
+            Arg::new("file")
+                .long("file")
+                .value_name("filename")
+                .num_args(1)
+                .help("set system config with file content. filename = file path.
+    buckycli --set_config $key --file filename")
+        )
         .get_matches();
     
 
@@ -164,6 +186,35 @@ async fn main() -> Result<(), String> {
         private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
     }
 
+
+    // 如果有参数，而不是子命令
+    // eg. buckycli --get_config $key
+    if let Some(key) = matches.get_one::<String>("get_config") {
+        println!("Get config, key[{}]", key);
+        sys_config::get_config(key).await;
+        return Ok(());
+    }
+    if let Some(key) = matches.get_one::<String>("set_config") {
+        if let Some(file) = matches.get_one::<String>("file") {
+            // 读取文件内容
+            let content = std::fs::read_to_string(file)
+                .unwrap_or_else(|_| panic!("无法读取文件: {}", file));
+            sys_config::set_config(key, &content).await;
+            return Ok(());
+        }
+
+
+        let config_values: Vec<&String> = matches
+            .get_many::<String>("set_config")
+            .expect("必须提供 key 和 value 参数")
+            .collect();
+        let key = config_values[0];
+        let value = config_values[1];
+        sys_config::set_config(key, value).await;
+        return Ok(());
+    }
+
+    // 处理子命令
     match matches.subcommand() {
         Some(("version", _)) => {
             let version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");

@@ -3,6 +3,35 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use buckyos_api::*;
 
+pub async fn get_config(key: &str) {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
+    let result = syc_cfg_client.get(key).await;
+    match result {
+        Ok(value) => {
+            println!("value:");
+            println!("{}", value.0);
+            println!("version:");
+            println!("{}", value.1);
+        }
+        Err(err) => println!("config get error: {}", err),
+    }
+}
+
+pub async fn set_config(key: &str, value: &str) {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
+    let result = syc_cfg_client.set(key, value).await;
+    match result {
+        Ok(version) => println!("{} 已设置为 {}, version: {}", key, value, version),
+        Err(err) => println!("config set error: {}", err),
+    }
+}
+
+
+
+
+
 pub async fn connect_into() {
     let api_runtime = get_buckyos_api_runtime().unwrap();
     let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
@@ -43,10 +72,11 @@ pub async fn connect_into() {
                                 println!("version:");
                                 println!("{}", value.1);
                             }
-                            Err(err) => println!("错误: {}", err),
+                            Err(err) => println!("config get error: {}", err),
                         }
                     }
                     "set" => {
+                        // TODO 询问是否覆盖
                         if parts.len() != 3 {
                             println!("用法: set <key> <value>");
                             continue;
@@ -56,7 +86,49 @@ pub async fn connect_into() {
                         let result = syc_cfg_client.set(key, value).await;
                         match result {
                             Ok(version) => println!("{} 已设置为 {}, version: {}", key, value, version),
-                            Err(err) => println!("错误: {}", err),
+                            Err(err) => println!("config set error: {}", err),
+                        }
+                    }
+                    "list" => {
+                        if parts.len()!= 2 {
+                            println!("用法: list <key>");
+                            continue;
+                        }
+                        let key = parts[1];
+                        let result = syc_cfg_client.list(key).await;
+                        match result {
+                            Ok(value) => {
+                                value.iter().for_each(|item| {
+                                    println!("{}", item);
+                                });
+                            }
+                            Err(err) => println!("config list error: {}", err),
+                        }
+                    }
+                    "del" => {
+                        if parts.len()!= 2 {
+                            println!("用法: del <key>");
+                            continue;
+                        }
+                        let key = parts[1];
+                        let result = syc_cfg_client.delete(key).await;
+                        match result {
+                            Ok(version) => println!("key [{}] 已删除, version: {}", key, version),
+                            Err(err) => println!("config delete error: {}", err),
+                        }
+                    }
+                    "set_jpath" | "set_jsonpath" => {
+                        if parts.len()!= 4 {
+                            println!("用法: jsonpath <key>/<json_path> <value>");
+                            continue;
+                        }
+                        let key = parts[1];
+                        let json_path = parts[2];
+                        let value = parts[3];
+                        let result = syc_cfg_client.set_by_json_path(key, json_path, value).await;
+                        match result {
+                            Ok(version) => println!("key [{}] 已设置, version: {}", key, version),
+                            Err(err) => println!("config set by json path error: {}", err),
                         }
                     }
                     "exit" => {

@@ -11,6 +11,7 @@ mod fileobj;
 mod mtree;
 mod hash;
 mod object_map;
+mod path_object_map;
 
 pub use object::*;
 pub use chunk::*;
@@ -23,6 +24,7 @@ pub use fileobj::*;
 pub use hash::*;
 pub use mtree::*;
 pub use object_map::*;
+pub use path_object_map::*;
 
 use thiserror::Error;
 
