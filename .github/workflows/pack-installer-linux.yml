@@ -49,6 +49,8 @@ jobs:
               uses: actions/download-artifact@v4
               with:
                 name: buckyos-tools-linux-x86_64-${{inputs.version}}-${{ inputs.build_time }}
+                github-token: ${{ secrets.GITHUB_TOKEN }}
+                run-id: ${{inputs.run_id}}
             - name: Prepare Tools
               run: chmod +x ./tools/*
             - name: make deb
