@@ -61,6 +61,8 @@ jobs:
               run: python3 scripts/make_deb.py ${{matrix.arch}} ${{inputs.version}} ${{inputs.build_time}}
               env:
                 BUCKYCLI_PATH: ${{github.workspace}}/tools/buckycli
+            - name: check deb
+              run: ls -l ./src/*.deb
             - name: Upload deb
               uses: actions/upload-artifact@v4
               with:
