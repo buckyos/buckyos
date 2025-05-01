@@ -27,6 +27,3 @@ pub trait ObjectMapInnerStorage: Send + Sync {
     async fn put_mtree_data(&mut self, value: &[u8]) -> NdnResult<()>;
     async fn load_mtree_data(&self) -> NdnResult<Option<Vec<u8>>>;
 }
-
-
-// Use to map key to path, first hash(key) -> base32 ->
