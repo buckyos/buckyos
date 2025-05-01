@@ -53,12 +53,14 @@ jobs:
                 run-id: ${{inputs.run_id}}
                 path: tools
             - name: Prepare Tools
-              run: chmod +x ./tools/*
+              run: |
+                chmod +x ./tools/*
+                ls -l ./tools
             - name: make deb
               working-directory: ./src
               run: python3 scripts/make_deb.py ${{matrix.arch}} ${{inputs.version}} ${{inputs.build_time}}
               env:
-                BUCKYCLI_PATH: ./tools/buckycli
+                BUCKYCLI_PATH: ${{github.workspace}}/tools/buckycli
             - name: Upload deb
               uses: actions/upload-artifact@v4
               with:
