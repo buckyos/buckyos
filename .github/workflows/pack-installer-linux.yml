@@ -56,7 +56,7 @@ jobs:
               run: chmod +x ./tools/*
             - name: make deb
               working-directory: ./src
-              run: python3 scripts/make_deb.py ${{matrix.arch}} ${{inputs.version}}
+              run: python3 scripts/make_deb.py ${{matrix.arch}} ${{inputs.version}} ${{inputs.build_time}}
               env:
                 BUCKYCLI_PATH: ./tools/buckycli
             - name: Upload deb

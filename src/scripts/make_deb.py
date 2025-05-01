@@ -3,7 +3,7 @@ import sys
 import tempfile
 import shutil
 import subprocess
-
+from datetime import datetime
 import perpare_installer
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -22,7 +22,7 @@ def adjust_control_file(dest_dir, new_version, architecture):
 
 temp_dir = tempfile.gettempdir()
 
-def make_deb(architecture, version):
+def make_deb(architecture, version, builddate):
     print(f"make deb with architecture: {architecture}, version: {version}")
     deb_root_dir = os.path.join(temp_dir, "deb_build")
     print(f"deb_root_dir: {deb_root_dir}")
@@ -34,7 +34,7 @@ def make_deb(architecture, version):
     adjust_control_file(deb_dir, version, architecture)
     dest_dir = os.path.join(deb_dir, "opt", "buckyos")
 
-    perpare_installer.prepare_installer(dest_dir, "nightly", "linux", architecture, version)
+    perpare_installer.prepare_installer(dest_dir, "nightly", "linux", architecture, version, builddate)
 
     print(f"run: chmod -R 755 {deb_dir}")
     subprocess.run(["chmod", "-R", "755", deb_dir], check=True)
@@ -49,6 +49,7 @@ if __name__ == "__main__":
     architecture = "amd64"
     #architecture = "aarch64"
     version = "0.4.0"
+    builddate = datetime.now().strftime("%Y%m%d")
 
     if len(sys.argv) > 1:
         architecture = sys.argv[1]
@@ -56,6 +57,9 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         version = sys.argv[2]
 
+    if len(sys.argv) > 3:
+        builddate = sys.argv[3]
+
     if architecture == "x86_64":
         architecture = "amd64"
-    make_deb(architecture, version)
+    make_deb(architecture, version, builddate)
