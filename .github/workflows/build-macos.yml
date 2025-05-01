@@ -45,6 +45,16 @@ jobs:
       run: python3 scripts/build.py --no-build-web-apps --no-install --target=${{inputs.arch}}-apple-darwin
     - name: Tar Rootfs
       run: tar -cvf rootfs.tar ./src/rootfs
+    - name: Prepare tools
+      run: |
+        mkdir -p tools
+        cp ./src/rootfs/bin/buckycli/buckycli ./tools/
+    - name: Upload tools
+      uses: actions/upload-artifact@v4
+      with:
+        name: buckyos-tools-macos-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        path: tools
+        if-no-files-found: error
     - name: Upload
       id: upload
       uses: actions/upload-artifact@v4

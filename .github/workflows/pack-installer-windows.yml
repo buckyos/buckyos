@@ -43,7 +43,7 @@ jobs:
                   run-id: ${{inputs.run_id}}
             - name: Prepare Installer
               working-directory: ./src
-              run: python3 scripts/make_win_installer.py ${{inputs.version}} --no-build
+              run: python3 scripts/make_win_installer.py --version=${{inputs.version}} --builddate=${{inputs.build_time}} --no-build
             - name: Build Installer
               uses: ImagineBoom/Inno-Setup-Action@v1.0.0
               with:

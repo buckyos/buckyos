@@ -43,3 +43,9 @@ jobs:
               run: tar -xvf rootfs.tar
             - name: check rootfs
               run: ls -l ./src/rootfs
+            - name: Download Tools
+              uses: actions/download-artifact@v4
+              with:
+                name: buckyos-tools-linux-x86_64-${{inputs.version}}-${{ inputs.build_time }}
+            - name: Prepare Tools
+              run: chmod +x ./tools/*

@@ -45,9 +45,17 @@ jobs:
               run: tar -xvf rootfs.tar
             - name: check rootfs
               run: ls -l ./src/rootfs
+            - name: Download Tools
+              uses: actions/download-artifact@v4
+              with:
+                name: buckyos-tools-linux-x86_64-${{inputs.version}}-${{ inputs.build_time }}
+            - name: Prepare Tools
+              run: chmod +x ./tools/*
             - name: make deb
               working-directory: ./src
               run: python3 scripts/make_deb.py ${{matrix.arch}} ${{inputs.version}}
+              env:
+                BUCKYCLI_PATH: ./tools/buckycli
             - name: Upload deb
               uses: actions/upload-artifact@v4
               with:

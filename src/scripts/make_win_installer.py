@@ -10,7 +10,7 @@ src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 rootfs_dir = os.path.join(src_dir, "rootfs")
 installer_script = os.path.join(src_dir, "publish", "installer.iss")
 
-def make_installer(version, onlyBuild, noBuild):
+def make_installer(version, date, onlyBuild, noBuild):
     root_dir = os.path.join(src_dir, "buckyos_installer")
     dest_dir = os.path.join(root_dir, "rootfs")
     if not onlyBuild:
@@ -19,7 +19,6 @@ def make_installer(version, onlyBuild, noBuild):
         os.makedirs(root_dir)
         shutil.copy(installer_script, os.path.join(root_dir, "installer.iss"))
 
-        date = datetime.now().strftime("%Y%m%d")
         perpare_installer.prepare_installer(dest_dir, "nightly", "windows", "amd64", version, date)
 
         print(f"download home-station...")
@@ -47,7 +46,8 @@ def make_installer(version, onlyBuild, noBuild):
 
 if __name__ == "__main__":
     print("make sure YOU already run build.py!!!")
-    version = "0.3.0"
+    version = "0.4.0"
+    date = datetime.now().strftime("%Y%m%d")
     onlyBuild = False
     noBuild = False
     for arg in sys.argv:
@@ -55,6 +55,10 @@ if __name__ == "__main__":
             onlyBuild = True
         elif arg == "--no-build":
             noBuild = True
+        elif arg.startswith("--builddate="):
+            date = arg.split("=")[1]
+        elif arg.startswith("--version="):
+            version = arg.split("=")[1]
         else:
             version = arg
-    make_installer(version, onlyBuild, noBuild)
+    make_installer(version, date, onlyBuild, noBuild)
