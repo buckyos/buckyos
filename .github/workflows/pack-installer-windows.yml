@@ -33,7 +33,8 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v4
             - name: clean old rootfs
-              run: rmdir /S /Q .\src\rootfs 
+              run: rmdir /S /Q .\src\rootfs
+              shell: cmd
             - name: Download Artifact
               uses: actions/download-artifact@v4
               with:
@@ -50,7 +51,8 @@ jobs:
                 path: tools
             - name: Prepare Installer
               working-directory: ./src
-              run: python3 scripts/make_win_installer.py --version=${{inputs.version}} --builddate=${{inputs.build_time}} --no-build
+              run: scripts/make_win_installer.py --version=${{inputs.version}} --builddate=${{inputs.build_time}} --no-build
+              shell: python
               env:
                 BUCKYCLI_PATH: .\\tools\\buckycli.exe
             - name: Build Installer
