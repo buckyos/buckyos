@@ -26,6 +26,7 @@ def default_buckycli_path():
         buckycli_path += ".exe"
     return buckycli_path
 buckycli_path = os.getenv("BUCKYCLI_PATH", default_buckycli_path())
+print(f'use buckycli at {buckycli_path}')
 
 def prepare_meta_db(rootfs_dir):
     # 1 download base meta db
