@@ -53,7 +53,7 @@ jobs:
               working-directory: ./src
               run: python3 scripts/make_win_installer.py --version=${{inputs.version}} --builddate=${{inputs.build_time}} --no-build
               env:
-                BUCKYCLI_PATH: ${{github.workspace}}\\tools\\buckycli..exe
+                BUCKYCLI_PATH: ${{github.workspace}}\\tools\\buckycli.exe
             - name: Build Installer
               uses: ImagineBoom/Inno-Setup-Action@v1.0.0
               with:
