@@ -10,12 +10,15 @@ src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 publish_dir = os.path.join(src_dir, "publish", "deb_template")
 
 def adjust_control_file(dest_dir, new_version, architecture):
+    deb_arch = architecture
+    if deb_arch == "x86_64":
+        deb_arch = "amd64"
     control_file = os.path.join(dest_dir, "DEBIAN/control")
     f = open(control_file, "r")
     content = f.read()
     f.close()
     content = content.replace("{{package version here}}", new_version)
-    content = content.replace("{{architecture}}", architecture)
+    content = content.replace("{{architecture}}", deb_arch)
     f = open(control_file, "w")
     f.write(content)
     f.close()
@@ -41,14 +44,14 @@ def make_deb(architecture, version, builddate):
 
     subprocess.run([f"dpkg-deb --build {architecture}"], shell=True, check=True, cwd=deb_root_dir)
     print(f"build deb success at {deb_dir}")
-    
+
     dst_deb_path = os.path.join(src_dir, f"buckyos-{architecture}-{version}.deb")
     shutil.copy(f"{deb_root_dir}/{architecture}.deb", dst_deb_path)
     print(f"copy deb to {dst_deb_path}")
 
 if __name__ == "__main__":
     print("make sure YOU already run build.py!!!")
-    architecture = "amd64"
+    architecture = "x86_64"
     #architecture = "aarch64"
     version = "0.4.0"
     builddate = datetime.now().strftime("%Y%m%d")
@@ -62,6 +65,6 @@ if __name__ == "__main__":
     if len(sys.argv) > 3:
         builddate = sys.argv[3]
 
-    if architecture == "x86_64":
-        architecture = "amd64"
+    if architecture == "amd64":
+        architecture = "x86_64"
     make_deb(architecture, version, builddate)
