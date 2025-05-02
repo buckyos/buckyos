@@ -1,6 +1,6 @@
-use super::file::*;
+use super::{file::*, ObjectArray};
 use super::storage::{
-    ObjectArrayCacheType, ObjectArrayInnerCache, ObjectArrayStorageReader, ObjectArrayStorageType,
+    ObjectArrayCacheType, ObjectArrayInnerCache, ObjectArrayStorageType,
     ObjectArrayStorageWriter,
 };
 use super::memory_cache::ObjectArrayMemoryCache;
@@ -78,12 +78,12 @@ impl ObjectArrayStorageFactory {
         }
     }
 
-    pub async fn open_reader(&self, id: &ObjId) -> NdnResult<Box<dyn ObjectArrayStorageReader>> {
+    pub async fn open(&self, id: &ObjId, readonly: bool) -> NdnResult<Box<dyn ObjectArrayInnerCache>> {
         match self.storage_type {
             ObjectArrayStorageType::Arrow => {
                 let file_path = self.data_path.join(format!("{}.arrow", id.to_base32()));
-                let reader = ObjectArrayArrowReader::open(&file_path).await?;
-                Ok(Box::new(reader))
+                let reader = ObjectArrayArrowReader::open(&file_path, readonly).await?;
+                Ok(reader.into_cache())
             }
             ObjectArrayStorageType::SQLite => {
                 unimplemented!("SQLite storage is not implemented yet");

@@ -1,23 +1,20 @@
-use arrow::array::{ArrayBuilder, ArrayRef, BinaryArray, BinaryBuilder, StringArray, StringBuilder};
+use super::super::memory_cache::ObjectArrayMemoryCache;
+use super::super::storage::{
+    ObjectArrayCacheType, ObjectArrayInnerCache, ObjectArrayStorageType,
+    ObjectArrayStorageWriter,
+};
+use crate::ObjId;
+use crate::{NdnError, NdnResult};
+use arrow::array::{
+    ArrayBuilder, ArrayRef, BinaryArray, BinaryBuilder, StringArray, StringBuilder,
+};
 use arrow::datatypes::{DataType, Field, Schema};
-use arrow::record_batch::RecordBatch;
-use arrow::ipc::writer::FileWriter;
 use arrow::ipc::reader::FileReader;
+use arrow::ipc::writer::FileWriter;
+use arrow::record_batch::RecordBatch;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use crate::ObjId;
-use crate::{
-    NdnError,
-    NdnResult,
-};
-use std::fs::File;
-use super::super::storage::{
-    ObjectArrayStorageWriter,
-    ObjectArrayStorageReader,
-    ObjectArrayInnerCache,
-    ObjectArrayStorageType,
-    ObjectArrayCacheType,
-};
 
 pub struct ObjectArrayArrowCache {
     schema: Arc<Schema>,
@@ -33,31 +30,33 @@ impl ObjectArrayArrowCache {
         let schema = Arc::new(schema);
         let batch = RecordBatch::new_empty(schema.clone());
 
-        Self {
-            schema,
-            batch,
-        }
+        Self { schema, batch }
     }
 
     pub fn new(schema: Arc<Schema>, batch: RecordBatch) -> Self {
-        Self {
-            schema,
-            batch,
-        }
+        Self { schema, batch }
     }
 
     fn get(&self, index: usize) -> NdnResult<Option<ObjId>> {
         if index >= self.len() {
-            let msg = format!("Index out of bounds: {} >= {}", index, self.len);
+            let msg = format!("Index out of bounds: {} >= {}", index, self.len());
             error!("{}", msg);
             return Err(NdnError::OffsetTooLarge(msg));
         }
 
+        let obj_type_array = self
+            .batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let obj_hash_array = self
+            .batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
 
-        let obj_type_array = self.batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
-        let obj_hash_array = self.batch.column(1).as_any().downcast_ref::<BinaryArray>().unwrap();
-
-    
         let obj_type = obj_type_array.value(index).to_string();
         let obj_hash = obj_hash_array.value(index);
 
@@ -66,15 +65,31 @@ impl ObjectArrayArrowCache {
 
     fn get_range(&self, start: usize, end: usize) -> NdnResult<Vec<ObjId>> {
         if start >= self.len() || end > self.len() || start > end {
-            let msg = format!("Index out of bounds: {} >= {} or {} > {}", start, self.len(), end, self.len());
+            let msg = format!(
+                "Index out of bounds: {} >= {} or {} > {}",
+                start,
+                self.len(),
+                end,
+                self.len()
+            );
             error!("{}", msg);
             return Err(NdnError::OffsetTooLarge(msg));
         }
 
-        let obj_type_array = self.batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
-        let obj_hash_array = self.batch.column(1).as_any().downcast_ref::<BinaryArray>().unwrap();
+        let obj_type_array = self
+            .batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let obj_hash_array = self
+            .batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
         let mut ret = Vec::with_capacity(end - start);
-        
+
         for index in start..end {
             let obj_type = obj_type_array.value(index).to_string();
             let obj_hash = obj_hash_array.value(index);
@@ -85,7 +100,31 @@ impl ObjectArrayArrowCache {
     }
 
     fn len(&self) -> usize {
-        Ok(self.batch.num_rows())
+        self.batch.num_rows()
+    }
+
+    pub fn into_memory_cache(self) -> NdnResult<Box<dyn ObjectArrayInnerCache>> {
+        let obj_type_array = self
+            .batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let obj_hash_array = self
+            .batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
+
+        let mut cache = Vec::with_capacity(self.len());
+        for index in 0..self.len() {
+            let obj_type = obj_type_array.value(index).to_string();
+            let obj_hash = obj_hash_array.value(index);
+            cache.push(ObjId::new_by_raw(obj_type, obj_hash.to_vec()));
+        }
+
+        Ok(Box::new(ObjectArrayMemoryCache::new_array(cache)))
     }
 }
 
@@ -99,11 +138,8 @@ impl ObjectArrayInnerCache for ObjectArrayArrowCache {
         self.len()
     }
 
-    fn append(&mut self, value: &ObjId) -> NdnResult<()> {
-        self.batch.column(0).as_any().downcast_ref::<StringArray>().unwrap().append_value(&value.obj_type);
-        self.batch.column(1).as_any().downcast_ref::<BinaryArray>().unwrap().append_value(&value.obj_hash);
-
-        Ok(())
+    fn is_readonly(&self) -> bool {
+        true
     }
 
     fn get(&self, index: usize) -> NdnResult<Option<ObjId>> {
@@ -112,6 +148,36 @@ impl ObjectArrayInnerCache for ObjectArrayArrowCache {
 
     fn get_range(&self, start: usize, end: usize) -> NdnResult<Vec<ObjId>> {
         self.get_range(start, end)
+    }
+
+    fn append(&mut self, _value: &ObjId) -> NdnResult<()> {
+        let msg = "Append is not supported in Arrow cache".to_string();
+        error!("{}", msg);
+        Err(NdnError::InvalidState(msg))
+    }
+
+    fn insert(&mut self, _index: usize, _value: &ObjId) -> NdnResult<()> {
+        let msg = "Insert is not supported in Arrow cache".to_string();
+        error!("{}", msg);
+        Err(NdnError::InvalidState(msg))
+    }
+
+    fn remove(&mut self, _index: usize) -> NdnResult<()> {
+        let msg = "Remove is not supported in Arrow cache".to_string();
+        error!("{}", msg);
+        Err(NdnError::InvalidState(msg))
+    }
+
+    fn clear(&mut self) -> NdnResult<()> {
+        let msg = "Clear is not supported in Arrow cache".to_string();
+        error!("{}", msg);
+        Err(NdnError::InvalidState(msg))
+    }
+
+    fn pop(&mut self) -> NdnResult<Option<ObjId>> {
+        let msg = "Pop is not supported in Arrow cache".to_string();
+        error!("{}", msg);
+        Err(NdnError::InvalidState(msg))
     }
 }
 
@@ -125,8 +191,8 @@ pub struct ObjectArrayArrowWriter {
 
 impl ObjectArrayArrowWriter {
     pub fn new(file_path: PathBuf, len: Option<usize>) -> Self {
-        let mut obj_type_builder ;
-        let mut obj_hash_builder ;
+        let mut obj_type_builder;
+        let mut obj_hash_builder;
 
         match len {
             Some(len) => {
@@ -167,14 +233,12 @@ impl ObjectArrayArrowWriter {
         let obj_type_array: ArrayRef = Arc::new(self.obj_type_builder.finish());
         let obj_hash_array: ArrayRef = Arc::new(self.obj_hash_builder.finish());
 
-        let batch = RecordBatch::try_new(
-            self.schema.clone(),
-            vec![obj_type_array, obj_hash_array],
-        ).map_err(|e| {
-            let msg = format!("Failed to create record batch: {}", e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
+        let batch = RecordBatch::try_new(self.schema.clone(), vec![obj_type_array, obj_hash_array])
+            .map_err(|e| {
+                let msg = format!("Failed to create record batch: {}", e);
+                error!("{}", msg);
+                NdnError::InvalidData(msg)
+            })?;
 
         let file = File::create(&self.file_path).map_err(|e| {
             let msg = format!("Failed to create file: {:?}, {}", self.file_path, e);
@@ -228,7 +292,11 @@ impl ObjectArrayArrowReader {
         Self { cache }
     }
 
-    pub async fn open(file: &Path) -> NdnResult<Self> {
+    pub fn into_cache(self) -> Box<dyn ObjectArrayInnerCache> {
+        self.cache
+    }
+
+    pub async fn open(file: &Path, readonly: bool) -> NdnResult<Self> {
         let f = File::open(&file).map_err(|e| {
             let msg = format!("Failed to open file: {:?}, {}", file, e);
             error!("{}", msg);
@@ -257,25 +325,15 @@ impl ObjectArrayArrowReader {
         let schema = batch.schema().clone();
         let len = batch.num_rows();
 
-        let cache = ObjectArrayArrowCache::new(len, Arc::new(schema), batch);
-        let ret = Self::new(Box::new(cache));
+        let cache = ObjectArrayArrowCache::new(schema, batch);
+        let cache: Box<dyn ObjectArrayInnerCache> = if readonly {
+            Box::new(cache)
+        } else {
+            // If not readonly, convert to memory cache
+            cache.into_memory_cache()?
+        };
+
+        let ret = Self::new(cache);
         Ok(ret)
-    }
-
-    
-}
-
-#[async_trait::async_trait]
-impl ObjectArrayStorageReader for ObjectArrayArrowReader {
-    fn get(&self, index: usize) -> NdnResult<Option<ObjId>> {
-        self.cache.get(index)
-    }
-
-    fn get_range(&self, start: usize, end: usize) -> NdnResult<Vec<ObjId>> {
-        self.cache.get_range(start, end)
-    }
-
-    fn len(&self) -> NdnResult<usize> {
-        Ok(self.cache.len())
     }
 }

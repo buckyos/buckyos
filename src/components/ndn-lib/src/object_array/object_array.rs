@@ -1,6 +1,6 @@
 use super::proof::ObjectArrayItemProof;
 use super::storage::{
-    ObjectArrayInnerCache, ObjectArrayStorageReader, ObjectArrayStorageType,
+    ObjectArrayInnerCache, ObjectArrayStorageType,
     ObjectArrayStorageWriter,
 };
 use super::storage_factory::{ObjectArrayCacheFactory, ObjectArrayStorageFactory};
@@ -39,11 +39,22 @@ impl ObjectArray {
         }
     }
 
-    pub fn new_from_reader(
+    pub fn new_from_cache(
         hash_method: HashMethod,
-        reader: Box<dyn ObjectArrayStorageReader>,
+        cache: Box<dyn ObjectArrayInnerCache>,
     ) -> NdnResult<Self> {
-        todo!("Implement ObjectArray::new_from_reader");
+        let obj_array = Self {
+            hash_method,
+            cache,
+            is_dirty: false,
+            mtree: None,
+        };
+
+        Ok(obj_array)
+    }
+
+    pub fn is_readonly(&self) -> bool {
+        self.cache.is_readonly()
     }
 
     pub fn append_object(&mut self, obj_id: &ObjId) -> NdnResult<()> {
@@ -154,7 +165,7 @@ impl ObjectArray {
                 continue;
             }
 
-            let mtree_proof = mtree.get_proof_path_by_leaf_index(*index as u64).await?;
+            let mtree_proof = mtree.get_proof_path_by_leaf_index(index as u64).await?;
             let proof = ObjectArrayItemProof { proof: mtree_proof };
 
             let obj_id = obj_list[i].clone();
@@ -181,8 +192,10 @@ impl ObjectArray {
     // Calculate the object ID for the array
     // This is the same as the mtree root hash, but we need to check if the mtree is dirty
     pub async fn calc_obj_id(&mut self) -> NdnResult<ObjId> {
-        if self.data.is_empty() {
-            return Err(NdnError::InvalidData("No objects in the array".to_string()));
+        if self.cache.len() == 0 {
+            let msg = "No objects in the array".to_string();
+            error!("{}", msg);
+            return Err(NdnError::InvalidData(msg));
         }
 
         // Check if the mtree is dirty
@@ -195,7 +208,7 @@ impl ObjectArray {
 
     // Regenerate the merkle tree without checking the dirty flag
     pub async fn regenerate_merkle_tree(&mut self) -> NdnResult<()> {
-        let count = self.data.len() as u64;
+        let count = self.cache.len() as u64;
         let leaf_size = self.hash_method.hash_bytes() as u64;
         let data_size = count as u64 * leaf_size;
 
@@ -217,7 +230,9 @@ impl ObjectArray {
         )
         .await?;
 
-        for obj_id in &self.data {
+        for i in 0..self.cache.len() {
+            let obj_id = self.cache.get(i)?.unwrap();
+
             mtree_generator
                 .append_leaf_hashes(&vec![obj_id.obj_hash.clone()])
                 .await
@@ -259,6 +274,19 @@ impl ObjectArray {
         self.regenerate_merkle_tree().await?;
 
         self.is_dirty = false;
+
+        Ok(())
+    }
+
+    pub async fn save(&mut self, writer: &mut Box<dyn ObjectArrayStorageWriter>) -> NdnResult<()> {
+        // Write the object array to the storage
+        // TODO: use batch read and write to improve performance
+        for i in 0..self.cache.len() {
+            let obj_id = self.cache.get(i)?.unwrap();
+            writer.append(&obj_id).await?;
+        }
+
+        writer.flush().await?;
 
         Ok(())
     }

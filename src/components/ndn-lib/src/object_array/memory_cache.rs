@@ -11,6 +11,10 @@ impl ObjectArrayMemoryCache {
             storage: Vec::new(),
         }
     }
+
+    pub fn new_array(storage: Vec<ObjId>) -> Self {
+        Self { storage }
+    }
 }
 
 #[async_trait::async_trait]
@@ -23,9 +27,45 @@ impl ObjectArrayInnerCache for ObjectArrayMemoryCache {
         self.storage.len()
     }
 
+    fn is_readonly(&self) -> bool {
+        false
+    }
+
     fn append(&mut self, value: &ObjId) -> NdnResult<()> {
         self.storage.push(value.clone());
         Ok(())
+    }
+
+    fn insert(&mut self, index: usize, value: &ObjId) -> NdnResult<()> {
+        if index > self.storage.len() {
+            return Err(NdnError::InvalidData("Index out of range".to_string()));
+        }
+
+        self.storage.insert(index, value.clone());
+        Ok(())
+    }
+
+    fn remove(&mut self, index: usize) -> NdnResult<()> {
+        if index >= self.storage.len() {
+            return Err(NdnError::InvalidData("Index out of range".to_string()));
+        }
+
+        self.storage.remove(index);
+        Ok(())
+    }
+
+    fn clear(&mut self) -> NdnResult<()> {
+        self.storage.clear();
+        Ok(())
+    }
+
+    fn pop(&mut self) -> NdnResult<Option<ObjId>> {
+        if self.storage.is_empty() {
+            return Ok(None);
+        }
+
+        let obj_id = self.storage.pop().unwrap();
+        Ok(Some(obj_id))
     }
 
     fn get(&self, index: usize) -> NdnResult<Option<ObjId>> {
