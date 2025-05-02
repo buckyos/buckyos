@@ -6,41 +6,62 @@ use crate::{
 use super::storage::ObjectArrayInnerStorage;
 
 pub struct ObjectArray {
+    pub data: Vec<ObjId>,
     pub is_dirty: bool,
-    pub storage: Box<dyn ObjectArrayInnerStorage>,
-    pub mtree: Option<MerkleTreeObject>,
 }
 
 
 impl ObjectArray {
-    pub fn new(mut storage: Box<dyn ObjectArrayInnerStorage>,) -> Self {
+    pub fn new() -> Self {
         Self {
+            data: Vec::new(),
             is_dirty: false,
-            storage,
-            mtree: None,
         }
     }
 
     pub fn append_object(&mut self, obj_id: &ObjId) -> NdnResult<()> {
-        self.object_array.extend_from_slice(object);
+        self.data.push(obj_id.clone());
+        self.is_dirty = true;
         Ok(())
     }
 
-    pub fn get_object(&self, index: usize) -> NdnResult<Option<Vec<u8>>> {
-        if index < self.object_array.len() {
-            Ok(Some(&self.object_array[index..]))
-        } else {
-            Ok(None)
+    pub fn insert_object(&mut self, index: usize, obj_id: &ObjId) -> NdnResult<()> {
+        if index > self.data.len() {
+            let msg = format!("Index out of bounds: {}", index);
+            error!("{}", msg);
+            return Err(NdnError::OffsetTooLarge(msg));
         }
+
+        self.data.insert(index, obj_id.clone());
+        self.is_dirty = true;
+        Ok(())
     }
 
-    pub fn remove_object(&mut self, index: usize) -> NdnResult<()> {
-        if index < self.object_array.len() {
-            self.object_array.remove(index);
-            Ok(())
-        } else {
-            Err(NdnError::IndexOutOfBounds)
+    pub fn get_object(&self, index: usize) -> NdnResult<Option<&ObjId>> {
+        if index >= self.data.len() {
+            return Ok(None);
         }
+
+        Ok(Some(&self.data[index]))
     }
-    
+
+    pub fn remove_object(&mut self, index: usize) -> NdnResult<Option<ObjId>> {
+        if index >= self.data.len() {
+            return Ok(None);
+        }
+
+        let obj_id = self.data.remove(index);
+        self.is_dirty = true;
+        Ok(Some(obj_id))
+    }
+
+    pub fn pop_object(&mut self) -> NdnResult<Option<ObjId>> {
+        if self.data.is_empty() {
+            return Ok(None);
+        }
+
+        let obj_id = self.data.pop().unwrap();
+        self.is_dirty = true;
+        Ok(Some(obj_id))
+    }
 }
