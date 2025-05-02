@@ -45,7 +45,7 @@ jobs:
             - name: Download Tools
               uses: actions/download-artifact@v4
               with:
-                name: buckyos-tools-linux-x86_64-${{inputs.version}}-${{ inputs.build_time }}
+                name: buckyos-tools-windows-x86_64-${{inputs.version}}-${{ inputs.build_time }}
                 github-token: ${{ secrets.GITHUB_TOKEN }}
                 run-id: ${{inputs.run_id}}
                 path: tools
