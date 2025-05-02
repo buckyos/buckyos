@@ -33,7 +33,7 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v4
             - name: clean old rootfs
-              run: rm -rf ./src/rootfs 
+              run: rmdir /S /Q .\src\rootfs 
             - name: Download Artifact
               uses: actions/download-artifact@v4
               with:
