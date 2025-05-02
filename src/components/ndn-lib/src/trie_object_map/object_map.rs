@@ -1,32 +1,32 @@
 use super::storage::{
-    PathObjectMapInnerStorage, PathObjectMapInnerStorageFactory, PathObjectMapInnerStorageRef,
-    PathObjectMapProofVerifierRef,
+    TrieObjectMapInnerStorage, TrieObjectMapInnerStorageFactory, TrieObjectMapInnerStorageRef,
+    TrieObjectMapProofVerifierRef,
 };
 use crate::hash::HashMethod;
 use crate::object::ObjId;
-use crate::{PathObject, OBJ_TYPE_MTREE, OBJ_TYPE_OBJMAPT};
 use crate::{NdnError, NdnResult};
+use crate::{PathObject, OBJ_TYPE_MTREE, OBJ_TYPE_OBJMAPT};
 use bincode::de;
 use crypto_common::Key;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-pub use super::storage::PathObjectMapProofVerifyResult;
+pub use super::storage::TrieObjectMapProofVerifyResult;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PathObjectMapItem {
+pub struct TrieObjectMapItem {
     pub obj_id: ObjId,
     pub meta: Option<Vec<u8>>,
 }
 
-impl PathObjectMapItem {
+impl TrieObjectMapItem {
     pub fn new(obj_id: ObjId, meta: Option<Vec<u8>>) -> Self {
         Self { obj_id, meta }
     }
 
     pub fn encode(&self) -> NdnResult<Vec<u8>> {
         let bytes = bincode::serialize(self).map_err(|e| {
-            let msg = format!("Error serializing PathObjectMapItem: {}", e);
+            let msg = format!("Error serializing TrieObjectMapItem: {}", e);
             error!("{}", msg);
             NdnError::InvalidData(msg)
         })?;
@@ -36,7 +36,7 @@ impl PathObjectMapItem {
 
     pub fn decode(data: &[u8]) -> NdnResult<Self> {
         let ret = bincode::deserialize(data).map_err(|e| {
-            let msg = format!("Error deserializing PathObjectMapItem: {}", e);
+            let msg = format!("Error deserializing TrieObjectMapItem: {}", e);
             error!("{}", msg);
             NdnError::InvalidData(msg)
         })?;
@@ -46,28 +46,28 @@ impl PathObjectMapItem {
 }
 
 #[derive(Debug, Clone)]
-pub struct PathObjectMapItemProof {
+pub struct TrieObjectMapItemProof {
     // The proof nodes are the MPT nodes on the path to the root node
     pub proof_nodes: Vec<Vec<u8>>,
 
     // The root hash of the MPT tree
     pub root_hash: Vec<u8>,
     // TODO: should we add the item to the proof?
-    // pub item: Option<PathObjectMapItem>,
+    // pub item: Option<TrieObjectMapItem>,
 }
 
-impl PathObjectMapItemProof {
+impl TrieObjectMapItemProof {
     // Only encode the nodes to a base64 string, ignore the root hash
     pub fn encode_nodes(&self) -> NdnResult<String> {
-        let proof_nodes = PathObjectMapProofNodesCodec::encode(&self.proof_nodes)?;
-       
+        let proof_nodes = TrieObjectMapProofNodesCodec::encode(&self.proof_nodes)?;
+
         Ok(proof_nodes)
     }
 
     pub fn decode_nodes(proof_nodes: &str, root_hash: &ObjId) -> NdnResult<Self> {
-        let proof_nodes = PathObjectMapProofNodesCodec::decode(proof_nodes)?;
+        let proof_nodes = TrieObjectMapProofNodesCodec::decode(proof_nodes)?;
         let root_hash = root_hash.obj_hash.clone();
-        let proof = PathObjectMapItemProof {
+        let proof = TrieObjectMapItemProof {
             proof_nodes,
             root_hash,
         };
@@ -80,15 +80,15 @@ impl PathObjectMapItemProof {
 }
 
 #[derive(Clone)]
-pub struct PathObjectMap {
+pub struct TrieObjectMap {
     hash_method: HashMethod,
-    db: PathObjectMapInnerStorageRef,
+    db: TrieObjectMapInnerStorageRef,
 }
 
-impl PathObjectMap {
+impl TrieObjectMap {
     pub async fn new(hash_method: HashMethod) -> Self {
         let db =
-            PathObjectMapInnerStorageFactory::create_memory_storage_by_hash_method(hash_method);
+            TrieObjectMapInnerStorageFactory::create_memory_storage_by_hash_method(hash_method);
         let db = Arc::new(db);
         Self { hash_method, db }
     }
@@ -112,17 +112,17 @@ impl PathObjectMap {
         obj_id: ObjId,
         meta: Option<Vec<u8>>,
     ) -> NdnResult<()> {
-        let item = PathObjectMapItem::new(obj_id, meta);
+        let item = TrieObjectMapItem::new(obj_id, meta);
         let value = item.encode()?;
         self.db.put(key.as_bytes(), &value).await?;
 
         Ok(())
     }
 
-    pub async fn get_object(&self, key: &str) -> NdnResult<Option<PathObjectMapItem>> {
+    pub async fn get_object(&self, key: &str) -> NdnResult<Option<TrieObjectMapItem>> {
         match self.db.get(key.as_bytes()).await? {
             Some(value) => {
-                let item = PathObjectMapItem::decode(&value)?;
+                let item = TrieObjectMapItem::decode(&value)?;
                 Ok(Some(item))
             }
             None => Ok(None),
@@ -132,7 +132,7 @@ impl PathObjectMap {
     pub async fn remove_object(&self, key: &str) -> NdnResult<Option<(ObjId, Option<Vec<u8>>)>> {
         let value = self.db.remove(key.as_bytes()).await?;
         if let Some(value) = value {
-            let item = PathObjectMapItem::decode(&value)?;
+            let item = TrieObjectMapItem::decode(&value)?;
             Ok(Some((item.obj_id, item.meta)))
         } else {
             Ok(None)
@@ -146,11 +146,11 @@ impl PathObjectMap {
     pub async fn get_object_proof_path(
         &self,
         key: &str,
-    ) -> NdnResult<Option<PathObjectMapItemProof>> {
+    ) -> NdnResult<Option<TrieObjectMapItemProof>> {
         let proof_nodes = self.db.generate_proof(key.as_bytes()).await?;
         let root_hash = self.db.root().await;
 
-        Ok(Some(PathObjectMapItemProof {
+        Ok(Some(TrieObjectMapItemProof {
             proof_nodes,
             root_hash,
         }))
@@ -158,15 +158,15 @@ impl PathObjectMap {
 }
 
 #[derive(Clone)]
-pub struct PathObjectMapProofVerifier {
+pub struct TrieObjectMapProofVerifier {
     hash_method: HashMethod,
-    verifier: PathObjectMapProofVerifierRef,
+    verifier: TrieObjectMapProofVerifierRef,
 }
 
-impl PathObjectMapProofVerifier {
+impl TrieObjectMapProofVerifier {
     pub fn new(hash_method: HashMethod) -> Self {
         let verifier =
-            PathObjectMapInnerStorageFactory::create_verifier_by_hash_method(hash_method);
+            TrieObjectMapInnerStorageFactory::create_verifier_by_hash_method(hash_method);
         Self {
             hash_method,
             verifier: Arc::new(verifier),
@@ -177,8 +177,8 @@ impl PathObjectMapProofVerifier {
         &self,
         key: &str,
         value: &[u8],
-        proof: &PathObjectMapItemProof,
-    ) -> NdnResult<PathObjectMapProofVerifyResult> {
+        proof: &TrieObjectMapItemProof,
+    ) -> NdnResult<TrieObjectMapProofVerifyResult> {
         let key_bytes = key.as_bytes();
         self.verifier
             .verify(&proof.proof_nodes, &proof.root_hash, key.as_bytes(), value)
@@ -189,12 +189,11 @@ impl PathObjectMapProofVerifier {
         key: &str,
         obj_id: &ObjId,
         meta: Option<&[u8]>,
-        proof: &PathObjectMapItemProof,
-    ) -> NdnResult<PathObjectMapProofVerifyResult> {
-        
-        let item = PathObjectMapItem::new(obj_id.clone(), meta.map(|m| m.to_vec()));
+        proof: &TrieObjectMapItemProof,
+    ) -> NdnResult<TrieObjectMapProofVerifyResult> {
+        let item = TrieObjectMapItem::new(obj_id.clone(), meta.map(|m| m.to_vec()));
         let value = item.encode()?;
-            
+
         self.verify(key, value.as_ref(), proof)
     }
 }
@@ -207,9 +206,9 @@ struct ProofNodes {
     nodes: Vec<String>,
 }
 
-pub struct PathObjectMapProofNodesCodec {}
+pub struct TrieObjectMapProofNodesCodec {}
 
-impl PathObjectMapProofNodesCodec {
+impl TrieObjectMapProofNodesCodec {
     pub fn encode(proof_nodes: &[Vec<u8>]) -> NdnResult<String> {
         let mut ret = Vec::new();
         for node in proof_nodes {

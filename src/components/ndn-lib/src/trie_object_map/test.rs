@@ -1,11 +1,14 @@
-use std::sync::Arc;
+use super::object_map::{
+    TrieObjectMapProofNodesCodec, TrieObjectMapProofVerifier, TrieObjectMapProofVerifyResult,
+    TrieObjectMap,
+};
+use crate::hash::{HashHelper, HashMethod};
 use crate::ObjId;
-use super::object_map::{PathObjectMap, PathObjectMapProofVerifier, PathObjectMapProofVerifyResult, PathObjectMapProofNodesCodec};
 use crate::OBJ_TYPE_FILE;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use std::sync::Arc;
 use tokio::test;
-use crate::hash::{HashMethod, HashHelper};
 
 fn generate_random_buf(rng: &mut StdRng, len: usize) -> Vec<u8> {
     let mut buf = vec![0u8; len];
@@ -20,7 +23,9 @@ fn generate_random_path_key(rng: &mut StdRng) -> String {
     let seg_size = rng.random_range(1..=10);
     for _ in 0..seg_size {
         let seg_len = rng.random_range(1..=10);
-        let seg: String = (0..seg_len).map(|_| rng.random_range(b'a'..=b'z') as char).collect();
+        let seg: String = (0..seg_len)
+            .map(|_| rng.random_range(b'a'..=b'z') as char)
+            .collect();
         path.push('/');
         path.push_str(&seg);
     }
@@ -51,7 +56,7 @@ async fn test_path_object_map() {
     println!("Test object map");
     let key_pairs = generate_key_value_pairs("test", 100);
     println!("Key pairs generated");
-    let mut obj_map = PathObjectMap::new(HashMethod::Keccak256).await;
+    let mut obj_map = TrieObjectMap::new(HashMethod::Keccak256).await;
     println!("Object map created");
 
     let count = 100;
@@ -61,7 +66,10 @@ async fn test_path_object_map() {
         let obj_id = key_pairs[i].1.clone();
         let meta = key_pairs[i].2.clone();
 
-        obj_map.put_object(key, obj_id.clone(), Some(meta.clone())).await.unwrap();
+        obj_map
+            .put_object(key, obj_id.clone(), Some(meta.clone()))
+            .await
+            .unwrap();
 
         println!("Put object success: {}", key);
 
@@ -102,27 +110,32 @@ async fn test_path_object_map() {
         let proof1 = proof1.unwrap();
 
         // Test verification
-        let verifier = PathObjectMapProofVerifier::new(obj_map.hash_method());
-        
+        let verifier = TrieObjectMapProofVerifier::new(obj_map.hash_method());
+
         // First test verify with right value
-        let ret = verifier.verify_object(&key, &obj_id, Some(&meta), &proof).unwrap();
-        assert_eq!(ret, PathObjectMapProofVerifyResult::Ok);
+        let ret = verifier
+            .verify_object(&key, &obj_id, Some(&meta), &proof)
+            .unwrap();
+        assert_eq!(ret, TrieObjectMapProofVerifyResult::Ok);
 
         // Test verification without meta
         let ret = verifier.verify_object(&key, &obj_id, None, &proof).unwrap();
-        assert_eq!(ret, PathObjectMapProofVerifyResult::RootMismatch);
+        assert_eq!(ret, TrieObjectMapProofVerifyResult::RootMismatch);
 
         // Test verification with error value
         let mut error_meta = meta.clone();
         error_meta[0] = if error_meta[0] == 0 { 1 } else { 0 };
 
-        let ret = verifier.verify_object(&key, &obj_id, Some(&error_meta), &proof).unwrap();
-        assert_eq!(ret, PathObjectMapProofVerifyResult::RootMismatch);
+        let ret = verifier
+            .verify_object(&key, &obj_id, Some(&error_meta), &proof)
+            .unwrap();
+        assert_eq!(ret, TrieObjectMapProofVerifyResult::RootMismatch);
 
         // Test verification with invalid value
-        let ret = verifier.verify_object(&key1, &obj_id, Some(&meta), &proof1).unwrap();
-        assert_eq!(ret, PathObjectMapProofVerifyResult::ValueMismatch);
-
+        let ret = verifier
+            .verify_object(&key1, &obj_id, Some(&meta), &proof1)
+            .unwrap();
+        assert_eq!(ret, TrieObjectMapProofVerifyResult::ValueMismatch);
 
         // Test remove
         let prev_root_hash = obj_map.get_root_hash().await;
@@ -134,24 +147,29 @@ async fn test_path_object_map() {
 
             println!("Remove object success: {}", key);
         } else {
-            continue;   
+            continue;
         }
 
         // Test root hash after remove
         let root_hash = obj_map.get_root_hash().await;
         assert_ne!(prev_root_hash, root_hash);
-        println!("Root hash changed after remove: {:?} -> {:?}", prev_root_hash, root_hash);
+        println!(
+            "Root hash changed after remove: {:?} -> {:?}",
+            prev_root_hash, root_hash
+        );
 
         // Test verification after remove
         proof.root_hash = root_hash.clone();
-        let ret = verifier.verify_object(&key, &obj_id, Some(&meta), &proof).unwrap();
-        assert_eq!(ret, PathObjectMapProofVerifyResult::RootMismatch);
+        let ret = verifier
+            .verify_object(&key, &obj_id, Some(&meta), &proof)
+            .unwrap();
+        assert_eq!(ret, TrieObjectMapProofVerifyResult::RootMismatch);
         println!("Verify after remove success: {}", key);
 
         // Test codec
-        let s = PathObjectMapProofNodesCodec::encode(&proof.proof_nodes).unwrap();
+        let s = TrieObjectMapProofNodesCodec::encode(&proof.proof_nodes).unwrap();
         println!("Proof nodes encoded: {}", s);
-        let proof_nodes = PathObjectMapProofNodesCodec::decode(&s).unwrap();
+        let proof_nodes = TrieObjectMapProofNodesCodec::decode(&s).unwrap();
         assert_eq!(proof_nodes.len(), proof.proof_nodes.len());
     }
 }

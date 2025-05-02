@@ -9,7 +9,7 @@ use trie_db::proof::generate_proof;
 use trie_db::{NodeCodec, Trie, TrieLayout, TrieMut, Value};
 
 #[async_trait::async_trait]
-pub trait PathObjectMapInnerStorage: Send + Sync {
+pub trait TrieObjectMapInnerStorage: Send + Sync {
     async fn put(&self, key: &[u8], value: &[u8]) -> NdnResult<()>;
     async fn get(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>>;
     async fn remove(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>>;
@@ -19,7 +19,7 @@ pub trait PathObjectMapInnerStorage: Send + Sync {
     async fn generate_proof(&self, key: &[u8]) -> NdnResult<Vec<Vec<u8>>>;
 }
 
-pub type PathObjectMapInnerStorageRef = Arc<Box<dyn PathObjectMapInnerStorage>>;
+pub type TrieObjectMapInnerStorageRef = Arc<Box<dyn TrieObjectMapInnerStorage>>;
 
 type GenericMemoryDB<H> = MemoryDB<H, HashKey<H>, Vec<u8>>;
 type Sha256DB = GenericMemoryDB<Sha256Hasher>;
@@ -47,7 +47,7 @@ impl<H: Hasher> GenericMemoryStorage<H> {
 }
 
 #[async_trait::async_trait]
-impl<H> PathObjectMapInnerStorage for GenericMemoryStorage<H>
+impl<H> TrieObjectMapInnerStorage for GenericMemoryStorage<H>
 where
     H: Hasher + Send + Sync + 'static,
     H::Out: Send + Sync + 'static,
@@ -168,7 +168,7 @@ pub type Blake2s256MemoryStorage = GenericMemoryStorage<Blake2s256Hasher>;
 pub type Keccak256MemoryStorage = GenericMemoryStorage<Keccak256Hasher>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub enum PathObjectMapProofVerifyResult {
+pub enum TrieObjectMapProofVerifyResult {
     Ok,
     ExtraneousNode,
     ExtraneousValue,
@@ -180,17 +180,17 @@ pub enum PathObjectMapProofVerifyResult {
     Other,
 }
 
-pub trait PathObjectMapProofVerifier: Send + Sync {
+pub trait TrieObjectMapProofVerifier: Send + Sync {
     fn verify(
         &self,
         proof_nodes: &Vec<Vec<u8>>,
         root_hash: &[u8],
         key: &[u8],
         value: &[u8],
-    ) -> NdnResult<PathObjectMapProofVerifyResult>;
+    ) -> NdnResult<TrieObjectMapProofVerifyResult>;
 }
 
-pub type PathObjectMapProofVerifierRef = Arc<Box<dyn PathObjectMapProofVerifier>>;
+pub type TrieObjectMapProofVerifierRef = Arc<Box<dyn TrieObjectMapProofVerifier>>;
 
 pub trait HashFromSlice: Sized {
     fn from_slice(bytes: &[u8]) -> NdnResult<Self>;
@@ -218,11 +218,11 @@ where
     }
 }
 
-pub struct GenericPathObjectMapProofVerifier<H: Hasher> {
+pub struct GenericTrieObjectMapProofVerifier<H: Hasher> {
     _marker: std::marker::PhantomData<H>,
 }
 
-impl<H> GenericPathObjectMapProofVerifier<H>
+impl<H> GenericTrieObjectMapProofVerifier<H>
 where
     H: Hasher + Send + Sync + 'static,
     H::Out: HashFromSlice,
@@ -234,7 +234,7 @@ where
     }
 }
 
-impl<H> PathObjectMapProofVerifier for GenericPathObjectMapProofVerifier<H>
+impl<H> TrieObjectMapProofVerifier for GenericTrieObjectMapProofVerifier<H>
 where
     H: Hasher + Send + Sync + 'static,
     H::Out: HashFromSlice,
@@ -245,7 +245,7 @@ where
         root_hash: &[u8],
         key: &[u8],
         value: &[u8],
-    ) -> NdnResult<PathObjectMapProofVerifyResult> {
+    ) -> NdnResult<TrieObjectMapProofVerifyResult> {
         use trie_db::proof::{verify_proof, VerifyError};
 
         let root_hash: H::Out = H::Out::from_slice(root_hash)?;
@@ -259,34 +259,34 @@ where
         // println!("Verify proof: key = {:?}, root = {:?}, ret = {:?}", key, root_hash, ret);
         let ret = match ret {
             Ok(_) => {
-                PathObjectMapProofVerifyResult::Ok
+                TrieObjectMapProofVerifyResult::Ok
             }
             Err(e) => match &e {
                 VerifyError::ExtraneousNode => {
-                    PathObjectMapProofVerifyResult::ExtraneousNode
+                    TrieObjectMapProofVerifyResult::ExtraneousNode
                 }
                 VerifyError::ExtraneousValue(_) => {
-                    PathObjectMapProofVerifyResult::ExtraneousValue
+                    TrieObjectMapProofVerifyResult::ExtraneousValue
                 }
                 VerifyError::ExtraneousHashReference(_) => {
-                    PathObjectMapProofVerifyResult::ExtraneousHashReference
+                    TrieObjectMapProofVerifyResult::ExtraneousHashReference
                 }
                 VerifyError::ValueMismatch(_) => {
-                    PathObjectMapProofVerifyResult::ValueMismatch
+                    TrieObjectMapProofVerifyResult::ValueMismatch
                 }
                 VerifyError::RootMismatch(_) => {
-                    PathObjectMapProofVerifyResult::RootMismatch
+                    TrieObjectMapProofVerifyResult::RootMismatch
                 }
                 VerifyError::InvalidChildReference(_) => {
-                    PathObjectMapProofVerifyResult::InvalidChildReference
+                    TrieObjectMapProofVerifyResult::InvalidChildReference
                 }
                 VerifyError::IncompleteProof => {
-                    PathObjectMapProofVerifyResult::IncompleteProof
+                    TrieObjectMapProofVerifyResult::IncompleteProof
                 }
                 _ => {
                     let msg = format!("Verification error: {:?}, {:?}", key, e);
                     info!("{}", msg);
-                    PathObjectMapProofVerifyResult::Other
+                    TrieObjectMapProofVerifyResult::Other
                 }
             },
         };
@@ -295,21 +295,21 @@ where
     }
 }
 
-pub struct PathObjectMapInnerStorageFactory {}
+pub struct TrieObjectMapInnerStorageFactory {}
 
-impl PathObjectMapInnerStorageFactory {
+impl TrieObjectMapInnerStorageFactory {
     pub fn new() -> Self {
         Self {}
     }
 
     pub fn create_memory_storage<H: Hasher + Send + Sync + 'static>(
-    ) -> Box<dyn PathObjectMapInnerStorage> {
+    ) -> Box<dyn TrieObjectMapInnerStorage> {
         Box::new(GenericMemoryStorage::<H>::new())
     }
 
     pub fn create_memory_storage_by_hash_method(
         hash_method: HashMethod,
-    ) -> Box<dyn PathObjectMapInnerStorage> {
+    ) -> Box<dyn TrieObjectMapInnerStorage> {
         match hash_method {
             HashMethod::Sha256 => Self::create_memory_storage::<Sha256Hasher>(),
             HashMethod::Sha512 => Self::create_memory_storage::<Sha512Hasher>(),
@@ -318,17 +318,17 @@ impl PathObjectMapInnerStorageFactory {
         }
     }
 
-    pub fn create_verifier<H>() -> Box<dyn PathObjectMapProofVerifier>
+    pub fn create_verifier<H>() -> Box<dyn TrieObjectMapProofVerifier>
     where
         H: Hasher + Send + Sync + 'static,
         H::Out: HashFromSlice,
     {
-        Box::new(GenericPathObjectMapProofVerifier::<H>::new())
+        Box::new(GenericTrieObjectMapProofVerifier::<H>::new())
     }
 
     pub fn create_verifier_by_hash_method(
         hash_method: HashMethod,
-    ) -> Box<dyn PathObjectMapProofVerifier> {
+    ) -> Box<dyn TrieObjectMapProofVerifier> {
         match hash_method {
             HashMethod::Sha256 => Self::create_verifier::<Sha256Hasher>(),
             HashMethod::Sha512 => Self::create_verifier::<Sha512Hasher>(),
