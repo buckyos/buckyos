@@ -7,6 +7,13 @@ use crate::{HashMethod, ObjId, OBJ_TYPE_LIST};
 use crate::{NdnError, NdnResult};
 use std::io::SeekFrom;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use super::proof::ObjectArrayItemProof;
+
+#[derive(Clone, Debug)]
+pub struct ObjectArrayItem {
+    pub obj_id: ObjId,
+    pub proof: ObjectArrayItemProof,
+}
 
 pub struct ObjectArray {
     hash_method: HashMethod,
@@ -71,6 +78,52 @@ impl ObjectArray {
         Ok(Some(&self.data[index]))
     }
 
+    // Get the object ID and proof for the object at the given index, the mtree must be exists
+    pub async fn get_object_with_proof(
+        &mut self,
+        index: usize,
+    ) -> NdnResult<Option<ObjectArrayItem>> {
+        if index >= self.data.len() {
+            return Ok(None);
+        }
+
+        assert!(self.mtree.is_some(), "Mtree is not initialized");
+
+        let obj_id = self.data[index].clone();
+        let mtree_proof = self.mtree.as_mut().unwrap().get_proof_path_by_leaf_index(index as u64).await?;
+        let proof = ObjectArrayItemProof { proof: mtree_proof };
+
+        Ok(Some(ObjectArrayItem { obj_id, proof }))
+    }
+
+    pub async fn batch_get_object_with_proof(
+        &mut self,
+        indices: &[usize],
+    ) -> NdnResult<Vec<Option<ObjectArrayItem>>> {
+        let mut ret = Vec::with_capacity(indices.len());
+        for index in indices {
+            let item = self.get_object_with_proof(*index).await?;
+            ret.push(item);
+        }
+        Ok(ret)
+    }
+
+    pub async fn range_get_object_with_proof(
+        &mut self,
+        start: usize,
+        end: usize,
+    ) -> NdnResult<Vec<Option<ObjectArrayItem>>> {
+        if start >= self.data.len() || end > self.data.len() || start >= end {
+            return Ok(vec![]);
+        }
+
+        let mut ret = Vec::with_capacity(end - start);
+        for index in start..end {
+            let item = self.get_object_with_proof(index).await?;
+            ret.push(item);
+        }
+        Ok(ret)
+    }
 
     pub fn remove_object(&mut self, index: usize) -> NdnResult<Option<ObjId>> {
         if index >= self.data.len() {
