@@ -1,4 +1,6 @@
-use super::storage::ObjectArrayInnerStorage;
+use super::storage::{
+    ObjectArrayStorageReader, ObjectArrayStorageWriter,
+};
 use crate::mtree::{
     MerkleTreeObject, MerkleTreeObjectGenerator, MtreeReadSeek, MtreeReadWriteSeekWithSharedBuffer,
     MtreeWriteSeek, SharedBuffer,
@@ -32,6 +34,13 @@ impl ObjectArray {
         }
     }
 
+    pub fn new_from_reader(
+        hash_method: HashMethod,
+        reader: Box<dyn ObjectArrayStorageReader>,
+    ) -> NdnResult<Self> {
+        todo!("Implement ObjectArray::new_from_reader");
+    }
+    
     pub fn append_object(&mut self, obj_id: &ObjId) -> NdnResult<()> {
         // Check if obj_id.obj_hash has the same length as hash_method
         if obj_id.obj_hash.len() != self.hash_method.hash_bytes() {

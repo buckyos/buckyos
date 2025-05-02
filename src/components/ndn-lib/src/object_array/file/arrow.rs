@@ -3,7 +3,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use arrow::ipc::writer::FileWriter;
 use arrow::ipc::reader::FileReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use crate::ObjId;
 use crate::{
@@ -11,19 +11,34 @@ use crate::{
     NdnResult,
 };
 use std::fs::File;
+use super::super::storage::{
+    ObjectArrayStorageWriter,
+    ObjectArrayStorageReader,
+};
 
 pub struct ObjectArrayArrowWriter {
+    file_path: PathBuf,
     schema: Arc<Schema>,
-    len: usize,
 
     obj_type_builder: StringBuilder,
     obj_hash_builder: BinaryBuilder,
 }
 
 impl ObjectArrayArrowWriter {
-    pub fn new(len: usize) -> Self {
-        let mut obj_type_builder = StringBuilder::with_capacity(len, len * 40);
-        let mut obj_hash_builder = BinaryBuilder::with_capacity(len, len * 40);
+    pub fn new(file_path: PathBuf, len: Option<usize>) -> Self {
+        let mut obj_type_builder ;
+        let mut obj_hash_builder ;
+
+        match len {
+            Some(len) => {
+                obj_type_builder = StringBuilder::with_capacity(len, len * 40);
+                obj_hash_builder = BinaryBuilder::with_capacity(len, len * 40);
+            }
+            None => {
+                obj_type_builder = StringBuilder::new();
+                obj_hash_builder = BinaryBuilder::new();
+            }
+        }
 
         let schema = Schema::new(vec![
             Field::new("obj_type", DataType::Utf8, false),
@@ -31,8 +46,8 @@ impl ObjectArrayArrowWriter {
         ]);
 
         Self {
+            file_path,
             schema: Arc::new(schema),
-            len,
             obj_type_builder,
             obj_hash_builder,
         }
@@ -49,7 +64,7 @@ impl ObjectArrayArrowWriter {
         Ok(self.obj_type_builder.len())
     }
 
-    async fn flush(&mut self, file: &Path) -> NdnResult<()> {
+    async fn flush(&mut self) -> NdnResult<()> {
         let obj_type_array: ArrayRef = Arc::new(self.obj_type_builder.finish());
         let obj_hash_array: ArrayRef = Arc::new(self.obj_hash_builder.finish());
 
@@ -62,14 +77,14 @@ impl ObjectArrayArrowWriter {
             NdnError::InvalidData(msg)
         })?;
 
-        let file = File::create(&file).map_err(|e| {
-            let msg = format!("Failed to create file: {:?}, {}", file, e);
+        let file = File::create(&self.file_path).map_err(|e| {
+            let msg = format!("Failed to create file: {:?}, {}", self.file_path, e);
             error!("{}", msg);
             NdnError::IoError(msg)
         })?;
 
         let mut writer = FileWriter::try_new(file, &self.schema).map_err(|e| {
-            let msg = format!("Failed to create file writer: {}", e);
+            let msg = format!("Failed to create file writer: {:?}, {}", self.file_path, e);
             error!("{}", msg);
             NdnError::InvalidData(msg)
         })?;
@@ -90,6 +105,20 @@ impl ObjectArrayArrowWriter {
     }
 }
 
+#[async_trait::async_trait]
+impl ObjectArrayStorageWriter for ObjectArrayArrowWriter {
+    async fn append(&mut self, value: &ObjId) -> NdnResult<()> {
+        self.append(value).await
+    }
+
+    async fn len(&self) -> NdnResult<usize> {
+        self.len().await
+    }
+
+    async fn flush(&mut self) -> NdnResult<()> {
+        self.flush().await
+    }
+}
 
 pub struct ObjectArrayArrowReader {
     schema: Arc<Schema>,
@@ -106,7 +135,7 @@ impl ObjectArrayArrowReader {
         }
     }
 
-    async fn open(file: &Path) -> NdnResult<Self> {
+    pub async fn open(file: &Path) -> NdnResult<Self> {
         let f = File::open(&file).map_err(|e| {
             let msg = format!("Failed to open file: {:?}, {}", file, e);
             error!("{}", msg);
@@ -155,7 +184,42 @@ impl ObjectArrayArrowReader {
         Ok(Some(ObjId::new_by_raw(obj_type, obj_hash.to_vec())))
     }
 
+    async fn get_range(&self, start: usize, end: usize) -> NdnResult<Vec<ObjId>> {
+        if start >= self.len || end > self.len || start > end {
+            let msg = format!("Index out of bounds: {} >= {} or {} > {}", start, self.len, end, self.len);
+            error!("{}", msg);
+            return Err(NdnError::OffsetTooLarge(msg));
+        }
+
+        let obj_type_array = self.batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let obj_hash_array = self.batch.column(1).as_any().downcast_ref::<BinaryArray>().unwrap();
+        let mut ret = Vec::with_capacity(end - start);
+        
+        for index in start..end {
+            let obj_type = obj_type_array.value(index).to_string();
+            let obj_hash = obj_hash_array.value(index);
+            ret.push(ObjId::new_by_raw(obj_type, obj_hash.to_vec()));
+        }
+
+        Ok(ret)
+    }
+
     async fn len(&self) -> NdnResult<usize> {
         Ok(self.len)
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectArrayStorageReader for ObjectArrayArrowReader {
+    async fn get(&self, index: usize) -> NdnResult<Option<ObjId>> {
+        self.get(index).await
+    }
+
+    async fn get_range(&self, start: usize, end: usize) -> NdnResult<Vec<ObjId>> {
+        self.get_range(start, end).await
+    }
+    
+    async fn len(&self) -> NdnResult<usize> {
+        self.len().await
     }
 }
