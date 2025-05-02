@@ -1,18 +1,43 @@
-use std::path::{PathBuf, Path};
-use crate::{NdnResult, ObjId, NdnError};
-use super::storage::{
-    ObjectArrayStorageWriter,
-    ObjectArrayStorageReader,
-    ObjectArrayStorageType,
-};
 use super::file::*;
+use super::storage::{
+    ObjectArrayCacheType, ObjectArrayInnerCache, ObjectArrayStorageReader, ObjectArrayStorageType,
+    ObjectArrayStorageWriter,
+};
+use super::memory_cache::ObjectArrayMemoryCache;
+use crate::{NdnError, NdnResult, ObjId};
+use std::path::{Path, PathBuf};
 
-pub struct ObjectArrayStorage {
+pub struct ObjectArrayCacheFactory {}
+
+impl ObjectArrayCacheFactory {
+    /// Create a new cache based on the storage type.
+    pub fn create_cache(
+        storage_type: ObjectArrayStorageType,
+    ) -> Box<dyn ObjectArrayInnerCache> {
+        let cache_type = match storage_type {
+            ObjectArrayStorageType::Arrow => ObjectArrayCacheType::Arrow,
+            _ => ObjectArrayCacheType::Memory,
+        };
+
+        match cache_type {
+            ObjectArrayCacheType::Memory => {
+                let cache = ObjectArrayMemoryCache::new();
+                Box::new(cache)
+            }
+            ObjectArrayCacheType::Arrow => {
+                let cache = ObjectArrayArrowCache::new_empty();
+                Box::new(cache)
+            }
+        }
+    }
+}
+
+pub struct ObjectArrayStorageFactory {
     data_path: PathBuf,
     storage_type: ObjectArrayStorageType,
 }
 
-impl ObjectArrayStorage {
+impl ObjectArrayStorageFactory {
     pub fn new(data_path: &Path, storage_type: Option<ObjectArrayStorageType>) -> Self {
         Self {
             data_path: data_path.to_path_buf(),
@@ -20,11 +45,19 @@ impl ObjectArrayStorage {
         }
     }
 
-    pub async fn open_writer(&self, id: &ObjId, len: Option<usize>) -> NdnResult<Box<dyn ObjectArrayStorageWriter>> {
+    pub async fn open_writer(
+        &self,
+        id: &ObjId,
+        len: Option<usize>,
+    ) -> NdnResult<Box<dyn ObjectArrayStorageWriter>> {
         // First make sure the directory exists
         if !self.data_path.exists() {
             std::fs::create_dir_all(&self.data_path).map_err(|e| {
-                let msg = format!("Error creating directory {}: {}", self.data_path.display(), e);
+                let msg = format!(
+                    "Error creating directory {}: {}",
+                    self.data_path.display(),
+                    e
+                );
                 error!("{}", msg);
                 NdnError::IoError(msg)
             })?;

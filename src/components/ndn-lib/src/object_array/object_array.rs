@@ -1,15 +1,18 @@
+use super::proof::ObjectArrayItemProof;
 use super::storage::{
-    ObjectArrayStorageReader, ObjectArrayStorageWriter,
+    ObjectArrayInnerCache, ObjectArrayStorageReader, ObjectArrayStorageType,
+    ObjectArrayStorageWriter,
 };
+use super::storage_factory::{ObjectArrayCacheFactory, ObjectArrayStorageFactory};
 use crate::mtree::{
-    MerkleTreeObject, MerkleTreeObjectGenerator, MtreeReadSeek, MtreeReadWriteSeekWithSharedBuffer,
-    MtreeWriteSeek, SharedBuffer,
+    self, MerkleTreeObject, MerkleTreeObjectGenerator, MtreeReadSeek,
+    MtreeReadWriteSeekWithSharedBuffer, MtreeWriteSeek, SharedBuffer,
 };
 use crate::{HashMethod, ObjId, OBJ_TYPE_LIST};
 use crate::{NdnError, NdnResult};
+use http_types::cache;
 use std::io::SeekFrom;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use super::proof::ObjectArrayItemProof;
 
 #[derive(Clone, Debug)]
 pub struct ObjectArrayItem {
@@ -19,16 +22,18 @@ pub struct ObjectArrayItem {
 
 pub struct ObjectArray {
     hash_method: HashMethod,
-    data: Vec<ObjId>,
+    cache: Box<dyn ObjectArrayInnerCache>,
     is_dirty: bool,
     mtree: Option<MerkleTreeObject>,
 }
 
 impl ObjectArray {
-    pub fn new(hash_method: HashMethod) -> Self {
+    pub fn new(storage_type: ObjectArrayStorageType, hash_method: HashMethod) -> Self {
+        let cache: Box<dyn ObjectArrayInnerCache> =
+            ObjectArrayCacheFactory::create_cache(storage_type);
         Self {
             hash_method,
-            data: Vec::new(),
+            cache,
             is_dirty: false,
             mtree: None,
         }
@@ -40,7 +45,7 @@ impl ObjectArray {
     ) -> NdnResult<Self> {
         todo!("Implement ObjectArray::new_from_reader");
     }
-    
+
     pub fn append_object(&mut self, obj_id: &ObjId) -> NdnResult<()> {
         // Check if obj_id.obj_hash has the same length as hash_method
         if obj_id.obj_hash.len() != self.hash_method.hash_bytes() {
@@ -52,39 +57,13 @@ impl ObjectArray {
             return Err(NdnError::InvalidData(msg));
         }
 
-        self.data.push(obj_id.clone());
+        self.cache.append(obj_id)?;
         self.is_dirty = true;
         Ok(())
     }
 
-    pub fn insert_object(&mut self, index: usize, obj_id: &ObjId) -> NdnResult<()> {
-        if index > self.data.len() {
-            let msg = format!("Index out of bounds: {}", index);
-            error!("{}", msg);
-            return Err(NdnError::OffsetTooLarge(msg));
-        }
-
-        // Check if obj_id.obj_hash has the same length as hash_method
-        if obj_id.obj_hash.len() != self.hash_method.hash_bytes() {
-            let msg = format!(
-                "Object hash length does not match hash method: {}",
-                obj_id.obj_hash.len()
-            );
-            error!("{}", msg);
-            return Err(NdnError::InvalidData(msg));
-        }
-
-        self.data.insert(index, obj_id.clone());
-        self.is_dirty = true;
-        Ok(())
-    }
-
-    pub fn get_object(&self, index: usize) -> NdnResult<Option<&ObjId>> {
-        if index >= self.data.len() {
-            return Ok(None);
-        }
-
-        Ok(Some(&self.data[index]))
+    pub fn get_object(&self, index: usize) -> NdnResult<Option<ObjId>> {
+        self.cache.get(index)
     }
 
     // Get the object ID and proof for the object at the given index, the mtree must be exists
@@ -92,14 +71,26 @@ impl ObjectArray {
         &mut self,
         index: usize,
     ) -> NdnResult<Option<ObjectArrayItem>> {
-        if index >= self.data.len() {
-            return Ok(None);
+        if self.mtree.is_none() {
+            let msg = "Mtree is not initialized".to_string();
+            error!("{}", msg);
+            return Err(NdnError::InvalidState(msg));
         }
 
         assert!(self.mtree.is_some(), "Mtree is not initialized");
 
-        let obj_id = self.data[index].clone();
-        let mtree_proof = self.mtree.as_mut().unwrap().get_proof_path_by_leaf_index(index as u64).await?;
+        let obj_id = self.cache.get(index)?;
+        if obj_id.is_none() {
+            return Ok(None);
+        }
+        let obj_id = obj_id.unwrap();
+
+        let mtree_proof = self
+            .mtree
+            .as_mut()
+            .unwrap()
+            .get_proof_path_by_leaf_index(index as u64)
+            .await?;
         let proof = ObjectArrayItemProof { proof: mtree_proof };
 
         Ok(Some(ObjectArrayItem { obj_id, proof }))
@@ -109,11 +100,32 @@ impl ObjectArray {
         &mut self,
         indices: &[usize],
     ) -> NdnResult<Vec<Option<ObjectArrayItem>>> {
+        if self.mtree.is_none() {
+            let msg = "Mtree is not initialized".to_string();
+            error!("{}", msg);
+            return Err(NdnError::InvalidState(msg));
+        }
+
         let mut ret = Vec::with_capacity(indices.len());
         for index in indices {
-            let item = self.get_object_with_proof(*index).await?;
-            ret.push(item);
+            let obj_id = self.cache.get(*index)?;
+            if obj_id.is_none() {
+                ret.push(None);
+                continue;
+            }
+            let obj_id = obj_id.unwrap();
+
+            let mtree_proof = self
+                .mtree
+                .as_mut()
+                .unwrap()
+                .get_proof_path_by_leaf_index(*index as u64)
+                .await?;
+            let proof = ObjectArrayItemProof { proof: mtree_proof };
+
+            ret.push(Some(ObjectArrayItem { obj_id, proof }));
         }
+
         Ok(ret)
     }
 
@@ -122,36 +134,35 @@ impl ObjectArray {
         start: usize,
         end: usize,
     ) -> NdnResult<Vec<Option<ObjectArrayItem>>> {
-        if start >= self.data.len() || end > self.data.len() || start >= end {
+        if self.mtree.is_none() {
+            let msg = "Mtree is not initialized".to_string();
+            error!("{}", msg);
+            return Err(NdnError::InvalidState(msg));
+        }
+
+        let obj_list = self.cache.get_range(start, end)?;
+        if obj_list.is_empty() {
             return Ok(vec![]);
         }
 
         let mut ret = Vec::with_capacity(end - start);
+        let mtree = self.mtree.as_mut().unwrap();
+        let mut i = 0;
         for index in start..end {
-            let item = self.get_object_with_proof(index).await?;
-            ret.push(item);
+            if i >= obj_list.len() {
+                ret.push(None);
+                continue;
+            }
+
+            let mtree_proof = mtree.get_proof_path_by_leaf_index(*index as u64).await?;
+            let proof = ObjectArrayItemProof { proof: mtree_proof };
+
+            let obj_id = obj_list[i].clone();
+            let obj_id = ObjId::new_by_raw(obj_id.obj_type.clone(), obj_id.obj_hash.clone());
+            ret.push(Some(ObjectArrayItem { obj_id, proof }));
         }
+
         Ok(ret)
-    }
-
-    pub fn remove_object(&mut self, index: usize) -> NdnResult<Option<ObjId>> {
-        if index >= self.data.len() {
-            return Ok(None);
-        }
-
-        let obj_id = self.data.remove(index);
-        self.is_dirty = true;
-        Ok(Some(obj_id))
-    }
-
-    pub fn pop_object(&mut self) -> NdnResult<Option<ObjId>> {
-        if self.data.is_empty() {
-            return Ok(None);
-        }
-
-        let obj_id = self.data.pop().unwrap();
-        self.is_dirty = true;
-        Ok(Some(obj_id))
     }
 
     // Get the object ID for the array if mtree is not None, otherwise return None
@@ -251,6 +262,4 @@ impl ObjectArray {
 
         Ok(())
     }
-
-    
 }
