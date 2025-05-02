@@ -51,8 +51,7 @@ jobs:
                 path: tools
             - name: Prepare Installer
               working-directory: ./src
-              run: scripts/make_win_installer.py --version=${{inputs.version}} --builddate=${{inputs.build_time}} --no-build
-              shell: python
+              run: python3 scripts/make_win_installer.py --version=${{inputs.version}} --builddate=${{inputs.build_time}} --no-build
               env:
                 BUCKYCLI_PATH: .\\tools\\buckycli.exe
             - name: Build Installer
