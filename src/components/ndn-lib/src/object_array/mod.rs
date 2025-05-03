@@ -5,6 +5,9 @@ mod proof;
 mod storage_factory;
 mod memory_cache;
 
+#[cfg(test)]
+mod test;
+
 pub use object_array::*;
 pub use proof::*;
 pub use storage::*;

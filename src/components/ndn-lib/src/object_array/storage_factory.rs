@@ -12,13 +12,9 @@ pub struct ObjectArrayCacheFactory {}
 impl ObjectArrayCacheFactory {
     /// Create a new cache based on the storage type.
     pub fn create_cache(
-        storage_type: ObjectArrayStorageType,
+        cache_type: ObjectArrayCacheType,
     ) -> Box<dyn ObjectArrayInnerCache> {
-        let cache_type = match storage_type {
-            ObjectArrayStorageType::Arrow => ObjectArrayCacheType::Arrow,
-            _ => ObjectArrayCacheType::Memory,
-        };
-
+    
         match cache_type {
             ObjectArrayCacheType::Memory => {
                 let cache = ObjectArrayMemoryCache::new();

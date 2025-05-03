@@ -31,6 +31,11 @@ impl ObjectArrayInnerCache for ObjectArrayMemoryCache {
         false
     }
 
+    fn clone_cache(&self, _read_only: bool) -> NdnResult<Box<dyn ObjectArrayInnerCache>> {
+        let new_cache = ObjectArrayMemoryCache::new_array(self.storage.clone());
+        Ok(Box::new(new_cache))
+    }
+
     fn append(&mut self, value: &ObjId) -> NdnResult<()> {
         self.storage.push(value.clone());
         Ok(())
@@ -38,20 +43,24 @@ impl ObjectArrayInnerCache for ObjectArrayMemoryCache {
 
     fn insert(&mut self, index: usize, value: &ObjId) -> NdnResult<()> {
         if index > self.storage.len() {
-            return Err(NdnError::InvalidData("Index out of range".to_string()));
+            let msg = format!("Index out of range: {}", index);
+            error!("{}", msg);
+            return Err(NdnError::OffsetTooLarge(msg));
         }
 
         self.storage.insert(index, value.clone());
         Ok(())
     }
 
-    fn remove(&mut self, index: usize) -> NdnResult<()> {
+    fn remove(&mut self, index: usize) -> NdnResult<Option<ObjId>> {
         if index >= self.storage.len() {
-            return Err(NdnError::InvalidData("Index out of range".to_string()));
+            let msg = format!("Index out of range: {}", index);
+            error!("{}", msg);
+            return Err(NdnError::OffsetTooLarge(msg));
         }
 
-        self.storage.remove(index);
-        Ok(())
+        let item = self.storage.remove(index);
+        Ok(Some(item))
     }
 
     fn clear(&mut self) -> NdnResult<()> {

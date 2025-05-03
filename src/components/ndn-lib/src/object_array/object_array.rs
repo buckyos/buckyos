@@ -1,9 +1,9 @@
 use super::proof::ObjectArrayItemProof;
 use super::storage::{
-    ObjectArrayInnerCache, ObjectArrayStorageType,
-    ObjectArrayStorageWriter,
+    ObjectArrayCacheType, ObjectArrayInnerCache, ObjectArrayStorageType, ObjectArrayStorageWriter,
 };
 use super::storage_factory::{ObjectArrayCacheFactory, ObjectArrayStorageFactory};
+use crate::mtree::MerkleTreeProofPathVerifier;
 use crate::mtree::{
     self, MerkleTreeObject, MerkleTreeObjectGenerator, MtreeReadSeek,
     MtreeReadWriteSeekWithSharedBuffer, MtreeWriteSeek, SharedBuffer,
@@ -28,9 +28,9 @@ pub struct ObjectArray {
 }
 
 impl ObjectArray {
-    pub fn new(storage_type: ObjectArrayStorageType, hash_method: HashMethod) -> Self {
+    pub fn new(hash_method: HashMethod) -> Self {
         let cache: Box<dyn ObjectArrayInnerCache> =
-            ObjectArrayCacheFactory::create_cache(storage_type);
+            ObjectArrayCacheFactory::create_cache(ObjectArrayCacheType::Memory);
         Self {
             hash_method,
             cache,
@@ -57,6 +57,18 @@ impl ObjectArray {
         self.cache.is_readonly()
     }
 
+    pub fn clone(&self, read_only: bool) -> NdnResult<Self> {
+        let cache = self.cache.clone_cache(read_only)?;
+        let ret = Self {
+            hash_method: self.hash_method.clone(),
+            cache,
+            is_dirty: self.is_dirty,
+            mtree: None, // FIXME: Should we clone the mtree result if exists?
+        };
+
+        Ok(ret)
+    }
+
     pub fn append_object(&mut self, obj_id: &ObjId) -> NdnResult<()> {
         // Check if obj_id.obj_hash has the same length as hash_method
         if obj_id.obj_hash.len() != self.hash_method.hash_bytes() {
@@ -70,6 +82,55 @@ impl ObjectArray {
 
         self.cache.append(obj_id)?;
         self.is_dirty = true;
+
+        Ok(())
+    }
+
+    pub fn insert_object(&mut self, index: usize, obj_id: &ObjId) -> NdnResult<()> {
+        // Check if obj_id.obj_hash has the same length as hash_method
+        if obj_id.obj_hash.len() != self.hash_method.hash_bytes() {
+            let msg = format!(
+                "Object hash length does not match hash method: {}",
+                obj_id.obj_hash.len()
+            );
+            error!("{}", msg);
+            return Err(NdnError::InvalidData(msg));
+        }
+
+        self.cache.insert(index, obj_id)?;
+        self.is_dirty = true;
+
+        Ok(())
+    }
+
+    pub fn remove_object(&mut self, index: usize) -> NdnResult<Option<ObjId>> {
+        let ret = self.cache.remove(index)?;
+
+        if ret.is_some() {
+            self.is_dirty = true;
+        }
+
+        Ok(ret)
+    }
+
+    pub fn pop_object(&mut self) -> NdnResult<Option<ObjId>> {
+        let ret = self.cache.pop()?;
+
+        if ret.is_some() {
+            self.is_dirty = true;
+        }
+
+        Ok(ret)
+    }
+
+    pub fn clear(&mut self) -> NdnResult<()> {
+        if self.cache.len() == 0 {
+            return Ok(());
+        }
+
+        self.cache.clear()?;
+        self.is_dirty = true;
+
         Ok(())
     }
 
@@ -199,15 +260,17 @@ impl ObjectArray {
         }
 
         // Check if the mtree is dirty
-        if self.is_dirty {
+        if self.is_dirty || self.mtree.is_none() {
+            // If the mtree is dirty or first loaded, we need to regenerate it
             self.regenerate_merkle_tree().await?;
+            self.is_dirty = false;
         }
 
         Ok(self.get_obj_id().unwrap())
     }
 
     // Regenerate the merkle tree without checking the dirty flag
-    pub async fn regenerate_merkle_tree(&mut self) -> NdnResult<()> {
+    async fn regenerate_merkle_tree(&mut self) -> NdnResult<()> {
         let count = self.cache.len() as u64;
         let leaf_size = self.hash_method.hash_bytes() as u64;
         let data_size = count as u64 * leaf_size;
@@ -257,6 +320,7 @@ impl ObjectArray {
 
         let reader = Box::new(stream) as Box<dyn MtreeReadSeek>;
         let object = MerkleTreeObject::load_from_reader(reader, true).await?;
+
         let root_hash1 = object.get_root_hash();
         assert_eq!(root_hash, root_hash1);
 
@@ -289,5 +353,52 @@ impl ObjectArray {
         writer.flush().await?;
 
         Ok(())
+    }
+}
+
+pub struct ObjectArrayProofVerifier {
+    hash_method: HashMethod,
+}
+
+impl ObjectArrayProofVerifier {
+    pub fn new(hash_method: HashMethod) -> Self {
+        Self { hash_method }
+    }
+
+    pub fn verify(
+        &self,
+        container_id: &ObjId,
+        obj_id: &ObjId,
+        proof: &ObjectArrayItemProof,
+    ) -> NdnResult<bool> {
+        if proof.proof.len() < 2 {
+            let msg = format!("Invalid proof path length: {}", proof.proof.len());
+            error!("{}", msg);
+            return Err(NdnError::InvalidParam(msg));
+        }
+
+        // The first item is the leaf node, which is the item itself
+        if proof.proof[0].1 != obj_id.obj_hash {
+            let msg = format!(
+                "Unmatched object array leaf hash: expected {:?}, got {:?}",
+                obj_id, proof.proof[0].1
+            );
+            warn!("{}", msg);
+            return Ok(false);
+        }
+
+        // The last item is the root node, which is obj_id.obj_hash field
+        if proof.proof[proof.proof.len() - 1].1 != container_id.obj_hash {
+            let msg = format!(
+                "Unmatched object array root hash: expected {:?}, got {:?}",
+                container_id.obj_hash,
+                proof.proof[proof.proof.len() - 1].1
+            );
+            warn!("{}", msg);
+            return Ok(false);
+        }
+
+        let mtree_verifier = MerkleTreeProofPathVerifier::new(self.hash_method);
+        mtree_verifier.verify(&proof.proof)
     }
 }

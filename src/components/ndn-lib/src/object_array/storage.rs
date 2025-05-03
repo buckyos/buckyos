@@ -35,10 +35,12 @@ pub trait ObjectArrayInnerCache: Send + Sync {
     fn get(&self, index: usize) -> NdnResult<Option<ObjId>>;
     fn get_range(&self, start: usize, end: usize) -> NdnResult<Vec<ObjId>>;
 
+    fn clone_cache(&self, read_only: bool) -> NdnResult<Box<dyn ObjectArrayInnerCache>>;
+
     // Modify methods, can not be used in readonly mode
     fn append(&mut self, value: &ObjId) -> NdnResult<()>;
     fn insert(&mut self, index: usize, value: &ObjId) -> NdnResult<()>;
-    fn remove(&mut self, index: usize) -> NdnResult<()>;
+    fn remove(&mut self, index: usize) -> NdnResult<Option<ObjId>>;
     fn clear(&mut self) -> NdnResult<()>;
     fn pop(&mut self) -> NdnResult<Option<ObjId>>;
 }
@@ -56,6 +58,8 @@ pub trait ObjectArrayStorageReader: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait ObjectArrayStorageWriter: Send + Sync {
+    async fn file_path(&self) -> NdnResult<PathBuf>;
+
     async fn append(&mut self, value: &ObjId) -> NdnResult<()>;
     async fn len(&self) -> NdnResult<usize>;
 

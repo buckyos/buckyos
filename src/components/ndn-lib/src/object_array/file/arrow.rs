@@ -12,10 +12,12 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::FileWriter;
 use arrow::record_batch::RecordBatch;
+use buckyos_kit::init_logging;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct ObjectArrayArrowCache {
     schema: Arc<Schema>,
     batch: RecordBatch,
@@ -103,7 +105,7 @@ impl ObjectArrayArrowCache {
         self.batch.num_rows()
     }
 
-    pub fn into_memory_cache(self) -> NdnResult<Box<dyn ObjectArrayInnerCache>> {
+    pub fn into_memory_cache(self) -> Box<dyn ObjectArrayInnerCache> {
         let obj_type_array = self
             .batch
             .column(0)
@@ -124,7 +126,7 @@ impl ObjectArrayArrowCache {
             cache.push(ObjId::new_by_raw(obj_type, obj_hash.to_vec()));
         }
 
-        Ok(Box::new(ObjectArrayMemoryCache::new_array(cache)))
+        Box::new(ObjectArrayMemoryCache::new_array(cache))
     }
 }
 
@@ -140,6 +142,16 @@ impl ObjectArrayInnerCache for ObjectArrayArrowCache {
 
     fn is_readonly(&self) -> bool {
         true
+    }
+
+    fn clone_cache(&self, read_only: bool) -> NdnResult<Box<dyn ObjectArrayInnerCache>> {
+        let s = self.clone();
+        if read_only {
+            return Ok(Box::new(s));
+        }
+
+        let ret = s.into_memory_cache();
+        Ok(ret)
     }
 
     fn get(&self, index: usize) -> NdnResult<Option<ObjId>> {
@@ -162,7 +174,7 @@ impl ObjectArrayInnerCache for ObjectArrayArrowCache {
         Err(NdnError::InvalidState(msg))
     }
 
-    fn remove(&mut self, _index: usize) -> NdnResult<()> {
+    fn remove(&mut self, _index: usize) -> NdnResult<Option<ObjId>> {
         let msg = "Remove is not supported in Arrow cache".to_string();
         error!("{}", msg);
         Err(NdnError::InvalidState(msg))
@@ -264,12 +276,18 @@ impl ObjectArrayArrowWriter {
             NdnError::IoError(msg)
         })?;
 
+        info!("ObjectArray's arrow file written to: {:?}", self.file_path);
+
         Ok(())
     }
 }
 
 #[async_trait::async_trait]
 impl ObjectArrayStorageWriter for ObjectArrayArrowWriter {
+    async fn file_path(&self) -> NdnResult<PathBuf> {
+        Ok(self.file_path.clone())
+    }
+
     async fn append(&mut self, value: &ObjId) -> NdnResult<()> {
         self.append(value).await
     }
@@ -330,7 +348,7 @@ impl ObjectArrayArrowReader {
             Box::new(cache)
         } else {
             // If not readonly, convert to memory cache
-            cache.into_memory_cache()?
+            cache.into_memory_cache()
         };
 
         let ret = Self::new(cache);
