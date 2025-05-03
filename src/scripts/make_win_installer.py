@@ -39,7 +39,7 @@ def make_installer(version, date, onlyBuild, noBuild):
     
     if not noBuild:
         print(f"run build in {root_dir}")
-        subprocess.run(f"iscc /DMyAppVersion=\"{version}\" .\\installer.iss", shell=True, check=True, cwd=root_dir)
+        subprocess.run(f"iscc /DMyAppVersion={version} /DAllowArch=x64os .\\installer.iss", shell=True, check=True, cwd=root_dir)
         print(f"build installer success at {root_dir}")
         shutil.copy(f"{root_dir}/buckyos-installer-{version}.exe", src_dir)
         print(f"copy installer to {src_dir}")

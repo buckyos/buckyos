@@ -14,10 +14,12 @@ DefaultDirName=C:\{#MyAppName}
 UsePreviousAppDir=no
 DisableProgramGroupPage=yes
 OutputDir=.
-OutputBaseFilename=buckyos-installer-{#MyAppVersion}
+OutputBaseFilename=buckyos-{#AllowArch}-{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+ArchitecturesAllowed={#AllowArch}
+ArchitecturesInstallIn64BitMode={#AllowArch}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

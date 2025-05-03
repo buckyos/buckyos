@@ -28,7 +28,7 @@ jobs:
         runs-on: windows-latest
         strategy:
             matrix:
-                arch: ["x86_64"]
+                arch: ["x86_64", "aarch64"]
         steps:
             - name: Checkout
               uses: actions/checkout@v4
@@ -61,10 +61,10 @@ jobs:
               uses: ImagineBoom/Inno-Setup-Action@v1.0.0
               with:
                 path: src/buckyos_installer/installer.iss
-                options: /F"buckyos-installer-${{inputs.version}}-${{inputs.build_time}}"
+                options: /DMyAppVersion=${{inputs.version}} /DAllowArch=${{matrix.arch == 'x86_64' && 'x64' || 'arm64'}}
             - name: Upload installer
               uses: actions/upload-artifact@v4
               with:
-                name: buckyos-x86_64-${{inputs.version}}.exe
-                path: ./src/buckyos_installer/buckyos-installer-${{inputs.version}}.exe
+                name: buckyos-${{matrix.arch}}-${{inputs.version}}.exe
+                path: ./src/buckyos_installer/buckyos-${{matrix.arch == 'x86_64' && 'x64' || 'arm64'}}-${{inputs.version}}.exe
                 if-no-files-found: error
