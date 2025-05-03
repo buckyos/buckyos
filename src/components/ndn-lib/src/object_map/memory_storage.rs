@@ -1,9 +1,9 @@
 use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat};
-use crate::{NdnError, NdnResult};
+use crate::{NdnError, NdnResult, ObjId};
 use std::collections::BTreeMap;
 
 struct MemoryStorageItem {
-    value: Vec<u8>,
+    value: ObjId,
     mtree_index: Option<u64>,
 }
 
@@ -25,11 +25,11 @@ impl MemoryStorage {
 
 #[async_trait::async_trait]
 impl ObjectMapInnerStorage for MemoryStorage {
-    async fn put(&mut self, key: &str, value: &[u8]) -> NdnResult<()> {
+    async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
         self.storage.insert(
             key.to_string(),
             MemoryStorageItem {
-                value: value.to_vec(),
+                value: value.clone(),
                 mtree_index: None,
             },
         );
@@ -37,7 +37,7 @@ impl ObjectMapInnerStorage for MemoryStorage {
         Ok(())
     }
 
-    async fn get(&self, key: &str) -> NdnResult<Option<(Vec<u8>, Option<u64>)>> {
+    async fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>> {
         if let Some(item) = self.storage.get(key) {
             Ok(Some((item.value.clone(), item.mtree_index)))
         } else {
@@ -45,7 +45,7 @@ impl ObjectMapInnerStorage for MemoryStorage {
         }
     }
 
-    async fn remove(&mut self, key: &str) -> NdnResult<Option<Vec<u8>>> {
+    async fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
         if let Some(item) = self.storage.remove(key) {
             Ok(Some(item.value))
         } else {

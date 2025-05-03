@@ -228,6 +228,43 @@ impl HashHelper {
         }
     }
 
+    pub fn calc_hash_list(hash_method: HashMethod, data: &[&[u8]]) -> Vec<u8> {
+        match hash_method {
+            HashMethod::Sha256 => {
+                let mut hasher = sha2::Sha256::new();
+                for item in data {
+                    hasher.update(item);
+                }
+        
+                hasher.finalize().to_vec()
+            }
+            HashMethod::Sha512 => {
+                let mut hasher = sha2::Sha512::new();
+                for item in data {
+                    hasher.update(item);
+                }
+        
+                hasher.finalize().to_vec()
+            }
+            HashMethod::Blake2s256 => {
+                let mut hasher = Blake2s256::new();
+                for item in data {
+                    blake2::Digest::update(&mut hasher, item);
+                }
+        
+                hasher.finalize().to_vec()
+            }
+            HashMethod::Keccak256 =>  {
+                let mut hasher = Keccak256::new();
+                for item in data {
+                    sha3::Digest::update(&mut hasher, item);
+                }
+        
+                hasher.finalize().to_vec()
+            }
+        }
+    }
+
     pub fn calc_parent_hash(hash_method: HashMethod, left: &[u8], right: &[u8]) -> Vec<u8> {
         match hash_method {
             HashMethod::Sha256 => {

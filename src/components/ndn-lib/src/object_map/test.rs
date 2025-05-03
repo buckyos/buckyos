@@ -31,7 +31,7 @@ async fn test_object_map() {
 
         // Test get object
         let ret = obj_map.get_object(&key).await.unwrap().unwrap();
-        assert_eq!(ret.obj_id, obj_id);
+        assert_eq!(ret, obj_id);
 
         // Test exist
         let ret = obj_map.is_object_exist(&key).await.unwrap();

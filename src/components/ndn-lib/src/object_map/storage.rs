@@ -1,5 +1,5 @@
 use serde::{Serialize, Deserialize};
-use crate::NdnResult;
+use crate::{NdnResult, ObjId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectMapInnerStorageStat {
@@ -9,9 +9,9 @@ pub struct ObjectMapInnerStorageStat {
 #[async_trait::async_trait]
 pub trait ObjectMapInnerStorage: Send + Sync {
     // Use to store object data
-    async fn put(&mut self, key: &str, value: &[u8]) -> NdnResult<()>;
-    async fn get(&self, key: &str) -> NdnResult<Option<(Vec<u8>, Option<u64>)>>;
-    async fn remove(&mut self, key: &str) -> NdnResult<Option<Vec<u8>>>;
+    async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()>;
+    async fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>>;
+    async fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>>;
     async fn is_exist(&self, key: &str) -> NdnResult<bool>;
 
     async fn list(&self, page_index: usize, page_size: usize) -> NdnResult<Vec<String>>;

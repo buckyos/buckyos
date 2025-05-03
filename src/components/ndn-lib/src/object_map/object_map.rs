@@ -31,6 +31,11 @@ impl ObjectMapItem {
         }
     }
 
+    pub fn calc_hash(&self, hash_method: HashMethod) -> Vec<u8> {
+       HashHelper::calc_hash_list(hash_method, &[self.key.as_bytes(), self.obj_id.obj_hash.as_slice()])
+    }
+
+    /*
     pub fn encode(&self) -> NdnResult<Vec<u8>> {
         let bytes = bincode::serialize(self).map_err(|e| {
             let msg = format!("Error serializing ObjectMapItem: {}", e);
@@ -50,6 +55,7 @@ impl ObjectMapItem {
 
         Ok(ret)
     }
+    */
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -178,10 +184,7 @@ impl ObjectMap {
         key: &str,
         obj_id: ObjId,
     ) -> NdnResult<()> {
-        let item = ObjectMapItem::new(key.to_owned(), obj_id);
-        let data = item.encode()?;
-
-        self.storage.put(&key, &data).await.map_err(|e| {
+        self.storage.put(&key, &obj_id).await.map_err(|e| {
             let msg = format!("Error putting object map item: {}", e);
             error!("{}", msg);
             e
@@ -192,7 +195,7 @@ impl ObjectMap {
         Ok(())
     }
 
-    pub async fn get_object(&self, key: &str) -> NdnResult<Option<ObjectMapItem>> {
+    pub async fn get_object(&self, key: &str) -> NdnResult<Option<ObjId>> {
         let ret = self.get_object_inner(key).await?;
         if ret.is_none() {
             return Ok(None);
@@ -242,32 +245,21 @@ impl ObjectMap {
             })?;
 
         let proof = ObjectMapItemProof {
-            item: self.get_object(key).await?.unwrap(),
+            item: ObjectMapItem::new(key, item),
             proof,
         };
 
         Ok(Some(proof))
     }
 
-    async fn get_object_inner(&self, key: &str) -> NdnResult<Option<(ObjectMapItem, Option<u64>)>> {
+    async fn get_object_inner(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>> {
         let ret = self.storage.get(&key).await.map_err(|e| {
             let msg = format!("Error getting object map item: {}, {}", key, e);
             error!("{}", msg);
             e
         })?;
 
-        if ret.is_none() {
-            return Ok(None);
-        }
-
-        let (value, index) = ret.unwrap();
-        let item = ObjectMapItem::decode(&value).map_err(|e| {
-            let msg = format!("Error decoding object map item: {}, {}", key, e);
-            error!("{}", msg);
-            e
-        })?;
-
-        Ok(Some((item, index)))
+        Ok(ret)
     }
 
     // Try to remove the object from the map, return the object id and meta data
@@ -281,19 +273,11 @@ impl ObjectMap {
             e
         })?;
 
-        if ret.is_none() {
-            return Ok(None);
+        if ret.is_some() {
+            self.is_dirty = true;
         }
 
-        self.is_dirty = true;
-
-        let item = ObjectMapItem::decode(&ret.unwrap()).map_err(|e| {
-            let msg = format!("Error decoding object map item: {}, {}", key, e);
-            error!("{}", msg);
-            e
-        })?;
-
-        Ok(Some(item.obj_id))
+        Ok(ret)
     }
 
     pub async fn is_object_exist(&self, key: &str) -> NdnResult<bool> {
@@ -353,7 +337,11 @@ impl ObjectMap {
                 }
 
                 let item = item.unwrap();
-                let hash = HashHelper::calc_hash(self.meta.hash_method, &item.encode().unwrap());
+                let hash = HashHelper::calc_hash_list(self.meta.hash_method, &[
+                    key.as_bytes(),
+                    item.obj_hash.as_slice(),
+                ]);
+
                 mtree_generator
                     .append_leaf_hashes(&vec![hash])
                     .await
@@ -439,8 +427,7 @@ impl ObjectMapProofVerifier {
         }
 
         // First calculate the hash of the item
-        let item_data = proof.item.encode().unwrap();
-        let item_hash = HashHelper::calc_hash(self.hash_method, &item_data);
+        let item_hash = proof.item.calc_hash(self.hash_method);
 
         // The first item is the leaf node, which is the item itself
         if proof.proof[0].1 != item_hash {
