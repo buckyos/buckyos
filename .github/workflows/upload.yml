@@ -44,12 +44,12 @@ jobs:
                 name: buckyos-${{matrix.os}}-${{matrix.arch}}-${{inputs.version}}-${{ inputs.build_time }}
                 github-token: ${{ secrets.GITHUB_TOKEN }}
                 run-id: ${{inputs.run_id}}
-                path: ${{matrix.os == 'winodws' && './src/rootfs' || '.'}}
+                path: ${{matrix.os == 'windows' && './src/rootfs' || '.'}}
             - name: untar rootfs
               if: ${{ matrix.os != 'windows' }}
               run: tar -xvf rootfs.tar
             - name: check rootfs
-              run: ${{matrix.os == 'winodws' && 'dir src\rootfs' || 'ls -l ./src/rootfs'}}
+              run: 'ls -l ./src/rootfs'
             - name: Download Tools
               uses: actions/download-artifact@v4
               with:
