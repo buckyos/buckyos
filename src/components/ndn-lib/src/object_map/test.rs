@@ -23,17 +23,15 @@ async fn test_object_map() {
     for i in 0..count {
         let key = format!("key{}", i);
         let hash = generate_random_buf(&i.to_string(), HashMethod::Sha256.hash_bytes());
-        let meta = generate_random_buf(&key, 16);
         let obj_id = ObjId::new_by_raw(OBJ_TYPE_FILE.to_owned(), hash);
 
-        obj_map.put_object(&key, obj_id.clone(), Some(meta.clone()))
+        obj_map.put_object(&key, obj_id.clone())
             .await
             .unwrap();
 
         // Test get object
         let ret = obj_map.get_object(&key).await.unwrap().unwrap();
         assert_eq!(ret.obj_id, obj_id);
-        assert_eq!(ret.meta, Some(meta.clone()));
 
         // Test exist
         let ret = obj_map.is_object_exist(&key).await.unwrap();
@@ -42,8 +40,7 @@ async fn test_object_map() {
         // Test remove
         if i % 2 == 0 {
             let ret = obj_map.remove_object(&key).await.unwrap().unwrap();
-            assert_eq!(ret.0, obj_id);
-            assert_eq!(ret.1, Some(meta));
+            assert_eq!(ret, obj_id);
         }
     }
 
@@ -59,7 +56,6 @@ async fn test_object_map() {
             assert_eq!(ret.is_none(), true);
         } else {
             let ret = obj_map.get_object(&key).await.unwrap().unwrap();
-            assert_eq!(ret.meta.is_some(), true);
 
             let proof = obj_map.get_object_proof_path(&key).await.unwrap();
             assert!(proof.is_some());

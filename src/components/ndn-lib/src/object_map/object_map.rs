@@ -21,15 +21,13 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 pub struct ObjectMapItem {
     pub key: String,
     pub obj_id: ObjId,
-    pub meta: Option<Vec<u8>>,
 }
 
 impl ObjectMapItem {
-    pub fn new(key: impl Into<String>, obj_id: ObjId, meta: Option<Vec<u8>>) -> Self {
+    pub fn new(key: impl Into<String>, obj_id: ObjId) -> Self {
         Self {
             key: key.into(),
             obj_id,
-            meta,
         }
     }
 
@@ -179,9 +177,8 @@ impl ObjectMap {
         &mut self,
         key: &str,
         obj_id: ObjId,
-        meta: Option<Vec<u8>>,
     ) -> NdnResult<()> {
-        let item = ObjectMapItem::new(key.to_owned(), obj_id, meta);
+        let item = ObjectMapItem::new(key.to_owned(), obj_id);
         let data = item.encode()?;
 
         self.storage.put(&key, &data).await.map_err(|e| {
@@ -277,7 +274,7 @@ impl ObjectMap {
     pub async fn remove_object(
         &mut self,
         key: &str,
-    ) -> NdnResult<Option<(ObjId, Option<Vec<u8>>)>> {
+    ) -> NdnResult<Option<ObjId>> {
         let ret = self.storage.remove(&key).await.map_err(|e| {
             let msg = format!("Error removing object map item: {}", e);
             error!("{}", msg);
@@ -296,7 +293,7 @@ impl ObjectMap {
             e
         })?;
 
-        Ok(Some((item.obj_id, item.meta)))
+        Ok(Some(item.obj_id))
     }
 
     pub async fn is_object_exist(&self, key: &str) -> NdnResult<bool> {
