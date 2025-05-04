@@ -7,6 +7,11 @@ use buckyos_api::*;
 use clap::{Arg, Command};
 use package_cmd::*;
 
+
+fn is_local_cmd(cmd_name: &str) -> bool {
+    cmd_name == "version" || cmd_name == "install_pkg" || cmd_name == "pack_pkg" || cmd_name == "load_pkg" || cmd_name == "set_pkg_meta"
+}
+
 #[tokio::main]
 async fn main() -> Result<(), String> {
     buckyos_kit::init_logging("buckycli",false);
@@ -164,26 +169,36 @@ async fn main() -> Result<(), String> {
         )
         .get_matches();
     
+    
+    let sub_command = matches.subcommand();
+    if sub_command.is_none() {
+        println!("unknown command!");
+        return Err("unknown command!".to_string());
+    }
 
-    let mut runtime = init_buckyos_api_runtime("buckycli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
-        println!("Failed to init buckyos runtime: {}", e);
-        return e.to_string();
-    })?;
-
-    //TODO: Support login to verify-hub via command line to obtain a valid session_token, to avoid requiring a private key locally
-
-    runtime.login().await.map_err(|e| {
-        println!("Failed to login: {}", e);
-        return e.to_string();
-    })?;
-    set_buckyos_api_runtime(runtime);
-    let buckyos_runtime = get_buckyos_api_runtime().unwrap();
     let mut private_key = None;
-    let zone_host_name = buckyos_runtime.zone_id.to_host_name();
-    println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id,zone_host_name);
-    if buckyos_runtime.user_private_key.is_some() {
-        println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
-        private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
+
+    let cmd_name = sub_command.clone().unwrap().0;
+    if !is_local_cmd(cmd_name) {
+        let mut runtime = init_buckyos_api_runtime("buckycli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
+            println!("Failed to init buckyos runtime: {}", e);
+            return e.to_string();
+        })?;
+
+        //TODO: Support login to verify-hub via command line to obtain a valid session_token, to avoid requiring a private key locally
+
+        runtime.login().await.map_err(|e| {
+            println!("Failed to login: {}", e);
+            return e.to_string();
+        })?;
+        set_buckyos_api_runtime(runtime);
+        let buckyos_runtime = get_buckyos_api_runtime().unwrap();
+        let zone_host_name = buckyos_runtime.zone_id.to_host_name();
+        println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id,zone_host_name);
+        if buckyos_runtime.user_private_key.is_some() {
+            println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
+                private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
+        }
     }
 
 
@@ -208,14 +223,14 @@ async fn main() -> Result<(), String> {
             .get_many::<String>("set_config")
             .expect("必须提供 key 和 value 参数")
             .collect();
-        let key = config_values[0];
+        let key = config_values[0]; 
         let value = config_values[1];
         sys_config::set_config(key, value).await;
         return Ok(());
     }
 
     // 处理子命令
-    match matches.subcommand() {
+    match sub_command {
         Some(("version", _)) => {
             let version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");
             let git_hash = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
