@@ -7,6 +7,10 @@ use buckyos_api::*;
 use clap::{Arg, ArgAction, Command};
 use package_cmd::*;
 
+fn is_local_cmd(cmd_name: &str) -> bool {
+    cmd_name == "version" || cmd_name == "install_pkg" || cmd_name == "pack_pkg" || cmd_name == "load_pkg" || cmd_name == "set_pkg_meta"
+}
+
 async fn login() -> Result<(), String> {
     if !is_buckyos_api_runtime_set() {
         let mut runtime = init_buckyos_api_runtime("buckycli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
@@ -187,6 +191,17 @@ async fn main() -> Result<(), String> {
         )
         .get_matches();
 
+    let sub_command = matches.subcommand();
+    if sub_command.is_none() {
+        println!("unknown command!");
+        return Err("unknown command!".to_string());
+    }
+
+    let cmd_name = sub_command.clone().unwrap().0;
+    if !is_local_cmd(cmd_name) {
+        login().await?;
+    }
+
 
     // 如果有参数，而不是子命令
     // eg. buckycli --get_config $key
@@ -216,21 +231,18 @@ async fn main() -> Result<(), String> {
     }
 
     // 处理子命令
-    match matches.subcommand() {
+    match sub_command {
         Some(("version", _)) => {
             let version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");
-            // let git_hash = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
-            println!("Build Timestamp: {}", env!("VERGEN_BUILD_TIMESTAMP"));
+            let git_hash = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
+            println!("Build Timestamp: {}", option_env!("VERGEN_BUILD_TIMESTAMP").unwrap_or("unknown"));
             println!(
                 "buckyos control tool version {} {}",
                 version,
-                env!("VERGEN_GIT_DESCRIBE")
+                git_hash
             );
         }
         Some(("pub_pkg", matches)) => {
-            // need login
-            login().await?;
-
             let target_dir = matches.get_one::<String>("target_dir").unwrap();
             // 需要便利target_dir目录下的所有pkg，并发布
             // 遍历target_dir目录下的所有pkg目录
@@ -276,9 +288,6 @@ async fn main() -> Result<(), String> {
             println!("############\nPublish pkg success!");
         }
         Some(("pub_app", matches)) => {
-            // need login
-            login().await?;
-
             let app_name = matches.get_one::<String>("app_name").unwrap();
             let app_dir_path = matches.get_one::<String>("target_dir").unwrap();
             let pub_result = publish_app_pkg(app_name, app_dir_path,true).await;
@@ -288,9 +297,6 @@ async fn main() -> Result<(), String> {
             }
         }
         Some(("pack_pkg", matches)) => {
-            // need login
-            login().await?;
-
             let src_pkg_path = matches.get_one::<String>("src_pkg_path").unwrap();
             let target_path = matches.get_one::<String>("target_path").unwrap();
             // only need optional user private key
@@ -364,9 +370,6 @@ async fn main() -> Result<(), String> {
             }
         }
         Some(("pub_index", _matches)) => {
-            // need login
-            login().await?;
-
             let pub_result = publish_repo_index().await;
             if pub_result.is_err() {
                 println!("Publish repo index failed! {}", pub_result.err().unwrap());
@@ -375,9 +378,6 @@ async fn main() -> Result<(), String> {
             println!("############\nPublish repo index success!");
         }
         Some(("update_index", _matches)) => {
-            // need login
-            login().await?;
-
             let sync_result = sync_from_remote_source().await;
             if sync_result.is_err() {
                 println!("Sync from remote source failed! {}", sync_result.err().unwrap());
@@ -385,9 +385,6 @@ async fn main() -> Result<(), String> {
             }
         }
         Some(("connect", _matches)) => {
-            // need login
-            login().await?;
-
             sys_config::connect_into().await;
         }
         _ => {
