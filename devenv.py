@@ -30,7 +30,7 @@ def install_rust_toolchain():
     # Install cross-compilation tools
     run_command("apt-get install -y musl-tools")
     run_command("apt-get install -y gcc-aarch64-linux-gnu")
-    run_command("rustup toolchain install stable")
+    run_command("rustup default stable")
     
     # Add Rust targets
     run_command("rustup target add x86_64-unknown-linux-musl")

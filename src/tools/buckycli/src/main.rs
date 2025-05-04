@@ -218,12 +218,12 @@ async fn main() -> Result<(), String> {
     match matches.subcommand() {
         Some(("version", _)) => {
             let version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");
-            // let git_hash = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
-            println!("Build Timestamp: {}", env!("VERGEN_BUILD_TIMESTAMP"));
+            let git_hash = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
+            println!("Build Timestamp: {}", option_env!("VERGEN_BUILD_TIMESTAMP").unwrap_or("unknown"));
             println!(
                 "buckyos control tool version {} {}",
                 version,
-                env!("VERGEN_GIT_DESCRIBE")
+                git_hash,
             );
         }
         Some(("pub_pkg", matches)) => {
