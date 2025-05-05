@@ -16,12 +16,11 @@ pub use super::storage::TrieObjectMapProofVerifyResult;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TrieObjectMapItem {
     pub obj_id: ObjId,
-    pub meta: Option<Vec<u8>>,
 }
 
 impl TrieObjectMapItem {
-    pub fn new(obj_id: ObjId, meta: Option<Vec<u8>>) -> Self {
-        Self { obj_id, meta }
+    pub fn new(obj_id: ObjId) -> Self {
+        Self { obj_id }
     }
 
     pub fn encode(&self) -> NdnResult<Vec<u8>> {
@@ -110,30 +109,29 @@ impl TrieObjectMap {
         &self,
         key: &str,
         obj_id: ObjId,
-        meta: Option<Vec<u8>>,
     ) -> NdnResult<()> {
-        let item = TrieObjectMapItem::new(obj_id, meta);
+        let item = TrieObjectMapItem::new(obj_id);
         let value = item.encode()?;
         self.db.put(key.as_bytes(), &value).await?;
 
         Ok(())
     }
 
-    pub async fn get_object(&self, key: &str) -> NdnResult<Option<TrieObjectMapItem>> {
+    pub async fn get_object(&self, key: &str) -> NdnResult<Option<ObjId>> {
         match self.db.get(key.as_bytes()).await? {
             Some(value) => {
                 let item = TrieObjectMapItem::decode(&value)?;
-                Ok(Some(item))
+                Ok(Some(item.obj_id))
             }
             None => Ok(None),
         }
     }
 
-    pub async fn remove_object(&self, key: &str) -> NdnResult<Option<(ObjId, Option<Vec<u8>>)>> {
+    pub async fn remove_object(&self, key: &str) -> NdnResult<Option<(ObjId)>> {
         let value = self.db.remove(key.as_bytes()).await?;
         if let Some(value) = value {
             let item = TrieObjectMapItem::decode(&value)?;
-            Ok(Some((item.obj_id, item.meta)))
+            Ok(Some((item.obj_id)))
         } else {
             Ok(None)
         }
@@ -188,10 +186,9 @@ impl TrieObjectMapProofVerifier {
         &self,
         key: &str,
         obj_id: &ObjId,
-        meta: Option<&[u8]>,
         proof: &TrieObjectMapItemProof,
     ) -> NdnResult<TrieObjectMapProofVerifyResult> {
-        let item = TrieObjectMapItem::new(obj_id.clone(), meta.map(|m| m.to_vec()));
+        let item = TrieObjectMapItem::new(obj_id.clone());
         let value = item.encode()?;
 
         self.verify(key, value.as_ref(), proof)
