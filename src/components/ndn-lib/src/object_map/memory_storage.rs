@@ -1,7 +1,9 @@
 use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat};
 use crate::{NdnError, NdnResult, ObjId};
 use std::collections::BTreeMap;
+use std::path::Path;
 
+#[derive(Clone, Debug)]
 struct MemoryStorageItem {
     value: ObjId,
     mtree_index: Option<u64>,
@@ -111,5 +113,23 @@ impl ObjectMapInnerStorage for MemoryStorage {
 
     async fn load_mtree_data(&self) -> NdnResult<Option<Vec<u8>>> {
         Ok(self.mtree_data.clone())
+    }
+
+    async fn clone(&self, _target: &Path) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
+        // Create a new MemoryStorage instance
+        let mut new_storage = MemoryStorage::new();
+
+        // Copy meta and mtree data
+        new_storage.storage = self.storage.clone();
+        new_storage.meta = self.meta.clone();
+        new_storage.mtree_data = self.mtree_data.clone();
+
+        Ok(Box::new(new_storage))
+    }
+
+    // If file is diff from the current one, it will be saved to the file.
+    async fn save(&mut self, _file: &Path) -> NdnResult<()> {
+        // Memory storage does not need to save to file, just return Ok
+        Ok(())
     }
 }

@@ -17,7 +17,7 @@ reqwest = {version = "*", features = ["json", "rustls-tls","stream"]}
 surf = "*"  
 tide = "*" 
 http-types = '*'
-rusqlite = { version = "*", features = ["bundled"] }
+rusqlite = { version = "*", features = ["bundled", "backup"] }
 futures = "*"  
 futures-util = "*"
 hex = "*"
@@ -46,6 +46,7 @@ trie-db = { version = "0.29", features = ["std"] }
 sp-trie = "38.0"
 base64 = "0.22"
 arrow = "55.0"
+chrono = "*"
 
 [dev-dependencies]
 tempfile = "*"
