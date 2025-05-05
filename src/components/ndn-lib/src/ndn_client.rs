@@ -82,7 +82,7 @@ impl NdnClient {
             result = format!("{}/{}",real_base_url,chunk_id.to_base32());
         }
         //去掉多余的/
-        let result = result.replace("//", "/");
+        //let result = result.replace("//", "/");
         result
     }
 
@@ -789,16 +789,12 @@ mod tests {
             mmap_cache_dir: None,
         };
         
-        let named_mgr = NamedDataMgr::from_config(
-            Some("test".to_string()),
-            temp_dir.path().to_path_buf(),
-            config
-        ).await.unwrap();
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some("test")).await.unwrap();
+        let mut named_mgr = named_mgr.lock().await;
         let chunk_a_size:u64 = 1024*1024 + 321;
         let chunk_a = generate_random_bytes(chunk_a_size);
         let mut hasher = ChunkHasher::new(None).unwrap();
-        let hash_a = hasher.calc_from_bytes(&chunk_a);
-        let chunk_id_a = ChunkId::from_sha256_result(&hash_a);
+        let chunk_id_a = hasher.calc_chunkid_from_bytes(&chunk_a);
         info!("chunk_id_a:{}",chunk_id_a.to_string());
         let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_a, chunk_a_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_a).await.unwrap();
@@ -808,8 +804,7 @@ mod tests {
         let chunk_b_size:u64 = 1024*1024*3 + 321*71;
         let chunk_b = generate_random_bytes(chunk_b_size);
         let mut hasher = ChunkHasher::new(None).unwrap();
-        let hash_b = hasher.calc_from_bytes(&chunk_b);
-        let chunk_id_b = ChunkId::from_sha256_result(&hash_b);
+        let chunk_id_b = hasher.calc_chunkid_from_bytes(&chunk_b);
         info!("chunk_id_b:{}",chunk_id_b.to_string());
         let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_b, chunk_b_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_b).await.unwrap();
@@ -818,17 +813,16 @@ mod tests {
         let chunk_c_size:u64 = 1024*1024*3 + 321*71;
         let chunk_c = generate_random_bytes(chunk_c_size);
         let mut hasher = ChunkHasher::new(None).unwrap();
-        let hash_c = hasher.calc_from_bytes(&chunk_c);
-        let chunk_id_c = ChunkId::from_sha256_result(&hash_c);
+        let chunk_id_c = hasher.calc_chunkid_from_bytes(&chunk_c);
         info!("chunk_id_c:{}",chunk_id_c.to_string());
         let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_c, chunk_c_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_c).await.unwrap();
         drop(chunk_writer);
         named_mgr.complete_chunk_writer_impl(&chunk_id_c).await.unwrap();
+        drop(named_mgr);
         
-        
-        info!("named_mgr [test] init OK!");
-        NamedDataMgr::set_mgr_by_id(Some("test"),named_mgr).await.unwrap();
+        //info!("named_mgr [test] init OK!");
+        //NamedDataMgr::set_mgr_by_id(Some("test"),named_mgr).await.unwrap();
 
         let temp_dir = tempfile::tempdir().unwrap();
         let config = NamedDataMgrConfig {

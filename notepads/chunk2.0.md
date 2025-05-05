@@ -66,6 +66,94 @@ cyfs-object:chunklist_data
 
 
 
+## chunklist和chunk的一些伪代码
+
+### 本地读取
+
+常用接口，用chunkid当文件名来读取
+
+```rust
+reader = ndn_mgr.open_chunk_reader(chunk_id)
+reader.read(offset, size)
+```
+
+常用接口，可以直接用chunklist_id当文件名来读取，内部根据offset先得到实际的chunkid在进行读取
+```rust
+reader = ndn_mgr.open_chunklist_reader(chunklist_id)
+reader.read(offset, size)
+```
+
+
+### 本地写入
+
+写入，这个语义上有锁定的含义，完全写完才能open chunk reader成功
+```rust
+writer = ndn_mgr.open_chunk_writer(chunk_id)
+writer.write(offset, data)
+```
+
+写入一个chunklist通常意味着写入多个chunk，这个过程是可以并行的，并且写入成功的chunk立刻就可以被chunklist reader使用
+```rust
+for chunkid in chunklist {
+    writer = ndn_mgr.open_chunk_writer(chunkid)
+    writer.write(offset, data)
+}
+```
+有一种特殊情况，就是写入的chunklist[index]必须通过chunklist_id + index才能访问。这通常是大量的小chunk组成的chunklist,chunklist通常通过一个文件来保存
+```rust
+// 这种只适合于不会保存chunklist里的chunkid的场景
+writer = ndn_mgr.open_chunklist_writer(chunklist_id,index)
+writer.write(offset, data)
+```
+
+
+### 具体的例子，使用chunklist来实现fileobject
+
+将一个大文件写入ndn_mgr的过程，不再依赖hasher的状态保存与恢复，就可以实现断点续穿
+
+```rust
+file_reader = open_file(file_path)
+chunk_list = []
+loop {
+    chunk_buffer = file_reader.read(CHUNK_SIZE)
+    chunk_id = chunk_hasher.cacl_buffer(chunk_buffer)
+    chunk_writer = ndn_mgr.open_chunk_writer(chunk_id)
+    chunk_writer.write(chunk_buffer)
+    chunk_list.append(chunk_id)
+}
+chunk_list_id = chunk_list.cacl_id();
+ndn_mgr.put_chunklist(chunk_list_id, chunk_list);
+file_obj = json!({ 
+    "file_size": file_reader.size(),
+    "content": chunk_list_id,
+})
+ndn_mgr.put_obj(file_obj_id, file_obj);
+```
+
+### ndn_client的伪代码
+
+- 带验证的get chunk
+
+
+- 带验证的get chunklist
+```rust
+reader,cyfs_resp_header = ndn_client.open_named_data_by_url(chunk_list_url,range)
+copy_chunk_list(reader,cyfs_resp_header)
+
+```
+
+
+- put chunk
+
+- put chunklist
+
+
+### 高级: Link两个chunklist
+对同一个数据，可以用对个不同切分方法的chunklist来描述。
+这几个chunklist是等价的，系统只保存一份数据即可
+可用于基于chunk切分的版本diff计算，较少文件新版本的实际存储空间 
+
+
 ## 最终目标：基础设施可以支持新的 DFS 和 GraphDB
 
 虽然可以用soft link用文件系统实现知识图谱，但GraphDB支持的高级查询（这些查询还是比较学术的，并不清楚在实际产品中是否有价值）

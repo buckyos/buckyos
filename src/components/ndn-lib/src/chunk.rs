@@ -163,6 +163,11 @@ impl ChunkHasher {
         self.hasher.finalize().to_vec()
     }
 
+    pub fn calc_chunkid_from_bytes(mut self,bytes: &[u8]) -> ChunkId {
+        self.hasher.update_from_bytes(bytes);
+        self.finalize_chunk_id()
+    }
+
     pub fn update_from_bytes(&mut self, bytes: &[u8]) {
         self.hasher.update_from_bytes(bytes);
     }
@@ -334,7 +339,7 @@ mod tests {
         let hash_result_restored = {
             let mut chunk_hasher = ChunkHasher::new(None).unwrap();
             chunk_hasher.update_from_bytes(&buffer[..1024]);
-            let state_json = chunk_hasher.save_state();
+            let state_json = chunk_hasher.save_state().unwrap();
             println!("state_json:{}",state_json.to_string());
 
 

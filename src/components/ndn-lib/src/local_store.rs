@@ -937,8 +937,7 @@ mod tests {
         let store = create_test_store().await?;
         let data = b"test data".to_vec();
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();
-        let hash_bytes = chunk_hasher.calc_from_bytes(&data);
-        let chunk_id = ChunkId::from_sha256_result(&hash_bytes);
+        let chunk_id = chunk_hasher.calc_chunkid_from_bytes(&data);
 
         // Test putting chunk
         store.put_chunk(&chunk_id, &data, false).await?;
