@@ -1,11 +1,26 @@
-use crate::NdnError;
+use crate::{NdnError, NdnResult};
 use blake2::{digest::Update as Blake2Update, Blake2s256, Digest as Blake2Digest};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use sha3::Keccak256;
 use std::str::FromStr;
+use hex;
+use serde_json::{json, Value};
+use crypto_common::hazmat::{SerializedState, SerializableState};
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub trait Hasher {
+    fn support_state(&self) -> bool;
+    fn get_pos(&self) -> u64;
+    fn restore_from_state(&mut self, state_json: serde_json::Value) -> NdnResult<()>;
+    fn save_state(&self) -> NdnResult<serde_json::Value>;
+    fn update_from_bytes(&mut self, bytes: &[u8]) -> NdnResult<()>;
+    fn finalize(self: Box<Self>) -> Vec<u8>;
+}
+
+
+pub const DEFAULT_HASH_METHOD: &str = "sha256";
+
+#[derive(Debug, Clone,Copy, Eq, PartialEq)]
 pub enum HashMethod {
     Sha256,
     Sha512,
@@ -76,9 +91,118 @@ impl<'de> Deserialize<'de> for HashMethod {
     }
 }
 
+pub struct Sha256Hasher {
+    hasher: Sha256,
+    pos: u64,
+}
+
+impl Sha256Hasher {
+    pub fn new() -> Self {
+        Self { 
+            hasher: Sha256::new(),
+            pos: 0,
+        }
+    }
+}
+
+impl Hasher for Sha256Hasher {
+    fn support_state(&self) -> bool { true }
+    fn get_pos(&self) -> u64 { self.pos }
+
+    fn restore_from_state(&mut self, state_json: serde_json::Value) -> NdnResult<()> {
+        let pos = state_json["pos"].as_u64().unwrap_or(0);
+        let serialized_state = hex::decode(
+            state_json["state"].as_str().ok_or(NdnError::Internal("invalid hasher state json".to_string()))?)
+            .map_err(|e| NdnError::Internal(format!("invalid hasher state json:{}",e.to_string())))?;
+
+        self.hasher = Sha256::deserialize(
+            &SerializedState::<Sha256>::try_from(&serialized_state[..]).map_err(|e| NdnError::Internal(format!("invalid hasher state json:{}",e.to_string())))?)
+            .map_err(|e| NdnError::Internal(format!("invalid hasher state json:{}",e.to_string())))?;
+        self.pos = pos;
+        Ok(())
+    }
+
+    fn save_state(&self) -> NdnResult<serde_json::Value> {
+        let state_json = json!({
+            "hash_type": "sha256",
+            "pos": self.pos,
+            "state": hex::encode(self.hasher.serialize()),
+        });
+        Ok(state_json)
+    }
+
+    fn update_from_bytes(&mut self, bytes: &[u8]) -> NdnResult<()> {
+        self.hasher.update(bytes);
+        self.pos += bytes.len() as u64;
+        Ok(())
+    }
+
+    fn finalize(self: Box<Self>) -> Vec<u8> {
+        self.hasher.finalize().to_vec()
+    }
+}
+
+pub struct Sha512Hasher {
+    hasher: Sha512,
+    pos: u64,
+}
+
+impl Sha512Hasher {
+    pub fn new() -> Self {
+        Self { 
+            hasher: Sha512::new(),
+            pos: 0,
+        }
+    }
+}
+
+impl Hasher for Sha512Hasher {
+    fn support_state(&self) -> bool { true }
+    fn get_pos(&self) -> u64 { self.pos }
+    fn restore_from_state(&mut self, state_json: serde_json::Value) -> NdnResult<()> {
+        let pos = state_json["pos"].as_u64().unwrap_or(0);
+        let serialized_state = hex::decode(
+            state_json["state"].as_str().ok_or(NdnError::Internal("invalid hasher state json".to_string()))?)
+            .map_err(|e| NdnError::Internal(format!("invalid hasher state json:{}",e.to_string())))?;
+
+        self.hasher = Sha512::deserialize(
+            &SerializedState::<Sha512>::try_from(&serialized_state[..]).map_err(|e| NdnError::Internal(format!("invalid hasher state json:{}",e.to_string())))?)
+            .map_err(|e| NdnError::Internal(format!("invalid hasher state json:{}",e.to_string())))?;
+        self.pos = pos;
+        Ok(())
+    }
+
+    fn save_state(&self) -> NdnResult<serde_json::Value> {
+        let state_json = json!({
+            "hash_type": "sha512",
+            "pos": self.pos,
+            "state": hex::encode(self.hasher.serialize()),
+        });
+        Ok(state_json)
+    }
+
+    fn update_from_bytes(&mut self, bytes: &[u8]) -> NdnResult<()> {
+        self.hasher.update(bytes);
+        self.pos += bytes.len() as u64;
+        Ok(())
+    }
+
+    fn finalize(self: Box<Self>) -> Vec<u8> {
+        self.hasher.finalize().to_vec()
+    }
+}
+
 pub struct HashHelper {}
 
 impl HashHelper {
+    pub fn create_hasher(hash_method: HashMethod) -> NdnResult<Box<dyn Hasher + Send + Sync>> {
+        match hash_method {
+            HashMethod::Sha256 => Ok(Box::new(Sha256Hasher::new())),
+            HashMethod::Sha512 => Ok(Box::new(Sha512Hasher::new())),
+            _ => Err(NdnError::InvalidParam(format!("Unsupported hash method: {:?}", hash_method))),
+        }
+    }
+
     pub fn calc_hash(hash_method: HashMethod, data: &[u8]) -> Vec<u8> {
         match hash_method {
             HashMethod::Sha256 => {
@@ -132,4 +256,45 @@ impl HashHelper {
             }
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::Rng;
+
+    fn test_hasher_state_save_restore(hash_method: HashMethod) {
+        let mut buffer = vec![0u8; 2048];
+        let mut rng = rand::thread_rng();
+        rng.fill(&mut buffer[..]);
+
+        let mut hasher = HashHelper::create_hasher(hash_method).unwrap();
+        hasher.update_from_bytes(&buffer).unwrap();
+        let hash_result = hasher.finalize();
+
+        let hash_result_restored = {
+            let mut hasher = HashHelper::create_hasher(hash_method).unwrap();
+            hasher.update_from_bytes(&buffer[..1024]).unwrap();
+            let state_json = hasher.save_state().unwrap();
+            println!("state_json:{}", state_json.to_string());
+
+            let mut hasher_restored = HashHelper::create_hasher(hash_method).unwrap();
+            hasher_restored.restore_from_state(state_json).unwrap();
+            hasher_restored.update_from_bytes(&buffer[1024..]).unwrap();
+            hasher_restored.finalize()
+        };
+
+        assert_eq!(hash_result, hash_result_restored);
+    }
+
+    #[test]
+    fn test_sha256_hasher_state_save_restore() {
+        test_hasher_state_save_restore(HashMethod::Sha256);
+    }
+
+    #[test]
+    fn test_sha512_hasher_state_save_restore() {
+        test_hasher_state_save_restore(HashMethod::Sha512);
+    }
+
 }

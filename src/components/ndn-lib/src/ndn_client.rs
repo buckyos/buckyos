@@ -97,46 +97,47 @@ impl NdnClient {
     }
 
     fn verify_inner_path_to_obj(resp_headers:&CYFSHttpRespHeaders,inner_path:&str)->NdnResult<()> {
-        use crate::path_object_map::{PathObjectMapItemProof, PathObjectMapProofVerifier, PathObjectMapProofVerifyResult};
-        use crate::hash::HashMethod;
+        // //use crate::::{PathObjectMapItemProof, PathObjectMapProofVerifier, PathObjectMapProofVerifyResult};
+        // use crate::hash::HashMethod;
 
-        // First get root_obj_id and obj_id from resp_headers, if any one is None, then we can not verify?
-        if resp_headers.root_obj_id.is_none() {
-            let msg = format!("no root obj id in resp_headers, inner_path: {}", inner_path);
-            warn!("{}",msg);
-            return Err(NdnError::InvalidId(msg));
-        }
+        // // First get root_obj_id and obj_id from resp_headers, if any one is None, then we can not verify?
+        // if resp_headers.root_obj_id.is_none() {
+        //     let msg = format!("no root obj id in resp_headers, inner_path: {}", inner_path);
+        //     warn!("{}",msg);
+        //     return Err(NdnError::InvalidId(msg));
+        // }
 
-        if resp_headers.obj_id.is_none() {
-            let msg = format!("no obj id in resp_headers, inner_path: {}", inner_path);
-            warn!("{}",msg);
-            return Err(NdnError::InvalidId(msg));
-        }
+        // if resp_headers.obj_id.is_none() {
+        //     let msg = format!("no obj id in resp_headers, inner_path: {}", inner_path);
+        //     warn!("{}",msg);
+        //     return Err(NdnError::InvalidId(msg));
+        // }
 
-        let proof= PathObjectMapItemProof::decode_nodes(
-            &resp_headers.mtree_path, 
-            resp_headers.root_obj_id.as_ref().unwrap()
-        )?;
+        // let proof= PathObjectMapItemProof::decode_nodes(
+        //     &resp_headers.mtree_path, 
+        //     resp_headers.root_obj_id.as_ref().unwrap()
+        // )?;
         
-        // FIXME: Should we allow multiple hash methods? or just use the default one?
-        let verifier = PathObjectMapProofVerifier::new(HashMethod::Keccak256);
-        let ret = verifier.verify_object(
-            inner_path, 
-            resp_headers.obj_id.as_ref().unwrap(),
-            None, 
-            &proof,
-        )?;
+        // // FIXME: Should we allow multiple hash methods? or just use the default one?
+        // let verifier = PathObjectMapProofVerifier::new(HashMethod::Keccak256);
+        // let ret = verifier.verify_object(
+        //     inner_path, 
+        //     resp_headers.obj_id.as_ref().unwrap(),
+        //     None, 
+        //     &proof,
+        // )?;
         
-        match ret {
-            PathObjectMapProofVerifyResult::Ok => {
-                return Ok(());
-            },
-            _ => {
-                let msg = format!("verify inner path failed, url: {}, ret: {:?}", inner_path, ret);
-                warn!("{}",msg);
-                return Err(NdnError::VerifyError(msg));
-            }
-        }
+        // match ret {
+        //     PathObjectMapProofVerifyResult::Ok => {
+        //         return Ok(());
+        //     },
+        //     _ => {
+        //         let msg = format!("verify inner path failed, url: {}, ret: {:?}", inner_path, ret);
+        //         warn!("{}",msg);
+        //         return Err(NdnError::VerifyError(msg));
+        //     }
+        // }
+        unimplemented!()
     }
 
     pub async fn query_chunk_state(&self,chunk_id:ChunkId,target_url:Option<String>)->NdnResult<ChunkState> {
@@ -606,9 +607,10 @@ impl NdnClient {
 
         let mut hasher = ChunkHasher::new(None)
             .map_err(|e| NdnError::Internal(format!("Failed to create chunk hasher: {}", e)))?;
+        let chunk_type = hasher.hash_type.clone();
         let (hash_result,_) = hasher.calc_from_reader(&mut file).await
             .map_err(|e| NdnError::Internal(format!("Failed to calculate hash: {}", e)))?;
-        let file_chunk_id = ChunkId::from_sha256_result(&hash_result);
+        let file_chunk_id = ChunkId::from_hash_result(&hash_result, &chunk_type.as_str());
  
         Ok(file_chunk_id == content_chunk_id)
     }
@@ -660,7 +662,7 @@ impl NdnClient {
                         } else {
                             
                             let hash_state = hash_state.unwrap();
-                            download_pos = hash_state.pos;
+                            download_pos = hash_state.get_pos();
                             real_hash_state  = Some(hash_state);
                             info!("pull_chunk load progress sucess!,pos:{}",download_pos);
                         }
@@ -693,7 +695,12 @@ impl NdnClient {
                 let mut json_progress_str = String::new();
                 if let Some(hasher) = hasher {
                     let state = hasher.save_state();
-                    json_progress_str = serde_json::to_string(&state).unwrap(); 
+                    if state.is_err() {
+                        warn!("pull_chunk: save state failed:{}",state.err().unwrap().to_string());                  
+                    } else {
+                        let state = state.unwrap();
+                        json_progress_str = serde_json::to_string(&state).unwrap(); 
+                    }
                 }
                 let counter = counter.clone();
                 let named_mgr2 = named_mgr2.clone();

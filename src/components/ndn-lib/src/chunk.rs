@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 use hex;
 use log::*;
 use crate::{object::{ObjId}, NdnError, NdnResult};
+use crate::hash::*;
+use std::str::FromStr;
 
 pub const CACL_HASH_PIECE_SIZE: u64 = 1024*1024;
 pub const QCID_HASH_PIECE_SIZE: u64 = 4096;
@@ -45,8 +47,8 @@ impl ChunkId {
         Self { hash_type:obj_id.obj_type.clone(), hash_result:obj_id.obj_hash.clone() }
     }
 
-    pub fn from_sha256_result(hash_result: &[u8]) -> Self {
-        Self { hash_type:"sha256".to_string(), hash_result:hash_result.to_vec() }
+    pub fn from_hash_result(hash_result: &[u8],hash_type: &str) -> Self {
+        Self { hash_type:hash_type.to_string(), hash_result:hash_result.to_vec() }
     }
 
     pub fn to_string(&self) -> String {
@@ -80,65 +82,60 @@ impl ChunkId {
 
 
 pub struct ChunkHasher {
-    pub hash_type:String,
-    pub pos: u64,
-    sha_hasher: Option<Sha256>,
+    pub hash_type:HashMethod,
+    pub hasher: Box<dyn Hasher + Send + Sync>,
     //can extend other hash type in the future
 }
 
 
-
 impl ChunkHasher {
-
     pub fn new(hash_type: Option<&str>) -> NdnResult<Self> {
         //default is sha256
-        let hasher = match hash_type {
-            Some("sha256") => Sha256::new(),
-            None => Sha256::new(),
-            _ => return Err(NdnError::Internal(format!("invalid hash type:{}",hash_type.unwrap_or("")))),
-        };
+        let hash_type = hash_type.unwrap_or("sha256");
+        let hash_method = HashMethod::from_str(hash_type)?;
+        let hasher = HashHelper::create_hasher(hash_method)?;
 
         Ok(Self {
-            hash_type:hash_type.unwrap_or("sha256").to_string(),
-            sha_hasher: Some(hasher),
-            pos: 0,
+            hash_type:hash_method,
+            hasher:hasher,
         })
+    }
+
+    pub fn new_with_hash_type(hash_type: HashMethod) -> NdnResult<Self> {
+        let hasher = HashHelper::create_hasher(hash_type)?;
+
+        Ok(Self {
+            hash_type,
+            hasher,
+        })
+    }
+    pub fn get_pos(&self) -> u64 {
+        self.hasher.get_pos()
     }
 
     pub fn restore_from_state(state_json:serde_json::Value) -> NdnResult<Self> {
-        let hash_type = state_json["hash_type"].as_str().unwrap_or("sha256");
-        let pos = state_json["pos"].as_u64().unwrap_or(0);
-        let serialized_state = hex::decode(
-            &state_json["state"].as_str().ok_or(NdnError::Internal("invalid hasher state json".to_string()))?)
-            .map_err(|e| NdnError::Internal(format!("invalid hasher state json:{}",e.to_string())))?;
-
-        let hasher = Sha256::deserialize(
-            &SerializedState::<Sha256>::try_from(&serialized_state[..]).map_err(|e| NdnError::Internal(format!("invalid hasher state json:{}",e.to_string())))?)
-            .map_err(|e| NdnError::Internal(format!("invalid hasher state json:{}",e.to_string())))?;
+        let mut hash_str_type = DEFAULT_HASH_METHOD;
+        let hash_type = state_json.get("hash_type");
+        if hash_type.is_some() {
+            hash_str_type = hash_type.unwrap().as_str().unwrap();
+        }
+        let hash_method = HashMethod::from_str(hash_str_type)?;
+        let mut hasher = HashHelper::create_hasher(hash_method)?;
+        hasher.restore_from_state(state_json)?;
         Ok(Self {
-            hash_type: hash_type.to_string(),
-            sha_hasher: Some(hasher),
-            pos: pos,
+            hash_type:hash_method,
+            hasher,
         })
     }
 
-    pub fn save_state(&self) -> serde_json::Value {
-        if let Some(hasher) = &self.sha_hasher {
-            let will_save = json!({
-                "hash_type": self.hash_type,
-                "pos": self.pos,
-                "state": hex::encode(hasher.serialize()),
-            });
-            will_save
-        } else {
-            serde_json::Value::Null
-        }
+    pub fn save_state(&self) -> NdnResult<serde_json::Value> {
+        self.hasher.save_state()
     }
 
     //return the hash result and the total read size
-    pub async fn calc_from_reader<T: AsyncRead + Unpin>(&mut self, reader: &mut T) -> NdnResult<(Vec<u8>,u64)> {
+    pub async fn calc_from_reader<T: AsyncRead + Unpin>(mut self, reader: &mut T) -> NdnResult<(Vec<u8>,u64)> {
         //TODO: add other hash type support
-        let mut hasher = Sha256::new();
+       
         let mut buffer = vec![0u8; CACL_HASH_PIECE_SIZE as usize];
         let mut total_read = 0;
         loop {
@@ -154,52 +151,30 @@ impl ChunkHasher {
             }
             
             // 更新哈希计算器
-            hasher.update(&buffer[..n]);
+            self.hasher.update_from_bytes(&buffer[..n]);
             total_read += n as u64;
         }
 
-        Ok((hasher.finalize().to_vec(), total_read))
+        Ok((self.hasher.finalize().to_vec(), total_read))
     }
 
-    pub fn calc_from_bytes(&mut self,bytes: &[u8]) -> Vec<u8> {
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        hasher.finalize().to_vec()
+    pub fn calc_from_bytes(mut self,bytes: &[u8]) -> Vec<u8> {
+        self.hasher.update_from_bytes(bytes);
+        self.hasher.finalize().to_vec()
     }
 
     pub fn update_from_bytes(&mut self, bytes: &[u8]) {
-        let mut hasher = self.sha_hasher.as_mut().unwrap();
-        hasher.update(bytes);
-        self.pos += bytes.len() as u64;
+        self.hasher.update_from_bytes(bytes);
     }
 
     pub fn finalize(self) -> Vec<u8> {
-        let hasher = self.sha_hasher.unwrap();
-        hasher.finalize().to_vec()
+        self.hasher.finalize().to_vec()
     }
 
     pub fn finalize_chunk_id(self) -> ChunkId {
-        let hash_result = self.finalize();
-        ChunkId::from_sha256_result(&hash_result)
-    }
-
-    pub async fn verify_local_file_is_chunk(&self,file_path: &PathBuf,chunk_id: &ChunkId) -> NdnResult<bool> {
-        let mut file = tokio::fs::File::open(file_path).await
-            .map_err(|e| NdnError::IoError(e.to_string()))?;
-        let mut hasher = Sha256::new();
-        let mut buffer = vec![0u8; CACL_HASH_PIECE_SIZE as usize];
-        let mut total_read = 0;
-        loop {
-            let n = file.read(&mut buffer).await
-                .map_err(|e| NdnError::IoError(e.to_string()))?;
-            total_read += n as u64;
-            if n < CACL_HASH_PIECE_SIZE as usize {
-                break;
-            }
-            hasher.update(&buffer[..n]);
-        }
-        let hash_result = hasher.finalize();
-        Ok(hash_result.as_slice() == chunk_id.hash_result.as_slice())
+        let hash_type_str = self.hash_type.as_str();
+        let hash_result = self.hasher.finalize();
+        ChunkId::from_hash_result(&hash_result, &hash_type_str)
     }
 }
 
@@ -275,6 +250,19 @@ pub async fn calc_quick_hash_by_buffer(buffer_begin: &[u8],buffer_mid: &[u8],buf
 }
 
 
+pub async fn calculate_file_chunk_id(file_path: &str,hash_method:HashMethod) -> NdnResult<(ChunkId,u64)> {
+    let mut file_reader = tokio::fs::File::open(file_path).await
+        .map_err(|err| {
+            warn!("calculate_file_chunk_id: open file failed! {}",err.to_string());
+            NdnError::IoError(err.to_string())
+        })?;
+    
+    
+    let mut hasher = ChunkHasher::new_with_hash_type(hash_method)?;
+    let (hash_result,file_size) = hasher.calc_from_reader(&mut file_reader).await?;
+    Ok((ChunkId::from_hash_result(&hash_result, hash_method.as_str()),file_size))
+}
+
 pub async fn copy_chunk<R, W, F>(
     chunk_id: ChunkId,
     mut chunk_reader: R,
@@ -300,10 +288,10 @@ where
         }
 
         if let Some(ref mut hasher) = hasher {
-            if hasher.hash_type == chunk_id.hash_type {
+            if hasher.hash_type.as_str() == chunk_id.hash_type {
                 hasher.update_from_bytes(&buffer[..n]);
             } else {
-                return Err(NdnError::Internal(format!("hash type mismatch:{}",hasher.hash_type)));
+                return Err(NdnError::Internal(format!("hash type mismatch:{}",hasher.hash_type.as_str())));
             }
         }
 
@@ -317,7 +305,7 @@ where
     }
 
     if let Some(hasher) = hasher {
-        let result_chunk_id = hasher.finalize_chunk_id();
+        let result_chunk_id = ChunkHasher::finalize_chunk_id(hasher);
         if result_chunk_id != chunk_id {
             return Err(NdnError::VerifyError(format!("copy chunk hash mismatch:{}",result_chunk_id.to_string())));
         }
