@@ -1,1 +1,1 @@
-{"ownership": "recommended", "suppress_bundle_relocation": true, "postinstall_action": "none", "preserve_xattr": false, "name": "macos_pkg-${version}.pkg", "identifier": "com.github.buckyos.pkg.buckyos", "install_location": "/", "version": "0.4.0-20250505", "distribution_style": false}
+{"ownership": "recommended", "suppress_bundle_relocation": true, "postinstall_action": "none", "preserve_xattr": false, "name": "buckyos-${version}.pkg", "identifier": "com.github.buckyos.pkg.buckyos", "install_location": "/", "version": "0.4.0-20250505", "distribution_style": false}

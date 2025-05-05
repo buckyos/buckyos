@@ -30,13 +30,14 @@ def make_pkg(channel, version, builddate, noBuild):
     json.dump(build_info, open(os.path.join(pkg_dir, "build-info.json"), "w"))
     print(f"# write build-info.json to {pkg_dir} OK ")
 
-    subprocess.run(["chmod", "+x", os.path.join(pkg_dir, "scripts", "*")], check=True)
+    subprocess.run(["chmod", "+x", os.path.join(pkg_dir, "scripts", "postinstall")], check=True)
+    subprocess.run(["chmod", "+x", os.path.join(pkg_dir, "scripts", "preinstall")], check=True)
 
     if not noBuild:
         subprocess.run(["munkipkg", pkg_dir], check=True)
         print(f"# build pkg to {pkg_dir} OK ")
         # copy pkg to src_dir
-        pkg_file = os.path.join(pkg_dir, "build", f"macos_pkg-{version}-{builddate}.pkg")
+        pkg_file = os.path.join(pkg_dir, "build", f"buckyos-{version}-{builddate}.pkg")
         if os.path.exists(pkg_file):
             shutil.copy(pkg_file, os.path.join(src_dir, f"buckyos-{channel}-{version}-{builddate}.pkg"))
             print(f"# copy pkg to {src_dir} OK ")
@@ -49,8 +50,9 @@ if __name__ == "__main__":
     version = "0.4.0"
     builddate = datetime.now().strftime("%Y%m%d")
     channel = "nightly"
+    noBuild = False
 
-    for arg in sys.argv:
+    for arg in sys.argv[1:]:
         if arg == "--no-build":
             noBuild = True
         elif arg.startswith("--builddate="):
