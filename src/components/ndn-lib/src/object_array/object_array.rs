@@ -69,6 +69,10 @@ impl ObjectArray {
         Ok(ret)
     }
 
+    pub fn len(&self) -> usize {
+        self.cache.len()
+    }
+    
     pub fn append_object(&mut self, obj_id: &ObjId) -> NdnResult<()> {
         // Check if obj_id.obj_hash has the same length as hash_method
         if obj_id.obj_hash.len() != self.hash_method.hash_bytes() {

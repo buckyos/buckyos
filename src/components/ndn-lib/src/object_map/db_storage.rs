@@ -433,9 +433,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
 
         // Check if target file exists
         if file.exists() {
-            let msg = format!("Target file already exists: {}", file.display());
-            error!("{}", msg);
-            return Err(NdnError::AlreadyExists(msg));
+            warn!("Target object map storage file already exists: {}, now will overwrite it", file.display());
         }
 
         // First close the current connection, then try to rename the file, and then open a new connection to the file.
@@ -455,6 +453,8 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
             error!("{}", msg);
             NdnError::DbError(msg)
         })?;
+
+        info!("Renamed SQLite database: {:?} -> {:?}", self.file, file);
 
         // Open a new connection to the file
         let new_conn = Connection::open(file).map_err(|e| {

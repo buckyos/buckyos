@@ -14,10 +14,8 @@ fn generate_random_buf(seed: &str, len: usize) -> Vec<u8> {
     buf
 }
 
-#[test]
 async fn test_object_map() {
-    let storage = Box::new(MemoryStorage::new()) as Box<dyn ObjectMapInnerStorage>;
-    let mut obj_map = ObjectMap::new(HashMethod::Sha256, storage).await.unwrap();
+    let mut obj_map = ObjectMap::new(HashMethod::Sha256, None).await.unwrap();
 
     let count = 100;
     for i in 0..count {
@@ -46,8 +44,10 @@ async fn test_object_map() {
 
     obj_map.flush().await.unwrap();
 
-    let objid = obj_map.gen_obj_id().unwrap();
+    let objid = obj_map.get_obj_id().unwrap();
     println!("objid: {}", objid.to_string());
+
+    obj_map.save().await.unwrap();
 
     for i in 0..count {
         let key = format!("key{}", i);
@@ -66,4 +66,53 @@ async fn test_object_map() {
             assert_eq!(ret, true);
         }
     }
+
+    // Test reopen object map for read
+    let mut obj_map2 = ObjectMap::open(&objid, true, None).await.unwrap();
+    obj_map2.flush().await.unwrap();
+
+    let objid2 = obj_map2.get_obj_id().unwrap();
+    assert_eq!(objid, objid2, "Object ID unmatch");
+
+    // Test clone for modify
+    let mut obj_map3 = obj_map2.clone(false).await.unwrap();
+
+    // Remove some objects
+    let obj_item1 = obj_map3.remove_object("key0").await.unwrap();
+    let obj_item2 = obj_map3.remove_object("key1").await.unwrap();
+
+    println!("obj_item1: {:?}", obj_item1);
+    println!("obj_item2: {:?}", obj_item2);
+    assert!(obj_item1.is_none(), "Remove object failed");
+    assert!(obj_item2.is_some(), "Remove object failed");
+
+    // Regenerate container ID
+    let objid3 = obj_map3.calc_obj_id().await.unwrap();
+    assert_ne!(objid, objid3, "Object ID unmatch");
+
+    // Then save it to new file
+    obj_map3.save().await.unwrap();
+
+    // Then reinsert key1
+    obj_map3.put_object("key1", obj_item2.unwrap()).await.unwrap();
+
+    obj_map3.flush().await.unwrap();
+    let objid4 = obj_map3.get_obj_id().unwrap();
+    assert_eq!(objid, objid4, "Object ID unmatch");
+}
+
+
+#[test]
+async fn test_object_map_main() {
+    buckyos_kit::init_logging("test-object-map", false);
+
+    // First init global object map storage factory
+    let data_dir = std::env::temp_dir().join("ndn-test-object-map");
+    let factory = ObjectMapStorageFactory::new(&data_dir, Some(ObjectMapInnerStorageType::SQLite));
+
+    GLOBAL_OBJECT_MAP_STORAGE_FACTORY
+        .set(factory)
+        .unwrap_or_else(|_| panic!("Failed to set global object map storage factory"));
+    
+    test_object_map().await;
 }

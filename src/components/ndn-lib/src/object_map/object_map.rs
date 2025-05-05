@@ -1,4 +1,4 @@
-use super::storage::ObjectMapInnerStorage;
+use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageType};
 use super::GLOBAL_OBJECT_MAP_STORAGE_FACTORY;
 use crate::mtree::{MerkleTreeObject, MerkleTreeObjectGenerator};
 use crate::mtree::{
@@ -79,18 +79,19 @@ pub struct ObjectMap {
     pub is_dirty: bool,
     pub storage: Box<dyn ObjectMapInnerStorage>,
     pub mtree: Option<MerkleTreeObject>,
+    pub obj_id: Option<ObjId>, // Same as the root hash of the mtree
 }
 
 impl ObjectMap {
     // Create empty object map
     pub async fn new(
         hash_method: HashMethod,
-        mut storage: Box<dyn ObjectMapInnerStorage>,
+        storage_type: Option<ObjectMapInnerStorageType>,
     ) -> NdnResult<Self> {
         let mut storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .open(None, false)
+            .open(None, false, storage_type)
             .await
             .map_err(|e| {
                 let msg = format!("Error opening object map storage: {}", e);
@@ -112,6 +113,7 @@ impl ObjectMap {
             is_dirty: false,
             storage,
             mtree: None,
+            obj_id: None,
         })
     }
 
@@ -119,12 +121,20 @@ impl ObjectMap {
         self.storage.is_readonly()
     }
 
+    pub fn get_storage_type(&self) -> ObjectMapInnerStorageType {
+        self.storage.get_type()
+    }
+
     // Load object map from storage
-    pub async fn open(container_id: &ObjId, read_only: bool) -> NdnResult<Self> {
+    pub async fn open(
+        container_id: &ObjId,
+        read_only: bool,
+        storage_type: Option<ObjectMapInnerStorageType>,
+    ) -> NdnResult<Self> {
         let storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .open(Some(container_id), read_only)
+            .open(Some(container_id), read_only, storage_type)
             .await
             .map_err(|e| {
                 let msg = format!("Error opening object map storage: {}", e);
@@ -181,6 +191,7 @@ impl ObjectMap {
             is_dirty: false,
             storage,
             mtree,
+            obj_id: None,
         };
 
         if map.mtree.is_none() {
@@ -191,21 +202,23 @@ impl ObjectMap {
     }
 
     // If mtree exists, return the current objid, otherwise return None
-    // If mtree is dirty, then should call flush to regenerate the mtree first
+    // If mtree is dirty, then should call flush/calc_obj_id to regenerate the mtree first
     pub fn get_obj_id(&self) -> Option<ObjId> {
-        let root_hash = self.get_root_hash();
-        if root_hash.is_none() {
-            None
-        } else {
-            Some(ObjId::new_by_raw(
-                OBJ_TYPE_OBJMAPT.to_owned(),
-                root_hash.unwrap(),
-            ))
-        }
+        self.obj_id.clone()
     }
 
     pub fn hash_method(&self) -> HashMethod {
         self.meta.hash_method
+    }
+
+    pub async fn len(&self) -> NdnResult<usize> {
+        let stat = self.storage.stat().await.map_err(|e| {
+            let msg = format!("Error getting object map stat: {}", e);
+            error!("{}", msg);
+            e
+        })?;
+
+        Ok(stat.total_count as usize)
     }
 
     pub async fn put_object(&mut self, key: &str, obj_id: ObjId) -> NdnResult<()> {
@@ -317,7 +330,7 @@ impl ObjectMap {
     }
 
     // Regenerate the merkle tree without checking the dirty flag
-    pub async fn regenerate_merkle_tree(&mut self) -> NdnResult<()> {
+    async fn regenerate_merkle_tree(&mut self) -> NdnResult<()> {
         let count = self.storage.stat().await?.total_count;
         let leaf_size = 256u64;
         let data_size = count as u64 * leaf_size;
@@ -340,6 +353,7 @@ impl ObjectMap {
         )
         .await?;
 
+        let read_only = self.is_read_only();
         let mut page_index = 0;
         let page_size = 128;
         let mut leaf_index = 0;
@@ -373,16 +387,20 @@ impl ObjectMap {
                         e
                     })?;
 
-                // Update the mtree index in storage
-                self.storage
-                    .update_mtree_index(&key, leaf_index)
-                    .await
-                    .map_err(|e| {
-                        let msg =
-                            format!("Error updating mtree index: {}, {}, {}", key, leaf_index, e);
-                        error!("{}", msg);
-                        e
-                    })?;
+                if !read_only {
+                    // Update the mtree index in storage
+                    self.storage
+                        .update_mtree_index(&key, leaf_index)
+                        .await
+                        .map_err(|e| {
+                            let msg = format!(
+                                "Error updating mtree index: {}, {}, {}",
+                                key, leaf_index, e
+                            );
+                            error!("{}", msg);
+                            e
+                        })?;
+                }
 
                 leaf_index += 1;
             }
@@ -412,18 +430,35 @@ impl ObjectMap {
 
     // Regenerate the merkle tree and object id if the mtree is dirty
     pub async fn flush(&mut self) -> NdnResult<()> {
-        if !self.is_dirty && self.mtree.is_some() {
+        if !self.is_dirty && !self.mtree.is_none() {
             return Ok(());
         }
 
         self.regenerate_merkle_tree().await?;
-
         self.is_dirty = false;
+
+        let root_hash = self.get_root_hash().unwrap();
+        let obj_id = ObjId::new_by_raw(OBJ_TYPE_OBJMAPT.to_owned(), root_hash);
+        self.obj_id = Some(obj_id.clone());
+        info!("Calculated object map id: {}", obj_id);
 
         Ok(())
     }
 
+    pub async fn calc_obj_id(&mut self) -> NdnResult<ObjId> {
+        self.flush().await?;
+
+        Ok(self.obj_id.clone().unwrap())
+    }
+
+    // Should not call this function if in read-only mode
     pub async fn save(&mut self) -> NdnResult<()> {
+        if self.is_read_only() {
+            let msg = "Object map is read-only".to_string();
+            error!("{}", msg);
+            return Err(NdnError::PermissionDenied(msg));
+        }
+
         self.flush().await?;
 
         let obj_id = self.get_obj_id();
@@ -483,12 +518,13 @@ impl ObjectMap {
             is_dirty: true,
             storage: new_storage,
             mtree: None,
+            obj_id: self.obj_id.clone(),
         };
 
         Ok(ret)
     }
 
-    pub fn get_root_hash(&self) -> Option<Vec<u8>> {
+    fn get_root_hash(&self) -> Option<Vec<u8>> {
         if self.mtree.is_none() {
             return None;
         }
