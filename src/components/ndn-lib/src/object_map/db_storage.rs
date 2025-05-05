@@ -71,6 +71,51 @@ impl ObjectMapSqliteStorage {
         }
         Ok(())
     }
+
+    async fn clone_for_modify(&self, target: &Path) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
+        // First check if target is same as current file
+        if target == self.file {
+            let msg = format!("Target file is same as current file: {}", target.display());
+            error!("{}", msg);
+            return Err(NdnError::AlreadyExists(msg));
+        }
+
+        // Open new connection to target file
+        let mut new_conn = Connection::open(target).map_err(|e| {
+            let msg = format!("Failed to open SQLite database: {:?}, {}", target, e);
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        let mut lock = self.conn.lock().unwrap();
+        let mut conn = lock.as_ref().unwrap();
+        let backup = rusqlite::backup::Backup::new(&conn, &mut new_conn).map_err(|e| {
+            let msg = format!(
+                "Failed to create backup: {:?} -> {:?}, {}",
+                self.file, target, e
+            );
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        backup
+            .run_to_completion(64, std::time::Duration::from_millis(5), None)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to run backup: {:?} -> {:?}, {}",
+                    self.file, target, e
+                );
+                error!("{}", msg);
+                NdnError::DbError(msg)
+            })?;
+
+        drop(backup);
+        drop(lock);
+
+        let new_storage =
+            ObjectMapSqliteStorage::new_with_connection(target.to_path_buf(), new_conn, false);
+        Ok(Box::new(new_storage))
+    }
 }
 
 #[async_trait::async_trait]
@@ -369,48 +414,12 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
     }
 
     async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
-        // First check if target is same as current file
-        if target == self.file {
-            let msg = format!("Target file is same as current file: {}", target.display());
-            error!("{}", msg);
-            return Err(NdnError::AlreadyExists(msg));
+        if read_only {
+            let ret = Self::new(target, read_only)?;
+            Ok(Box::new(ret))
+        } else {
+            self.clone_for_modify(target,).await
         }
-
-        // Open new connection to target file
-        let mut new_conn = Connection::open(target).map_err(|e| {
-            let msg = format!("Failed to open SQLite database: {:?}, {}", target, e);
-            error!("{}", msg);
-            NdnError::DbError(msg)
-        })?;
-
-        let mut lock = self.conn.lock().unwrap();
-        let mut conn = lock.as_ref().unwrap();
-        let backup = rusqlite::backup::Backup::new(&conn, &mut new_conn).map_err(|e| {
-            let msg = format!(
-                "Failed to create backup: {:?} -> {:?}, {}",
-                self.file, target, e
-            );
-            error!("{}", msg);
-            NdnError::DbError(msg)
-        })?;
-
-        backup
-            .run_to_completion(64, std::time::Duration::from_millis(5), None)
-            .map_err(|e| {
-                let msg = format!(
-                    "Failed to run backup: {:?} -> {:?}, {}",
-                    self.file, target, e
-                );
-                error!("{}", msg);
-                NdnError::DbError(msg)
-            })?;
-
-        drop(backup);
-        drop(lock);
-
-        let new_storage =
-            ObjectMapSqliteStorage::new_with_connection(target.to_path_buf(), new_conn, read_only);
-        Ok(Box::new(new_storage))
     }
 
     async fn save(&mut self, file: &Path) -> NdnResult<()> {

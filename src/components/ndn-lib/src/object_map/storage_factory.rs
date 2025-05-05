@@ -24,13 +24,6 @@ impl ObjectMapStorageFactory {
         }
     }
 
-    pub async fn save(&self, container_id: &ObjId, storage: &mut dyn ObjectMapInnerStorage) -> NdnResult<()> {
-        let file_name = format!("{}.sqlite", container_id.to_base32());
-        let file = self.data_dir.join(&file_name);
-        
-        storage.save(&file).await
-    }
-
     pub async fn open(
         &self,
         container_id: Option<&ObjId>,
@@ -56,13 +49,37 @@ impl ObjectMapStorageFactory {
         };
 
         match self.storage_type {
-            ObjectMapInnerStorageType::Memory => Ok(Box::new(MemoryStorage::new(read_only))),
+            ObjectMapInnerStorageType::Memory => {
+                let msg = "Memory storage is not supported for open operation".to_string();
+                error!("{}", msg);
+                Err(NdnError::PermissionDenied(msg))
+            }
             ObjectMapInnerStorageType::SQLite => {
                 let file = self.data_dir.join(&file_name);
                 let storage = ObjectMapSqliteStorage::new(&file, read_only)?;
                 Ok(Box::new(storage))
             }
         }
+    }
+
+    pub async fn save(&self, container_id: &ObjId, storage: &mut dyn ObjectMapInnerStorage) -> NdnResult<()> {
+        let file_name = format!("{}.sqlite", container_id.to_base32());
+        let file = self.data_dir.join(&file_name);
+        
+        storage.save(&file).await
+    }
+
+    pub async fn clone(
+        &self,
+        container_id: &ObjId,
+        storage: &dyn ObjectMapInnerStorage,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
+        let index = self.temp_file_index.fetch_add(1, Ordering::SeqCst);
+        let file_name = format!("clone_{}_{}_{}.sqlite", container_id.to_base32(), index, chrono::Utc::now().timestamp());
+        let file = self.data_dir.join(&file_name);
+        
+        storage.clone(&file, read_only).await
     }
 
     fn get_temp_file_name(&self) -> String {

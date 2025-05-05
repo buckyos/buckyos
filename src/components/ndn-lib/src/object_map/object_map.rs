@@ -87,7 +87,6 @@ impl ObjectMap {
         hash_method: HashMethod,
         mut storage: Box<dyn ObjectMapInnerStorage>,
     ) -> NdnResult<Self> {
-       
         let mut storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
@@ -452,19 +451,43 @@ impl ObjectMap {
         Ok(())
     }
 
-    /*
     pub async fn clone(&self, read_only: bool) -> NdnResult<Self> {
-        let mut new_storage = self.storage.clone(read_only).await?;
-        let new_map = ObjectMap {
+        if self.is_dirty || self.mtree.is_none() {
+            let msg = "Object map is dirty, should call flush at first".to_string();
+            error!("{}", msg);
+            return Err(NdnError::InvalidState(msg));
+        }
+
+        let obj_id = self.get_obj_id();
+        if obj_id.is_none() {
+            let msg = "Object map is empty".to_string();
+            error!("{}", msg);
+            return Err(NdnError::InvalidState(msg));
+        }
+
+        let obj_id = obj_id.unwrap();
+
+        let mut new_storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
+            .get()
+            .unwrap()
+            .clone(&obj_id, &*self.storage, read_only)
+            .await
+            .map_err(|e| {
+                let msg = format!("Error cloning object map storage: {}", e);
+                error!("{}", msg);
+                e
+            })?;
+
+        let ret = Self {
             meta: self.meta.clone(),
-            is_dirty: self.is_dirty,
+            is_dirty: true,
             storage: new_storage,
             mtree: None,
         };
 
-        Ok(new_map)
-    }*/
-    
+        Ok(ret)
+    }
+
     pub fn get_root_hash(&self) -> Option<Vec<u8>> {
         if self.mtree.is_none() {
             return None;
