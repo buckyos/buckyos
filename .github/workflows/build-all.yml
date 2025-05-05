@@ -1,0 +1,46 @@
+name: Build All
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number'
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version number'
+        required: true
+        type: string
+    outputs:
+      build_time:
+        value: ${{jobs.build-linux.outputs.build_time}}
+
+jobs:
+  build-windows:
+    strategy:
+      matrix:
+        arch: ["x86_64", "aarch64"]
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      version: ${{ inputs.version }}
+      arch: ${{ matrix.arch }}
+
+  build-linux:
+    strategy:
+      matrix:
+        arch: ["x86_64", "aarch64"]
+    uses: ./.github/workflows/build-linux.yml
+    with:
+      version: ${{ inputs.version }}
+      arch: ${{ matrix.arch }}
+
+  build-macos:
+    strategy:
+      matrix:
+        arch: ["x86_64", "aarch64"]
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      version: ${{ inputs.version }}
+      arch: ${{ matrix.arch }}

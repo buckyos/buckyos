@@ -25,9 +25,6 @@ def build():
                        env=env)
 
     args = sys.argv[1:]
-    if len(args) == 0:
-        print("NEED ARGUMENT: clean|amd64|aarch64")
-        exit(1)
 
     system = platform.system() # Linux / Windows / Darwin
     arch = platform.machine() # x86_64 / AMD64 / arm64 / arm

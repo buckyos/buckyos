@@ -12,34 +12,27 @@ import sys
 import json
 import shutil
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-buckycli_path = os.path.join(src_dir, "rootfs/bin/buckycli", "buckycli")
 
+def default_buckycli_path():
+    buckycli_path = os.path.join(src_dir, "rootfs/bin/buckycli", "buckycli")
+    if platform.system() == "Windows":
+        buckycli_path += ".exe"
+    return buckycli_path
 
-if platform.system() == "Windows":
-    buckycli_path += ".exe"
+# 如果有定义BUCKYCLI_PATH环境变量，就使用这个变量作为CLI的执行文件
+buckycli_path = os.getenv("BUCKYCLI_PATH", default_buckycli_path())
+sys_temp_dir = tempfile.gettempdir()
 
 def get_deb_rootfs_dir():
     """获取deb的rootfs目录"""
-    if platform.system() == "Windows":
-        sys_temp_dir = tempfile.gettempdir()
-    else:
-        sys_temp_dir = "/tmp/"
     return os.path.join(sys_temp_dir, "buckyos_deb_build")
 
 def get_default_pkg_dir():
     """获取默认的待发布的pack的pkg目录"""
-    if platform.system() == "Windows":
-        sys_temp_dir = tempfile.gettempdir()
-    else:
-        sys_temp_dir = "/tmp/"
     return os.path.join(sys_temp_dir, "buckyos_pkgs")
 
 def get_default_target_dir():
     """获取默认的输出目录"""
-    if platform.system() == "Windows":
-        sys_temp_dir = tempfile.gettempdir()
-    else:
-        sys_temp_dir = "/tmp/"
     target_dir = os.path.join(sys_temp_dir, "buckyos_pkg_out")
     os.makedirs(target_dir, exist_ok=True)
     return target_dir
@@ -119,12 +112,19 @@ def main():
     # 获取默认目录
     pkg_dir = get_default_pkg_dir()
     target_dir = get_default_target_dir()
-    
+    no_index = False
     # 处理命令行参数
-    if len(sys.argv) > 1:
-        pkg_dir = sys.argv[1]
-    if len(sys.argv) > 2:
-        target_dir = sys.argv[2]
+    args = sys.argv
+    try:
+        index = args.index("--no-index")
+        no_index = True
+        del args[index]
+    except:
+        pass
+    if len(args) > 1:
+        pkg_dir = args[1]
+    if len(args) > 2:
+        target_dir = args[2]
     
     print(f"使用包目录: {pkg_dir}")
     print(f"使用输出目录: {target_dir}")
@@ -140,11 +140,12 @@ def main():
     if not publish_packages(packed_dirs):
         print("发布包失败")
         return 1
-        
-    # 发布索引
-    if not publish_index():
-        print("发布索引失败")
-        return 1
+    
+    if not no_index:
+        # 发布索引
+        if not publish_index():
+            print("发布索引失败")
+            return 1
         
     print("所有操作完成")
     return 0

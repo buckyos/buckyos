@@ -1,0 +1,69 @@
+name: Build MACOS DMG Installer
+on: 
+    workflow_call:
+        inputs:
+            version:
+                required: true
+                type: string
+            build_time:
+                required: true
+                type: string
+            run_id:
+                required: true
+                type: number
+    workflow_dispatch:
+        inputs:
+            version:
+                required: true
+                type: string
+            build_time:
+                required: true
+                type: string
+            run_id:
+                required: true
+                type: number
+jobs:
+    pack:
+        runs-on: macos-latest
+        strategy:
+            matrix:
+                arch: ["aarch64", "x86_64"]
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+            - name: clean old rootfs
+              run: rm -rf ./src/rootfs 
+            - name: Download Artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: buckyos-macos-${{matrix.arch}}-${{inputs.version}}-${{ inputs.build_time }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+                  run-id: ${{inputs.run_id}}
+            - name: untar rootfs
+              run: tar -xvf rootfs.tar
+            - name: check rootfs
+              run: ls -l ./src/rootfs
+            - name: Download Tools
+              uses: actions/download-artifact@v4
+              with:
+                name: buckyos-tools-macos-aarch64-${{inputs.version}}-${{ inputs.build_time }}
+                github-token: ${{ secrets.GITHUB_TOKEN }}
+                run-id: ${{inputs.run_id}}
+                path: tools
+            - name: Prepare Tools
+              run: chmod +x ./tools/*
+            - name: prepare pkg
+              run: python3 scripts/make_pkg.py --channel=nightly --version=${{inputs.version}} --builddate=${{inputs.build_time}} --no-build
+              env:
+                BUCKYCLI_PATH: ${{github.workspace}}/tools/buckycli
+              working-directory: ./src
+            - name: build pkg
+              uses: joncrain/munkipkg-action@v1.5
+              with:
+                munkipkg_version: https://raw.githubusercontent.com/munki/munki-pkg/refs/heads/main/munkipkg
+                pkg_subdir: ./src/publish/macos_pkg
+            - name: Upload
+              uses: actions/upload-artifact@v4
+              with:
+                name: buckyos-macos-${{matrix.arch}}-${{inputs.version}}-${{ inputs.build_time }}
+                path: ./src/publish/macos_pkg/build/buckyos-${{inputs.version}}-${{ inputs.build_time }}.pkg
