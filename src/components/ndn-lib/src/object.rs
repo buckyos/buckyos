@@ -5,6 +5,7 @@ use crate::{NdnResult, NdnError};
 use crate::{OBJ_TYPE_FILE,OBJ_TYPE_DIR,OBJ_TYPE_MTREE,OBJ_TYPE_OBJMAPT,OBJ_TYPE_PACK,OBJ_TYPE_LIST};
 use serde::{Deserialize, Serialize};
 use jsonwebtoken::{encode, EncodingKey};
+use std::fmt::Display;
 
 //objid link to a did::EncodedDocument
 #[derive(Debug, Clone,Eq, PartialEq, Serialize, Deserialize)]
@@ -127,6 +128,11 @@ impl ObjId {
     }
 }
 
+impl Display for ObjId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_base32())
+    }
+}
 
 pub fn build_obj_id(obj_type:&str,obj_json_str:&str)->ObjId {
     let vec_u8 = obj_json_str.as_bytes().to_vec();
