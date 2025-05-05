@@ -58,7 +58,7 @@ jobs:
                 BUCKYCLI_PATH: ${{github.workspace}}/tools/buckycli
               working-directory: ./src
             - name: build pkg
-              uses: joncrain/munkipkg@v1.0
+              uses: joncrain/munkipkg-action@v1.5
               with:
                 munkipkg_version: https://raw.githubusercontent.com/munki/munki-pkg/refs/heads/main/munkipkg
                 pkg_subdir: ./src/publish/macos_pkg
