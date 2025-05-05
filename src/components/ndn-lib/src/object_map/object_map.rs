@@ -1,4 +1,5 @@
 use super::storage::ObjectMapInnerStorage;
+use super::GLOBAL_OBJECT_MAP_STORAGE_FACTORY;
 use crate::mtree::{MerkleTreeObject, MerkleTreeObjectGenerator};
 use crate::mtree::{
     MtreeReadSeek, MtreeReadWriteSeekWithSharedBuffer, MtreeWriteSeek, SharedBuffer,
@@ -32,7 +33,10 @@ impl ObjectMapItem {
     }
 
     pub fn calc_hash(&self, hash_method: HashMethod) -> Vec<u8> {
-       HashHelper::calc_hash_list(hash_method, &[self.key.as_bytes(), self.obj_id.obj_hash.as_slice()])
+        HashHelper::calc_hash_list(
+            hash_method,
+            &[self.key.as_bytes(), self.obj_id.obj_hash.as_slice()],
+        )
     }
 
     /*
@@ -83,9 +87,20 @@ impl ObjectMap {
         hash_method: HashMethod,
         mut storage: Box<dyn ObjectMapInnerStorage>,
     ) -> NdnResult<Self> {
-        let meta = ObjectMapMeta { hash_method };
+       
+        let mut storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
+            .get()
+            .unwrap()
+            .open(None, false)
+            .await
+            .map_err(|e| {
+                let msg = format!("Error opening object map storage: {}", e);
+                error!("{}", msg);
+                e
+            })?;
 
         // First save the meta to storage
+        let meta = ObjectMapMeta { hash_method };
         let data = bincode::serialize(&meta).unwrap();
         storage.put_meta(&data).await.map_err(|e| {
             let msg = format!("Error putting object map meta: {}", e);
@@ -101,8 +116,23 @@ impl ObjectMap {
         })
     }
 
+    pub fn is_read_only(&self) -> bool {
+        self.storage.is_readonly()
+    }
+
     // Load object map from storage
-    pub async fn load(storage: Box<dyn ObjectMapInnerStorage>) -> NdnResult<Self> {
+    pub async fn open(container_id: &ObjId, read_only: bool) -> NdnResult<Self> {
+        let storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
+            .get()
+            .unwrap()
+            .open(Some(container_id), read_only)
+            .await
+            .map_err(|e| {
+                let msg = format!("Error opening object map storage: {}", e);
+                error!("{}", msg);
+                e
+            })?;
+
         // First load meta from storage
         let ret = storage.get_meta().await.map_err(|e| {
             let msg = format!("Error getting object map meta: {}", e);
@@ -163,7 +193,7 @@ impl ObjectMap {
 
     // If mtree exists, return the current objid, otherwise return None
     // If mtree is dirty, then should call flush to regenerate the mtree first
-    pub fn gen_obj_id(&self) -> Option<ObjId> {
+    pub fn get_obj_id(&self) -> Option<ObjId> {
         let root_hash = self.get_root_hash();
         if root_hash.is_none() {
             None
@@ -179,11 +209,7 @@ impl ObjectMap {
         self.meta.hash_method
     }
 
-    pub async fn put_object(
-        &mut self,
-        key: &str,
-        obj_id: ObjId,
-    ) -> NdnResult<()> {
+    pub async fn put_object(&mut self, key: &str, obj_id: ObjId) -> NdnResult<()> {
         self.storage.put(&key, &obj_id).await.map_err(|e| {
             let msg = format!("Error putting object map item: {}", e);
             error!("{}", msg);
@@ -263,10 +289,7 @@ impl ObjectMap {
     }
 
     // Try to remove the object from the map, return the object id and meta data
-    pub async fn remove_object(
-        &mut self,
-        key: &str,
-    ) -> NdnResult<Option<ObjId>> {
+    pub async fn remove_object(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
         let ret = self.storage.remove(&key).await.map_err(|e| {
             let msg = format!("Error removing object map item: {}", e);
             error!("{}", msg);
@@ -337,10 +360,10 @@ impl ObjectMap {
                 }
 
                 let item = item.unwrap();
-                let hash = HashHelper::calc_hash_list(self.meta.hash_method, &[
-                    key.as_bytes(),
-                    item.obj_hash.as_slice(),
-                ]);
+                let hash = HashHelper::calc_hash_list(
+                    self.meta.hash_method,
+                    &[key.as_bytes(), item.obj_hash.as_slice()],
+                );
 
                 mtree_generator
                     .append_leaf_hashes(&vec![hash])
@@ -350,13 +373,14 @@ impl ObjectMap {
                         error!("{}", msg);
                         e
                     })?;
-                
+
                 // Update the mtree index in storage
                 self.storage
                     .update_mtree_index(&key, leaf_index)
                     .await
                     .map_err(|e| {
-                        let msg = format!("Error updating mtree index: {}, {}, {}", key, leaf_index, e);
+                        let msg =
+                            format!("Error updating mtree index: {}, {}, {}", key, leaf_index, e);
                         error!("{}", msg);
                         e
                     })?;
@@ -387,6 +411,7 @@ impl ObjectMap {
         Ok(())
     }
 
+    // Regenerate the merkle tree and object id if the mtree is dirty
     pub async fn flush(&mut self) -> NdnResult<()> {
         if !self.is_dirty && self.mtree.is_some() {
             return Ok(());
@@ -399,6 +424,47 @@ impl ObjectMap {
         Ok(())
     }
 
+    pub async fn save(&mut self) -> NdnResult<()> {
+        self.flush().await?;
+
+        let obj_id = self.get_obj_id();
+        if obj_id.is_none() {
+            let msg = "Object map is empty".to_string();
+            error!("{}", msg);
+            return Err(NdnError::InvalidState(msg));
+        }
+
+        let obj_id = obj_id.unwrap();
+
+        GLOBAL_OBJECT_MAP_STORAGE_FACTORY
+            .get()
+            .unwrap()
+            .save(&obj_id, &mut *self.storage)
+            .await
+            .map_err(|e| {
+                let msg = format!("Error saving object map: {}", e);
+                error!("{}", msg);
+                e
+            })?;
+
+        info!("Saved object map to storage: {}", obj_id);
+
+        Ok(())
+    }
+
+    /*
+    pub async fn clone(&self, read_only: bool) -> NdnResult<Self> {
+        let mut new_storage = self.storage.clone(read_only).await?;
+        let new_map = ObjectMap {
+            meta: self.meta.clone(),
+            is_dirty: self.is_dirty,
+            storage: new_storage,
+            mtree: None,
+        };
+
+        Ok(new_map)
+    }*/
+    
     pub fn get_root_hash(&self) -> Option<Vec<u8>> {
         if self.mtree.is_none() {
             return None;

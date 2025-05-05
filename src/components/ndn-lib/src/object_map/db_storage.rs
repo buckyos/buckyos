@@ -1,20 +1,21 @@
-use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat};
+use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapInnerStorageType};
 use crate::{NdnError, NdnResult, ObjId};
 use rusqlite::types::{FromSql, ToSql, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
 use std::error;
-use std::sync::{Arc, Mutex};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct ObjectMapSqliteStorage {
+    read_only: bool,
     file: PathBuf,
 
     conn: Arc<Mutex<Option<Connection>>>,
 }
 
 impl ObjectMapSqliteStorage {
-    pub fn new(db_path: &Path) -> NdnResult<Self> {
+    pub fn new(db_path: &Path, read_only: bool) -> NdnResult<Self> {
         let conn = Connection::open(db_path).map_err(|e| {
             let msg = format!("Failed to open SQLite database: {:?}, {}", db_path, e);
             error!("{}", msg);
@@ -23,11 +24,16 @@ impl ObjectMapSqliteStorage {
 
         Self::init_tables(&conn)?;
 
-        Ok(Self::new_with_connection(db_path.to_path_buf(), conn))
+        Ok(Self::new_with_connection(
+            db_path.to_path_buf(),
+            conn,
+            read_only,
+        ))
     }
 
-    fn new_with_connection(db_path: PathBuf, conn: Connection) -> Self {
+    fn new_with_connection(db_path: PathBuf, conn: Connection, read_only: bool) -> Self {
         Self {
+            read_only,
             file: db_path,
             conn: Arc::new(Mutex::new(Some(conn))),
         }
@@ -56,14 +62,32 @@ impl ObjectMapSqliteStorage {
             NdnError::DbError(msg)
         })
     }
+
+    fn check_read_only(&self) -> NdnResult<()> {
+        if self.read_only {
+            let msg = format!("Storage is read-only: {}", self.file.display());
+            error!("{}", msg);
+            return Err(NdnError::PermissionDenied(msg));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
 impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
+    fn get_type(&self) -> ObjectMapInnerStorageType {
+        ObjectMapInnerStorageType::SQLite
+    }
+
+    fn is_readonly(&self) -> bool {
+        self.read_only
+    }
+
     async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
+        self.check_read_only()?;
+
         let mut lock = self.conn.lock().unwrap();
         let mut conn = lock.as_mut().unwrap();
-
 
         conn.execute(
             "INSERT OR REPLACE INTO object_map (key, value, mtree_index) VALUES (?1, ?2, NULL)",
@@ -105,10 +129,12 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
     }
 
     async fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
+        self.check_read_only()?;
+
         let mut lock = self.conn.lock().unwrap();
         let mut conn = lock.as_mut().unwrap();
 
-        /* 
+        /*
         let tx = conn.transaction().map_err(|e| {
             let msg = format!("Failed to begin transaction: {}", e);
             error!("{}", msg);
@@ -142,15 +168,18 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         })?;
         */
 
-        let result: Option<String> = conn.query_row(
-            "DELETE FROM object_map WHERE key=?1 RETURNING value",
-            [key],
-            |row| row.get(0)
-        ).optional().map_err(|e| {
-            let msg = format!("Failed to delete from object_map: {}, {}", key, e);
-            error!("{}", msg);
-            NdnError::DbError(msg)
-        })?;
+        let result: Option<String> = conn
+            .query_row(
+                "DELETE FROM object_map WHERE key=?1 RETURNING value",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| {
+                let msg = format!("Failed to delete from object_map: {}, {}", key, e);
+                error!("{}", msg);
+                NdnError::DbError(msg)
+            })?;
 
         let obj_id = match result {
             Some(v) => Some(ObjId::new(&v)?),
@@ -229,6 +258,8 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
     }
 
     async fn put_meta(&mut self, value: &[u8]) -> NdnResult<()> {
+        self.check_read_only()?;
+
         let mut lock = self.conn.lock().unwrap();
         let conn = lock.as_ref().unwrap();
 
@@ -262,6 +293,8 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
     }
 
     async fn update_mtree_index(&mut self, key: &str, index: u64) -> NdnResult<()> {
+        self.check_read_only()?;
+
         let mut lock = self.conn.lock().unwrap();
         let mut conn = lock.as_mut().unwrap();
 
@@ -303,7 +336,9 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
     }
 
     async fn put_mtree_data(&mut self, value: &[u8]) -> NdnResult<()> {
-        let mut lock = self.conn.lock().unwrap();
+        self.check_read_only()?;
+
+        let lock = self.conn.lock().unwrap();
         let conn = lock.as_ref().unwrap();
 
         conn.execute(
@@ -333,13 +368,10 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
             .map(|v| v.map(|i: Vec<u8>| i))
     }
 
-    async fn clone(&self, target: &Path) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
+    async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         // First check if target is same as current file
         if target == self.file {
-            let msg = format!(
-                "Target file is same as current file: {}",
-                target.display()
-            );
+            let msg = format!("Target file is same as current file: {}", target.display());
             error!("{}", msg);
             return Err(NdnError::AlreadyExists(msg));
         }
@@ -354,31 +386,36 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         let mut lock = self.conn.lock().unwrap();
         let mut conn = lock.as_ref().unwrap();
         let backup = rusqlite::backup::Backup::new(&conn, &mut new_conn).map_err(|e| {
-            let msg = format!("Failed to create backup: {:?} -> {:?}, {}", self.file, target, e);
-            error!("{}", msg);
-            NdnError::DbError(msg)
-        })?;
-
-        backup.run_to_completion(64, std::time::Duration::from_millis(5), None).map_err(|e| {
             let msg = format!(
-                "Failed to run backup: {:?} -> {:?}, {}",
+                "Failed to create backup: {:?} -> {:?}, {}",
                 self.file, target, e
             );
             error!("{}", msg);
             NdnError::DbError(msg)
         })?;
 
+        backup
+            .run_to_completion(64, std::time::Duration::from_millis(5), None)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to run backup: {:?} -> {:?}, {}",
+                    self.file, target, e
+                );
+                error!("{}", msg);
+                NdnError::DbError(msg)
+            })?;
+
         drop(backup);
         drop(lock);
 
-        let new_storage = ObjectMapSqliteStorage::new_with_connection(
-            target.to_path_buf(),
-            new_conn,
-        );
+        let new_storage =
+            ObjectMapSqliteStorage::new_with_connection(target.to_path_buf(), new_conn, read_only);
         Ok(Box::new(new_storage))
     }
 
     async fn save(&mut self, file: &Path) -> NdnResult<()> {
+        self.check_read_only()?;
+
         // Check if file is same as current file
         if file == self.file {
             warn!("Target file is same as current file: {}", file.display());
@@ -431,7 +468,9 @@ mod test {
     #[test]
     fn test_version() {
         let conn = Connection::open_in_memory().unwrap();
-        let version: String = conn.query_row("SELECT sqlite_version()", [], |row| row.get(0)).unwrap();
+        let version: String = conn
+            .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+            .unwrap();
         println!("SQLite version: {}", version);
     }
 }

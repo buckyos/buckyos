@@ -70,6 +70,9 @@ pub enum NdnError {
 
     #[error("invalid state: {0}")]
     InvalidState(String),
+
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
 }
 
 

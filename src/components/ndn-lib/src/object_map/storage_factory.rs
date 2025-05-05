@@ -1,11 +1,11 @@
-use super::storage::{
-    ObjectMapInnerStorage, ObjectMapInnerStorageType,
-};
 use super::db_storage::ObjectMapSqliteStorage;
 use super::memory_storage::MemoryStorage;
+use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageType};
+use crate::{NdnError, NdnResult, ObjId};
+use once_cell::sync::OnceCell;
 use std::path::{Path, PathBuf};
-use crate::{NdnResult, ObjId, NdnError};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Once;
 
 pub struct ObjectMapStorageFactory {
     data_dir: PathBuf,
@@ -24,7 +24,18 @@ impl ObjectMapStorageFactory {
         }
     }
 
-    pub async fn open_storage(&self, file_name: Option<&str>) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
+    pub async fn save(&self, container_id: &ObjId, storage: &mut dyn ObjectMapInnerStorage) -> NdnResult<()> {
+        let file_name = format!("{}.sqlite", container_id.to_base32());
+        let file = self.data_dir.join(&file_name);
+        
+        storage.save(&file).await
+    }
+
+    pub async fn open(
+        &self,
+        container_id: Option<&ObjId>,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         if !self.data_dir.exists() {
             std::fs::create_dir_all(&self.data_dir).map_err(|e| {
                 let msg = format!(
@@ -37,18 +48,18 @@ impl ObjectMapStorageFactory {
             })?;
         }
 
-        match self.storage_type {
-            ObjectMapInnerStorageType::Memory => Ok(Box::new(MemoryStorage::new())),
-            ObjectMapInnerStorageType::SQLite => {
-                let file = if let Some(file_name) = file_name {
-                    self.data_dir.join(file_name)
-                } else {
-                    // Create a new file name for the storage
-                    let temp_file_name = self.get_temp_file_name();
-                    self.data_dir.join(&temp_file_name)
-                };
+        let file_name = if let Some(id) = container_id {
+            format!("{}.sqlite", id.to_base32())
+        } else {
+            let temp_file_name = self.get_temp_file_name();
+            format!("{}.sqlite", temp_file_name)
+        };
 
-                let storage = ObjectMapSqliteStorage::new(&file)?;
+        match self.storage_type {
+            ObjectMapInnerStorageType::Memory => Ok(Box::new(MemoryStorage::new(read_only))),
+            ObjectMapInnerStorageType::SQLite => {
+                let file = self.data_dir.join(&file_name);
+                let storage = ObjectMapSqliteStorage::new(&file, read_only)?;
                 Ok(Box::new(storage))
             }
         }
@@ -60,3 +71,5 @@ impl ObjectMapStorageFactory {
         format!("temp_{}_{}.sqlite", chrono::Utc::now().timestamp(), index)
     }
 }
+
+pub static GLOBAL_OBJECT_MAP_STORAGE_FACTORY: OnceCell<ObjectMapStorageFactory> = OnceCell::new();

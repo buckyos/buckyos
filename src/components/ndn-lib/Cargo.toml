@@ -47,6 +47,7 @@ sp-trie = "38.0"
 base64 = "0.22"
 arrow = "55.0"
 chrono = "*"
+once_cell = "*"
 
 [dev-dependencies]
 tempfile = "*"

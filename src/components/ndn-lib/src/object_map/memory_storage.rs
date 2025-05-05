@@ -1,4 +1,4 @@
-use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat};
+use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapInnerStorageType};
 use crate::{NdnError, NdnResult, ObjId};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -10,24 +10,46 @@ struct MemoryStorageItem {
 }
 
 pub struct MemoryStorage {
+    read_only: bool,
     storage: BTreeMap<String, MemoryStorageItem>,
     meta: Option<Vec<u8>>,
     mtree_data: Option<Vec<u8>>,
 }
 
 impl MemoryStorage {
-    pub fn new() -> Self {
+    pub fn new(read_only: bool) -> Self {
         Self {
+            read_only,
             storage: BTreeMap::new(),
             meta: None,
             mtree_data: None,
         }
     }
+
+    fn check_read_only(&self) -> NdnResult<()> {
+        if self.read_only {
+            let msg = "Memory storage is read-only".to_string();
+            error!("{}", msg);
+            return Err(NdnError::PermissionDenied(msg));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
 impl ObjectMapInnerStorage for MemoryStorage {
+    fn get_type(&self) -> ObjectMapInnerStorageType {
+        ObjectMapInnerStorageType::Memory
+    }
+
+    fn is_readonly(&self) -> bool {
+        self.read_only
+    }
+
     async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         self.storage.insert(
             key.to_string(),
             MemoryStorageItem {
@@ -48,6 +70,9 @@ impl ObjectMapInnerStorage for MemoryStorage {
     }
 
     async fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         if let Some(item) = self.storage.remove(key) {
             Ok(Some(item.value))
         } else {
@@ -80,6 +105,9 @@ impl ObjectMapInnerStorage for MemoryStorage {
     }
 
     async fn put_meta(&mut self, value: &[u8]) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         self.meta = Some(value.to_vec());
         Ok(())
     }
@@ -89,6 +117,9 @@ impl ObjectMapInnerStorage for MemoryStorage {
     }
 
     async fn update_mtree_index(&mut self, key: &str, index: u64) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         if let Some(item) = self.storage.get_mut(key) {
             item.mtree_index = Some(index);
             return Ok(());
@@ -107,6 +138,9 @@ impl ObjectMapInnerStorage for MemoryStorage {
     }
 
     async fn put_mtree_data(&mut self, value: &[u8]) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         self.mtree_data = Some(value.to_vec());
         Ok(())
     }
@@ -115,9 +149,9 @@ impl ObjectMapInnerStorage for MemoryStorage {
         Ok(self.mtree_data.clone())
     }
 
-    async fn clone(&self, _target: &Path) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
+    async fn clone(&self, _target: &Path, read_only: bool) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         // Create a new MemoryStorage instance
-        let mut new_storage = MemoryStorage::new();
+        let mut new_storage = MemoryStorage::new(read_only);
 
         // Copy meta and mtree data
         new_storage.storage = self.storage.clone();
@@ -129,6 +163,9 @@ impl ObjectMapInnerStorage for MemoryStorage {
 
     // If file is diff from the current one, it will be saved to the file.
     async fn save(&mut self, _file: &Path) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         // Memory storage does not need to save to file, just return Ok
         Ok(())
     }

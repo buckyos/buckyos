@@ -21,6 +21,9 @@ pub struct ObjectMapInnerStorageStat {
 
 #[async_trait::async_trait]
 pub trait ObjectMapInnerStorage: Send + Sync {
+    fn get_type(&self) -> ObjectMapInnerStorageType;
+    fn is_readonly(&self) -> bool;
+
     // Use to store object data
     async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()>;
     async fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>>;
@@ -42,7 +45,7 @@ pub trait ObjectMapInnerStorage: Send + Sync {
 
     // Clone the storage to a new file.
     // If the target file exists, it will be failed.
-    async fn clone(&self, target: &Path) -> NdnResult<Box<dyn ObjectMapInnerStorage>>;
+    async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn ObjectMapInnerStorage>>;
 
     // If file is diff from the current one, it will be saved to the file.
     async fn save(&mut self, file: &Path) -> NdnResult<()>;
