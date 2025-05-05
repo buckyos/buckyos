@@ -27,7 +27,7 @@ jobs:
         runs-on: macos-latest
         strategy:
             matrix:
-                arch: ["aarch64"]
+                arch: ["aarch64", "x86_64"]
         steps:
             - name: Checkout
               uses: actions/checkout@v4
@@ -46,9 +46,24 @@ jobs:
             - name: Download Tools
               uses: actions/download-artifact@v4
               with:
-                name: buckyos-tools-macos-x86_64-${{inputs.version}}-${{ inputs.build_time }}
+                name: buckyos-tools-macos-aarch64-${{inputs.version}}-${{ inputs.build_time }}
                 github-token: ${{ secrets.GITHUB_TOKEN }}
                 run-id: ${{inputs.run_id}}
                 path: tools
             - name: Prepare Tools
               run: chmod +x ./tools/*
+            - name: prepare pkg
+              run: python3 scripts/make_pkg.py --channel=nightly --version=${{inputs.version}} --builddate=${{inputs.build_time}} --no-build
+              env:
+                BUCKYCLI_PATH: ${{github.workspace}}/tools/buckycli
+              working-directory: ./src
+            - name: build pkg
+              uses: joncrain/munkipkg@v1.0
+              with:
+                munkipkg_version: https://raw.githubusercontent.com/munki/munki-pkg/refs/heads/main/munkipkg
+                pkg_subdir: ./src/publish/macos_pkg
+            - name: Upload
+              uses: actions/upload-artifact@v4
+              with:
+                name: buckyos-macos-${{matrix.arch}}-${{inputs.version}}-${{ inputs.build_time }}
+                path: ./src/publish/macos_pkg/build/buckyos-${{inputs.version}}-${{ inputs.build_time }}.pkg

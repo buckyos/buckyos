@@ -1,0 +1,2 @@
+#!/bin/zsh
+rm -rf /opt/buckyos/bin/
