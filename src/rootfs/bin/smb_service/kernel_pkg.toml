@@ -1,0 +1,2 @@
+service_name = "smb_service"
+service_type = "kernel"

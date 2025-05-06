@@ -1,0 +1,9 @@
+{
+  "login_title": "登入到 BuckyOS",
+  "email_username": "邮箱/用户名",
+  "password": "密码",
+  "login": "登入",
+  "enter_email_username": "请输入你的邮箱或用户名",
+  "enter_password": "请输入你的密码",
+  "setting_title": "系统设置"
+} 

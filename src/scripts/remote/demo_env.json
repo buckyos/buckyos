@@ -1,0 +1,64 @@
+{
+    "sn": {
+        "username": "root",
+        "port": 22,
+        "zone_id":"web3.buckyos.io",
+        "node_id":"sn",
+        "vm": {
+            "cpu": 2,
+            "memory": "1G",
+            "disk": "10G",
+            "network": {
+                "type": "bridge",
+                "bridge": "enp4s0"
+            }
+        },
+        "apps": {
+            "web3_bridge": {
+                "start":"python3 /opt/web3_bridge/start.py",
+                "stop":"python3 /opt/web3_bridge/stop.py"
+            }
+        }
+    },
+    "nodeB1": {
+        "username": "root",
+        "port": 22,
+        "zone_id":"bob.web3.buckyos.io",
+        "node_id":"ood1",
+        "vm": {
+            "cpu": 1,
+            "memory": "1G",
+            "disk": "10G",
+            "network": {
+                "type": "nat"
+            }
+        },
+        "apps": {
+            "buckyos": {
+                "start": "nohup /opt/buckyos/bin/node_daemon > /dev/null 2>&1 &",
+                "stop":"python3 /opt/buckyos/bin/killall.py"
+            }
+        }
+    },
+    "nodeB2": {
+        "username": "root",
+        "port": 22,
+        "zone_id":"bob.web3.buckyos.io",
+        "node_id":"ood2",
+        "vm": {
+            "cpu": 1,
+            "memory": "1G",
+            "disk": "10G",
+            "network": {
+                "type": "bridge",
+                "bridge": "enp4s0"
+            }
+        },
+        "apps": {
+            "buckyos": {
+                "start": "nohup /opt/buckyos/bin/node_daemon > /dev/null 2>&1 &",
+                "stop":"python3 /opt/buckyos/bin/killall.py"
+            }
+        }
+    }
+}

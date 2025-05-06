@@ -1,0 +1,57 @@
+<style>
+    .container {
+        display: flex;
+        flex-direction: column;
+        min-width: 480px;
+        gap: 12px;
+    }
+
+    .button-container {
+        display: flex;
+        justify-content: center; 
+        align-items: center;
+    }
+
+    md-filled-text-field {
+        width: 100%;
+    }
+</style>
+</style>
+<div class="frame">
+    <h3>2. 设置访问Personal Server使用的域名</h3>
+    <p>您的名字:</p>
+    <md-outlined-text-field id="txt_name" placeholder="用户名" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
+    <p>基于您的名字构建的域名,创建后无法修改!</p>
+    <div class="container">
+        <bucky-checkbox id="chk_use_buckyos_name" lable="使用buckyos.io的二级域名" check="true"></bucky-checkbox>
+        <div>* 激活完成后,您将通过下面域名访问您的Personal Server</div> 
+        <div id="show_buckyos_name"> - http://$name.web3.buckyos.io </div>
+        <div>- Alpha测试期间,使用buckyos.io的二级域名服务需要邀请码:</div>
+        <md-outlined-text-field id="txt_bucky_sn_token"  placeholder="请输入邀请码" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
+    </div>
+    <p></p>
+    <div class="container">
+        <bucky-checkbox id="chk_use_self_name" lable="使用自己拥有的域名"></bucky-checkbox>
+        <md-outlined-text-field id="txt_domain" placeholder="输入将使用的域名" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
+        <div style="margin-top: 0px; margin-left: 28px;">
+        <p>您需要通过域名提供商进行以下设置:</p>
+        <ul>
+        <li id="txt_dns_tip">设置A记录: 设置为您的Personal Server的公网IP</li>
+        <li>设置TXT记录: 为您的域名添加TXT记录,值为:<a id="copyButton" href="#">(复制)</a></li>
+        </ul>
+        <md-filled-text-field id="txt_zone_id_value" type="textarea" label="TXT Record" disabled="true"
+        value="(请先输入用户名)"
+        rows="5">
+        </md-filled-text-field>
+        </div
+    </div>
+    <p></p>
+    <p></p>
+    <div class="button-container">
+        <md-filled-button id="btn_next" style="width: 150px;">Next</md-filled-button>
+    </div>
+</div>
+
+<script>
+
+</script>

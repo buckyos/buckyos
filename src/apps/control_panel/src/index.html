@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BuckyOS Control Panel</title>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Outlined" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.12.0/cdn/themes/light.css" />
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.12.0/cdn/shoelace-autoloader.js"></script>
+    
+    <script src="./index.ts" type="module"></script>
+    <style>
+        body {
+            /* 使用纹理背景 */
+            background-image: url('bkg.png');
+            background-repeat: repeat;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            
+        }
+
+    </style>
+</head>
+<body>
+    <div id="background">
+        <bs-title-bar
+        username="张三"
+        avatar-url="/assets/avatar.jpg"
+        message="有新的系统更新"
+      ></bs-title-bar>
+    </div>    
+   
+</body>
+</html>

@@ -1,0 +1,147 @@
+<mxfile host="65bd71144e">
+    <diagram id="ryGVmH6V5j2Zu_o-trWW" name="Page-1">
+        <mxGraphModel dx="1852" dy="628" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="2" value="发现文件" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="180" y="10" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="根据文件类型进入不同的Parser" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="180" y="200" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="5" value="图片" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="30" y="270" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="分析EXIF&lt;div&gt;得到 时间，地点等信息&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+                    <mxGeometry x="30" y="330" width="120" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="8" value="记录来源信息" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+                    <mxGeometry x="180" y="130" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="9" value="传统分类AI快速扫描&lt;div&gt;得到人脸信息&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+                    <mxGeometry x="30" y="410" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="10" value="进行矢量编码（保存到矢量数据库" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="180" y="650" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="11" value="" style="endArrow=none;dashed=1;html=1;dashPattern=1 3;strokeWidth=2;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="-60" y="600" as="sourcePoint"/>
+                        <mxPoint x="490" y="600" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="12" value="第二阶段，(实体）进入&lt;span style=&quot;color: rgb(0, 0, 0);&quot;&gt;矢量&lt;/span&gt;数据库&lt;div&gt;encoding&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="-20" y="610" width="160" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="14" value="" style="endArrow=none;dashed=1;html=1;dashPattern=1 3;strokeWidth=2;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="-70" y="730" as="sourcePoint"/>
+                        <mxPoint x="480" y="730" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="15" value="基于提示词A，由LLM对图片进行总结" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+                    <mxGeometry x="-60" y="800" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="16" value="OCR,得到图片中的文本内容" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+                    <mxGeometry x="30" y="470" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="18" value="基于提示词B，由LLM对图片进行总结" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+                    <mxGeometry x="110" y="800" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="19" value="基于 入库提示词&lt;div&gt;LLM 更新 图谱数据库&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+                    <mxGeometry x="180" y="910" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="20" value="根据结果创建图谱节点" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="180" y="540" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="21" value="基于入库提示词的结果，加入本地全文索引库" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="180" y="980" width="120" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="22" value="第一阶段，传统的文件内容分析(parser)" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="-50" y="120" width="160" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="23" value="第二阶段，使用LLM进行深度理解" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="-30" y="740" width="210" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="24" value="本地文件系统" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" vertex="1" parent="1">
+                    <mxGeometry x="920" y="80" width="90" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="25" value="文本索引&lt;div&gt;（传统桌面搜索）&lt;/div&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" vertex="1" parent="1">
+                    <mxGeometry x="800" y="80" width="90" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="26" value="矢量数据库" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" vertex="1" parent="1">
+                    <mxGeometry x="920" y="170" width="90" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="27" value="每个库都提供了查询接口和描述接口" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="800" y="30" width="200" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="56" value="cyfs://" style="edgeStyle=none;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;" edge="1" parent="1" source="28" target="55">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="28" value="图数据库" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" vertex="1" parent="1">
+                    <mxGeometry x="800" y="170" width="90" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="29" value="搜索Agent" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="670" y="300" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="30" value="Agent启用固定的 Content上下文填充提示词" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="850" y="300" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="31" value="Agent主动进入知识补充流程" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="1020" y="300" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="41" style="edgeStyle=none;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="32" target="34">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="32" value="交互上下文" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="762.5" y="510" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="33" value="基于LLM的 知识补充 管线" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="822.5" y="430" width="140" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="42" style="edgeStyle=none;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="34" target="35">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="34" value="基于知识库补充提示词，执行LLM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+                    <mxGeometry x="762.5" y="605" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="35" value="调用不同库的搜索接口" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="762.5" y="700" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="36" value="LLM整合搜索结果" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+                    <mxGeometry x="952.5" y="510" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="48" style="edgeStyle=none;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="38" target="40">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="54" style="edgeStyle=none;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="38" target="34">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="38" value="是否结束&lt;div&gt;（太长/足够）&lt;/div&gt;" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="947.5" y="600" width="130" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="40" value="给出补充内容" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="952.5" y="700" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="47" style="edgeStyle=none;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.502;entryY=0.059;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="36" target="38">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="53" value="" style="endArrow=classic;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="35" target="36">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="722.5" y="700" as="sourcePoint"/>
+                        <mxPoint x="772.5" y="650" as="targetPoint"/>
+                        <Array as="points">
+                            <mxPoint x="722.5" y="730"/>
+                            <mxPoint x="722.5" y="480"/>
+                            <mxPoint x="1012.5" y="480"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="55" value="&lt;div&gt;另一个&lt;/div&gt;图数据库" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" vertex="1" parent="1">
+                    <mxGeometry x="620" y="170" width="90" height="80" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

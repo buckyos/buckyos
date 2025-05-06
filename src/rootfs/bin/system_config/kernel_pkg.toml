@@ -1,0 +1,2 @@
+service_name = "system_config"
+service_type = "kernel"

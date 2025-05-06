@@ -1,0 +1,25 @@
+#!/bin/bash
+cat <<EOF > /etc/systemd/system/buckyos.service
+[Unit]
+Description=buckyos node daemon
+After=network.target
+
+[Service]
+ExecStart=/opt/buckyos/bin/node_daemon/node_daemon --enable_active
+User=root
+WorkingDirectory=/opt/buckyos/bin
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+
+systemctl stop buckyos.service
+systemctl daemon-reload
+systemctl enable buckyos.service
+systemctl start buckyos.service
+
+chmod -R 777 /opt/buckyos/
+
+echo "BuckyOS install success, open http://127.0.0.1:3180/index.html to start, ENJOY!"

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <!-- Background Circle -->
+  <circle cx="100" cy="100" r="90" fill="#2C3E50"/>
+  
+  <!-- Server Rack Design -->
+  <rect x="60" y="55" width="80" height="90" rx="5" fill="#34495E"/>
+  
+  <!-- Server Lines -->
+  <rect x="65" y="65" width="70" height="15" rx="2" fill="#ECF0F1"/>
+  <rect x="65" y="85" width="70" height="15" rx="2" fill="#ECF0F1"/>
+  <rect x="65" y="105" width="70" height="15" rx="2" fill="#ECF0F1"/>
+  
+  <!-- Storage Symbols -->
+  <circle cx="75" cy="72.5" r="3" fill="#E74C3C"/>
+  <circle cx="75" cy="92.5" r="3" fill="#27AE60"/>
+  <circle cx="75" cy="112.5" r="3" fill="#3498DB"/>
+  
+  <!-- Hard Drive Icons -->
+  <rect x="85" y="69" width="40" height="7" rx="1" fill="#BDC3C7"/>
+  <rect x="85" y="89" width="40" height="7" rx="1" fill="#BDC3C7"/>
+  <rect x="85" y="109" width="40" height="7" rx="1" fill="#BDC3C7"/>
+  
+  <!-- NAS Text -->
+  <text x="100" y="140" 
+        font-family="Arial, sans-serif" 
+        font-size="23" 
+        font-weight="bold" 
+        text-anchor="middle" 
+        fill="#ECF0F1">Zone</text>
+</svg>

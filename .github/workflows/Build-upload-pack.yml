@@ -1,0 +1,29 @@
+name: Build and Upload and Pack Buckyos Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number'
+        required: true
+        type: string
+
+jobs:
+    build:
+        uses: ./.github/workflows/build-all.yml
+        with:
+            version: ${{ inputs.version }}
+    upload:
+        needs: build
+        uses: ./.github/workflows/upload.yml
+        with:
+            version: ${{ inputs.version }}
+            build_time: ${{ needs.build.outputs.build_time }}
+            run_id: ${{ github.run_id }}
+    pack:
+        needs: build
+        uses: ./.github/workflows/pack_installer.yml
+        with:
+            version: ${{ inputs.version }}
+            build_time: ${{ needs.build.outputs.build_time }}
+            run_id: ${{ github.run_id }}

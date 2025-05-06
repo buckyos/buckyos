@@ -1,4 +1,4 @@
-# BuckyOS Current Development Plan PoC (Pre-Alpha1)
+# BuckyOS Current Development Plan Beta
 
 ## Overview of the Overall Plan
 
@@ -21,16 +21,17 @@
 This phase is planned to be completed in 2024 through the following minor versions:
 
 - **0.1 Demo:** 2.5% (Done)
-- **0.2 PoC (Pre-Alpha1):** 2.5% (🔥🔥🔥 `Current Version`)
-- **0.3 Pre-Alpha2:** 5% (First complete version)
-- **0.4 Alpha:** 2.5% (Available for user testing, Q4 2024)
+- **0.2 PoC :** 2.5% (Internal Release ,Done)
+- **0.3 Pre-Alpha1:** 2.5% (Done!)
+- **0.4 Alpha2:** 2.5% (Done!,Delay to Q1 2025)
 
 ### Phase 2: Integration of AI (Beta, Q2 2025)
-
 System integration with the OpenDAN Framework, with hardware integration with security (AI) cameras.
 
-- Integrate the AI Compute Kernel functionality required by OpenDAN, upgrading from a Personal Server to a Personal AI Server, testing our system's scalability.
-- Meet the demand for new capabilities combining traditional AI with GenAI. Our Library application should support AI management of vast multimedia files.
+- **0.5 Alpha3:** 2.5% (🔥🔥🔥 `Current Version` Available for user testing, Q2 2025)
+  - Integrate the AI Compute Kernel functionality required by OpenDAN, upgrading from a Personal Server to a Personal AI Server, testing our system's scalability.
+- **0.6 Beta1:** 2.5% (Q2 2025)
+  - Meet the demand for new capabilities combining traditional AI with GenAI. Our Library application should support AI management of vast multimedia files.
 - Integrate with traditional security cameras, achieving more privacy-controlled and long-term data storage, and perform semantic analysis of large amounts of raw data based on AI.
 
 ### Phase 3: Perfecting Key Application Development (Official Version, Q2 2026)
@@ -47,90 +48,42 @@ AI-driven media processing. Support for download, streaming, and other traffic s
 
 ## Overall Plan for the Alpha Phase
 
-Functions marked with `*` are those I believe must be completed in the next release version 0.2 (PoC). Functions without `*` may depend on some basic components.
+All completed tasks are the task of next release veriosn : Alpha2 (0.4.0).
+Functions marked with `*` are those I believe must be completed in Alpha2. Functions without `*` may depend on some basic components.
 
-- Kernel Models
-  - [ ] *node_daemon (A4 @waterflier)
-    - [ ] *app & service loader (A4), implement formal permission management and container isolation
-    - [ ] node task execute system (A4), usually used for maintenance tasks; implement if unavoidable
-  - system config (A2)
-    - [ ] *system-config lib (A2)
-    - [ ] *ACL libs (A4 @waterflier), basic ACL usage and management
-  - system status for system status monitoring
-  - kRPC @waterflier
-    - [ ] *kRPC libs (A4)
-    - [ ] *Authorization center (A2)
-  - kLog, a reliable logging library, is the foundation for automatic fault diagnosis in the system.
-    - [ ] *kLog lib (A4), defines the basic interfaces for kLog output and reliable behavior logic, can handle server downtime
-    - [ ] *kLog server (S2), PoC version should implement a simple version to ensure reliability
-  - kMQ message queue, supports custom event systems
-  - pkg system
-    - [ ] *Improve lib (A2) to facilitate use by other components
-    - [ ] Integrate with the task system
-- Kernel Services
-  - [ ] *scheduler (A4 @waterflier), a key module to be implemented in the PoC version, automatically generating node_config and establishing an initial extensible framework
-  - [ ] *Task Manager (A4), providing a general stateful background task management service, supporting reliable execution of critical tasks
-  - DFS
-    - [ ] *glusterFS (A2) integrated with ACL
-    - DCFS (listed separately)
-  - dApp manager, the `apt` tool in BuckyOS, provides basic reliable pkg management capabilities for the system.
-    - [ ] *basic API support (A4), source management, installed management, permission configuration, installer
-    - [ ] *CLI tools (S4), command-line tools similar to apt based on basic API
-    - [ ] *in-zone pkg repo service (S4), a stable repo service running within the zone
-    - [ ] *Installer UI (A4), meets the minimum requirements for dApp permission control in the system
-  - backup system (listed separately)
-  - cyfs-gateway (listed separately)
-- Frame Services
-  - [ ] *smb-service (A2), integrated with ACL
-  - [ ] k8s-service, integrated with ACL
-  - [ ] *http-fs-service (A2), integrated with ACL
-  - [ ] Notify Manager
-  - [ ] *msg_bus(S4), the user's system inbox, where all applications can send messages
-  - [ ] dApp Store
-  - [ ] *Control panel (S8) Provide basic system management functions according to the requirements document (including related web pages), can be further divided.
-- [ ] *CyberChat App (A4), BuckyOS control app modified based on the CYFS wallet app.
-  - [ ] *Account management (S4), mainly local DID account management, much logic can be reused from CYFS wallet
-  - [ ] *Name management (S4), manage friendly names owned
-  - [ ] *Zone management (S2), support relevant requirements of the first version
-  - [ ] *Storage management (S2), pure display in the first version
-  - [ ] *File UI (S4), provide basic UI to access DFS
-- Web2.5 Services
-  - [ ] *BuckyOS Web general lib design (A4 @waterflier), the basic library used by all web pages
-  - [ ] *Account management + signature service (A2), including signature history
-  - [ ] *did resolution and name resolution (S2), mainly implemented in cyfs-gateway, this mainly handles formal online operations
-  - [ ] *Name application and management (S4), allowing users to easily and freely own a $name.buckyos.org name, obtained during account registration
-  - [ ] gateway service (subscription management)
-  - [ ] *http backup server (S2), mainly functions from BuckyOS Backup Suite, simple online operation at first (with size restrictions), followed by subscription implementation
-  - [ ] Cloud zone support: two research approaches
-  - [ ] Support migration from Web2.5 to Web3
-- [ ] *BuckyOS Backup Suite (independent product with separate points, additional rewards from the DMC fund), an independent cross-platform backup software, refer to its independent PRD.
-  - [ ] Backup Service
-  - [ ] UI
-  - [ ] Backup basic libs
-  - [ ] http DAV target client
+- DFS (wugren & photosssa)
+  - [ ] Select the underlying solution and conduct research on key needs(A2,@wugren,@photosssa)
+  - [ ] DFS (A1) integrated with rbac
+  - [ ] DFS Support soft RAID: 4 hard disks can damage any hard disk without losing data (A2)
+  - [ ] DFS expand from 1 node to 2 node (A2)
+  - [ ] DFS expand from 2 node to 3 node (A2)
+  - [ ] DFS Support SSD Read/Write Cache (A2)
+  - DCFS (listed separately)
+
+- BuckyOS Backup Suite (independent product with separate points, additional rewards from the DMC fund), an independent cross-platform backup software, refer to its independent PRD.
+  - [ ] *Backup Suite Framework (A4,@waterflier)
+  - [ ] *Backup basic libs (A1,@waterflier)
+  - [ ] *General high-performance dir backup source (A2,@photosssa, @waterflier)
+  - [ ] *Web UI（S3，@streetycat,@waterflier）
+  - [ ] DMC Backup Target (Alpha3) (A6,@photosssa)
   - [ ] http DAV target server
-  - [ ] dmc target client
-  - [ ] dmc target server
-- [ ] *CYFS Gateway (independent product with separate points), detailed requirements document is still being written
-  - [ ] *Support buckyos demo needs:
+  - [ ] *Installation package (A1,@streetycat)
+  - [ ] *Integrated with BuckyOS (S1,@waterflier)9
 
- TAP Device-based VPN, allowing needed services to work transparently with the main OOD in the same LAN
-  - [ ] *Expose FrameService/dApp services to the outside of the Zone securely via reverse proxy
-  - [ ] *Establish a basic framework, including rule engine, tunnel management, and support for reverse proxy https server
-  - [ ] *cyfs-nameservice service, supporting our name system and did-document system
-- CI/CD Support
-  - [ ] *Nightly CI/CD system (A4), based on Github Action
-  - [ ] *Rapid cloud development environment setup (A4), referencing Github's CodeSpace
-  - [ ] Rapid independent CI/CD environment setup based on specific branches
-  - [ ] Set up typical responsible test environments
-- DCFS Formal architecture design is ongoing based on the Demo phase research results.
-- SDK Initially integrated according to internal needs, formal planning will begin in version 0.3.
+- Port Apps:Integrated BuckyOS SDK, integrated single sign-on
+  - [ ] Sync Drive App : seafile?
+  - [ ] Photo Library: ?
+  - [ ] Video Library:Jellyfin
+  - [ ] Music App: ?
+  - [ ] Note App: ?
+  - [ ] Download tools: Xunlei,qBittorrent
+  - [ ] Dev tools: VSCode-Server, Jupyter lab
+  
+- *BuckyOS offical website (S2)
 
-(TODO: Continuously improve the brief introduction of each module)
+
 
 ## Project Management Process
-
-0.2 PoC is the first relatively official version of BuckyOS. To ensure quality, we have formulated the following project management process based on the actual situation:
 
 ### Step 1: Read Existing Documents and Discuss
 
