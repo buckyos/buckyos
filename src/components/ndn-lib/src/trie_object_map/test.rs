@@ -67,7 +67,7 @@ async fn test_path_object_map() {
         let meta = key_pairs[i].2.clone();
 
         obj_map
-            .put_object(key, obj_id.clone(), Some(meta.clone()))
+            .put_object(key, obj_id.clone())
             .await
             .unwrap();
 
@@ -79,8 +79,7 @@ async fn test_path_object_map() {
             panic!("Object not found for key: {}, {}", i, key);
         }
         let ret = ret.unwrap();
-        assert_eq!(ret.obj_id, obj_id);
-        assert_eq!(ret.meta, Some(meta.clone()));
+        assert_eq!(ret, obj_id);
 
         println!("Get object success: {}", key);
 
@@ -114,12 +113,12 @@ async fn test_path_object_map() {
 
         // First test verify with right value
         let ret = verifier
-            .verify_object(&key, &obj_id, Some(&meta), &proof)
+            .verify_object(&key, &obj_id,  &proof)
             .unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::Ok);
 
         // Test verification without meta
-        let ret = verifier.verify_object(&key, &obj_id, None, &proof).unwrap();
+        let ret = verifier.verify_object(&key, &obj_id, &proof).unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::RootMismatch);
 
         // Test verification with error value
@@ -127,13 +126,13 @@ async fn test_path_object_map() {
         error_meta[0] = if error_meta[0] == 0 { 1 } else { 0 };
 
         let ret = verifier
-            .verify_object(&key, &obj_id, Some(&error_meta), &proof)
+            .verify_object(&key, &obj_id, &proof)
             .unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::RootMismatch);
 
         // Test verification with invalid value
         let ret = verifier
-            .verify_object(&key1, &obj_id, Some(&meta), &proof1)
+            .verify_object(&key1, &obj_id,  &proof1)
             .unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::ValueMismatch);
 
@@ -142,8 +141,7 @@ async fn test_path_object_map() {
         assert!(proof.root_hash == prev_root_hash);
         if i % 2 == 0 {
             let ret = obj_map.remove_object(&key).await.unwrap().unwrap();
-            assert_eq!(ret.0, obj_id);
-            assert_eq!(ret.1, Some(meta.clone()));
+            assert_eq!(ret, obj_id);
 
             println!("Remove object success: {}", key);
         } else {
@@ -161,7 +159,7 @@ async fn test_path_object_map() {
         // Test verification after remove
         proof.root_hash = root_hash.clone();
         let ret = verifier
-            .verify_object(&key, &obj_id, Some(&meta), &proof)
+            .verify_object(&key, &obj_id, &proof)
             .unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::RootMismatch);
         println!("Verify after remove success: {}", key);

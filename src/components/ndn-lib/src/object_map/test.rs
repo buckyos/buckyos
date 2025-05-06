@@ -93,6 +93,11 @@ async fn test_object_map() {
     // Then save it to new file
     obj_map3.save().await.unwrap();
 
+    // Clone for read-only
+    let obj_map_read= obj_map3.clone(true).await.unwrap();
+    let objid4 = obj_map_read.get_obj_id().unwrap();
+    assert_eq!(objid3, objid4, "Object ID unmatch");
+
     // Then reinsert key1
     obj_map3.put_object("key1", obj_item2.unwrap()).await.unwrap();
 

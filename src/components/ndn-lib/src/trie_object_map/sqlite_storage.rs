@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub struct SqliteDB<H, KF, T>
+pub struct TrieObjectMapSqliteStorage<H, KF, T>
 where
     H: KeyHasher,
     KF: KeyFunction<H>,
@@ -21,12 +21,12 @@ where
     _kf: PhantomData<KF>,
 }
 
-impl<H, KF, T> SqliteDB<H, KF, T>
+impl<H, KF, T> TrieObjectMapSqliteStorage<H, KF, T>
 where
     H: KeyHasher,
     T: for<'a> From<&'a [u8]> + Default + AsRef<[u8]> + Clone + Send + Sync,
     KF: KeyFunction<H>,
-    KF::Key: Borrow<[u8]> + for<'a> From<&'a [u8]>,
+    KF::Key: Borrow<[u8]>,
 {
     pub fn new(db_path: &Path) -> NdnResult<Self> {
         let conn = Connection::open(db_path).map_err(|e| {
@@ -48,10 +48,9 @@ where
     fn init_tables(conn: &Connection) -> NdnResult<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS trie_data (
-                key BLOB NOT NULL,
+                key BLOB NOT NULL PRIMARY KEY,
                 value BLOB NOT NULL,
-                ref_count INTEGER NOT NULL,
-                PRIMARY KEY key
+                ref_count INTEGER NOT NULL
             );
             ",
         )
@@ -90,7 +89,7 @@ where
         Ok(result.flatten())
     }
 
-    fn replace(&self, key: &KF::Key, value: T) -> NdnResult<()> {
+    fn emplace_value(&self, key: &KF::Key, value: T) -> NdnResult<()> {
         // Use transaction to ensure atomicity
         let mut conn = self.conn.lock().unwrap();
 
@@ -127,7 +126,7 @@ where
                     // Update value and reference count
                     tx.execute(
                         "UPDATE trie_data SET value = ?1, ref_count = ?2 WHERE key = ?3",
-                        params![value.as_ref(), ref_count, key.borrow()],
+                        params![value.as_ref(), ref_count + 1, key.borrow()],
                     )
                     .map_err(|e| {
                         let msg = format!("Failed to update: {}", e);
@@ -211,7 +210,7 @@ where
                 // Insert a new row with ref_count = -1
                 let default_value: Vec<u8> = T::default().as_ref().to_vec();
                 tx.execute(
-                    "INSERT INTO trie_data (key, value, ref_count) VALUES (?1, ?2, ?3, -1)",
+                    "INSERT INTO trie_data (key, value, ref_count) VALUES (?1, ?2, -1)",
                     params![key.borrow(), default_value],
                 )
                 .map_err(|e| {
@@ -233,12 +232,12 @@ where
     }
 }
 
-impl<H, KF, T> HashDB<H, T> for SqliteDB<H, KF, T>
+impl<H, KF, T> HashDB<H, T> for TrieObjectMapSqliteStorage<H, KF, T>
 where
     H: KeyHasher,
     T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: KeyFunction<H> + Send + Sync,
-    KF::Key: Borrow<[u8]> + for<'a> From<&'a [u8]>,
+    KF::Key: Borrow<[u8]>,
 {
     fn get(&self, key: &H::Out, prefix: Prefix) -> Option<T> {
         if key == &self.hashed_null_node {
@@ -278,8 +277,7 @@ where
         }
 
         let key = KF::key(&key, prefix);
-
-        match self.remove_value(&key) {
+        match self.emplace_value(&key, value) {
             Ok(()) => (),
             Err(e) => {
                 error!("Failed to remove value: {}", e);
@@ -312,12 +310,12 @@ where
     }
 }
 
-impl<H, KF, T> HashDBRef<H, T> for SqliteDB<H, KF, T>
+impl<H, KF, T> HashDBRef<H, T> for TrieObjectMapSqliteStorage<H, KF, T>
 where
     H: KeyHasher,
     T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: KeyFunction<H> + Send + Sync,
-    KF::Key: Borrow<[u8]> + for<'a> From<&'a [u8]>,
+    KF::Key: Borrow<[u8]>,
 {
     fn get(&self, key: &H::Out, prefix: Prefix) -> Option<T> {
         HashDB::get(self, key, prefix)
@@ -327,17 +325,83 @@ where
     }
 }
 
-impl<H, KF, T> AsHashDB<H, T> for SqliteDB<H, KF, T>
+impl<H, KF, T> AsHashDB<H, T> for TrieObjectMapSqliteStorage<H, KF, T>
 where
     H: KeyHasher,
     T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: KeyFunction<H> + Send + Sync,
-    KF::Key: Borrow<[u8]> + for<'a> From<&'a [u8]>,
+    KF::Key: Borrow<[u8]>,
 {
     fn as_hash_db(&self) -> &dyn HashDB<H, T> {
         self
     }
     fn as_hash_db_mut(&mut self) -> &mut dyn HashDB<H, T> {
         self
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::{hash::Hash, path::PathBuf, vec};
+    use super::super::hash::Sha256Hasher;
+    use memory_db::HashKey;
+    use hash_db::HashDB;
+
+    #[test]
+    fn test_sqlite_storage() {
+        
+    }
+
+    #[test]
+    fn test_trie_object_map_sqlite_storage() {
+        type TestStorage = TrieObjectMapSqliteStorage<Sha256Hasher, HashKey<Sha256Hasher>, Vec<u8>>;
+        type H = Sha256Hasher;
+        buckyos_kit::init_logging("test-trie-object-map", false);
+
+        let data_dir = std::env::temp_dir().join("ndn-test-trie-object-map");
+        let db_path = PathBuf::from("test.db");
+        if db_path.exists() {
+            println!("Removing existing test database file: {:?}", db_path);
+            std::fs::remove_file(&db_path).unwrap();
+        }
+        let mut storage = TestStorage::new(&db_path).unwrap();
+        
+        // Test as HashDB
+        let value = b"test_value".to_vec();
+        let key = H::hash(&value);
+        let node = vec![0u8; 32];
+        let prefix = (node.as_ref(), None);
+        
+        HashDB::insert(&mut storage, prefix, &value);
+        let retrieved_value = HashDB::get(&storage, &key, prefix).unwrap();
+        assert_eq!(retrieved_value, value);
+        assert!(HashDB::contains(&storage, &key, prefix));
+
+        storage.remove(&key, prefix);
+        assert!(!HashDB::contains(&storage, &key, prefix));
+        assert!(HashDB::get(&storage, &key, prefix).is_none());
+        assert!(HashDB::get(&storage, &H::hash(b"non_existent_key"), prefix).is_none());
+
+        // Insert one value twice and then should be removed twice before it is really removed
+    
+        HashDB::insert(&mut storage, prefix, &value);
+        HashDB::insert(&mut storage, prefix, &value);
+
+        HashDB::remove(&mut storage, &key, prefix);
+
+        // Get the value again, it should be existing
+        let retrieved_value = HashDB::get(&storage, &key, prefix).unwrap();
+        assert_eq!(retrieved_value, value);
+
+        assert!(HashDB::contains(&storage, &key, prefix));
+
+        // Remove the value again, it should be removed
+        HashDB::remove(&mut storage, &key, prefix);
+
+        assert!(!HashDB::contains(&storage, &key, prefix));
+        assert!(HashDB::get(&storage, &key, prefix).is_none());
+
     }
 }
