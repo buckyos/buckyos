@@ -26,7 +26,6 @@ jobs:
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
-
   build-linux:
     strategy:
       matrix:
@@ -35,7 +34,6 @@ jobs:
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
-
   build-macos:
     strategy:
       matrix:
