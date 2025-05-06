@@ -17,7 +17,7 @@ extern "C" {
 }
 
 fn main() {
-    init_logging("tray-controller");
+    init_logging("tray-controller", true);
 
     let mut file = OpenOptions::new();
     file.read(true).write(true).create(true);
