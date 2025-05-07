@@ -1,7 +1,7 @@
 use super::{file::*, ObjectArray};
 use super::storage::{
     ObjectArrayCacheType, ObjectArrayInnerCache, ObjectArrayStorageType,
-    ObjectArrayStorageWriter,
+    ObjectArrayStorageWriter
 };
 use super::memory_cache::ObjectArrayMemoryCache;
 use crate::{NdnError, NdnResult, ObjId};
@@ -65,11 +65,13 @@ impl ObjectArrayStorageFactory {
                 let writer = ObjectArrayArrowWriter::new(file_path, len);
                 Ok(Box::new(writer))
             }
+            ObjectArrayStorageType::JSONFile => {
+                let file_path = self.data_path.join(format!("{}.json", id.to_base32()));
+                let writer = ObjectArrayJSONWriter::new(file_path);
+                Ok(Box::new(writer))
+            }
             ObjectArrayStorageType::SQLite => {
                 unimplemented!("SQLite storage is not implemented yet");
-            }
-            ObjectArrayStorageType::SimpleFile => {
-                unimplemented!("Simple file storage is not implemented yet");
             }
         }
     }
@@ -81,11 +83,13 @@ impl ObjectArrayStorageFactory {
                 let reader = ObjectArrayArrowReader::open(&file_path, readonly).await?;
                 Ok(reader.into_cache())
             }
+            ObjectArrayStorageType::JSONFile => {
+                let file_path = self.data_path.join(format!("{}.json", id.to_base32()));
+                let reader = ObjectArrayJSONReader::open(&file_path, readonly).await?;
+                Ok(reader.into_cache())
+            }
             ObjectArrayStorageType::SQLite => {
                 unimplemented!("SQLite storage is not implemented yet");
-            }
-            ObjectArrayStorageType::SimpleFile => {
-                unimplemented!("Simple file storage is not implemented yet");
             }
         }
     }

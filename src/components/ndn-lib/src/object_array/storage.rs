@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 pub enum ObjectArrayStorageType {
     Arrow,
     SQLite,
-    SimpleFile,
+    JSONFile,
 }
 
 impl Default for ObjectArrayStorageType {
