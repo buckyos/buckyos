@@ -277,11 +277,8 @@ where
         }
 
         let key = KF::key(&key, prefix);
-        match self.emplace_value(&key, value) {
-            Ok(()) => (),
-            Err(e) => {
-                error!("Failed to remove value: {}", e);
-            }
+        if let Err(e) = self.emplace_value(&key, value) {
+            error!("Failed to remove value: {}", e);
         }
     }
 
@@ -340,24 +337,22 @@ where
     }
 }
 
-
 #[cfg(test)]
 mod test {
-    use super::*;
-    use std::{hash::Hash, path::PathBuf, vec};
-    use super::super::hash::Sha256Hasher;
-    use memory_db::HashKey;
-    use hash_db::HashDB;
+    use crate::trie_object_map::storage;
 
-    #[test]
-    fn test_sqlite_storage() {
-        
-    }
+    use super::super::hash::Sha256Hasher;
+    use super::*;
+    use hash_db::HashDB;
+    use memory_db::{HashKey, MemoryDB};
+    use std::{hash::Hash, path::PathBuf, vec};
 
     #[test]
     fn test_trie_object_map_sqlite_storage() {
         type TestStorage = TrieObjectMapSqliteStorage<Sha256Hasher, HashKey<Sha256Hasher>, Vec<u8>>;
         type H = Sha256Hasher;
+        type TestMemoryDB = MemoryDB<Sha256Hasher, HashKey<Sha256Hasher>, Vec<u8>>;
+
         buckyos_kit::init_logging("test-trie-object-map", false);
 
         let data_dir = std::env::temp_dir().join("ndn-test-trie-object-map");
@@ -367,13 +362,14 @@ mod test {
             std::fs::remove_file(&db_path).unwrap();
         }
         let mut storage = TestStorage::new(&db_path).unwrap();
-        
+        //let mut storage = TestMemoryDB::default();
+
         // Test as HashDB
         let value = b"test_value".to_vec();
         let key = H::hash(&value);
         let node = vec![0u8; 32];
         let prefix = (node.as_ref(), None);
-        
+
         HashDB::insert(&mut storage, prefix, &value);
         let retrieved_value = HashDB::get(&storage, &key, prefix).unwrap();
         assert_eq!(retrieved_value, value);
@@ -385,23 +381,52 @@ mod test {
         assert!(HashDB::get(&storage, &H::hash(b"non_existent_key"), prefix).is_none());
 
         // Insert one value twice and then should be removed twice before it is really removed
-    
-        HashDB::insert(&mut storage, prefix, &value);
-        HashDB::insert(&mut storage, prefix, &value);
+        {
+            let value = b"test_value1".to_vec();
+            let key = H::hash(&value);
+            let node = vec![0u8; 32];
+            let prefix = (node.as_ref(), None);
 
-        HashDB::remove(&mut storage, &key, prefix);
+            HashDB::insert(&mut storage, prefix, &value);
+            HashDB::insert(&mut storage, prefix, &value);
 
-        // Get the value again, it should be existing
-        let retrieved_value = HashDB::get(&storage, &key, prefix).unwrap();
-        assert_eq!(retrieved_value, value);
+            HashDB::remove(&mut storage, &key, prefix);
 
-        assert!(HashDB::contains(&storage, &key, prefix));
+            // Get the value again, it should be existing
+            let retrieved_value = HashDB::get(&storage, &key, prefix).unwrap();
+            assert_eq!(retrieved_value, value);
 
-        // Remove the value again, it should be removed
-        HashDB::remove(&mut storage, &key, prefix);
+            assert!(HashDB::contains(&storage, &key, prefix));
 
-        assert!(!HashDB::contains(&storage, &key, prefix));
-        assert!(HashDB::get(&storage, &key, prefix).is_none());
+            // Remove the value again, it should be removed
+            HashDB::remove(&mut storage, &key, prefix);
 
+            assert!(!HashDB::contains(&storage, &key, prefix));
+            assert!(HashDB::get(&storage, &key, prefix).is_none());
+        }
+
+        // Test first remove and then insert again
+        {
+            let value = b"test_value2".to_vec();
+            let key = H::hash(&value);
+            let node = vec![0u8; 32];
+            let prefix = (node.as_ref(), None);
+
+            // First remove the value
+            HashDB::remove(&mut storage, &key, prefix);
+            assert!(!HashDB::contains(&storage, &key, prefix));
+            assert!(HashDB::get(&storage, &key, prefix).is_none());
+
+            // First insert the value will not be existing
+            HashDB::insert(&mut storage, prefix, &value);
+            assert!(!HashDB::contains(&storage, &key, prefix));
+            assert!(HashDB::get(&storage, &key, prefix).is_none());
+
+            // Insert the value again, it should be existing
+            HashDB::insert(&mut storage, prefix, &value);
+            assert!(HashDB::contains(&storage, &key, prefix));
+            let retrieved_value = HashDB::get(&storage, &key, prefix).unwrap();
+            assert_eq!(retrieved_value, value);
+        }
     }
 }
