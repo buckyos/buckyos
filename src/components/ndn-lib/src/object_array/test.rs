@@ -27,7 +27,7 @@ fn gen_random_obj_id(seed: &str) -> ObjId {
 }
 
 async fn test_object_array() {
-    let mut ar = ObjectArray::new(HashMethod::Sha256);
+    let mut ar = ObjectArray::new(HashMethod::Sha256, None);
 
     for i in 0..100 {
         let obj_id = gen_random_obj_id(&format!("test-{}", i));
@@ -48,16 +48,13 @@ async fn test_object_array() {
 
     // Save to file
     let data_dir = std::env::temp_dir().join("ndn-test-object-array");
-    let factory = ObjectArrayStorageFactory::new(&data_dir, Some(ObjectArrayStorageType::Arrow));
-    let mut writer = factory.open_writer(&id, None).await.unwrap();
 
-    ar.save(&mut writer).await.unwrap();
+    ar.save().await.unwrap();
     ar.flush().await.unwrap();
 
 
     // Test load from file, in read-only mode
-    let cache = factory.open(&id, true).await.unwrap();
-    let mut reader = ObjectArray::new_from_cache(HashMethod::Sha256, cache).unwrap();
+    let mut reader = ObjectArray::open(HashMethod::Sha256, &id, true).await.unwrap();
 
     let id2 = reader.calc_obj_id().await.unwrap();
     assert_eq!(id, id2, "Load object ID unmatch");
@@ -150,6 +147,13 @@ async fn test_object_array() {
 #[tokio::test]
 async fn test_object_array_main() {
     buckyos_kit::init_logging("test-object-array", false);
+
+    // First init object array factory
+    let data_dir = std::env::temp_dir().join("ndn-test-object-array");
+    let factory = ObjectArrayStorageFactory::new(&data_dir);
+    if let Err(_) = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.set(factory) {
+        error!("Object array storage factory already initialized");
+    }
 
     test_object_array().await;
 }

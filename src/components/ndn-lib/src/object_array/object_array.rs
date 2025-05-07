@@ -3,6 +3,7 @@ use super::storage::{
     ObjectArrayCacheType, ObjectArrayInnerCache, ObjectArrayStorageType, ObjectArrayStorageWriter,
 };
 use super::storage_factory::{ObjectArrayCacheFactory, ObjectArrayStorageFactory};
+use super::GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY;
 use crate::mtree::MerkleTreeProofPathVerifier;
 use crate::mtree::{
     self, MerkleTreeObject, MerkleTreeObjectGenerator, MtreeReadSeek,
@@ -10,7 +11,9 @@ use crate::mtree::{
 };
 use crate::{HashMethod, ObjId, OBJ_TYPE_LIST};
 use crate::{NdnError, NdnResult};
+use arrow::csv::writer;
 use http_types::cache;
+use core::hash;
 use std::io::SeekFrom;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -22,17 +25,23 @@ pub struct ObjectArrayItem {
 
 pub struct ObjectArray {
     hash_method: HashMethod,
+    storage_type: ObjectArrayStorageType,
     cache: Box<dyn ObjectArrayInnerCache>,
     is_dirty: bool,
     mtree: Option<MerkleTreeObject>,
 }
 
 impl ObjectArray {
-    pub fn new(hash_method: HashMethod) -> Self {
+    pub fn new(
+        hash_method: HashMethod,
+        storage_type: Option<ObjectArrayStorageType>,
+    ) -> Self {
         let cache: Box<dyn ObjectArrayInnerCache> =
             ObjectArrayCacheFactory::create_cache(ObjectArrayCacheType::Memory);
+
         Self {
             hash_method,
+            storage_type: storage_type.unwrap_or(ObjectArrayStorageType::default()),
             cache,
             is_dirty: false,
             mtree: None,
@@ -42,9 +51,11 @@ impl ObjectArray {
     pub fn new_from_cache(
         hash_method: HashMethod,
         cache: Box<dyn ObjectArrayInnerCache>,
+        storage_type: ObjectArrayStorageType,
     ) -> NdnResult<Self> {
         let obj_array = Self {
             hash_method,
+            storage_type,
             cache,
             is_dirty: false,
             mtree: None,
@@ -61,6 +72,7 @@ impl ObjectArray {
         let cache = self.cache.clone_cache(read_only)?;
         let ret = Self {
             hash_method: self.hash_method.clone(),
+            storage_type: self.storage_type.clone(),
             cache,
             is_dirty: self.is_dirty,
             mtree: None, // FIXME: Should we clone the mtree result if exists?
@@ -346,7 +358,12 @@ impl ObjectArray {
         Ok(())
     }
 
-    pub async fn save(&mut self, writer: &mut Box<dyn ObjectArrayStorageWriter>) -> NdnResult<()> {
+    pub async fn save(&mut self) -> NdnResult<()> {
+        let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
+        let mut writer = factory
+            .open_writer(&self.get_obj_id().unwrap(), None, Some(self.storage_type.clone()))
+            .await?;
+        
         // Write the object array to the storage
         // TODO: use batch read and write to improve performance
         for i in 0..self.cache.len() {
@@ -357,6 +374,20 @@ impl ObjectArray {
         writer.flush().await?;
 
         Ok(())
+    }
+
+    // FIXME: should we save hash_method to the storage?
+    pub async fn open(hash_method: HashMethod, container_id: &ObjId, read_only: bool) -> NdnResult<Self> {
+        let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
+        let (cache, storage_type) = factory.open(container_id, read_only).await?;
+
+        let obj_array = Self::new_from_cache(
+            hash_method,
+            cache,
+            storage_type,
+        )?;
+
+        Ok(obj_array)
     }
 }
 
