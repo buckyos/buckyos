@@ -19,7 +19,7 @@ async fn main() -> Result<(), String> {
     let matches = Command::new("buckyos control tool")
         .author("buckyos")
         .about("control tools")
-        // .subcommand_required(true)  //  即可以subcommand也可以arg
+        .subcommand_required(true)
         .arg_required_else_help(true)
         .arg(
             Arg::new("id")
@@ -145,40 +145,40 @@ async fn main() -> Result<(), String> {
                         .help("node_id in current machine, default 'node'")
                 )
         )
-        .arg(
-            Arg::new("get_config")
-                .long("get_config")
-                .value_name("key")                 // 控制占位符名称
-                .help("get system config, buckycli --get_config $key")
-        )
-        .arg(
-            Arg::new("set_config")
-                .long("set_config")
-                .value_name("key value")
-                .help("set system config,
-    buckycli --set_config $key $value
-    buckycli --set_config $key --file filename.")
-        )
-        .arg(
-            Arg::new("file")
-                .long("file")
-                .value_name("filename")
-                .num_args(1)
-                .help("set system config with file content. filename = file path.
-    buckycli --set_config $key --file filename")
+        .subcommand(
+            Command::new("sys_config")
+               .about("Quick interaction mode for system config")
+               .arg(
+                    Arg::new("get")
+                       .long("get")
+                       .value_name("key")
+                       .help("get system config, buckycli sys_config --get_config $key")
+                )
+                .arg(
+                    Arg::new("set")
+                        .long("set")
+                        .value_names(&["key", "value"])  // 定义两个占位符名称
+                        .num_args(2)
+                        .help("set system config,
+    buckycli sys_config --set $key $value")
+                )
+                .arg(
+                    Arg::new("set_file")
+                        .long("set_file")
+                        .value_names(&["key", "$filename"])  // 定义两个占位符名称
+                        .num_args(2)
+                        .help("set system config with file content. filename = file path.
+    buckycli sys_config --set_file $key $filename")
+                )
         )
         .get_matches();
     
     
-    let sub_command = matches.subcommand();
-    if sub_command.is_none() {
-        println!("unknown command!");
-        return Err("unknown command!".to_string());
-    }
 
     let mut private_key = None;
+    let subcommand = matches.subcommand();
 
-    let cmd_name = sub_command.clone().unwrap().0;
+    let cmd_name = subcommand.clone().unwrap().0;
     if !is_local_cmd(cmd_name) {
         let mut runtime = init_buckyos_api_runtime("buckycli",None,BuckyOSRuntimeType::AppClient).await.map_err(|e| {
             println!("Failed to init buckyos runtime: {}", e);
@@ -202,35 +202,9 @@ async fn main() -> Result<(), String> {
     }
 
 
-    // 如果有参数，而不是子命令
-    // eg. buckycli --get_config $key
-    if let Some(key) = matches.get_one::<String>("get_config") {
-        println!("Get config, key[{}]", key);
-        sys_config::get_config(key).await;
-        return Ok(());
-    }
-    if let Some(key) = matches.get_one::<String>("set_config") {
-        if let Some(file) = matches.get_one::<String>("file") {
-            // 读取文件内容
-            let content = std::fs::read_to_string(file)
-                .unwrap_or_else(|_| panic!("无法读取文件: {}", file));
-            sys_config::set_config(key, &content).await;
-            return Ok(());
-        }
-
-
-        let config_values: Vec<&String> = matches
-            .get_many::<String>("set_config")
-            .expect("必须提供 key 和 value 参数")
-            .collect();
-        let key = config_values[0]; 
-        let value = config_values[1];
-        sys_config::set_config(key, value).await;
-        return Ok(());
-    }
 
     // 处理子命令
-    match sub_command {
+    match subcommand {
         Some(("version", _)) => {
             let version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");
             let git_hash = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
@@ -375,6 +349,37 @@ async fn main() -> Result<(), String> {
             if sync_result.is_err() {
                 println!("Sync from remote source failed! {}", sync_result.err().unwrap());
                 return Err("sync from remote source failed!".to_string());
+            }
+        }
+        Some(("sys_config", matches)) => {
+            if let Some(key) = matches.get_one::<String>("get") {
+                println!("Get system config, key[{}]", key);
+                sys_config::get_config(key).await;
+                return Ok(());
+            }
+
+            if let Some(_key) = matches.get_one::<String>("set") {
+                let config_values: Vec<&String> = matches
+                    .get_many::<String>("set")
+                    .expect("必须提供 key 和 value 参数")
+                    .collect();
+                let key = config_values[0];
+                let value = config_values[1];
+                println!("Set system config, key[{}]: {}", key, value);
+                sys_config::set_config(key, value).await;
+                return Ok(());
+            }
+            if let Some(_key) = matches.get_one::<String>("set_file") {
+                let config_values: Vec<&String> = matches
+                    .get_many::<String>("set_file")
+                    .expect("必须提供 key 和 file 参数")
+                    .collect();
+                let key = config_values[0];
+                let filepath = config_values[1];
+                let content = std::fs::read_to_string(filepath)
+                    .unwrap_or_else(|_| panic!("无法读取文件: {}", filepath));
+                sys_config::set_config(key, &content).await;
+                return Ok(());
             }
         }
         Some(("connect", _matches)) => {
