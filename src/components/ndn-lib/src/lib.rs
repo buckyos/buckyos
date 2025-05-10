@@ -1,6 +1,7 @@
 #![allow(unused, dead_code)]
 
 mod chunk;
+mod chunk_list;
 mod object;
 mod link_obj;
 mod local_store;
@@ -27,6 +28,7 @@ pub use mtree::*;
 pub use object_map::*;
 pub use trie_object_map::*;
 pub use object_array::*;
+pub use chunk_list::*;
 
 use thiserror::Error;
 

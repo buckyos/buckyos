@@ -84,6 +84,12 @@ reader.read(offset, size)
 ```
 
 
+```rust
+reader = ndn_mgr.open_chunk_reader_by_chunklist(chunklist_id,index)
+reader.read(offset, size)
+```
+
+
 ### 本地写入
 
 写入，这个语义上有锁定的含义，完全写完才能open chunk reader成功

@@ -2,14 +2,17 @@ use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_by_json_
 use name_lib::decode_jwt_claim_without_verify;
 use serde::{Serialize,Deserialize};
 use serde_json::json;
-//chunk_mgr默认是机器级别的，即多个进程可以共享同一个chunk_mgr
-//chunk_mgr使用共享内存/filemap等技术来实现跨进程的读数据共享，比使用127.0.0.1的http协议更高效
-//从实现简单的角度考虑，先用http协议实现写数据？
+use tokio_util::bytes::BytesMut;
+use std::io as std_io;
+
 use tokio::{
     fs::{self, File,OpenOptions}, 
-    io::{self, AsyncRead,AsyncWrite, AsyncReadExt, AsyncWriteExt, AsyncSeek, AsyncSeekExt}, 
+    io::{self, AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt}, 
 };
 use log::*;
+use futures_util::stream;
+use futures_util::stream::StreamExt;
+use tokio_util::io::StreamReader;
 use crate::{build_named_object_by_json, ChunkHasher, ChunkId, ChunkReadSeek, ChunkState, FileObject, NamedDataStore, NdnError, NdnResult, PathObject};
 use memmap::Mmap;
 use std::{path::PathBuf, pin::Pin};
@@ -22,7 +25,13 @@ use lazy_static::lazy_static;
 
 use buckyos_kit::get_buckyos_named_data_dir;
 
-use crate::{ChunkReader,ChunkWriter,ObjId};
+use crate::{ChunkReader,ChunkWriter,ObjId,ChunkList};
+
+impl From<NdnError> for std_io::Error {
+    fn from(err: NdnError) -> Self {
+        std_io::Error::new(std_io::ErrorKind::Other, err.to_string())
+    }
+}
 
 pub struct NamedDataMgrDB {
     db_path: String,
@@ -738,11 +747,74 @@ impl NamedDataMgr {
     pub async fn open_chunk_reader(mgr_id:Option<&str>, chunk_id:&ChunkId,seek_from:SeekFrom,auto_cache:bool)->NdnResult<(ChunkReader,u64)> {
         let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id).await;
         if named_mgr.is_none() {
-            return Err(NdnError::NotFound(format!("named data mgr not found")));
+            return Err(NdnError::NotFound(format!("named data mgr {} not found",mgr_id.unwrap())));
         }
         let named_mgr = named_mgr.unwrap();
         let named_mgr = named_mgr.lock().await;
         named_mgr.open_chunk_reader_impl(chunk_id,seek_from,auto_cache).await
+    }
+
+    //return chunklist_reader,chunklist_size(total_size)
+    pub async fn open_chunklist_reader(
+        mgr_id: Option<&str>, 
+        chunklist_id: &ObjId,
+        seek_from: SeekFrom,
+        auto_cache: bool
+    ) -> NdnResult<(ChunkReader, u64)> {
+        // 1. 获取 named_mgr
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id).await
+            .ok_or_else(|| NdnError::NotFound(format!("named data mgr {} not found", mgr_id.unwrap_or("default"))))?;
+        
+        // 2. 获取 chunklist 对象
+        let obj_data = {
+            let mgr = named_mgr.lock().await;
+            mgr.get_object_impl(chunklist_id, None).await?
+        };
+        
+        let chunklist = ChunkList::new_by_obj_data(obj_data);
+        
+        // 3. 计算起始位置
+        let (chunk_index, chunk_offset) = chunklist.get_chunk_index_by_offset(seek_from)?;
+        
+        // 4. 获取第一个 chunk 的 reader
+        let first_chunk_id = chunklist.get_object(chunk_index as usize)?;
+        if first_chunk_id.is_none() {
+            return Err(NdnError::NotFound(format!("chunk {} not found", chunk_index)));
+        }
+        let first_chunk_id = first_chunk_id.unwrap();
+        let first_chunk_id = ChunkId::from_obj_id(&first_chunk_id);
+        
+        let (first_reader, _) = {
+            let mgr = named_mgr.lock().await;
+            mgr.open_chunk_reader_impl(&first_chunk_id, SeekFrom::Start(chunk_offset), auto_cache).await?
+        };
+        
+        // 5. 创建后续 chunks 的 stream
+        //let remaining_chunks = chunklist
+        //    .into_iter()
+        //    .skip(chunk_index + 1);
+        let chunk_ids = vec![first_chunk_id];
+        
+        let stream = stream::iter(chunk_ids.iter())
+            .map(move |chunk_id| {
+                let mgr_id = mgr_id.map(|s| s.to_string());
+                async move {
+                    let mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id.as_deref()).await
+                        .ok_or_else(|| NdnError::NotFound("named data mgr not found".to_string()))?;
+                    let mgr = mgr.lock().await;
+                    let (reader, _) = mgr.open_chunk_reader_impl(&chunk_id, SeekFrom::Start(0), auto_cache).await?;
+                    Ok::<_, NdnError>(reader)
+                }
+            })
+            .buffered(2);  // 最多同时打开2个文件
+        
+        // 6. 创建 StreamReader
+        //let stream_reader = StreamReader::new(stream);
+        
+        // 7. 组合 readers
+        //let combined_reader = Box::pin(first_reader.chain(stream_reader));
+        
+        Ok((first_reader, chunklist.get_total_size()))
     }
 
     //return chunk_id,progress_info 

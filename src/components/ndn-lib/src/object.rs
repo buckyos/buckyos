@@ -50,6 +50,10 @@ impl ObjId {
         }
     }
 
+    pub fn get_length(&self)-> NdnResult<u64> {
+        return Err(NdnError::InvalidObjType("not supported".to_string()));
+    }
+
     pub fn new_by_raw(obj_type:String,hash_value:Vec<u8>)->Self {
         Self { obj_type: obj_type, obj_hash: hash_value }
     }
