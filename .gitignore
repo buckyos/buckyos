@@ -24,6 +24,8 @@ src/apps/control_panel/src/dist/
 src/apps/sys_test/dist/
 
 /src/scripts/__pycache__/
+/src/scripts/**/__pycache__/
+/src/scripts/remote/device_info.json
 target/
 cargo.lock
 pnpm-lock.yaml
