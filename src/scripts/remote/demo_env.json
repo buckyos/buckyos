@@ -10,7 +10,7 @@
             "disk": "10G",
             "network": {
                 "type": "bridge",
-                "bridge": "enp4s0"
+                "bridge": "br0"
             }
         },
         "apps": {
@@ -51,7 +51,7 @@
             "disk": "10G",
             "network": {
                 "type": "bridge",
-                "bridge": "enp4s0"
+                "bridge": "br0"
             }
         },
         "apps": {

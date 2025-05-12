@@ -128,7 +128,10 @@ def main():
     if len(sys.argv) != 2:
         print_usage()
     
-    config_path = os.path.expanduser("~/buckyos_dev_env.json")
+    config_path = "device_info.json"
+    if not os.path.exists(config_path):
+        print(f"Config file not found: {config_path}")
+        sys.exit(1)
     with open(config_path, 'r') as f:
         g_all_devices = json.load(f)
 
