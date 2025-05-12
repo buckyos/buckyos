@@ -41,7 +41,7 @@ def create_rootfs_tarball():
         shell=True,
         check=True
     )
-    
+
     return tar_path
 
 
@@ -53,7 +53,8 @@ def install(device_id: str):
         # 1. 创建tar包
         print("Creating rootfs tarball...")
         tar_path = create_rootfs_tarball()
-        
+        print(f"tar_path: {tar_path}")
+
         # 2. 检查远程目录是否存在
         stdout, stderr = device.run_command("test -d /opt/buckyos && echo 'exists' || echo 'not_exists'")
         is_fresh_install = 'not_exists' in stdout

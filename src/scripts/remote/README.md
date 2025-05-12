@@ -1,9 +1,10 @@
 
 
 # step
-1. Installation process: 
-2. Check the network environment 
+1. generate ssh key(put into ~/.buckyos_dev/id_rsa)， generate pub key into vm_init.yaml
+2. Check the multipass cmd,and check the network environment (br0)
 3. Check the multipass command 
 4. Install the virtual machine and generate deviceinfo information (device_info.json)
-5. Install the rootfs 
-6. Execute commands (optional)
+5. VM install buckyos （'-i ~/.buckyos_dev/id_rsa')
+6. VM start buckyos
+7. Execute other commands (optional)
