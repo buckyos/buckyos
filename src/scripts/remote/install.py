@@ -26,7 +26,7 @@ def create_rootfs_tarball():
     # 获取当前工程根目录
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     rootfs_path = os.path.join(project_root, "rootfs")
-
+    
     print(f"rootfs_path: {rootfs_path}")
     if not os.path.exists(rootfs_path):
         raise Exception("rootfs directory not found")

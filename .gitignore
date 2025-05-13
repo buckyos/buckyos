@@ -23,6 +23,8 @@ src/rootfs/tmp
 src/apps/control_panel/src/dist/
 src/apps/sys_test/dist/
 
+src/web3_bridge/web3_gateway
+
 /src/scripts/__pycache__/
 /src/scripts/**/__pycache__/
 /src/scripts/remote/device_info.json

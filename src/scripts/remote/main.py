@@ -2,16 +2,25 @@ import subprocess
 import sys
 import os
 import yaml  # 新增导入 yaml 模块
+import json
 
 import create_vm
 import get_device_info
+import install
+import start
+import remote_device
 
 
 def print_usage():
     print("Usage:")
-    print("  ./main.py create    # 创建虚拟机")
-    print("  ./main.py clean    # 清除所有的Multipass实例")
-    print("  ./main.py check    # 检查是否存在网络桥接")
+    print("  ./main.py clean                    # 清除所有的Multipass实例")
+    print("  ./main.py init                     # 初始化环境")
+    print("  ./main.py create                   # 创建虚拟机")
+    print("  ./main.py check                    # 检查是否存在网络桥接")
+    print("  ./main.py install <device_id>      # 安装buckyos")
+    print("  ./main.py install --all            # 全部vm，安装buckyos")
+    print("  ./main.py start                    # 启动buckyos")
+
 
 
 
@@ -111,6 +120,8 @@ def init():
     print("Updated vm_init.yaml with new public key")
 
 def main():
+    config_path = os.path.expanduser('~/.buckyos_dev/device_info.json')
+
     # argv[1] 是命令行参数
     if len(sys.argv) < 2:
         print_usage()
@@ -128,11 +139,30 @@ def main():
         check_br()
         create()
         # generate deviceinfo
-        get_device_info.get_device_info()
+        get_device_info.get_device_info(info_path=config_path)
         return
     elif sys.argv[1] == "deviceinfo":
-        config_path = os.path.expanduser('~/.buckyos_dev/device_info.json')
         get_device_info.get_device_info(info_path=config_path)
+    elif sys.argv[1] == "install":
+        device_id = sys.argv[2]
+        if device_id == "--all":
+            # 遍历所有设备
+            with open(config_path, 'r') as f:
+                g_all_devices = json.load(f)
+                for device_id in g_all_devices:
+                    print(f"install target device_id: {device_id}")
+                    install.install(device_id)
+            return
+
+
+        print(f"install target device_id: {device_id}")
+        install.install(device_id)
+    elif sys.argv[1] == "start":
+        device_id = sys.argv[2]
+        print(f"start target device_id: {device_id}")
+        device = remote_device.remote_device(device_id)
+        start.start_all_apps(device)
+
     else:
         print_usage()
         return
