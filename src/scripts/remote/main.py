@@ -19,7 +19,8 @@ def print_usage():
     print("  ./main.py check                    # 检查是否存在网络桥接")
     print("  ./main.py install <device_id>      # 安装buckyos")
     print("  ./main.py install --all            # 全部vm，安装buckyos")
-    print("  ./main.py start                    # 启动buckyos")
+    print("  ./main.py start <device_id>        # 启动buckyos")
+    print("  ./main.py start --all              # 全部vm，启动buckyos")
 
 
 
@@ -74,11 +75,13 @@ def init():
     # cp demo_env.json to ~/.buckyos_dev/env_config.json
     demo_env = "demo_env.json"
     env_config = os.path.join(config_dir, "env_config.json")
-    if not os.path.exists(env_config):
-        os.link(demo_env, env_config)
-        print(f"Created link: {env_config} -> {demo_env}")
-    else:
-        print(f"Link already exists: {env_config}")
+    # 每次覆盖更新env_config.json
+    if os.path.exists(env_config):
+        os.remove(env_config) 
+    os.link(demo_env, env_config)
+    print(f"Created link: {env_config} -> {demo_env}")
+    # else:
+    #     print(f"Link already exists: {env_config}")
 
     # 创建密钥对
     key_path = os.path.join(config_dir, "id_rsa")
@@ -105,19 +108,26 @@ def init():
     with open(vm_init_path, 'r') as f:
         vm_config = yaml.safe_load(f)
 
+    need_update = False
     # 确保 ssh_authorized_keys 存在
     if 'users' in vm_config:
         for user in vm_config['users']:
             if user.get('name') == 'root':
                 if 'ssh_authorized_keys' not in user:
                     user['ssh_authorized_keys'] = []
+                # 检查是否已经存在
+                if public_key in user['ssh_authorized_keys']:
+                    print("Public key already exists in vm_init.yaml")
+                    return
                 user['ssh_authorized_keys'].append(public_key)
+                need_update = True
                 break
 
-    # 写回 vm_init.yaml
-    with open(vm_init_path, 'w') as f:
-        yaml.dump(vm_config, f, default_flow_style=False)
-    print("Updated vm_init.yaml with new public key")
+    if need_update:
+        # 写回 vm_init.yaml
+        with open(vm_init_path, 'w') as f:
+            yaml.dump(vm_config, f, default_flow_style=False)
+        print("Updated vm_init.yaml with new public key")
 
 def main():
     config_path = os.path.expanduser('~/.buckyos_dev/device_info.json')
@@ -144,6 +154,10 @@ def main():
     elif sys.argv[1] == "deviceinfo":
         get_device_info.get_device_info(info_path=config_path)
     elif sys.argv[1] == "install":
+        if len(sys.argv) < 3:
+            print("Usage: install.py <device_id>")
+            print("Usage: install.py --all")
+            return
         device_id = sys.argv[2]
         if device_id == "--all":
             # 遍历所有设备
@@ -158,7 +172,20 @@ def main():
         print(f"install target device_id: {device_id}")
         install.install(device_id)
     elif sys.argv[1] == "start":
+        if len(sys.argv) < 3:
+            print("Usage: start.py <device_id>")
+            return
+
         device_id = sys.argv[2]
+        if device_id == "--all":
+            # 遍历所有设备
+            with open(config_path, 'r') as f:
+                g_all_devices = json.load(f)
+                for device_id in g_all_devices:
+                    print(f"start target device_id: {device_id}")
+                    device = remote_device.remote_device(device_id)
+                    start.start_all_apps(device)
+            return
         print(f"start target device_id: {device_id}")
         device = remote_device.remote_device(device_id)
         start.start_all_apps(device)
