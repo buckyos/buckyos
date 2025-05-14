@@ -1157,6 +1157,159 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     
 
     #[tokio::test]
+    async fn create_test_sn_config() {
+        let sn_server_ip = "192.168.1.188";
+        let sn_server_host = "buckyos.io";
+        let now = 1743478939;//2025-04-01
+        let exp = now + 3600*24*365*10;//2035-04-01
+        let tmp_dir = std::env::temp_dir().join("buckyos_dev_configs").join("sn_server");
+        std::fs::create_dir_all(tmp_dir.clone()).unwrap();
+        //create test sn zone_boot_config
+        let test_sn_zone_owner_private_key = r#"
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIH3hgzhuE0wuR+OEz0Bx6I+YrJDtS0OIajH1rNkEfxnl
+-----END PRIVATE KEY-----
+        "#;
+        let test_sn_zone_owner_public_key = json!({
+            "crv":"Ed25519",
+            "kty":"OKP",
+            "x":"qJdNEtscIYwTo-I0K7iPEt_UZdBDRd4r16jdBfNR0tM"
+        });
+        let owner_private_key: EncodingKey = EncodingKey::from_ed_pem(test_sn_zone_owner_private_key.as_bytes()).unwrap();
+        let x_str = test_sn_zone_owner_public_key.get("x").unwrap().as_str();
+        //create test sn device_key_pair
+
+        let test_sn_device_private_key = r#"
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIBvnIIa1Tx45SjRu9kBZuMgusP5q762SvojXZ4scFxVD
+-----END PRIVATE KEY-----
+        "#;
+        let test_sn_device_public_key = json!({
+            "crv":"Ed25519",
+            "kty":"OKP",
+            "x":"FPvY3WXPxuWPYFuwOY0Qbh0O7-hhKr6ta1jTcX9ORPI"
+        });
+        let private_key_path = tmp_dir.join("device_key.pem");
+        std::fs::write(private_key_path.clone(),test_sn_device_private_key).unwrap();
+        println!("# device key write to file: {}",private_key_path.to_string_lossy());
+        let zone_boot_config = ZoneBootConfig {
+            id:None,
+            oods:vec!["ood1".to_string()],
+            sn:None,
+            exp:exp,
+            iat:now as u32,
+            owner:None,
+            owner_key:None,
+            gateway_devs:vec![],
+            extra_info:HashMap::new(),
+        };
+        let zone_boot_config_json_str = serde_json::to_string_pretty(&zone_boot_config).unwrap();
+        //println!("zone boot config: {}",zone_boot_config_json_str.as_str());
+
+
+        let zone_boot_config_jwt = zone_boot_config.encode(Some(&owner_private_key)).unwrap();
+        let zone_boot_config_jwt_str = zone_boot_config_jwt.to_string();
+        let config = json!({
+            "device_name":"web3_gateway",
+            "device_key_path":"/opt/web3_bridge/device_key.pem",
+            "inner_services":{
+                "main_sn" : {
+                    "type" : "cyfs-sn",
+                    "host":format!("web3.{}",sn_server_host),
+                    "ip":sn_server_ip,
+                    "zone_config_jwt":zone_boot_config_jwt_str,
+                    "zone_config_pkx":x_str
+                },
+                "zone_provider" : {
+                    "type" : "zone-provider"
+                }
+            },
+            "servers":{
+                "main_http_server":{
+                    "type":"cyfs-warp",
+                    "bind":"0.0.0.0",
+                    "http_port":80,
+                    "tls_port":443,
+                    "default_tls_host":format!("*.{}",sn_server_host),
+                    "hosts": {
+                        format!("web3.{}",sn_server_host): {
+                            "tls": {
+                                "disable_tls": true,
+                                "enable_acme": false
+                            },
+                            "enable_cors":true,
+                            "routes": {
+                                "/kapi/sn":{
+                                    "inner_service":"main_sn"
+                                }
+                            }
+                        },
+                        format!("*.web3.{}",sn_server_host): {
+                            "tls": {
+                                "disable_tls": true
+                            },
+                            "routes": {
+                                "/":{
+                                    "tunnel_selector":"main_sn"
+                                }
+                            }
+                        },
+                        "*":{
+                            "routes": {
+                                "/":{
+                                    "tunnel_selector":"main_sn"
+                                },
+                                "/resolve":{
+                                    "inner_service":"zone_provider"
+                                }
+                            }
+                        }
+                    }
+                },
+                "main_dns_server":{
+                    "type":"cyfs-dns",
+                    "bind":"0.0.0.0",
+                    "port":53,
+                    "this_name":format!("sn.{}",sn_server_host),
+                    "resolver_chain": [
+                        {
+                          "type": "SN",
+                          "server_id": "main_sn"
+                        },
+                        {
+                            "type": "dns",
+                            "cache": true
+                        }
+                    ],
+                    "fallback": ["8.8.8.8","6.6.6.6"]
+                }
+            },
+            
+            "dispatcher" : {
+                "udp://0.0.0.0:53":{
+                    "type":"server",
+                    "id":"main_dns_server"
+                },
+                "tcp://0.0.0.0:80":{
+                    "type":"server",
+                    "id":"main_http_server"
+                },
+                "tcp://0.0.0.0:443":{
+                    "type":"server",
+                    "id":"main_http_server"
+                }
+            }
+        });
+
+        let config_path = tmp_dir.join("web3_gateway.json");
+        let config_str = serde_json::to_string_pretty(&config).unwrap();
+        println!("# web3 gateway config: {}",config_str.as_str());
+        std::fs::write(config_path.clone(),config_str.as_str()).unwrap();
+        println!("# web3 gateway config write to file: {}",config_path.to_string_lossy());
+   
+    }
+
+    #[tokio::test]
     async fn create_test_env_configs() {
         let devtest_private_key_pem = r#"
 -----BEGIN PRIVATE KEY-----
