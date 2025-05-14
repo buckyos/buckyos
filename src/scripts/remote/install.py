@@ -26,7 +26,7 @@ def create_rootfs_tarball():
     # 获取当前工程根目录
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     rootfs_path = os.path.join(project_root, "rootfs")
-
+    
     print(f"rootfs_path: {rootfs_path}")
     if not os.path.exists(rootfs_path):
         raise Exception("rootfs directory not found")
@@ -41,7 +41,7 @@ def create_rootfs_tarball():
         shell=True,
         check=True
     )
-    
+
     return tar_path
 
 
@@ -53,7 +53,8 @@ def install(device_id: str):
         # 1. 创建tar包
         print("Creating rootfs tarball...")
         tar_path = create_rootfs_tarball()
-        
+        print(f"tar_path: {tar_path}")
+
         # 2. 检查远程目录是否存在
         stdout, stderr = device.run_command("test -d /opt/buckyos && echo 'exists' || echo 'not_exists'")
         is_fresh_install = 'not_exists' in stdout
@@ -128,7 +129,10 @@ def main():
     if len(sys.argv) != 2:
         print_usage()
     
-    config_path = os.path.expanduser("~/buckyos_dev_env.json")
+    config_path = "device_info.json"
+    if not os.path.exists(config_path):
+        print(f"Config file not found: {config_path}")
+        sys.exit(1)
     with open(config_path, 'r') as f:
         g_all_devices = json.load(f)
 

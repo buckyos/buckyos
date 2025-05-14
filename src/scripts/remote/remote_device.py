@@ -59,7 +59,10 @@ class remote_device:
             local_path: 本地目标路径
             recursive: 是否递归复制目录
         """
-        scp_command = ["scp"]
+        scp_command = [
+            "scp",
+            '-i', os.path.expanduser('~/.buckyos_dev/id_rsa'),
+        ]
         if recursive:
             scp_command.append("-r")
         
@@ -81,7 +84,10 @@ class remote_device:
             remote_path: 远程目标路径
             recursive: 是否递归复制目录
         """
-        scp_command = ["scp"]
+        scp_command = [
+            "scp",
+            '-i', os.path.expanduser('~/.buckyos_dev/id_rsa'),
+        ]
         if recursive:
             scp_command.append("-r")
         
@@ -100,9 +106,11 @@ class remote_device:
             'ssh',
             '-o', 'StrictHostKeyChecking=no',
             '-p', str(self.remote_port),
+            '-i', os.path.expanduser('~/.buckyos_dev/id_rsa'),
             f"{self.remote_username}@{self.remote_ip}",
             command
         ]
+        print(f"run_command: {ssh_command}")
         
         try:
             result = subprocess.run(

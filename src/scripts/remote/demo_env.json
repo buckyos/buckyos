@@ -10,7 +10,7 @@
             "disk": "10G",
             "network": {
                 "type": "bridge",
-                "bridge": "enp4s0"
+                "bridge": "br0"
             }
         },
         "apps": {
@@ -35,7 +35,7 @@
         },
         "apps": {
             "buckyos": {
-                "start": "nohup /opt/buckyos/bin/node_daemon > /dev/null 2>&1 &",
+                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon > /dev/null 2>&1 &",
                 "stop":"python3 /opt/buckyos/bin/killall.py"
             }
         }
@@ -51,12 +51,12 @@
             "disk": "10G",
             "network": {
                 "type": "bridge",
-                "bridge": "enp4s0"
+                "bridge": "br0"
             }
         },
         "apps": {
             "buckyos": {
-                "start": "nohup /opt/buckyos/bin/node_daemon > /dev/null 2>&1 &",
+                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon > /dev/null 2>&1 &",
                 "stop":"python3 /opt/buckyos/bin/killall.py"
             }
         }
