@@ -37,15 +37,24 @@ def create():
 
 
 # chekc network bridge
-# 检查是否存在 br0 网络桥接
+# 检查是否存在 br-sn 网络桥接
 def check_br():
     try:
         # 调用 ip 命令检查网络桥接      
-        result = subprocess.run(['ip', 'link', 'show', 'br0'], capture_output=True, text=True)
+        result = subprocess.run(['ip', 'link', 'show', 'br-sn'], capture_output=True, text=True)
         if result.returncode == 0:
-            print("网络桥接 br0 已存在。")
+            ip = subprocess.run("ip -4 addr show dev br-sn | grep -oP 'inet \K[\d.]+'", shell=True, capture_output=True, text=True)
+            print(f"网络桥接 br-sn 已存在, IP: {ip.stdout.strip()}")
         else:
-            print("网络桥接 br0 不存在。")
+            print("网络桥接 br-sn 不存在。")
+            print("正在创建网络桥接 br-sn...")
+            # sudo ip link add br-sn type bridge
+            # sudo ip link set br-sn up
+            # sudo ip addr add 10.10.10.1/24 dev br-sn'
+            subprocess.run(["sudo", "ip", "link", "add", "br-sn", "type", "bridge"])
+            subprocess.run(["sudo", "ip", "link", "set", "br-sn", "up"])
+            subprocess.run(["sudo", "ip", "addr", "add", "10.10.10.1/24", "dev", "br-sn"])
+            print("网络桥接 br-sn 创建完成。")
     except FileNotFoundError:
         print("未找到 ip 命令，请检查是否已安装。")
 
@@ -141,12 +150,12 @@ def main():
         return
     elif sys.argv[1] == "init":
         init()
-    elif sys.argv[1] == "check":
-        # TODO create brige if not exists
+    elif sys.argv[1] == "network":
+
         check_br()
         return
     elif sys.argv[1] == "create":
-        check_br()
+        # check_br()
         create()
         # generate deviceinfo
         get_device_info.get_device_info(info_path=config_path)
