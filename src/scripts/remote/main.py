@@ -15,8 +15,8 @@ def print_usage():
     print("Usage:")
     print("  ./main.py clean                    # 清除所有的Multipass实例")
     print("  ./main.py init                     # 初始化环境")
+    print("  ./main.py network                  # 检查是否存在sn-br，并输入ip，如果不存在会创建一个")
     print("  ./main.py create                   # 创建虚拟机")
-    print("  ./main.py check                    # 检查是否存在网络桥接")
     print("  ./main.py install <device_id>      # 安装buckyos")
     print("  ./main.py install --all            # 全部vm，安装buckyos")
     print("  ./main.py start <device_id>        # 启动buckyos")
@@ -43,8 +43,8 @@ def check_br():
         # 调用 ip 命令检查网络桥接      
         result = subprocess.run(['ip', 'link', 'show', 'br-sn'], capture_output=True, text=True)
         if result.returncode == 0:
-            ip = subprocess.run("ip -4 addr show dev br-sn | grep -oP 'inet \K[\d.]+'", shell=True, capture_output=True, text=True)
-            print(f"网络桥接 br-sn 已存在, IP: {ip.stdout.strip()}")
+            # ip = subprocess.run("ip -4 addr show dev br-sn | grep -oP 'inet \K[\d.]+'", shell=True, capture_output=True, text=True)
+            print(f"网络桥接 br-sn 已存在")
         else:
             print("网络桥接 br-sn 不存在。")
             print("正在创建网络桥接 br-sn...")
@@ -151,7 +151,6 @@ def main():
     elif sys.argv[1] == "init":
         init()
     elif sys.argv[1] == "network":
-
         check_br()
         return
     elif sys.argv[1] == "create":
@@ -180,6 +179,20 @@ def main():
 
         print(f"install target device_id: {device_id}")
         install.install(device_id)
+    elif sys.argv[1] == "active":
+        nodeB1 = remote_device.remote_device("nodeB1")
+        nodeB1.run_command("mkdir -p /opt/buckyos/etc")
+        nodeB1.scp_put("./dev_configs/bobdev/ood1/node_identity.json", "/opt/buckyos/etc/node_identity.json")
+        nodeB1.scp_put("./dev_configs/bobdev/ood1/node_private_key.pem", "/opt/buckyos/etc/node_private_key.pem")
+
+        # start_config 激活流程会生成，没激活直接复制过去
+        nodeB1.scp_put("./dev_configs/bobdev/ood1/start_config.json", "/opt/buckyos/etc/start_config.json")
+        
+        # nodeB1.run_command("mkdir -p /opt/buckyos/etc/did_docs")
+        # nodeB1.scp_put("./dev_configs/bobdev/test.buckyos.io.zone.json", "/opt/buckyos/etc/did_docs/bob.web3.buckyos.org.doc.json")
+
+        print("nodeB1 config file uploaded")
+
     elif sys.argv[1] == "start":
         if len(sys.argv) < 3:
             print("Usage: start.py <device_id>")
