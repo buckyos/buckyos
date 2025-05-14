@@ -882,6 +882,7 @@ mod tests {
     use super::DeviceInfo;
     use serde::de;
     use serde_json::json;
+    use cyfs_sn::*;
 
     #[tokio::test]
     async fn test_all_dev_env_configs() {
@@ -1031,7 +1032,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     
 
     async fn create_test_zone_config(user_did:DID,username:&str,owner_private_key_pem:&str,owner_jwk:serde_json::Value
-        ,zone_did:DID) {
+        ,zone_did:DID,sn_host:Option<String>) -> String{
         let tmp_dir = std::env::temp_dir().join("buckyos_dev_configs").join(username.to_string());
         std::fs::create_dir_all(tmp_dir.clone()).unwrap();
         println!("# all BuckyOS dev test config files will be saved in: {:?}",tmp_dir);
@@ -1057,7 +1058,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         let zone_boot_config = ZoneBootConfig {
             id:None,
             oods:vec!["ood1".to_string()],
-            sn:None,
+            sn:sn_host,
             exp:exp,
             iat:now as u32,
             owner:None,
@@ -1068,7 +1069,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         let zone_boot_config_json_str = serde_json::to_string_pretty(&zone_boot_config).unwrap();
         println!("zone boot config: {}",zone_boot_config_json_str.as_str());
         
-        let zone_boot_config_path = tmp_dir.join(format!("{}.zone.json",DID::new("web","test.buckyos.io").to_host_name()));
+        let zone_boot_config_path = tmp_dir.join(format!("{}.zone.json",zone_did.to_string()));
         std::fs::write(zone_boot_config_path.clone(),zone_boot_config_json_str.clone()).unwrap();
         println!("# zone boot config write to file: {}",zone_boot_config_path.to_string_lossy());
         let zone_boot_config_jwt = zone_boot_config.encode(Some(&owner_private_key)).unwrap();
@@ -1079,12 +1080,13 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         let owner_x = get_x_from_jwk(&owner_jwk).unwrap();
         //let ood_x = get_x_from_jwk(&ood1_jwk).unwrap();
         println!("# {} TXT Record: PKX=0:{};",zone_host_name,owner_x.to_string());
+        return zone_boot_config_jwt.to_string();
         //println!("# {} TXT Record: PKX=1:{};",zone_host_name,ood_x.to_string());
     }
 
     async fn create_test_node_config(user_did:DID,username:&str,owner_private_key_pem:&str,owner_jwk:serde_json::Value
         ,zone_did:DID,
-        device_name:&str,device_private_key_pem:&str,device_public_key:serde_json::Value) {
+        device_name:&str,device_private_key_pem:&str,device_public_key:serde_json::Value,is_wan:bool) -> String{
         let now = 1743478939;//2025-04-01
         let exp = now + 3600*24*365*10;//2035-04-01
         let owner_private_key: EncodingKey = EncodingKey::from_ed_pem(owner_private_key_pem.as_bytes()).unwrap();
@@ -1102,6 +1104,9 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         let mut device_config = DeviceConfig::new_by_jwk(device_name,device_jwk.clone());
 
         device_config.support_container = true;
+        if is_wan {
+            device_config.net_id = Some("wan".to_string());
+        } 
         
         device_config.iss = user_did.to_string();
         let device_config_json_str = serde_json::to_string_pretty(&device_config).unwrap();
@@ -1153,10 +1158,10 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             std::fs::write(start_config_path.clone(),start_config_json_str.clone()).unwrap();
             println!("# start_config will store at {}",start_config_path.to_string_lossy());
         }
+
+        return device_jwt2.to_string();
     }
     
-
-    #[tokio::test]
     async fn create_test_sn_config() {
         let sn_server_ip = "192.168.1.188";
         let sn_server_host = "buckyos.io";
@@ -1311,6 +1316,7 @@ MC4CAQAwBQYDK2VwBCIEIBvnIIa1Tx45SjRu9kBZuMgusP5q762SvojXZ4scFxVD
 
     #[tokio::test]
     async fn create_test_env_configs() {
+
         let devtest_private_key_pem = r#"
 -----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
@@ -1339,7 +1345,7 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
 
         create_test_node_config(DID::new("bns","devtest"),"devtest",devtest_private_key_pem,devtest_owner_jwk.clone(),
             DID::new("bns","devtest"),
-            "node1",devtest_node1_private_key,devtest_node1_public_key).await;
+            "node1",devtest_node1_private_key,devtest_node1_public_key,false).await;
         
         //create bob (nodeB1) config
         let bob_private_key = r#"
@@ -1353,9 +1359,10 @@ MC4CAQAwBQYDK2VwBCIEILQLoUZt2okCht0UVhsf4UlGAV9h3BoliwZQN5zBO1G+
                 "x":"y-kuJcQ0doFpdNXf4HI8E814lK8MB3-t4XjDRcR_QCU"
             }
         );
+        let bob_public_key_str = serde_json::to_string(&bob_public_key).unwrap();
 
-        create_test_zone_config(DID::new("bns","bobdev"),"bobdev",bob_private_key,bob_public_key.clone(),
-            DID::new("bns","bob")).await;
+        let bob_zone_jwt = create_test_zone_config(DID::new("bns","bobdev"),"bobdev",bob_private_key,bob_public_key.clone(),
+            DID::new("bns","bob"),Some("sn.buckyos.io".to_string())).await;
         let bob_ood1_private_key = r#"
 -----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIADmO0+u/gcmStDsHZOZCM5gxNYlQmP6jpMo279TQE75
@@ -1367,11 +1374,38 @@ MC4CAQAwBQYDK2VwBCIEIADmO0+u/gcmStDsHZOZCM5gxNYlQmP6jpMo279TQE75
                 "x":"iSMKakFEGzGAxLTlaB5TkqZ6d4wurObr-BpaQleoE2M"
             }
         );
-        create_test_node_config(DID::new("bns","bobdev"),"bobdev",bob_private_key,bob_public_key.clone(),
+        let bob_ood1_did = DID::new("dev", "iSMKakFEGzGAxLTlaB5TkqZ6d4wurObr");
+        let bob_ood1_device_jwt = create_test_node_config(DID::new("bns","bobdev"),"bobdev",bob_private_key,bob_public_key.clone(),
             DID::new("bns","bob"),
-            "ood1",bob_ood1_private_key,bob_ood1_public_key).await;
+            "ood1",bob_ood1_private_key,bob_ood1_public_key,false).await;
 
-        //create sn config
+        //create sn db
+        create_test_sn_config().await;
+
+        let tmp_dir = std::env::temp_dir().join("buckyos_dev_configs");
+  
+        let sn_db_path = tmp_dir.join("sn_db.sqlite3");
+        //delete first
+        if sn_db_path.exists() {
+            std::fs::remove_file(sn_db_path.clone()).unwrap();
+        }
+
+        let conn = get_sn_db_conn_by_path(sn_db_path.to_str().unwrap()).unwrap();
+        initialize_database(&conn);
+        insert_activation_code(&conn, "test-active-sn-code-bob").unwrap();
+        insert_activation_code(&conn, "11111").unwrap();
+        insert_activation_code(&conn, "22222").unwrap();
+        insert_activation_code(&conn, "33333").unwrap();
+        insert_activation_code(&conn, "44444").unwrap();
+        insert_activation_code(&conn, "55555").unwrap();
+        register_user(&conn, "test-active-sn-code-bob", "bobdev", 
+            bob_public_key_str.as_str(), 
+            bob_zone_jwt.as_str(), None).unwrap();
+        register_device(&conn, "bobdev", "ood1", 
+            bob_ood1_did.to_string().as_str(), 
+            "192.168.100.100","{}").unwrap();
+
+        println!("# sn_db already create at {}",sn_db_path.to_string_lossy());
     }
 
     #[test]

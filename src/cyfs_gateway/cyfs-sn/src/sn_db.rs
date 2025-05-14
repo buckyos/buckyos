@@ -27,6 +27,23 @@ pub fn get_sn_db_conn() -> Result<Connection> {
     Ok(conn)
 }
 
+pub fn get_sn_db_conn_by_path(path: &str) -> Result<Connection> {
+    let conn = Connection::open(path);
+    if conn.is_err() {
+        error!("Failed to open sn_db : {}",path);
+        return Err(conn.err().unwrap());
+    }
+    let conn = conn.unwrap();
+    Ok(conn)
+}
+
+
+pub fn insert_activation_code(conn: &Connection, code: &str) -> Result<()> {
+    let mut stmt = conn.prepare("INSERT INTO activation_codes (code, used) VALUES (?1, 0)")?;
+    stmt.execute(params![code])?;
+    Ok(())
+}
+
 pub fn generate_activation_codes(conn: &Connection, count: usize) -> Result<Vec<String>> {
     let mut codes: Vec<String> = Vec::new();
     let mut stmt = conn.prepare("INSERT INTO activation_codes (code, used) VALUES (?1, 0)")?;
