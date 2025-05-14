@@ -1029,6 +1029,198 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         println!("# test.buckyos.io TXT Record: PKX=1:{};",ood_x.to_string());
     }
     
+
+    async fn create_test_zone_config(user_did:DID,username:&str,owner_private_key_pem:&str,owner_jwk:serde_json::Value
+        ,zone_did:DID) {
+        let tmp_dir = std::env::temp_dir().join("buckyos_dev_configs").join(username.to_string());
+        std::fs::create_dir_all(tmp_dir.clone()).unwrap();
+        println!("# all BuckyOS dev test config files will be saved in: {:?}",tmp_dir);
+        //本测试会在tmp目录下构造开环境所有的测试文件，并在控制台输出用于写入DNS的记录信息。
+        let now = 1743478939;//2025-04-01
+        let exp = now + 3600*24*365*10;//2035-04-01
+
+        let user_key_path = tmp_dir.join("user_private_key.pem");
+        std::fs::write(user_key_path.clone(),owner_private_key_pem).unwrap();
+        println!("# user private key write to file: {}",user_key_path.to_string_lossy());
+
+        let owner_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(owner_jwk.clone()).unwrap();
+        let owner_private_key: EncodingKey = EncodingKey::from_ed_pem(owner_private_key_pem.as_bytes()).unwrap();
+
+        let mut owner_config = OwnerConfig::new(user_did.clone(),username.to_string(),username.to_string(),
+        owner_jwk.clone());
+        let owner_config_json_str = serde_json::to_string_pretty(&owner_config).unwrap();
+        let owner_config_path = tmp_dir.join("user_config.json");
+        std::fs::write(owner_config_path.clone(),owner_config_json_str.clone()).unwrap();
+        println!("{}'s owner config: {}",username,owner_config_json_str);
+        println!("# owner config write to file: {}",owner_config_path.to_string_lossy());
+        
+        let zone_boot_config = ZoneBootConfig {
+            id:None,
+            oods:vec!["ood1".to_string()],
+            sn:None,
+            exp:exp,
+            iat:now as u32,
+            owner:None,
+            owner_key:None,
+            gateway_devs:vec![],
+            extra_info:HashMap::new(),
+        };
+        let zone_boot_config_json_str = serde_json::to_string_pretty(&zone_boot_config).unwrap();
+        println!("zone boot config: {}",zone_boot_config_json_str.as_str());
+        
+        let zone_boot_config_path = tmp_dir.join(format!("{}.zone.json",DID::new("web","test.buckyos.io").to_host_name()));
+        std::fs::write(zone_boot_config_path.clone(),zone_boot_config_json_str.clone()).unwrap();
+        println!("# zone boot config write to file: {}",zone_boot_config_path.to_string_lossy());
+        let zone_boot_config_jwt = zone_boot_config.encode(Some(&owner_private_key)).unwrap();
+
+
+        let zone_host_name = zone_did.to_host_name();
+        println!("# {} TXT Record: DID={};",zone_host_name,zone_boot_config_jwt.to_string());
+        let owner_x = get_x_from_jwk(&owner_jwk).unwrap();
+        //let ood_x = get_x_from_jwk(&ood1_jwk).unwrap();
+        println!("# {} TXT Record: PKX=0:{};",zone_host_name,owner_x.to_string());
+        //println!("# {} TXT Record: PKX=1:{};",zone_host_name,ood_x.to_string());
+    }
+
+    async fn create_test_node_config(user_did:DID,username:&str,owner_private_key_pem:&str,owner_jwk:serde_json::Value
+        ,zone_did:DID,
+        device_name:&str,device_private_key_pem:&str,device_public_key:serde_json::Value) {
+        let now = 1743478939;//2025-04-01
+        let exp = now + 3600*24*365*10;//2035-04-01
+        let owner_private_key: EncodingKey = EncodingKey::from_ed_pem(owner_private_key_pem.as_bytes()).unwrap();
+        let owner_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(owner_jwk.clone()).unwrap();
+        
+        let tmp_dir = std::env::temp_dir().join("buckyos_dev_configs").join(username).join(device_name.to_string());
+        std::fs::create_dir_all(tmp_dir.clone()).unwrap();
+        println!("# all BuckyOS dev test config files will be saved in: {:?}",tmp_dir);
+
+        let private_key_path = tmp_dir.join("node_private_key.pem");
+        std::fs::write(private_key_path.clone(),device_private_key_pem).unwrap();
+        println!("# device {} private key write to file: {}",device_name,private_key_path.to_string_lossy());
+
+        let device_jwk : jsonwebtoken::jwk::Jwk = serde_json::from_value(device_public_key.clone()).unwrap();
+        let mut device_config = DeviceConfig::new_by_jwk(device_name,device_jwk.clone());
+
+        device_config.support_container = true;
+        
+        device_config.iss = user_did.to_string();
+        let device_config_json_str = serde_json::to_string_pretty(&device_config).unwrap();
+        println!("device config: {}",device_config_json_str);
+
+        let device_jwt = device_config.encode(Some(&owner_private_key)).unwrap();
+        println!(" device {} jwt: {}",device_name,device_jwt.to_string());
+
+
+        let encode_key = EncodingKey::from_ed_pem(owner_private_key_pem.as_bytes()).unwrap();
+        let decode_key = DecodingKey::from_jwk(&owner_jwk).unwrap();
+        let device_jwt2 = device_config.encode(Some(&encode_key)).unwrap();
+        let decode_device_config = DeviceConfig::decode(&device_jwt2,Some(&decode_key)).unwrap();
+        assert_eq!(device_config,decode_device_config);
+
+        let node_identity_config = NodeIdentityConfig {
+            zone_did:zone_did.clone(),
+            owner_public_key:owner_jwk.clone(),
+            owner_did:user_did,
+            device_doc_jwt:device_jwt.to_string(),
+            zone_iat:now as u32,
+        };
+        let node_identity_config_json_str = serde_json::to_string_pretty(&node_identity_config).unwrap();
+        println!("node identity config: {}",node_identity_config_json_str.as_str());
+        let node_identity_config_path = tmp_dir.join("node_identity.json");
+        std::fs::write(node_identity_config_path.clone(),node_identity_config_json_str.clone()).unwrap();
+        println!("# node identity config will store at {}",node_identity_config_path.to_string_lossy());
+
+        //build start_config.json
+        if device_name.starts_with("ood") {
+            let start_config = json!(
+                {
+                    "admin_password_hash":"o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4=",//bucky2025
+                    "device_private_key":device_private_key_pem,
+                    "device_public_key":device_jwk,
+                    "friend_passcode":"sdfsdfsdf",
+                    "gateway_type":"PortForward",
+                    "guest_access":true,
+                    "private_key":owner_private_key_pem,
+                    "public_key":owner_jwk,
+                    "user_name":username,
+                    "zone_name":zone_did.to_host_name(),
+                    "BUCKYOS_ROOT":"/opt/buckyos"
+                }
+            );
+            let start_config_json_str = serde_json::to_string_pretty(&start_config).unwrap();
+            println!("start config: {}",start_config_json_str.as_str());
+            let start_config_path = tmp_dir.join("start_config.json");
+            std::fs::write(start_config_path.clone(),start_config_json_str.clone()).unwrap();
+            println!("# start_config will store at {}",start_config_path.to_string_lossy());
+        }
+    }
+    
+
+    #[tokio::test]
+    async fn create_test_env_configs() {
+        let devtest_private_key_pem = r#"
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
+-----END PRIVATE KEY-----
+        "#;
+
+        let devtest_owner_jwk = json!(
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
+            }
+        );
+
+        let devtest_node1_private_key = r#"
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
+-----END PRIVATE KEY-----"#;
+        let devtest_node1_public_key = json!(
+            {
+                "crv":"Ed25519",
+                "kty":"OKP",
+                "x":"Bb325f2ed0XSxrPS5sKQaX7ylY9Jh9rfevXiidKA1zc"
+            }
+        );
+
+        create_test_node_config(DID::new("bns","devtest"),"devtest",devtest_private_key_pem,devtest_owner_jwk.clone(),
+            DID::new("bns","devtest"),
+            "node1",devtest_node1_private_key,devtest_node1_public_key).await;
+        
+        //create bob (nodeB1) config
+        let bob_private_key = r#"
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEILQLoUZt2okCht0UVhsf4UlGAV9h3BoliwZQN5zBO1G+
+-----END PRIVATE KEY-----"#;
+        let bob_public_key = json!(
+            {
+                "crv":"Ed25519",
+                "kty":"OKP",
+                "x":"y-kuJcQ0doFpdNXf4HI8E814lK8MB3-t4XjDRcR_QCU"
+            }
+        );
+
+        create_test_zone_config(DID::new("bns","bobdev"),"bobdev",bob_private_key,bob_public_key.clone(),
+            DID::new("bns","bob")).await;
+        let bob_ood1_private_key = r#"
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIADmO0+u/gcmStDsHZOZCM5gxNYlQmP6jpMo279TQE75
+-----END PRIVATE KEY-----"#;
+        let bob_ood1_public_key = json!(
+            {
+                "crv":"Ed25519",
+                "kty":"OKP",
+                "x":"iSMKakFEGzGAxLTlaB5TkqZ6d4wurObr-BpaQleoE2M"
+            }
+        );
+        create_test_node_config(DID::new("bns","bobdev"),"bobdev",bob_private_key,bob_public_key.clone(),
+            DID::new("bns","bob"),
+            "ood1",bob_ood1_private_key,bob_ood1_public_key).await;
+
+        //create sn config
+    }
+
     #[test]
     fn test_zone_boot_config() {
         let private_key_pem = r#"
