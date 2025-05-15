@@ -932,12 +932,13 @@ impl NodeIdentityConfig {
 mod tests {
     use super::DeviceInfo;
     use super::*;
+    use super::super::*;
     use cyfs_sn::*;
+    
     use serde::de;
     use serde_json::json;
     use std::{
-        alloc::System,
-        time::{SystemTime, UNIX_EPOCH},
+        alloc::System, hash::Hash, time::{SystemTime, UNIX_EPOCH}
     };
 
     #[tokio::test]
@@ -1201,7 +1202,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         let zone_boot_config_json_str = serde_json::to_string_pretty(&zone_boot_config).unwrap();
         println!("zone boot config: {}", zone_boot_config_json_str.as_str());
 
-        let zone_boot_config_path = tmp_dir.join(format!("{}.zone.json", zone_did.to_string()));
+        let zone_boot_config_path = tmp_dir.join(format!("{}.zone.json", zone_did.to_host_name()));
         std::fs::write(
             zone_boot_config_path.clone(),
             zone_boot_config_json_str.clone(),
@@ -1502,6 +1503,10 @@ MC4CAQAwBQYDK2VwBCIEIBvnIIa1Tx45SjRu9kBZuMgusP5q762SvojXZ4scFxVD
 
     #[tokio::test]
     async fn create_test_env_configs() {
+        let mut test_web3_bridge = HashMap::new();
+        test_web3_bridge.insert("bns".to_string(), "web3.buckyos.io".to_string());
+        KNOWN_WEB3_BRIDGE_CONFIG.set(test_web3_bridge.clone());
+
         let devtest_private_key_pem = r#"
 -----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
