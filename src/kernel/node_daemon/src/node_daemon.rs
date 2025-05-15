@@ -714,6 +714,7 @@ async fn node_daemon_main_loop(
                     info!("node gateway_config changed, update node_gateway_config!");
                     let gateway_config_path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
                     std::fs::write(gateway_config_path, serde_json::to_string(&node_gateway_config).unwrap()).unwrap();
+                    //todo: only zone-gateway need to keep-tunnel to sn
                     keep_cyfs_gateway_service(node_id,&device_doc, &device_private_key,zone_config.sn.clone(),true).await.map_err(|err| {
                         error!("start cyfs_gateway service failed! {}", err);
                     });

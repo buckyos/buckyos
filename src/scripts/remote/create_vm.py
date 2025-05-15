@@ -65,9 +65,10 @@ class VMCreator:
         if 'network' in vm_config:
             net_config = vm_config['network']
             if net_config['type'] == 'bridge':
-                cmd += f"--network name={net_config['bridge']} "
+                cmd += f"--network name={net_config['bridge']}"
         
         # 启动VM
+        print(f"Running command: {cmd}")
         self._run_command(cmd)
         time.sleep(5)  # 等待VM完全启动
     

@@ -10,7 +10,7 @@
             "disk": "10G",
             "network": {
                 "type": "bridge",
-                "bridge": "br0"
+                "bridge": "br-sn"
             }
         },
         "apps": {
@@ -20,27 +20,7 @@
             }
         }
     },
-    "nodeB1": {
-        "username": "root",
-        "port": 22,
-        "zone_id":"bob.web3.buckyos.io",
-        "node_id":"ood1",
-        "vm": {
-            "cpu": 1,
-            "memory": "1G",
-            "disk": "10G",
-            "network": {
-                "type": "nat"
-            }
-        },
-        "apps": {
-            "buckyos": {
-                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon > /dev/null 2>&1 &",
-                "stop":"python3 /opt/buckyos/bin/killall.py"
-            }
-        }
-    },
-    "nodeB2": {
+    "nodeA2": {
         "username": "root",
         "port": 22,
         "zone_id":"bob.web3.buckyos.io",
@@ -50,8 +30,29 @@
             "memory": "1G",
             "disk": "10G",
             "network": {
-                "type": "bridge",
-                "bridge": "br0"
+                "type": "nat",
+                "name": "nat1"
+            }
+        },
+        "apps": {
+            "buckyos": {
+                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon > /dev/null 2>&1 &",
+                "stop":"python3 /opt/buckyos/bin/killall.py"
+            }
+        }
+    },
+        "nodeB1": {
+        "username": "root",
+        "port": 22,
+        "zone_id":"bob.web3.buckyos.io",
+        "node_id":"ood1",
+        "vm": {
+            "cpu": 1,
+            "memory": "1G",
+            "disk": "10G",
+            "network": {
+                "type": "nat",
+                "name": "nat2"
             }
         },
         "apps": {
