@@ -1,6 +1,9 @@
 import json
 import os
 import subprocess
+
+# 当前目录下的id_rsa
+id_rsa_path = os.path.join(os.path.dirname(__file__), "dev_configs/ssh/id_rsa")
         
 class remote_device:
     def __init__(self, device_id: str):
@@ -61,7 +64,7 @@ class remote_device:
         """
         scp_command = [
             "scp",
-            '-i', os.path.expanduser('~/.buckyos_dev/id_rsa'),
+            '-i', id_rsa_path,
         ]
         if recursive:
             scp_command.append("-r")
@@ -86,7 +89,7 @@ class remote_device:
         """
         scp_command = [
             "scp",
-            '-i', os.path.expanduser('~/.buckyos_dev/id_rsa'),
+            '-i', id_rsa_path,
         ]
         if recursive:
             scp_command.append("-r")
@@ -106,7 +109,7 @@ class remote_device:
             'ssh',
             '-o', 'StrictHostKeyChecking=no',
             '-p', str(self.remote_port),
-            '-i', os.path.expanduser('~/.buckyos_dev/id_rsa'),
+            '-i', id_rsa_path,
             f"{self.remote_username}@{self.remote_ip}",
             command
         ]
