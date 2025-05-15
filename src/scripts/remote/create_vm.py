@@ -59,7 +59,8 @@ class VMCreator:
         disk = vm_config.get('disk', '10G')
         
         # 创建VM的基本命令
-        cmd = f"multipass launch --name {device_id} --cpus {cpu} --memory {memory} --disk {disk} --cloud-init vm_init.yaml "
+        cmd = f"multipass launch --name {device_id} --cpus {cpu} --memory {memory} --disk {disk} --cloud-init dev_configs/vm_init.yaml"
+
         
         # 添加网络配置
         if 'network' in vm_config:
@@ -103,21 +104,21 @@ class VMCreator:
 
         # TODO: 通过multipass list 获取所有vm的ip
 
-def main():
-    if len(sys.argv) != 2:
-        print_usage()
+# def main():
+#     if len(sys.argv) != 2:
+#         print_usage()
     
-    config_file = sys.argv[1]
-    if not os.path.exists(config_file):
-        print(f"Config file not found: {config_file}")
-        sys.exit(1)
+#     config_file = sys.argv[1]
+#     if not os.path.exists(config_file):
+#         print(f"Config file not found: {config_file}")
+#         sys.exit(1)
     
-    try:
-        creator = VMCreator(config_file)
-        creator.create_all()
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        sys.exit(1)
+#     try:
+#         creator = VMCreator(config_file)
+#         creator.create_all()
+#     except Exception as e:
+#         print(f"Error: {str(e)}")
+#         sys.exit(1)
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
