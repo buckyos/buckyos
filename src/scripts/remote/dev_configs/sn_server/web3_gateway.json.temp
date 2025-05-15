@@ -1,0 +1,94 @@
+{
+  "device_key_path": "/opt/web3_bridge/device_key.pem",
+  "device_name": "web3_gateway",
+  "dispatcher": {
+    "tcp://0.0.0.0:443": {
+      "id": "main_http_server",
+      "type": "server"
+    },
+    "tcp://0.0.0.0:80": {
+      "id": "main_http_server",
+      "type": "server"
+    },
+    "udp://0.0.0.0:53": {
+      "id": "main_dns_server",
+      "type": "server"
+    }
+  },
+  "inner_services": {
+    "main_sn": {
+      "host": "web3.buckyos.io",
+      "ip": "192.168.1.188",
+      "type": "cyfs-sn",
+      "zone_config_jwt": "eyJhbGciOiJFZERTQSJ9.eyJvb2RzIjpbIm9vZDEiXSwiZXhwIjoyMDU4ODM4OTM5LCJpYXQiOjE3NDM0Nzg5Mzl9.bWTpc-4RW4t6mz0ZUd6z962n9YDogwQ0AbzwIkD4FJbrs3Q7ujiVsi4WO0FzgKMndHh8oynPyydFM5gvaTXXBw",
+      "zone_config_pkx": "qJdNEtscIYwTo-I0K7iPEt_UZdBDRd4r16jdBfNR0tM"
+    },
+    "zone_provider": {
+      "type": "zone-provider"
+    }
+  },
+  "servers": {
+    "main_dns_server": {
+      "bind": "0.0.0.0",
+      "fallback": [
+        "8.8.8.8",
+        "6.6.6.6"
+      ],
+      "port": 53,
+      "resolver_chain": [
+        {
+          "server_id": "main_sn",
+          "type": "SN"
+        },
+        {
+          "cache": true,
+          "type": "dns"
+        }
+      ],
+      "this_name": "sn.buckyos.io",
+      "type": "cyfs-dns"
+    },
+    "main_http_server": {
+      "bind": "0.0.0.0",
+      "default_tls_host": "*.buckyos.io",
+      "hosts": {
+        "*": {
+          "routes": {
+            "/": {
+              "tunnel_selector": "main_sn"
+            },
+            "/resolve": {
+              "inner_service": "zone_provider"
+            }
+          }
+        },
+        "*.web3.buckyos.io": {
+          "routes": {
+            "/": {
+              "tunnel_selector": "main_sn"
+            }
+          },
+          "tls": {
+            "disable_tls": true,
+            "enable_acme": false
+          }
+        },
+        "web3.buckyos.io": {
+          "enable_cors": true,
+          "routes": {
+            "/kapi/sn": {
+              "inner_service": "main_sn"
+            }
+          },
+          "tls": {
+            "disable_tls": true,
+            "enable_acme": false
+          }
+        }
+      },
+      "http_port": 80,
+      "tls_port": 443,
+      "type": "cyfs-warp"
+    }
+  }
+}

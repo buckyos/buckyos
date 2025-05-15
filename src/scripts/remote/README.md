@@ -1,4 +1,11 @@
 
+# 配置文件生成
+通过运行
+```
+cargo test --package name-lib --lib -- config::tests::create_test_env_configs --exact --show-output 
+```
+然后将生成于 /tmp/buckyos_dev_configs的文件覆盖拷贝到 src/scripts/remote/dev_configs下
+
 
 # vm 描述
 

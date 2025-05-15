@@ -9,6 +9,8 @@ import get_device_info
 import install
 import start
 import remote_device
+import py_src.util as util
+
 
 
 def print_usage():
@@ -19,6 +21,8 @@ def print_usage():
     print("  ./main.py create                   # 创建虚拟机")
     print("  ./main.py install <device_id>      # 安装buckyos")
     print("  ./main.py install --all            # 全部vm，安装buckyos")
+    print("  ./main.py active                   # 激活测试身份")
+    print("  ./main.py active_sn                 # 激活测试sn配置信息")
     print("  ./main.py start <device_id>        # 启动buckyos")
     print("  ./main.py start --all              # 全部vm，启动buckyos")
 
@@ -138,6 +142,33 @@ def init():
             yaml.dump(vm_config, f, default_flow_style=False)
         print("Updated vm_init.yaml with new public key")
 
+
+def active_sn():
+    temp_config = "./dev_configs/sn_server/web3_gateway.json.temp"
+    sn_ip =  util.get_multipass_ip("sn")
+    print(f"sn vm ip: {sn_ip}")
+
+    # 读取sn配置文件模板，修改ip字段，生成配置文件
+    with open(temp_config, 'r') as f:
+        config = json.load(f)
+        config["inner_services"]["main_sn"]["ip"] = sn_ip[0]
+        # fix
+        config["includes"] = []
+        with open("./dev_configs/sn_server/web3_gateway.json", 'w') as f:
+            json.dump(config, f, indent=4)
+        print("generate web3_gateway.json")
+        # print(config["inner_services"]["main_sn"]["ip"])
+
+    vmsn = remote_device.remote_device("sn")
+    vmsn.scp_put("./dev_configs/sn_server/web3_gateway.json", "/opt/web3_bridge")
+    vmsn.scp_put("./dev_configs/sn_db.sqlite3", "/opt/web3_bridge")
+    vmsn.scp_put("./dev_configs/sn_server/device_key.pem", "/opt/web3_bridge")
+    print("sn config file uploaded")
+    # vmsn.scp_put("./dev_configs/bobdev/ood1/node_private_key.pem", "/opt/buckyos/etc/node_private_key.pem")
+    # vmsn.scp_put("./dev_configs/bobdev/ood1/start_config.json", "/opt/buckyos/etc/start_config.json")
+
+
+
 def main():
     config_path = os.path.expanduser('~/.buckyos_dev/device_info.json')
 
@@ -179,6 +210,8 @@ def main():
 
         print(f"install target device_id: {device_id}")
         install.install(device_id)
+    elif sys.argv[1] == "active_sn":
+        active_sn()
     elif sys.argv[1] == "active":
         nodeB1 = remote_device.remote_device("nodeB1")
         nodeB1.run_command("mkdir -p /opt/buckyos/etc")
