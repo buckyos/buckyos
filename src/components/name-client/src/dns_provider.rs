@@ -55,6 +55,7 @@ impl NsProvider for DnsProvider {
 
     async fn query(&self, name: &str, record_type: Option<RecordType>, from_ip: Option<IpAddr>) -> NSResult<NameInfo> {
         let mut server_config = ResolverConfig::default();
+        let resolver;
         if self.dns_server.is_some() {
             let dns_server = self.dns_server.clone().unwrap();
             let name_server_configs = vec![NameServerConfig::new(
@@ -66,10 +67,11 @@ impl NsProvider for DnsProvider {
                 vec![], 
                 name_server_configs,
             );
+            resolver = TokioAsyncResolver::tokio(server_config, ResolverOpts::default());
+        } else {
+            resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap();
         }
         info!("dns query: {}",name);
-        //let resolver2 = Resolver::new();
-        let resolver = TokioAsyncResolver::tokio(server_config, ResolverOpts::default());
         //resolver.lookup(name, record_type)
         //for dns proivder,default record type is A.
         let record_type_str = record_type

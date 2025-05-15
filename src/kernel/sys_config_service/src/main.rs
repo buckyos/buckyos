@@ -32,8 +32,7 @@ lazy_static! {
 }
 
 lazy_static! {
-    static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> =
-        { Arc::new(Mutex::new(SledStore::new().unwrap())) };
+    static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> = Arc::new(Mutex::new(SledStore::new().unwrap()));
 }
 
 async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
