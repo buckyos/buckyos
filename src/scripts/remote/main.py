@@ -163,10 +163,33 @@ def active_sn():
     vmsn.scp_put("./dev_configs/sn_server/web3_gateway.json", "/opt/web3_bridge")
     vmsn.scp_put("./dev_configs/sn_db.sqlite3", "/opt/web3_bridge")
     vmsn.scp_put("./dev_configs/sn_server/device_key.pem", "/opt/web3_bridge")
-    print("sn config file uploaded")
+    print("sn config file, db file uploaded")
     # vmsn.scp_put("./dev_configs/bobdev/ood1/node_private_key.pem", "/opt/buckyos/etc/node_private_key.pem")
     # vmsn.scp_put("./dev_configs/bobdev/ood1/start_config.json", "/opt/buckyos/etc/start_config.json")
 
+
+def active():
+    nodeB1 = remote_device.remote_device("nodeB1")
+    nodeB1.run_command("mkdir -p /opt/buckyos/etc")
+    nodeB1.scp_put("./dev_configs/bobdev/ood1/node_identity.json", "/opt/buckyos/etc/node_identity.json")
+    nodeB1.scp_put("./dev_configs/bobdev/ood1/node_private_key.pem", "/opt/buckyos/etc/node_private_key.pem")
+
+    # start_config 激活流程会生成，没激活直接复制过去
+    nodeB1.scp_put("./dev_configs/bobdev/ood1/start_config.json", "/opt/buckyos/etc/start_config.json")
+
+    nodeB1.scp_put("./dev_configs/machine.json", "/opt/buckyos/etc/machine.json")
+    # nodeB1.run_command("mkdir -p /opt/buckyos/etc/did_docs")
+    # nodeB1.scp_put("./dev_configs/bobdev/test.buckyos.io.zone.json", "/opt/buckyos/etc/did_docs/bob.web3.buckyos.org.doc.json")
+
+    print("nodeB1 config file uploaded")
+
+    # 处理DNS配置
+    sn_ip =  util.get_multipass_ip("sn")
+    # 如果 DNS 行已存在但被注释，这条命令会取消注释并修改值
+    nodeB1.run_command(f"sudo sed -i 's/#DNS=.*/DNS={sn_ip}/' /etc/systemd/resolved.conf")
+    # 如果 DNS 行不存在或已经被取消注释，确保它被正确设置
+    nodeB1.run_command(f"sudo sed -i 's/DNS=.*/DNS={sn_ip}/' /etc/systemd/resolved.conf")
+    nodeB1.run_command("sudo systemctl restart systemd-resolved")
 
 
 def main():
@@ -213,19 +236,8 @@ def main():
     elif sys.argv[1] == "active_sn":
         active_sn()
     elif sys.argv[1] == "active":
-        nodeB1 = remote_device.remote_device("nodeB1")
-        nodeB1.run_command("mkdir -p /opt/buckyos/etc")
-        nodeB1.scp_put("./dev_configs/bobdev/ood1/node_identity.json", "/opt/buckyos/etc/node_identity.json")
-        nodeB1.scp_put("./dev_configs/bobdev/ood1/node_private_key.pem", "/opt/buckyos/etc/node_private_key.pem")
-
-        # start_config 激活流程会生成，没激活直接复制过去
-        nodeB1.scp_put("./dev_configs/bobdev/ood1/start_config.json", "/opt/buckyos/etc/start_config.json")
-        
-        # nodeB1.run_command("mkdir -p /opt/buckyos/etc/did_docs")
-        # nodeB1.scp_put("./dev_configs/bobdev/test.buckyos.io.zone.json", "/opt/buckyos/etc/did_docs/bob.web3.buckyos.org.doc.json")
-
-        print("nodeB1 config file uploaded")
-
+        # active 非sn的ood和node
+        active()
     elif sys.argv[1] == "start":
         if len(sys.argv) < 3:
             print("Usage: start.py <device_id>")
