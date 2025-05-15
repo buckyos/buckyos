@@ -96,51 +96,7 @@ def init():
     # else:
     #     print(f"Link already exists: {env_config}")
 
-    # 创建密钥对
-    key_path = os.path.join(config_dir, "id_rsa")
-    if not os.path.exists(key_path):
-        try:
-            subprocess.run(
-                f"ssh-keygen -t rsa -b 4096 -f {key_path} -N ''",
-                shell=True,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            print(f"Generated SSH key pair at {key_path}")
-        except subprocess.CalledProcessError:
-            print("Failed to generate SSH key pair")
-            return
-
-    # 读取公钥内容
-    with open(f"{key_path}.pub", 'r') as f:
-        public_key = f.read().strip()
-
-    # 修改 vm_init.yaml
-    vm_init_path = "vm_init.yaml"
-    with open(vm_init_path, 'r') as f:
-        vm_config = yaml.safe_load(f)
-
-    need_update = False
-    # 确保 ssh_authorized_keys 存在
-    if 'users' in vm_config:
-        for user in vm_config['users']:
-            if user.get('name') == 'root':
-                if 'ssh_authorized_keys' not in user:
-                    user['ssh_authorized_keys'] = []
-                # 检查是否已经存在
-                if public_key in user['ssh_authorized_keys']:
-                    print("Public key already exists in vm_init.yaml")
-                    return
-                user['ssh_authorized_keys'].append(public_key)
-                need_update = True
-                break
-
-    if need_update:
-        # 写回 vm_init.yaml
-        with open(vm_init_path, 'w') as f:
-            yaml.dump(vm_config, f, default_flow_style=False)
-        print("Updated vm_init.yaml with new public key")
+  
 
 
 def active_sn():
