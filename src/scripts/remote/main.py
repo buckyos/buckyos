@@ -185,10 +185,13 @@ def active():
 
     # 处理DNS配置
     sn_ip =  util.get_multipass_ip("sn")
+    # 要考虑sn_ip是非数组的情况
+    print(f"nodeB1 will update DNS for {sn_ip[0]}")
+
     # 如果 DNS 行已存在但被注释，这条命令会取消注释并修改值
-    nodeB1.run_command(f"sudo sed -i 's/#DNS=.*/DNS={sn_ip}/' /etc/systemd/resolved.conf")
+    nodeB1.run_command(f"sudo sed -i 's/#DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
     # 如果 DNS 行不存在或已经被取消注释，确保它被正确设置
-    nodeB1.run_command(f"sudo sed -i 's/DNS=.*/DNS={sn_ip}/' /etc/systemd/resolved.conf")
+    nodeB1.run_command(f"sudo sed -i 's/DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
     nodeB1.run_command("sudo systemctl restart systemd-resolved")
 
 
