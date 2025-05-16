@@ -49,5 +49,9 @@ def get_device_info(info_path = "device_info.json"):
         print(f"An error occurred: {e}")
         return None
 
-if __name__ == '__main__':
-    get_device_info()
+
+
+def read_from_config(info_path = "device_info.json"):
+    with open(info_path, 'r') as f:
+        g_all_devices = json.load(f)
+        return g_all_devices
