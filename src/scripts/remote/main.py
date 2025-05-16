@@ -29,7 +29,8 @@ def print_usage():
     print("  ./main.py install <device_id>      # 安装buckyos")
     print("  ./main.py install --all            # 全部vm，安装buckyos")
     print("  ./main.py active                   # 激活测试身份")
-    print("  ./main.py active_sn                 # 激活测试sn配置信息")
+    print("  ./main.py active_sn                # 激活测试sn配置信息")
+    print("  ./main.py start_sn                 # 启动sn")
     print("  ./main.py start <device_id>        # 启动buckyos")
     print("  ./main.py start --all              # 全部vm，启动buckyos")
     print("  ./main.py clog                     # 收集node日志")
@@ -216,6 +217,13 @@ def main():
         case "active":
             # active 非sn的ood和node
             active()
+        case "start_sn":
+            device_id = "sn"
+            print(f"start target device_id: {device_id}")
+            device = remote_device.remote_device(device_id)
+            device.run_command("sudo systemctl stop systemd-resolved")
+            device.run_command("sudo systemctl disable systemd-resolved")
+            start.start_all_apps(device)
         case "start":
             if len(sys.argv) < 3:
                 print("Usage: start.py <device_id>")
