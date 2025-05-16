@@ -13,7 +13,7 @@
 ```
 cargo test --package name-lib --lib -- config::tests::create_test_env_configs --exact --show-output 
 ```
-然后将生成于 /tmp/buckyos_dev_configs的文件覆盖拷贝到 src/scripts/remote/dev_configs下
+然后将生成于 `/tmp/buckyos_dev_configs`的文件覆盖拷贝到 `src/scripts/remote/dev_configs`下
 
 ## sn
 
@@ -31,14 +31,24 @@ cargo test --package name-lib --lib -- config::tests::create_test_env_configs --
 
 
 # step
-1. Check the multipass cmd
-2. 生成并检查网络（br-sn）
-3. 执行 create 启动vm(sn, nodeA2, nodeB1)
-4. 编译buckyos，（执行 /src/scripts/build.py） vm是ubuntu的，这里的编译出来的二进制，需要对应得上。
-5. 执行 install 
-6. 执行active_sn， 把sn的配置和db复制到sn vm里面
-7. 启动sn
-8. 执行active，激活其他的node，把A和B的配置分别复制到 nodeB1 和 nodeA2 里面, 并且会修改这两个vm里面的DNS 服务，指向SN
-9. 执行 `multipass exec nodeB1 -- dig bob.web3.buckyos.io` 查看改了DNS后，能否解析到。
+1.  安装multipass
+2.  网络：执行main.py network, 生成并检查网络（br-sn）
+3.  创建VM： 执行 create 启动vm(sn, nodeA2, nodeB1)
+4.  编译buckyos，（执行 `/src/scripts/build.py`） vm是ubuntu的，这里的编译出来的二进制，需要对应得上。
+5.  执行 install --all
+6.  执行 active_sn， 把sn的配置和db复制到sn vm里面
+7.  启动sn
+8.  执行active，激活其他的node，把A和B的配置分别复制到 nodeB1 和 nodeA2 里面, 并且会修改这两个vm里面的DNS 服务，指向SN
+9.  执行 `multipass exec nodeB1 -- dig bob.web3.buckyos.io` 查看改了DNS后，能否解析到。
 10. 启动nodeA2 和 nodeB1
+11. (只支持Linux) 模拟网络隔离：执行bash network.sh 
+
+
+# 注意事项
+使用`dev_configs/ssh/id_rsa` 这个私钥的时候，可能会出现提示私钥权限过大，需要手动修改。
+`chmod 600 dev_configs/ssh/id_rsa`
+
+这个私钥文件跟ood无关，不是ood的身份文件。
+是给vm用的（可以分离multipass，单独使用ssh）
+
 
