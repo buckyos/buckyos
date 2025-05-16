@@ -30,8 +30,8 @@
             "memory": "1G",
             "disk": "10G",
             "network": {
-                "type": "nat",
-                "name": "nat1"
+                "type": "bridge",
+                "bridge": "br-sn"
             }
         },
         "apps": {
@@ -51,8 +51,8 @@
             "memory": "1G",
             "disk": "10G",
             "network": {
-                "type": "nat",
-                "name": "nat2"
+                "type": "bridge",
+                "bridge": "br-sn"
             }
         },
         "apps": {
