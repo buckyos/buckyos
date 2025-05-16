@@ -9,16 +9,20 @@ import get_device_info
 import install
 import start
 import remote_device
+import py_src.util as util
+
 
 
 def print_usage():
     print("Usage:")
     print("  ./main.py clean                    # 清除所有的Multipass实例")
     print("  ./main.py init                     # 初始化环境")
+    print("  ./main.py network                  # 检查是否存在sn-br，并输入ip，如果不存在会创建一个")
     print("  ./main.py create                   # 创建虚拟机")
-    print("  ./main.py check                    # 检查是否存在网络桥接")
     print("  ./main.py install <device_id>      # 安装buckyos")
     print("  ./main.py install --all            # 全部vm，安装buckyos")
+    print("  ./main.py active                   # 激活测试身份")
+    print("  ./main.py active_sn                 # 激活测试sn配置信息")
     print("  ./main.py start <device_id>        # 启动buckyos")
     print("  ./main.py start --all              # 全部vm，启动buckyos")
 
@@ -43,8 +47,8 @@ def check_br():
         # 调用 ip 命令检查网络桥接      
         result = subprocess.run(['ip', 'link', 'show', 'br-sn'], capture_output=True, text=True)
         if result.returncode == 0:
-            ip = subprocess.run("ip -4 addr show dev br-sn | grep -oP 'inet \K[\d.]+'", shell=True, capture_output=True, text=True)
-            print(f"网络桥接 br-sn 已存在, IP: {ip.stdout.strip()}")
+            # ip = subprocess.run("ip -4 addr show dev br-sn | grep -oP 'inet \K[\d.]+'", shell=True, capture_output=True, text=True)
+            print(f"网络桥接 br-sn 已存在")
         else:
             print("网络桥接 br-sn 不存在。")
             print("正在创建网络桥接 br-sn...")
@@ -92,51 +96,60 @@ def init():
     # else:
     #     print(f"Link already exists: {env_config}")
 
-    # 创建密钥对
-    key_path = os.path.join(config_dir, "id_rsa")
-    if not os.path.exists(key_path):
-        try:
-            subprocess.run(
-                f"ssh-keygen -t rsa -b 4096 -f {key_path} -N ''",
-                shell=True,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            print(f"Generated SSH key pair at {key_path}")
-        except subprocess.CalledProcessError:
-            print("Failed to generate SSH key pair")
-            return
+  
 
-    # 读取公钥内容
-    with open(f"{key_path}.pub", 'r') as f:
-        public_key = f.read().strip()
 
-    # 修改 vm_init.yaml
-    vm_init_path = "vm_init.yaml"
-    with open(vm_init_path, 'r') as f:
-        vm_config = yaml.safe_load(f)
+def active_sn():
+    temp_config = "./dev_configs/sn_server/web3_gateway.json.temp"
+    sn_ip =  util.get_multipass_ip("sn")
+    print(f"sn vm ip: {sn_ip}")
 
-    need_update = False
-    # 确保 ssh_authorized_keys 存在
-    if 'users' in vm_config:
-        for user in vm_config['users']:
-            if user.get('name') == 'root':
-                if 'ssh_authorized_keys' not in user:
-                    user['ssh_authorized_keys'] = []
-                # 检查是否已经存在
-                if public_key in user['ssh_authorized_keys']:
-                    print("Public key already exists in vm_init.yaml")
-                    return
-                user['ssh_authorized_keys'].append(public_key)
-                need_update = True
-                break
+    # 读取sn配置文件模板，修改ip字段，生成配置文件
+    with open(temp_config, 'r') as f:
+        config = json.load(f)
+        config["inner_services"]["main_sn"]["ip"] = sn_ip[0]
+        # fix
+        config["includes"] = []
+        with open("./dev_configs/sn_server/web3_gateway.json", 'w') as f:
+            json.dump(config, f, indent=4)
+        print("generate web3_gateway.json")
+        # print(config["inner_services"]["main_sn"]["ip"])
 
-    if need_update:
-        # 写回 vm_init.yaml
-        with open(vm_init_path, 'w') as f:
-            yaml.dump(vm_config, f, default_flow_style=False)
-        print("Updated vm_init.yaml with new public key")
+    vmsn = remote_device.remote_device("sn")
+    vmsn.scp_put("./dev_configs/sn_server/web3_gateway.json", "/opt/web3_bridge")
+    vmsn.scp_put("./dev_configs/sn_db.sqlite3", "/opt/web3_bridge")
+    vmsn.scp_put("./dev_configs/sn_server/device_key.pem", "/opt/web3_bridge")
+    print("sn config file, db file uploaded")
+    # vmsn.scp_put("./dev_configs/bobdev/ood1/node_private_key.pem", "/opt/buckyos/etc/node_private_key.pem")
+    # vmsn.scp_put("./dev_configs/bobdev/ood1/start_config.json", "/opt/buckyos/etc/start_config.json")
+
+
+def active():
+    nodeB1 = remote_device.remote_device("nodeB1")
+    nodeB1.run_command("mkdir -p /opt/buckyos/etc")
+    nodeB1.scp_put("./dev_configs/bobdev/ood1/node_identity.json", "/opt/buckyos/etc/node_identity.json")
+    nodeB1.scp_put("./dev_configs/bobdev/ood1/node_private_key.pem", "/opt/buckyos/etc/node_private_key.pem")
+
+    # start_config 激活流程会生成，没激活直接复制过去
+    nodeB1.scp_put("./dev_configs/bobdev/ood1/start_config.json", "/opt/buckyos/etc/start_config.json")
+
+    nodeB1.scp_put("./dev_configs/machine.json", "/opt/buckyos/etc/machine.json")
+    # nodeB1.run_command("mkdir -p /opt/buckyos/etc/did_docs")
+    # nodeB1.scp_put("./dev_configs/bobdev/test.buckyos.io.zone.json", "/opt/buckyos/etc/did_docs/bob.web3.buckyos.org.doc.json")
+
+    print("nodeB1 config file uploaded")
+
+    # 处理DNS配置
+    sn_ip =  util.get_multipass_ip("sn")
+    # 要考虑sn_ip是非数组的情况
+    print(f"nodeB1 will update DNS for {sn_ip[0]}")
+
+    # 如果 DNS 行已存在但被注释，这条命令会取消注释并修改值
+    nodeB1.run_command(f"sudo sed -i 's/#DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
+    # 如果 DNS 行不存在或已经被取消注释，确保它被正确设置
+    nodeB1.run_command(f"sudo sed -i 's/DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
+    nodeB1.run_command("sudo systemctl restart systemd-resolved")
+
 
 def main():
     config_path = os.path.expanduser('~/.buckyos_dev/device_info.json')
@@ -151,7 +164,6 @@ def main():
     elif sys.argv[1] == "init":
         init()
     elif sys.argv[1] == "network":
-
         check_br()
         return
     elif sys.argv[1] == "create":
@@ -180,6 +192,11 @@ def main():
 
         print(f"install target device_id: {device_id}")
         install.install(device_id)
+    elif sys.argv[1] == "active_sn":
+        active_sn()
+    elif sys.argv[1] == "active":
+        # active 非sn的ood和node
+        active()
     elif sys.argv[1] == "start":
         if len(sys.argv) < 3:
             print("Usage: start.py <device_id>")

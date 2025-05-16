@@ -1,0 +1,26 @@
+{
+  "@context": "https://www.w3.org/ns/did/v1",
+  "id": "did:bns:bobdev",
+  "verificationMethod": [
+    {
+      "type": "Ed25519VerificationKey2020",
+      "id": "#main_key",
+      "controller": "did:bns:bobdev",
+      "publicKeyJwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "y-kuJcQ0doFpdNXf4HI8E814lK8MB3-t4XjDRcR_QCU"
+      }
+    }
+  ],
+  "authentication": [
+    "#main_key"
+  ],
+  "assertion_method": [
+    "#main_key"
+  ],
+  "exp": 2062638471,
+  "iat": 1747278471,
+  "name": "bobdev",
+  "full_name": "bobdev"
+}

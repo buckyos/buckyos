@@ -49,7 +49,7 @@ enum NodeDaemonErrors {
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
-async fn looking_zone_config(node_identity: &NodeIdentityConfig) -> Result<ZoneBootConfig> {
+async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<ZoneBootConfig> {
     //If local files exist, priority loads local files
     let etc_dir = get_buckyos_system_etc_dir();
     let json_config_path = etc_dir.join(format!("{}.zone.json",node_identity.zone_did.to_host_name()));
@@ -817,7 +817,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     //lookup zone config
     info!("start refresh zone [{}] 's config...", node_identity.zone_did.to_host_name());
-    let zone_boot_config = looking_zone_config(&node_identity).await.map_err(|err| {
+    let zone_boot_config = looking_zone_boot_config(&node_identity).await.map_err(|err| {
         error!("looking zone config failed! {}", err);
         String::from("looking zone config failed!")
     })?;
