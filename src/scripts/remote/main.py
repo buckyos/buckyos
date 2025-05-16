@@ -10,6 +10,7 @@ import install
 import start
 import remote_device
 import py_src.util as util
+import py_src.clog as clog
 
 
 # 配置文件路径
@@ -31,6 +32,7 @@ def print_usage():
     print("  ./main.py active_sn                 # 激活测试sn配置信息")
     print("  ./main.py start <device_id>        # 启动buckyos")
     print("  ./main.py start --all              # 全部vm，启动buckyos")
+    print("  ./main.py clog                     # 收集node日志")
 
 
 
@@ -112,8 +114,6 @@ def active_sn():
     vmsn.scp_put("./dev_configs/sn_db.sqlite3", "/opt/web3_bridge")
     vmsn.scp_put("./dev_configs/sn_server/device_key.pem", "/opt/web3_bridge")
     print("sn config file, db file uploaded")
-    # vmsn.scp_put("./dev_configs/bobdev/ood1/node_private_key.pem", "/opt/buckyos/etc/node_private_key.pem")
-    # vmsn.scp_put("./dev_configs/bobdev/ood1/start_config.json", "/opt/buckyos/etc/start_config.json")
 
 
 def active():
@@ -232,6 +232,12 @@ def main():
                 print(f"start target device_id: {device_id}")
                 device = remote_device.remote_device(device_id)
                 start.start_all_apps(device)
+        case "clog":
+            all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
+            for device_id in all_devices:
+                device = remote_device.remote_device(device_id)
+                clog.get_device_log(device)
+
         case _:
             print("unknown command")
             print("")
