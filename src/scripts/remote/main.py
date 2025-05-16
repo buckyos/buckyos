@@ -118,6 +118,8 @@ def active_sn():
 
 def active():
     nodeB1 = remote_device.remote_device("nodeB1")
+    nodeA2 = remote_device.remote_device("nodeA2")
+
     nodeB1.run_command("mkdir -p /opt/buckyos/etc")
     nodeB1.scp_put("./dev_configs/bobdev/ood1/node_identity.json", "/opt/buckyos/etc/node_identity.json")
     nodeB1.scp_put("./dev_configs/bobdev/ood1/node_private_key.pem", "/opt/buckyos/etc/node_private_key.pem")
@@ -136,11 +138,18 @@ def active():
     # 要考虑sn_ip是非数组的情况
     print(f"nodeB1 will update DNS for {sn_ip[0]}")
 
-    # 如果 DNS 行已存在但被注释，这条命令会取消注释并修改值
-    nodeB1.run_command(f"sudo sed -i 's/#DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
-    # 如果 DNS 行不存在或已经被取消注释，确保它被正确设置
-    nodeB1.run_command(f"sudo sed -i 's/DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
-    nodeB1.run_command("sudo systemctl restart systemd-resolved")
+
+    def update_dns(node, ip):
+        # 如果 DNS 行已存在但被注释，这条命令会取消注释并修改值
+        node.run_command(f"sudo sed -i 's/#DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
+        # 如果 DNS 行不存在或已经被取消注释，确保它被正确设置
+        node.run_command(f"sudo sed -i 's/DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
+        node.run_command("sudo systemctl restart systemd-resolved")
+    
+    update_dns(nodeB1, sn_ip[0])
+    print("nodeB1 DNS updated")
+    update_dns(nodeA2, sn_ip[0])
+    print("nodeA2 DNS updated")
 
 
 def main():
