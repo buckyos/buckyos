@@ -249,7 +249,7 @@ def main():
                 print(f"start target device_id: {device_id}")
                 device = remote_device.remote_device(device_id)
                 start.start_all_apps(device)
-        case "stop"
+        case "stop":
             if len(sys.argv) < 3:
                 print("Usage: stop.py <device_id>")
                 return
