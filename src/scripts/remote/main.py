@@ -8,6 +8,7 @@ import py_src.create_vm as create_vm
 import py_src.get_device_info as get_device_info
 import install
 import start
+import stop
 import remote_device
 import py_src.util as util
 import py_src.clog as clog
@@ -32,6 +33,8 @@ def print_usage():
     print("  ./main.py start_sn                 # 启动sn")
     print("  ./main.py start <device_id>        # 启动buckyos")
     print("  ./main.py start --all              # 全部vm，启动buckyos, 但是不会启动sn")
+    print("  ./main.py stop <device_id>         # 停止buckyos")
+    print("  ./main.py stop --all               # 全部vm，停止buckyos")
     print("  ./main.py clog                     # 收集node日志")
     print("  ./main.py list                     # list vm device info")
 
@@ -246,6 +249,21 @@ def main():
                 print(f"start target device_id: {device_id}")
                 device = remote_device.remote_device(device_id)
                 start.start_all_apps(device)
+        case "stop"
+            if len(sys.argv) < 3:
+                print("Usage: stop.py <device_id>")
+                return
+            device_id = sys.argv[2]
+            if device_id == "--all":
+                all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
+                for device_id in all_devices:
+                    print(f"stop target device_id: {device_id}")
+                    device = remote_device.remote_device(device_id)
+                    stop.stop_all_apps(device)
+            else:
+                print(f"stop target device_id: {device_id}")
+                device = remote_device.remote_device(device_id)
+                stop.stop_all_apps(device)
         case "clog":
             all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
             for device_id in all_devices:
