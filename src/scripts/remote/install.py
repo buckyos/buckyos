@@ -90,8 +90,9 @@ def install(device_id: str):
             print("uploading web3_bridge ...")
             project_dir = get_project_dir()
             print(f"project_dir, {project_dir}")
-            # TODO 这里有问题，不能覆盖文件，会出现嵌套目录的问题
-            device.scp_put(f"{project_dir}/web3_bridge", "/opt/web3_bridge", recursive=True)
+            device.scp_put(f"{project_dir}/web3_bridge/start.py", "/opt/web3_bridge")
+            device.scp_put(f"{project_dir}/web3_bridge/stop.py", "/opt/web3_bridge")
+            device.scp_put(f"{project_dir}/web3_bridge/web3_gateway", "/opt/web3_bridge")
 
         for cmd in install_commands:
             print(f"Running remote command: {cmd}")
