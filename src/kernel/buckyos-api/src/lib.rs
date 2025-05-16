@@ -311,7 +311,7 @@ impl BuckyOSRuntime {
     
         let node_identity_file = config_root_dir.join("node_identity.json");
         let device_private_key_file = config_root_dir.join("node_private_key.pem");
-        let machine_config_file = config_root_dir.join("machine_config.json");
+        let machine_config_file = config_root_dir.join("machine.json");
 
         let node_identity_config =  NodeIdentityConfig::load_node_identity_config(&node_identity_file)
             .map_err(|e| {
