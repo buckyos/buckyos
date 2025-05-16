@@ -120,18 +120,28 @@ def active():
     nodeB1 = remote_device.remote_device("nodeB1")
     nodeA2 = remote_device.remote_device("nodeA2")
 
+    print("nodeB1 config file uploading......")
     nodeB1.run_command("mkdir -p /opt/buckyos/etc")
     nodeB1.scp_put("./dev_configs/bobdev/ood1/node_identity.json", "/opt/buckyos/etc/node_identity.json")
     nodeB1.scp_put("./dev_configs/bobdev/ood1/node_private_key.pem", "/opt/buckyos/etc/node_private_key.pem")
-
     # start_config 激活流程会生成，没激活直接复制过去
     nodeB1.scp_put("./dev_configs/bobdev/ood1/start_config.json", "/opt/buckyos/etc/start_config.json")
-
     nodeB1.scp_put("./dev_configs/machine.json", "/opt/buckyos/etc/machine.json")
-    # nodeB1.run_command("mkdir -p /opt/buckyos/etc/did_docs")
-    # nodeB1.scp_put("./dev_configs/bobdev/test.buckyos.io.zone.json", "/opt/buckyos/etc/did_docs/bob.web3.buckyos.org.doc.json")
-
     print("nodeB1 config file uploaded")
+
+    # 处理nodeA2的配置文件
+    print("nodeA2 config file uploading......")
+    nodeA2.run_command("mkdir -p /opt/buckyos/etc")
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    rootfs_path = os.path.join(project_root, "rootfs")
+    nodeA2.scp_put(os.path.join(rootfs_path, "etc/node_identity.json"), "/opt/buckyos/etc/node_identity.json")
+    nodeA2.scp_put(os.path.join(rootfs_path, "etc/node_private_key.pem"), "/opt/buckyos/etc/node_private_key.pem")
+    nodeA2.scp_put(os.path.join(rootfs_path, "etc/start_config.json"), "/opt/buckyos/etc/start_config.json")
+    nodeA2.scp_put("./dev_configs/machine.json", "/opt/buckyos/etc/machine.json")
+    print("nodeA2 config file uploaded")
+
+
+
 
     # 处理DNS配置
     sn_ip =  util.get_multipass_ip("sn")
