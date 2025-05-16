@@ -59,7 +59,7 @@ class VMCreator:
         disk = vm_config.get('disk', '10G')
         
         # 创建VM的基本命令
-        cmd = f"multipass launch --name {device_id} --cpus {cpu} --memory {memory} --disk {disk} --cloud-init dev_configs/vm_init.yaml"
+        cmd = f"multipass launch --name {device_id} --cpus {cpu} --memory {memory} --disk {disk} --cloud-init dev_configs/vm_init.yaml "
 
         
         # 添加网络配置

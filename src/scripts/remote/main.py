@@ -4,13 +4,18 @@ import os
 import yaml  # 新增导入 yaml 模块
 import json
 
-import create_vm
-import get_device_info
+import py_src.create_vm as create_vm
+import py_src.get_device_info as get_device_info
 import install
 import start
 import remote_device
 import py_src.util as util
 
+
+# 配置文件路径
+CONFIG_BASE = os.path.join(os.getcwd(), "dev_configs")
+ENV_CONFIG = os.path.join(CONFIG_BASE, "dev_vm_config.json")
+VM_DEVICE_CONFIG = os.path.join(CONFIG_BASE, "device_info.json")
 
 
 def print_usage():
@@ -31,12 +36,11 @@ def print_usage():
 
 # create vm by read demo_env.json
 def create():
-    config_file = "demo_env.json"
-    if not os.path.exists(config_file):
-        print(f"Config file not found: {config_file}")
+    if not os.path.exists(ENV_CONFIG):
+        print(f"Config file not found: {ENV_CONFIG}")
         sys.exit(1)
-    print(f"Using config file: {config_file}")
-    creator = create_vm.VMCreator(config_file)
+    print(f"Using config file: {ENV_CONFIG}")
+    creator = create_vm.VMCreator(ENV_CONFIG)
     creator.create_all()
 
 
@@ -77,30 +81,17 @@ def clean():
 
 
 def init(): 
-    # 检查是否存在 ~/.buckyos_dev 目录
-    home_dir = os.path.expanduser("~")
-    config_dir = os.path.join(home_dir, ".buckyos_dev")
-    if not os.path.exists(config_dir):
-        os.makedirs(config_dir)
-        print(f"Created directory: {config_dir}")
-    else:
-        print(f"Directory already exists: {config_dir}")
-    # cp demo_env.json to ~/.buckyos_dev/env_config.json
-    demo_env = "demo_env.json"
-    env_config = os.path.join(config_dir, "env_config.json")
-    # 每次覆盖更新env_config.json
-    if os.path.exists(env_config):
-        os.remove(env_config) 
-    os.link(demo_env, env_config)
-    print(f"Created link: {env_config} -> {demo_env}")
-    # else:
-    #     print(f"Link already exists: {env_config}")
+    # check config file
 
+    if not os.path.exists(ENV_CONFIG):
+        print(f"Config file not found: {ENV_CONFIG}")
+        sys.exit(1)
+    print(f"VM Using config file: {ENV_CONFIG}")
   
 
 
 def active_sn():
-    temp_config = "./dev_configs/sn_server/web3_gateway.json.temp"
+    temp_config =os.path.join(CONFIG_BASE, "sn_server/web3_gateway.json.temp")
     sn_ip =  util.get_multipass_ip("sn")
     print(f"sn vm ip: {sn_ip}")
 
@@ -152,73 +143,71 @@ def active():
 
 
 def main():
-    config_path = os.path.expanduser('~/.buckyos_dev/device_info.json')
-
     # argv[1] 是命令行参数
     if len(sys.argv) < 2:
         print_usage()
-        return
-    elif sys.argv[1] == "clean":
-        clean()
-        return
-    elif sys.argv[1] == "init":
-        init()
-    elif sys.argv[1] == "network":
-        check_br()
-        return
-    elif sys.argv[1] == "create":
-        # check_br()
-        create()
-        # generate deviceinfo
-        get_device_info.get_device_info(info_path=config_path)
-        return
-    elif sys.argv[1] == "deviceinfo":
-        get_device_info.get_device_info(info_path=config_path)
-    elif sys.argv[1] == "install":
-        if len(sys.argv) < 3:
-            print("Usage: install.py <device_id>")
-            print("Usage: install.py --all")
-            return
-        device_id = sys.argv[2]
-        if device_id == "--all":
-            # 遍历所有设备
-            with open(config_path, 'r') as f:
-                g_all_devices = json.load(f)
-                for device_id in g_all_devices:
-                    print(f"install target device_id: {device_id}")
-                    install.install(device_id)
-            return
+        sys.exit(0)
 
-
-        print(f"install target device_id: {device_id}")
-        install.install(device_id)
-    elif sys.argv[1] == "active_sn":
-        active_sn()
-    elif sys.argv[1] == "active":
-        # active 非sn的ood和node
-        active()
-    elif sys.argv[1] == "start":
-        if len(sys.argv) < 3:
-            print("Usage: start.py <device_id>")
+    # parse command
+    match sys.argv[1]:
+        case "clean":
+            clean()
             return
-
-        device_id = sys.argv[2]
-        if device_id == "--all":
-            # 遍历所有设备
-            with open(config_path, 'r') as f:
-                g_all_devices = json.load(f)
-                for device_id in g_all_devices:
-                    print(f"start target device_id: {device_id}")
-                    device = remote_device.remote_device(device_id)
-                    start.start_all_apps(device)
+        case "init":
+            init()
             return
-        print(f"start target device_id: {device_id}")
-        device = remote_device.remote_device(device_id)
-        start.start_all_apps(device)
-
-    else:
-        print_usage()
-        return
+        case "network":
+            check_br()
+            return
+        case "create":
+            # check_br()
+            create()
+            # generate deviceinfo
+            get_device_info.get_device_info(info_path=VM_DEVICE_CONFIG)
+            return
+        case "deviceinfo":
+            get_device_info.get_device_info(info_path=VM_DEVICE_CONFIG)
+        case "install":
+            if len(sys.argv) < 3:
+                print("Usage: install.py <device_id>")
+                print("Usage: install.py --all")
+                return
+            device_id = sys.argv[2]
+            if device_id == "--all":
+                # 遍历所有设备
+                with open(VM_DEVICE_CONFIG, 'r') as f:
+                    g_all_devices = json.load(f)
+                    for device_id in g_all_devices:
+                        print(f"install target device_id: {device_id}")
+                        install.install(device_id)
+                return
+            print(f"install target device_id: {device_id}")
+            install.install(device_id)
+        case "active_sn":
+            active_sn()
+        case "active":
+            # active 非sn的ood和node
+            active()
+        case "start":
+            if len(sys.argv) < 3:
+                print("Usage: start.py <device_id>")
+                return
+            device_id = sys.argv[2]
+            if device_id == "--all":
+                # 遍历所有设备
+                with open(VM_DEVICE_CONFIG, 'r') as f:
+                    g_all_devices = json.load(f)
+                    for device_id in g_all_devices:
+                        print(f"start target device_id: {device_id}")
+                        device = remote_device.remote_device(device_id)
+                        start.start_all_apps(device)
+                return
+            print(f"start target device_id: {device_id}")
+            device = remote_device.remote_device(device_id)
+            start.start_all_apps(device)
+        case _:
+            print("unknown command")
+            
 
 
 

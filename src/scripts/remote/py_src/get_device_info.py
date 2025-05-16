@@ -49,5 +49,4 @@ def get_device_info(info_path = "device_info.json"):
         print(f"An error occurred: {e}")
         return None
 
-if __name__ == '__main__':
-    get_device_info()
+
