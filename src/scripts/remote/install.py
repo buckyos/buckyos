@@ -122,27 +122,3 @@ def install(device_id: str):
     except Exception as e:
         print(f"Error during installation: {str(e)}", file=sys.stderr)
         return False
-
-g_all_devices = None
-
-def main():
-    if len(sys.argv) != 2:
-        print_usage()
-    
-    config_path = "device_info.json"
-    if not os.path.exists(config_path):
-        print(f"Config file not found: {config_path}")
-        sys.exit(1)
-    with open(config_path, 'r') as f:
-        g_all_devices = json.load(f)
-
-    device_id = sys.argv[1]
-    try:
-        success = install(device_id)
-        sys.exit(0 if success else 1)
-    except Exception as e:
-        print(f"Error: {str(e)}", file=sys.stderr)
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()

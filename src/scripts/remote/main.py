@@ -13,13 +13,14 @@ import py_src.util as util
 
 
 # 配置文件路径
-CONFIG_BASE = os.path.join(os.getcwd(), "dev_configs")
+CONFIG_BASE = os.path.join(os.path.dirname(__file__), "dev_configs")
 ENV_CONFIG = os.path.join(CONFIG_BASE, "dev_vm_config.json")
 VM_DEVICE_CONFIG = os.path.join(CONFIG_BASE, "device_info.json")
 
 
 def print_usage():
     print("Usage:")
+    print("  ./main.py list                     # list vm device info")
     print("  ./main.py clean                    # 清除所有的Multipass实例")
     print("  ./main.py init                     # 初始化环境")
     print("  ./main.py network                  # 检查是否存在sn-br，并输入ip，如果不存在会创建一个")
@@ -167,6 +168,17 @@ def main():
             return
         case "deviceinfo":
             get_device_info.get_device_info(info_path=VM_DEVICE_CONFIG)
+        case "list":
+            all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
+            # print有缩进格式
+            print("all devices:")
+            for device_id in all_devices:
+                print(f"device_id: {device_id}")
+                print(f"state: {all_devices[device_id]['state']}")
+                print(f"ipv4: {all_devices[device_id]['ipv4']}")
+                print(f"release: {all_devices[device_id]['release']}")
+                print("")
+            # print(all_devices)
         case "install":
             if len(sys.argv) < 3:
                 print("Usage: install.py <device_id>")
@@ -174,15 +186,13 @@ def main():
                 return
             device_id = sys.argv[2]
             if device_id == "--all":
-                # 遍历所有设备
-                with open(VM_DEVICE_CONFIG, 'r') as f:
-                    g_all_devices = json.load(f)
-                    for device_id in g_all_devices:
-                        print(f"install target device_id: {device_id}")
-                        install.install(device_id)
-                return
-            print(f"install target device_id: {device_id}")
-            install.install(device_id)
+                all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
+                for device_id in all_devices:
+                    print(f"install target device_id: {device_id}")
+                    install.install(device_id)
+            else:
+                print(f"install target device_id: {device_id}")
+                install.install(device_id)
         case "active_sn":
             active_sn()
         case "active":
@@ -194,19 +204,19 @@ def main():
                 return
             device_id = sys.argv[2]
             if device_id == "--all":
-                # 遍历所有设备
-                with open(VM_DEVICE_CONFIG, 'r') as f:
-                    g_all_devices = json.load(f)
-                    for device_id in g_all_devices:
-                        print(f"start target device_id: {device_id}")
-                        device = remote_device.remote_device(device_id)
-                        start.start_all_apps(device)
-                return
-            print(f"start target device_id: {device_id}")
-            device = remote_device.remote_device(device_id)
-            start.start_all_apps(device)
+                all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
+                for device_id in all_devices:
+                    print(f"start target device_id: {device_id}")
+                    device = remote_device.remote_device(device_id)
+                    start.start_all_apps(device)
+            else:
+                print(f"start target device_id: {device_id}")
+                device = remote_device.remote_device(device_id)
+                start.start_all_apps(device)
         case _:
             print("unknown command")
+            print("")
+            print_usage()
             
 
 

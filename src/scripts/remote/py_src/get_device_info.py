@@ -50,3 +50,8 @@ def get_device_info(info_path = "device_info.json"):
         return None
 
 
+
+def read_from_config(info_path = "device_info.json"):
+    with open(info_path, 'r') as f:
+        g_all_devices = json.load(f)
+        return g_all_devices
