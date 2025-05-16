@@ -21,7 +21,6 @@ VM_DEVICE_CONFIG = os.path.join(CONFIG_BASE, "device_info.json")
 
 def print_usage():
     print("Usage:")
-    print("  ./main.py list                     # list vm device info")
     print("  ./main.py clean                    # 清除所有的Multipass实例")
     print("  ./main.py init                     # 初始化环境")
     print("  ./main.py network                  # 检查是否存在sn-br，并输入ip，如果不存在会创建一个")
@@ -34,6 +33,8 @@ def print_usage():
     print("  ./main.py start <device_id>        # 启动buckyos")
     print("  ./main.py start --all              # 全部vm，启动buckyos")
     print("  ./main.py clog                     # 收集node日志")
+    print("  ./main.py list                     # list vm device info")
+
 
 
 
@@ -182,7 +183,7 @@ def main():
             return
         case "create":
             create()
-            # generate deviceinfo
+            # 创建完成后，会生成generate deviceinfo
             get_device_info.get_device_info(info_path=VM_DEVICE_CONFIG)
             return
         case "deviceinfo":

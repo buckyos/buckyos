@@ -37,14 +37,16 @@ cargo test --package name-lib --lib -- config::tests::create_test_env_configs --
 4.  编译buckyos，（执行 `/src/scripts/build.py`） vm是ubuntu的，这里的编译出来的二进制，需要对应得上。
 5.  执行 `main.py install --all`
 6.  执行 `main.py active_sn`， 把sn的配置和db复制到sn vm里面
-7.  关闭sn vm上面的`systemd-resolved`程序，否则会因为占用53端口问题，导致sn的gateway进程中的dns_server启动失败 
+  
+7.  执行 `main.py start_sn`, 单独启动sn
+     如果sn启动没成功，可能需要手动执行关闭`systemd-resolved`，然后再启动sn
+     `systemd-resolved`会占用53端口问题，导致sn的gateway进程中的dns_server启动失败 
      `sudo systemctl stop systemd-resolved`
      `sudo systemctl disable systemd-resolved`
-8.  执行 `main.py start_sn`, 单独启动sn
-9.  执行active，激活其他的node，把A和B的配置分别复制到 nodeB1 和 nodeA2 里面, 并且会修改这两个vm里面的DNS 服务，指向SN
-10.  测试sn配置和dns配置是否成功： 执行 `multipass exec nodeB1 -- dig bob.web3.buckyos.io` 查看改了DNS后，能否解析到。
-11. 启动nodeA2 和 nodeB1
-12. (只支持Linux) 模拟网络隔离：执行bash network.sh 
+8.  执行active，激活其他的node，把A和B的配置分别复制到 nodeB1 和 nodeA2 里面, 并且会修改这两个vm里面的DNS 服务，指向SN
+9.  测试sn配置和dns配置是否成功： 执行 `multipass exec nodeB1 -- dig bob.web3.buckyos.io` 查看改了DNS后，能否解析到。
+10. 启动nodeA2 和 nodeB1
+11. (只支持Linux) 模拟网络隔离：执行bash network.sh 
 
 
 # 注意事项
