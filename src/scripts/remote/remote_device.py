@@ -36,6 +36,7 @@ class remote_device:
 
 
     def _load_device_info(self):
+        print(f"load device info from {VM_DEVICE_CONFIG}")
         try:
             with open(VM_DEVICE_CONFIG, 'r') as f:
                 configs = json.load(f)
