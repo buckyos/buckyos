@@ -49,7 +49,7 @@ def create():
 
 # chekc network bridge
 # 检查是否存在 br-sn 网络桥接
-def check_br():
+def network():
     try:
         # 调用 ip 命令检查网络桥接      
         result = subprocess.run(['ip', 'link', 'show', 'br-sn'], capture_output=True, text=True)
@@ -177,10 +177,9 @@ def main():
             init()
             return
         case "network":
-            check_br()
+            network()
             return
         case "create":
-            # check_br()
             create()
             # generate deviceinfo
             get_device_info.get_device_info(info_path=VM_DEVICE_CONFIG)
