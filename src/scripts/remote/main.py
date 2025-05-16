@@ -31,7 +31,7 @@ def print_usage():
     print("  ./main.py active_sn                # 激活测试sn配置信息")
     print("  ./main.py start_sn                 # 启动sn")
     print("  ./main.py start <device_id>        # 启动buckyos")
-    print("  ./main.py start --all              # 全部vm，启动buckyos")
+    print("  ./main.py start --all              # 全部vm，启动buckyos, 但是不会启动sn")
     print("  ./main.py clog                     # 收集node日志")
     print("  ./main.py list                     # list vm device info")
 
@@ -233,10 +233,16 @@ def main():
             if device_id == "--all":
                 all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
                 for device_id in all_devices:
+                    # 不在这里启动sn，在start_sn中启动
+                    if device_id == "sn":
+                        continue
                     print(f"start target device_id: {device_id}")
                     device = remote_device.remote_device(device_id)
                     start.start_all_apps(device)
             else:
+                if device_id == "sn":
+                    print("use start_sn replace")
+                    return
                 print(f"start target device_id: {device_id}")
                 device = remote_device.remote_device(device_id)
                 start.start_all_apps(device)
