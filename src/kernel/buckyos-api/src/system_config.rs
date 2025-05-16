@@ -158,6 +158,12 @@ impl SystemConfigClient {
                         "value": value
                     }));
                 }
+                KVAction::Append(value) => {
+                    tx_json.insert(key.to_string(), json!({
+                        "action": "append",
+                        "value": value
+                    }));
+                }
                 KVAction::SetByJsonPath(value) => {
                     tx_json.insert(key.to_string(), json!({
                         "action": "set_by_path",
