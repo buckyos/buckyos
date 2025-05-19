@@ -257,6 +257,12 @@ def main():
                 device = remote_device.remote_device(device_id)
                 stop.stop_all_apps(device)
         case "clog":
+            if len(sys.argv) >= 3:
+                device_id = sys.argv[2]
+                print("Collecting log for device_id: ", device_id)
+                device = remote_device.remote_device(device_id)
+                clog.get_device_log(device)
+                return
             all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
             for device_id in all_devices:
                 device = remote_device.remote_device(device_id)
