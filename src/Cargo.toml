@@ -20,6 +20,7 @@ members = [
     "./cyfs_gateway/cyfs-sn",
     "./cyfs_gateway/cyfs-socks",
 
+    "./kernel/msg_queue",
     "./kernel/kRPC",
     "./kernel/rbac",
     "./kernel/buckyos-api",
