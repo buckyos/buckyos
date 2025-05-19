@@ -30,6 +30,13 @@ def create_rootfs_tarball():
     print(f"rootfs_path: {rootfs_path}")
     if not os.path.exists(rootfs_path):
         raise Exception("rootfs directory not found")
+
+    # 检查是否存在bin文件
+    node_daemon_bin_path = os.path.join(rootfs_path, "bin", "node_daemon", "node_daemon")
+    if not os.path.exists(node_daemon_bin_path):
+        print(f"没有编译， node_daemon_bin_path : {node_daemon_bin_path}")
+        sys.exit(1)
+
     
     # 创建临时tar包
     with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as tmp_file:

@@ -24,6 +24,7 @@ VM_DEVICE_CONFIG = os.path.join(CONFIG_BASE, "device_info.json")
 def print_usage():
     print("Usage:")
     print("  ./main.py clean                    # 清除所有的Multipass实例")
+    print("  ./main.py clean --force            # 跳过询问，清除所有的Multipass实例")
     print("  ./main.py init                     # 初始化环境")
     print("  ./main.py network                  # 检查是否存在sn-br，并输入ip，如果不存在会创建一个")
     print("  ./main.py create                   # 创建虚拟机")
@@ -217,6 +218,8 @@ def main():
             device_id = "sn"
             print(f"start target device_id: {device_id}")
             device = remote_device.remote_device(device_id)
+            device.run_command("sudo chmod 777 /opt/web3_bridge/") #rust sqlite client 需要对目录和文件有写权限
+            device.run_command("sudo chmod 777 /opt/web3_bridge/sn_db.sqlite3")
             device.run_command("sudo systemctl stop systemd-resolved")
             device.run_command("sudo systemctl disable systemd-resolved")
             start.start_all_apps(device)
