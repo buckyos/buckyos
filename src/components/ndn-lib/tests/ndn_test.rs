@@ -6,9 +6,12 @@ use cyfs_warp::*;
 use hex::ToHex;
 use log::*;
 use ndn_lib::*;
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use serde_json::json;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{
+    fs,
+    io::{AsyncReadExt, AsyncWriteExt},
+};
 
 fn generate_random_bytes(size: u64) -> Vec<u8> {
     let mut rng = rand::rng();
@@ -18,9 +21,12 @@ fn generate_random_bytes(size: u64) -> Vec<u8> {
 }
 
 async fn init_handles(ndn_mgr_id: &str) -> NdnClient {
+    let mut rng = rand::rng();
+    let tls_port = rng.random_range(10000u16..20000u16);
+    let http_port = rng.random_range(10000u16..20000u16);
     let test_server_config = json!({
-        "tls_port": 3243,
-        "http_port": 3280,
+        "tls_port": tls_port,
+        "http_port": http_port,
         "hosts": {
             "*": {
                 "enable_cors": true,
@@ -54,6 +60,11 @@ async fn init_handles(ndn_mgr_id: &str) -> NdnClient {
         .path()
         .join("ndn-test")
         .join(ndn_mgr_id);
+
+    fs::create_dir_all(temp_dir.as_path())
+        .await
+        .expect("create temp dir failed.");
+
     let config = NamedDataMgrConfig {
         local_stores: vec![temp_dir.to_str().unwrap().to_string()],
         local_cache: None,
@@ -70,7 +81,7 @@ async fn init_handles(ndn_mgr_id: &str) -> NdnClient {
         .expect("set named data manager by id failed.");
 
     let client = NdnClient::new(
-        "http://localhost:3280/ndn/".to_string(),
+        format!("http://localhost:{}/ndn/", http_port),
         None,
         Some(ndn_mgr_id.to_string()),
     );
@@ -84,9 +95,6 @@ async fn ndn_local_chunk_ok() {
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
-    // let ndn_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(ndn_mgr_id.as_str()))
-    //     .await
-    //     .expect("get ndn manager by id failed");
 
     let chunk_size: u64 = 1024 * 1024 + 515;
     let chunk_data = generate_random_bytes(chunk_size);
@@ -169,9 +177,6 @@ async fn ndn_local_chunk_verify_failed() {
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
-    // let ndn_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(ndn_mgr_id.as_str()))
-    //     .await
-    //     .expect("get ndn manager by id failed");
 
     let chunk_size: u64 = 1024 * 1024 + 567;
     let chunk_data = generate_random_bytes(chunk_size);
@@ -195,12 +200,6 @@ async fn ndn_local_chunk_verify_failed() {
     NamedDataMgr::complete_chunk_writer(Some(ndn_mgr_id.as_str()), &chunk_id)
         .await
         .expect("wait chunk writer complete failed.");
-
-    // Pull the chunk using the NdnClient
-    // ndn_client
-    //     .pull_chunk(chunk_id.clone(), Some(ndn_mgr_id.as_str()))
-    //     .await
-    //     .expect("pull chunk from ndn-mgr failed");
 
     let (mut chunk_reader, len) = NamedDataMgr::open_chunk_reader(
         Some(ndn_mgr_id.as_str()),
@@ -255,21 +254,18 @@ async fn ndn_same_zone_chunk_ok() {
 
     // push the chunk using the NdnClient
     ndn_client
-        .push_chunk(chunk_id.clone(), Some(ndn_mgr_id.clone()))
+        .push_chunk(chunk_id.clone(), None)
         .await
         .expect("push chunk from ndn-mgr failed");
 
-    let empty_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let empty_ndn_client = init_handles(empty_ndn_mgr_id.as_str()).await;
-
     // Pull the chunk using the NdnClient
-    empty_ndn_client
-        .pull_chunk(chunk_id.clone(), Some(empty_ndn_mgr_id.as_str()))
+    ndn_client
+        .pull_chunk(chunk_id.clone(), Some(ndn_mgr_id.as_str()))
         .await
         .expect("pull chunk from ndn-mgr failed");
 
     let (mut chunk_reader, len) = NamedDataMgr::open_chunk_reader(
-        Some(empty_ndn_mgr_id.as_str()),
+        Some(ndn_mgr_id.as_str()),
         &chunk_id,
         SeekFrom::Start(0),
         false,
@@ -293,7 +289,7 @@ async fn ndn_same_zone_chunk_not_found() {
     init_logging("ndn_same_zone_chunk_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
+    let ndn_client = init_handles(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 * 1024 + 515;
     let chunk_data = generate_random_bytes(chunk_size);
@@ -302,30 +298,9 @@ async fn ndn_same_zone_chunk_not_found() {
     let chunk_id = ChunkId::from_sha256_result(&hash);
     info!("chunk_id: {}", chunk_id.to_string());
 
-    let (mut chunk_writer, _progress_info) =
-        NamedDataMgr::open_chunk_writer(Some(ndn_mgr_id.as_str()), &chunk_id, chunk_size, 0)
-            .await
-            .expect("open chunk writer failed");
-    chunk_writer
-        .write_all(&chunk_data)
-        .await
-        .expect("write chunk to ndn-mgr failed");
-    NamedDataMgr::complete_chunk_writer(Some(ndn_mgr_id.as_str()), &chunk_id)
-        .await
-        .expect("wait chunk writer complete failed.");
-
-    // no push
-    // ndn_client
-    //     .push_chunk(chunk_id.clone(), Some(ndn_mgr_id.clone()))
-    //     .await
-    //     .expect("pull chunk from ndn-mgr failed");
-
-    let empty_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let empty_ndn_client = init_handles(empty_ndn_mgr_id.as_str()).await;
-
     // Pull the chunk using the NdnClient
-    let ret = empty_ndn_client
-        .pull_chunk(chunk_id.clone(), Some(empty_ndn_mgr_id.as_str()))
+    let ret = ndn_client
+        .pull_chunk(chunk_id.clone(), Some(ndn_mgr_id.as_str()))
         .await;
 
     match ret {
@@ -347,9 +322,6 @@ async fn ndn_same_zone_chunk_verify_failed() {
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let ndn_client = init_handles(ndn_mgr_id.as_str()).await;
-    // let ndn_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(ndn_mgr_id.as_str()))
-    //     .await
-    //     .expect("get ndn manager by id failed");
 
     let chunk_size: u64 = 1024 * 1024 + 567;
     let chunk_data = generate_random_bytes(chunk_size);
@@ -374,29 +346,14 @@ async fn ndn_same_zone_chunk_verify_failed() {
         .await
         .expect("wait chunk writer complete failed.");
 
-    // push the chunk using the NdnClient
+    // Pull the chunk using the NdnClient
     ndn_client
-        .push_chunk(chunk_id.clone(), Some(ndn_mgr_id.clone()))
-        .await
-        .expect("push chunk from ndn-mgr failed");
-
-    // Pull the chunk using the NdnClient
-    // ndn_client
-    //     .pull_chunk(chunk_id.clone(), Some(ndn_mgr_id.as_str()))
-    //     .await
-    //     .expect("pull chunk from ndn-mgr failed");
-
-    let empty_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let empty_ndn_client = init_handles(empty_ndn_mgr_id.as_str()).await;
-
-    // Pull the chunk using the NdnClient
-    empty_ndn_client
-        .pull_chunk(chunk_id.clone(), Some(empty_ndn_mgr_id.as_str()))
+        .pull_chunk(chunk_id.clone(), Some(ndn_mgr_id.as_str()))
         .await
         .expect("pull chunk from local-zone failed");
 
     let (mut chunk_reader, len) = NamedDataMgr::open_chunk_reader(
-        Some(empty_ndn_mgr_id.as_str()),
+        Some(ndn_mgr_id.as_str()),
         &chunk_id,
         SeekFrom::Start(0),
         false,
