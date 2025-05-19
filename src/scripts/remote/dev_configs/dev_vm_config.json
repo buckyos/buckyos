@@ -36,7 +36,7 @@
         },
         "apps": {
             "buckyos": {
-                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon > /dev/null 2>&1 &",
+                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon --enable_active > /dev/null 2>&1 &",
                 "stop":"python3 /opt/buckyos/bin/killall.py"
             }
         }
@@ -57,7 +57,7 @@
         },
         "apps": {
             "buckyos": {
-                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon > /dev/null 2>&1 &",
+                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon --enable_active > /dev/null 2>&1 &",
                 "stop":"python3 /opt/buckyos/bin/killall.py"
             }
         }
