@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use futures::StreamExt;
+use anyhow;
 
 use crate::backend::MsgQueueBackend;
 use crate::error::MsgQueueError;
@@ -129,29 +131,77 @@ impl MsgQueueBackend for NatsBackend {
     }
     
     async fn get_message_reply(&self, message_id: &str) -> Result<Option<MessageReply>, MsgQueueError> {
-        let subject = format!("reply.{}", message_id);
-        let subscription = self.client
-            .subscribe(subject)
+        // 确保replies stream存在
+        let _ = self.js
+            .create_stream(async_nats::jetstream::stream::Config {
+                name: "replies".to_string(),
+                subjects: vec!["replies".to_string()],
+                storage: async_nats::jetstream::stream::StorageType::Memory,
+                max_age: std::time::Duration::from_secs(300), // 5分钟过期
+                max_messages: 10000, // 最多保留10000条消息
+                ..Default::default()
+            })
             .await
             .map_err(|e| MsgQueueError::BackendError(e.into()))?;
-            
-        // if let Some(msg) = subscription.next().await {
-        //     let reply: MessageReply = serde_json::from_slice(&msg.payload)
-        //         .map_err(|e| MsgQueueError::BackendError(e.into()))?;
-        //     Ok(Some(reply))
-        // } else {
-        //     Ok(None)
-        // }
 
-        unimplemented!()
+        let stream = self.js
+            .get_stream("replies")
+            .await
+            .map_err(|e| MsgQueueError::BackendError(e.into()))?;
+
+        let consumer = stream
+            .create_consumer(async_nats::jetstream::consumer::pull::Config {
+                durable_name: Some(format!("reply-consumer-{}", message_id)),
+                filter_subject: "replies".to_string(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| MsgQueueError::BackendError(e.into()))?;
+
+        // 等待回复，超时时间为5秒
+        let timeout = tokio::time::Duration::from_secs(5);
+        let reply = tokio::select! {
+            result = async {
+                match consumer.fetch().max_messages(1).messages().await {
+                    Ok(mut batch) => {
+                        if let Some(msg_result) = batch.next().await {
+                            match msg_result {
+                                Ok(msg) => Ok(Some(msg)),
+                                Err(e) => Err(MsgQueueError::BackendError(anyhow::Error::msg(e.to_string()))),
+                            }
+                        } else {
+                            Ok(None)
+                        }
+                    },
+                    Err(e) => Err(MsgQueueError::BackendError(anyhow::Error::msg(e.to_string()))),
+                }
+            } => {
+                if let Ok(Some(msg)) = result {
+                    let reply: MessageReply = serde_json::from_slice(&msg.payload)
+                        .map_err(|e| MsgQueueError::BackendError(e.into()))?;
+                    if reply.message_id.to_string() == message_id {
+                        msg.ack()
+                            .await
+                            .map_err(|e| MsgQueueError::BackendError(anyhow::Error::msg(e.to_string())))?;
+                        return Ok(Some(reply));
+                    }
+                }
+                Ok(None)
+            },
+            _ = tokio::time::sleep(timeout) => Ok(None),
+        };
+
+        // 清理消费者
+        let _ = stream.delete_consumer(&format!("reply-consumer-{}", message_id)).await;
+        reply
     }
     
     async fn reply_to_message(&self, reply: MessageReply) -> Result<(), MsgQueueError> {
-        let subject = format!("reply.{}", reply.message_id);
+        let subject = "replies".to_string();
         let payload = serde_json::to_vec(&reply)
             .map_err(|e| MsgQueueError::BackendError(e.into()))?;
             
-        self.client
+        self.js
             .publish(subject, payload.into())
             .await
             .map_err(|e| MsgQueueError::BackendError(e.into()))?;
