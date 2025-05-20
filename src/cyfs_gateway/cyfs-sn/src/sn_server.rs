@@ -23,6 +23,8 @@ pub struct SNServerConfig {
     ip:String,
     zone_config_jwt:String,
     zone_config_pkx:String,
+    #[serde(default)]
+    aliases:Vec<String>,
 }
 
 
@@ -37,7 +39,7 @@ pub struct SNServer {
     all_user_zone_config:Arc<Mutex<HashMap<String,(String,String)>>>,
     server_host:String,
     server_ip:IpAddr,
-
+    server_aliases:Vec<String>,
     zone_boot_config:String,
     zone_boot_config_pkx:String,
     zone_gateway_list:Option<Vec<String>>,//device_list is the list of device_did
@@ -74,6 +76,7 @@ impl SNServer {
             all_user_zone_config:Arc::new(Mutex::new(HashMap::new())),
             server_host:server_host,
             server_ip:server_ip,
+            server_aliases:server_config.aliases,
             zone_boot_config:zone_config,
             zone_boot_config_pkx:zone_config_pkx,
             zone_gateway_list:device_list,
@@ -469,7 +472,9 @@ impl NsProvider for SNServer {
         }
 
         let full_server_host = format!("{}.",self.server_host.as_str());
-        if name == self.server_host || name == full_server_host {
+        let req_full_name = format!("{}.",name);
+        if name == self.server_host || name == full_server_host ||
+             self.server_aliases.contains(&req_full_name) || self.server_aliases.contains(&name.to_string()) {
             //返回当前服务器的地址
             match record_type {
                 RecordType::A => {

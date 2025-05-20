@@ -1406,9 +1406,11 @@ MC4CAQAwBQYDK2VwBCIEIBvnIIa1Tx45SjRu9kBZuMgusP5q762SvojXZ4scFxVD
                 "main_sn" : {
                     "type" : "cyfs-sn",
                     "host":format!("web3.{}",sn_server_host),
+                    "aliases":vec![format!("sn.{}",sn_server_host)],
                     "ip":sn_server_ip,
                     "zone_config_jwt":zone_boot_config_jwt_str,
                     "zone_config_pkx":x_str
+
                 },
                 "zone_provider" : {
                     "type" : "zone-provider"
