@@ -17,7 +17,7 @@
   },
   "inner_services": {
     "main_sn": {
-      "host": "sn.buckyos.io",
+      "host": "web3.buckyos.io",
       "ip": "192.168.1.188",
       "type": "cyfs-sn",
       "zone_config_jwt": "eyJhbGciOiJFZERTQSJ9.eyJvb2RzIjpbIm9vZDEiXSwiZXhwIjoyMDU4ODM4OTM5LCJpYXQiOjE3NDM0Nzg5Mzl9.bWTpc-4RW4t6mz0ZUd6z962n9YDogwQ0AbzwIkD4FJbrs3Q7ujiVsi4WO0FzgKMndHh8oynPyydFM5gvaTXXBw",

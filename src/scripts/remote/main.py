@@ -13,6 +13,7 @@ import remote_device
 import py_src.util as util
 import py_src.clog as clog
 import py_src.clean as clean
+import py_src.sn as sn
 
 
 # 配置文件路径
@@ -91,27 +92,7 @@ def init():
   
 
 
-def active_sn():
-    temp_config =os.path.join(CONFIG_BASE, "sn_server/web3_gateway.json.temp")
-    sn_ip =  util.get_multipass_ip("sn")
-    print(f"sn vm ip: {sn_ip}")
 
-    # 读取sn配置文件模板，修改ip字段，生成配置文件
-    with open(temp_config, 'r') as f:
-        config = json.load(f)
-        config["inner_services"]["main_sn"]["ip"] = sn_ip[0]
-        # fix
-        config["includes"] = []
-        with open("./dev_configs/sn_server/web3_gateway.json", 'w') as f:
-            json.dump(config, f, indent=4)
-        print("generate web3_gateway.json")
-        # print(config["inner_services"]["main_sn"]["ip"])
-
-    vmsn = remote_device.remote_device("sn")
-    vmsn.scp_put("./dev_configs/sn_server/web3_gateway.json", "/opt/web3_bridge")
-    vmsn.scp_put("./dev_configs/sn_db.sqlite3", "/opt/web3_bridge")
-    vmsn.scp_put("./dev_configs/sn_server/device_key.pem", "/opt/web3_bridge")
-    print("sn config file, db file uploaded")
 
 
 def active():
@@ -210,19 +191,12 @@ def main():
                 print(f"install target device_id: {device_id}")
                 install.install(device_id)
         case "active_sn":
-            active_sn()
+            sn.active_sn(CONFIG_BASE)
         case "active":
             # active 非sn的ood和node
             active()
         case "start_sn":
-            device_id = "sn"
-            print(f"start target device_id: {device_id}")
-            device = remote_device.remote_device(device_id)
-            device.run_command("sudo chmod 777 /opt/web3_bridge/") #rust sqlite client 需要对目录和文件有写权限
-            device.run_command("sudo chmod 777 /opt/web3_bridge/sn_db.sqlite3")
-            device.run_command("sudo systemctl stop systemd-resolved")
-            device.run_command("sudo systemctl disable systemd-resolved")
-            start.start_all_apps(device)
+            sn.start_sn()
         case "start":
             if len(sys.argv) < 3:
                 print("Usage: start.py <device_id>")
