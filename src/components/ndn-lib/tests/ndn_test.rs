@@ -20,6 +20,44 @@ fn generate_random_bytes(size: u64) -> Vec<u8> {
     buffer
 }
 
+fn generate_random_chunk(size: u64) -> (ChunkId, Vec<u8>) {
+    let chunk_data = generate_random_bytes(size);
+    let mut hasher = ChunkHasher::new(None).expect("hash failed.");
+    let hash = hasher.calc_from_bytes(&chunk_data);
+    let chunk_id = ChunkId::from_sha256_result(&hash);
+    info!("chunk_id: {}", chunk_id.to_string());
+    (chunk_id, chunk_data)
+}
+
+async fn write_chunk(ndn_mgr_id: &str, chunk_id: &ChunkId, chunk_data: &[u8]) {
+    let (mut chunk_writer, _progress_info) =
+        NamedDataMgr::open_chunk_writer(Some(ndn_mgr_id), chunk_id, chunk_data.len() as u64, 0)
+            .await
+            .expect("open chunk writer failed");
+    chunk_writer
+        .write_all(chunk_data)
+        .await
+        .expect("write chunk to ndn-mgr failed");
+    NamedDataMgr::complete_chunk_writer(Some(ndn_mgr_id), chunk_id)
+        .await
+        .expect("wait chunk writer complete failed.");
+}
+
+async fn read_chunk(ndn_mgr_id: &str, chunk_id: &ChunkId) -> Vec<u8> {
+    let (mut chunk_reader, len) =
+        NamedDataMgr::open_chunk_reader(Some(ndn_mgr_id), chunk_id, SeekFrom::Start(0), false)
+            .await
+            .expect("open reader from ndn-mgr failed.");
+
+    let mut buffer = vec![0u8; len as usize];
+    chunk_reader
+        .read_exact(&mut buffer)
+        .await
+        .expect("read chunk from ndn-mgr failed");
+
+    buffer
+}
+
 async fn init_handles(ndn_mgr_id: &str) -> NdnClient {
     let mut rng = rand::rng();
     let tls_port = rng.random_range(10000u16..20000u16);
@@ -97,40 +135,11 @@ async fn ndn_local_chunk_ok() {
     let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 * 1024 + 515;
-    let chunk_data = generate_random_bytes(chunk_size);
-    let mut hasher = ChunkHasher::new(None).expect("hash failed.");
-    let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_sha256_result(&hash);
-    info!("chunk_id: {}", chunk_id.to_string());
+    let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
 
-    let (mut chunk_writer, _progress_info) =
-        NamedDataMgr::open_chunk_writer(Some(ndn_mgr_id.as_str()), &chunk_id, chunk_size, 0)
-            .await
-            .expect("open chunk writer failed");
-    chunk_writer
-        .write_all(&chunk_data)
-        .await
-        .expect("write chunk to ndn-mgr failed");
-    NamedDataMgr::complete_chunk_writer(Some(ndn_mgr_id.as_str()), &chunk_id)
-        .await
-        .expect("wait chunk writer complete failed.");
+    write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 
-    let (mut chunk_reader, len) = NamedDataMgr::open_chunk_reader(
-        Some(ndn_mgr_id.as_str()),
-        &chunk_id,
-        SeekFrom::Start(0),
-        false,
-    )
-    .await
-    .expect("open reader from ndn-mgr failed.");
-
-    assert_eq!(len, chunk_size, "chunk-length mismatch");
-
-    let mut buffer = vec![0u8; chunk_size as usize];
-    chunk_reader
-        .read_exact(&mut buffer)
-        .await
-        .expect("read chunk from ndn-mgr failed");
+    let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
 
     assert_eq!(buffer, chunk_data, "chunk-content check failed");
 }
@@ -143,11 +152,7 @@ async fn ndn_local_chunk_not_found() {
     let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 + 154;
-    let chunk_data = generate_random_bytes(chunk_size);
-    let mut hasher = ChunkHasher::new(None).expect("hash failed.");
-    let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_sha256_result(&hash);
-    info!("chunk_id: {}", chunk_id.to_string());
+    let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
 
     // Pull the chunk using the NdnClient
     let ret = NamedDataMgr::open_chunk_reader(
@@ -179,44 +184,13 @@ async fn ndn_local_chunk_verify_failed() {
     let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 * 1024 + 567;
-    let chunk_data = generate_random_bytes(chunk_size);
-    let mut hasher = ChunkHasher::new(None).expect("hash failed.");
-    let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_sha256_result(&hash);
-    info!("chunk_id: {}", chunk_id.to_string());
-
-    let (mut chunk_writer, _progress_info) =
-        NamedDataMgr::open_chunk_writer(Some(ndn_mgr_id.as_str()), &chunk_id, chunk_size, 0)
-            .await
-            .expect("open chunk writer failed");
-
+    let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
     let mut fake_chunk_data = chunk_data.clone();
     fake_chunk_data.splice(0..10, 0..10);
 
-    chunk_writer
-        .write_all(&fake_chunk_data)
-        .await
-        .expect("write chunk to ndn-mgr failed");
-    NamedDataMgr::complete_chunk_writer(Some(ndn_mgr_id.as_str()), &chunk_id)
-        .await
-        .expect("wait chunk writer complete failed.");
+    write_chunk(ndn_mgr_id.as_str(), &chunk_id, &fake_chunk_data).await;
 
-    let (mut chunk_reader, len) = NamedDataMgr::open_chunk_reader(
-        Some(ndn_mgr_id.as_str()),
-        &chunk_id,
-        SeekFrom::Start(0),
-        false,
-    )
-    .await
-    .expect("open reader from ndn-mgr failed.");
-
-    assert_eq!(len, chunk_size, "chunk-length mismatch");
-
-    let mut buffer = vec![0u8; chunk_size as usize];
-    chunk_reader
-        .read_exact(&mut buffer)
-        .await
-        .expect("read chunk from ndn-mgr failed");
+    let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
 
     assert_eq!(buffer, fake_chunk_data, "chunk-content check failed");
 
@@ -234,23 +208,9 @@ async fn ndn_same_zone_chunk_ok() {
     let ndn_client = init_handles(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 * 1024 + 515;
-    let chunk_data = generate_random_bytes(chunk_size);
-    let mut hasher = ChunkHasher::new(None).expect("hash failed.");
-    let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_sha256_result(&hash);
-    info!("chunk_id: {}", chunk_id.to_string());
+    let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
 
-    let (mut chunk_writer, _progress_info) =
-        NamedDataMgr::open_chunk_writer(Some(ndn_mgr_id.as_str()), &chunk_id, chunk_size, 0)
-            .await
-            .expect("open chunk writer failed");
-    chunk_writer
-        .write_all(&chunk_data)
-        .await
-        .expect("write chunk to ndn-mgr failed");
-    NamedDataMgr::complete_chunk_writer(Some(ndn_mgr_id.as_str()), &chunk_id)
-        .await
-        .expect("wait chunk writer complete failed.");
+    write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 
     // push the chunk using the NdnClient
     ndn_client
@@ -264,22 +224,7 @@ async fn ndn_same_zone_chunk_ok() {
         .await
         .expect("pull chunk from ndn-mgr failed");
 
-    let (mut chunk_reader, len) = NamedDataMgr::open_chunk_reader(
-        Some(ndn_mgr_id.as_str()),
-        &chunk_id,
-        SeekFrom::Start(0),
-        false,
-    )
-    .await
-    .expect("open reader from ndn-mgr failed.");
-
-    assert_eq!(len, chunk_size);
-
-    let mut buffer = vec![0u8; chunk_size as usize];
-    chunk_reader
-        .read_exact(&mut buffer)
-        .await
-        .expect("read chunk from ndn-mgr failed");
+    let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
 
     assert_eq!(buffer, chunk_data);
 }
@@ -292,11 +237,7 @@ async fn ndn_same_zone_chunk_not_found() {
     let ndn_client = init_handles(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 * 1024 + 515;
-    let chunk_data = generate_random_bytes(chunk_size);
-    let mut hasher = ChunkHasher::new(None).expect("hash failed.");
-    let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_sha256_result(&hash);
-    info!("chunk_id: {}", chunk_id.to_string());
+    let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
 
     // Pull the chunk using the NdnClient
     let ret = ndn_client
@@ -324,27 +265,12 @@ async fn ndn_same_zone_chunk_verify_failed() {
     let ndn_client = init_handles(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 * 1024 + 567;
-    let chunk_data = generate_random_bytes(chunk_size);
-    let mut hasher = ChunkHasher::new(None).expect("hash failed.");
-    let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_sha256_result(&hash);
-    info!("chunk_id: {}", chunk_id.to_string());
-
-    let (mut chunk_writer, _progress_info) =
-        NamedDataMgr::open_chunk_writer(Some(ndn_mgr_id.as_str()), &chunk_id, chunk_size, 0)
-            .await
-            .expect("open chunk writer failed");
+    let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
 
     let mut fake_chunk_data = chunk_data.clone();
     fake_chunk_data.splice(0..10, 0..10);
 
-    chunk_writer
-        .write_all(&fake_chunk_data)
-        .await
-        .expect("write chunk to ndn-mgr failed");
-    NamedDataMgr::complete_chunk_writer(Some(ndn_mgr_id.as_str()), &chunk_id)
-        .await
-        .expect("wait chunk writer complete failed.");
+    write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 
     // Pull the chunk using the NdnClient
     ndn_client
@@ -352,22 +278,7 @@ async fn ndn_same_zone_chunk_verify_failed() {
         .await
         .expect("pull chunk from local-zone failed");
 
-    let (mut chunk_reader, len) = NamedDataMgr::open_chunk_reader(
-        Some(ndn_mgr_id.as_str()),
-        &chunk_id,
-        SeekFrom::Start(0),
-        false,
-    )
-    .await
-    .expect("open reader from ndn-mgr failed.");
-
-    assert_eq!(len, chunk_size, "chunk-length mismatch");
-
-    let mut buffer = vec![0u8; chunk_size as usize];
-    chunk_reader
-        .read_exact(&mut buffer)
-        .await
-        .expect("read chunk from ndn-mgr failed");
+    let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
 
     assert_eq!(buffer, fake_chunk_data, "chunk-content check failed");
 
