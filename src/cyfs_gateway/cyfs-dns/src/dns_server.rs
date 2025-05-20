@@ -57,7 +57,7 @@ pub async fn create_ns_provider(
             let dns_provider = DnsProvider::new(None);
             Ok(Box::new(dns_provider))
         }
-        
+
         DNSProviderType::SN => {
             let sn_server_id = provider_config.config.get("server_id");
             if sn_server_id.is_none() {
@@ -154,7 +154,7 @@ fn nameinfo_to_rdata(record_type: &str, name_info: &NameInfo) -> Result<Vec<RDat
                     warn!("TXT is too long, split it");
                     let s1 = txt[0..254].to_string();
                     let s2 = txt[254..].to_string();
-    
+
                     records.push(RData::TXT(TXT::new(vec![s1, s2])));
                 } else {
                     records.push(RData::TXT(TXT::new(vec![txt])));
@@ -172,7 +172,7 @@ fn nameinfo_to_rdata(record_type: &str, name_info: &NameInfo) -> Result<Vec<RDat
                     records.push(RData::TXT(TXT::new(vec![format!("PKX={};", pk_x)])));
                 }
             }
-           
+
             return Ok(records);
         }
         _ => {
@@ -329,20 +329,27 @@ impl DNSServer {
             return Ok(header.into());
         }
 
-        if let Some(server_name) = self.config.this_name.as_ref() {
-            if !name.ends_with(server_name.as_str()) {
-                info!("All providers can't resolve name:{} enter fallback", name);
-                // for server_name in self.config.fallback.iter() {
-                //     let resp_message = self.handle_fallback(request,server_name,response.clone()).await;
-                //     if resp_message.is_ok() {
+        // if let Some(server_name) = self.config.this_name.as_ref() {
+        //     if !name.ends_with(server_name.as_str()) {
+        // info!(
+        //     "All providers can't resolve name:{}, {} enter fallback",
+        //     name,
+        //     server_name.as_str()
+        // );
+        // for server_name in self.config.fallback.iter() {
+        //     let resp_message = self.handle_fallback(request,server_name,response.clone()).await;
+        //     if resp_message.is_ok() {
 
-                //         return resp_info;
-                //     }
-                // }
-            }
-        }
+        //         return resp_info;
+        //     }
+        // }
+        //     }
+        // }
 
-        warn!("All providers can't resolve name:{}", name);
+        warn!(
+            "[{:?}] All providers can't resolve name:{}",
+            record_type, name
+        );
         return Err(Error::NameNotFound("".to_string()));
     }
 }
