@@ -52,11 +52,26 @@ def create_rootfs_tarball():
     return tar_path
 
 
+def install_sn(device): 
+        # sn 节点
+    print("uploading web3_bridge ...")
+    project_dir = get_project_dir()
+    print(f"project_dir, {project_dir}")
+    device.scp_put(f"{project_dir}/web3_bridge/start.py", "/opt/web3_bridge")
+    device.scp_put(f"{project_dir}/web3_bridge/stop.py", "/opt/web3_bridge")
+    device.scp_put(f"{project_dir}/web3_bridge/web3_gateway", "/opt/web3_bridge")
+
+
 
 def install(device_id: str):
     device = remote_device(device_id)
     
     try:
+        if  device.has_app("web3_bridge"):
+            install_sn(device)
+            sys.exit(0)
+
+
         # 1. 创建tar包
         print("Creating rootfs tarball...")
         tar_path = create_rootfs_tarball()
@@ -93,21 +108,11 @@ def install(device_id: str):
                 f"cd /opt/buckyos && tar xzf {remote_tar} ./bin",
             ]
 
-        if device.has_app("web3_bridge"):
-            print("uploading web3_bridge ...")
-            project_dir = get_project_dir()
-            print(f"project_dir, {project_dir}")
-            device.scp_put(f"{project_dir}/web3_bridge/start.py", "/opt/web3_bridge")
-            device.scp_put(f"{project_dir}/web3_bridge/stop.py", "/opt/web3_bridge")
-            device.scp_put(f"{project_dir}/web3_bridge/web3_gateway", "/opt/web3_bridge")
-
         for cmd in install_commands:
             print(f"Running remote command: {cmd}")
             stdout, stderr = device.run_command(cmd)
             if stderr:
                 raise Exception(f"Installation failed: {stderr}")
-            
-        
         
         # 6. 如果是新安装，复制配置文件
         #if is_fresh_install and 'identity_file' in device.config:
