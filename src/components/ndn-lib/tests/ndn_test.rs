@@ -176,9 +176,9 @@ async fn check_obj_inner_path(
     }
 }
 
-type NdnServerUrl = String;
+type NdnServerHost = String;
 
-async fn init_ndn_server(ndn_mgr_id: &str) -> (NdnClient, NdnServerUrl) {
+async fn init_ndn_server(ndn_mgr_id: &str) -> (NdnClient, NdnServerHost) {
     let mut rng = rand::rng();
     let tls_port = rng.random_range(10000u16..20000u16);
     let http_port = rng.random_range(10000u16..20000u16);
@@ -238,10 +238,14 @@ async fn init_ndn_server(ndn_mgr_id: &str) -> (NdnClient, NdnServerUrl) {
         .await
         .expect("set named data manager by id failed.");
 
-    let url = format!("http://localhost:{}/ndn/", http_port);
-    let client = NdnClient::new(url.clone(), None, Some(ndn_mgr_id.to_string()));
+    let host = format!("localhost:{}", http_port);
+    let client = NdnClient::new(
+        format!("http://{}/ndn/", host),
+        None,
+        Some(ndn_mgr_id.to_string()),
+    );
 
-    (client, url)
+    (client, host)
 }
 
 #[tokio::test]
@@ -671,7 +675,8 @@ async fn ndn_same_zone_object_ok() {
     init_logging("ndn_same_zone_object_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (_ndn_client, ndn_url) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (_ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let ndn_url = format!("http://{}/ndn/", ndn_host);
 
     let (obj_id, obj) = generate_random_obj();
 
@@ -703,7 +708,8 @@ async fn ndn_same_zone_object_not_found() {
     init_logging("ndn_same_zone_object_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (_ndn_client, ndn_url) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (_ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let _ndn_url = format!("http://{}/ndn/", ndn_host);
 
     let (obj_id, obj) = generate_random_obj();
 
@@ -713,7 +719,7 @@ async fn ndn_same_zone_object_not_found() {
         .expect("put object in local failed");
 
     let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (target_ndn_client, _target_ndn_url) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
+    let (_target_ndn_client, _target_ndn_url) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
 
     // no get
     // let (got_obj_id, got_obj) = target_ndn_client
@@ -741,7 +747,8 @@ async fn ndn_same_zone_object_verify_failed() {
     init_logging("ndn_local_object_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (_ndn_client, ndn_url) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (_ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let ndn_url = format!("http://{}/ndn/", ndn_host);
 
     let (obj_id, obj) = generate_random_obj();
     let (fake_obj_id, fake_obj) = generate_random_obj();
@@ -752,7 +759,7 @@ async fn ndn_same_zone_object_verify_failed() {
         .expect("put object in local failed");
 
     let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (target_ndn_client, _target_ndn_url) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
+    let (target_ndn_client, _target_ndn_host) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
 
     // get object using the NdnClient
     let ret = target_ndn_client
@@ -773,9 +780,39 @@ async fn ndn_same_zone_object_verify_failed() {
     }
 }
 
+// http://{host}/ndn/{obj-id}/inner-path
 #[tokio::test]
 async fn ndn_same_zone_o_link_innerpath_ok() {
-    unimplemented!()
+    init_logging("ndn_same_zone_object_ok", false);
+
+    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (_ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let ndn_url = format!("http://{}/ndn/", ndn_host);
+
+    let (obj_id, obj) = generate_random_obj();
+    let obj_id_base32 = obj_id.to_base32();
+
+    let (_, obj_str) = build_named_object_by_json("non-test", &obj);
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &obj_id, obj_str.as_str())
+        .await
+        .expect("put object in local failed");
+
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (target_ndn_client, _target_ndn_host) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
+
+    // get object using the NdnClient
+    let inner_path = "obj";
+    let o_link_inner_path = format!("http://{}.{}/ndn/{}", obj_id_base32, ndn_host, inner_path);
+    let (got_obj_id, got_obj) = target_ndn_client
+        .get_obj_by_url(o_link_inner_path.as_str(), None)
+        .await
+        .expect("get obj from ndn-mgr failed");
+
+    // assert_eq!(got_obj_id, obj_id, "got obj-id mismatch");
+
+    let (_, got_obj_str) = build_named_object_by_json("non-test", &got_obj);
+    let (_, expect_obj_str) = build_named_object_by_json("non-test", obj.get(inner_path).unwrap());
+    assert_eq!(got_obj_str, expect_obj_str, "got obj mismatch");
 }
 
 #[tokio::test]
