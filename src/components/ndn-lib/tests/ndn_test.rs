@@ -176,7 +176,9 @@ async fn check_obj_inner_path(
     }
 }
 
-async fn init_handles(ndn_mgr_id: &str) -> NdnClient {
+type NdnServerUrl = String;
+
+async fn init_ndn_server(ndn_mgr_id: &str) -> (NdnClient, NdnServerUrl) {
     let mut rng = rand::rng();
     let tls_port = rng.random_range(10000u16..20000u16);
     let http_port = rng.random_range(10000u16..20000u16);
@@ -236,13 +238,10 @@ async fn init_handles(ndn_mgr_id: &str) -> NdnClient {
         .await
         .expect("set named data manager by id failed.");
 
-    let client = NdnClient::new(
-        format!("http://localhost:{}/ndn/", http_port),
-        None,
-        Some(ndn_mgr_id.to_string()),
-    );
+    let url = format!("http://localhost:{}/ndn/", http_port);
+    let client = NdnClient::new(url.clone(), None, Some(ndn_mgr_id.to_string()));
 
-    client
+    (client, url)
 }
 
 #[tokio::test]
@@ -250,7 +249,7 @@ async fn ndn_local_chunk_ok() {
     init_logging("ndn_local_chunk_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
+    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 * 1024 + 515;
     let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
@@ -267,7 +266,7 @@ async fn ndn_local_chunk_not_found() {
     init_logging("ndn_local_chunk_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
+    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 + 154;
     let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
@@ -299,7 +298,7 @@ async fn ndn_local_chunk_verify_failed() {
     init_logging("ndn_local_chunk_verify_failed", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
+    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 * 1024 + 567;
     let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
@@ -323,7 +322,7 @@ async fn ndn_local_object_ok() {
     init_logging("ndn_local_object_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
+    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
 
     let (obj_id, obj) = generate_random_obj();
 
@@ -502,7 +501,7 @@ async fn ndn_local_object_not_found() {
     init_logging("ndn_local_object_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
+    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
 
     let (obj_id, obj) = generate_random_obj();
 
@@ -529,7 +528,7 @@ async fn ndn_local_object_verify_failed() {
     init_logging("ndn_local_object_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
+    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
 
     let (obj_id, obj) = generate_random_obj();
     let (fake_obj_id, fake_obj) = generate_random_obj();
@@ -557,7 +556,7 @@ async fn ndn_same_zone_chunk_ok() {
     init_logging("ndn_same_zone_chunk_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let ndn_client = init_handles(ndn_mgr_id.as_str()).await;
+    let (ndn_client, _) = init_ndn_server(ndn_mgr_id.as_str()).await;
 
     let chunk1_size: u64 = 1024 * 1024 + 515;
     let (chunk1_id, chunk1_data) = generate_random_chunk(chunk1_size);
@@ -567,28 +566,28 @@ async fn ndn_same_zone_chunk_ok() {
     let (chunk2_id, chunk2_data) = generate_random_chunk(chunk2_size);
     write_chunk(ndn_mgr_id.as_str(), &chunk2_id, chunk2_data.as_slice()).await;
 
-    let remote_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let remote_ndn_client = init_handles(remote_ndn_mgr_id.as_str()).await;
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (target_ndn_client, _) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
 
     // push the chunk using the NdnClient
     ndn_client
         .push_chunk(
             chunk1_id.clone(),
-            Some(remote_ndn_client.gen_chunk_url(&chunk1_id, None)),
+            Some(target_ndn_client.gen_chunk_url(&chunk1_id, None)),
         )
         .await
         .expect("push chunk from ndn-mgr failed");
 
-    let buffer = read_chunk(remote_ndn_mgr_id.as_str(), &chunk1_id).await;
+    let buffer = read_chunk(target_ndn_mgr_id.as_str(), &chunk1_id).await;
     assert_eq!(buffer, chunk1_data);
 
     // Pull the chunk using the NdnClient
     ndn_client
-        .pull_chunk(chunk2_id.clone(), Some(remote_ndn_mgr_id.as_str()))
+        .pull_chunk(chunk2_id.clone(), Some(target_ndn_mgr_id.as_str()))
         .await
         .expect("pull chunk from ndn-mgr failed");
 
-    let buffer = read_chunk(remote_ndn_mgr_id.as_str(), &chunk2_id).await;
+    let buffer = read_chunk(target_ndn_mgr_id.as_str(), &chunk2_id).await;
     assert_eq!(buffer, chunk2_data);
 }
 
@@ -597,23 +596,23 @@ async fn ndn_same_zone_chunk_not_found() {
     init_logging("ndn_same_zone_chunk_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_handles(ndn_mgr_id.as_str()).await;
+    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 * 1024 + 515;
     let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
 
     write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 
-    let remote_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _remote_ndn_client = init_handles(remote_ndn_mgr_id.as_str()).await;
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let _target_ndn_client = init_ndn_server(target_ndn_mgr_id.as_str()).await;
 
     // Pull the chunk using the NdnClient
     // let ret = ndn_client
-    //     .pull_chunk(chunk_id.clone(), Some(remote_ndn_mgr_id.as_str()))
+    //     .pull_chunk(chunk_id.clone(), Some(target_ndn_mgr_id.as_str()))
     //     .await;
 
     let ret = NamedDataMgr::open_chunk_reader(
-        Some(remote_ndn_mgr_id.as_str()),
+        Some(target_ndn_mgr_id.as_str()),
         &chunk_id,
         SeekFrom::Start(0),
         false,
@@ -638,7 +637,7 @@ async fn ndn_same_zone_chunk_verify_failed() {
     init_logging("ndn_same_zone_chunk_verify_failed", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let ndn_client = init_handles(ndn_mgr_id.as_str()).await;
+    let (ndn_client, _) = init_ndn_server(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 * 1024 + 567;
     let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
@@ -648,16 +647,16 @@ async fn ndn_same_zone_chunk_verify_failed() {
 
     write_chunk(ndn_mgr_id.as_str(), &chunk_id, fake_chunk_data.as_slice()).await;
 
-    let remote_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _remote_ndn_client = init_handles(remote_ndn_mgr_id.as_str()).await;
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let _target_ndn_client = init_ndn_server(target_ndn_mgr_id.as_str()).await;
 
     // Pull the chunk using the NdnClient
     ndn_client
-        .pull_chunk(chunk_id.clone(), Some(remote_ndn_mgr_id.as_str()))
+        .pull_chunk(chunk_id.clone(), Some(target_ndn_mgr_id.as_str()))
         .await
         .expect("pull chunk from local-zone failed");
 
-    let buffer = read_chunk(remote_ndn_mgr_id.as_str(), &chunk_id).await;
+    let buffer = read_chunk(target_ndn_mgr_id.as_str(), &chunk_id).await;
 
     assert_eq!(buffer, fake_chunk_data, "chunk-content check failed");
 
@@ -665,6 +664,113 @@ async fn ndn_same_zone_chunk_verify_failed() {
     let hash = hasher.calc_from_bytes(&buffer);
     let fake_chunk_id = ChunkId::from_sha256_result(&hash);
     assert_ne!(fake_chunk_id, chunk_id, "chunk-id should mismatch");
+}
+
+#[tokio::test]
+async fn ndn_same_zone_object_ok() {
+    init_logging("ndn_same_zone_object_ok", false);
+
+    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (_ndn_client, ndn_url) = init_ndn_server(ndn_mgr_id.as_str()).await;
+
+    let (obj_id, obj) = generate_random_obj();
+
+    let (_, obj_str) = build_named_object_by_json("non-test", &obj);
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &obj_id, obj_str.as_str())
+        .await
+        .expect("put object in local failed");
+
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (target_ndn_client, _target_ndn_url) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
+
+    // get object using the NdnClient
+    let (got_obj_id, got_obj) = target_ndn_client
+        .get_obj_by_url(
+            format!("{}{}", ndn_url, obj_id.to_base32()).as_str(),
+            Some(obj_id.clone()),
+        )
+        .await
+        .expect("get obj from ndn-mgr failed");
+
+    assert_eq!(got_obj_id, obj_id, "got obj-id mismatch");
+
+    let (_, got_obj_str) = build_named_object_by_json("non-test", &got_obj);
+    assert_eq!(got_obj_str, obj_str, "got obj mismatch");
+}
+
+#[tokio::test]
+async fn ndn_same_zone_object_not_found() {
+    init_logging("ndn_same_zone_object_not_found", false);
+
+    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (_ndn_client, ndn_url) = init_ndn_server(ndn_mgr_id.as_str()).await;
+
+    let (obj_id, obj) = generate_random_obj();
+
+    let (_, obj_str) = build_named_object_by_json("non-test", &obj);
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &obj_id, obj_str.as_str())
+        .await
+        .expect("put object in local failed");
+
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (target_ndn_client, _target_ndn_url) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
+
+    // no get
+    // let (got_obj_id, got_obj) = target_ndn_client
+    //     .get_obj_by_url(
+    //         format!("{}{}", ndn_url, obj_id.to_base32()).as_str(),
+    //         Some(obj_id.clone()),
+    //     )
+    //     .await
+    //     .expect("get obj from ndn-mgr failed");
+
+    check_obj_inner_path(
+        target_ndn_mgr_id.as_str(),
+        &obj_id,
+        "non-test",
+        None,
+        Some(None),
+        None,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn ndn_same_zone_object_verify_failed() {
+    init_logging("ndn_local_object_ok", false);
+
+    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (_ndn_client, ndn_url) = init_ndn_server(ndn_mgr_id.as_str()).await;
+
+    let (obj_id, obj) = generate_random_obj();
+    let (fake_obj_id, fake_obj) = generate_random_obj();
+
+    let (_, fake_obj_str) = build_named_object_by_json("non-test", &fake_obj);
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &obj_id, fake_obj_str.as_str())
+        .await
+        .expect("put object in local failed");
+
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (target_ndn_client, _target_ndn_url) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
+
+    // get object using the NdnClient
+    let ret = target_ndn_client
+        .get_obj_by_url(
+            format!("{}{}", ndn_url, obj_id.to_base32()).as_str(),
+            Some(obj_id.clone()),
+        )
+        .await;
+
+    match ret {
+        Ok(_) => assert!(false, "should obj id verify failed"),
+        Err(err) => {
+            if let NdnError::InvalidId(_) = err {
+            } else {
+                assert!(false, "unexpect error, should obj id verify failed.")
+            }
+        }
+    }
 }
 
 #[tokio::test]
