@@ -33,6 +33,7 @@ def print_usage():
     print("  ./main.py install --all            # 全部vm，安装buckyos")
     print("  ./main.py active                   # 激活测试身份")
     print("  ./main.py active_sn                # 激活测试sn配置信息")
+    print("  ./main.py purge <device_id>        # 清除设备（用户）配置信息")
     print("  ./main.py start_sn                 # 启动sn")
     print("  ./main.py start <device_id>        # 启动buckyos")
     print("  ./main.py start --all              # 全部vm，启动buckyos, 但是不会启动sn")
@@ -79,6 +80,19 @@ def network():
 
 
 
+def purge():
+    if len(sys.argv) < 3:
+        print("Usage: main.py purge <device_id>")
+        return
+    device_id = sys.argv[2]
+    if device_id == "sn":
+        print("sn no support purge")
+        return
+    device = remote_device.remote_device("nodeA2")
+    device.run_command("sudo rm /opt/buckyos/etc/node_identity.json")
+    device.run_command("sudo rm /opt/buckyos/etc/node_private_key.pem")
+    device.run_command("sudo rm /opt/buckyos/etc/start_config.json")
+    print("purge config ok")
 
 
 
@@ -197,11 +211,13 @@ def main():
         case "active":
             # active 非sn的ood和node
             active()
+        case "purge":
+            purge()
         case "start_sn":
             sn.start_sn()
         case "start":
             if len(sys.argv) < 3:
-                print("Usage: start.py <device_id>")
+                print("Usage: main.py start <device_id>")
                 return
             device_id = sys.argv[2]
             if device_id == "--all":
