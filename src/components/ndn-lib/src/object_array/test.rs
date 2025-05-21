@@ -27,7 +27,7 @@ fn gen_random_obj_id(seed: &str) -> ObjId {
 }
 
 async fn test_object_array() {
-    let mut ar = ObjectArray::new(HashMethod::Sha256, None);
+    let mut ar = ObjectArray::new(HashMethod::Sha256, Some(ObjectArrayStorageType::JSONFile));
 
     for i in 0..100 {
         let obj_id = gen_random_obj_id(&format!("test-{}", i));

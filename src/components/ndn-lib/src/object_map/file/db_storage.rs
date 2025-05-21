@@ -451,7 +451,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
                 self.file, file, e
             );
             error!("{}", msg);
-            NdnError::DbError(msg)
+            NdnError::IoError(msg)
         })?;
 
         info!("Renamed SQLite database: {:?} -> {:?}", self.file, file);

@@ -88,10 +88,10 @@ mod base64_serde {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct JSONStorageItem {
-    #[serde(with = "serde_objid_as_base32_helper")]
+    #[serde(with = "serde_objid_as_base32_helper", rename = "v")]
     value: ObjId,
 
-    #[serde(with = "serde_u64_as_string_helper")]
+    #[serde(with = "serde_u64_as_string_helper", rename = "i")]
     mtree_index: Option<u64>,
 }
 
@@ -462,6 +462,47 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         // Check if the storage is read-only
         self.check_read_only()?;
 
+        // Check if the file is the same as the current one
+        if file != self.file {
+            if file.exists() {
+                warn!(
+                    "Target object map storage file already exists: {}, now will overwrite it",
+                    file.display()
+                );
+            }
+
+            if self.file.exists() {
+                if file.exists() {
+                    // If the target file exists, we need to rename the current file
+                    std::fs::remove_file(file).map_err(|e| {
+                        let msg = format!("Failed to remove file: {:?}, {}", file, e);
+                        error!("{}", msg);
+                        NdnError::IoError(msg)
+                    })?;
+                }
+                
+                std::fs::rename(&self.file, file).map_err(|e| {
+                    let msg = format!(
+                        "Failed to rename json file: {:?} -> {:?}, {}",
+                        self.file, file, e
+                    );
+                    error!("{}", msg);
+                    NdnError::IoError(msg)
+                })?;
+            } else {
+                // We hadn't save the file yet, so we can just create a new one
+                self.is_dirty = true;
+            }
+
+            // Update the file path
+            self.file = file.to_path_buf();
+        } else {
+            if !self.file.exists() {
+                // We hadn't save the file yet, so we can just create a new one
+                self.is_dirty = true;
+            }
+        }
+
         if !self.is_dirty {
             // No changes to save
             return Ok(());
@@ -480,9 +521,10 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
             NdnError::IoError(msg)
         })?;
 
+        info!("Saved JSON storage to file: {:?}", file);
+
         // Mark the storage as clean
         self.is_dirty = false;
-        self.file = file.to_path_buf();
 
         Ok(())
     }

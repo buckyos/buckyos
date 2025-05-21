@@ -144,7 +144,7 @@ impl ObjectMap {
 
         // First load meta from storage
         let ret = storage.get_meta().await.map_err(|e| {
-            let msg = format!("Error getting object map meta: {}", e);
+            let msg = format!("Error getting object map meta: {}, {}", container_id, e);
             error!("{}", msg);
             e
         })?;

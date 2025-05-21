@@ -24,6 +24,47 @@ impl ObjectMapStorageFactory {
         }
     }
 
+    fn get_file_path_by_id(&self, container_id: Option<&ObjId>, storage_type: ObjectMapStorageType) -> PathBuf {
+        let file_name = match storage_type {
+            ObjectMapStorageType::Memory => {
+                unreachable!("Memory storage does not have a file path");
+            }
+            ObjectMapStorageType::SQLite => {
+                if let Some(id) = container_id {
+                    id.to_base32()
+                } else {
+                    self.get_temp_file_name()
+                }
+            }
+            ObjectMapStorageType::JSONFile => {
+                if let Some(id) = container_id {
+                    id.to_base32()
+                } else {
+                    self.get_temp_file_name()
+                }
+            }
+        };
+
+        self.get_file_path(&file_name, storage_type)
+    }
+
+    fn get_file_path(&self, file_name: &str, storage_type: ObjectMapStorageType) -> PathBuf {
+        match storage_type {
+            ObjectMapStorageType::Memory => {
+                unreachable!("Memory storage does not have a file path");
+            }
+            ObjectMapStorageType::SQLite => {
+                let file_name = format!("{}.sqlite", file_name);
+                self.data_dir.join(file_name)
+            }
+            ObjectMapStorageType::JSONFile => {
+                let file_name = format!("{}.json", file_name);
+
+                self.data_dir.join(file_name)
+            }
+        }
+    }
+    
     pub async fn open(
         &self,
         container_id: Option<&ObjId>,
@@ -50,26 +91,12 @@ impl ObjectMapStorageFactory {
                 Err(NdnError::PermissionDenied(msg))
             }
             ObjectMapStorageType::SQLite => {
-                let file_name = if let Some(id) = container_id {
-                    format!("{}.sqlite", id.to_base32())
-                } else {
-                    let temp_file_name = self.get_temp_file_name();
-                    format!("{}.sqlite", temp_file_name)
-                };
-
-                let file = self.data_dir.join(&file_name);
+                let file = self.get_file_path_by_id(container_id, storage_type);
                 let storage = ObjectMapSqliteStorage::new(file, read_only)?;
                 Ok(Box::new(storage))
             }
             ObjectMapStorageType::JSONFile => {
-                let file_name = if let Some(id) = container_id {
-                    format!("{}.json", id.to_base32())
-                } else {
-                    let temp_file_name = self.get_temp_file_name();
-                    format!("{}.json", temp_file_name)
-                };
-
-                let file = self.data_dir.join(&file_name);
+                let file = self.get_file_path_by_id(container_id, storage_type);
                 let storage = ObjectMapJSONStorage::new(file, read_only)?;
                 Ok(Box::new(storage))
             }
@@ -81,8 +108,7 @@ impl ObjectMapStorageFactory {
         container_id: &ObjId,
         storage: &mut dyn ObjectMapInnerStorage,
     ) -> NdnResult<()> {
-        let file_name = format!("{}.sqlite", container_id.to_base32());
-        let file = self.data_dir.join(&file_name);
+        let file = self.get_file_path_by_id(Some(container_id), storage.get_type());
 
         storage.save(&file).await
     }
@@ -93,20 +119,19 @@ impl ObjectMapStorageFactory {
         storage: &dyn ObjectMapInnerStorage,
         read_only: bool,
     ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
-        let file = if read_only {
-            self.data_dir
-                .join(format!("{}.sqlite", container_id.to_base32()))
+        let file_name = if read_only {
+            container_id.to_base32()
         } else {
             let index = self.temp_file_index.fetch_add(1, Ordering::SeqCst);
-            let file_name = format!(
+            format!(
                 "clone_{}_{}_{}.sqlite",
                 container_id.to_base32(),
                 index,
                 chrono::Utc::now().timestamp()
-            );
-            self.data_dir.join(&file_name)
+            )
         };
 
+        let file = self.get_file_path(&file_name, storage.get_type());
         storage.clone(&file, read_only).await
     }
 
