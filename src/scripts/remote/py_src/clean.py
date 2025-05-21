@@ -9,15 +9,17 @@ import subprocess
 
 
 def cleanInstances():
-    force = sys.argv[2]
-    if force == '--force' or force == '-f':
-        try:
-            subprocess.run(['multipass', 'delete', 'sn', 'nodeA2', 'nodeB1', '--purge'], check=True)
-            print("Multipass 实例已成功清除。")
-        except subprocess.CalledProcessError as e:
-            print(f"清除 Multipass 实例时出错: {e}")
-        except FileNotFoundError:
-            print("未找到 multipass 命令，请检查是否已安装。")
+    if len(sys.argv) >= 3:
+        force = sys.argv[2]
+        if force == '--force' or force == '-f':
+            try:
+                subprocess.run(['multipass', 'delete', 'sn', 'nodeA2', 'nodeB1', '--purge'], check=True)
+                print("Multipass 实例已成功清除。")
+            except subprocess.CalledProcessError as e:
+                print(f"清除 Multipass 实例时出错: {e}")
+            except FileNotFoundError:
+                print("未找到 multipass 命令，请检查是否已安装。")
+            sys.exit(0)
 
     question = "是否清除sn，nodeA2，nodeB1实例"
     answer = input(f"{question} (y/n): ").lower()
