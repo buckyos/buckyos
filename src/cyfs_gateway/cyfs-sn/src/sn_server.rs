@@ -23,6 +23,8 @@ pub struct SNServerConfig {
     ip:String,
     zone_config_jwt:String,
     zone_config_pkx:String,
+    #[serde(default)]
+    aliases:Vec<String>,
 }
 
 
@@ -37,7 +39,7 @@ pub struct SNServer {
     all_user_zone_config:Arc<Mutex<HashMap<String,(String,String)>>>,
     server_host:String,
     server_ip:IpAddr,
-
+    server_aliases:Vec<String>,
     zone_boot_config:String,
     zone_boot_config_pkx:String,
     zone_gateway_list:Option<Vec<String>>,//device_list is the list of device_did
@@ -74,6 +76,7 @@ impl SNServer {
             all_user_zone_config:Arc::new(Mutex::new(HashMap::new())),
             server_host:server_host,
             server_ip:server_ip,
+            server_aliases:server_config.aliases,
             zone_boot_config:zone_config,
             zone_boot_config_pkx:zone_config_pkx,
             zone_gateway_list:device_list,
@@ -115,7 +118,10 @@ impl SNServer {
             return Err(RPCErrors::ParseRequestError("Invalid params, active_code is none".to_string()));
         }
         let active_code = active_code.unwrap();
-        let conn = sn_db::get_sn_db_conn().unwrap();
+        let conn = sn_db::get_sn_db_conn().map_err(|e|{
+            error!("Failed to get sn_db_conn: {:?}",e);
+            RPCErrors::ReasonError(e.to_string())
+        })?;
         let ret = sn_db::check_active_code(&conn, active_code);
         if ret.is_err() {
             return Err(RPCErrors::ReasonError(ret.err().unwrap().to_string()));
@@ -150,7 +156,10 @@ impl SNServer {
            }
         }
 
-        let conn = sn_db::get_sn_db_conn().unwrap();
+        let conn = sn_db::get_sn_db_conn().map_err(|e|{
+            error!("Failed to get sn_db_conn: {:?}",e);
+            RPCErrors::ReasonError(e.to_string())
+        })?;
         let ret = sn_db::register_user(&conn, active_code, user_name, public_key, zone_config_jwt, real_user_domain);
         if ret.is_err() {
             let err_str = ret.err().unwrap().to_string();
@@ -212,7 +221,10 @@ impl SNServer {
             return Err(RPCErrors::ParseRequestError("invalid appid".to_string()));
         }
 
-        let conn = sn_db::get_sn_db_conn().unwrap();
+        let conn = sn_db::get_sn_db_conn().map_err(|e|{
+            error!("Failed to get sn_db_conn: {:?}",e);
+            RPCErrors::ReasonError(e.to_string())
+        })?;
         let ret = sn_db::register_device(&conn, user_name, device_name, device_did, device_ip, device_info);
         if ret.is_err() {
             let err_str = ret.err().unwrap().to_string();
@@ -264,7 +276,10 @@ impl SNServer {
 
         info!("start update {}_{} ==> {:?}",owner_id,device_info.name.clone(),device_info_json);
 
-        let conn = sn_db::get_sn_db_conn().unwrap();
+        let conn = sn_db::get_sn_db_conn().map_err(|e|{
+            error!("Failed to get sn_db_conn: {:?}",e);
+            RPCErrors::ReasonError(e.to_string())
+        })?;
         let ip_str = ip_from.to_string();
         sn_db::update_device_by_name(&conn, owner_id, &device_info.name.clone(), ip_str.as_str(), device_info_json.to_string().as_str());
         let resp = RPCResponse::new(RPCResult::Success(json!({
@@ -317,7 +332,14 @@ impl SNServer {
         let device_info = device_info_map.get(&key);
         if device_info.is_none() {
             warn!("device info not found for {} in memory cache, try to query from db",key);
-            let conn = sn_db::get_sn_db_conn().unwrap();
+            let conn = sn_db::get_sn_db_conn().map_err(|e|{
+                error!("Failed to get sn_db_conn: {:?}",e);
+                RPCErrors::ReasonError(e.to_string())
+            });
+            if conn.is_err() {
+                return None;
+            }
+            let conn = conn.unwrap();
             let device_json = sn_db::query_device_by_name(&conn, owner_id, device_name).unwrap();
             if device_json.is_none() {
                 warn!("device info not found for {} in db",key);
@@ -346,7 +368,14 @@ impl SNServer {
         let mut user_zone_config_map = self.all_user_zone_config.lock().await;
         let zone_config_reuslt = user_zone_config_map.get(username);
         if zone_config_reuslt.is_none() {
-            let conn = sn_db::get_sn_db_conn().unwrap();
+            let conn = sn_db::get_sn_db_conn().map_err(|e|{
+                error!("Failed to get sn_db_conn: {:?}",e);
+                RPCErrors::ReasonError(e.to_string())
+            });
+            if conn.is_err() {
+                return None;
+            }
+            let conn = conn.unwrap();
             let user_info = sn_db::get_user_info(&conn, username).unwrap();
             if user_info.is_some() {
                 let user_info = user_info.unwrap();
@@ -361,7 +390,14 @@ impl SNServer {
     }
 
     async fn get_user_public_key(&self, username: &str) -> Option<String> {
-        let conn = sn_db::get_sn_db_conn().unwrap();
+        let conn = sn_db::get_sn_db_conn().map_err(|e|{
+            error!("Failed to get sn_db_conn: {:?}",e);
+            RPCErrors::ReasonError(e.to_string())
+        });
+        if conn.is_err() {
+            return None;
+        }
+        let conn = conn.unwrap();
         let user_info = sn_db::get_user_info(&conn, username).unwrap();
         if user_info.is_some() {
             return Some(user_info.unwrap().0.clone());
@@ -436,7 +472,9 @@ impl NsProvider for SNServer {
         }
 
         let full_server_host = format!("{}.",self.server_host.as_str());
-        if name == self.server_host || name == full_server_host {
+        let req_full_name = format!("{}.",name);
+        if name == self.server_host || name == full_server_host ||
+             self.server_aliases.contains(&req_full_name) || self.server_aliases.contains(&name.to_string()) {
             //返回当前服务器的地址
             match record_type {
                 RecordType::A => {
@@ -514,7 +552,14 @@ impl NsProvider for SNServer {
             
         } else {
             let real_domain_name = name[0..name.len()-1].to_string();
-            let conn = sn_db::get_sn_db_conn().unwrap();
+            let conn = sn_db::get_sn_db_conn().map_err(|e|{
+                error!("Failed to get sn_db_conn: {:?}",e);
+                RPCErrors::ReasonError(e.to_string())
+            });
+            if conn.is_err() {
+                return Err(NSError::NotFound(name.to_string()));
+            }
+            let conn = conn.unwrap();
             let user_info = sn_db::get_user_info_by_domain(&conn, real_domain_name.as_str()).unwrap();
             if user_info.is_none() {
                 return Err(NSError::NotFound(name.to_string()));
@@ -618,7 +663,14 @@ impl TunnelSelector for SNServer {
                 warn!("ood1 device info not found for {} in sn server",username);
             }
         } else {
-            let conn = sn_db::get_sn_db_conn().unwrap();
+            let conn = sn_db::get_sn_db_conn().map_err(|e|{
+                error!("Failed to get sn_db_conn: {:?}",e);
+                RPCErrors::ReasonError(e.to_string())
+            });
+            if conn.is_err() {
+                return None;
+            }
+            let conn = conn.unwrap();
             let user_info = sn_db::get_user_info_by_domain(&conn, req_host).unwrap();
             if user_info.is_none() {
                 return None;

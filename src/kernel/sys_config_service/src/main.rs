@@ -373,6 +373,16 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
                     .ok_or(RPCErrors::ReasonError("Value must be string".to_string()))?;
                 KVAction::Update(value.to_string())
             }
+            "append" => {
+                let value = action
+                    .get("value")
+                    .ok_or(RPCErrors::ReasonError(
+                        "Missing value for append".to_string(),
+                    ))?
+                    .as_str()
+                    .ok_or(RPCErrors::ReasonError("Value must be string".to_string()))?;
+                KVAction::Append(value.to_string())
+            }
             "set_by_path" => {
                 let all_set = action.get("all_set").ok_or(RPCErrors::ReasonError(
                     "Missing all_set for set_by_path".to_string(),

@@ -8,6 +8,7 @@ use serde_json::json;
 pub enum KVAction {
     Create(String),//创建一个节点并设置值
     Update(String),//完整更新
+    Append(String),//追加
     SetByJsonPath(HashMap<String,Option<Value>>),//当成json设置其中的一个值,针对一个对象,set可以是一个数组
     Remove,//删除
     //Create(String),
@@ -122,6 +123,9 @@ pub fn extend_kv_action_map(dest_map: &mut HashMap<String, KVAction>, from_map: 
                     },
                     KVAction::Update(new_value) => {
                         *old_value = KVAction::Update(new_value.clone());
+                    },
+                    KVAction::Append(new_value) => {
+                        *old_value = KVAction::Append(new_value.clone());
                     },
                     KVAction::SetByJsonPath(new_value) => {
                         match old_value {

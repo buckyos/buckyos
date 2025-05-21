@@ -45,11 +45,13 @@ def install(install_all=False):
         return
     # if /opt/buckyos not exist, copy rootfs to /opt/buckyos
     print(f"installing to {install_root_dir}")
-    if not os.path.exists(install_root_dir):
+    etc_dir = os.path.join(install_root_dir, "etc")
+    if not os.path.exists(etc_dir):
         install_all = True
     
     if install_all:
         print(f'copying rootfs to {install_root_dir}')
+        
         if os.path.exists(install_root_dir):
             # 删除目标目录下的所有子项
             for item in os.listdir(install_root_dir):

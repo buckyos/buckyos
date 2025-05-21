@@ -8,9 +8,12 @@ import py_src.create_vm as create_vm
 import py_src.get_device_info as get_device_info
 import install
 import start
+import stop
 import remote_device
 import py_src.util as util
 import py_src.clog as clog
+import py_src.clean as clean
+import py_src.sn as sn
 
 
 # 配置文件路径
@@ -22,6 +25,7 @@ VM_DEVICE_CONFIG = os.path.join(CONFIG_BASE, "device_info.json")
 def print_usage():
     print("Usage:")
     print("  ./main.py clean                    # 清除所有的Multipass实例")
+    print("  ./main.py clean --force            # 跳过询问，清除所有的Multipass实例")
     print("  ./main.py init                     # 初始化环境")
     print("  ./main.py network                  # 检查是否存在sn-br，并输入ip，如果不存在会创建一个")
     print("  ./main.py create                   # 创建虚拟机")
@@ -31,7 +35,9 @@ def print_usage():
     print("  ./main.py active_sn                # 激活测试sn配置信息")
     print("  ./main.py start_sn                 # 启动sn")
     print("  ./main.py start <device_id>        # 启动buckyos")
-    print("  ./main.py start --all              # 全部vm，启动buckyos")
+    print("  ./main.py start --all              # 全部vm，启动buckyos, 但是不会启动sn")
+    print("  ./main.py stop <device_id>         # 停止buckyos")
+    print("  ./main.py stop --all               # 全部vm，停止buckyos")
     print("  ./main.py clog                     # 收集node日志")
     print("  ./main.py list                     # list vm device info")
 
@@ -74,15 +80,6 @@ def network():
 
 
 
-def clean():
-    try:
-        # 调用 multipass 执行清除操作
-        subprocess.run(['multipass', 'delete', '--all', '--purge'], check=True)
-        print("Multipass 实例已成功清除。")
-    except subprocess.CalledProcessError as e:
-        print(f"清除 Multipass 实例时出错: {e}")
-    except FileNotFoundError:
-        print("未找到 multipass 命令，请检查是否已安装。")
 
 
 def init(): 
@@ -95,27 +92,7 @@ def init():
   
 
 
-def active_sn():
-    temp_config =os.path.join(CONFIG_BASE, "sn_server/web3_gateway.json.temp")
-    sn_ip =  util.get_multipass_ip("sn")
-    print(f"sn vm ip: {sn_ip}")
 
-    # 读取sn配置文件模板，修改ip字段，生成配置文件
-    with open(temp_config, 'r') as f:
-        config = json.load(f)
-        config["inner_services"]["main_sn"]["ip"] = sn_ip[0]
-        # fix
-        config["includes"] = []
-        with open("./dev_configs/sn_server/web3_gateway.json", 'w') as f:
-            json.dump(config, f, indent=4)
-        print("generate web3_gateway.json")
-        # print(config["inner_services"]["main_sn"]["ip"])
-
-    vmsn = remote_device.remote_device("sn")
-    vmsn.scp_put("./dev_configs/sn_server/web3_gateway.json", "/opt/web3_bridge")
-    vmsn.scp_put("./dev_configs/sn_db.sqlite3", "/opt/web3_bridge")
-    vmsn.scp_put("./dev_configs/sn_server/device_key.pem", "/opt/web3_bridge")
-    print("sn config file, db file uploaded")
 
 
 def active():
@@ -173,7 +150,7 @@ def main():
     # parse command
     match sys.argv[1]:
         case "clean":
-            clean()
+            clean.cleanInstances()
             return
         case "init":
             init()
@@ -214,17 +191,12 @@ def main():
                 print(f"install target device_id: {device_id}")
                 install.install(device_id)
         case "active_sn":
-            active_sn()
+            sn.active_sn(CONFIG_BASE)
         case "active":
             # active 非sn的ood和node
             active()
         case "start_sn":
-            device_id = "sn"
-            print(f"start target device_id: {device_id}")
-            device = remote_device.remote_device(device_id)
-            device.run_command("sudo systemctl stop systemd-resolved")
-            device.run_command("sudo systemctl disable systemd-resolved")
-            start.start_all_apps(device)
+            sn.start_sn()
         case "start":
             if len(sys.argv) < 3:
                 print("Usage: start.py <device_id>")
@@ -233,14 +205,41 @@ def main():
             if device_id == "--all":
                 all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
                 for device_id in all_devices:
+                    # 不在这里启动sn，在start_sn中启动
+                    if device_id == "sn":
+                        continue
                     print(f"start target device_id: {device_id}")
                     device = remote_device.remote_device(device_id)
                     start.start_all_apps(device)
             else:
+                if device_id == "sn":
+                    print("use start_sn replace")
+                    return
                 print(f"start target device_id: {device_id}")
                 device = remote_device.remote_device(device_id)
                 start.start_all_apps(device)
+        case "stop":
+            if len(sys.argv) < 3:
+                print("Usage: stop.py <device_id>")
+                return
+            device_id = sys.argv[2]
+            if device_id == "--all":
+                all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
+                for device_id in all_devices:
+                    print(f"stop target device_id: {device_id}")
+                    device = remote_device.remote_device(device_id)
+                    stop.stop_all_apps(device)
+            else:
+                print(f"stop target device_id: {device_id}")
+                device = remote_device.remote_device(device_id)
+                stop.stop_all_apps(device)
         case "clog":
+            if len(sys.argv) >= 3:
+                device_id = sys.argv[2]
+                print("Collecting log for device_id: ", device_id)
+                device = remote_device.remote_device(device_id)
+                clog.get_device_log(device)
+                return
             all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
             for device_id in all_devices:
                 device = remote_device.remote_device(device_id)

@@ -191,6 +191,22 @@ impl KVStoreProvider for SledStore {
                     KVAction::Update(value) => {
                         batch.insert(key.as_bytes(), value.as_bytes());
                     }
+                    KVAction::Append(value) => {
+                        let existing_value = match db.get(key)? {
+                            Some(val) => val,
+                            None => return Err(sled::transaction::ConflictableTransactionError::Abort(
+                                KVStoreErrors::KeyNotFound(key.to_string()) 
+                            )),
+                        };
+
+                        let existing_value: String = String::from_utf8(existing_value.to_vec())
+                            .map_err(|err| sled::transaction::ConflictableTransactionError::Abort(
+                                KVStoreErrors::InternalError(err.to_string())
+                            ))?;
+
+                        let updated_value = format!("{}{}", existing_value, value);
+                        batch.insert(key.as_bytes(), updated_value.as_bytes());
+                    }
                     KVAction::SetByJsonPath(value) => {
                         let existing_value = match db.get(key)? {
                             Some(val) => val,

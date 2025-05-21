@@ -30,13 +30,13 @@
             "memory": "1G",
             "disk": "10G",
             "network": {
-                "type": "nat",
-                "name": "nat1"
+                "type": "bridge",
+                "bridge": "br-sn"
             }
         },
         "apps": {
             "buckyos": {
-                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon > /dev/null 2>&1 &",
+                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon --enable_active > /dev/null 2>&1 &",
                 "stop":"python3 /opt/buckyos/bin/killall.py"
             }
         }
@@ -51,13 +51,13 @@
             "memory": "1G",
             "disk": "10G",
             "network": {
-                "type": "nat",
-                "name": "nat2"
+                "type": "bridge",
+                "bridge": "br-sn"
             }
         },
         "apps": {
             "buckyos": {
-                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon > /dev/null 2>&1 &",
+                "start": "nohup /opt/buckyos/bin/node_daemon/node_daemon --enable_active > /dev/null 2>&1 &",
                 "stop":"python3 /opt/buckyos/bin/killall.py"
             }
         }

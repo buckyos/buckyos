@@ -1,0 +1,63 @@
+import subprocess
+import sys
+import os
+import yaml  # 新增导入 yaml 模块
+import json
+
+
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
+import util
+
+
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+import remote_device
+import start
+
+
+
+
+def active_sn(base_dir):
+    temp_config =os.path.join(base_dir, "sn_server/web3_gateway.json.temp")
+    sn_ip =  util.get_multipass_ip("sn")
+    print(f"sn vm ip: {sn_ip}")
+
+    # 读取sn配置文件模板，修改ip字段，生成配置文件
+    with open(temp_config, 'r') as f:
+        config = json.load(f)
+        config["inner_services"]["main_sn"]["ip"] = sn_ip[0]
+        # fix
+        config["includes"] = []
+        with open("./dev_configs/sn_server/web3_gateway.json", 'w') as f:
+            json.dump(config, f, indent=4)
+        print("generate web3_gateway.json")
+        # print(config["inner_services"]["main_sn"]["ip"])
+
+    vmsn = remote_device.remote_device("sn")
+    vmsn.scp_put("./dev_configs/sn_server/web3_gateway.json", "/opt/web3_bridge")
+    vmsn.scp_put("./dev_configs/sn_db.sqlite3", "/opt/web3_bridge")
+    vmsn.scp_put("./dev_configs/sn_server/device_key.pem", "/opt/web3_bridge")
+    print("sn config file, db file uploaded")
+
+
+    # 不能用 stop systemd-resolved的方式
+    # dns_provider.rs里面的
+    # `resolver = TokioAsyncResolver::tokio_from_system_conf()` 需要读取 /etc/resolver文件
+    print("disable dnsstub")
+    vmsn.run_command("sudo mkdir /etc/systemd/resolved.conf.d")
+    vmsn.run_command("echo -e '[Resolve]\nDNSStubListener=no' | sudo tee /etc/systemd/resolved.conf.d/disable-dnsstub.conf")
+
+
+# sudo mkdir /etc/systemd/resolved.conf.d | echo -e '[Resolve]\nDNSStubListener=no' | sudo tee /etc/systemd/resolved.conf.d/disable-dnsstub.conf
+
+def start_sn():
+    device_id = "sn"
+    print(f"start target device_id: {device_id}")
+    device = remote_device.remote_device(device_id)
+    # device.run_command("sudo chmod 777 /opt/web3_bridge/") #rust sqlite client 需要对目录和文件有写权限
+    # device.run_command("sudo chmod 777 /opt/web3_bridge/sn_db.sqlite3")
+    # device.run_command("sudo systemctl stop systemd-resolved")
+    # device.run_command("sudo systemctl disable systemd-resolved")
+    start.start_all_apps(device)

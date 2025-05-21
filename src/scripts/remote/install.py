@@ -30,6 +30,13 @@ def create_rootfs_tarball():
     print(f"rootfs_path: {rootfs_path}")
     if not os.path.exists(rootfs_path):
         raise Exception("rootfs directory not found")
+
+    # 检查是否存在bin文件
+    node_daemon_bin_path = os.path.join(rootfs_path, "bin", "node_daemon", "node_daemon")
+    if not os.path.exists(node_daemon_bin_path):
+        print(f"没有编译， node_daemon_bin_path : {node_daemon_bin_path}")
+        sys.exit(1)
+
     
     # 创建临时tar包
     with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as tmp_file:
@@ -45,11 +52,26 @@ def create_rootfs_tarball():
     return tar_path
 
 
+def install_sn(device): 
+        # sn 节点
+    print("uploading web3_bridge ...")
+    project_dir = get_project_dir()
+    print(f"project_dir, {project_dir}")
+    device.scp_put(f"{project_dir}/web3_bridge/start.py", "/opt/web3_bridge")
+    device.scp_put(f"{project_dir}/web3_bridge/stop.py", "/opt/web3_bridge")
+    device.scp_put(f"{project_dir}/web3_bridge/web3_gateway", "/opt/web3_bridge")
+
+
 
 def install(device_id: str):
     device = remote_device(device_id)
     
     try:
+        if  device.has_app("web3_bridge"):
+            install_sn(device)
+            sys.exit(0)
+
+
         # 1. 创建tar包
         print("Creating rootfs tarball...")
         tar_path = create_rootfs_tarball()
@@ -86,20 +108,11 @@ def install(device_id: str):
                 f"cd /opt/buckyos && tar xzf {remote_tar} ./bin",
             ]
 
-        if device.has_app("web3_bridge"):
-            print("uploading web3_bridge ...")
-            project_dir = get_project_dir()
-            print(f"project_dir, {project_dir}")
-            # TODO 这里有问题，不能覆盖文件，会出现嵌套目录的问题
-            device.scp_put(f"{project_dir}/web3_bridge", "/opt/web3_bridge", recursive=True)
-
         for cmd in install_commands:
             print(f"Running remote command: {cmd}")
             stdout, stderr = device.run_command(cmd)
             if stderr:
                 raise Exception(f"Installation failed: {stderr}")
-            
-        
         
         # 6. 如果是新安装，复制配置文件
         #if is_fresh_install and 'identity_file' in device.config:

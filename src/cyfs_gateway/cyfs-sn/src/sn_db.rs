@@ -20,8 +20,9 @@ pub fn get_sn_db_conn() -> Result<Connection> {
 
     let conn = Connection::open(db_path);
     if conn.is_err() {
-        error!("Failed to open sn_db.sqlite3");
-        return Err(conn.err().unwrap());
+        let err = conn.err().unwrap();
+        error!("Failed to open sn_db.sqlite3 {}", err.to_string());
+        return Err(err);
     }
     let conn = conn.unwrap();
     Ok(conn)

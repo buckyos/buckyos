@@ -16,27 +16,27 @@ def stop_app(device: remote_device, app_id: str) -> bool:
     if app_config is None:
         raise Exception(f"App {app_id} not found in configuration")
 
-    start_cmd = app_config.get('start')
+    start_cmd = app_config.get('stop')
     if start_cmd is None:
-        raise Exception(f"Start command for {app_id} not found in configuration")
+        raise Exception(f"stop command for {app_id} not found in configuration")
     
     # 执行启动命令
     stdout, stderr = device.run_command(start_cmd)
     if stderr:
-        print(f"Warning while starting {app_id}: {stderr}")
+        print(f"Warning while stop {app_id}: {stderr}")
     
     time.sleep(1)  # 等待进程启动
     
-    print(f"Successfully started {app_id}")
+    print(f"Successfully stop {app_id}")
     return True
 
 def stop_all_apps(device: remote_device) -> bool:
     success = True
     for app_id in device.apps.keys():
         try:
-            start_app(device, app_id)
+            stop_app(device, app_id)
         except Exception as e:
-            print(f"Failed to start {app_id}: {str(e)}", file=sys.stderr)
+            print(f"Failed to stop {app_id}: {str(e)}", file=sys.stderr)
             success = False
     
     return success
