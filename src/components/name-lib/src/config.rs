@@ -1582,7 +1582,7 @@ MC4CAQAwBQYDK2VwBCIEIADmO0+u/gcmStDsHZOZCM5gxNYlQmP6jpMo279TQE75
                 "x":"iSMKakFEGzGAxLTlaB5TkqZ6d4wurObr-BpaQleoE2M"
             }
         );
-        let bob_ood1_did = DID::new("dev", "iSMKakFEGzGAxLTlaB5TkqZ6d4wurObr");
+        let bob_ood1_did = DID::new("dev", "iSMKakFEGzGAxLTlaB5TkqZ6d4wurObr-BpaQleoE2M");
         let bob_ood1_device_jwt = create_test_node_config(
             DID::new("bns", "bobdev"),
             "bobdev",
@@ -1629,9 +1629,6 @@ MC4CAQAwBQYDK2VwBCIEIADmO0+u/gcmStDsHZOZCM5gxNYlQmP6jpMo279TQE75
         device_info.auto_fill_by_system_info().await.unwrap();
         let device_info_json = serde_json::to_string_pretty(&device_info).unwrap();
 
-        // let device_info_str = r#"{"hostname":"ood1","device_type":"ood","did":"did:dev:iSMKakFEGzGAxLTlaB5TkqZ6d4wurObr","ip":"192.168.1.86","sys_hostname":"nodeB1","base_os_info":"Ubuntu 24.04.2 LTS","cpu_info":"AMD Ryzen 7 5800X 8-Core Processor @ 3800 MHz","cpu_usage":0.0,"total_mem":67392299008,"mem_usage":5.7286677}"#;
-
-        // let device_info_str =
         register_device(
             &conn,
             "bob",
