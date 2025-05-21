@@ -4,15 +4,15 @@ use std::path::Path;
 use std::sync::atomic::AtomicU64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ObjectMapInnerStorageType {
+pub enum ObjectMapStorageType {
     Memory,
     SQLite,
     JSONFile,
 }
 
-impl Default for ObjectMapInnerStorageType {
+impl Default for ObjectMapStorageType {
     fn default() -> Self {
-        ObjectMapInnerStorageType::SQLite
+        ObjectMapStorageType::SQLite
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,7 +22,7 @@ pub struct ObjectMapInnerStorageStat {
 
 #[async_trait::async_trait]
 pub trait ObjectMapInnerStorage: Send + Sync {
-    fn get_type(&self) -> ObjectMapInnerStorageType;
+    fn get_type(&self) -> ObjectMapStorageType;
     fn is_readonly(&self) -> bool;
 
     // Use to store object data

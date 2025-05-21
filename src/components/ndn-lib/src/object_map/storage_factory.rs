@@ -1,6 +1,6 @@
-use super::file::{ObjectMapSqliteStorage, ObjectMapJSONStorage};
+use super::file::{ObjectMapJSONStorage, ObjectMapSqliteStorage};
 use super::memory_storage::MemoryStorage;
-use super::storage::{self, ObjectMapInnerStorage, ObjectMapInnerStorageType};
+use super::storage::{self, ObjectMapInnerStorage, ObjectMapStorageType};
 use crate::{NdnError, NdnResult, ObjId};
 use once_cell::sync::OnceCell;
 use std::path::{Path, PathBuf};
@@ -9,18 +9,17 @@ use std::sync::Once;
 
 pub struct ObjectMapStorageFactory {
     data_dir: PathBuf,
-    default_storage_type: ObjectMapInnerStorageType,
+    default_storage_type: ObjectMapStorageType,
 
     // Use to create a new file name for the storage, randomly generated and should be unique.
     temp_file_index: AtomicU64,
 }
 
 impl ObjectMapStorageFactory {
-    pub fn new(data_dir: &Path, default_storage_type: Option<ObjectMapInnerStorageType>) -> Self {
+    pub fn new(data_dir: &Path, default_storage_type: Option<ObjectMapStorageType>) -> Self {
         Self {
             data_dir: data_dir.to_path_buf(),
-            default_storage_type: default_storage_type
-                .unwrap_or(ObjectMapInnerStorageType::default()),
+            default_storage_type: default_storage_type.unwrap_or(ObjectMapStorageType::default()),
             temp_file_index: AtomicU64::new(0),
         }
     }
@@ -29,7 +28,7 @@ impl ObjectMapStorageFactory {
         &self,
         container_id: Option<&ObjId>,
         read_only: bool,
-        storage_type: Option<ObjectMapInnerStorageType>,
+        storage_type: Option<ObjectMapStorageType>,
     ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         if !self.data_dir.exists() {
             std::fs::create_dir_all(&self.data_dir).map_err(|e| {
@@ -45,12 +44,12 @@ impl ObjectMapStorageFactory {
 
         let storage_type = storage_type.unwrap_or(self.default_storage_type);
         match storage_type {
-            ObjectMapInnerStorageType::Memory => {
+            ObjectMapStorageType::Memory => {
                 let msg = "Memory storage is not supported for open operation".to_string();
                 error!("{}", msg);
                 Err(NdnError::PermissionDenied(msg))
             }
-            ObjectMapInnerStorageType::SQLite => {
+            ObjectMapStorageType::SQLite => {
                 let file_name = if let Some(id) = container_id {
                     format!("{}.sqlite", id.to_base32())
                 } else {
@@ -62,7 +61,7 @@ impl ObjectMapStorageFactory {
                 let storage = ObjectMapSqliteStorage::new(file, read_only)?;
                 Ok(Box::new(storage))
             }
-            ObjectMapInnerStorageType::JSONFile => {
+            ObjectMapStorageType::JSONFile => {
                 let file_name = if let Some(id) = container_id {
                     format!("{}.json", id.to_base32())
                 } else {

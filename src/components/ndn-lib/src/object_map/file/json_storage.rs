@@ -1,5 +1,5 @@
 use super::super::storage::{
-    ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapInnerStorageType,
+    ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapStorageType,
 };
 use crate::{NdnError, NdnResult, ObjId};
 use http_types::content;
@@ -251,8 +251,8 @@ impl ObjectMapJSONStorage {
 
 #[async_trait::async_trait]
 impl ObjectMapInnerStorage for ObjectMapJSONStorage {
-    fn get_type(&self) -> ObjectMapInnerStorageType {
-        ObjectMapInnerStorageType::JSONFile
+    fn get_type(&self) -> ObjectMapStorageType {
+        ObjectMapStorageType::JSONFile
     }
 
     fn is_readonly(&self) -> bool {

@@ -113,7 +113,7 @@ async fn test_object_map_main() {
 
     // First init global object map storage factory
     let data_dir = std::env::temp_dir().join("ndn-test-object-map");
-    let factory = ObjectMapStorageFactory::new(&data_dir, Some(ObjectMapInnerStorageType::SQLite));
+    let factory = ObjectMapStorageFactory::new(&data_dir, Some(ObjectMapStorageType::JSONFile));
 
     GLOBAL_OBJECT_MAP_STORAGE_FACTORY
         .set(factory)

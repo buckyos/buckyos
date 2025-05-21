@@ -1,4 +1,4 @@
-use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageType};
+use super::storage::{ObjectMapInnerStorage, ObjectMapStorageType};
 use super::GLOBAL_OBJECT_MAP_STORAGE_FACTORY;
 use crate::mtree::{MerkleTreeObject, MerkleTreeObjectGenerator};
 use crate::mtree::{
@@ -86,7 +86,7 @@ impl ObjectMap {
     // Create empty object map
     pub async fn new(
         hash_method: HashMethod,
-        storage_type: Option<ObjectMapInnerStorageType>,
+        storage_type: Option<ObjectMapStorageType>,
     ) -> NdnResult<Self> {
         let mut storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
             .get()
@@ -121,7 +121,7 @@ impl ObjectMap {
         self.storage.is_readonly()
     }
 
-    pub fn get_storage_type(&self) -> ObjectMapInnerStorageType {
+    pub fn get_storage_type(&self) -> ObjectMapStorageType {
         self.storage.get_type()
     }
 
@@ -129,7 +129,7 @@ impl ObjectMap {
     pub async fn open(
         container_id: &ObjId,
         read_only: bool,
-        storage_type: Option<ObjectMapInnerStorageType>,
+        storage_type: Option<ObjectMapStorageType>,
     ) -> NdnResult<Self> {
         let storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
             .get()

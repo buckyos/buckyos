@@ -1,4 +1,4 @@
-use super::super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapInnerStorageType};
+use super::super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapStorageType};
 use crate::{NdnError, NdnResult, ObjId};
 use rusqlite::types::{FromSql, ToSql, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
@@ -120,8 +120,8 @@ impl ObjectMapSqliteStorage {
 
 #[async_trait::async_trait]
 impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
-    fn get_type(&self) -> ObjectMapInnerStorageType {
-        ObjectMapInnerStorageType::SQLite
+    fn get_type(&self) -> ObjectMapStorageType {
+        ObjectMapStorageType::SQLite
     }
 
     fn is_readonly(&self) -> bool {

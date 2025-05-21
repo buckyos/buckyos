@@ -1,4 +1,4 @@
-use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapInnerStorageType};
+use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapStorageType};
 use crate::{NdnError, NdnResult, ObjId};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -38,8 +38,8 @@ impl MemoryStorage {
 
 #[async_trait::async_trait]
 impl ObjectMapInnerStorage for MemoryStorage {
-    fn get_type(&self) -> ObjectMapInnerStorageType {
-        ObjectMapInnerStorageType::Memory
+    fn get_type(&self) -> ObjectMapStorageType {
+        ObjectMapStorageType::Memory
     }
 
     fn is_readonly(&self) -> bool {
@@ -149,7 +149,11 @@ impl ObjectMapInnerStorage for MemoryStorage {
         Ok(self.mtree_data.clone())
     }
 
-    async fn clone(&self, _target: &Path, read_only: bool) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
+    async fn clone(
+        &self,
+        _target: &Path,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         // Create a new MemoryStorage instance
         let mut new_storage = MemoryStorage::new(read_only);
 
