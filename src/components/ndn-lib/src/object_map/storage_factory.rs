@@ -1,4 +1,4 @@
-use super::db_storage::ObjectMapSqliteStorage;
+use super::file::{ObjectMapSqliteStorage, ObjectMapJSONStorage};
 use super::memory_storage::MemoryStorage;
 use super::storage::{self, ObjectMapInnerStorage, ObjectMapInnerStorageType};
 use crate::{NdnError, NdnResult, ObjId};
@@ -19,7 +19,8 @@ impl ObjectMapStorageFactory {
     pub fn new(data_dir: &Path, default_storage_type: Option<ObjectMapInnerStorageType>) -> Self {
         Self {
             data_dir: data_dir.to_path_buf(),
-            default_storage_type: default_storage_type.unwrap_or(ObjectMapInnerStorageType::default()),
+            default_storage_type: default_storage_type
+                .unwrap_or(ObjectMapInnerStorageType::default()),
             temp_file_index: AtomicU64::new(0),
         }
     }
@@ -42,13 +43,6 @@ impl ObjectMapStorageFactory {
             })?;
         }
 
-        let file_name = if let Some(id) = container_id {
-            format!("{}.sqlite", id.to_base32())
-        } else {
-            let temp_file_name = self.get_temp_file_name();
-            format!("{}.sqlite", temp_file_name)
-        };
-
         let storage_type = storage_type.unwrap_or(self.default_storage_type);
         match storage_type {
             ObjectMapInnerStorageType::Memory => {
@@ -57,17 +51,40 @@ impl ObjectMapStorageFactory {
                 Err(NdnError::PermissionDenied(msg))
             }
             ObjectMapInnerStorageType::SQLite => {
+                let file_name = if let Some(id) = container_id {
+                    format!("{}.sqlite", id.to_base32())
+                } else {
+                    let temp_file_name = self.get_temp_file_name();
+                    format!("{}.sqlite", temp_file_name)
+                };
+
                 let file = self.data_dir.join(&file_name);
-                let storage = ObjectMapSqliteStorage::new(&file, read_only)?;
+                let storage = ObjectMapSqliteStorage::new(file, read_only)?;
+                Ok(Box::new(storage))
+            }
+            ObjectMapInnerStorageType::JSONFile => {
+                let file_name = if let Some(id) = container_id {
+                    format!("{}.json", id.to_base32())
+                } else {
+                    let temp_file_name = self.get_temp_file_name();
+                    format!("{}.json", temp_file_name)
+                };
+
+                let file = self.data_dir.join(&file_name);
+                let storage = ObjectMapJSONStorage::new(file, read_only)?;
                 Ok(Box::new(storage))
             }
         }
     }
 
-    pub async fn save(&self, container_id: &ObjId, storage: &mut dyn ObjectMapInnerStorage) -> NdnResult<()> {
+    pub async fn save(
+        &self,
+        container_id: &ObjId,
+        storage: &mut dyn ObjectMapInnerStorage,
+    ) -> NdnResult<()> {
         let file_name = format!("{}.sqlite", container_id.to_base32());
         let file = self.data_dir.join(&file_name);
-        
+
         storage.save(&file).await
     }
 
@@ -78,13 +95,19 @@ impl ObjectMapStorageFactory {
         read_only: bool,
     ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         let file = if read_only {
-            self.data_dir.join(format!("{}.sqlite", container_id.to_base32()))
+            self.data_dir
+                .join(format!("{}.sqlite", container_id.to_base32()))
         } else {
             let index = self.temp_file_index.fetch_add(1, Ordering::SeqCst);
-            let file_name = format!("clone_{}_{}_{}.sqlite", container_id.to_base32(), index, chrono::Utc::now().timestamp());
+            let file_name = format!(
+                "clone_{}_{}_{}.sqlite",
+                container_id.to_base32(),
+                index,
+                chrono::Utc::now().timestamp()
+            );
             self.data_dir.join(&file_name)
         };
-        
+
         storage.clone(&file, read_only).await
     }
 

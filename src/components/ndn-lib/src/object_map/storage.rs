@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicU64;
 pub enum ObjectMapInnerStorageType {
     Memory,
     SQLite,
+    JSONFile,
 }
 
 impl Default for ObjectMapInnerStorageType {

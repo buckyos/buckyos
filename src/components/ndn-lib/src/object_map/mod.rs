@@ -1,7 +1,7 @@
 mod object_map;
 mod storage;
 mod memory_storage;
-mod db_storage;
+mod file;
 mod storage_factory;
 
 pub use object_map::*;

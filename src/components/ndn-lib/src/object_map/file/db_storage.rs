@@ -1,4 +1,4 @@
-use super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapInnerStorageType};
+use super::super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapInnerStorageType};
 use crate::{NdnError, NdnResult, ObjId};
 use rusqlite::types::{FromSql, ToSql, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
@@ -15,8 +15,8 @@ pub struct ObjectMapSqliteStorage {
 }
 
 impl ObjectMapSqliteStorage {
-    pub fn new(db_path: &Path, read_only: bool) -> NdnResult<Self> {
-        let conn = Connection::open(db_path).map_err(|e| {
+    pub fn new(db_path: PathBuf, read_only: bool) -> NdnResult<Self> {
+        let conn = Connection::open(&db_path).map_err(|e| {
             let msg = format!("Failed to open SQLite database: {:?}, {}", db_path, e);
             error!("{}", msg);
             NdnError::DbError(msg)
@@ -25,7 +25,7 @@ impl ObjectMapSqliteStorage {
         Self::init_tables(&conn)?;
 
         Ok(Self::new_with_connection(
-            db_path.to_path_buf(),
+            db_path,
             conn,
             read_only,
         ))
@@ -415,7 +415,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
 
     async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         if read_only {
-            let ret = Self::new(target, read_only)?;
+            let ret = Self::new(target.to_path_buf(), read_only)?;
             Ok(Box::new(ret))
         } else {
             self.clone_for_modify(target,).await
