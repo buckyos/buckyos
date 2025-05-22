@@ -10,7 +10,7 @@
             "disk": "10G",
             "network": {
                 "type": "bridge",
-                "bridge": "br-sn"
+                "bridge": "mpqemubr0"
             }
         },
         "apps": {
@@ -31,7 +31,7 @@
             "disk": "10G",
             "network": {
                 "type": "bridge",
-                "bridge": "br-sn"
+                "bridge": "mpqemubr0"
             }
         },
         "apps": {
@@ -52,7 +52,7 @@
             "disk": "10G",
             "network": {
                 "type": "bridge",
-                "bridge": "br-sn"
+                "bridge": "mpqemubr0"
             }
         },
         "apps": {
