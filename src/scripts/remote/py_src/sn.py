@@ -30,15 +30,16 @@ def active_sn(base_dir):
         config["inner_services"]["main_sn"]["ip"] = sn_ip[0]
         # fix
         config["includes"] = []
-        with open("./dev_configs/sn_server/web3_gateway.json", 'w') as f:
+        with open(f"{base_dir}/sn_server/web3_gateway.json", 'w') as f:
             json.dump(config, f, indent=4)
         print("generate web3_gateway.json")
         # print(config["inner_services"]["main_sn"]["ip"])
 
     vmsn = remote_device.remote_device("sn")
-    vmsn.scp_put("./dev_configs/sn_server/web3_gateway.json", "/opt/web3_bridge")
-    vmsn.scp_put("./dev_configs/sn_db.sqlite3", "/opt/web3_bridge")
-    vmsn.scp_put("./dev_configs/sn_server/device_key.pem", "/opt/web3_bridge")
+    vmsn.run_command("sudo mkdir -p /opt/web3_bridge")
+    vmsn.scp_put(f"{base_dir}/sn_server/web3_gateway.json", "/opt/web3_bridge/web3_gateway.json")
+    vmsn.scp_put(f"{base_dir}/sn_db.sqlite3", "/opt/web3_bridge/sn_db.sqlite3")
+    vmsn.scp_put(f"{base_dir}/sn_server/device_key.pem", "/opt/web3_bridge/device_key.pem")
     print("sn config file, db file uploaded")
 
 

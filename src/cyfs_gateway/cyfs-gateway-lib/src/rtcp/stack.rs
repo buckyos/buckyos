@@ -422,18 +422,11 @@ impl TunnelBuilder for RTcpStack {
 
         // 1） resolve target auth-key and ip (rtcp base on tcp,so need ip)
 
-        let device_ip = resolve_ip(target_id_str.as_str()).await;
-        if device_ip.is_err() {
-            warn!(
-                "cann't resolve target device {} ip.",
-                target_id_str.as_str()
-            );
-            return Err(TunnelError::ConnectError(format!(
-                "cann't resolve target device {} ip.",
-                target_id_str.as_str()
-            )));
-        }
-        let device_ip = device_ip.unwrap();
+        let device_ip = resolve_ip(target_id_str.as_str()).await.map_err(|_err| {
+            let msg = format!("cann't resolve target device {} ip", target_id_str);
+            error!("{}", msg);
+            TunnelError::DocumentError(msg)
+        })?;
         let port = target.stack_port;
         let remote_addr = format!("{}:{}", device_ip, port);
 

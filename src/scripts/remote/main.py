@@ -17,7 +17,8 @@ import py_src.sn as sn
 
 
 # 配置文件路径
-CONFIG_BASE = os.path.join(os.path.dirname(__file__), "dev_configs")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_BASE = os.path.join(BASE_DIR, "dev_configs")
 ENV_CONFIG = os.path.join(CONFIG_BASE, "dev_vm_config.json")
 VM_DEVICE_CONFIG = os.path.join(CONFIG_BASE, "device_info.json")
 
@@ -33,6 +34,7 @@ def print_usage():
     print("  ./main.py install --all            # 全部vm，安装buckyos")
     print("  ./main.py active                   # 激活测试身份")
     print("  ./main.py active_sn                # 激活测试sn配置信息")
+    print("  ./main.py purge <device_id>        # 清除设备（用户）配置信息")
     print("  ./main.py start_sn                 # 启动sn")
     print("  ./main.py start <device_id>        # 启动buckyos")
     print("  ./main.py start --all              # 全部vm，启动buckyos, 但是不会启动sn")
@@ -79,6 +81,19 @@ def network():
 
 
 
+def purge():
+    if len(sys.argv) < 3:
+        print("Usage: main.py purge <device_id>")
+        return
+    device_id = sys.argv[2]
+    if device_id == "sn":
+        print("sn no support purge")
+        return
+    device = remote_device.remote_device("nodeA2")
+    device.run_command("sudo rm /opt/buckyos/etc/node_identity.json")
+    device.run_command("sudo rm /opt/buckyos/etc/node_private_key.pem")
+    device.run_command("sudo rm /opt/buckyos/etc/start_config.json")
+    print("purge config ok")
 
 
 
@@ -125,20 +140,22 @@ def active():
     # 处理DNS配置
     sn_ip =  util.get_multipass_ip("sn")
     # 要考虑sn_ip是非数组的情况
-    print(f"nodeB1 will update DNS for {sn_ip[0]}")
+    print(f"sn IP {sn_ip[0]}")
 
 
     def update_dns(node, ip):
         # 如果 DNS 行已存在但被注释，这条命令会取消注释并修改值
-        node.run_command(f"sudo sed -i 's/#DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
+        node.run_command(f"sudo sed -i 's/#DNS=.*/DNS={ip}/' /etc/systemd/resolved.conf")
         # 如果 DNS 行不存在或已经被取消注释，确保它被正确设置
-        node.run_command(f"sudo sed -i 's/DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
+        node.run_command(f"sudo sed -i 's/DNS=.*/DNS={ip}/' /etc/systemd/resolved.conf")
+
+        node.run_command("sudo rm -f /etc/resolv.conf")
+        node.run_command("sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf")
         node.run_command("sudo systemctl restart systemd-resolved")
+        print(f"device DNS updated nameserver update to {ip}")
     
     update_dns(nodeB1, sn_ip[0])
-    print("nodeB1 DNS updated")
     update_dns(nodeA2, sn_ip[0])
-    print("nodeA2 DNS updated")
 
 
 def main():
@@ -195,11 +212,13 @@ def main():
         case "active":
             # active 非sn的ood和node
             active()
+        case "purge":
+            purge()
         case "start_sn":
             sn.start_sn()
         case "start":
             if len(sys.argv) < 3:
-                print("Usage: start.py <device_id>")
+                print("Usage: main.py start <device_id>")
                 return
             device_id = sys.argv[2]
             if device_id == "--all":

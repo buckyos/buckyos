@@ -57,9 +57,11 @@ def install_sn(device):
     print("uploading web3_bridge ...")
     project_dir = get_project_dir()
     print(f"project_dir, {project_dir}")
-    device.scp_put(f"{project_dir}/web3_bridge/start.py", "/opt/web3_bridge")
-    device.scp_put(f"{project_dir}/web3_bridge/stop.py", "/opt/web3_bridge")
-    device.scp_put(f"{project_dir}/web3_bridge/web3_gateway", "/opt/web3_bridge")
+    device.run_command("sudo mkdir -p /opt/web3_bridge")
+    device.scp_put(f"{project_dir}/web3_bridge/start.py", "/opt/web3_bridge/start.py")
+    device.scp_put(f"{project_dir}/web3_bridge/stop.py", "/opt/web3_bridge/stop.py")
+    device.scp_put(f"{project_dir}/web3_bridge/web3_gateway", "/opt/web3_bridge/web3_gateway")
+    print("web3_bridge uploaded")
 
 
 
