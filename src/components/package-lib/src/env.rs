@@ -521,10 +521,14 @@ impl PackageEnv {
         //建立符号链接 ./pkg_nameA#version -> pkgs/pkg_nameA/$meta_obj_id
         //如果是最新版本，建立符号链接 ./pkg_nameA -> pkgs/pkg_nameA/$meta_obj_id
         info!("extract pkg {} from chunk",pkg_meta.pkg_name.as_str());
+        let meta_real_obj_id : ObjId = ObjId::new(meta_obj_id)
+            .map_err(|e| PkgError::ParseError(meta_obj_id.to_string(),e.to_string()))?;
+
         let buf_reader = BufReader::new(chunk_reader);
         let gz_decoder = GzipDecoder::new(buf_reader);
         let mut archive = Archive::new(gz_decoder);
-        let synlink_target = format!("./pkgs/{}/{}", pkg_meta.pkg_name, meta_obj_id);
+        
+        let synlink_target = format!("./pkgs/{}/{}", pkg_meta.pkg_name, meta_real_obj_id.to_filename());
         let target_dir = self.work_dir.join(synlink_target.clone());
         //如果target_dir存在？则根据是否强制安装决定是否删除后继续
         if force_install {
@@ -609,7 +613,7 @@ impl PackageEnv {
         let (meta_obj_id,pkg_meta) = self.get_pkg_meta(&real_pkg_id).await?;
         
         // 使用元数据中的信息构建准确的物理路径
-        let pkg_strict_dir = self.get_pkg_strict_dir(&meta_obj_id,&pkg_meta);
+        let pkg_strict_dir = self.get_pkg_strict_dir(&meta_obj_id,&pkg_meta)?;
         
         if tokio_fs::metadata(&pkg_strict_dir).await.is_ok() {
             let metadata = tokio_fs::metadata(&pkg_strict_dir).await?;
@@ -668,10 +672,12 @@ impl PackageEnv {
     }
 
 
-    fn get_pkg_strict_dir(&self, meta_obj_id: &str,pkg_meta: &PackageMeta) -> PathBuf {
+    fn get_pkg_strict_dir(&self, meta_obj_id: &str,pkg_meta: &PackageMeta) -> PkgResult<PathBuf> {
         let pkg_name = pkg_meta.pkg_name.clone();
+        let real_obj_id = ObjId::new(meta_obj_id)
+            .map_err(|e| PkgError::ParseError(meta_obj_id.to_string(),e.to_string()))?;
         //pkgs/pkg_nameA/$meta_obj_id
-        self.get_install_dir().join(pkg_name).join(meta_obj_id)
+        Ok(self.get_install_dir().join(pkg_name).join(real_obj_id.to_filename()))
     }
 
     fn get_pkg_dir(&self, pkg_id: &str) -> PkgResult<Vec<PathBuf>> {
