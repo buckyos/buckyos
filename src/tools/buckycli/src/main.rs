@@ -152,7 +152,7 @@ async fn main() -> Result<(), String> {
                     Arg::new("get")
                        .long("get")
                        .value_name("key")
-                       .help("get system config, buckycli sys_config --get_config $key")
+                       .help("get system config, buckycli sys_config --get $key")
                 )
                 .arg(
                     Arg::new("set")

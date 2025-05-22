@@ -17,7 +17,8 @@ import py_src.sn as sn
 
 
 # 配置文件路径
-CONFIG_BASE = os.path.join(os.path.dirname(__file__), "dev_configs")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_BASE = os.path.join(BASE_DIR, "dev_configs")
 ENV_CONFIG = os.path.join(CONFIG_BASE, "dev_vm_config.json")
 VM_DEVICE_CONFIG = os.path.join(CONFIG_BASE, "device_info.json")
 
