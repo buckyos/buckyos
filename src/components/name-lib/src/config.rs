@@ -930,15 +930,17 @@ impl NodeIdentityConfig {
 //unit test
 #[cfg(test)]
 mod tests {
+    use super::super::*;
     use super::DeviceInfo;
     use super::*;
-    use super::super::*;
     use cyfs_sn::*;
-    
+
     use serde::de;
     use serde_json::json;
     use std::{
-        alloc::System, hash::Hash, time::{SystemTime, UNIX_EPOCH}
+        alloc::System,
+        hash::Hash,
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     #[tokio::test]
@@ -1607,16 +1609,16 @@ MC4CAQAwBQYDK2VwBCIEIADmO0+u/gcmStDsHZOZCM5gxNYlQmP6jpMo279TQE75
             std::fs::remove_file(sn_db_path.clone()).unwrap();
         }
 
-        let conn = get_sn_db_conn_by_path(sn_db_path.to_str().unwrap()).unwrap();
-        initialize_database(&conn);
-        insert_activation_code(&conn, "test-active-sn-code-bob").unwrap();
-        insert_activation_code(&conn, "11111").unwrap();
-        insert_activation_code(&conn, "22222").unwrap();
-        insert_activation_code(&conn, "33333").unwrap();
-        insert_activation_code(&conn, "44444").unwrap();
-        insert_activation_code(&conn, "55555").unwrap();
-        register_user(
-            &conn,
+        let db = SnDB::new_by_path(sn_db_path.to_str().unwrap()).unwrap();
+        db.initialize_database();
+        db.insert_activation_code("test-active-sn-code-bob")
+            .unwrap();
+        db.insert_activation_code("11111").unwrap();
+        db.insert_activation_code("22222").unwrap();
+        db.insert_activation_code("33333").unwrap();
+        db.insert_activation_code("44444").unwrap();
+        db.insert_activation_code("55555").unwrap();
+        db.register_user(
             "test-active-sn-code-bob",
             "bob",
             bob_public_key_str.as_str(),
@@ -1629,8 +1631,7 @@ MC4CAQAwBQYDK2VwBCIEIADmO0+u/gcmStDsHZOZCM5gxNYlQmP6jpMo279TQE75
         device_info.auto_fill_by_system_info().await.unwrap();
         let device_info_json = serde_json::to_string_pretty(&device_info).unwrap();
 
-        register_device(
-            &conn,
+        db.register_device(
             "bob",
             "ood1",
             bob_ood1_did.to_string().as_str(),
