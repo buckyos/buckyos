@@ -47,8 +47,12 @@ def active_sn(base_dir):
     # dns_provider.rs里面的
     # `resolver = TokioAsyncResolver::tokio_from_system_conf()` 需要读取 /etc/resolver文件
     print("disable dnsstub")
-    vmsn.run_command("sudo mkdir /etc/systemd/resolved.conf.d")
-    vmsn.run_command("echo -e '[Resolve]\nDNSStubListener=no' | sudo tee /etc/systemd/resolved.conf.d/disable-dnsstub.conf")
+    # vmsn.run_command("sudo mkdir /etc/systemd/resolved.conf.d")
+    # vmsn.run_command("echo -e '[Resolve]\nDNSStubListener=no' | sudo tee /etc/systemd/resolved.conf.d/disable-dnsstub.conf")
+    vmsn.run_command(f"sudo sed -i 's/#DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
+    vmsn.run_command(f"sudo sed -i 's/#Domains=.*/Domains=/' /etc/systemd/resolved.conf")
+    vmsn.run_command(f"sudo sed -i 's/#DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf")
+    vmsn.run_command("sudo systemctl restart systemd-resolved")
 
 
 # sudo mkdir /etc/systemd/resolved.conf.d | echo -e '[Resolve]\nDNSStubListener=no' | sudo tee /etc/systemd/resolved.conf.d/disable-dnsstub.conf
@@ -58,10 +62,10 @@ def start_sn():
     print(f"start target device_id: {device_id}")
     device = remote_device.remote_device(device_id)
 
-    sn_ip =  util.get_multipass_ip("sn")
+    # sn_ip =  util.get_multipass_ip("sn")
     # 要考虑sn_ip是非数组的情况
-    print(f"SN IP {sn_ip[0]}")
-    update_node_dns(device, sn_ip[0])
+    # print(f"SN IP {sn_ip[0]}")
+    # update_node_dns(device, sn_ip[0])
 
 
     # device.run_command("sudo chmod 777 /opt/web3_bridge/") #rust sqlite client 需要对目录和文件有写权限
@@ -77,8 +81,19 @@ def update_node_dns(node, ip):
     node.run_command(f"sudo sed -i 's/#DNS=.*/DNS={ip}/' /etc/systemd/resolved.conf")
     # 如果 DNS 行不存在或已经被取消注释，确保它被正确设置
     node.run_command(f"sudo sed -i 's/DNS=.*/DNS={ip}/' /etc/systemd/resolved.conf")
+    # node.run_command("sudo systemctl restart systemd-resolved")
 
-    node.run_command("sudo rm -f /etc/resolv.conf")
-    node.run_command("sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf")
+    # 这node_daemon和buckycli 启动时候的DNS，只读/etc/resolv.conf, 只能硬改这文件了
+    node.run_command(f"sudo sed -i 's/#DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf")
     node.run_command("sudo systemctl restart systemd-resolved")
+
+    # 这node_daemon和buckycli 启动时候的DNS，只读/etc/resolv.conf, 只能硬改这文件了
+    # node.run_command(f"sudo echo nameserver {ip} > /etc/resolv.conf")
+
+    # sudo resolvectl dns ens3 ""
+    # sudo resolvectl dns ens4 ""
+    # sudo resolvectl flush-caches
+    # resolvectl status
+
+    # node.run_command("sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf")
     print(f"device DNS updated nameserver update to {ip}")
