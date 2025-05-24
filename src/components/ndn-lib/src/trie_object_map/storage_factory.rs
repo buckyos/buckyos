@@ -41,7 +41,8 @@ impl TrieObjectMapStorageFactory {
             TrieObjectMapStorageType::SQLite => {
                 // For SQLite storage, we can use a SQLite-based implementation
                 let file = self.data_dir.join("trie_object_map.sqlite");
-                Box::new(TrieObjectMapSqliteStorage::<H>::new(file)?) as Box<dyn HashDB<H, Vec<u8>>>
+                Box::new(TrieObjectMapSqliteStorage::<H>::new(file, false)?)
+                    as Box<dyn HashDB<H, Vec<u8>>>
             }
         };
 

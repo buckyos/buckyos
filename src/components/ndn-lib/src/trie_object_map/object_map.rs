@@ -156,12 +156,12 @@ impl TrieObjectMap {
 }
 
 #[derive(Clone)]
-pub struct TrieObjectMapProofVerifier {
+pub struct TrieObjectMapProofVerifierHelper {
     hash_method: HashMethod,
     verifier: TrieObjectMapProofVerifierRef,
 }
 
-impl TrieObjectMapProofVerifier {
+impl TrieObjectMapProofVerifierHelper {
     pub fn new(hash_method: HashMethod) -> Self {
         let verifier =
             TrieObjectMapStorageFactory::create_verifier_by_hash_method(hash_method);

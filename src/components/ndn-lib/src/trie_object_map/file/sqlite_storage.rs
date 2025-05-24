@@ -5,7 +5,7 @@ use rusqlite::types::{FromSql, ToSql, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
 use std::borrow::Borrow;
 use std::marker::PhantomData;
-use std::path::{PathBuf, Path};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct SqliteStorage<H, KF, T>
@@ -14,9 +14,10 @@ where
     KF: KeyFunction<H>,
 {
     file: PathBuf,
+    read_only: bool,
 
     // data: Map<KF::Key, (T, i32)>,
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<Mutex<Option<Connection>>>,
 
     hashed_null_node: H::Out,
     null_node_data: T,
@@ -30,7 +31,9 @@ where
     KF: KeyFunction<H>,
 {
     fn default() -> Self {
-        todo!("");
+        unimplemented!(
+            "Default is not implemented for SqliteStorage, please use SqliteStorage::new() instead"
+        )
     }
 }
 
@@ -41,7 +44,7 @@ where
     KF: KeyFunction<H> + Send + Sync,
     KF::Key: Borrow<[u8]>,
 {
-    pub fn new(db_path: PathBuf) -> NdnResult<Self> {
+    pub fn new(db_path: PathBuf, read_only: bool) -> NdnResult<Self> {
         let conn = Connection::open(&db_path).map_err(|e| {
             let msg = format!("Failed to open SQLite database: {:?}, {}", db_path, e);
             error!("{}", msg);
@@ -50,13 +53,18 @@ where
 
         Self::init_tables(&conn)?;
 
-        Ok(Self {
+        Ok(Self::new_with_connection(db_path, conn, read_only))
+    }
+
+    fn new_with_connection(db_path: PathBuf, conn: Connection, read_only: bool) -> Self {
+        Self {
+            read_only,
             file: db_path,
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Arc::new(Mutex::new(Some(conn))),
             hashed_null_node: H::hash(&[0u8][..]),
             null_node_data: [0u8][..].into(),
             _kf: PhantomData,
-        })
+        }
     }
 
     fn init_tables(conn: &Connection) -> NdnResult<()> {
@@ -75,8 +83,19 @@ where
         })
     }
 
+    fn check_read_only(&self) -> NdnResult<()> {
+        if self.read_only {
+            let msg = format!("Storage is read-only: {}", self.file.display());
+            error!("{}", msg);
+            return Err(NdnError::PermissionDenied(msg));
+        }
+
+        Ok(())
+    }
+
     fn get_value(&self, key: &KF::Key) -> NdnResult<Option<T>> {
         let conn = self.conn.lock().unwrap();
+        let conn = conn.as_ref().unwrap();
 
         let result = conn
             .query_row(
@@ -104,8 +123,12 @@ where
     }
 
     fn emplace_value(&self, key: &KF::Key, value: T) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         // Use transaction to ensure atomicity
         let mut conn = self.conn.lock().unwrap();
+        let conn = conn.as_mut().unwrap();
 
         // Use transaction to ensure atomicity
         let tx = conn.transaction().map_err(|e| {
@@ -185,8 +208,13 @@ where
     }
 
     fn remove_value(&self, key: &KF::Key) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         // Use transaction to ensure atomicity
         let mut conn = self.conn.lock().unwrap();
+        let conn = conn.as_mut().unwrap();
+
         let tx = conn.transaction().map_err(|e| {
             let msg = format!("Failed to begin transaction: {}", e);
             error!("{}", msg);
@@ -241,6 +269,108 @@ where
             error!("{}", msg);
             NdnError::DbError(msg)
         })?;
+
+        Ok(())
+    }
+
+    async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Self> {
+        if read_only {
+            Self::new(target.to_path_buf(), read_only)
+        } else {
+            self.clone_for_modify(target).await
+        }
+    }
+
+    async fn clone_for_modify(&self, target: &Path) -> NdnResult<Self> {
+        // First check if target is same as current file
+        if target == self.file {
+            let msg = format!("Target file is same as current file: {}", target.display());
+            error!("{}", msg);
+            return Err(NdnError::AlreadyExists(msg));
+        }
+
+        // Open new connection to target file
+        let mut new_conn = Connection::open(target).map_err(|e| {
+            let msg = format!("Failed to open SQLite database: {:?}, {}", target, e);
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        let mut lock = self.conn.lock().unwrap();
+        let mut conn = lock.as_ref().unwrap();
+        let backup = rusqlite::backup::Backup::new(&conn, &mut new_conn).map_err(|e| {
+            let msg = format!(
+                "Failed to create backup: {:?} -> {:?}, {}",
+                self.file, target, e
+            );
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        backup
+            .run_to_completion(64, std::time::Duration::from_millis(5), None)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to run backup: {:?} -> {:?}, {}",
+                    self.file, target, e
+                );
+                error!("{}", msg);
+                NdnError::DbError(msg)
+            })?;
+
+        drop(backup);
+        drop(lock);
+
+        let new_storage = Self::new_with_connection(target.to_path_buf(), new_conn, false);
+        Ok(new_storage)
+    }
+
+    async fn save(&mut self, file: &Path) -> NdnResult<()> {
+        self.check_read_only()?;
+
+        // Check if file is same as current file
+        if file == self.file {
+            warn!("Target file is same as current file: {}", file.display());
+            return Ok(());
+        }
+
+        // Check if target file exists
+        if file.exists() {
+            warn!(
+                "Target object map storage file already exists: {}, now will overwrite it",
+                file.display()
+            );
+        }
+
+        // First close the current connection, then try to rename the file, and then open a new connection to the file.
+        let mut lock = self.conn.lock().unwrap();
+        let mut conn = lock.take().unwrap();
+        conn.close().map_err(|e| {
+            let msg = format!("Failed to close SQLite database: {:?}", e);
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        std::fs::rename(&self.file, file).map_err(|e| {
+            let msg = format!(
+                "Failed to rename SQLite database: {:?} -> {:?}, {}",
+                self.file, file, e
+            );
+            error!("{}", msg);
+            NdnError::IoError(msg)
+        })?;
+
+        info!("Renamed SQLite database: {:?} -> {:?}", self.file, file);
+
+        // Open a new connection to the file
+        let new_conn = Connection::open(file).map_err(|e| {
+            let msg = format!("Failed to open SQLite database: {:?}, {}", file, e);
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        *lock = Some(new_conn);
+        self.file = file.to_path_buf();
 
         Ok(())
     }
@@ -375,7 +505,7 @@ mod test {
             println!("Removing existing test database file: {:?}", db_path);
             std::fs::remove_file(&db_path).unwrap();
         }
-        let mut storage = TestStorage::new(&db_path).unwrap();
+        let mut storage = TestStorage::new(&db_path, false).unwrap();
         //let mut storage = TestMemoryDB::default();
 
         // Test as HashDB
