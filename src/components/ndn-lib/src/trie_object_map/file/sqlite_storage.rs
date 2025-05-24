@@ -84,16 +84,6 @@ where
         })
     }
 
-    fn check_read_only(&self) -> NdnResult<()> {
-        if self.read_only {
-            let msg = format!("Storage is read-only: {}", self.file.display());
-            error!("{}", msg);
-            return Err(NdnError::PermissionDenied(msg));
-        }
-
-        Ok(())
-    }
-
     fn get_value(&self, key: &KF::Key) -> NdnResult<Option<T>> {
         let conn = self.conn.lock().unwrap();
         let conn = conn.as_ref().unwrap();
@@ -124,8 +114,6 @@ where
     }
 
     fn emplace_value(&self, key: &KF::Key, value: T) -> NdnResult<()> {
-        // Check if the storage is read-only
-        self.check_read_only()?;
 
         // Use transaction to ensure atomicity
         let mut conn = self.conn.lock().unwrap();
@@ -209,8 +197,6 @@ where
     }
 
     fn remove_value(&self, key: &KF::Key) -> NdnResult<()> {
-        // Check if the storage is read-only
-        self.check_read_only()?;
 
         // Use transaction to ensure atomicity
         let mut conn = self.conn.lock().unwrap();
@@ -319,7 +305,6 @@ where
     }
 
     async fn save(&mut self, file: &Path) -> NdnResult<()> {
-        self.check_read_only()?;
 
         // Check if file is same as current file
         if file == self.file {

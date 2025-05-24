@@ -37,6 +37,7 @@ pub trait HashDBWithFile<H: Hasher, T>: Send + Sync + HashDB<H, T> {
 
 #[async_trait::async_trait]
 pub trait TrieObjectMapInnerStorage: Send + Sync {
+    fn is_readonly(&self) -> bool;
     fn get_type(&self) -> TrieObjectMapStorageType;
 
     async fn put(&self, key: &[u8], value: &[u8]) -> NdnResult<()>;
@@ -52,7 +53,7 @@ pub trait TrieObjectMapInnerStorage: Send + Sync {
     async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>>;
 
     // If file is diff from the current one, it will be saved to the file.
-    async fn save(&mut self, file: &Path) -> NdnResult<()>;
+    async fn save(&self, file: &Path) -> NdnResult<()>;
 }
 
 pub type TrieObjectMapInnerStorageRef = Arc<Box<dyn TrieObjectMapInnerStorage>>;

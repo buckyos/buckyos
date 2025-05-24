@@ -2,7 +2,7 @@ use super::storage::{
     TrieObjectMapInnerStorage, TrieObjectMapInnerStorageRef, TrieObjectMapProofVerifierRef,
     TrieObjectMapStorageType,
 };
-use super::storage_factory::{GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY, TrieObjectMapStorageFactory};
+use super::storage_factory::{TrieObjectMapStorageFactory, GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY};
 use crate::hash::HashMethod;
 use crate::object::ObjId;
 use crate::{NdnError, NdnResult};
@@ -86,14 +86,51 @@ pub struct TrieObjectMap {
 }
 
 impl TrieObjectMap {
-    pub async fn new(hash_method: HashMethod) -> NdnResult<Self> {
+    pub async fn new(
+        hash_method: HashMethod,
+        storage_type: Option<TrieObjectMapStorageType>,
+    ) -> NdnResult<Self> {
         let db = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .create_storage_by_hash_method(TrieObjectMapStorageType::Memory, hash_method)?;
+            .open_by_hash_method(None, false, storage_type, hash_method)
+            .await?;
         let db = Arc::new(db);
 
         Ok(Self { hash_method, db })
+    }
+
+    // Load object map from storage
+    pub async fn open(
+        container_id: &ObjId,
+        read_only: bool,
+        hash_method: HashMethod,
+        storage_type: Option<TrieObjectMapStorageType>,
+    ) -> NdnResult<Self> {
+        let db = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
+            .get()
+            .unwrap()
+            .open_by_hash_method(Some(container_id), read_only, storage_type, hash_method)
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "Error opening trie object map storage: {}, {}",
+                    container_id, e
+                );
+                error!("{}", msg);
+                e
+            })?;
+
+        let db = Arc::new(db);
+        Ok(Self { hash_method, db })
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.db.is_readonly()
+    }
+
+    pub fn get_storage_type(&self) -> TrieObjectMapStorageType {
+        self.db.get_type()
     }
 
     pub async fn get_root_hash(&self) -> Vec<u8> {
@@ -141,6 +178,54 @@ impl TrieObjectMap {
         self.db.is_exist(key.as_bytes()).await
     }
 
+    // Should not call this function if in read-only mode
+    pub async fn save(&mut self) -> NdnResult<()> {
+        if self.is_read_only() {
+            let msg = "Trie Object map is read-only".to_string();
+            error!("{}", msg);
+            return Err(NdnError::PermissionDenied(msg));
+        }
+
+        let obj_id = self.get_obj_id().await;
+
+        GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
+            .get()
+            .unwrap()
+            .save(&obj_id, &**self.db)
+            .await
+            .map_err(|e| {
+                let msg = format!("Error saving object map: {}", e);
+                error!("{}", msg);
+                e
+            })?;
+
+        info!("Saved trie object map to storage: {}", obj_id);
+
+        Ok(())
+    }
+
+    pub async fn clone(&self, read_only: bool) -> NdnResult<Self> {
+        let obj_id = self.get_obj_id().await;
+
+        let mut new_storage = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
+            .get()
+            .unwrap()
+            .clone(&obj_id, &**self.db, read_only)
+            .await
+            .map_err(|e| {
+                let msg = format!("Error cloning object map storage: {}", e);
+                error!("{}", msg);
+                e
+            })?;
+
+        let ret = TrieObjectMap {
+            hash_method: self.hash_method.clone(),
+            db: Arc::new(new_storage),
+        };
+
+        Ok(ret)
+    }
+
     pub async fn get_object_proof_path(
         &self,
         key: &str,
@@ -163,8 +248,7 @@ pub struct TrieObjectMapProofVerifierHelper {
 
 impl TrieObjectMapProofVerifierHelper {
     pub fn new(hash_method: HashMethod) -> Self {
-        let verifier =
-            TrieObjectMapStorageFactory::create_verifier_by_hash_method(hash_method);
+        let verifier = TrieObjectMapStorageFactory::create_verifier_by_hash_method(hash_method);
         Self {
             hash_method,
             verifier: Arc::new(verifier),

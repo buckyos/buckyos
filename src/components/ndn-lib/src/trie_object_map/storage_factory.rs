@@ -73,6 +73,33 @@ impl TrieObjectMapStorageFactory {
         }
     }
 
+    pub async fn open_by_hash_method(
+        &self,
+        container_id: Option<&ObjId>,
+        read_only: bool,
+        storage_type: Option<TrieObjectMapStorageType>,
+        hash_method: HashMethod,
+    ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>> {
+        match hash_method {
+            HashMethod::Sha256 => {
+                self.open::<Sha256Hasher>(container_id, read_only, storage_type)
+                    .await
+            }
+            HashMethod::Sha512 => {
+                self.open::<Sha512Hasher>(container_id, read_only, storage_type)
+                    .await
+            }
+            HashMethod::Blake2s256 => {
+                self.open::<Blake2s256Hasher>(container_id, read_only, storage_type)
+                    .await
+            }
+            HashMethod::Keccak256 => {
+                self.open::<Keccak256Hasher>(container_id, read_only, storage_type)
+                    .await
+            }
+        }
+    }
+
     pub async fn open<H>(
         &self,
         container_id: Option<&ObjId>,
@@ -109,6 +136,7 @@ impl TrieObjectMapStorageFactory {
                 let storage = TrieObjectMapInnerStorageWrapper::<H>::new(
                     db.get_type(),
                     Box::new(db) as Box<dyn HashDBWithFile<H, Vec<u8>>>,
+                    read_only,
                 );
                 let ret = Box::new(storage) as Box<dyn TrieObjectMapInnerStorage>;
 
@@ -123,7 +151,7 @@ impl TrieObjectMapStorageFactory {
     pub async fn save(
         &self,
         container_id: &ObjId,
-        storage: &mut dyn TrieObjectMapInnerStorage,
+        storage: &dyn TrieObjectMapInnerStorage,
     ) -> NdnResult<()> {
         let file = self.get_file_path_by_id(Some(container_id), storage.get_type());
 
@@ -174,6 +202,7 @@ impl TrieObjectMapStorageFactory {
     pub fn create_storage<H>(
         &self,
         storage_type: TrieObjectMapStorageType,
+        read_only: bool,
     ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>>
     where
         H: Hasher + Send + Sync + 'static,
@@ -187,7 +216,7 @@ impl TrieObjectMapStorageFactory {
             TrieObjectMapStorageType::SQLite => {
                 // For SQLite storage, we can use a SQLite-based implementation
                 let file = self.data_dir.join("trie_object_map.sqlite");
-                Box::new(TrieObjectMapSqliteStorage::<H>::new(file, false)?)
+                Box::new(TrieObjectMapSqliteStorage::<H>::new(file, read_only)?)
                     as Box<dyn HashDBWithFile<H, Vec<u8>>>
             }
             TrieObjectMapStorageType::JSONFile => {
@@ -196,19 +225,28 @@ impl TrieObjectMapStorageFactory {
             }
         };
 
-        Ok(Box::new(TrieObjectMapInnerStorageWrapper::<H>::new(storage_type, db)))
+        Ok(Box::new(TrieObjectMapInnerStorageWrapper::<H>::new(
+            storage_type,
+            db,
+            read_only,
+        )))
     }
 
     pub fn create_storage_by_hash_method(
         &self,
         storage_type: TrieObjectMapStorageType,
+        read_only: bool,
         hash_method: HashMethod,
     ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>> {
         match hash_method {
-            HashMethod::Sha256 => self.create_storage::<Sha256Hasher>(storage_type),
-            HashMethod::Sha512 => self.create_storage::<Sha512Hasher>(storage_type),
-            HashMethod::Blake2s256 => self.create_storage::<Blake2s256Hasher>(storage_type),
-            HashMethod::Keccak256 => self.create_storage::<Keccak256Hasher>(storage_type),
+            HashMethod::Sha256 => self.create_storage::<Sha256Hasher>(storage_type, read_only),
+            HashMethod::Sha512 => self.create_storage::<Sha512Hasher>(storage_type, read_only),
+            HashMethod::Blake2s256 => {
+                self.create_storage::<Blake2s256Hasher>(storage_type, read_only)
+            }
+            HashMethod::Keccak256 => {
+                self.create_storage::<Keccak256Hasher>(storage_type, read_only)
+            }
         }
     }
 

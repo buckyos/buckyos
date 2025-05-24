@@ -19,6 +19,7 @@ type GenericTrieDBMutBuilder<'a, H> = trie_db::TrieDBMutBuilder<'a, GenericLayou
 
 pub struct TrieObjectMapInnerStorageWrapper<H: Hasher> {
     storage_type: TrieObjectMapStorageType,
+    read_only: bool,
     db: Arc<RwLock<Box<dyn HashDBWithFile<H, Vec<u8>>>>>,
     root: Arc<RwLock<<H as Hasher>::Out>>,
 }
@@ -27,6 +28,7 @@ impl<H: Hasher + 'static> TrieObjectMapInnerStorageWrapper<H> {
     pub fn new(
         storage_type: TrieObjectMapStorageType,
         db: Box<dyn HashDBWithFile<H, Vec<u8>>>,
+        read_only: bool,
     ) -> Self
     where
         <H as hash_db::Hasher>::Out: Borrow<[u8]>,
@@ -38,7 +40,18 @@ impl<H: Hasher + 'static> TrieObjectMapInnerStorageWrapper<H> {
             storage_type,
             db,
             root,
+            read_only,
         }
+    }
+
+    fn check_read_only(&self) -> NdnResult<()> {
+        if self.read_only {
+            let msg = format!("Storage is read-only");
+            error!("{}", msg);
+            return Err(NdnError::PermissionDenied(msg));
+        }
+
+        Ok(())
     }
 }
 
@@ -52,7 +65,14 @@ where
         self.storage_type
     }
 
+    fn is_readonly(&self) -> bool {
+        self.read_only
+    }
+
     async fn put(&self, key: &[u8], value: &[u8]) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         let mut db_write = self.db.write().await;
         let mut root = self.root.write().await;
 
@@ -86,6 +106,9 @@ where
     }
 
     async fn remove(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         let mut db_write = self.db.write().await;
         let mut root = self.root.write().await;
         let mut trie =
@@ -139,6 +162,9 @@ where
     }
 
     async fn commit(&self) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         let mut db_write = self.db.write().await;
         let mut root = self.root.write().await;
 
@@ -185,13 +211,17 @@ where
         let cloned_db = db.clone(target, read_only).await?;
 
         // Create a new storage wrapper with the cloned database
-        let new_storage = TrieObjectMapInnerStorageWrapper::<H>::new(self.storage_type, cloned_db);
+        let new_storage =
+            TrieObjectMapInnerStorageWrapper::<H>::new(self.storage_type, cloned_db, read_only);
 
         Ok(Box::new(new_storage))
     }
 
     // If file is diff from the current one, it will be saved to the file.
-    async fn save(&mut self, file: &Path) -> NdnResult<()> {
+    async fn save(&self, file: &Path) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
         let mut db_write = self.db.write().await;
         let db = db_write.as_mut();
 

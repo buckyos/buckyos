@@ -137,7 +137,7 @@ impl ObjectMap {
             .open(Some(container_id), read_only, storage_type)
             .await
             .map_err(|e| {
-                let msg = format!("Error opening object map storage: {}", e);
+                let msg = format!("Error opening object map storage: {}, {}", container_id, e);
                 error!("{}", msg);
                 e
             })?;
