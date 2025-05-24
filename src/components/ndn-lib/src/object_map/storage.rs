@@ -15,6 +15,7 @@ impl Default for ObjectMapStorageType {
         ObjectMapStorageType::SQLite
     }
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectMapInnerStorageStat {
     pub total_count: u64,
