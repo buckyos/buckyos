@@ -485,7 +485,7 @@ where
 mod test {
     use crate::trie_object_map::storage;
 
-    use super::super::hash::Sha256Hasher;
+    use super::super::super::hash::Sha256Hasher;
     use super::*;
     use hash_db::HashDB;
     use memory_db::{HashKey, MemoryDB};
@@ -499,13 +499,21 @@ mod test {
 
         buckyos_kit::init_logging("test-trie-object-map", false);
 
+        // Get system temp directory
         let data_dir = std::env::temp_dir().join("ndn-test-trie-object-map");
-        let db_path = PathBuf::from("test.db");
+        if !data_dir.exists() {
+            println!("Creating test data directory: {:?}", data_dir);
+            std::fs::create_dir_all(&data_dir).unwrap();
+        } else {
+            println!("Using existing test data directory: {:?}", data_dir);
+        }
+        
+        let db_path = data_dir.join("test_trie_object_map.sqlite");
         if db_path.exists() {
             println!("Removing existing test database file: {:?}", db_path);
             std::fs::remove_file(&db_path).unwrap();
         }
-        let mut storage = TestStorage::new(&db_path, false).unwrap();
+        let mut storage = TestStorage::new(db_path, false).unwrap();
         //let mut storage = TestMemoryDB::default();
 
         // Test as HashDB
@@ -579,7 +587,7 @@ use super::super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512
 use memory_db::HashKey;
 
 pub type TrieObjectMapSqliteStorage<H> = SqliteStorage<H, HashKey<H>, Vec<u8>>;
-pub type TrieObjectMapSqliteSha256Storage = TrieObjectMapSqliteStorage<Sha256Hasher>;
-pub type TrieObjectMapSqliteSha512Storage = TrieObjectMapSqliteStorage<Sha512Hasher>;
-pub type TrieObjectMapSqliteBlake2s256Storage = TrieObjectMapSqliteStorage<Blake2s256Hasher>;
-pub type TrieObjectMapSqliteKeccak256Storage = TrieObjectMapSqliteStorage<Keccak256Hasher>;
+// pub type TrieObjectMapSqliteSha256Storage = TrieObjectMapSqliteStorage<Sha256Hasher>;
+// pub type TrieObjectMapSqliteSha512Storage = TrieObjectMapSqliteStorage<Sha512Hasher>;
+// pub type TrieObjectMapSqliteBlake2s256Storage = TrieObjectMapSqliteStorage<Blake2s256Hasher>;
+// pub type TrieObjectMapSqliteKeccak256Storage = TrieObjectMapSqliteStorage<Keccak256Hasher>;

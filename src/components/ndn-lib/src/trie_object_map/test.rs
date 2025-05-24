@@ -1,5 +1,5 @@
 use super::object_map::{
-    TrieObjectMapProofNodesCodec, TrieObjectMapProofVerifier, TrieObjectMapProofVerifyResult,
+    TrieObjectMapProofNodesCodec, TrieObjectMapProofVerifierHelper, TrieObjectMapProofVerifyResult,
     TrieObjectMap,
 };
 use crate::hash::{HashHelper, HashMethod};
@@ -52,11 +52,11 @@ fn generate_key_value_pairs(seed: &str, count: usize) -> Vec<(String, ObjId, Vec
 }
 
 #[test]
-async fn test_path_object_map() {
+async fn test_trie_object_map() {
     println!("Test object map");
     let key_pairs = generate_key_value_pairs("test", 100);
     println!("Key pairs generated");
-    let mut obj_map = TrieObjectMap::new(HashMethod::Keccak256).await;
+    let mut obj_map = TrieObjectMap::new(HashMethod::Keccak256).await.unwrap();
     println!("Object map created");
 
     let count = 100;
@@ -109,7 +109,7 @@ async fn test_path_object_map() {
         let proof1 = proof1.unwrap();
 
         // Test verification
-        let verifier = TrieObjectMapProofVerifier::new(obj_map.hash_method());
+        let verifier = TrieObjectMapProofVerifierHelper::new(obj_map.hash_method());
 
         // First test verify with right value
         let ret = verifier
