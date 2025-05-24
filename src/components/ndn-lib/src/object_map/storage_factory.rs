@@ -124,10 +124,11 @@ impl ObjectMapStorageFactory {
         } else {
             let index = self.temp_file_index.fetch_add(1, Ordering::SeqCst);
             format!(
-                "clone_{}_{}_{}.sqlite",
+                "clone_{}_{}_{}.{}",
                 container_id.to_base32(),
                 index,
-                chrono::Utc::now().timestamp()
+                chrono::Utc::now().timestamp(), 
+                Self::get_file_ext(storage.get_type()),
             )
         };
 
@@ -139,13 +140,17 @@ impl ObjectMapStorageFactory {
         // Use index and time tick to create a unique file name.
         let index = self.temp_file_index.fetch_add(1, Ordering::SeqCst);
 
-        let ext = match storage_type {
-            ObjectMapStorageType::Memory => unreachable!("Memory storage does not have a file name"),
-            ObjectMapStorageType::SQLite => "sqlite",
-            ObjectMapStorageType::JSONFile => "json",
-        };
+        let ext = Self::get_file_ext(storage_type);
 
         format!("temp_{}_{}.{}", chrono::Utc::now().timestamp(), index, ext)
+    }
+
+    fn get_file_ext(storage_type: ObjectMapStorageType) -> &'static str {
+        match storage_type {
+            ObjectMapStorageType::Memory => unreachable!("Memory storage does not have a file extension"),
+            ObjectMapStorageType::SQLite => "sqlite",
+            ObjectMapStorageType::JSONFile => "json",
+        }
     }
 }
 
