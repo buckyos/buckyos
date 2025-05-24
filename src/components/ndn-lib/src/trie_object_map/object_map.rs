@@ -1,7 +1,8 @@
 use super::storage::{
-    TrieObjectMapInnerStorage, TrieObjectMapInnerStorageFactory, TrieObjectMapInnerStorageRef,
-    TrieObjectMapProofVerifierRef,
+    TrieObjectMapInnerStorage, TrieObjectMapInnerStorageRef, TrieObjectMapProofVerifierRef,
+    TrieObjectMapStorageType,
 };
+use super::storage_factory::{GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY, TrieObjectMapStorageFactory};
 use crate::hash::HashMethod;
 use crate::object::ObjId;
 use crate::{NdnError, NdnResult};
@@ -85,11 +86,14 @@ pub struct TrieObjectMap {
 }
 
 impl TrieObjectMap {
-    pub async fn new(hash_method: HashMethod) -> Self {
-        let db =
-            TrieObjectMapInnerStorageFactory::create_memory_storage_by_hash_method(hash_method);
+    pub async fn new(hash_method: HashMethod) -> NdnResult<Self> {
+        let db = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
+            .get()
+            .unwrap()
+            .create_storage_by_hash_method(TrieObjectMapStorageType::Memory, hash_method)?;
         let db = Arc::new(db);
-        Self { hash_method, db }
+
+        Ok(Self { hash_method, db })
     }
 
     pub async fn get_root_hash(&self) -> Vec<u8> {
@@ -105,11 +109,7 @@ impl TrieObjectMap {
         self.hash_method
     }
 
-    pub async fn put_object(
-        &self,
-        key: &str,
-        obj_id: ObjId,
-    ) -> NdnResult<()> {
+    pub async fn put_object(&self, key: &str, obj_id: ObjId) -> NdnResult<()> {
         let item = TrieObjectMapItem::new(obj_id);
         let value = item.encode()?;
         self.db.put(key.as_bytes(), &value).await?;
@@ -164,7 +164,7 @@ pub struct TrieObjectMapProofVerifier {
 impl TrieObjectMapProofVerifier {
     pub fn new(hash_method: HashMethod) -> Self {
         let verifier =
-            TrieObjectMapInnerStorageFactory::create_verifier_by_hash_method(hash_method);
+            TrieObjectMapStorageFactory::create_verifier_by_hash_method(hash_method);
         Self {
             hash_method,
             verifier: Arc::new(verifier),

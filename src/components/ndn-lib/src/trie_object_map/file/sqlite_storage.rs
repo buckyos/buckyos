@@ -5,14 +5,16 @@ use rusqlite::types::{FromSql, ToSql, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
 use std::borrow::Borrow;
 use std::marker::PhantomData;
-use std::path::Path;
+use std::path::{PathBuf, Path};
 use std::sync::{Arc, Mutex};
 
-pub struct TrieObjectMapSqliteStorage<H, KF, T>
+pub(crate) struct SqliteStorage<H, KF, T>
 where
     H: KeyHasher,
     KF: KeyFunction<H>,
 {
+    file: PathBuf,
+
     // data: Map<KF::Key, (T, i32)>,
     conn: Arc<Mutex<Connection>>,
 
@@ -21,15 +23,26 @@ where
     _kf: PhantomData<KF>,
 }
 
-impl<H, KF, T> TrieObjectMapSqliteStorage<H, KF, T>
+impl<H, KF, T> Default for SqliteStorage<H, KF, T>
+where
+    H: KeyHasher,
+    T: for<'a> From<&'a [u8]>,
+    KF: KeyFunction<H>,
+{
+    fn default() -> Self {
+        todo!("");
+    }
+}
+
+impl<H, KF, T> SqliteStorage<H, KF, T>
 where
     H: KeyHasher,
     T: for<'a> From<&'a [u8]> + Default + AsRef<[u8]> + Clone + Send + Sync,
-    KF: KeyFunction<H>,
+    KF: KeyFunction<H> + Send + Sync,
     KF::Key: Borrow<[u8]>,
 {
-    pub fn new(db_path: &Path) -> NdnResult<Self> {
-        let conn = Connection::open(db_path).map_err(|e| {
+    pub fn new(db_path: PathBuf) -> NdnResult<Self> {
+        let conn = Connection::open(&db_path).map_err(|e| {
             let msg = format!("Failed to open SQLite database: {:?}, {}", db_path, e);
             error!("{}", msg);
             NdnError::DbError(msg)
@@ -38,6 +51,7 @@ where
         Self::init_tables(&conn)?;
 
         Ok(Self {
+            file: db_path,
             conn: Arc::new(Mutex::new(conn)),
             hashed_null_node: H::hash(&[0u8][..]),
             null_node_data: [0u8][..].into(),
@@ -232,7 +246,7 @@ where
     }
 }
 
-impl<H, KF, T> HashDB<H, T> for TrieObjectMapSqliteStorage<H, KF, T>
+impl<H, KF, T> HashDB<H, T> for SqliteStorage<H, KF, T>
 where
     H: KeyHasher,
     T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
@@ -307,7 +321,7 @@ where
     }
 }
 
-impl<H, KF, T> HashDBRef<H, T> for TrieObjectMapSqliteStorage<H, KF, T>
+impl<H, KF, T> HashDBRef<H, T> for SqliteStorage<H, KF, T>
 where
     H: KeyHasher,
     T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
@@ -322,7 +336,7 @@ where
     }
 }
 
-impl<H, KF, T> AsHashDB<H, T> for TrieObjectMapSqliteStorage<H, KF, T>
+impl<H, KF, T> AsHashDB<H, T> for SqliteStorage<H, KF, T>
 where
     H: KeyHasher,
     T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
@@ -349,7 +363,7 @@ mod test {
 
     #[test]
     fn test_trie_object_map_sqlite_storage() {
-        type TestStorage = TrieObjectMapSqliteStorage<Sha256Hasher, HashKey<Sha256Hasher>, Vec<u8>>;
+        type TestStorage = SqliteStorage<Sha256Hasher, HashKey<Sha256Hasher>, Vec<u8>>;
         type H = Sha256Hasher;
         type TestMemoryDB = MemoryDB<Sha256Hasher, HashKey<Sha256Hasher>, Vec<u8>>;
 
@@ -430,3 +444,12 @@ mod test {
         }
     }
 }
+
+use super::super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
+use memory_db::HashKey;
+
+pub type TrieObjectMapSqliteStorage<H> = SqliteStorage<H, HashKey<H>, Vec<u8>>;
+pub type TrieObjectMapSqliteSha256Storage = TrieObjectMapSqliteStorage<Sha256Hasher>;
+pub type TrieObjectMapSqliteSha512Storage = TrieObjectMapSqliteStorage<Sha512Hasher>;
+pub type TrieObjectMapSqliteBlake2s256Storage = TrieObjectMapSqliteStorage<Blake2s256Hasher>;
+pub type TrieObjectMapSqliteKeccak256Storage = TrieObjectMapSqliteStorage<Keccak256Hasher>;
