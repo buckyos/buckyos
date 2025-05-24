@@ -1,4 +1,5 @@
-use crate::{NdnError, NdnResult};
+use super::super::storage::HashDBWithFile;
+use crate::{NdnError, NdnResult, TrieObjectMapStorageType};
 use hash_db::{AsHashDB, HashDB, HashDBRef, Hasher as KeyHasher, Prefix};
 use memory_db::KeyFunction;
 use rusqlite::types::{FromSql, ToSql, ValueRef};
@@ -273,14 +274,6 @@ where
         Ok(())
     }
 
-    async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Self> {
-        if read_only {
-            Self::new(target.to_path_buf(), read_only)
-        } else {
-            self.clone_for_modify(target).await
-        }
-    }
-
     async fn clone_for_modify(&self, target: &Path) -> NdnResult<Self> {
         // First check if target is same as current file
         if target == self.file {
@@ -481,6 +474,47 @@ where
     }
 }
 
+#[async_trait::async_trait]
+impl<H, KF, T> HashDBWithFile<H, T> for SqliteStorage<H, KF, T>
+where
+    H: KeyHasher + 'static,
+    T: Default
+        + PartialEq<T>
+        + AsRef<[u8]>
+        + for<'a> From<&'a [u8]>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    KF: KeyFunction<H> + Send + Sync + 'static,
+    KF::Key: Borrow<[u8]>,
+{
+    fn get_type(&self) -> TrieObjectMapStorageType {
+        TrieObjectMapStorageType::SQLite
+    }
+
+    // Clone the storage to a new file.
+    // If the target file exists, it will be failed.
+    async fn clone(
+        &self,
+        target: &Path,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn HashDBWithFile<H, T>>> {
+        if read_only {
+            let ret = Self::new(target.to_path_buf(), read_only)?;
+            Ok(Box::new(ret) as Box<dyn HashDBWithFile<H, T>>)
+        } else {
+            let ret = self.clone_for_modify(target).await?;
+            Ok(Box::new(ret) as Box<dyn HashDBWithFile<H, T>>)
+        }
+    }
+
+    // If file is diff from the current one, it will be saved to the file.
+    async fn save(&mut self, file: &Path) -> NdnResult<()> {
+        self.save(file).await
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::trie_object_map::storage;
@@ -507,7 +541,7 @@ mod test {
         } else {
             println!("Using existing test data directory: {:?}", data_dir);
         }
-        
+
         let db_path = data_dir.join("test_trie_object_map.sqlite");
         if db_path.exists() {
             println!("Removing existing test database file: {:?}", db_path);

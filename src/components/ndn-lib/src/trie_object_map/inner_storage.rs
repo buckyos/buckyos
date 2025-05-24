@@ -1,15 +1,16 @@
 use super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
 use super::layout::GenericLayout;
-use super::storage::TrieObjectMapInnerStorage;
+use super::storage::{HashDBWithFile, TrieObjectMapInnerStorage, TrieObjectMapStorageType};
 use crate::{HashMethod, NdnError, NdnResult, ObjId};
 use generic_array::{ArrayLength, GenericArray};
 use hash_db::{HashDB, HashDBRef, Hasher};
 use memory_db::{HashKey, MemoryDB};
-use std::sync::{Arc, RwLock};
+use std::borrow::Borrow;
+use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use trie_db::proof::generate_proof;
 use trie_db::{NodeCodec, Trie, TrieLayout, TrieMut, Value};
-use std::borrow::Borrow;
-
 
 type GenericTrieDB<'a, 'cache, H> = trie_db::TrieDB<'a, 'cache, GenericLayout<H>>;
 type GenericTrieDBBuilder<'a, 'cache, H> = trie_db::TrieDBBuilder<'a, 'cache, GenericLayout<H>>;
@@ -17,20 +18,27 @@ type GenericTrieDBMut<'a, H> = trie_db::TrieDBMut<'a, GenericLayout<H>>;
 type GenericTrieDBMutBuilder<'a, H> = trie_db::TrieDBMutBuilder<'a, GenericLayout<H>>;
 
 pub struct TrieObjectMapInnerStorageWrapper<H: Hasher> {
-    // db: Arc<RwLock<GenericMemoryDB<H>>>,
-    db: Arc<RwLock<Box<dyn HashDB<H, Vec<u8>>>>>,
+    storage_type: TrieObjectMapStorageType,
+    db: Arc<RwLock<Box<dyn HashDBWithFile<H, Vec<u8>>>>>,
     root: Arc<RwLock<<H as Hasher>::Out>>,
 }
 
 impl<H: Hasher + 'static> TrieObjectMapInnerStorageWrapper<H> {
-    pub fn new(db: Box<dyn HashDB<H, Vec<u8>>>) -> Self
+    pub fn new(
+        storage_type: TrieObjectMapStorageType,
+        db: Box<dyn HashDBWithFile<H, Vec<u8>>>,
+    ) -> Self
     where
         <H as hash_db::Hasher>::Out: Borrow<[u8]>,
     {
         let root = <GenericLayout<H> as TrieLayout>::Codec::hashed_null_node();
         let db = Arc::new(RwLock::new(db));
         let root = Arc::new(RwLock::new(root));
-        Self { db, root }
+        Self {
+            storage_type,
+            db,
+            root,
+        }
     }
 }
 
@@ -40,11 +48,16 @@ where
     H: Hasher + Send + Sync + 'static,
     H::Out: Send + Sync + 'static + std::borrow::Borrow<[u8]>,
 {
-    async fn put(&self, key: &[u8], value: &[u8]) -> NdnResult<()> {
-        let mut db_write = self.db.write().unwrap();
-        let mut root = self.root.write().unwrap();
+    fn get_type(&self) -> TrieObjectMapStorageType {
+        self.storage_type
+    }
 
-        let mut trie = GenericTrieDBMutBuilder::from_existing(db_write.as_mut(), &mut root).build();
+    async fn put(&self, key: &[u8], value: &[u8]) -> NdnResult<()> {
+        let mut db_write = self.db.write().await;
+        let mut root = self.root.write().await;
+
+        let mut trie =
+            GenericTrieDBMutBuilder::from_existing(db_write.as_hash_db_mut(), &mut root).build();
         trie.insert(key, value).map_err(|e| {
             let msg = format!("Failed to insert key-value pair: {:?}", e);
             error!("{}", msg);
@@ -58,9 +71,9 @@ where
     }
 
     async fn get(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>> {
-        let db_read = self.db.read().unwrap();
-        let db = db_read.as_ref();
-        let root = self.root.read().unwrap();
+        let db_read = self.db.read().await;
+        let db = db_read.as_ref().as_hash_db();
+        let root = self.root.read().await;
 
         let trie = GenericTrieDBBuilder::new(&db as &dyn HashDBRef<H, Vec<u8>>, &root).build();
         let value = trie.get(key).map_err(|e| {
@@ -73,9 +86,10 @@ where
     }
 
     async fn remove(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>> {
-        let mut db_write = self.db.write().unwrap();
-        let mut root = self.root.write().unwrap();
-        let mut trie = GenericTrieDBMutBuilder::from_existing(db_write.as_mut(), &mut root).build();
+        let mut db_write = self.db.write().await;
+        let mut root = self.root.write().await;
+        let mut trie =
+            GenericTrieDBMutBuilder::from_existing(db_write.as_hash_db_mut(), &mut root).build();
 
         // First get value
         let value = trie.get(key).map_err(|e| {
@@ -110,9 +124,10 @@ where
     }
 
     async fn is_exist(&self, key: &[u8]) -> NdnResult<bool> {
-        let db_read = self.db.read().unwrap();
-        let db = db_read.as_ref();
-        let root = self.root.read().unwrap();
+        let db_read = self.db.read().await;
+        let db = db_read.as_ref().as_hash_db();
+        let root = self.root.read().await;
+
         let trie = GenericTrieDBBuilder::new(&db as &dyn HashDBRef<H, Vec<u8>>, &root).build();
         let exists = trie.contains(key).map_err(|e| {
             let msg = format!("Failed to check existence for key: {:?}", e);
@@ -124,10 +139,11 @@ where
     }
 
     async fn commit(&self) -> NdnResult<()> {
-        let mut db_write = self.db.write().unwrap();
-        let mut root = self.root.write().unwrap();
+        let mut db_write = self.db.write().await;
+        let mut root = self.root.write().await;
 
-        let mut trie = GenericTrieDBMutBuilder::from_existing(db_write.as_mut(), &mut root).build();
+        let mut trie =
+            GenericTrieDBMutBuilder::from_existing(db_write.as_hash_db_mut(), &mut root).build();
         trie.commit();
 
         // let new_root = trie.root_hash().to_vec();
@@ -136,24 +152,57 @@ where
     }
 
     async fn root(&self) -> Vec<u8> {
-        let root = *self.root.read().unwrap();
+        let root = *self.root.read().await;
         root.as_ref().to_vec()
     }
 
     async fn generate_proof(&self, key: &[u8]) -> NdnResult<Vec<Vec<u8>>> {
-        let db_read = self.db.read().unwrap();
+        let db_read = self.db.read().await;
         let db = db_read.as_ref();
-        let root = self.root.read().unwrap();
+        let root = self.root.read().await;
         // let trie = Sha256TrieDBBuilder::new(&*db_read, &*self.root.read().unwrap()).build();
 
-        let proof = generate_proof::<_, GenericLayout<H>, _, &[u8]>(&db, &root, &vec![key])
-            .map_err(|e| {
-                let msg = format!("Failed to generate proof for key: {:?}", e);
-                error!("{}", msg);
-                NdnError::DbError(msg)
-            })?;
+        let proof =
+            generate_proof::<_, GenericLayout<H>, _, &[u8]>(&db.as_hash_db(), &root, &vec![key])
+                .map_err(|e| {
+                    let msg = format!("Failed to generate proof for key: {:?}", e);
+                    error!("{}", msg);
+                    NdnError::DbError(msg)
+                })?;
 
         Ok(proof)
+    }
+
+    async fn clone(
+        &self,
+        target: &Path,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>> {
+        let db_read = self.db.read().await;
+        let db = db_read.as_ref();
+
+        // Clone the database
+        let cloned_db = db.clone(target, read_only).await?;
+
+        // Create a new storage wrapper with the cloned database
+        let new_storage = TrieObjectMapInnerStorageWrapper::<H>::new(self.storage_type, cloned_db);
+
+        Ok(Box::new(new_storage))
+    }
+
+    // If file is diff from the current one, it will be saved to the file.
+    async fn save(&mut self, file: &Path) -> NdnResult<()> {
+        let mut db_write = self.db.write().await;
+        let db = db_write.as_mut();
+
+        // Save the database to the file
+        db.save(file).await.map_err(|e| {
+            let msg = format!("Failed to save database to file: {:?}, {}", file, e);
+            error!("{}", msg);
+            NdnError::IoError(msg)
+        })?;
+
+        Ok(())
     }
 }
 

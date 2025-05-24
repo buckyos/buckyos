@@ -8,11 +8,13 @@ use std::sync::{Arc, RwLock};
 use trie_db::proof::generate_proof;
 use trie_db::{NodeCodec, Trie, TrieLayout, TrieMut, Value};
 use std::borrow::Borrow;
+use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrieObjectMapStorageType {
     Memory,
     SQLite,
+    JSONFile,
 }
 
 impl Default for TrieObjectMapStorageType {
@@ -22,7 +24,21 @@ impl Default for TrieObjectMapStorageType {
 }
 
 #[async_trait::async_trait]
+pub trait HashDBWithFile<H: Hasher, T>: Send + Sync + HashDB<H, T> {
+    fn get_type(&self) -> TrieObjectMapStorageType;
+
+    // Clone the storage to a new file.
+    // If the target file exists, it will be failed.
+    async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn HashDBWithFile<H, T>>>;
+
+    // If file is diff from the current one, it will be saved to the file.
+    async fn save(&mut self, file: &Path) -> NdnResult<()>;
+}
+
+#[async_trait::async_trait]
 pub trait TrieObjectMapInnerStorage: Send + Sync {
+    fn get_type(&self) -> TrieObjectMapStorageType;
+
     async fn put(&self, key: &[u8], value: &[u8]) -> NdnResult<()>;
     async fn get(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>>;
     async fn remove(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>>;
@@ -30,6 +46,13 @@ pub trait TrieObjectMapInnerStorage: Send + Sync {
     async fn commit(&self) -> NdnResult<()>;
     async fn root(&self) -> Vec<u8>;
     async fn generate_proof(&self, key: &[u8]) -> NdnResult<Vec<Vec<u8>>>;
+
+    // Clone the storage to a new file.
+    // If the target file exists, it will be failed.
+    async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>>;
+
+    // If file is diff from the current one, it will be saved to the file.
+    async fn save(&mut self, file: &Path) -> NdnResult<()>;
 }
 
 pub type TrieObjectMapInnerStorageRef = Arc<Box<dyn TrieObjectMapInnerStorage>>;

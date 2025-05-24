@@ -75,6 +75,9 @@ pub enum NdnError {
 
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
+
+    #[error("Unsupported operation: {0}")]
+    Unsupported(String),
 }
 
 
