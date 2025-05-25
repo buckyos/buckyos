@@ -1,9 +1,9 @@
-use super::file::TrieObjectMapSqliteStorage;
+use super::file::{TrieObjectMapSqliteStorage, TrieObjectMapJSONFileStorage};
 use super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
-use super::inner_storage::TrieObjectMapInnerStorageWrapper;
+use super::inner_storage::{ TrieObjectMapInnerStorageWrapper};
 use super::memory_storage::TrieObjectMapMemoryStorage;
 use super::storage::{
-    GenericTrieObjectMapProofVerifier, HashFromSlice, TrieObjectMapProofVerifier,
+    GenericTrieObjectMapProofVerifier, TrieObjectMapProofVerifier, HashFromSlice,
 };
 use super::storage::{TrieObjectMapInnerStorage, TrieObjectMapStorageType};
 use crate::{HashDBWithFile, HashMethod, NdnError, NdnResult, ObjId};
@@ -108,7 +108,7 @@ impl TrieObjectMapStorageFactory {
     ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>>
     where
         H: Hasher + Send + Sync + 'static,
-        H::Out: HashFromSlice + std::borrow::Borrow<[u8]>,
+        H::Out: HashFromSlice + AsRef<[u8]>,
     {
         if !self.data_dir.exists() {
             std::fs::create_dir_all(&self.data_dir).map_err(|e| {
@@ -143,7 +143,17 @@ impl TrieObjectMapStorageFactory {
                 Ok(ret)
             }
             TrieObjectMapStorageType::JSONFile => {
-                todo!("JSON file storage is not implemented yet");
+                let file = self.get_file_path_by_id(container_id, storage_type);
+
+                let db = TrieObjectMapJSONFileStorage::<H>::new(file, read_only)?;
+                let storage = TrieObjectMapInnerStorageWrapper::<H>::new(
+                    db.get_type(),
+                    Box::new(db) as Box<dyn HashDBWithFile<H, Vec<u8>>>,
+                    read_only,
+                );
+                let ret = Box::new(storage) as Box<dyn TrieObjectMapInnerStorage>;
+
+                Ok(ret)
             }
         }
     }
@@ -199,6 +209,7 @@ impl TrieObjectMapStorageFactory {
         }
     }
 
+    /*
     pub fn create_storage<H>(
         &self,
         storage_type: TrieObjectMapStorageType,
@@ -249,11 +260,12 @@ impl TrieObjectMapStorageFactory {
             }
         }
     }
+    */
 
     pub fn create_verifier<H>() -> Box<dyn TrieObjectMapProofVerifier>
     where
         H: Hasher + Send + Sync + 'static,
-        H::Out: HashFromSlice + std::borrow::Borrow<[u8]>,
+        H::Out: HashFromSlice + AsRef<[u8]>,
     {
         Box::new(GenericTrieObjectMapProofVerifier::<H>::new())
     }

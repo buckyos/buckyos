@@ -43,7 +43,7 @@ where
     H: KeyHasher,
     T: for<'a> From<&'a [u8]> + Default + AsRef<[u8]> + Clone + Send + Sync,
     KF: KeyFunction<H> + Send + Sync,
-    KF::Key: Borrow<[u8]>,
+    KF::Key: AsRef<[u8]>,
 {
     pub fn new(db_path: PathBuf, read_only: bool) -> NdnResult<Self> {
         let conn = Connection::open(&db_path).map_err(|e| {
@@ -91,7 +91,7 @@ where
         let result = conn
             .query_row(
                 "SELECT value, ref_count FROM trie_data WHERE key = ?1",
-                params![key.borrow()],
+                params![key.as_ref()],
                 |row| {
                     let ref_count: i32 = row.get(1)?;
                     if ref_count > 0 {
@@ -130,7 +130,7 @@ where
         let mut existing: Option<(Vec<u8>, i32)> = None;
         tx.query_row(
             "SELECT value, ref_count FROM trie_data WHERE key = ?1",
-            params![key.borrow()],
+            params![key.as_ref()],
             |row| {
                 let value: Vec<u8> = row.get(0)?;
                 let ref_count: i32 = row.get(1)?;
@@ -152,7 +152,7 @@ where
                     // Update value and reference count
                     tx.execute(
                         "UPDATE trie_data SET value = ?1, ref_count = ?2 WHERE key = ?3",
-                        params![value.as_ref(), ref_count + 1, key.borrow()],
+                        params![value.as_ref(), ref_count + 1, key.as_ref()],
                     )
                     .map_err(|e| {
                         let msg = format!("Failed to update: {}", e);
@@ -163,7 +163,7 @@ where
                     // Only increase reference count
                     tx.execute(
                         "UPDATE trie_data SET ref_count = ref_count + 1 WHERE key = ?1",
-                        params![key.borrow()],
+                        params![key.as_ref()],
                     )
                     .map_err(|e| {
                         let msg = format!("Failed to update ref_count: {}", e);
@@ -176,7 +176,7 @@ where
                 // Insert new record
                 tx.execute(
                     "INSERT INTO trie_data (key, value, ref_count) VALUES (?1, ?2, 1)",
-                    params![key.borrow(), value.as_ref()],
+                    params![key.as_ref(), value.as_ref()],
                 )
                 .map_err(|e| {
                     let msg = format!("Failed to insert: {}", e);
@@ -212,7 +212,7 @@ where
         let ref_count: Option<i32> = tx
             .query_row(
                 "SELECT ref_count FROM trie_data WHERE key = ?1",
-                params![key.borrow()],
+                params![key.as_ref()],
                 |row| row.get(0),
             )
             .optional()
@@ -227,7 +227,7 @@ where
                 // Decrease the reference count
                 tx.execute(
                     "UPDATE trie_data SET ref_count = ref_count - 1 WHERE key = ?1",
-                    params![key.borrow()],
+                    params![key.as_ref()],
                 )
                 .map_err(|e| {
                     let msg = format!("Failed to update ref_count: {}", e);
@@ -240,7 +240,7 @@ where
                 let default_value: Vec<u8> = T::default().as_ref().to_vec();
                 tx.execute(
                     "INSERT INTO trie_data (key, value, ref_count) VALUES (?1, ?2, -1)",
-                    params![key.borrow(), default_value],
+                    params![key.as_ref(), default_value],
                 )
                 .map_err(|e| {
                     let msg = format!("Failed to insert new row: {}", e);
@@ -359,7 +359,7 @@ where
     H: KeyHasher,
     T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: KeyFunction<H> + Send + Sync,
-    KF::Key: Borrow<[u8]>,
+    KF::Key: AsRef<[u8]>,
 {
     fn get(&self, key: &H::Out, prefix: Prefix) -> Option<T> {
         if key == &self.hashed_null_node {
@@ -434,7 +434,7 @@ where
     H: KeyHasher,
     T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: KeyFunction<H> + Send + Sync,
-    KF::Key: Borrow<[u8]>,
+    KF::Key: AsRef<[u8]>,
 {
     fn get(&self, key: &H::Out, prefix: Prefix) -> Option<T> {
         HashDB::get(self, key, prefix)
@@ -449,7 +449,7 @@ where
     H: KeyHasher,
     T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: KeyFunction<H> + Send + Sync,
-    KF::Key: Borrow<[u8]>,
+    KF::Key: AsRef<[u8]>,
 {
     fn as_hash_db(&self) -> &dyn HashDB<H, T> {
         self
@@ -472,7 +472,7 @@ where
         + Sync
         + 'static,
     KF: KeyFunction<H> + Send + Sync + 'static,
-    KF::Key: Borrow<[u8]>,
+    KF::Key: AsRef<[u8]>,
 {
     fn get_type(&self) -> TrieObjectMapStorageType {
         TrieObjectMapStorageType::SQLite
@@ -602,7 +602,7 @@ mod test {
     }
 }
 
-use super::super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
+// use super::super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
 use memory_db::HashKey;
 
 pub type TrieObjectMapSqliteStorage<H> = SqliteStorage<H, HashKey<H>, Vec<u8>>;

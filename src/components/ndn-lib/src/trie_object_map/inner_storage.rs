@@ -1,6 +1,6 @@
 use super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
 use super::layout::GenericLayout;
-use super::storage::{HashDBWithFile, TrieObjectMapInnerStorage, TrieObjectMapStorageType};
+use super::storage::{HashDBWithFile, TrieObjectMapInnerStorage, TrieObjectMapStorageType, HashFromSlice};
 use crate::{HashMethod, NdnError, NdnResult, ObjId};
 use generic_array::{ArrayLength, GenericArray};
 use hash_db::{HashDB, HashDBRef, Hasher};
@@ -31,7 +31,7 @@ impl<H: Hasher + 'static> TrieObjectMapInnerStorageWrapper<H> {
         read_only: bool,
     ) -> Self
     where
-        <H as hash_db::Hasher>::Out: Borrow<[u8]>,
+        <H as hash_db::Hasher>::Out: AsRef<[u8]>,
     {
         let root = <GenericLayout<H> as TrieLayout>::Codec::hashed_null_node();
         let db = Arc::new(RwLock::new(db));
@@ -59,7 +59,7 @@ impl<H: Hasher + 'static> TrieObjectMapInnerStorageWrapper<H> {
 impl<H> TrieObjectMapInnerStorage for TrieObjectMapInnerStorageWrapper<H>
 where
     H: Hasher + Send + Sync + 'static,
-    H::Out: Send + Sync + 'static + std::borrow::Borrow<[u8]>,
+    H::Out: Send + Sync + 'static + AsRef<[u8]>,
 {
     fn get_type(&self) -> TrieObjectMapStorageType {
         self.storage_type
@@ -260,32 +260,6 @@ pub trait TrieObjectMapProofVerifier: Send + Sync {
 }
 
 pub type TrieObjectMapProofVerifierRef = Arc<Box<dyn TrieObjectMapProofVerifier>>;
-
-pub trait HashFromSlice: Sized {
-    fn from_slice(bytes: &[u8]) -> NdnResult<Self>;
-}
-
-impl<N> HashFromSlice for GenericArray<u8, N>
-where
-    N: ArrayLength<u8>,
-{
-    fn from_slice(data: &[u8]) -> NdnResult<Self> {
-        if data.len() != N::to_usize() {
-            let msg = format!(
-                "Invalid length for GenericArray<u8, {}>: expected {}, got {}",
-                std::any::type_name::<N>(),
-                N::to_usize(),
-                data.len()
-            );
-            error!("{}", msg);
-            return Err(NdnError::InvalidData(msg));
-        }
-
-        let mut array = GenericArray::<u8, N>::default();
-        array.clone_from_slice(data);
-        Ok(array)
-    }
-}
 
 pub struct GenericTrieObjectMapProofVerifier<H: Hasher> {
     _marker: std::marker::PhantomData<H>,
