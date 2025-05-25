@@ -41,7 +41,8 @@ pub enum NSError {
     DecodeJWTError(String),
     #[error("Final Error: {0}")]
     FinalError(String),
-
+    #[error("Invalid request param: {0}")]
+    InvalidParam(String),
     #[error("Invalid state: {0}")]
     InvalidState(String),
 }
