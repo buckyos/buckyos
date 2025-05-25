@@ -96,7 +96,7 @@ where
             Ok(new_storage)
         } else {
             // If the storage is not dirty, just copy the file
-            std::fs::copy(&self.file, target).map_err(|e| {
+            tokio::fs::copy(&self.file, target).await.map_err(|e| {
                 let msg = format!("Failed to copy file: {:?}, {}", target, e);
                 error!("{}", msg);
                 NdnError::IoError(msg)

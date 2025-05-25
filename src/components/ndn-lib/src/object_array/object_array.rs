@@ -12,8 +12,8 @@ use crate::mtree::{
 use crate::{HashMethod, ObjId, OBJ_TYPE_LIST};
 use crate::{NdnError, NdnResult};
 use arrow::csv::writer;
-use http_types::cache;
 use core::hash;
+use http_types::cache;
 use std::io::SeekFrom;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -32,10 +32,7 @@ pub struct ObjectArray {
 }
 
 impl ObjectArray {
-    pub fn new(
-        hash_method: HashMethod,
-        storage_type: Option<ObjectArrayStorageType>,
-    ) -> Self {
+    pub fn new(hash_method: HashMethod, storage_type: Option<ObjectArrayStorageType>) -> Self {
         let cache: Box<dyn ObjectArrayInnerCache> =
             ObjectArrayCacheFactory::create_cache(ObjectArrayCacheType::Memory);
 
@@ -84,7 +81,7 @@ impl ObjectArray {
     pub fn len(&self) -> usize {
         self.cache.len()
     }
-    
+
     pub fn iter(&self) -> ObjectArrayIter<'_> {
         ObjectArrayIter {
             cache: &*self.cache,
@@ -368,9 +365,13 @@ impl ObjectArray {
     pub async fn save(&mut self) -> NdnResult<()> {
         let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
         let mut writer = factory
-            .open_writer(&self.get_obj_id().unwrap(), None, Some(self.storage_type.clone()))
+            .open_writer(
+                &self.get_obj_id().unwrap(),
+                None,
+                Some(self.storage_type.clone()),
+            )
             .await?;
-        
+
         // Write the object array to the storage
         // TODO: use batch read and write to improve performance
         for i in 0..self.cache.len() {
@@ -384,15 +385,15 @@ impl ObjectArray {
     }
 
     // FIXME: should we save hash_method to the storage?
-    pub async fn open(hash_method: HashMethod, container_id: &ObjId, read_only: bool) -> NdnResult<Self> {
+    pub async fn open(
+        hash_method: HashMethod,
+        container_id: &ObjId,
+        read_only: bool,
+    ) -> NdnResult<Self> {
         let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
         let (cache, storage_type) = factory.open(container_id, read_only).await?;
 
-        let obj_array = Self::new_from_cache(
-            hash_method,
-            cache,
-            storage_type,
-        )?;
+        let obj_array = Self::new_from_cache(hash_method, cache, storage_type)?;
 
         Ok(obj_array)
     }
@@ -413,14 +414,15 @@ impl<'a> Iterator for ObjectArrayIter<'a> {
                 match self.cache.get(index) {
                     Ok(Some(id)) => Some(id),
                     Ok(None) => {
-                        None
+                        // If the item is None, we just skip it
+                        self.next() // Call next again to get the next item
                     }
                     Err(_) => {
                         // FIXME: What should we do on error? just return None now
                         None
-                    }         
+                    }
                 }
-            },
+            }
             None => None,
         }
     }
@@ -434,6 +436,50 @@ impl<'a> Iterator for ObjectArrayIter<'a> {
 
 // Because we always known the size of the iterator, we can implement ExactSizeIterator
 impl<'a> ExactSizeIterator for ObjectArrayIter<'a> {}
+
+impl IntoIterator for ObjectArray {
+    type Item = ObjId;
+    type IntoIter = ObjectArrayOwnedIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let len = self.cache.len();
+        ObjectArrayOwnedIter {
+            cache: self.cache,
+            indices: 0..len,
+        }
+    }
+}
+
+// This iterator consumes the ObjectArray and provides ObjId items
+pub struct ObjectArrayOwnedIter {
+    cache: Box<dyn ObjectArrayInnerCache>,
+    indices: std::ops::Range<usize>,
+}
+
+impl Iterator for ObjectArrayOwnedIter {
+    type Item = ObjId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.indices.next() {
+            Some(index) => {
+                match self.cache.get(index) {
+                    Ok(Some(id)) => Some(id),
+                    Ok(None) => {
+                        // If the item is None, we just skip it
+                        self.next() // Call next again to get the next item
+                    }
+                    Err(_) => {
+                        // FIXME: What should we do on error? just return None now
+                        None
+                    }
+                }
+            }
+            None => None,
+        }
+    }
+}
+
+impl ExactSizeIterator for ObjectArrayOwnedIter {}
 
 pub struct ObjectArrayProofVerifier {
     hash_method: HashMethod,
