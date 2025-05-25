@@ -85,6 +85,13 @@ impl ObjectArray {
         self.cache.len()
     }
     
+    pub fn iter(&self) -> ObjectArrayIter<'_> {
+        ObjectArrayIter {
+            cache: &*self.cache,
+            indices: 0..self.cache.len(),
+        }
+    }
+
     pub fn append_object(&mut self, obj_id: &ObjId) -> NdnResult<()> {
         // Check if obj_id.obj_hash has the same length as hash_method
         if obj_id.obj_hash.len() != self.hash_method.hash_bytes() {
@@ -390,6 +397,43 @@ impl ObjectArray {
         Ok(obj_array)
     }
 }
+
+// Iterator over the object array, providing ObjId items
+pub struct ObjectArrayIter<'a> {
+    cache: &'a dyn ObjectArrayInnerCache,
+    indices: std::ops::Range<usize>,
+}
+
+impl<'a> Iterator for ObjectArrayIter<'a> {
+    type Item = ObjId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.indices.next() {
+            Some(index) => {
+                match self.cache.get(index) {
+                    Ok(Some(id)) => Some(id),
+                    Ok(None) => {
+                        None
+                    }
+                    Err(_) => {
+                        // FIXME: What should we do on error? just return None now
+                        None
+                    }         
+                }
+            },
+            None => None,
+        }
+    }
+
+    // Implement size_hint to help performance optimization
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.indices.end - self.indices.start;
+        (remaining, Some(remaining))
+    }
+}
+
+// Because we always known the size of the iterator, we can implement ExactSizeIterator
+impl<'a> ExactSizeIterator for ObjectArrayIter<'a> {}
 
 pub struct ObjectArrayProofVerifier {
     hash_method: HashMethod,
