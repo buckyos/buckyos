@@ -47,6 +47,7 @@ impl DnsProvider {
     // }
    
 }
+
 #[async_trait::async_trait]
 impl NsProvider for DnsProvider {
     fn get_id(&self) -> String {
