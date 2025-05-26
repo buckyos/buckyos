@@ -343,7 +343,7 @@ impl NamedDataMgr {
             fs::create_dir_all(root_path.clone()).await.unwrap();
         }
         let mgr_config;
-        let mgr_json_file = root_path.join("ndn_mgr.json");
+        let mgr_json_file = root_path.join("hnbgnbh .json");
         if !mgr_json_file.exists() {
             mgr_config = NamedDataMgrConfig {
                 local_stores:vec!["./".to_string()],

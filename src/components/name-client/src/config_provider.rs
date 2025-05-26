@@ -6,6 +6,9 @@ use std::path::Path;
 use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use std::io::Result;
+use std::time::SystemTime;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use crate::{NSResult, NameInfo, NameProof, NsProvider, RecordType};
 use name_lib::*;
@@ -33,7 +36,7 @@ MX=["mail.example.com"]
 
 
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct DomainConfig {
     #[serde(default)]
     pub ttl: u32,
@@ -53,14 +56,20 @@ pub(crate) struct DomainConfig {
     pub cname: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct DnsLocalConfig {
     #[serde(flatten)]
     pub domains: HashMap<String, DomainConfig>,
 }
 
 pub struct ConfigProvider {
+    inner: Arc<Mutex<ConfigProviderInner>>,
+}
+
+struct ConfigProviderInner {
     config: DnsLocalConfig,
+    config_path: PathBuf,
+    last_modified: SystemTime,
 }
 
 impl ConfigProvider {
@@ -72,7 +81,39 @@ impl ConfigProvider {
         let config: DnsLocalConfig = toml::from_str(&contents)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         
-        Ok(ConfigProvider { config })
+        let metadata = file.metadata()?;
+        let last_modified = metadata.modified()?;
+        
+        let inner = ConfigProviderInner {
+            config,
+            config_path: config_path.to_path_buf(),
+            last_modified,
+        };
+        
+        Ok(ConfigProvider { 
+            inner: Arc::new(Mutex::new(inner))
+        })
+    }
+
+    fn check_and_reload_config(inner: &mut ConfigProviderInner) -> Result<bool> {
+        let metadata = std::fs::metadata(&inner.config_path)?;
+        let current_modified = metadata.modified()?;
+        
+        if current_modified > inner.last_modified {
+            let mut file = File::open(&inner.config_path)?;
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)?;
+            
+            let new_config: DnsLocalConfig = toml::from_str(&contents)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            
+            inner.config = new_config;
+            inner.last_modified = current_modified;
+            info!("Config file reloaded successfully");
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     fn matches_wildcard(pattern: &str, name: &str) -> bool {
@@ -154,7 +195,8 @@ impl ConfigProvider {
     }
 
     pub fn get_all_domains(&self) -> Vec<String> {
-        self.config.domains.keys().cloned().collect()
+        let inner = self.inner.lock().unwrap();
+        inner.config.domains.keys().cloned().collect()
     }
 }
 
@@ -164,16 +206,24 @@ impl NsProvider for ConfigProvider {
         "local dns-record-config provider".to_string()
     }
 
-    async fn query(&self, domain: &str, record_type: Option<RecordType>, from_ip: Option<IpAddr>) -> NSResult<NameInfo> {
+    async fn query(&self, domain: &str, record_type: Option<RecordType>, _from_ip: Option<IpAddr>) -> NSResult<NameInfo> {
         let record_type = record_type.unwrap_or(RecordType::A);
-    
+        
+        // 获取内部配置的锁
+        let mut inner = self.inner.lock().unwrap();
+        
+        // 检查并重新加载配置
+        if let Err(e) = Self::check_and_reload_config(&mut inner) {
+            warn!("Failed to reload config: {}", e);
+        }
+        
         // First check for exact match
-        let config = self.config.domains.get(domain);
+        let config = inner.config.domains.get(domain);
         if config.is_none() {
-            for (pattern, config) in &self.config.domains {
+            for (pattern, config) in &inner.config.domains {
                 if pattern.contains('*') {
                     if Self::matches_wildcard(pattern, domain) {
-                        info!("{} found in matches_wildcard {}",domain,pattern);
+                        debug!("{} found in matches_wildcard {}",domain,pattern);
                         return Self::convert_domain_config_to_records(
                             domain,
                             config,
@@ -184,7 +234,7 @@ impl NsProvider for ConfigProvider {
             }
             return Err(NSError::NotFound(domain.to_string()));
         }
-        info!("{} found in dns-local-config!",domain);
+        debug!("{} found in dns-local-config!",domain);
         let config = config.unwrap();
         return Self::convert_domain_config_to_records(
             domain,
@@ -193,16 +243,48 @@ impl NsProvider for ConfigProvider {
         );
     }
 
-    async fn query_did(&self, did: &DID, fragment: Option<&str>, from_ip: Option<IpAddr>) -> NSResult<EncodedDocument> {
-        unimplemented!()
+    async fn query_did(&self, did: &DID, _fragment: Option<&str>, _from_ip: Option<IpAddr>) -> NSResult<EncodedDocument> {
+        let domain = did.to_host_name();
+        // 获取内部配置的锁
+        let mut inner = self.inner.lock().unwrap();
+        
+        // 检查并重新加载配置
+        if let Err(e) = Self::check_and_reload_config(&mut inner) {
+            warn!("Failed to reload config: {}", e);
+        }
+        
+        // First check for exact match
+        let config = inner.config.domains.get(&domain);
+        if config.is_none() {
+            for (pattern, config) in &inner.config.domains {
+                if pattern.contains('*') {
+                    if Self::matches_wildcard(pattern, &domain) {
+                        if config.did.is_some() {
+                            debug!("query_did: {} found in matches_wildcard {}",domain,pattern);
+                            let doc_doc_str = config.did.clone().unwrap();
+                            let did_doc = EncodedDocument::from_str(doc_doc_str)?;
+                            return Ok(did_doc);
+                        }
+                    }
+                }
+            }
+            return Err(NSError::NotFound(domain.to_string()));
+        }
+
+        debug!("query_did: {} found in dns-local-config!",domain);
+        let config = config.unwrap();
+        if config.did.is_some() {
+            let doc_doc_str = config.did.clone().unwrap();
+            let did_doc = EncodedDocument::from_str(doc_doc_str)?;
+            return Ok(did_doc);
+        }
+        return Err(NSError::NotFound(domain.to_string()));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use hickory_resolver::proto::rr::domain;
     use tempfile::NamedTempFile;
     use std::io::Write;
     use buckyos_kit::init_logging;
@@ -214,6 +296,7 @@ mod tests {
 ttl = 300
 A = ["192.168.1.1"]
 TXT="THISISATEST"
+DID="eyJhbGciOiJFZERTQSJ9.eyJvb2RzIjpbIm9vZDEiXSwiZXhwIjoyMDU4ODM4OTM5LCJpYXQiOjE3NDM0Nzg5Mzl9.6p01rckQkSoZ4kMOQfqZ_JIfHisYI27xNMtmHdYiu_0J_FZC-9j6JzN8PO3PO2A9Eugwo2877LJ5cyHGYEIbCw"
 
 ["*.example.com"]
 ttl = 300
@@ -252,6 +335,9 @@ A = ["192.168.1.106"]
         assert_eq!(result.ttl.unwrap(), 300);
         assert_eq!(result.address.len(), 1);
         assert_eq!(result.address[0].to_string(), "192.168.1.1");
+
+        let result = provider.query_did(&DID::new("web","www.example.com"), None, None).await.unwrap();
+        assert_eq!(result.to_string(),"eyJhbGciOiJFZERTQSJ9.eyJvb2RzIjpbIm9vZDEiXSwiZXhwIjoyMDU4ODM4OTM5LCJpYXQiOjE3NDM0Nzg5Mzl9.6p01rckQkSoZ4kMOQfqZ_JIfHisYI27xNMtmHdYiu_0J_FZC-9j6JzN8PO3PO2A9Eugwo2877LJ5cyHGYEIbCw");
 
         let result = provider.query("www.example.com", Some(RecordType::TXT), None).await.unwrap();
         assert_eq!(result.name, "www.example.com");
