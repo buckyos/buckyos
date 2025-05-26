@@ -31,10 +31,62 @@ close_msg_queue(queue_id)
 - msq_queue也可以配置成纯内存模式（只保障顺序不保障序列化），可用于某些性能特化场景
 
 ## 核心接口设计
-- 实现msg_queue service,基于NATS+jetstream实现
-- 抽象出trait,方便在有需要的场景透明的替换底层实现（比如在物联网场合基于sqlite进行单节点实现）
+- 设计msg_queue service,基于NATS+jetstream实现
+- 先抽象出trait,方便在有需要的场景透明的替换底层实现（比如在物联网场合基于sqlite进行单节点实现）
 
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueConfig {
+    pub max_size: usize,
+    pub persistence: bool,
+    pub retention_period: Option<u64>, // in seconds
+    pub max_message_size: Option<usize>,
+}
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub id: Uuid,
+    pub queue_id: String,
+    pub content: Vec<u8>,
+    pub timestamp: u64,
+    pub reply_to: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageReply {
+    pub message_id: Uuid,
+    pub result: Vec<u8>,
+    pub timestamp: u64,
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueStats {
+    pub queue_id: String,
+    pub message_count: usize,
+    pub max_size: usize,
+    pub used_storage: usize,
+    pub created_at: u64,
+    pub last_accessed: u64,
+} 
+
+#[async_trait]
+pub trait MsgQueueBackend: Send + Sync {
+    async fn create_queue(&self, queue_id: &str, config: QueueConfig) -> Result<(), MsgQueueError>;
+    async fn update_queue_config(&self, queue_id: &str, config: QueueConfig) -> Result<(), MsgQueueError>;
+    async fn delete_queue(&self, queue_id: &str) -> Result<(), MsgQueueError>;
+    
+    async fn post_message(&self, queue_id: &str, message: Message) -> Result<(), MsgQueueError>;
+    async fn pop_message(&self, queue_id: &str) -> Result<Option<Message>, MsgQueueError>;
+    
+    async fn get_message_reply(&self, message_id: &str) -> Result<Option<MessageReply>, MsgQueueError>;
+    async fn reply_to_message(&self, reply: MessageReply) -> Result<(), MsgQueueError>;
+    
+    async fn get_queue_stats(&self, queue_id: &str) -> Result<QueueStats, MsgQueueError>;
+
+} 
+```
 
 （基于 功能描述 发给AI调研后，得出结论使用NATS + jetstream, 然后根据例子手工调整接口定义）
 （service都需要通过kRPC向外提供服务，因此这里也要消息的思考这些接口不会在kRPC化后带来巨大的劣化）
