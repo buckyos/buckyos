@@ -14,6 +14,7 @@ import py_src.util as util
 import py_src.clog as clog
 import py_src.clean as clean
 import py_src.sn as sn
+import py_src.state as state
 
 
 # 配置文件路径
@@ -41,7 +42,7 @@ def print_usage():
     print("  ./main.py stop <device_id>         # 停止buckyos")
     print("  ./main.py stop --all               # 全部vm，停止buckyos")
     print("  ./main.py clog                     # 收集node日志")
-    print("  ./main.py list                     # list vm device info")
+    print("  ./main.py info                     # list vm device info")
 
 
 
@@ -176,17 +177,8 @@ def main():
             return
         case "deviceinfo":
             get_device_info.get_device_info(info_path=VM_DEVICE_CONFIG)
-        case "list":
-            all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
-            # print有缩进格式
-            print("all devices:")
-            for device_id in all_devices:
-                print(f"device_id: {device_id}")
-                print(f"state: {all_devices[device_id]['state']}")
-                print(f"ipv4: {all_devices[device_id]['ipv4']}")
-                print(f"release: {all_devices[device_id]['release']}")
-                print("")
-            # print(all_devices)
+        case "info":
+            state.info_device()
         case "install":
             if len(sys.argv) < 3:
                 print("Usage: install.py <device_id>")
