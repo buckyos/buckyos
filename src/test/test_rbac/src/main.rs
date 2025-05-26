@@ -74,7 +74,7 @@ async fn test() -> std::result::Result<(), String> {
         return Err("system/rbac/policy is null".to_string());
     }
 
-    println!("<== test GET system/rbac/policy via admin + kernel success, pass");
+    println!("<== test GET system/rbac/policy via admin + kernel, pass");
 
     println!("==> test CREATE system/test_rbac/set via admin + kernel, should success");
     let _result = client
@@ -90,7 +90,7 @@ async fn test() -> std::result::Result<(), String> {
             );
             return e.to_string();
         })?;
-    println!("<== test CREATE system/test_rbac/set via admin + kernel success, pass");
+    println!("<== test CREATE system/test_rbac/set via admin + kernel, pass");
 
     println!("==> test SET system/test_rbac/set via admin + kernel, should success");
     let _result = client
@@ -106,7 +106,7 @@ async fn test() -> std::result::Result<(), String> {
             );
             return e.to_string();
         })?;
-    println!("<== test SET system/test_rbac/set via admin + kernel success, pass");
+    println!("<== test SET system/test_rbac/set via admin + kernel, pass");
 
     println!("==> test DELETE system/test_rbac/set via admin + kernel, should success");
     let _result = client
@@ -119,7 +119,7 @@ async fn test() -> std::result::Result<(), String> {
             );
             return e.to_string();
         })?;
-    println!("<== test DELETE system/test_rbac/set via admin + kernel success, pass");
+    println!("<== test DELETE system/test_rbac/set via admin + kernel, pass");
 
     println!("==> test SET users/aaa/apps/app-test/settings via admin + kernel, should success");
     let _result = client
@@ -135,7 +135,7 @@ async fn test() -> std::result::Result<(), String> {
             );
             return e.to_string();
         })?;
-    println!("<== test SET users/aaa/apps/app-test/settings via admin + kernel success, pass");
+    println!("<== test SET users/aaa/apps/app-test/settings via admin + kernel, pass");
 
     println!("==> test GET users/aaa/apps/app-test/settings via admin + kernel, should success");
     let _result = client
@@ -151,7 +151,7 @@ async fn test() -> std::result::Result<(), String> {
             );
             return e.to_string();
         })?;
-    println!("<== test GET users/aaa/apps/app-test/settings via admin + kernel success, pass");
+    println!("<== test GET users/aaa/apps/app-test/settings via admin + kernel, pass");
 
     println!("***********************");
     println!("End admin + kernel test");
@@ -195,7 +195,7 @@ async fn test() -> std::result::Result<(), String> {
         println!("result is null");
         return Err("system/rbac/policy is null".to_string());
     }
-    println!("<== test GET system/rbac/policy via admin + sys-test success, pass");
+    println!("<== test GET system/rbac/policy via admin + sys-test, pass");
 
     println!("==> test SET system/test_rbac/set via admin + sys-test, should failed");
     let result = client
@@ -209,7 +209,7 @@ async fn test() -> std::result::Result<(), String> {
         println!("test SET system/test_rbac/set via admin + sys-test should failed");
         return Err("test SET system/test_rbac/set via admin + sys-test should failed".to_string());
     }
-    println!("<== test SET system/test_rbac/set via admin + sys-test failed, pass");
+    println!("<== test SET system/test_rbac/set via admin + sys-test, pass");
 
     println!("==> test SET users/aaa/apps/sys-test/settings via admin + sys-test, should success");
     let _result = client
@@ -225,7 +225,7 @@ async fn test() -> std::result::Result<(), String> {
             );
             return e.to_string();
         })?;
-    println!("<== test SET users/aaa/apps/sys-test/settings via admin + sys-test success, pass");
+    println!("<== test SET users/aaa/apps/sys-test/settings via admin + sys-test, pass");
 
     println!("==> test GET users/aaa/apps/sys-test/settings via admin + sys-test, should success");
     let _result = client
@@ -241,12 +241,88 @@ async fn test() -> std::result::Result<(), String> {
             );
             return e.to_string();
         })?;
-    println!("<== test GET users/aaa/apps/sys-test/settings via admin + sys-test success, pass");
+    println!("<== test GET users/aaa/apps/sys-test/settings via admin + sys-test, pass");
 
-    //appA write appB?
+    //p, app, kv://users/*/apps/{app}/config,read,allow
+    println!("==> test SET users/aaa/apps/sys-test/config via admin + sys-test, should failed");
+    let result = client
+        .call(
+            "sys_config_set",
+            json!({"key": "users/aaa/apps/sys-test/config", "value": "test_rbac_set_value"}),
+        )
+        .await;
+    if result.is_ok() {
+        println!("test SET users/aaa/apps/sys-test/config via admin + sys-test should failed");
+        return Err(
+            "test SET users/aaa/apps/sys-test/config via admin + sys-test should failed"
+                .to_string(),
+        );
+    }
+    println!("<== test SET users/aaa/apps/sys-test/config via admin + sys-test, pass");
+
+    //p, app, kv://users/*/apps/{app}/info,read,allow
+    println!("==> test SET users/aaa/apps/sys-test/info via admin + sys-test, should failed");
+    let result = client
+        .call(
+            "sys_config_set",
+            json!({"key": "users/aaa/apps/sys-test/info", "value": "test_rbac_set_value"}),
+        )
+        .await;
+    if result.is_ok() {
+        println!("test SET users/aaa/apps/sys-test/info via admin + sys-test should failed");
+        return Err(
+            "test SET users/aaa/apps/sys-test/info via admin + sys-test should failed".to_string(),
+        );
+    }
+    println!("<== test SET users/aaa/apps/sys-test/info via admin + sys-test, pass");
+
     println!("********************");
     println!("End admin + app test");
     println!("********************");
+
+    //appA write appB
+    println!("**********************************");
+    println!("Begin admin + appA Write appB test");
+    println!("**********************************");
+
+    println!(
+        "==> test GET users/aaa/apps/buckyos-filebrowser/settings via admin + sys-test, should success"
+    );
+    let _result = client
+        .call(
+            "sys_config_get",
+            json!({"key": "users/aaa/apps/buckyos-filebrowser/settings"}),
+        )
+        .await
+        .map_err(|e| {
+            println!(
+                "Failed to get users/aaa/apps/buckyos-filebrowser/settings via admin + sys-test: {}",
+                e
+            );
+            return e.to_string();
+        })?;
+    println!("<== test GET users/aaa/apps/buckyos-filebrowser/settings via admin + sys-test, pass");
+
+    println!(
+        "==> test SET users/aaa/apps/buckyos-filebrowser/settings via admin + sys-test, should failed"
+    );
+    let result = client
+        .call(
+            "sys_config_set",
+            json!({"key": "users/aaa/apps/buckyos-filebrowser/settings", "value": "test_rbac_set_value"}),
+        )
+        .await;
+    if result.is_ok() {
+        println!(
+            "test SET users/aaa/apps/buckyos-filebrowser/settings via admin + sys-test should failed"
+        );
+        return Err("test SET users/aaa/apps/buckyos-filebrowser/settings via admin + sys-test should failed".to_string());
+    }
+    println!("<== test SET users/aaa/apps/buckyos-filebrowser/settings via admin + sys-test, pass");
+
+    println!("********************************");
+    println!("End admin + appA Write appB test");
+    println!("********************************");
 
     Ok(())
 }
