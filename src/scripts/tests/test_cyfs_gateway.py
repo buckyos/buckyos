@@ -117,6 +117,7 @@ def reset_gateway1(ip: str):
     write_file(os.path.join(local_path, 'gateway1.json'), new_config)
     remote_node.scp_put(os.path.join(local_path, '../remote/dev_configs/sn_db.sqlite3'), '/opt/web3_bridge/sn_db.sqlite3')
     remote_node.scp_put(os.path.join(local_path, 'gateway1.json'), '/opt/cyfs_gateway/gateway.json')
+    remote_node.scp_put(os.path.join(local_path, 'local_dns.toml'), '/opt/cyfs_gateway/local_dns.toml')
     remote_node.run_command('sudo nohup /opt/cyfs_gateway/cyfs_gateway --config_file /opt/cyfs_gateway/gateway.json > /dev/null 2>&1 &')
     time.sleep(2)
 
@@ -134,18 +135,20 @@ def test_forward(init_context):
     print(resp)
 
 
-def query_with_dns(domain, dns_server="8.8.8.8", record_type="A") -> list[str] | None:
+def query_with_dns(domain, dns_server="8.8.8.8", record_type="A", dns_port=53) -> list[str] | None:
     resolver = dns.resolver.Resolver()
+    resolver.retry_servfail = False
     resolver.nameservers = [dns_server]  # 指定DNS服务器
+    resolver.port = dns_port  # 指定DNS服务器端口
     try:
-        answers = resolver.resolve(domain, record_type)
+        answers = resolver.resolve(domain, record_type, raise_on_no_answer=False)
         records = []
         for record in answers:
             records.append(record.to_text())
         return records
     except Exception as e:
-        assert False, f"查询失败: {e}"
         return None
+
 
 def test_dns(init_context):
     init_context
@@ -156,10 +159,73 @@ def test_dns(init_context):
     assert list is not None
     assert len(list) == 1
     assert list[0] == "192.168.1.188"
+    list = query_with_dns('web3.buckyos.cc', dns_server=ips[0], record_type="A")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == "192.168.1.188"
+    list = query_with_dns('web3.buckyos.ai', dns_server=ips[0], record_type="A")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == "192.168.1.188"
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="AAAA")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="TXT")
+    assert list is not None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="SRV")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="CNAME")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="MX")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="NS")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="PTR")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="SOA")
+    assert list is None
     list = query_with_dns('www.github.com', dns_server=ips[0], record_type="A")
     print(f"www.github.com: {list}")
     assert list is not None
     assert len(list) >= 1
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="SRV")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="CNAME")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="MX")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="NS")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="PTR")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="SOA")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="A", dns_port=534)
+    assert list is None
+
+    list = query_with_dns('www.buckyos.com', dns_server="127.0.0.1", record_type="A", dns_port=534)
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == "192.168.1.1"
+
+    list = query_with_dns('www.buckyos.com', dns_server=ips[0], record_type="TXT")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == "THISISATEST"
+
+    list = query_with_dns('test.buckyos.com', dns_server=ips[0], record_type="A")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == "192.168.1.2"
+
+    list = query_with_dns('test.sub.buckyos.com', dns_server=ips[0], record_type="A")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == "192.168.1.3"
+
+    list = query_with_dns('mail.buckyos.com', dns_server=ips[0], record_type="A")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == "192.168.1.106"
 
 
 @pytest.mark.asyncio
