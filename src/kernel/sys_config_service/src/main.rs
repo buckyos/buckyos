@@ -102,7 +102,7 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     )
     .await
     {
-        return Err(RPCErrors::NoPermission("No read permission".to_string()));
+        return Err(RPCErrors::NoPermission("No write permission".to_string()));
     }
 
     //do business logic
@@ -146,7 +146,7 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
     )
     .await
     {
-        return Err(RPCErrors::NoPermission("No read permission".to_string()));
+        return Err(RPCErrors::NoPermission("No write permission".to_string()));
     }
 
     //do business logic
@@ -185,7 +185,7 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
     )
     .await
     {
-        return Err(RPCErrors::NoPermission("No read permission".to_string()));
+        return Err(RPCErrors::NoPermission("No write permission".to_string()));
     }
 
     //do business logic
@@ -290,7 +290,7 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
     )
     .await
     {
-        return Err(RPCErrors::NoPermission("No read permission".to_string()));
+        return Err(RPCErrors::NoPermission("No write permission".to_string()));
     }
 
     //do business logic
