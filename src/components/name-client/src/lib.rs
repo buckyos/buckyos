@@ -4,6 +4,7 @@ mod provider;
 mod name_client;
 mod name_query;
 mod dns_provider;
+mod config_provider;
 mod utility;
 
 use jsonwebtoken::DecodingKey;
@@ -12,6 +13,7 @@ pub use name_client::*;
 pub use name_query::*;
 pub use dns_provider::*;
 pub use utility::*;
+pub use config_provider::*;
 
 use cfg_if::cfg_if;
 cfg_if! {

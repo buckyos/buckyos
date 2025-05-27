@@ -19,7 +19,7 @@ use anyhow::Result;
 use cyfs_gateway_lib::*;
 use cyfs_sn::get_sn_server_by_id;
 use futures::stream::{self, StreamExt};
-use name_client::{DnsProvider, NameInfo, NsProvider, RecordType};
+use name_client::{DnsProvider, LocalConfigDnsProvider, NameInfo, NsProvider, RecordType};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -54,8 +54,12 @@ pub async fn create_ns_provider(
 ) -> Result<Box<dyn NsProvider>> {
     match provider_config.provider_type {
         DNSProviderType::DNS => {
-            let dns_provider = DnsProvider::new(None);
+            let dns_provider = DnsProvider::new_with_config(provider_config.config.clone())?;
             Ok(Box::new(dns_provider))
+        }
+        DNSProviderType::LocalConfig => {
+            let local_provider = LocalConfigDnsProvider::new_with_config(provider_config.config.clone())?;
+            Ok(Box::new(local_provider))
         }
 
         DNSProviderType::SN => {

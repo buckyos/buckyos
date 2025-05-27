@@ -14,6 +14,7 @@ import py_src.util as util
 import py_src.clog as clog
 import py_src.clean as clean
 import py_src.sn as sn
+import py_src.state as state
 
 
 # 配置文件路径
@@ -41,10 +42,12 @@ def print_usage():
     print("  ./main.py stop <device_id>         # 停止buckyos")
     print("  ./main.py stop --all               # 全部vm，停止buckyos")
     print("  ./main.py clog                     # 收集node日志")
-    print("  ./main.py list                     # list vm device info")
+    print("  ./main.py info                     # list vm device info")
 
 
 
+def gen_dev_config_path(sub_path: str):
+    return os.path.join(CONFIG_BASE, sub_path)
 
 
 # create vm by read demo_env.json
@@ -116,11 +119,14 @@ def active():
 
     print("nodeB1 config file uploading......")
     nodeB1.run_command("mkdir -p /opt/buckyos/etc")
-    nodeB1.scp_put("./dev_configs/bobdev/ood1/node_identity.json", "/opt/buckyos/etc/node_identity.json")
-    nodeB1.scp_put("./dev_configs/bobdev/ood1/node_private_key.pem", "/opt/buckyos/etc/node_private_key.pem")
+    nodeB1.scp_put(gen_dev_config_path("bobdev/ood1/node_identity.json"), "/opt/buckyos/etc/node_identity.json")
+    nodeB1.scp_put(gen_dev_config_path("bobdev/ood1/node_private_key.pem"), "/opt/buckyos/etc/node_private_key.pem")
     # start_config 激活流程会生成，没激活直接复制过去
-    nodeB1.scp_put("./dev_configs/bobdev/ood1/start_config.json", "/opt/buckyos/etc/start_config.json")
-    nodeB1.scp_put("./dev_configs/machine.json", "/opt/buckyos/etc/machine.json")
+    nodeB1.scp_put(gen_dev_config_path("bobdev/ood1/start_config.json"), "/opt/buckyos/etc/start_config.json")
+    nodeB1.scp_put(gen_dev_config_path("bobdev/cyfs_gateway.json"), "/opt/buckyos/etc/cyfs_gateway.json")
+    nodeB1.scp_put(gen_dev_config_path("bobdev/node_gateway.json"), "/opt/buckyos/etc/node_gateway.json")
+
+    nodeB1.scp_put(gen_dev_config_path("machine.json"), "/opt/buckyos/etc/machine.json")
     print("nodeB1 config file uploaded")
 
     # 处理nodeA2的配置文件
@@ -142,20 +148,9 @@ def active():
     # 要考虑sn_ip是非数组的情况
     print(f"sn IP {sn_ip[0]}")
 
-
-    def update_dns(node, ip):
-        # 如果 DNS 行已存在但被注释，这条命令会取消注释并修改值
-        node.run_command(f"sudo sed -i 's/#DNS=.*/DNS={ip}/' /etc/systemd/resolved.conf")
-        # 如果 DNS 行不存在或已经被取消注释，确保它被正确设置
-        node.run_command(f"sudo sed -i 's/DNS=.*/DNS={ip}/' /etc/systemd/resolved.conf")
-
-        node.run_command("sudo rm -f /etc/resolv.conf")
-        node.run_command("sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf")
-        node.run_command("sudo systemctl restart systemd-resolved")
-        print(f"device DNS updated nameserver update to {ip}")
     
-    update_dns(nodeB1, sn_ip[0])
-    update_dns(nodeA2, sn_ip[0])
+    sn.update_node_dns(nodeB1, sn_ip[0])
+    sn.update_node_dns(nodeA2, sn_ip[0])
 
 
 def main():
@@ -182,17 +177,8 @@ def main():
             return
         case "deviceinfo":
             get_device_info.get_device_info(info_path=VM_DEVICE_CONFIG)
-        case "list":
-            all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)
-            # print有缩进格式
-            print("all devices:")
-            for device_id in all_devices:
-                print(f"device_id: {device_id}")
-                print(f"state: {all_devices[device_id]['state']}")
-                print(f"ipv4: {all_devices[device_id]['ipv4']}")
-                print(f"release: {all_devices[device_id]['release']}")
-                print("")
-            # print(all_devices)
+        case "info":
+            state.info_device()
         case "install":
             if len(sys.argv) < 3:
                 print("Usage: install.py <device_id>")
