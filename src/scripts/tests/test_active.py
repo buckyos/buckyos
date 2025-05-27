@@ -8,28 +8,14 @@ import sys
 import time
 
 import pytest
-import socket
-from urllib3.util import connection
 
-from krpc import kRPCClient
+from krpc import kRPCClient, regsiter_sn_user
+from scripts.tests.krpc import register_domain_ip
 
 local_path = os.path.realpath(os.path.dirname(__file__))
 
 sys.path.append(os.path.realpath(os.path.join(local_path, '../remote')))
 from remote_device import remote_device
-
-_orig_create_connection = connection.create_connection
-
-domain_ip_map = dict()
-def patched_create_connection(address, *args, **kwargs):
-    host, port = address
-    global domain_ip_map
-    if host in domain_ip_map:
-        return _orig_create_connection((domain_ip_map[host], port), *args, **kwargs)
-    return _orig_create_connection((host, port), *args, **kwargs)
-
-# 应用补丁
-connection.create_connection = patched_create_connection
 
 @pytest.fixture(scope='module')
 def init_context():
@@ -123,27 +109,6 @@ async def get_device_info(server: str) -> dict:
         assert False, f"generate_key_pair failed: {e}"
     return resp
 
-
-async def regsiter_sn_user(sn_server: str, user_name: str, active_code: str, public_key: str, zone_config_jwt: str, user_domain: str = None, check_success: bool = True):
-    try:
-        global domain_ip_map
-        domain_ip_map["web3.buckyos.io"] = sn_server
-        rpc = kRPCClient(f'http://web3.buckyos.io/kapi/sn')
-        req = {
-            "user_name": user_name,
-            "active_code": active_code,
-            "public_key": public_key,
-            "zone_config": zone_config_jwt,
-        }
-        if user_domain is not None:
-            req['user_domain'] = user_domain
-
-        await rpc.call('register_user', req)
-        if not check_success:
-            assert False, f"register_user should failed"
-    except Exception as e:
-        if check_success:
-            assert False, f"register_user failed: {e}"
 
 
 def hash_password(username: str, password: str, nonce: int = None) -> str:
@@ -266,8 +231,8 @@ async def test_active_with_sn(init_context):
             zone_boot_config_jwt = await generate_zone_boot_config_jwt(ip, "", owner_private_key)
             print(zone_boot_config_jwt)
 
-            await regsiter_sn_user(sn_ip, None, None, None, None, check_success=False)
-            await regsiter_sn_user(sn_ip, "test", "11111", json.dumps(owner_public_key), zone_boot_config_jwt)
+            await regsiter_sn_user(sn_ip, None, None, None, None, assert_failed=False, sn_domain="web3.buckyos.io")
+            await regsiter_sn_user(sn_ip, "test", "11111", json.dumps(owner_public_key), zone_boot_config_jwt, sn_domain="web3.buckyos.io")
 
             req = {
                 "sn_url": "",
