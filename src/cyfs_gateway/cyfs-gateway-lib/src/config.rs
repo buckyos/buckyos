@@ -178,6 +178,8 @@ pub enum DNSProviderType {
     #[serde(rename = "dns")]
     DNS,//query name info by system
     SN,//query name info by sn server
+    LocalConfig,
+    
 }
 
 #[derive(Deserialize,Clone,Debug)]

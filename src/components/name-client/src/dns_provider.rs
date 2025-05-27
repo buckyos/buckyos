@@ -21,6 +21,19 @@ impl DnsProvider {
         }
     }
 
+    pub fn new_with_config(config: serde_json::Value) -> NSResult<Self> {
+        let dns_server = config.get("dns_server");
+        if dns_server.is_some() {
+            let dns_server = dns_server.unwrap().as_str();
+            return Ok( Self {
+                dns_server : dns_server.map(|s| s.to_string())
+            }) 
+        }
+        Ok(Self {
+            dns_server: None,
+        })
+    }
+
     // fn parse_dns_response(resp: DnsResponse) -> NSResult<NameInfo> {
     //     let mut txt_list = Vec::new();
     //     for record in resp.answers() {

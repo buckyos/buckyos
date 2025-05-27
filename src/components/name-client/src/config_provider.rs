@@ -62,7 +62,7 @@ pub(crate) struct DnsLocalConfig {
     pub domains: HashMap<String, DomainConfig>,
 }
 
-pub struct ConfigProvider {
+pub struct LocalConfigDnsProvider {
     inner: Arc<Mutex<ConfigProviderInner>>,
 }
 
@@ -72,17 +72,21 @@ struct ConfigProviderInner {
     last_modified: SystemTime,
 }
 
-impl ConfigProvider {
-    pub fn new(config_path: &Path) -> Result<Self> {
-        let mut file = File::open(config_path)?;
+impl LocalConfigDnsProvider {
+    pub fn new(config_path: &Path) -> NSResult<Self> {
+        let mut file = File::open(config_path)
+            .map_err(|e|  NSError::ReadLocalFileError(format!("load config error:{}",e)))?;
         let mut contents = String::new();
-        file.read_to_string(&mut contents)?;
+        file.read_to_string(&mut contents)
+            .map_err(|e|  NSError::ReadLocalFileError(format!("load config error:{}",e)))?;
         
         let config: DnsLocalConfig = toml::from_str(&contents)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            .map_err(|e|  NSError::ReadLocalFileError(format!("load config error:{}",e)))?;
         
-        let metadata = file.metadata()?;
-        let last_modified = metadata.modified()?;
+        let metadata = file.metadata()
+            .map_err(|_e| NSError::ReadLocalFileError("Failed to get metadata".to_string()))?;
+        let last_modified = metadata.modified()
+            .map_err(|_e| NSError::ReadLocalFileError("Failed to get modified time".to_string()))?;
         
         let inner = ConfigProviderInner {
             config,
@@ -90,9 +94,24 @@ impl ConfigProvider {
             last_modified,
         };
         
-        Ok(ConfigProvider { 
+        Ok(LocalConfigDnsProvider { 
             inner: Arc::new(Mutex::new(inner))
         })
+    }
+
+    pub fn new_with_config(config: serde_json::Value) -> NSResult<Self> {
+        let config_path_str = config.get("path");
+        if config_path_str.is_none() {
+            return Err(NSError::ReadLocalFileError("config path is not set".to_string()));
+        }
+        let config_path_str = config_path_str.unwrap();
+        let config_path_str = config_path_str.as_str();
+        if config_path_str.is_none() {
+            return Err(NSError::ReadLocalFileError("config path is not a string".to_string()));
+        }
+        let config_path_str = config_path_str.unwrap();
+        let config_path = Path::new(config_path_str);
+        Self::new(config_path)
     }
 
     fn check_and_reload_config(inner: &mut ConfigProviderInner) -> Result<bool> {
@@ -201,7 +220,7 @@ impl ConfigProvider {
 }
 
 #[async_trait::async_trait]
-impl NsProvider for ConfigProvider {
+impl NsProvider for LocalConfigDnsProvider {
     fn get_id(&self) -> String {
         "local dns-record-config provider".to_string()
     }
@@ -214,7 +233,7 @@ impl NsProvider for ConfigProvider {
         
         // 检查并重新加载配置
         if let Err(e) = Self::check_and_reload_config(&mut inner) {
-            warn!("Failed to reload config: {}", e);
+            warn!("Failed to reload config: {},still use old config", e);
         }
         
         // First check for exact match
@@ -318,17 +337,17 @@ A = ["192.168.1.106"]
 
     #[test]
     fn test_wildcard_matching() {
-        assert!(ConfigProvider::matches_wildcard("*", "www"));
-        assert!(ConfigProvider::matches_wildcard("*.example.com", "www.example.com"));
-        assert!(ConfigProvider::matches_wildcard("*.example.com", "mail.example.com"));
-        assert!(!ConfigProvider::matches_wildcard("*.example.com", "example.com"));
-        assert!(!ConfigProvider::matches_wildcard("*.example.com", "sub.www.example.com"));
+        assert!(LocalConfigDnsProvider::matches_wildcard("*", "www"));
+        assert!(LocalConfigDnsProvider::matches_wildcard("*.example.com", "www.example.com"));
+        assert!(LocalConfigDnsProvider::matches_wildcard("*.example.com", "mail.example.com"));
+        assert!(!LocalConfigDnsProvider::matches_wildcard("*.example.com", "example.com"));
+        assert!(!LocalConfigDnsProvider::matches_wildcard("*.example.com", "sub.www.example.com"));
     }
 
     #[tokio::test]
     async fn test_config_provider() {
         let temp_file = create_test_config();
-        let provider = ConfigProvider::new(temp_file.path()).unwrap();
+        let provider = LocalConfigDnsProvider::new(temp_file.path()).unwrap();
         // Test exact domain match
         let result = provider.query("www.example.com", Some(RecordType::A), None).await.unwrap();
         assert_eq!(result.name, "www.example.com");
