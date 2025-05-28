@@ -90,11 +90,7 @@ pub async fn connect_into() {
                         }
                     }
                     "list" => {
-                        if parts.len()!= 2 {
-                            println!("用法: list <key>");
-                            continue;
-                        }
-                        let key = parts[1];
+let key =                         if parts.len() > 1 { parts[1] } else { "" };
                         let result = syc_cfg_client.list(key).await;
                         match result {
                             Ok(value) => {

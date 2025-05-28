@@ -72,8 +72,10 @@ impl NsProvider for DnsProvider {
         let resolver;
         if self.dns_server.is_some() {
             let dns_server = self.dns_server.clone().unwrap();
+            let dns_ip_addr = IpAddr::from_str(&dns_server)
+                .map_err(|e| NSError::ReadLocalFileError(format!("Invalid dns server: {}", e)))?;
             let name_server_configs = vec![NameServerConfig::new(
-                SocketAddr::new(IpAddr::from_str(&dns_server).unwrap(), 53),
+                SocketAddr::new(dns_ip_addr, 53),
                 Protocol::Udp,
             )];
             server_config = ResolverConfig::from_parts(
