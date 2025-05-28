@@ -66,10 +66,6 @@ def start_sn():
     # 要考虑sn_ip是非数组的情况
     # print(f"SN IP {sn_ip[0]}")
     # update_node_dns(device, sn_ip[0])
-
-
-    # device.run_command("sudo chmod 777 /opt/web3_bridge/") #rust sqlite client 需要对目录和文件有写权限
-    # device.run_command("sudo chmod 777 /opt/web3_bridge/sn_db.sqlite3")
     # device.run_command("sudo systemctl stop systemd-resolved")
     # device.run_command("sudo systemctl disable systemd-resolved")
     start.start_all_apps(device)

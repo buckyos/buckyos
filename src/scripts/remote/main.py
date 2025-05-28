@@ -56,7 +56,7 @@ def create():
         print(f"Config file not found: {ENV_CONFIG}")
         sys.exit(1)
     print(f"Using config file: {ENV_CONFIG}")
-    creator = create_vm.VMCreator(ENV_CONFIG)
+    creator = create_vm.VMCreator(ENV_CONFIG, CONFIG_BASE)
     creator.create_all()
 
 
@@ -137,7 +137,7 @@ def active():
     nodeA2.scp_put(os.path.join(rootfs_path, "etc/node_identity.json"), "/opt/buckyos/etc/node_identity.json")
     nodeA2.scp_put(os.path.join(rootfs_path, "etc/node_private_key.pem"), "/opt/buckyos/etc/node_private_key.pem")
     nodeA2.scp_put(os.path.join(rootfs_path, "etc/start_config.json"), "/opt/buckyos/etc/start_config.json")
-    nodeA2.scp_put("./dev_configs/machine.json", "/opt/buckyos/etc/machine.json")
+    nodeA2.scp_put(gen_dev_config_path("machine.json"), "/opt/buckyos/etc/machine.json") # 不能用rootfs下面的machine.json
     print("nodeA2 config file uploaded")
 
 
