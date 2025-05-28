@@ -149,7 +149,7 @@ impl KVStoreProvider for SledStore {
 
     async fn list_direct_children(&self, prefix: String) -> Result<Vec<String>> {
         let mut result = Vec::new();
-        let prefix = if prefix.ends_with("/") {
+        let prefix = if prefix.eq("") || prefix.ends_with("/") {
             prefix
         } else {
             format!("{}/", prefix)
