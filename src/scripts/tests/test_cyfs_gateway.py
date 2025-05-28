@@ -99,6 +99,12 @@ def init_context():
     remote_node.run_command('sudo mkdir /opt/web3_bridge')
     remote_node.scp_put(os.path.join(rootfs, 'bin/cyfs_gateway/cyfs_gateway'), '/opt/cyfs_gateway/cyfs_gateway')
     remote_node.scp_put(os.path.join(local_path, 'device_key.pem'), '/opt/cyfs_gateway/device_key.pem')
+    remote_node.scp_put(os.path.join(local_path, 'web3.buckyos.site.crt'), '/opt/cyfs_gateway/web3.buckyos.site.crt')
+    remote_node.scp_put(os.path.join(local_path, 'web3.buckyos.site.key'), '/opt/cyfs_gateway/web3.buckyos.site.key')
+    remote_node.scp_put(os.path.join(local_path, 'buckyos.site.crt'), '/opt/cyfs_gateway/buckyos.site.crt')
+    remote_node.scp_put(os.path.join(local_path, 'buckyos.site.key'), '/opt/cyfs_gateway/buckyos.site.key')
+    remote_node.scp_put(os.path.join(local_path, 'web3.buckyos.xx.crt'), '/opt/cyfs_gateway/web3.buckyos.xx.crt')
+    remote_node.scp_put(os.path.join(local_path, 'web3.buckyos.xx.key'), '/opt/cyfs_gateway/web3.buckyos.xx.key')
     remote_node.run_command('sudo kill -9 $(pgrep -f "http_test_server.py")')
     remote_node.scp_put(os.path.join(local_path, 'http_test_server.py'), '/opt/cyfs_gateway/http_test_server.py')
     remote_node.run_command('nohup python3 /opt/cyfs_gateway/http_test_server.py > /dev/null 2>&1 &')
@@ -272,3 +278,23 @@ def test_http_server(init_context):
     response = requests.options(f"http://web3.buckyos.ai/test_upstream")
     if "Access-Control-Allow-Origin" not in response.headers:
         assert False, "Access-Control-Allow-Origin header not found in response"
+
+
+def test_https_server(init_context):
+    init_context
+    ips = get_vm_ips('gateway1')
+    print(f"gateway1 ips: {ips}")
+    reset_gateway1(ips[0])
+    register_domain_ip("web3.buckyos.site", ips[0])
+    register_domain_ip("web3.buckyos.xx", ips[0])
+    register_domain_ip("www.buckyos.site", ips[0])
+    resp = requests.get(f"https://web3.buckyos.site/static/gateway.json", verify=False)
+    assert resp.status_code == 200
+    resp = requests.get(f"https://web3.buckyos.xx/static/gateway.json", verify=False)
+    assert resp.status_code == 200
+    resp = requests.get(f"https://www.buckyos.site/static/gateway.json", verify=False)
+    assert resp.status_code == 200
+    resp = requests.get(f"http://web3.buckyos.site/test_upstream", verify=False)
+    assert resp.status_code == 200
+    resp = requests.get(f"https://web3.buckyos.site/test_upstream", verify=False)
+    assert resp.status_code == 200
