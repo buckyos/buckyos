@@ -14,7 +14,7 @@ fn is_local_cmd(cmd_name: &str) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    buckyos_kit::init_logging("buckycli",false);
+    buckyos_kit::init_logging("buckycli", false);
 
     let matches = Command::new("buckyos control tool")
         .author("buckyos")
@@ -161,6 +161,12 @@ async fn main() -> Result<(), String> {
                         .num_args(2)
                         .help("set system config,
     buckycli sys_config --set $key $value")
+                )
+                .arg(
+                    Arg::new("list")
+                      .long("list")
+                      .value_name("key")
+                      .help("get system config, buckycli sys_config --list $key")
                 )
                 .arg(
                     Arg::new("set_file")
@@ -367,6 +373,11 @@ async fn main() -> Result<(), String> {
                 let value = config_values[1];
                 println!("Set system config, key[{}]: {}", key, value);
                 sys_config::set_config(key, value).await;
+                return Ok(());
+            }
+            if let Some(key) = matches.get_one::<String>("list") {
+                // println!("List system config, key[{}]", key);
+                sys_config::list_config(key).await;
                 return Ok(());
             }
             if let Some(_key) = matches.get_one::<String>("set_file") {

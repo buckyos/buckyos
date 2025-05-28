@@ -9,10 +9,10 @@ pub async fn get_config(key: &str) {
     let result = syc_cfg_client.get(key).await;
     match result {
         Ok(value) => {
-            println!("value:");
+            // println!("value:");
             println!("{}", value.0);
-            println!("version:");
-            println!("{}", value.1);
+            // println!("version:");
+            // println!("{}", value.1);
         }
         Err(err) => println!("config get error: {}", err),
     }
@@ -25,6 +25,20 @@ pub async fn set_config(key: &str, value: &str) {
     match result {
         Ok(version) => println!("{} 已设置为 {}, version: {}", key, value, version),
         Err(err) => println!("config set error: {}", err),
+    }
+}
+
+pub async fn list_config(key: &str) {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
+    let result = syc_cfg_client.list(key).await;
+    match result {
+        Ok(value) => {
+            value.iter().for_each(|item| {
+                println!("{}", item);
+            })
+        },
+        Err(err) => println!("config list error: {}", err),
     }
 }
 
@@ -67,10 +81,10 @@ pub async fn connect_into() {
                         let result = syc_cfg_client.get(key).await;
                         match result {
                             Ok(value) => {
-                                println!("value:");
+                                // println!("value:");
                                 println!("{}", value.0);
-                                println!("version:");
-                                println!("{}", value.1);
+                                // println!("version:");
+                                // println!("{}", value.1);
                             }
                             Err(err) => println!("config get error: {}", err),
                         }
