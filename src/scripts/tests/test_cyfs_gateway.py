@@ -3,12 +3,11 @@ import re
 import subprocess
 import time
 
-import dns.resolver
 import pytest
 import requests
 
 from remote_node import RemoteNode
-from krpc import sn_check_active_code, sn_check_username, regsiter_sn_user, register_domain_ip
+from krpc import sn_check_active_code, sn_check_username, regsiter_sn_user, register_domain_ip, query_with_dns
 
 local_path = os.path.realpath(os.path.dirname(__file__))
 identity_file = os.path.realpath(os.path.join(os.path.join(local_path, '../remote'), 'dev_configs/ssh/id_rsa'))
@@ -133,21 +132,6 @@ def test_forward(init_context):
     resp = requests.post(f"http://{ips[0]}:8080/test", json={"test": 1})
     assert resp.status_code == 201
     print(resp)
-
-
-def query_with_dns(domain, dns_server="8.8.8.8", record_type="A", dns_port=53) -> list[str] | None:
-    resolver = dns.resolver.Resolver()
-    resolver.retry_servfail = False
-    resolver.nameservers = [dns_server]  # 指定DNS服务器
-    resolver.port = dns_port  # 指定DNS服务器端口
-    try:
-        answers = resolver.resolve(domain, record_type, raise_on_no_answer=False)
-        records = []
-        for record in answers:
-            records.append(record.to_text())
-        return records
-    except Exception as e:
-        return None
 
 
 def test_dns(init_context):

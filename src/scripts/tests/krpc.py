@@ -4,6 +4,7 @@ from typing import Any, Optional, Union
 import time
 import requests
 from urllib3.util import connection
+import dns.resolver
 
 _orig_create_connection = connection.create_connection
 
@@ -151,11 +152,13 @@ async def regsiter_sn_user(sn_server: str, user_name: str, active_code: str, pub
             req['user_domain'] = user_domain
 
         await rpc.call('register_user', req)
-        if not assert_failed:
-            assert False, f"register_user should failed"
     except Exception as e:
         if assert_failed:
             assert False, f"register_user failed: {e}"
+        return
+
+    if not assert_failed:
+        assert False, f"register_user should failed"
 
 async def sn_register_device(sn_server: str, user_name: str, device_name: str, device_did: str, device_ip: str, device_info: str, assert_failed: bool = True, sn_domain: str = "web3.buckyos.ai"):
     try:
@@ -169,9 +172,25 @@ async def sn_register_device(sn_server: str, user_name: str, device_name: str, d
             "device_info": device_info,
         }
         await rpc.call('register_device', req)
-        if not assert_failed:
-            assert False, f"register_device should failed"
     except Exception as e:
         if assert_failed:
             assert False, f"register_device failed: {e}"
+        return
 
+    if not assert_failed:
+        assert False, f"register_device should failed"
+
+
+def query_with_dns(domain, dns_server="8.8.8.8", record_type="A", dns_port=53) -> list[str] | None:
+    resolver = dns.resolver.Resolver()
+    resolver.retry_servfail = False
+    resolver.nameservers = [dns_server]  # 指定DNS服务器
+    resolver.port = dns_port  # 指定DNS服务器端口
+    try:
+        answers = resolver.resolve(domain, record_type, raise_on_no_answer=False)
+        records = []
+        for record in answers:
+            records.append(record.to_text())
+        return records
+    except Exception as e:
+        return None

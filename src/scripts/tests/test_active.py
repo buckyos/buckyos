@@ -9,8 +9,7 @@ import time
 
 import pytest
 
-from krpc import kRPCClient, regsiter_sn_user
-from scripts.tests.krpc import register_domain_ip
+from krpc import kRPCClient, regsiter_sn_user, query_with_dns
 
 local_path = os.path.realpath(os.path.dirname(__file__))
 
@@ -27,7 +26,9 @@ def init_context():
     subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'start_sn'], check=True)
     subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'active'], check=True)
     subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'start', '--all'], check=True)
-    resp = subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'list'], check=True, capture_output=True)
+    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'deviceinfo'], check=True)
+    with open(os.path.join(local_path, '../remote/dev_configs/device_info.json'), 'r') as f:
+        resp = json.load(f)
     yield resp
     subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'clean', '--force'], check=True)
 
@@ -94,12 +95,13 @@ async def do_active(server: str, req: dict, check_success: bool = True):
     try:
         rpc = kRPCClient(f'http://{server}:3180/kapi/active')
         resp = await rpc.call('do_active', req)
-        if not check_success:
-            assert False, f"do_active should failed"
     except Exception as e:
         if check_success:
             assert False, f"do_active failed: {e}"
+        return
 
+    if not check_success:
+        assert False, f"do_active should failed"
 
 async def get_device_info(server: str) -> dict:
     try:
@@ -150,10 +152,9 @@ def reset_sn_server(node: str):
 
 @pytest.mark.asyncio
 async def test_active_no_sn(init_context):
-    resp = init_context
-    node_list = parse_node_info(resp.stdout.decode('utf-8'))
-    for node in node_list:
-        if node.get('device_id') == 'nodeA2':
+    nodes = init_context
+    for node_id, node in nodes.items():
+        if node_id == 'nodeA2':
             reset_active('nodeA2')
             ip = node.get('ipv4')[0]
             owner_public_key, owner_private_key = await generate_key_pair(ip)
@@ -201,27 +202,24 @@ async def test_active_no_sn(init_context):
             }
             await do_active(ip, req)
 
-    print(node_list)
-
 
 @pytest.mark.asyncio
 async def test_active_with_sn(init_context):
-    resp = init_context
-    node_list = parse_node_info(resp.stdout.decode('utf-8'))
+    nodes = init_context
 
-    reset_sn_server('sn')
+    # reset_sn_server('sn')
 
     sn_ip = None
-    for node in node_list:
-        if node.get('device_id') == 'sn':
+    for node_id, node in nodes.items():
+        if node_id == 'sn':
             sn_ip = node.get('ipv4')[0]
             break
 
     if sn_ip is None:
         assert False, "sn node not found"
 
-    for node in node_list:
-        if node.get('device_id') == 'nodeB1':
+    for node_id, node in nodes.items():
+        if node_id == 'nodeB1':
             reset_active('nodeB1')
             ip = node.get('ipv4')[0]
             owner_public_key, owner_private_key = await generate_key_pair(ip)
@@ -257,6 +255,8 @@ async def test_active_with_sn(init_context):
             }
             await do_active(ip, req, False)
 
+            time.sleep(2)
+
             req = {
                 "user_name": "test",
                 "zone_name": "test.web3.buckyos.io",
@@ -272,4 +272,8 @@ async def test_active_with_sn(init_context):
             }
             await do_active(ip, req)
 
-    print(node_list)
+            resp = query_with_dns("test.web3.buckyos.io", dns_server=sn_ip)
+            print(f'test.web3.buckyos.io ips {resp}')
+
+            resp = query_with_dns("ood1.test.web3.buckyos.io", dns_server=sn_ip)
+            print(f'ood1.test.web3.buckyos.io ips {resp}')
