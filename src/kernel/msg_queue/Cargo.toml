@@ -2,6 +2,7 @@
 name = "msg_queue"
 version = "0.5.0"
 edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
 
 [dependencies]
 async-nats = "*"
@@ -9,11 +10,15 @@ async-trait = "*"
 tokio = { version = "*", features = ["full"] }
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
+log = "*"
 anyhow = "*"
 thiserror = "*"
-tracing = "*"
 uuid = { version = "*", features = ["v4", "serde"] }
 futures = "*"
+kRPC = { path = "../kRPC" }
+buckyos-kit = { path = "../../components/buckyos-kit" }
+cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
+cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
 
 [dev-dependencies]
 mockall = "*"
