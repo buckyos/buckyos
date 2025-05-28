@@ -7,9 +7,8 @@ use uuid::Uuid;
 use futures::StreamExt;
 use anyhow;
 
-use crate::backend::MsgQueueBackend;
 use crate::error::MsgQueueError;
-use crate::types::{Message, MessageReply, QueueConfig, QueueStats};
+use crate::msg_queue::*;
 
 pub struct NatsBackend {
     client: Arc<Client>,
@@ -188,7 +187,7 @@ impl MsgQueueBackend for NatsBackend {
         reply
     }
     
-    async fn reply_to_message(&self, reply: MessageReply) -> Result<(), MsgQueueError> {
+    async fn reply_message(&self, reply: MessageReply) -> Result<(), MsgQueueError> {
         let subject = format!("replies.{}", reply.message_id);
         let payload = serde_json::to_vec(&reply)
             .map_err(|e| MsgQueueError::BackendError(e.into()))?;

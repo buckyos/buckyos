@@ -512,7 +512,7 @@ pub async fn start_task_manager_service() {
     register_inner_service_builder("task_manager", move || Box::new(server.clone())).await;
     let _ = get_buckyos_system_bin_dir().join("task_manager");
 
-    let active_server_config = json!({
+    let task_manager_server_config = json!({
       "http_port":3380,
       "hosts": {
         "*": {
@@ -525,10 +525,10 @@ pub async fn start_task_manager_service() {
         }
       }
     });
-    let active_server_config: WarpServerConfig =
-        serde_json::from_value(active_server_config).unwrap();
+    let server_config: WarpServerConfig =
+        serde_json::from_value(task_manager_server_config).unwrap();
     info!("start node task manager service...");
-    let _ = start_cyfs_warp_server(active_server_config).await;
+    let _ = start_cyfs_warp_server(server_config).await;
 }
 
 #[cfg(test)]
