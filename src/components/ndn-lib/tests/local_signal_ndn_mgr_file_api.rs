@@ -789,6 +789,83 @@ async fn ndn_local_o_link_innerpath_file_ok() {
         let read_chunk = read_buffers.concat();
         assert_eq!(read_chunk, chunk_data, "chunk data mismatch");
     }
+
+    {
+        // download to local
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
+
+        write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_ne!(file_id, cal_file_id, "file-id mismatch");
+
+        NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file_id, file_obj_str.as_str())
+            .await
+            .expect("put object in local failed");
+
+        let download_path = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join(TEST_DIR)
+            .join(DOWNLOAD_DIR)
+            .join(chunk_id.to_base32());
+        let _ = std::fs::remove_file(download_path.as_path());
+
+        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
+        let (download_chunk_id, download_chunk_len) = ndn_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await
+            .expect("download chunk to local failed");
+
+        assert_eq!(
+            download_chunk_id, chunk_id,
+            "download chunk-id should equal with chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            chunk_data.len() as u64,
+            "download chunk-size should equal with chunk-data len"
+        );
+
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, chunk_data,
+            "should be same as chunk-content"
+        );
+
+        let (download_chunk_id, download_chunk_len) = ndn_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
+
+        assert_eq!(
+            download_chunk_id, chunk_id,
+            "download chunk-id should equal with chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            chunk_data.len() as u64,
+            "download chunk-size should equal with chunk-data len"
+        );
+
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, chunk_data,
+            "should be same as chunk-content"
+        );
+    }
 }
 
 #[tokio::test]
@@ -832,6 +909,80 @@ async fn ndn_local_o_link_innerpath_file_not_found() {
             format!("http://{}/ndn/{}/notexist", ndn_host, file_id.to_string(),);
         let ret = ndn_client
             .get_obj_by_url(o_link_inner_path.as_str(), None)
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+    }
+
+    {
+        // no write chunk for download to local
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
+
+        // write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_ne!(file_id, cal_file_id, "file-id mismatch");
+
+        NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file_id, file_obj_str.as_str())
+            .await
+            .expect("put object in local failed");
+
+        let download_path = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join(TEST_DIR)
+            .join(DOWNLOAD_DIR)
+            .join(chunk_id.to_base32());
+        let _ = std::fs::remove_file(download_path.as_path());
+
+        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
+        let ret = ndn_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+
+        let ret = ndn_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
             .await;
 
         match ret {
@@ -1249,283 +1400,989 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             .await
             .expect("download chunk should success without verify");
 
-        assert_eq!(
-            download_chunk_id, chunk_id,
-            "should be same as fake chunk-id"
-        );
+        assert_eq!(download_chunk_id, chunk_id, "should be same as chunk-id");
         assert_eq!(
             download_chunk_len,
             chunk_data.len() as u64,
-            "should be same as fake chunk.len"
+            "should be same as chunk.len"
         );
         let download_chunk =
             std::fs::read(download_path.as_path()).expect("chunk should exists in local");
         assert_eq!(
             download_chunk, chunk_data,
-            "should be same as fake chunk-content"
+            "should be same as chunk-content"
         );
     }
 }
 
-// http://{host}/ndn/{obj-path}
-#[tokio::test]
-async fn ndn_local_r_link_ok() {
-    // init_logging("ndn_local_r_link_ok", false);
-
-    // let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    // let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
-
-    // let ndn_url = format!("http://{}/ndn/", ndn_host);
-
-    // let (obj_id, obj) = generate_random_obj();
-    // let obj_id_base32 = obj_id.to_base32();
-
-    // let obj_path = "/test_obj_path";
-    // NamedDataMgr::pub_object_to_file(
-    //     Some(ndn_mgr_id.as_str()),
-    //     obj.clone(),
-    //     "non-test-obj",
-    //     obj_path,
-    //     "test_non_obj_user_id",
-    //     "test_non_obj_app_id",
-    // )
-    // .await
-    // .expect("pub object to file failed");
-
-    // // get object using the NdnClient
-    // let r_link = format!("http://{}/ndn{}", ndn_host, obj_path);
-    // let (got_obj_id, got_obj) = ndn_client
-    //     .get_obj_by_url(r_link.as_str(), Some(obj_id.clone()))
-    //     .await
-    //     .expect("get obj from ndn-mgr failed");
-
-    // assert_eq!(got_obj_id, obj_id, "got obj-id mismatch");
-
-    // let (_, got_obj_str) = build_named_object_by_json("non-test-obj", &got_obj);
-    // let (_, expect_obj_str) = build_named_object_by_json("non-test-obj", &obj);
-    // assert_eq!(got_obj_str, expect_obj_str, "got obj mismatch");
-}
-
-#[tokio::test]
-async fn ndn_local_r_link_not_found() {
-    // init_logging("ndn_local_r_link_not_found", false);
-
-    // let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    // let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
-
-    // let ndn_url = format!("http://{}/ndn/", ndn_host);
-
-    // let (obj_id, obj) = generate_random_obj();
-
-    // let obj_path = "/test_obj_path";
-    // // no pub
-    // // NamedDataMgr::pub_object_to_file(
-    // //     Some(ndn_mgr_id.as_str()),
-    // //     obj.clone(),
-    // //     "non-test-obj",
-    // //     obj_path,
-    // //     "test_non_obj_user_id",
-    // //     "test_non_obj_app_id",
-    // // )
-    // // .await
-    // // .expect("pub object to file failed");
-
-    // // get object using the NdnClient
-    // let r_link = format!("http://{}/ndn{}", ndn_host, obj_path);
-    // let ret = ndn_client
-    //     .get_obj_by_url(r_link.as_str(), Some(obj_id.clone()))
-    //     .await;
-
-    // match ret {
-    //     Ok(_) => assert!(false, "sub obj id should not found"),
-    //     Err(err) => {
-    //         if let NdnError::NotFound(_) = err {
-    //         } else {
-    //             assert!(
-    //                 false,
-    //                 "unexpect error, sub obj id should not found. {:?}",
-    //                 err
-    //             )
-    //         }
-    //     }
-    // }
-}
-
-#[tokio::test]
-async fn ndn_local_r_link_verify_failed() {
-    // init_logging("ndn_local_r_link_verify_failed", false);
-
-    // let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    // let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
-
-    // let ndn_url = format!("http://{}/ndn/", ndn_host);
-
-    // let (obj_id, mut obj) = generate_random_obj();
-
-    // // modify 'obj.string'.
-    // obj.as_object_mut().unwrap().insert(
-    //     "string".to_string(),
-    //     serde_json::Value::String("fake string".to_string()),
-    // );
-
-    // let obj_path = "/test_obj_path";
-    // NamedDataMgr::pub_object_to_file(
-    //     Some(ndn_mgr_id.as_str()),
-    //     obj.clone(),
-    //     "non-test-obj",
-    //     obj_path,
-    //     "test_non_obj_user_id",
-    //     "test_non_obj_app_id",
-    // )
-    // .await
-    // .expect("pub object to file failed");
-
-    // // get object using the NdnClient
-    // let r_link = format!("http://{}/ndn/{}", ndn_host, obj_path);
-    // let ret = ndn_client
-    //     .get_obj_by_url(r_link.as_str(), Some(obj_id.clone()))
-    //     .await;
-
-    // match ret {
-    //     Ok(_) => assert!(false, "should obj id verify failed"),
-    //     Err(err) => {
-    //         if let NdnError::InvalidId(_) = err {
-    //         } else {
-    //             assert!(false, "unexpect error, should obj id verify failed.")
-    //         }
-    //     }
-    // }
-}
-
 // http://{host}/ndn/{obj-path}/inner-path
 #[tokio::test]
-async fn ndn_local_r_link_innerpath_ok() {
-    // init_logging("ndn_local_r_link_innerpath_ok", false);
+async fn ndn_local_r_link_innerpath_file_ok() {
+    init_logging("ndn_local_r_link_innerpath_file_ok", false);
 
-    // let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    // let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
 
-    // let ndn_url = format!("http://{}/ndn/", ndn_host);
+    let ndn_url = format!("http://{}/ndn/", ndn_host);
 
-    // let (obj_id, obj) = generate_random_obj();
-    // let obj_id_base32 = obj_id.to_base32();
+    {
+        // 1. get chunk of file
+        // 2. get name of file
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
 
-    // let obj_path = "/test_obj_path";
-    // NamedDataMgr::pub_object_to_file(
-    //     Some(ndn_mgr_id.as_str()),
-    //     obj.clone(),
-    //     "non-test-obj",
-    //     obj_path,
-    //     "test_non_obj_user_id",
-    //     "test_non_obj_app_id",
-    // )
-    // .await
-    // .expect("pub object to file failed");
+        // write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 
-    // // get object using the NdnClient
-    // let inner_path = "obj";
-    // let r_link_inner_path = format!("http://{}/ndn{}/{}", ndn_host, obj_path, inner_path);
-    // let (got_obj_id, got_obj) = ndn_client
-    //     .get_obj_by_url(r_link_inner_path.as_str(), None)
-    //     .await
-    //     .expect("get obj from ndn-mgr failed");
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_eq!(file_id, cal_file_id, "file-id mismatch");
 
-    // // assert_eq!(got_obj_id, obj_id, "got obj-id mismatch");
+        let local_path = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join(TEST_DIR)
+            .join(DOWNLOAD_DIR)
+            .join(chunk_id.to_base32());
+        let _ = std::fs::remove_file(local_path.as_path());
 
-    // let (_, got_obj_str) = build_named_object_by_json("non-test-obj", &got_obj);
-    // let (_, expect_obj_str) =
-    //     build_named_object_by_json("non-test-obj", obj.get(inner_path).unwrap());
-    // assert_eq!(got_obj_str, expect_obj_str, "got obj mismatch");
+        // 创建local_path目录
+        std::fs::create_dir_all(local_path.parent().unwrap())
+            .expect("create local path parent dir failed");
+        // 把chunk_data写入到local_path
+        std::fs::write(local_path.as_path(), chunk_data.as_slice())
+            .expect("write chunk data to local failed");
+
+        let obj_path = "/test_file_path";
+        let content_ndn_path = format!("test_file_content_{}", chunk_id.to_base32());
+
+        let mut file_obj = FileObject::new(
+            "non_test_file".to_string(),
+            chunk_data.len() as u64,
+            chunk_id.to_string(),
+        );
+
+        NamedDataMgr::pub_local_file_as_fileobj(
+            Some(ndn_mgr_id.as_str()),
+            &local_path,
+            obj_path,
+            content_ndn_path.as_str(),
+            &mut file_obj,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
+
+        assert_eq!(
+            file_obj.content,
+            chunk_id.to_string(),
+            "file content should be same as ndn-path"
+        );
+        assert_eq!(
+            file_obj.size,
+            chunk_data.len() as u64,
+            "file content-ndn-path should be same as ndn-path"
+        );
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let (mut reader, resp_headers) = ndn_client
+            .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await
+            .map_err(|err| {
+                log::error!("Failed to open chunk reader: {:?}", err);
+                err
+            })
+            .expect("open chunk-reader failed");
+
+        let content_len = resp_headers
+            .obj_size
+            .expect("content-length should exist in http-headers");
+        assert_eq!(
+            content_len,
+            chunk_data.len() as u64,
+            "content-length in http-header should equal with chunk.len"
+        );
+        assert_eq!(
+            resp_headers.obj_id,
+            Some(chunk_id.to_obj_id()),
+            "obj-id in http-header should equal with chunk-id"
+        );
+        assert!(
+            resp_headers.path_obj.is_none(),
+            "path-obj should be None for o-link"
+        );
+        assert_eq!(
+            resp_headers.root_obj_id,
+            Some(file_id.clone()),
+            "root-obj-id in http-header should equal with file-id"
+        );
+
+        let mut buffer = vec![0u8, 0];
+        let len = reader
+            .read_to_end(&mut buffer)
+            .await
+            .expect("read chunk failed");
+        assert_eq!(
+            len as u64, content_len,
+            "length of data in http-body should equal with content-length"
+        );
+        assert_eq!(
+            len,
+            buffer.len(),
+            "length of read data should equal with content-length"
+        );
+        assert_eq!(buffer, chunk_data, "chunk content mismatch");
+
+        // todo: verify chunk with mtree
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/name", ndn_host, obj_path);
+        let (name_obj_id, name_json) = ndn_client
+            .get_obj_by_url(r_link_inner_path.as_str(), None)
+            .await
+            .expect("get name of file with o-link failed");
+
+        let name = name_json.as_str().expect("name should be string");
+        assert_eq!(name, file_obj.name.as_str(), "name mismatch");
+
+        std::fs::remove_file(local_path.as_path()).expect("remove local file failed");
+    }
+
+    {
+        // 1. get name of file
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
+
+        write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_eq!(file_id, cal_file_id, "file-id mismatch");
+
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/name", ndn_host, file_id.to_string());
+        let (name_obj_id, name_json) = ndn_client
+            .get_obj_by_url(r_link_inner_path.as_str(), None)
+            .await
+            .expect("get name of file with o-link failed");
+
+        let name = name_json.as_str().expect("name should be string");
+        assert_eq!(name, file_obj.name.as_str(), "name mismatch");
+    }
+
+    {
+        // 1. get chunk range by range
+        let (file_id, file_obj, chunk_id, chunk_data) =
+            generate_random_file_obj_with_len(16, 5 * 1024 * 1024);
+
+        write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_eq!(file_id, cal_file_id, "file-id mismatch");
+
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+
+        let mut read_pos = 0;
+        let mut read_buffers = vec![];
+
+        loop {
+            let read_len = {
+                let mut rng = rand::rng();
+                rng.random_range(1u64..chunk_data.len() as u64 - read_pos)
+            };
+            let end_pos = read_pos + read_len;
+
+            let (mut reader, resp_headers) = ndn_client
+                .open_chunk_reader_by_url(
+                    r_link_inner_path.as_str(),
+                    Some(chunk_id.clone()),
+                    Some(read_pos..end_pos),
+                )
+                .await
+                .expect("open chunk-reader failed");
+
+            let content_len = resp_headers
+                .obj_size
+                .expect("content-length should exist in http-headers");
+            assert_eq!(
+                content_len, read_len,
+                "content-length in http-header should equal with read_len"
+            );
+            assert_eq!(
+                resp_headers.obj_id,
+                Some(chunk_id.to_obj_id()),
+                "obj-id in http-header should equal with chunk-id"
+            );
+            assert!(
+                resp_headers.path_obj.is_none(),
+                "path-obj should be None for o-link"
+            );
+            assert_eq!(
+                resp_headers.root_obj_id,
+                Some(file_id.clone()),
+                "root-obj-id in http-header should equal with file-id"
+            );
+
+            let mut buffer = vec![0u8, 0];
+            let len = reader
+                .read_to_end(&mut buffer)
+                .await
+                .expect("read chunk failed");
+            assert_eq!(
+                len as u64, read_len,
+                "length of data in http-body should equal with content-length"
+            );
+            assert_eq!(
+                len,
+                buffer.len(),
+                "length of read data should equal with content-length"
+            );
+            assert_eq!(
+                buffer.as_slice(),
+                &chunk_data.as_slice()[read_pos as usize..end_pos as usize],
+                "chunk range mismatch"
+            );
+            read_buffers.push(buffer);
+
+            // todo: verify chunk with mtree
+
+            read_pos += read_len;
+            if read_pos >= chunk_data.len() as u64 {
+                break;
+            }
+        }
+
+        let read_chunk = read_buffers.concat();
+        assert_eq!(read_chunk, chunk_data, "chunk data mismatch");
+    }
+
+    {
+        // download to local
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
+
+        write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_ne!(file_id, cal_file_id, "file-id mismatch");
+
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let download_path = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join(TEST_DIR)
+            .join(DOWNLOAD_DIR)
+            .join(chunk_id.to_base32());
+        let _ = std::fs::remove_file(download_path.as_path());
+
+        let (download_chunk_id, download_chunk_len) = ndn_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await
+            .expect("download chunk to local failed");
+
+        assert_eq!(
+            download_chunk_id, chunk_id,
+            "download chunk-id should equal with chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            chunk_data.len() as u64,
+            "download chunk-size should equal with chunk-data len"
+        );
+
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, chunk_data,
+            "should be same as chunk-content"
+        );
+
+        let (download_chunk_id, download_chunk_len) = ndn_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
+
+        assert_eq!(
+            download_chunk_id, chunk_id,
+            "download chunk-id should equal with chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            chunk_data.len() as u64,
+            "download chunk-size should equal with chunk-data len"
+        );
+
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, chunk_data,
+            "should be same as chunk-content"
+        );
+
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
+    }
 }
 
 #[tokio::test]
-async fn ndn_local_r_link_innerpath_not_found() {
-    // init_logging("ndn_local_r_link_innerpath_not_found", false);
+async fn ndn_local_r_link_innerpath_file_not_found() {
+    init_logging("ndn_local_r_link_innerpath_file_not_found", false);
 
-    // let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    // let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
 
-    // let ndn_url = format!("http://{}/ndn/", ndn_host);
+    {
+        // no chunk saved
+        // 1. get chunk of file
+        // 2. get name of file
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
 
-    // let (obj_id, obj) = generate_random_obj();
+        // write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 
-    // let obj_path = "";
-    // NamedDataMgr::pub_object_to_file(
-    //     Some(ndn_mgr_id.as_str()),
-    //     obj.clone(),
-    //     "non-test-obj",
-    //     obj_path,
-    //     "test_non_obj_user_id",
-    //     "test_non_obj_app_id",
-    // )
-    // .await
-    // .expect("pub object to file failed");
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_eq!(file_id, cal_file_id, "file-id mismatch");
 
-    // // get object using the NdnClient
-    // let inner_path = "notexist";
-    // let r_link_inner_path = format!("http://{}/ndn/{}{}", ndn_host, obj_path, inner_path);
-    // let ret = ndn_client
-    //     .get_obj_by_url(r_link_inner_path.as_str(), None)
-    //     .await;
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
 
-    // match ret {
-    //     Ok(_) => assert!(false, "sub obj id should not found"),
-    //     Err(err) => {
-    //         if let NdnError::NotFound(_) = err {
-    //         } else {
-    //             assert!(
-    //                 false,
-    //                 "unexpect error, sub obj id should not found. {:?}",
-    //                 err
-    //             )
-    //         }
-    //     }
-    // }
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let ret = ndn_client
+            .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "chunk should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(false, "unexpect error, chunk should not found. {:?}", err)
+                }
+            }
+        }
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/notexist", ndn_host, obj_path);
+        let ret = ndn_client
+            .get_obj_by_url(r_link_inner_path.as_str(), None)
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+    }
+
+    {
+        // no write chunk for download to local
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
+
+        // write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_ne!(file_id, cal_file_id, "file-id mismatch");
+
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+
+        let download_path = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join(TEST_DIR)
+            .join(DOWNLOAD_DIR)
+            .join(chunk_id.to_base32());
+        let _ = std::fs::remove_file(download_path.as_path());
+
+        let ret = ndn_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+
+        let ret = ndn_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+    }
+
+    {
+        // field not exist
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
+
+        write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_eq!(file_id, cal_file_id, "file-id mismatch");
+
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/notexist", ndn_host, obj_path,);
+
+        let ret = ndn_client
+            .get_obj_by_url(r_link_inner_path.as_str(), None)
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test]
-async fn ndn_local_r_link_innerpath_verify_failed() {
-    // init_logging("ndn_local_r_link_innerpath_not_found", false);
+async fn ndn_local_r_link_innerpath_file_verify_failed() {
+    init_logging("ndn_local_r_link_innerpath_file_verify_failed", false);
 
-    // let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    // let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
 
-    // let ndn_url = format!("http://{}/ndn/", ndn_host);
+    {
+        // fake file.content
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
 
-    // let (obj_id, mut obj) = generate_random_obj();
+        let mut fake_file_obj = file_obj.clone();
+        let (fake_chunk_id, fake_chunk_data) = generate_random_chunk(5678);
+        fake_file_obj.content = fake_chunk_id.to_string();
 
-    // // modify 'obj.string'.
-    // obj.as_object_mut().unwrap().insert(
-    //     "string".to_string(),
-    //     serde_json::Value::String("fake string".to_string()),
-    // );
+        write_chunk(
+            ndn_mgr_id.as_str(),
+            &fake_chunk_id,
+            fake_chunk_data.as_slice(),
+        )
+        .await;
 
-    // let obj_path = "";
-    // NamedDataMgr::pub_object_to_file(
-    //     Some(ndn_mgr_id.as_str()),
-    //     obj.clone(),
-    //     "non-test-obj",
-    //     obj_path,
-    //     "test_non_obj_user_id",
-    //     "test_non_obj_app_id",
-    // )
-    // .await
-    // .expect("pub object to file failed");
+        let (cal_file_id, file_obj_str) = fake_file_obj.gen_obj_id();
+        assert_ne!(file_id, cal_file_id, "file-id should not match");
 
-    // // get object using the NdnClient
-    // let inner_path = "string";
-    // let r_link_inner_path = format!("http://{}/ndn/{}{}", ndn_host, obj_path, inner_path);
-    // let ret = ndn_client
-    //     .get_obj_by_url(r_link_inner_path.as_str(), None)
-    //     .await;
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
 
-    // match ret {
-    //     Ok(_) => assert!(false, "should obj id verify failed"),
-    //     Err(err) => {
-    //         if let NdnError::InvalidId(_) = err {
-    //         } else {
-    //             assert!(false, "unexpect error, should obj id verify failed.")
-    //         }
-    //     }
-    // }
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+
+        let ret = ndn_client
+            .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "chunk should verify error"),
+            Err(err) => match err {
+                NdnError::VerifyError(_) => {
+                    info!("Chunk verify error as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+    }
+
+    {
+        // fake file.content for download to local
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
+
+        let mut fake_file_obj = file_obj.clone();
+        let (fake_chunk_id, fake_chunk_data) = generate_random_chunk(5678);
+        fake_file_obj.content = fake_chunk_id.to_string();
+
+        write_chunk(
+            ndn_mgr_id.as_str(),
+            &fake_chunk_id,
+            fake_chunk_data.as_slice(),
+        )
+        .await;
+
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_eq!(file_id, cal_file_id, "file-id should not match");
+
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+
+        let download_path = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join(TEST_DIR)
+            .join(DOWNLOAD_DIR)
+            .join(chunk_id.to_base32());
+        let _ = std::fs::remove_file(download_path.as_path());
+
+        let ret = ndn_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "chunk-content should verify error"),
+            Err(err) => match err {
+                NdnError::VerifyError(_) => {
+                    info!("chunk-content verify error as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+
+        let (download_chunk_id, download_chunk_len) = ndn_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
+
+        assert_eq!(
+            download_chunk_id, fake_chunk_id,
+            "should be same as fake chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            fake_chunk_data.len() as u64,
+            "should be same as fake chunk.len"
+        );
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, fake_chunk_data,
+            "should be same as fake chunk-content"
+        );
+    }
+
+    {
+        // fake chunk
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
+
+        let (fake_chunk_id, fake_chunk_data) = generate_random_chunk(5678);
+
+        write_chunk(ndn_mgr_id.as_str(), &chunk_id, fake_chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_eq!(file_id, cal_file_id, "file-id should not match");
+
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+
+        let (mut reader, resp_headers) = ndn_client
+            .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await
+            .expect("open chunk-reader failed");
+
+        let content_len = resp_headers
+            .obj_size
+            .expect("content-length should exist in http-headers");
+        assert_eq!(
+            content_len,
+            fake_chunk_data.len() as u64,
+            "content-length in http-header should equal with chunk.len"
+        );
+        assert_eq!(
+            resp_headers.obj_id,
+            Some(chunk_id.to_obj_id()),
+            "obj-id in http-header should equal with chunk-id"
+        );
+        assert!(
+            resp_headers.path_obj.is_none(),
+            "path-obj should be None for o-link"
+        );
+        assert_eq!(
+            resp_headers.root_obj_id,
+            Some(file_id.clone()),
+            "root-obj-id in http-header should equal with file-id"
+        );
+
+        let mut buffer = vec![0u8, 0];
+        let len = reader
+            .read_to_end(&mut buffer)
+            .await
+            .expect("read chunk failed");
+        assert_eq!(
+            len as u64, content_len,
+            "length of data in http-body should equal with content-length"
+        );
+        assert_eq!(
+            len,
+            buffer.len(),
+            "length of read data should equal with content-length"
+        );
+        assert_eq!(buffer, fake_chunk_data, "chunk content mismatch");
+
+        // todo: verify chunk with mtree
+    }
+
+    {
+        // fake chunk for download to local
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
+
+        let (fake_chunk_id, fake_chunk_data) = generate_random_chunk(5678);
+
+        write_chunk(ndn_mgr_id.as_str(), &chunk_id, fake_chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_eq!(file_id, cal_file_id, "file-id should not match");
+
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+
+        let download_path = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join(TEST_DIR)
+            .join(DOWNLOAD_DIR)
+            .join(chunk_id.to_base32());
+        let _ = std::fs::remove_file(download_path.as_path());
+
+        let ret = ndn_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "chunk-content should verify error"),
+            Err(err) => match err {
+                NdnError::VerifyError(_) => {
+                    info!("chunk-content verify error as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+
+        let (download_chunk_id, download_chunk_len) = ndn_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
+
+        assert_eq!(
+            download_chunk_id, fake_chunk_id,
+            "should be same as fake chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            fake_chunk_data.len() as u64,
+            "should be same as fake chunk.len"
+        );
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, fake_chunk_data,
+            "should be same as fake chunk-content"
+        );
+    }
+
+    {
+        // fake file.name
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
+
+        let mut fake_file_obj = file_obj.clone();
+        fake_file_obj.name = "fake-file-name".to_string();
+
+        write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = fake_file_obj.gen_obj_id();
+        assert_ne!(file_id, cal_file_id, "file-id mismatch");
+
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let ret = ndn_client
+            .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "file-obj should verify error"),
+            Err(err) => match err {
+                NdnError::VerifyError(_) => {
+                    info!("file-obj verify error as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+    }
+
+    {
+        // fake file.name for download to local
+        let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
+
+        let mut fake_file_obj = file_obj.clone();
+        fake_file_obj.name = "fake-file-name".to_string();
+
+        write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = fake_file_obj.gen_obj_id();
+        assert_ne!(file_id, cal_file_id, "file-id mismatch");
+
+        let obj_path = "/test_file_path";
+        NamedDataMgr::pub_object_to_file(
+            Some(ndn_mgr_id.as_str()),
+            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+            OBJ_TYPE_FILE,
+            obj_path,
+            "test_non_file_obj_user_id",
+            "test_non_file_obj_app_id",
+        )
+        .await
+        .expect("pub object to file failed");
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+
+        let download_path = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join(TEST_DIR)
+            .join(DOWNLOAD_DIR)
+            .join(chunk_id.to_base32());
+        let _ = std::fs::remove_file(download_path.as_path());
+
+        let ret = ndn_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "file-obj should verify error"),
+            Err(err) => match err {
+                NdnError::VerifyError(_) => {
+                    info!("file-obj verify error as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+
+        let (download_chunk_id, download_chunk_len) = ndn_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
+
+        assert_eq!(download_chunk_id, chunk_id, "should be same as chunk-id");
+        assert_eq!(
+            download_chunk_len,
+            chunk_data.len() as u64,
+            "should be same as chunk.len"
+        );
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, chunk_data,
+            "should be same as chunk-content"
+        );
+    }
 }
