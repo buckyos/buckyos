@@ -1,8 +1,3 @@
-
-# 步骤
-# scp 测试文件到 nodeB1
-# 执行 python main
-# asset 执行结果
 import subprocess
 import json
 import sys
@@ -56,9 +51,12 @@ def extract_json_from_output(command_output):
 
 
 def main():
-  # /opt/buckyos/bin/buckycli/buckycli sys_config --get boot/config
     boot_config()
-    device()
+    devices()
+    nodes()
+    services()
+    system()
+    users()
 
 def boot_config():
     stdout = buckycli(["--get", "boot/config"])
@@ -71,18 +69,91 @@ def boot_config():
     print(f"owner       {json_data['owner']}")
 
 
-def device():
+def devices():
     stdout = buckycli(["--list", "devices"])
     # json_data = extract_json_from_output(result.stdout)
     # 将stdout按行分割成数组并去掉第一行
     # 分割并过滤掉第一行和空行
     devices = [line for line in stdout.split('\n')[1:] if line.strip()]
+    print("")
+    print("-------------------")
+    print("-------------------")
     for device in devices:
-        print(f"device: {device}")
-        stdout = buckycli(["--list", f"devices/{device}"])
-        print(stdout)
 
-    
+        print(f"current device: {device}")
+        stdout = buckycli(["--list", f"devices/{device}"])
+        # print(stdout)
+        items = [line for line in stdout.split('\n')[1:] if line.strip()]
+        for item in items:
+            stdout = buckycli(["--get", f"devices/{device}/{item}"])
+            # print(f"{"devices/{device}/{item}"}:")
+            print(stdout)
+            print("-------------------")
+
+def nodes():
+    stdout = buckycli(["--list", "nodes"])
+    nodes = [line for line in stdout.split('\n')[1:] if line.strip()]
+    print("")
+    print("-------------------")
+    print("-------------------")
+    for node in nodes:
+        print(f"current device: {node}")
+        stdout = buckycli(["--list", f"nodes/{node}"])
+        items = [line for line in stdout.split('\n')[1:] if line.strip()]
+        for item in items:
+            stdout = buckycli(["--get", f"nodes/{node}/{item}"])
+            print(stdout)
+            print("-------------------")
+
+def services():
+    stdout = buckycli(["--list", "services"])
+    services = [line for line in stdout.split('\n')[1:] if line.strip()]
+    print("")
+    print("-------------------")
+    print("-------------------")
+    for service in services:
+        print(f"service: {service}")
+        stdout = buckycli(["--list", f"services/{service}"])
+        items = [line for line in stdout.split('\n')[1:] if line.strip()]
+        for item in items:
+            stdout = buckycli(["--get", f"services/{service}/{item}"])
+            print(stdout)
+            print("-------------------")
+
+def system():
+    stdout = buckycli(["--list", "system"])
+    keys = [line for line in stdout.split('\n')[1:] if line.strip()]
+    print("")
+    print("-------------------")
+    print("-------------------")
+    for key in keys:
+        stdout = buckycli(["--list", f"system/{key}"])
+        items = [line for line in stdout.split('\n')[1:] if line.strip()]
+        for item in items:
+            stdout = buckycli(["--get", f"system/{key}/{item}"])
+            print(stdout)
+            print("-------------------")
+
+def users():
+    stdout = buckycli(["--list", "users"])
+    users = [line for line in stdout.split('\n')[1:] if line.strip()]
+    print("")
+    print("-------------------")
+    print("-------------------")
+    for user in users:
+        print(f"user: {user}")
+        if user == "root":
+            settings = buckycli(["--get", f"users/root/settings"])
+            print(f"setting: {settings}")
+            print("-------------------")
+            continue
+        apps = buckycli(["--list", f"users/{user}/apps"])
+        doc = buckycli(["--get", f"users/{user}/doc"])
+        settings = buckycli(["--get", f"users/{user}/settings"])
+        print(f"apps: {apps}")
+        print(f"doc: {doc}")
+        print(f"setting: {settings}")
+        print("-------------------")
 
 
 def buckycli(cmd: list[str]):
@@ -101,7 +172,8 @@ def buckycli(cmd: list[str]):
         sys.exit(1)
     # print(f"run `buckycli sys_config --list devices` OK, stdout: {result.returncode}")
     return result.stdout
-    
+
+
 
 
 if __name__ == "__main__":
