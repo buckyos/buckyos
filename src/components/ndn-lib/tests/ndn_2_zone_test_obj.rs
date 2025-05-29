@@ -255,8 +255,8 @@ async fn init_ndn_client(ndn_mgr_id: &str, private_key: &str, target_ndn_host: &
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_object_ok() {
-    init_logging("ndn_diff_zone_object_ok", false);
+async fn ndn_2_zone_object_ok() {
+    init_logging("ndn_2_zone_object_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =
@@ -318,8 +318,8 @@ async fn ndn_diff_zone_object_ok() {
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_object_not_found() {
-    init_logging("ndn_diff_zone_object_not_found", false);
+async fn ndn_2_zone_object_not_found() {
+    init_logging("ndn_2_zone_object_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =
@@ -388,8 +388,8 @@ async fn ndn_diff_zone_object_not_found() {
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_object_verify_failed() {
-    init_logging("ndn_diff_zone_object_verify_failed", false);
+async fn ndn_2_zone_object_verify_failed() {
+    init_logging("ndn_2_zone_object_verify_failed", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =
@@ -442,8 +442,8 @@ async fn ndn_diff_zone_object_verify_failed() {
 
 // http://{host}/ndn/{obj-id}/inner-path
 #[tokio::test]
-async fn ndn_diff_zone_o_link_innerpath_ok() {
-    init_logging("ndn_diff_zone_o_link_innerpath_ok", false);
+async fn ndn_2_zone_o_link_innerpath_ok() {
+    init_logging("ndn_2_zone_o_link_innerpath_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =
@@ -506,8 +506,8 @@ async fn ndn_diff_zone_o_link_innerpath_ok() {
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_o_link_innerpath_not_found() {
-    init_logging("ndn_diff_zone_o_link_innerpath_not_found", false);
+async fn ndn_2_zone_o_link_innerpath_not_found() {
+    init_logging("ndn_2_zone_o_link_innerpath_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =
@@ -578,8 +578,8 @@ async fn ndn_diff_zone_o_link_innerpath_not_found() {
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_o_link_innerpath_verify_failed() {
-    init_logging("ndn_diff_zone_o_link_innerpath_verify_failed", false);
+async fn ndn_2_zone_o_link_innerpath_verify_failed() {
+    init_logging("ndn_2_zone_o_link_innerpath_verify_failed", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =
@@ -641,8 +641,8 @@ async fn ndn_diff_zone_o_link_innerpath_verify_failed() {
 
 // http://{obj-id}.{host}/ndn/{obj-id}/inner-path
 #[tokio::test]
-async fn ndn_diff_zone_o_link_in_host_innerpath_ok() {
-    // init_logging("ndn_diff_zone_o_link_innerpath_ok", false);
+async fn ndn_2_zone_o_link_in_host_innerpath_ok() {
+    // init_logging("ndn_2_zone_o_link_innerpath_ok", false);
 
     // let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     // let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
@@ -709,19 +709,19 @@ async fn ndn_diff_zone_o_link_in_host_innerpath_ok() {
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_o_link_in_host_innerpath_not_found() {
+async fn ndn_2_zone_o_link_in_host_innerpath_not_found() {
     unimplemented!()
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_o_link_in_host_innerpath_verify_failed() {
+async fn ndn_2_zone_o_link_in_host_innerpath_verify_failed() {
     unimplemented!()
 }
 
 // http://{host}/ndn/{obj-path}
 #[tokio::test]
-async fn ndn_diff_zone_r_link_ok() {
-    init_logging("ndn_diff_zone_r_link_ok", false);
+async fn ndn_2_zone_r_link_ok() {
+    init_logging("ndn_2_zone_r_link_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =
@@ -782,8 +782,8 @@ async fn ndn_diff_zone_r_link_ok() {
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_r_link_not_found() {
-    init_logging("ndn_diff_zone_r_link_not_found", false);
+async fn ndn_2_zone_r_link_not_found() {
+    init_logging("ndn_2_zone_r_link_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =
@@ -845,8 +845,8 @@ async fn ndn_diff_zone_r_link_not_found() {
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_r_link_verify_failed() {
-    init_logging("ndn_diff_zone_r_link_verify_failed", false);
+async fn ndn_2_zone_r_link_verify_failed() {
+    init_logging("ndn_2_zone_r_link_verify_failed", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =
@@ -906,8 +906,8 @@ async fn ndn_diff_zone_r_link_verify_failed() {
 
 // http://{host}/ndn/{obj-path}/inner-path
 #[tokio::test]
-async fn ndn_diff_zone_r_link_innerpath_ok() {
-    init_logging("ndn_diff_zone_r_link_innerpath_ok", false);
+async fn ndn_2_zone_r_link_innerpath_ok() {
+    init_logging("ndn_2_zone_r_link_innerpath_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =
@@ -961,8 +961,8 @@ async fn ndn_diff_zone_r_link_innerpath_ok() {
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_r_link_innerpath_not_found() {
-    init_logging("ndn_diff_zone_r_link_innerpath_not_found", false);
+async fn ndn_2_zone_r_link_innerpath_not_found() {
+    init_logging("ndn_2_zone_r_link_innerpath_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =
@@ -1042,8 +1042,8 @@ async fn ndn_diff_zone_r_link_innerpath_not_found() {
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_r_link_innerpath_verify_failed() {
-    init_logging("ndn_diff_zone_r_link_innerpath_verify_failed", false);
+async fn ndn_2_zone_r_link_innerpath_verify_failed() {
+    init_logging("ndn_2_zone_r_link_innerpath_verify_failed", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, local_ndn_server_host) =

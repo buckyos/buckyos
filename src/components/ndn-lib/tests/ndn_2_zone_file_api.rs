@@ -14,6 +14,16 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
 };
 
+const LOCAL_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
+-----END PRIVATE KEY-----
+"#;
+
+const NODE_B_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
+-----END PRIVATE KEY-----
+"#;
+
 const TEST_DIR: &str = "ndn-test";
 const DOWNLOAD_DIR: &str = "download";
 
@@ -311,7 +321,7 @@ async fn read_chunk(ndn_mgr_id: &str, chunk_id: &ChunkId) -> Vec<u8> {
 
 type NdnServerHost = String;
 
-async fn init_ndn_server(ndn_mgr_id: &str) -> (NdnClient, NdnServerHost) {
+async fn init_local_ndn_server(ndn_mgr_id: &str) -> (NdnClient, NdnServerHost) {
     let mut rng = rand::rng();
     let tls_port = rng.random_range(10000u16..20000u16);
     let http_port = rng.random_range(10000u16..20000u16);
@@ -381,12 +391,58 @@ async fn init_ndn_server(ndn_mgr_id: &str) -> (NdnClient, NdnServerHost) {
     (client, host)
 }
 
+async fn init_ndn_client(ndn_mgr_id: &str, private_key: &str, target_ndn_host: &str) -> NdnClient {
+    let session_token = kRPC::RPCSessionToken {
+        token_type: kRPC::RPCSessionTokenType::JWT,
+        token: None,
+        appid: Some("ndn".to_string()),
+        exp: Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600 * 24 * 7,
+        ),
+        iss: None,
+        nonce: None,
+        userid: None,
+    };
+
+    let private_key = EncodingKey::from_ed_pem(private_key.as_bytes()).unwrap();
+
+    let target_ndn_client = NdnClient::new(
+        format!("http://{}/ndn/", target_ndn_host),
+        Some(
+            session_token
+                .generate_jwt(None, &private_key)
+                .expect("generate jwt failed."),
+        ),
+        Some(ndn_mgr_id.to_string()),
+    );
+
+    target_ndn_client
+}
+
 #[tokio::test]
-async fn ndn_local_file_ok() {
-    init_logging("ndn_local_file_ok", false);
+async fn ndn_2_zone_file_ok() {
+    init_logging("ndn_2_zone_file_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (local_ndn_client, local_ndn_server_host) =
+        init_local_ndn_server(ndn_mgr_id.as_str()).await;
+
+    let zone_a_client =
+        init_ndn_client(ndn_mgr_id.as_str(), LOCAL_PRIVATE_KEY, "test.buckyos.io").await;
+
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (_local_ndn_target_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
+
+    let zone_b_client = init_ndn_client(
+        target_ndn_mgr_id.as_str(),
+        NODE_B_PRIVATE_KEY,
+        "bob.web3.buckyos.io",
+    )
+    .await;
 
     let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
 
@@ -397,28 +453,135 @@ async fn ndn_local_file_ok() {
 
     NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file_id, file_obj_str.as_str())
         .await
-        .expect("put object in local failed");
+        .expect("put file-object in local failed");
 
-    check_file_obj(ndn_mgr_id.as_str(), &file_id, Some(Some(&file_obj)), None).await;
+    let (got_obj_id, got_obj) = zone_a_client
+        .get_obj_by_url(
+            format!(
+                "http://{}/ndn/{}",
+                local_ndn_server_host,
+                file_id.to_base32()
+            )
+            .as_str(),
+            Some(file_id.clone()),
+        )
+        .await
+        .expect("get file-obj from ndn-mgr failed");
+
+    assert_eq!(got_obj_id, file_id, "got obj-id mismatch");
+
+    let (_, got_obj_str) = build_named_object_by_json(OBJ_TYPE_FILE, &got_obj);
+    assert_eq!(got_obj_str, file_obj_str, "got file-obj mismatch");
+
+    local_ndn_client
+        .push_chunk(
+            chunk_id.clone(),
+            Some(zone_a_client.gen_chunk_url(&chunk_id, None)),
+        )
+        .await
+        .expect("push chunk from ndn-mgr failed");
 
     let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
-    assert_eq!(buffer, chunk_data, "file chunk-content check failed");
+    assert_eq!(buffer, chunk_data);
+
+    let (got_obj_id, got_obj) = zone_b_client
+        .get_obj_by_url(
+            format!("http://test.buckyos.io/ndn/{}", file_id.to_string()).as_str(),
+            Some(file_id.clone()),
+        )
+        .await
+        .expect("get file-obj from ndn-mgr failed");
+
+    assert_eq!(got_obj_id, file_id, "got obj-id mismatch");
+
+    let (_, got_obj_str) = build_named_object_by_json(OBJ_TYPE_FILE, &got_obj);
+    assert_eq!(got_obj_str, file_obj_str, "got file-obj mismatch");
+
+    let got_chunk_len = zone_b_client
+        .pull_chunk_by_url(
+            zone_a_client.gen_chunk_url(&chunk_id, None),
+            chunk_id.clone(),
+            Some(target_ndn_mgr_id.as_str()),
+        )
+        .await
+        .expect("pull chunk from ndn-mgr failed");
+
+    let buffer = read_chunk(target_ndn_mgr_id.as_str(), &chunk_id).await;
+    assert_eq!(
+        got_chunk_len,
+        chunk_data.len() as u64,
+        "got chunk len mismatch"
+    );
+    assert_eq!(buffer, chunk_data);
 }
 
 #[tokio::test]
-async fn ndn_local_file_not_found() {
-    init_logging("ndn_local_file_not_found", false);
+async fn ndn_2_zone_file_not_found() {
+    init_logging("ndn_2_zone_file_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (local_ndn_client, local_ndn_server_host) =
+        init_local_ndn_server(ndn_mgr_id.as_str()).await;
+
+    let zone_a_client =
+        init_ndn_client(ndn_mgr_id.as_str(), LOCAL_PRIVATE_KEY, "test.buckyos.io").await;
+
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (_local_ndn_target_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
+
+    let zone_b_client = init_ndn_client(
+        target_ndn_mgr_id.as_str(),
+        NODE_B_PRIVATE_KEY,
+        "bob.web3.buckyos.io",
+    )
+    .await;
 
     {
+        // local -> zone-a !-> zone-b
         let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
 
-        check_file_obj(ndn_mgr_id.as_str(), &file_id, Some(None), None).await;
+        write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_eq!(file_id, cal_file_id, "file-id mismatch");
+
+        NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file_id, file_obj_str.as_str())
+            .await
+            .expect("put file-object in local failed");
+
+        let (got_obj_id, got_obj) = zone_a_client
+            .get_obj_by_url(
+                format!(
+                    "http://{}/ndn/{}",
+                    local_ndn_server_host,
+                    file_id.to_base32()
+                )
+                .as_str(),
+                Some(file_id.clone()),
+            )
+            .await
+            .expect("get file-obj from ndn-mgr failed");
+
+        assert_eq!(got_obj_id, file_id, "got obj-id mismatch");
+
+        let (_, got_obj_str) = build_named_object_by_json(OBJ_TYPE_FILE, &got_obj);
+        assert_eq!(got_obj_str, file_obj_str, "got file-obj mismatch");
+
+        local_ndn_client
+            .push_chunk(
+                chunk_id.clone(),
+                Some(zone_a_client.gen_chunk_url(&chunk_id, None)),
+            )
+            .await
+            .expect("push chunk from ndn-mgr failed");
+
+        let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
+        assert_eq!(buffer, chunk_data);
+
+        check_file_obj(target_ndn_mgr_id.as_str(), &file_id, Some(None), None).await;
 
         let ret = NamedDataMgr::open_chunk_reader(
-            Some(ndn_mgr_id.as_str()),
+            Some(target_ndn_mgr_id.as_str()),
             &chunk_id,
             SeekFrom::Start(0),
             false,
@@ -439,19 +602,69 @@ async fn ndn_local_file_not_found() {
     }
 
     {
-        // write chunk only
+        // zone-a -> zone-b: pull chunk only
         let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
 
         write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 
-        check_file_obj(ndn_mgr_id.as_str(), &file_id, Some(None), None).await;
+        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+        assert_eq!(file_id, cal_file_id, "file-id mismatch");
+
+        NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file_id, file_obj_str.as_str())
+            .await
+            .expect("put file-object in local failed");
+
+        let (got_obj_id, got_obj) = zone_a_client
+            .get_obj_by_url(
+                format!(
+                    "http://{}/ndn/{}",
+                    local_ndn_server_host,
+                    file_id.to_base32()
+                )
+                .as_str(),
+                Some(file_id.clone()),
+            )
+            .await
+            .expect("get file-obj from ndn-mgr failed");
+
+        assert_eq!(got_obj_id, file_id, "got obj-id mismatch");
+
+        let (_, got_obj_str) = build_named_object_by_json(OBJ_TYPE_FILE, &got_obj);
+        assert_eq!(got_obj_str, file_obj_str, "got file-obj mismatch");
+
+        local_ndn_client
+            .push_chunk(
+                chunk_id.clone(),
+                Some(zone_a_client.gen_chunk_url(&chunk_id, None)),
+            )
+            .await
+            .expect("push chunk from ndn-mgr failed");
 
         let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
+        assert_eq!(buffer, chunk_data);
+
+        let got_chunk_len = zone_b_client
+            .pull_chunk_by_url(
+                zone_a_client.gen_chunk_url(&chunk_id, None),
+                chunk_id.clone(),
+                Some(target_ndn_mgr_id.as_str()),
+            )
+            .await
+            .expect("pull chunk from ndn-mgr failed");
+
+        let buffer = read_chunk(target_ndn_mgr_id.as_str(), &chunk_id).await;
         assert_eq!(buffer, chunk_data, "file chunk-content check failed");
+        assert_eq!(
+            got_chunk_len,
+            chunk_data.len() as u64,
+            "got chunk len mismatch"
+        );
+
+        check_file_obj(target_ndn_mgr_id.as_str(), &file_id, Some(None), None).await;
     }
 
     {
-        // put file-obj only
+        // zone-a -> zone-b: get file-obj only
         let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
 
         let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
@@ -461,10 +674,58 @@ async fn ndn_local_file_not_found() {
             .await
             .expect("put object in local failed");
 
-        check_file_obj(ndn_mgr_id.as_str(), &file_id, Some(Some(&file_obj)), None).await;
+        let (got_obj_id, got_obj) = zone_a_client
+            .get_obj_by_url(
+                format!(
+                    "http://{}/ndn/{}",
+                    local_ndn_server_host,
+                    file_id.to_base32()
+                )
+                .as_str(),
+                Some(file_id.clone()),
+            )
+            .await
+            .expect("get file-obj from ndn-mgr failed");
+
+        assert_eq!(got_obj_id, file_id, "got obj-id mismatch");
+
+        let (_, got_obj_str) = build_named_object_by_json(OBJ_TYPE_FILE, &got_obj);
+        assert_eq!(got_obj_str, file_obj_str, "got file-obj mismatch");
+
+        local_ndn_client
+            .push_chunk(
+                chunk_id.clone(),
+                Some(zone_a_client.gen_chunk_url(&chunk_id, None)),
+            )
+            .await
+            .expect("push chunk from ndn-mgr failed");
+
+        let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
+        assert_eq!(buffer, chunk_data);
+
+        let (got_obj_id, got_obj) = zone_b_client
+            .get_obj_by_url(
+                format!("http://test.buckyos.io/ndn/{}", file_id.to_string()).as_str(),
+                Some(file_id.clone()),
+            )
+            .await
+            .expect("get file-obj from ndn-mgr failed");
+
+        assert_eq!(got_obj_id, file_id, "got obj-id mismatch");
+
+        let (_, got_obj_str) = build_named_object_by_json(OBJ_TYPE_FILE, &got_obj);
+        assert_eq!(got_obj_str, file_obj_str, "got file-obj mismatch");
+
+        check_file_obj(
+            target_ndn_mgr_id.as_str(),
+            &file_id,
+            Some(Some(&file_obj)),
+            None,
+        )
+        .await;
 
         let ret = NamedDataMgr::open_chunk_reader(
-            Some(ndn_mgr_id.as_str()),
+            Some(target_ndn_mgr_id.as_str()),
             &chunk_id,
             SeekFrom::Start(0),
             false,
@@ -486,11 +747,25 @@ async fn ndn_local_file_not_found() {
 }
 
 #[tokio::test]
-async fn ndn_local_file_verify_failed() {
-    init_logging("ndn_local_file_verify_failed", false);
+async fn ndn_2_zone_file_verify_failed() {
+    init_logging("ndn_2_zone_file_verify_failed", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (local_ndn_client, local_ndn_server_host) =
+        init_local_ndn_server(ndn_mgr_id.as_str()).await;
+
+    let zone_a_client =
+        init_ndn_client(ndn_mgr_id.as_str(), LOCAL_PRIVATE_KEY, "test.buckyos.io").await;
+
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (_local_ndn_target_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
+
+    let zone_b_client = init_ndn_client(
+        target_ndn_mgr_id.as_str(),
+        NODE_B_PRIVATE_KEY,
+        "bob.web3.buckyos.io",
+    )
+    .await;
 
     {
         // fake file.content
@@ -514,36 +789,110 @@ async fn ndn_local_file_verify_failed() {
             .await
             .expect("put object in local failed");
 
-        check_file_obj(
-            ndn_mgr_id.as_str(),
-            &file_id,
-            Some(Some(&fake_file_obj)),
-            Some(Some(&file_obj)),
-        )
-        .await;
-
-        let buffer = read_chunk(ndn_mgr_id.as_str(), &fake_chunk_id).await;
-        assert_eq!(buffer, fake_chunk_data, "file chunk-content check failed");
-
-        let ret = NamedDataMgr::open_chunk_reader(
-            Some(ndn_mgr_id.as_str()),
-            &chunk_id,
-            SeekFrom::Start(0),
-            false,
-        )
-        .await;
+        let ret = zone_a_client
+            .get_obj_by_url(
+                format!(
+                    "http://{}/ndn/{}",
+                    local_ndn_server_host,
+                    file_id.to_base32()
+                )
+                .as_str(),
+                Some(file_id.clone()),
+            )
+            .await;
 
         match ret {
-            Ok(_) => assert!(false, "should no chunk found"),
+            Ok(_) => assert!(false, "should obj id verify failed"),
+            Err(err) => {
+                if let NdnError::InvalidId(_) = err {
+                } else {
+                    assert!(false, "unexpect error, should obj id verify failed.")
+                }
+            }
+        }
+
+        let ret = local_ndn_client
+            .push_chunk(
+                chunk_id.clone(),
+                Some(zone_a_client.gen_chunk_url(&chunk_id, None)),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "real chunk should no chunk found"),
             Err(err) => match err {
                 NdnError::NotFound(_) => {
-                    info!("Chunk not found as expected");
+                    info!("real chunk not found as expected");
                 }
                 _ => {
                     assert!(false, "Unexpected error type");
                 }
             },
         }
+
+        local_ndn_client
+            .push_chunk(
+                fake_chunk_id.clone(),
+                Some(zone_a_client.gen_chunk_url(&fake_chunk_id, None)),
+            )
+            .await
+            .expect("push chunk to zone-1 failed");
+
+        let buffer = read_chunk(ndn_mgr_id.as_str(), &fake_chunk_id).await;
+        assert_eq!(buffer, fake_chunk_data, "file chunk-content check failed");
+
+        let ret = zone_b_client
+            .get_obj_by_url(
+                format!("http://test.buckyos.io/ndn/{}", file_id.to_string()).as_str(),
+                Some(file_id.clone()),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "should obj id verify failed"),
+            Err(err) => {
+                if let NdnError::InvalidId(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, should obj id verify failed. {:?}",
+                        err
+                    );
+                }
+            }
+        }
+
+        let ret = zone_b_client
+            .pull_chunk_by_url(
+                zone_a_client.gen_chunk_url(&chunk_id, None),
+                chunk_id.clone(),
+                Some(target_ndn_mgr_id.as_str()),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "real chunk should no chunk found"),
+            Err(err) => match err {
+                NdnError::NotFound(_) => {
+                    info!("real chunk not found as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+
+        zone_b_client
+            .pull_chunk_by_url(
+                zone_a_client.gen_chunk_url(&fake_chunk_id, None),
+                fake_chunk_id.clone(),
+                Some(target_ndn_mgr_id.as_str()),
+            )
+            .await
+            .expect("push chunk to zone-1 failed");
+
+        let buffer = read_chunk(target_ndn_mgr_id.as_str(), &fake_chunk_id).await;
+        assert_eq!(buffer, fake_chunk_data, "file chunk-content check failed");
     }
 
     {
@@ -562,15 +911,66 @@ async fn ndn_local_file_verify_failed() {
             .await
             .expect("put object in local failed");
 
-        check_file_obj(
-            ndn_mgr_id.as_str(),
-            &file_id,
-            Some(Some(&fake_file_obj)),
-            Some(Some(&file_obj)),
-        )
-        .await;
+        let ret = zone_a_client
+            .get_obj_by_url(
+                format!(
+                    "http://{}/ndn/{}",
+                    local_ndn_server_host,
+                    file_id.to_base32()
+                )
+                .as_str(),
+                Some(file_id.clone()),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "should obj id verify failed"),
+            Err(err) => {
+                if let NdnError::InvalidId(_) = err {
+                } else {
+                    assert!(false, "unexpect error, should obj id verify failed.")
+                }
+            }
+        }
+
+        local_ndn_client
+            .push_chunk(
+                chunk_id.clone(),
+                Some(zone_a_client.gen_chunk_url(&chunk_id, None)),
+            )
+            .await
+            .expect("push chunk to zone-1 failed");
 
         let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
+        assert_eq!(buffer, chunk_data, "file chunk-content check failed");
+
+        let ret = zone_b_client
+            .get_obj_by_url(
+                format!("http://test.buckyos.io/ndn/{}", file_id.to_string()).as_str(),
+                Some(file_id.clone()),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "should obj id verify failed"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(false, "unexpect error, should obj id not found.")
+                }
+            }
+        }
+
+        zone_b_client
+            .pull_chunk_by_url(
+                zone_a_client.gen_chunk_url(&chunk_id, None),
+                chunk_id.clone(),
+                Some(target_ndn_mgr_id.as_str()),
+            )
+            .await
+            .expect("push chunk to zone-1 failed");
+
+        let buffer = read_chunk(target_ndn_mgr_id.as_str(), &chunk_id).await;
         assert_eq!(buffer, chunk_data, "file chunk-content check failed");
     }
 
@@ -589,22 +989,125 @@ async fn ndn_local_file_verify_failed() {
             .await
             .expect("put object in local failed");
 
-        check_file_obj(ndn_mgr_id.as_str(), &file_id, Some(Some(&file_obj)), None).await;
+        let (got_file_id, got_file_json) = zone_a_client
+            .get_obj_by_url(
+                format!(
+                    "http://{}/ndn/{}",
+                    local_ndn_server_host,
+                    file_id.to_base32()
+                )
+                .as_str(),
+                Some(file_id.clone()),
+            )
+            .await
+            .expect("get file-obj from ndn-mgr failed");
 
-        let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
-        assert_eq!(buffer, fake_chunk_data, "file chunk-content check failed");
+        assert_eq!(got_file_id, file_id, "got obj-id mismatch");
+
+        let (_, got_obj_str) = build_named_object_by_json(OBJ_TYPE_FILE, &got_file_json);
+        assert_eq!(got_obj_str, file_obj_str, "got file-obj mismatch");
+
+        let ret = local_ndn_client
+            .push_chunk(
+                chunk_id.clone(),
+                Some(zone_a_client.gen_chunk_url(&chunk_id, None)),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "should chunk id verify failed"),
+            Err(err) => {
+                if let NdnError::InvalidId(_) = err {
+                } else {
+                    assert!(false, "unexpect error, should chunk id verify failed.")
+                }
+            }
+        }
+
+        let (got_obj_id, got_obj) = zone_b_client
+            .get_obj_by_url(
+                format!("http://test.buckyos.io/ndn/{}", file_id.to_string()).as_str(),
+                Some(file_id.clone()),
+            )
+            .await
+            .expect("get file-obj from ndn-mgr failed");
+
+        assert_eq!(got_obj_id, file_id, "got obj-id mismatch");
+
+        let (_, got_obj_str) = build_named_object_by_json(OBJ_TYPE_FILE, &got_obj);
+        assert_eq!(got_obj_str, file_obj_str, "got file-obj mismatch");
+
+        let got_file_obj: FileObject =
+            serde_json::from_value(got_obj).expect("deserialize got_obj to FileObject failed");
+        assert_eq!(
+            chunk_id,
+            ChunkId::new(got_file_obj.content.as_str()).expect("Failed to create ChunkId"),
+            "got content(chunk-id) from file-obj mismatch"
+        );
+
+        let ret = zone_b_client
+            .pull_chunk_by_url(
+                zone_a_client.gen_chunk_url(&chunk_id, None),
+                chunk_id.clone(),
+                Some(target_ndn_mgr_id.as_str()),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "real chunk should no chunk found"),
+            Err(err) => match err {
+                NdnError::InvalidId(_) => {
+                    info!("pull chunk from zone-a verify failed as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+
+        let ret = zone_b_client
+            .pull_chunk_by_url(
+                zone_a_client.gen_chunk_url(&fake_chunk_id, None),
+                fake_chunk_id.clone(),
+                Some(target_ndn_mgr_id.as_str()),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "real chunk should no chunk found"),
+            Err(err) => match err {
+                NdnError::NotFound(_) => {
+                    info!("real chunk not found as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
     }
 }
 
 // http://{host}/ndn/{obj-id}/inner-path
 #[tokio::test]
-async fn ndn_local_o_link_innerpath_file_ok() {
+async fn ndn_2_zone_o_link_innerpath_file_ok() {
     init_logging("ndn_local_o_link_innerpath_file_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (local_ndn_client, local_ndn_server_host) =
+        init_local_ndn_server(ndn_mgr_id.as_str()).await;
 
-    let ndn_url = format!("http://{}/ndn/", ndn_host);
+    let zone_a_client =
+        init_ndn_client(ndn_mgr_id.as_str(), LOCAL_PRIVATE_KEY, "test.buckyos.io").await;
+
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (_local_ndn_target_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
+
+    let zone_b_client = init_ndn_client(
+        target_ndn_mgr_id.as_str(),
+        NODE_B_PRIVATE_KEY,
+        "bob.web3.buckyos.io",
+    )
+    .await;
 
     {
         // 1. get chunk of file
@@ -620,8 +1123,12 @@ async fn ndn_local_o_link_innerpath_file_ok() {
             .await
             .expect("put object in local failed");
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
-        let (mut reader, resp_headers) = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/content",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let (mut reader, resp_headers) = zone_a_client
             .open_chunk_reader_by_url(o_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await
             .expect("open chunk-reader failed");
@@ -667,8 +1174,69 @@ async fn ndn_local_o_link_innerpath_file_ok() {
 
         // todo: verify chunk with mtree
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/name", ndn_host, file_id.to_string(),);
-        let (name_obj_id, name_json) = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/name",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let (name_obj_id, name_json) = zone_a_client
+            .get_obj_by_url(o_link_inner_path.as_str(), None)
+            .await
+            .expect("get name of file with o-link failed");
+
+        let name = name_json.as_str().expect("name should be string");
+        assert_eq!(name, file_obj.name.as_str(), "name mismatch");
+
+        let o_link_inner_path =
+            format!("http://test.buckyos.io/ndn/{}/content", file_id.to_string(),);
+        let (mut reader, resp_headers) = zone_b_client
+            .open_chunk_reader_by_url(o_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await
+            .expect("open chunk-reader failed");
+
+        let content_len = resp_headers
+            .obj_size
+            .expect("content-length should exist in http-headers");
+        assert_eq!(
+            content_len,
+            chunk_data.len() as u64,
+            "content-length in http-header should equal with chunk.len"
+        );
+        assert_eq!(
+            resp_headers.obj_id,
+            Some(chunk_id.to_obj_id()),
+            "obj-id in http-header should equal with chunk-id"
+        );
+        assert!(
+            resp_headers.path_obj.is_none(),
+            "path-obj should be None for o-link"
+        );
+        assert_eq!(
+            resp_headers.root_obj_id,
+            Some(file_id.clone()),
+            "root-obj-id in http-header should equal with file-id"
+        );
+
+        let mut buffer = vec![0u8, 0];
+        let len = reader
+            .read_to_end(&mut buffer)
+            .await
+            .expect("read chunk failed");
+        assert_eq!(
+            len as u64, content_len,
+            "length of data in http-body should equal with content-length"
+        );
+        assert_eq!(
+            len,
+            buffer.len(),
+            "length of read data should equal with content-length"
+        );
+        assert_eq!(buffer, chunk_data, "chunk content mismatch");
+
+        // todo: verify chunk with mtree
+
+        let o_link_inner_path = format!("http://test.buckyos.io/ndn/{}/name", file_id.to_string(),);
+        let (name_obj_id, name_json) = zone_b_client
             .get_obj_by_url(o_link_inner_path.as_str(), None)
             .await
             .expect("get name of file with o-link failed");
@@ -690,8 +1258,21 @@ async fn ndn_local_o_link_innerpath_file_ok() {
             .await
             .expect("put object in local failed");
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/name", ndn_host, file_id.to_string());
-        let (name_obj_id, name_json) = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/name",
+            local_ndn_server_host,
+            file_id.to_string()
+        );
+        let (name_obj_id, name_json) = zone_a_client
+            .get_obj_by_url(o_link_inner_path.as_str(), None)
+            .await
+            .expect("get name of file with o-link failed");
+
+        let name = name_json.as_str().expect("name should be string");
+        assert_eq!(name, file_obj.name.as_str(), "name mismatch");
+
+        let o_link_inner_path = format!("http://test.buckyos.io/ndn/{}/name", file_id.to_string(),);
+        let (name_obj_id, name_json) = zone_b_client
             .get_obj_by_url(o_link_inner_path.as_str(), None)
             .await
             .expect("get name of file with o-link failed");
@@ -717,7 +1298,11 @@ async fn ndn_local_o_link_innerpath_file_ok() {
         let mut read_pos = 0;
         let mut read_buffers = vec![];
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string());
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/content",
+            local_ndn_server_host,
+            file_id.to_string()
+        );
 
         loop {
             let read_len = {
@@ -726,7 +1311,83 @@ async fn ndn_local_o_link_innerpath_file_ok() {
             };
             let end_pos = read_pos + read_len;
 
-            let (mut reader, resp_headers) = ndn_client
+            let (mut reader, resp_headers) = zone_a_client
+                .open_chunk_reader_by_url(
+                    o_link_inner_path.as_str(),
+                    Some(chunk_id.clone()),
+                    Some(read_pos..end_pos),
+                )
+                .await
+                .expect("open chunk-reader failed");
+
+            let content_len = resp_headers
+                .obj_size
+                .expect("content-length should exist in http-headers");
+            assert_eq!(
+                content_len, read_len,
+                "content-length in http-header should equal with read_len"
+            );
+            assert_eq!(
+                resp_headers.obj_id,
+                Some(chunk_id.to_obj_id()),
+                "obj-id in http-header should equal with chunk-id"
+            );
+            assert!(
+                resp_headers.path_obj.is_none(),
+                "path-obj should be None for o-link"
+            );
+            assert_eq!(
+                resp_headers.root_obj_id,
+                Some(file_id.clone()),
+                "root-obj-id in http-header should equal with file-id"
+            );
+
+            let mut buffer = vec![0u8, 0];
+            let len = reader
+                .read_to_end(&mut buffer)
+                .await
+                .expect("read chunk failed");
+            assert_eq!(
+                len as u64, read_len,
+                "length of data in http-body should equal with content-length"
+            );
+            assert_eq!(
+                len,
+                buffer.len(),
+                "length of read data should equal with content-length"
+            );
+            assert_eq!(
+                buffer.as_slice(),
+                &chunk_data.as_slice()[read_pos as usize..end_pos as usize],
+                "chunk range mismatch"
+            );
+            read_buffers.push(buffer);
+
+            // todo: verify chunk with mtree
+
+            read_pos += read_len;
+            if read_pos >= chunk_data.len() as u64 {
+                break;
+            }
+        }
+
+        let read_chunk = read_buffers.concat();
+        assert_eq!(read_chunk, chunk_data, "chunk data mismatch");
+
+        let mut read_pos = 0;
+        let mut read_buffers = vec![];
+
+        let o_link_inner_path =
+            format!("http://test.buckyos.io/ndn/{}/content", file_id.to_string());
+
+        loop {
+            let read_len = {
+                let mut rng = rand::rng();
+                rng.random_range(1u64..chunk_data.len() as u64 - read_pos)
+            };
+            let end_pos = read_pos + read_len;
+
+            let (mut reader, resp_headers) = zone_b_client
                 .open_chunk_reader_by_url(
                     o_link_inner_path.as_str(),
                     Some(chunk_id.clone()),
@@ -811,8 +1472,12 @@ async fn ndn_local_o_link_innerpath_file_ok() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
-        let (download_chunk_id, download_chunk_len) = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/content",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let (download_chunk_id, download_chunk_len) = zone_a_client
             .download_chunk_to_local(
                 o_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -839,10 +1504,9 @@ async fn ndn_local_o_link_innerpath_file_ok() {
             "should be same as chunk-content"
         );
 
-        std::fs::remove_file(download_path.as_path())
-            .expect("remove downloaded chunk failed");
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
 
-        let (download_chunk_id, download_chunk_len) = ndn_client
+        let (download_chunk_id, download_chunk_len) = zone_a_client
             .download_chunk_to_local(
                 o_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -868,18 +1532,89 @@ async fn ndn_local_o_link_innerpath_file_ok() {
             download_chunk, chunk_data,
             "should be same as chunk-content"
         );
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
 
-        std::fs::remove_file(download_path.as_path())
-            .expect("remove downloaded chunk failed");
+        let o_link_inner_path =
+            format!("http://test.buckyos.io/ndn/{}/content", file_id.to_string(),);
+        let (download_chunk_id, download_chunk_len) = zone_b_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await
+            .expect("download chunk to local failed");
+
+        assert_eq!(
+            download_chunk_id, chunk_id,
+            "download chunk-id should equal with chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            chunk_data.len() as u64,
+            "download chunk-size should equal with chunk-data len"
+        );
+
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, chunk_data,
+            "should be same as chunk-content"
+        );
+
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
+
+        let (download_chunk_id, download_chunk_len) = zone_b_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
+
+        assert_eq!(
+            download_chunk_id, chunk_id,
+            "download chunk-id should equal with chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            chunk_data.len() as u64,
+            "download chunk-size should equal with chunk-data len"
+        );
+
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, chunk_data,
+            "should be same as chunk-content"
+        );
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
     }
 }
 
 #[tokio::test]
-async fn ndn_local_o_link_innerpath_file_not_found() {
-    init_logging("ndn_local_o_link_innerpath_not_found", false);
+async fn ndn_2_zone_o_link_innerpath_file_not_found() {
+    init_logging("ndn_2_zone_o_link_innerpath_file_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (local_ndn_client, local_ndn_server_host) =
+        init_local_ndn_server(ndn_mgr_id.as_str()).await;
+
+    let zone_a_client =
+        init_ndn_client(ndn_mgr_id.as_str(), LOCAL_PRIVATE_KEY, "test.buckyos.io").await;
+
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (_local_ndn_target_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
+
+    let zone_b_client = init_ndn_client(
+        target_ndn_mgr_id.as_str(),
+        NODE_B_PRIVATE_KEY,
+        "bob.web3.buckyos.io",
+    )
+    .await;
 
     {
         // no chunk saved
@@ -896,8 +1631,12 @@ async fn ndn_local_o_link_innerpath_file_not_found() {
             .await
             .expect("put object in local failed");
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
-        let ret = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/content",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let ret = zone_a_client
             .open_chunk_reader_by_url(o_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await;
 
@@ -911,9 +1650,50 @@ async fn ndn_local_o_link_innerpath_file_not_found() {
             }
         }
 
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/notexist",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let ret = zone_a_client
+            .get_obj_by_url(o_link_inner_path.as_str(), None)
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+
         let o_link_inner_path =
-            format!("http://{}/ndn/{}/notexist", ndn_host, file_id.to_string(),);
-        let ret = ndn_client
+            format!("http://test.buckyos.io/ndn/{}/content", file_id.to_string(),);
+        let ret = zone_b_client
+            .open_chunk_reader_by_url(o_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "chunk should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(false, "unexpect error, chunk should not found. {:?}", err)
+                }
+            }
+        }
+
+        let o_link_inner_path = format!(
+            "http://test.buckyos.io/ndn/{}/notexist",
+            file_id.to_string(),
+        );
+        let ret = zone_b_client
             .get_obj_by_url(o_link_inner_path.as_str(), None)
             .await;
 
@@ -953,8 +1733,12 @@ async fn ndn_local_o_link_innerpath_file_not_found() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
-        let ret = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/content",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let ret = zone_a_client
             .download_chunk_to_local(
                 o_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -982,7 +1766,60 @@ async fn ndn_local_o_link_innerpath_file_not_found() {
             "chunk should removed for verify failed"
         );
 
-        let ret = ndn_client
+        let ret = zone_a_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+
+        let o_link_inner_path =
+            format!("http://test.buckyos.io/ndn/{}/content", file_id.to_string(),);
+        let ret = zone_b_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+
+        let ret = zone_b_client
             .download_chunk_to_local(
                 o_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -1019,9 +1856,34 @@ async fn ndn_local_o_link_innerpath_file_not_found() {
             .await
             .expect("put object in local failed");
 
-        let o_link_inner_path =
-            format!("http://{}/ndn/{}/notexist", ndn_host, file_id.to_string(),);
-        let ret = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/notexist",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let ret = zone_a_client
+            .get_obj_by_url(o_link_inner_path.as_str(), None)
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+
+        let o_link_inner_path = format!(
+            "http://test.buckyos.io/ndn/{}/notexist",
+            file_id.to_string(),
+        );
+        let ret = zone_b_client
             .get_obj_by_url(o_link_inner_path.as_str(), None)
             .await;
 
@@ -1042,11 +1904,25 @@ async fn ndn_local_o_link_innerpath_file_not_found() {
 }
 
 #[tokio::test]
-async fn ndn_local_o_link_innerpath_file_verify_failed() {
-    init_logging("ndn_local_o_link_innerpath_file_verify_failed", false);
+async fn ndn_2_zone_o_link_innerpath_file_verify_failed() {
+    init_logging("ndn_2_zone_o_link_innerpath_file_verify_failed", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (local_ndn_client, local_ndn_server_host) =
+        init_local_ndn_server(ndn_mgr_id.as_str()).await;
+
+    let zone_a_client =
+        init_ndn_client(ndn_mgr_id.as_str(), LOCAL_PRIVATE_KEY, "test.buckyos.io").await;
+
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (_local_ndn_target_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
+
+    let zone_b_client = init_ndn_client(
+        target_ndn_mgr_id.as_str(),
+        NODE_B_PRIVATE_KEY,
+        "bob.web3.buckyos.io",
+    )
+    .await;
 
     {
         // fake file.content
@@ -1070,8 +1946,12 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             .await
             .expect("put object in local failed");
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
-        let ret = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/content",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let ret = zone_a_client
             .open_chunk_reader_by_url(o_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await;
 
@@ -1080,6 +1960,24 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             Err(err) => match err {
                 NdnError::VerifyError(_) => {
                     info!("Chunk verify error as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+
+        let o_link_inner_path =
+            format!("http://test.buckyos.io/ndn/{}/content", file_id.to_string(),);
+        let ret = zone_b_client
+            .open_chunk_reader_by_url(o_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "chunk should not found"),
+            Err(err) => match err {
+                NdnError::NotFound(_) => {
+                    info!("Chunk not found as expected");
                 }
                 _ => {
                     assert!(false, "Unexpected error type");
@@ -1118,8 +2016,12 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
-        let ret = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/content",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let ret = zone_a_client
             .download_chunk_to_local(
                 o_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -1145,7 +2047,7 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             "chunk should removed for verify failed"
         );
 
-        let (download_chunk_id, download_chunk_len) = ndn_client
+        let (download_chunk_id, download_chunk_len) = zone_a_client
             .download_chunk_to_local(
                 o_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -1170,8 +2072,58 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             download_chunk, fake_chunk_data,
             "should be same as fake chunk-content"
         );
-        std::fs::remove_file(download_path.as_path())
-            .expect("remove downloaded chunk failed");
+
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
+        let o_link_inner_path =
+            format!("http://test.buckyos.io/ndn/{}/content", file_id.to_string(),);
+        let ret = zone_b_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "chunk-content should verify error"),
+            Err(err) => match err {
+                NdnError::VerifyError(_) => {
+                    info!("chunk-content verify error as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+        let (download_chunk_id, download_chunk_len) = zone_b_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
+        assert_eq!(
+            download_chunk_id, fake_chunk_id,
+            "should be same as fake chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            fake_chunk_data.len() as u64,
+            "should be same as fake chunk.len"
+        );
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, fake_chunk_data,
+            "should be same as fake chunk-content"
+        );
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
     }
 
     {
@@ -1188,8 +2140,12 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
         NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file_id, file_obj_str.as_str())
             .await
             .expect("put object in local failed");
-        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
-        let (mut reader, resp_headers) = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/content",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let (mut reader, resp_headers) = zone_a_client
             .open_chunk_reader_by_url(o_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await
             .expect("open chunk-reader failed");
@@ -1234,6 +2190,50 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
         assert_eq!(buffer, fake_chunk_data, "chunk content mismatch");
 
         // todo: verify chunk with mtree
+
+        let o_link_inner_path =
+            format!("http://test.buckyos.io/ndn/{}/content", file_id.to_string(),);
+        let (mut reader, resp_headers) = zone_b_client
+            .open_chunk_reader_by_url(o_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await
+            .expect("open chunk-reader failed");
+        let content_len = resp_headers
+            .obj_size
+            .expect("content-length should exist in http-headers");
+        assert_eq!(
+            content_len,
+            fake_chunk_data.len() as u64,
+            "content-length in http-header should equal with chunk.len"
+        );
+        assert_eq!(
+            resp_headers.obj_id,
+            Some(chunk_id.to_obj_id()),
+            "obj-id in http-header should equal with chunk-id"
+        );
+        assert!(
+            resp_headers.path_obj.is_none(),
+            "path-obj should be None for o-link"
+        );
+        assert_eq!(
+            resp_headers.root_obj_id,
+            Some(file_id.clone()),
+            "root-obj-id in http-header should equal with file-id"
+        );
+        let mut buffer = vec![0u8, 0];
+        let len = reader
+            .read_to_end(&mut buffer)
+            .await
+            .expect("read chunk failed");
+        assert_eq!(
+            len as u64, content_len,
+            "length of data in http-body should equal with content-length"
+        );
+        assert_eq!(
+            len,
+            buffer.len(),
+            "length of read data should equal with content-length"
+        );
+        assert_eq!(buffer, fake_chunk_data, "chunk content mismatch");
     }
 
     {
@@ -1259,8 +2259,12 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
-        let ret = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/content",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let ret = zone_a_client
             .download_chunk_to_local(
                 o_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -1286,7 +2290,7 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             "chunk should removed for verify failed"
         );
 
-        let (download_chunk_id, download_chunk_len) = ndn_client
+        let (download_chunk_id, download_chunk_len) = zone_a_client
             .download_chunk_to_local(
                 o_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -1311,8 +2315,59 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             download_chunk, fake_chunk_data,
             "should be same as fake chunk-content"
         );
-        std::fs::remove_file(download_path.as_path())
-            .expect("remove downloaded chunk failed");
+
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
+
+        let o_link_inner_path =
+            format!("http://test.buckyos.io/ndn/{}/content", file_id.to_string(),);
+        let ret = zone_b_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "chunk-content should verify error"),
+            Err(err) => match err {
+                NdnError::VerifyError(_) => {
+                    info!("chunk-content verify error as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+        let (download_chunk_id, download_chunk_len) = zone_b_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
+        assert_eq!(
+            download_chunk_id, fake_chunk_id,
+            "should be same as fake chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            fake_chunk_data.len() as u64,
+            "should be same as fake chunk.len"
+        );
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, fake_chunk_data,
+            "should be same as fake chunk-content"
+        );
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
     }
 
     {
@@ -1331,8 +2386,12 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             .await
             .expect("put object in local failed");
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
-        let ret = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/content",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let ret = zone_a_client
             .open_chunk_reader_by_url(o_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await;
 
@@ -1341,6 +2400,23 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             Err(err) => match err {
                 NdnError::VerifyError(_) => {
                     info!("file-obj verify error as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+
+        let o_link_inner_path =
+            format!("http://test.buckyos.io/ndn/{}/content", file_id.to_string(),);
+        let ret = zone_b_client
+            .open_chunk_reader_by_url(o_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "file-obj should not found"),
+            Err(err) => match err {
+                NdnError::NotFound(_) => {
+                    info!("file-obj not found as expected");
                 }
                 _ => {
                     assert!(false, "Unexpected error type");
@@ -1373,8 +2449,12 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-        let o_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, file_id.to_string(),);
-        let ret = ndn_client
+        let o_link_inner_path = format!(
+            "http://{}/ndn/{}/content",
+            local_ndn_server_host,
+            file_id.to_string(),
+        );
+        let ret = zone_a_client
             .download_chunk_to_local(
                 o_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -1400,7 +2480,7 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             "chunk should removed for verify failed"
         );
 
-        let (download_chunk_id, download_chunk_len) = ndn_client
+        let (download_chunk_id, download_chunk_len) = zone_a_client
             .download_chunk_to_local(
                 o_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -1422,20 +2502,76 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             download_chunk, chunk_data,
             "should be same as chunk-content"
         );
-        std::fs::remove_file(download_path.as_path())
-            .expect("remove downloaded chunk failed");
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
+
+        let o_link_inner_path =
+            format!("http://test.buckyos.io/ndn/{}/content", file_id.to_string(),);
+        let ret = zone_b_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "file-obj should verify error"),
+            Err(err) => match err {
+                NdnError::VerifyError(_) => {
+                    info!("file-obj verify error as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+        let (download_chunk_id, download_chunk_len) = zone_b_client
+            .download_chunk_to_local(
+                o_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
+        assert_eq!(download_chunk_id, chunk_id, "should be same as chunk-id");
+        assert_eq!(
+            download_chunk_len,
+            chunk_data.len() as u64,
+            "should be same as chunk.len"
+        );
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, chunk_data,
+            "should be same as chunk-content"
+        );
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
     }
 }
 
 // http://{host}/ndn/{obj-path}/inner-path
 #[tokio::test]
-async fn ndn_local_r_link_innerpath_file_ok() {
-    init_logging("ndn_local_r_link_innerpath_file_ok", false);
+async fn ndn_2_zone_r_link_innerpath_file_ok() {
+    init_logging("ndn_2_zone_r_link_innerpath_file_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
-
-    let ndn_url = format!("http://{}/ndn/", ndn_host);
+    let (local_ndn_client, local_ndn_server_host) =
+        init_local_ndn_server(ndn_mgr_id.as_str()).await;
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (target_ndn_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
+    let zone_a_client =
+        init_ndn_client(ndn_mgr_id.as_str(), LOCAL_PRIVATE_KEY, "test.buckyos.io").await;
+    let zone_b_client = init_ndn_client(
+        target_ndn_mgr_id.as_str(),
+        NODE_B_PRIVATE_KEY,
+        "bob.web3.buckyos.io",
+    )
+    .await;
 
     {
         // 1. get chunk of file
@@ -1494,8 +2630,11 @@ async fn ndn_local_r_link_innerpath_file_ok() {
             "file content-ndn-path should be same as ndn-path"
         );
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
-        let (mut reader, resp_headers) = ndn_client
+        std::fs::remove_file(local_path.as_path()).expect("remove local file failed");
+
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+        let (mut reader, resp_headers) = zone_a_client
             .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await
             .map_err(|err| {
@@ -1545,8 +2684,8 @@ async fn ndn_local_r_link_innerpath_file_ok() {
 
         // todo: verify chunk with mtree
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/name", ndn_host, obj_path);
-        let (name_obj_id, name_json) = ndn_client
+        let r_link_inner_path = format!("http://{}/ndn/{}/name", local_ndn_server_host, obj_path);
+        let (name_obj_id, name_json) = target_ndn_client
             .get_obj_by_url(r_link_inner_path.as_str(), None)
             .await
             .expect("get name of file with o-link failed");
@@ -1554,7 +2693,48 @@ async fn ndn_local_r_link_innerpath_file_ok() {
         let name = name_json.as_str().expect("name should be string");
         assert_eq!(name, file_obj.name.as_str(), "name mismatch");
 
-        std::fs::remove_file(local_path.as_path()).expect("remove local file failed");
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/content", obj_path,);
+        let (mut reader, resp_headers) = zone_b_client
+            .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await
+            .expect("open chunk-reader failed");
+        let content_len = resp_headers
+            .obj_size
+            .expect("content-length should exist in http-headers");
+        assert_eq!(
+            content_len,
+            chunk_data.len() as u64,
+            "content-length in http-header should equal with chunk.len"
+        );
+        assert_eq!(
+            resp_headers.obj_id,
+            Some(chunk_id.to_obj_id()),
+            "obj-id in http-header should equal with chunk-id"
+        );
+        assert!(
+            resp_headers.path_obj.is_none(),
+            "path-obj should be None for o-link"
+        );
+        assert_eq!(
+            resp_headers.root_obj_id,
+            Some(file_id.clone()),
+            "root-obj-id in http-header should equal with file-id"
+        );
+        let mut buffer = vec![0u8, 0];
+        let len = reader
+            .read_to_end(&mut buffer)
+            .await
+            .expect("read chunk failed");
+        assert_eq!(
+            len as u64, content_len,
+            "length of data in http-body should equal with content-length"
+        );
+        assert_eq!(
+            len,
+            buffer.len(),
+            "length of read data should equal with content-length"
+        );
+        assert_eq!(buffer, chunk_data, "chunk content mismatch");
     }
 
     {
@@ -1578,12 +2758,24 @@ async fn ndn_local_r_link_innerpath_file_ok() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/name", ndn_host, file_id.to_string());
-        let (name_obj_id, name_json) = ndn_client
+        let r_link_inner_path = format!(
+            "http://{}/ndn/{}/name",
+            local_ndn_server_host,
+            file_id.to_string()
+        );
+        let (name_obj_id, name_json) = zone_a_client
             .get_obj_by_url(r_link_inner_path.as_str(), None)
             .await
             .expect("get name of file with o-link failed");
 
+        let name = name_json.as_str().expect("name should be string");
+        assert_eq!(name, file_obj.name.as_str(), "name mismatch");
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/name", file_id.to_string());
+        let (name_obj_id, name_json) = zone_b_client
+            .get_obj_by_url(r_link_inner_path.as_str(), None)
+            .await
+            .expect("get name of file with o-link failed");
         let name = name_json.as_str().expect("name should be string");
         assert_eq!(name, file_obj.name.as_str(), "name mismatch");
     }
@@ -1610,7 +2802,8 @@ async fn ndn_local_r_link_innerpath_file_ok() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
 
         let mut read_pos = 0;
         let mut read_buffers = vec![];
@@ -1622,7 +2815,81 @@ async fn ndn_local_r_link_innerpath_file_ok() {
             };
             let end_pos = read_pos + read_len;
 
-            let (mut reader, resp_headers) = ndn_client
+            let (mut reader, resp_headers) = zone_a_client
+                .open_chunk_reader_by_url(
+                    r_link_inner_path.as_str(),
+                    Some(chunk_id.clone()),
+                    Some(read_pos..end_pos),
+                )
+                .await
+                .expect("open chunk-reader failed");
+
+            let content_len = resp_headers
+                .obj_size
+                .expect("content-length should exist in http-headers");
+            assert_eq!(
+                content_len, read_len,
+                "content-length in http-header should equal with read_len"
+            );
+            assert_eq!(
+                resp_headers.obj_id,
+                Some(chunk_id.to_obj_id()),
+                "obj-id in http-header should equal with chunk-id"
+            );
+            assert!(
+                resp_headers.path_obj.is_none(),
+                "path-obj should be None for o-link"
+            );
+            assert_eq!(
+                resp_headers.root_obj_id,
+                Some(file_id.clone()),
+                "root-obj-id in http-header should equal with file-id"
+            );
+
+            let mut buffer = vec![0u8, 0];
+            let len = reader
+                .read_to_end(&mut buffer)
+                .await
+                .expect("read chunk failed");
+            assert_eq!(
+                len as u64, read_len,
+                "length of data in http-body should equal with content-length"
+            );
+            assert_eq!(
+                len,
+                buffer.len(),
+                "length of read data should equal with content-length"
+            );
+            assert_eq!(
+                buffer.as_slice(),
+                &chunk_data.as_slice()[read_pos as usize..end_pos as usize],
+                "chunk range mismatch"
+            );
+            read_buffers.push(buffer);
+
+            // todo: verify chunk with mtree
+
+            read_pos += read_len;
+            if read_pos >= chunk_data.len() as u64 {
+                break;
+            }
+        }
+
+        let read_chunk = read_buffers.concat();
+        assert_eq!(read_chunk, chunk_data, "chunk data mismatch");
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/content", obj_path,);
+        let mut read_pos = 0;
+        let mut read_buffers = vec![];
+
+        loop {
+            let read_len = {
+                let mut rng = rand::rng();
+                rng.random_range(1u64..chunk_data.len() as u64 - read_pos)
+            };
+            let end_pos = read_pos + read_len;
+
+            let (mut reader, resp_headers) = zone_b_client
                 .open_chunk_reader_by_url(
                     r_link_inner_path.as_str(),
                     Some(chunk_id.clone()),
@@ -1707,7 +2974,6 @@ async fn ndn_local_r_link_innerpath_file_ok() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
         let download_path = tempfile::tempdir()
             .unwrap()
             .path()
@@ -1716,7 +2982,9 @@ async fn ndn_local_r_link_innerpath_file_ok() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-        let (download_chunk_id, download_chunk_len) = ndn_client
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+        let (download_chunk_id, download_chunk_len) = zone_a_client
             .download_chunk_to_local(
                 r_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -1745,7 +3013,7 @@ async fn ndn_local_r_link_innerpath_file_ok() {
 
         std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
 
-        let (download_chunk_id, download_chunk_len) = ndn_client
+        let (download_chunk_id, download_chunk_len) = zone_a_client
             .download_chunk_to_local(
                 r_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -1773,20 +3041,81 @@ async fn ndn_local_r_link_innerpath_file_ok() {
         );
 
         std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/content", obj_path,);
+        let (download_chunk_id, download_chunk_len) = zone_b_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await
+            .expect("download chunk to local failed");
+        assert_eq!(
+            download_chunk_id, chunk_id,
+            "download chunk-id should equal with chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            chunk_data.len() as u64,
+            "download chunk-size should equal with chunk-data len"
+        );
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, chunk_data,
+            "should be same as chunk-content"
+        );
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
+        let (download_chunk_id, download_chunk_len) = zone_b_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
+        assert_eq!(
+            download_chunk_id, chunk_id,
+            "download chunk-id should equal with chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            chunk_data.len() as u64,
+            "download chunk-size should equal with chunk-data len"
+        );
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, chunk_data,
+            "should be same as chunk-content"
+        );
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
     }
 }
 
 #[tokio::test]
-async fn ndn_local_r_link_innerpath_file_not_found() {
-    init_logging("ndn_local_r_link_innerpath_file_not_found", false);
+async fn ndn_2_zone_r_link_innerpath_file_not_found() {
+    init_logging("ndn_2_zone_r_link_innerpath_file_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (local_ndn_client, local_ndn_server_host) =
+        init_local_ndn_server(ndn_mgr_id.as_str()).await;
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (target_ndn_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
+    let zone_a_client =
+        init_ndn_client(ndn_mgr_id.as_str(), LOCAL_PRIVATE_KEY, "test.buckyos.io").await;
+    let zone_b_client = init_ndn_client(
+        target_ndn_mgr_id.as_str(),
+        NODE_B_PRIVATE_KEY,
+        "bob.web3.buckyos.io",
+    )
+    .await;
 
     {
         // no chunk saved
-        // 1. get chunk of file
-        // 2. get name of file
         let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
 
         // write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
@@ -1806,8 +3135,9 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
-        let ret = ndn_client
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+        let ret = zone_a_client
             .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await;
 
@@ -1821,8 +3151,9 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
             }
         }
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/notexist", ndn_host, obj_path);
-        let ret = ndn_client
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/notexist", local_ndn_server_host, obj_path);
+        let ret = zone_a_client
             .get_obj_by_url(r_link_inner_path.as_str(), None)
             .await;
 
@@ -1839,10 +3170,41 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
                 }
             }
         }
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/content", obj_path,);
+        let ret = zone_b_client
+            .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "chunk should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(false, "unexpect error, chunk should not found. {:?}", err)
+                }
+            }
+        }
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/notexist", obj_path);
+        let ret = zone_b_client
+            .get_obj_by_url(r_link_inner_path.as_str(), None)
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
     }
 
     {
-        // no pub file object for download to local
+        // no pub file-obj for download to local
         let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
 
         write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
@@ -1862,8 +3224,6 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
         // .await
         // .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
-
         let download_path = tempfile::tempdir()
             .unwrap()
             .path()
@@ -1872,7 +3232,10 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-        let ret = ndn_client
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+
+        let ret = zone_a_client
             .download_chunk_to_local(
                 r_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -1882,13 +3245,13 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
             .await;
 
         match ret {
-            Ok(_) => assert!(false, "notexist field should not found"),
+            Ok(_) => assert!(false, "file chunk should not found"),
             Err(err) => {
                 if let NdnError::NotFound(_) = err {
                 } else {
                     assert!(
                         false,
-                        "unexpect error, notexist field should not found. {:?}",
+                        "unexpect error, file chunk should not found. {:?}",
                         err
                     )
                 }
@@ -1900,7 +3263,7 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
             "chunk should removed for verify failed"
         );
 
-        let ret = ndn_client
+        let ret = zone_a_client
             .download_chunk_to_local(
                 r_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -1910,18 +3273,75 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
             .await;
 
         match ret {
-            Ok(_) => assert!(false, "notexist field should not found"),
+            Ok(_) => assert!(false, "file chunk should not found"),
             Err(err) => {
                 if let NdnError::NotFound(_) = err {
                 } else {
                     assert!(
                         false,
-                        "unexpect error, notexist field should not found. {:?}",
+                        "unexpect error, file chunk should not found. {:?}",
                         err
                     )
                 }
             }
         }
+
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/content", obj_path,);
+        let ret = zone_b_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "file chunk should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, file chunk should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+        let ret = zone_b_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "file chunk should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, file chunk should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
     }
 
     {
@@ -1945,12 +3365,31 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/notexist", ndn_host, obj_path,);
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/notexist", local_ndn_server_host, obj_path,);
 
-        let ret = ndn_client
+        let ret = zone_a_client
             .get_obj_by_url(r_link_inner_path.as_str(), None)
             .await;
 
+        match ret {
+            Ok(_) => assert!(false, "notexist field should not found"),
+            Err(err) => {
+                if let NdnError::NotFound(_) = err {
+                } else {
+                    assert!(
+                        false,
+                        "unexpect error, notexist field should not found. {:?}",
+                        err
+                    )
+                }
+            }
+        }
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/notexist", obj_path,);
+        let ret = zone_b_client
+            .get_obj_by_url(r_link_inner_path.as_str(), None)
+            .await;
         match ret {
             Ok(_) => assert!(false, "notexist field should not found"),
             Err(err) => {
@@ -1968,11 +3407,22 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
 }
 
 #[tokio::test]
-async fn ndn_local_r_link_innerpath_file_verify_failed() {
-    init_logging("ndn_local_r_link_innerpath_file_verify_failed", false);
+async fn ndn_2_zone_r_link_innerpath_file_verify_failed() {
+    init_logging("ndn_2_zone_r_link_innerpath_file_verify_failed", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (local_ndn_client, local_ndn_server_host) =
+        init_local_ndn_server(ndn_mgr_id.as_str()).await;
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (target_ndn_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
+    let zone_a_client =
+        init_ndn_client(ndn_mgr_id.as_str(), LOCAL_PRIVATE_KEY, "test.buckyos.io").await;
+    let zone_b_client = init_ndn_client(
+        target_ndn_mgr_id.as_str(),
+        NODE_B_PRIVATE_KEY,
+        "bob.web3.buckyos.io",
+    )
+    .await;
 
     {
         // fake file.content
@@ -2004,9 +3454,10 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
 
-        let ret = ndn_client
+        let ret = zone_a_client
             .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await;
 
@@ -2015,6 +3466,22 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
             Err(err) => match err {
                 NdnError::VerifyError(_) => {
                     info!("Chunk verify error as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/content", obj_path);
+        let ret = zone_b_client
+            .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "chunk should not found"),
+            Err(err) => match err {
+                NdnError::NotFound(_) => {
+                    info!("Chunk not found as expected");
                 }
                 _ => {
                     assert!(false, "Unexpected error type");
@@ -2053,7 +3520,7 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
 
         let download_path = tempfile::tempdir()
             .unwrap()
@@ -2063,7 +3530,7 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-        let ret = ndn_client
+        let ret = zone_a_client
             .download_chunk_to_local(
                 r_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -2089,7 +3556,7 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
             "chunk should removed for verify failed"
         );
 
-        let (download_chunk_id, download_chunk_len) = ndn_client
+        let (download_chunk_id, download_chunk_len) = zone_a_client
             .download_chunk_to_local(
                 r_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -2099,6 +3566,57 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
             .await
             .expect("download chunk should success without verify");
 
+        assert_eq!(
+            download_chunk_id, fake_chunk_id,
+            "should be same as fake chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            fake_chunk_data.len() as u64,
+            "should be same as fake chunk.len"
+        );
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, fake_chunk_data,
+            "should be same as fake chunk-content"
+        );
+
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/content", obj_path,);
+        let ret = zone_b_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "chunk-content should verify error"),
+            Err(err) => match err {
+                NdnError::NotFound(_) => {
+                    info!("Chunk not found as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+        let (download_chunk_id, download_chunk_len) = zone_b_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
         assert_eq!(
             download_chunk_id, fake_chunk_id,
             "should be same as fake chunk-id"
@@ -2140,9 +3658,9 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
 
-        let (mut reader, resp_headers) = ndn_client
+        let (mut reader, resp_headers) = zone_a_client
             .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await
             .expect("open chunk-reader failed");
@@ -2187,6 +3705,49 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         assert_eq!(buffer, fake_chunk_data, "chunk content mismatch");
 
         // todo: verify chunk with mtree
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/content", obj_path,);
+        let (mut reader, resp_headers) = zone_b_client
+            .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await
+            .expect("open chunk-reader failed");
+        let content_len = resp_headers
+            .obj_size
+            .expect("content-length should exist in http-headers");
+        assert_eq!(
+            content_len,
+            fake_chunk_data.len() as u64,
+            "content-length in http-header should equal with chunk.len"
+        );
+        assert_eq!(
+            resp_headers.obj_id,
+            Some(chunk_id.to_obj_id()),
+            "obj-id in http-header should equal with chunk-id"
+        );
+        assert!(
+            resp_headers.path_obj.is_none(),
+            "path-obj should be None for o-link"
+        );
+        assert_eq!(
+            resp_headers.root_obj_id,
+            Some(file_id.clone()),
+            "root-obj-id in http-header should equal with file-id"
+        );
+        let mut buffer = vec![0u8, 0];
+        let len = reader
+            .read_to_end(&mut buffer)
+            .await
+            .expect("read chunk failed");
+        assert_eq!(
+            len as u64, content_len,
+            "length of data in http-body should equal with content-length"
+        );
+        assert_eq!(
+            len,
+            buffer.len(),
+            "length of read data should equal with content-length"
+        );
+        assert_eq!(buffer, fake_chunk_data, "chunk content mismatch");
     }
 
     {
@@ -2212,8 +3773,6 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
-
         let download_path = tempfile::tempdir()
             .unwrap()
             .path()
@@ -2222,7 +3781,9 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-        let ret = ndn_client
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+
+        let ret = zone_a_client
             .download_chunk_to_local(
                 r_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -2248,7 +3809,7 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
             "chunk should removed for verify failed"
         );
 
-        let (download_chunk_id, download_chunk_len) = ndn_client
+        let (download_chunk_id, download_chunk_len) = zone_a_client
             .download_chunk_to_local(
                 r_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -2258,6 +3819,57 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
             .await
             .expect("download chunk should success without verify");
 
+        assert_eq!(
+            download_chunk_id, fake_chunk_id,
+            "should be same as fake chunk-id"
+        );
+        assert_eq!(
+            download_chunk_len,
+            fake_chunk_data.len() as u64,
+            "should be same as fake chunk.len"
+        );
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, fake_chunk_data,
+            "should be same as fake chunk-content"
+        );
+
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/content", obj_path,);
+        let ret = zone_b_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "chunk-content should verify error"),
+            Err(err) => match err {
+                NdnError::NotFound(_) => {
+                    info!("Chunk not found as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+        let (download_chunk_id, download_chunk_len) = zone_b_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
         assert_eq!(
             download_chunk_id, fake_chunk_id,
             "should be same as fake chunk-id"
@@ -2300,8 +3912,8 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
-        let ret = ndn_client
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+        let ret = zone_a_client
             .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await;
 
@@ -2316,6 +3928,24 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
                 }
             },
         }
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/content", obj_path,);
+        let ret = zone_b_client
+            .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .await;
+
+        match ret {
+            Ok(_) => assert!(false, "file-obj should not found"),
+            Err(err) => match err {
+                NdnError::NotFound(_) => {
+                    info!("file-obj not found as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+        
     }
 
     {
@@ -2342,8 +3972,6 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
-
         let download_path = tempfile::tempdir()
             .unwrap()
             .path()
@@ -2352,7 +3980,9 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-        let ret = ndn_client
+
+        let r_link_inner_path = format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+        let ret = zone_a_client
             .download_chunk_to_local(
                 r_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -2378,7 +4008,7 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
             "chunk should removed for verify failed"
         );
 
-        let (download_chunk_id, download_chunk_len) = ndn_client
+        let (download_chunk_id, download_chunk_len) = zone_a_client
             .download_chunk_to_local(
                 r_link_inner_path.as_str(),
                 chunk_id.clone(),
@@ -2388,6 +4018,54 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
             .await
             .expect("download chunk should success without verify");
 
+        assert_eq!(download_chunk_id, chunk_id, "should be same as chunk-id");
+        assert_eq!(
+            download_chunk_len,
+            chunk_data.len() as u64,
+            "should be same as chunk.len"
+        );
+        let download_chunk =
+            std::fs::read(download_path.as_path()).expect("chunk should exists in local");
+        assert_eq!(
+            download_chunk, chunk_data,
+            "should be same as chunk-content"
+        );
+
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
+
+        let r_link_inner_path = format!("http://test.buckyos.io/ndn/{}/content", obj_path,);
+        let ret = zone_b_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(true),
+            )
+            .await;
+        match ret {
+            Ok(_) => assert!(false, "file-obj should verify error"),
+            Err(err) => match err {
+                NdnError::NotFound(_) => {
+                    info!("file-obj not found as expected");
+                }
+                _ => {
+                    assert!(false, "Unexpected error type");
+                }
+            },
+        }
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
+        let (download_chunk_id, download_chunk_len) = zone_b_client
+            .download_chunk_to_local(
+                r_link_inner_path.as_str(),
+                chunk_id.clone(),
+                &download_path,
+                Some(false),
+            )
+            .await
+            .expect("download chunk should success without verify");
         assert_eq!(download_chunk_id, chunk_id, "should be same as chunk-id");
         assert_eq!(
             download_chunk_len,

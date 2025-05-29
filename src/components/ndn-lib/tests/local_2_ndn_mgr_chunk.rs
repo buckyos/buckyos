@@ -133,8 +133,8 @@ async fn init_ndn_server(ndn_mgr_id: &str) -> (NdnClient, NdnServerHost) {
 
 // 暂时先起两个不同的NamedDataMgr模拟相同zone内的两个Device
 #[tokio::test]
-async fn ndn_local_diff_mgr_chunk_ok() {
-    init_logging("ndn_local_diff_mgr_chunk_ok", false);
+async fn ndn_local_2_mgr_chunk_ok() {
+    init_logging("ndn_local_2_mgr_chunk_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (ndn_client, _) = init_ndn_server(ndn_mgr_id.as_str()).await;
@@ -173,8 +173,8 @@ async fn ndn_local_diff_mgr_chunk_ok() {
 }
 
 #[tokio::test]
-async fn ndn_local_diff_mgr_chunk_not_found() {
-    init_logging("ndn_local_diff_mgr_chunk_not_found", false);
+async fn ndn_local_2_mgr_chunk_not_found() {
+    init_logging("ndn_local_2_mgr_chunk_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
@@ -214,8 +214,8 @@ async fn ndn_local_diff_mgr_chunk_not_found() {
 }
 
 #[tokio::test]
-async fn ndn_local_diff_mgr_chunk_verify_failed() {
-    init_logging("ndn_local_diff_mgr_chunk_verify_failed", false);
+async fn ndn_local_2_mgr_chunk_verify_failed() {
+    init_logging("ndn_local_2_mgr_chunk_verify_failed", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (ndn_client, _) = init_ndn_server(ndn_mgr_id.as_str()).await;

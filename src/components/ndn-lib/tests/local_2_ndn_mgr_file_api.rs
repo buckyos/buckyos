@@ -453,8 +453,6 @@ async fn ndn_local_2_mgr_file_not_found() {
             .await
             .expect("put file-object in local failed");
 
-        let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-
         check_file_obj(target_ndn_mgr_id.as_str(), &file_id, Some(None), None).await;
 
         let ret = NamedDataMgr::open_chunk_reader(
@@ -717,12 +715,20 @@ async fn ndn_local_2_mgr_file_verify_failed() {
         let (_, got_obj_str) = build_named_object_by_json(OBJ_TYPE_FILE, &got_obj);
         assert_eq!(got_obj_str, file_obj_str, "got file-obj mismatch");
 
+        let got_file_obj: FileObject =
+            serde_json::from_value(got_obj).expect("deserialize got_obj to FileObject failed");
+        assert_eq!(
+            chunk_id,
+            ChunkId::new(got_file_obj.content.as_str()).expect("Failed to create ChunkId"),
+            "got content(chunk-id) from file-obj mismatch"
+        );
+
         let got_chunk_len = ndn_client
-            .pull_chunk(fake_chunk_id.clone(), Some(target_ndn_mgr_id.as_str()))
+            .pull_chunk(chunk_id.clone(), Some(target_ndn_mgr_id.as_str()))
             .await
             .expect("pull chunk from ndn-mgr failed");
 
-        let buffer = read_chunk(target_ndn_mgr_id.as_str(), &fake_chunk_id).await;
+        let buffer = read_chunk(target_ndn_mgr_id.as_str(), &chunk_id).await;
         assert_eq!(buffer, fake_chunk_data, "file chunk-content check failed");
         assert_eq!(
             got_chunk_len,
@@ -730,13 +736,8 @@ async fn ndn_local_2_mgr_file_verify_failed() {
             "got chunk len mismatch"
         );
 
-        let got_file_obj: FileObject =
-            serde_json::from_value(got_obj).expect("deserialize got_obj to FileObject failed");
         let ret = ndn_client
-            .pull_chunk(
-                ChunkId::new(got_file_obj.content.as_str()).expect("Failed to create ChunkId"),
-                Some(target_ndn_mgr_id.as_str()),
-            )
+            .pull_chunk(fake_chunk_id, Some(target_ndn_mgr_id.as_str()))
             .await;
 
         match ret {
@@ -997,6 +998,8 @@ async fn ndn_local_2_mgr_o_link_innerpath_file_ok() {
             "should be same as chunk-content"
         );
 
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
+
         let (download_chunk_id, download_chunk_len) = ndn_client
             .download_chunk_to_local(
                 o_link_inner_path.as_str(),
@@ -1023,6 +1026,7 @@ async fn ndn_local_2_mgr_o_link_innerpath_file_ok() {
             download_chunk, chunk_data,
             "should be same as chunk-content"
         );
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
     }
 }
 
@@ -1328,6 +1332,7 @@ async fn ndn_local_2_mgr_o_link_innerpath_file_verify_failed() {
             download_chunk, fake_chunk_data,
             "should be same as fake chunk-content"
         );
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
     }
 
     {
@@ -1467,6 +1472,7 @@ async fn ndn_local_2_mgr_o_link_innerpath_file_verify_failed() {
             download_chunk, fake_chunk_data,
             "should be same as fake chunk-content"
         );
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
     }
 
     {
@@ -1576,6 +1582,7 @@ async fn ndn_local_2_mgr_o_link_innerpath_file_verify_failed() {
             download_chunk, chunk_data,
             "should be same as chunk-content"
         );
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
     }
 }
 
@@ -1896,6 +1903,8 @@ async fn ndn_local_2_mgr_r_link_innerpath_file_ok() {
             download_chunk, chunk_data,
             "should be same as chunk-content"
         );
+
+        std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
 
         let (download_chunk_id, download_chunk_len) = target_ndn_client
             .download_chunk_to_local(
@@ -2270,6 +2279,7 @@ async fn ndn_local_2_mgr_r_link_innerpath_file_verify_failed() {
             download_chunk, fake_chunk_data,
             "should be same as fake chunk-content"
         );
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
     }
 
     {
@@ -2428,6 +2438,7 @@ async fn ndn_local_2_mgr_r_link_innerpath_file_verify_failed() {
             download_chunk, fake_chunk_data,
             "should be same as fake chunk-content"
         );
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
     }
 
     {
@@ -2554,5 +2565,6 @@ async fn ndn_local_2_mgr_r_link_innerpath_file_verify_failed() {
             download_chunk, chunk_data,
             "should be same as chunk-content"
         );
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
     }
 }
