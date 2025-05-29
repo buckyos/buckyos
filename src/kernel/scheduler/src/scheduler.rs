@@ -565,7 +565,7 @@ mod tests {
 
     use super::*;
 
-    use std::{collections::HashMap, os::linux::raw::stat};
+    use std::collections::HashMap;
 
     fn create_test_node(
         id: &str,
@@ -763,12 +763,16 @@ mod tests {
                 SchedulerAction::InstancePod(instance) => {
                     assert_eq!(instance.pod_id, "pod1");
                     assert_eq!(instance.node_id, "node1");
+                    //add pod instance
+                    scheduler.add_pod_instance(instance.clone());
                 }
                 SchedulerAction::ChangePodStatus(pod_id, new_state) => {
                     if pod_id == "pod1" {
                         assert_eq!(*new_state, PodItemState::Deployed);
                     } else if pod_id == "pod2" {
                         assert_eq!(*new_state, PodItemState::Deleted);
+                        // remove pod item
+                        scheduler.pods.remove(pod_id);
                     } else {
                         panic!("Unexpected pod id: {}", pod_id);
                     }
@@ -779,14 +783,8 @@ mod tests {
 
         /*
         改变pod1的状态为Removing
-        这里发现一个问题，整理出一个action列表之后，应该执行一系列操作再继续
-        因为真正的pod_instance还没有添加到scheduler中，add_pod_instance没有被调用过
-        所以后面的测试代码不能这样写
-        还有另外一个问题：上一轮的actions里标明pod2已经被移除，但是pod2的内部状态还是Removing
-        这样会导致下一轮schedule_pod_change会再次添加移除动作
-        现在没有实现资源的消耗与释放的逻辑？
         */
-        /*scheduler.pods.get_mut("pod1").unwrap().state = PodItemState::Removing;
+        scheduler.pods.get_mut("pod1").unwrap().state = PodItemState::Removing;
         let actions = scheduler.schedule_pod_change().unwrap();
         assert_eq!(actions.len(), 2);
         if let SchedulerAction::RemovePodInstance(instance_id) = &actions[0] {
@@ -797,7 +795,7 @@ mod tests {
         if let SchedulerAction::ChangePodStatus(pod_id, new_state) = &actions[1] {
             assert_eq!(pod_id, "pod1");
             assert_eq!(*new_state, PodItemState::Deleted);
-        }*/
+        }
     }
 
     // test create pod instance with no suitable node
