@@ -10,6 +10,8 @@ def info_device():
     subprocess.run(["multipass", "exec", "sn", "--", "bash", "-c", "ps -ef | grep -v bash | grep -v grep | grep web3_gateway"])
 
 
+    # sn log
+    # multipass exec sn -- tail -f  /opt/buckyos/logs/cyfs_gateway/cyfs_gateway_{pid}.log
 
 
     # all_devices = get_device_info.read_from_config(info_path=VM_DEVICE_CONFIG)

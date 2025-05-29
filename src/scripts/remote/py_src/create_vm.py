@@ -13,12 +13,13 @@ def print_usage():
     sys.exit(1)
 
 class VMCreator:
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, config_base: str):
         with open(config_path, 'r') as f:
             self.devices = json.load(f)
         
         # 验证配置文件
         self._validate_config()
+        self.config_base = config_base
         
     def _validate_config(self):
         """验证配置文件格式"""
@@ -57,9 +58,9 @@ class VMCreator:
         cpu = vm_config.get('cpu', 1)
         memory = vm_config.get('memory', '1G')
         disk = vm_config.get('disk', '10G')
-        
+        init_yaml = os.path.join(self.config_base, 'vm_init.yaml')
         # 创建VM的基本命令
-        cmd = f"multipass launch --name {device_id} --cpus {cpu} --memory {memory} --disk {disk} --cloud-init dev_configs/vm_init.yaml "
+        cmd = f"multipass launch --name {device_id} --cpus {cpu} --memory {memory} --disk {disk} --cloud-init {init_yaml} "
 
         
         # 添加网络配置
@@ -67,7 +68,6 @@ class VMCreator:
             net_config = vm_config['network']
             if net_config['type'] == 'bridge':
                 cmd += f"--network name={net_config['bridge']}"
-        
         # 启动VM
         print(f"Running command: {cmd}")
         self._run_command(cmd)

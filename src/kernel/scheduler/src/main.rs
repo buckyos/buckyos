@@ -1,35 +1,40 @@
-#![allow(unused_mut,unused,dead_code)]
+#![allow(unused_mut, unused, dead_code)]
 mod app;
 mod scheduler;
 mod service;
 
-use std::collections::HashMap;
-use std::process::exit;
 use log::*;
 use serde_json::json;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::process::exit;
 //use upon::Engine;
 
-use name_lib::*;
-use name_client::*;
-use buckyos_kit::*;
-use buckyos_api::*;
-use scheduler::*;
-use service::*;
 use app::*;
 use buckyos_api::*;
+use buckyos_api::*;
+use buckyos_kit::*;
+use name_client::*;
+use name_lib::*;
+use scheduler::*;
+use service::*;
 
 use anyhow::Result;
 
-async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
+async fn create_init_list_by_template() -> Result<HashMap<String, String>> {
     //load start_parms from active_service.
     let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
-    info!("load start_params from :{}",start_params_file_path.to_string_lossy());
+    info!(
+        "load start_params from :{}",
+        start_params_file_path.to_string_lossy()
+    );
     let start_params_str = tokio::fs::read_to_string(start_params_file_path).await?;
-    let mut start_params:serde_json::Value = serde_json::from_str(&start_params_str)?;
+    let mut start_params: serde_json::Value = serde_json::from_str(&start_params_str)?;
 
     let template_type_str = "boot".to_string();
-    let template_file_path = get_buckyos_system_etc_dir().join("scheduler").join(format!("{}.template.toml",template_type_str));
+    let template_file_path = get_buckyos_system_etc_dir()
+        .join("scheduler")
+        .join(format!("{}.template.toml", template_type_str));
     let template_str = tokio::fs::read_to_string(template_file_path).await?;
 
     //generate dynamic params
@@ -46,7 +51,9 @@ async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
         .to_string()?;
 
     if result.find("{{").is_some() {
-        return Err(anyhow::anyhow!("template contains unescaped double curly braces"));
+        return Err(anyhow::anyhow!(
+            "template contains unescaped double curly braces"
+        ));
     }
 
     //wwrite result to file
@@ -58,9 +65,8 @@ async fn create_init_list_by_template() -> Result<HashMap<String,String>> {
     Ok(config)
 }
 
-
 async fn do_boot_scheduler() -> Result<()> {
-    let mut init_list : HashMap<String,String> = HashMap::new();
+    let mut init_list: HashMap<String, String> = HashMap::new();
     let zone_boot_config_str = std::env::var("BUCKYOS_ZONE_BOOT_CONFIG");
 
     if zone_boot_config_str.is_err() {
@@ -68,8 +74,12 @@ async fn do_boot_scheduler() -> Result<()> {
         return Err(anyhow::anyhow!("BUCKYOS_ZONE_BOOT_CONFIG is not set"));
     }
 
-    info!("zone_boot_config_str:{}",zone_boot_config_str.as_ref().unwrap());
-    let zone_boot_config:ZoneBootConfig = serde_json::from_str(&zone_boot_config_str.unwrap()).unwrap();
+    info!(
+        "zone_boot_config_str:{}",
+        zone_boot_config_str.as_ref().unwrap()
+    );
+    let zone_boot_config: ZoneBootConfig =
+        serde_json::from_str(&zone_boot_config_str.unwrap()).unwrap();
     let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
 
     if rpc_session_token_str.is_err() {
@@ -77,30 +87,34 @@ async fn do_boot_scheduler() -> Result<()> {
     }
 
     let rpc_session_token = rpc_session_token_str.unwrap();
-    let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
+    let system_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
     let boot_config = system_config_client.get("boot/config").await;
     if boot_config.is_ok() {
-        return Err(anyhow::anyhow!("boot/config already exists, boot scheduler failed"));
+        return Err(anyhow::anyhow!(
+            "boot/config already exists, boot scheduler failed"
+        ));
     }
 
-    let mut init_list = create_init_list_by_template().await
-        .map_err(|e| {
-            error!("create_init_list_by_template failed: {:?}", e);
-            e
-        })?;
+    let mut init_list = create_init_list_by_template().await.map_err(|e| {
+        error!("create_init_list_by_template failed: {:?}", e);
+        e
+    })?;
 
     let boot_config_str = init_list.get("boot/config");
     if boot_config_str.is_none() {
         return Err(anyhow::anyhow!("boot/config not found in init list"));
     }
     let boot_config_str = boot_config_str.unwrap();
-    let mut zone_config:ZoneConfig = zone_boot_config.to_zone_config();
+    let mut zone_config: ZoneConfig = zone_boot_config.to_zone_config();
     zone_config.init_by_boot_config(&zone_boot_config);
-    init_list.insert("boot/config".to_string(),serde_json::to_string_pretty(&zone_config).unwrap());
+    init_list.insert(
+        "boot/config".to_string(),
+        serde_json::to_string_pretty(&zone_config).unwrap(),
+    );
     //info!("use init list from template {} to do boot scheduler",template_type_str);
     //write to system_config
-    for (key,value) in init_list.iter() {
-        system_config_client.create(key,value).await?;
+    for (key, value) in init_list.iter() {
+        system_config_client.create(key, value).await?;
     }
 
     info!("do first schedule!");
@@ -114,36 +128,38 @@ async fn do_boot_scheduler() -> Result<()> {
     return Ok(());
 }
 
-fn craete_node_item_by_device_info(device_name: &str,device_info: &DeviceInfo) -> NodeItem {
+fn craete_node_item_by_device_info(device_name: &str, device_info: &DeviceInfo) -> NodeItem {
     let node_state = NodeState::from(device_info.state.clone().unwrap_or("Ready".to_string()));
     let net_id = device_info.net_id.clone().unwrap_or("".to_string());
     NodeItem {
         id: device_name.to_string(),
         labels: vec![],
-        network_zone:net_id,
+        network_zone: net_id,
         state: node_state,
         support_container: device_info.support_container,
         available_cpu_mhz: device_info.cpu_mhz.unwrap_or(2000) as u32,
         total_cpu_mhz: device_info.cpu_mhz.unwrap_or(2000) as u32,
-        total_memory:device_info.total_mem.unwrap_or(1024*1024*1024*2) as u64,
-        available_memory:device_info.total_mem.unwrap_or(1024*1024*1024*2) as u64 - device_info.mem_usage.unwrap_or(0) as u64,
-        total_gpu_memory:device_info.gpu_total_mem.unwrap_or(0) as u64,
-        available_gpu_memory:device_info.gpu_total_mem.unwrap_or(0) as u64 - device_info.gpu_used_mem.unwrap_or(0) as u64,
-        gpu_tflops:device_info.gpu_tflops.unwrap_or(0.0) as f32,
+        total_memory: device_info.total_mem.unwrap_or(1024 * 1024 * 1024 * 2) as u64,
+        available_memory: device_info.total_mem.unwrap_or(1024 * 1024 * 1024 * 2) as u64
+            - device_info.mem_usage.unwrap_or(0) as u64,
+        total_gpu_memory: device_info.gpu_total_mem.unwrap_or(0) as u64,
+        available_gpu_memory: device_info.gpu_total_mem.unwrap_or(0) as u64
+            - device_info.gpu_used_mem.unwrap_or(0) as u64,
+        gpu_tflops: device_info.gpu_tflops.unwrap_or(0.0) as f32,
         resources: HashMap::new(),
         op_tasks: vec![],
     }
 }
 
-
-fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfig) -> PodItem {
+fn create_pod_item_by_app_config(app_id: &str, app_config: &AppConfig) -> PodItem {
     let pod_state = PodItemState::from(app_config.state.clone());
     let mut need_container = true;
     if app_config.app_doc.pkg_list.iter().any(|(_, pkg)| pkg.docker_image_name.is_none()) &&
        //TODO: 需要从配置中获取所有的可信发布商列表
-       app_config.app_doc.author == "did:web:buckyos.ai" ||
-       app_config.app_doc.author == "did:web:buckyos.io" ||
-       app_config.app_doc.author == "did:web:buckyos.org" {
+       app_config.app_doc.author == "did:web:buckyos.ai"
+        || app_config.app_doc.author == "did:web:buckyos.io"
+        || app_config.app_doc.author == "did:web:buckyos.org"
+    {
         need_container = false;
     }
 
@@ -154,7 +170,7 @@ fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfig) -> PodItem
         need_container: need_container,
         best_instance_count: app_config.instance,
         required_cpu_mhz: 200,
-        required_memory: 1024*1024*256,
+        required_memory: 1024 * 1024 * 256,
         required_gpu_tflops: 0.0,
         required_gpu_mem: 0,
         node_affinity: None,
@@ -162,7 +178,10 @@ fn create_pod_item_by_app_config(app_id: &str,app_config: &AppConfig) -> PodItem
     }
 }
 
-fn create_pod_item_by_service_config(service_name: &str,service_config: &KernelServiceConfig) -> PodItem {
+fn create_pod_item_by_service_config(
+    service_name: &str,
+    service_config: &KernelServiceConfig,
+) -> PodItem {
     let pod_state = PodItemState::from(service_config.state.clone());
     PodItem {
         id: service_name.to_string(),
@@ -171,7 +190,7 @@ fn create_pod_item_by_service_config(service_name: &str,service_config: &KernelS
         need_container: false,
         best_instance_count: service_config.instance,
         required_cpu_mhz: 300,
-        required_memory: 1024*1024*256,
+        required_memory: 1024 * 1024 * 256,
         required_gpu_tflops: 0.0,
         required_gpu_mem: 0,
         node_affinity: None,
@@ -179,19 +198,20 @@ fn create_pod_item_by_service_config(service_name: &str,service_config: &KernelS
     }
 }
 
-fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> Result<(PodScheduler,HashMap<String, DeviceInfo>)> {
-    let mut pod_scheduler = PodScheduler::new_empty(1,buckyos_get_unix_timestamp());
+fn create_scheduler_by_input_config(
+    input_config: &HashMap<String, String>,
+) -> Result<(PodScheduler, HashMap<String, DeviceInfo>)> {
+    let mut pod_scheduler = PodScheduler::new_empty(1, buckyos_get_unix_timestamp());
     let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
     for (key, value) in input_config.iter() {
         //add node
         if key.starts_with("devices/") && key.ends_with("/info") {
             let device_name = key.split('/').nth(1).unwrap();
-            let device_info:DeviceInfo = serde_json::from_str(value)
-                .map_err(|e| {
-                    error!("serde_json::from_str failed: {:?}", e);
-                    e
-                })?;
-            let node_item = craete_node_item_by_device_info(device_name,&device_info);
+            let device_info: DeviceInfo = serde_json::from_str(value).map_err(|e| {
+                error!("serde_json::from_str failed: {:?}", e);
+                e
+            })?;
+            let node_item = craete_node_item_by_device_info(device_name, &device_info);
             device_list.insert(device_name.to_string(), device_info);
             pod_scheduler.add_node(node_item);
         }
@@ -202,13 +222,16 @@ fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> R
             if parts.len() >= 4 && parts[2] == "apps" {
                 let user_id = parts[1];
                 let app_id = parts[3];
-                let full_appid = format!("{}@{}",app_id,user_id);
-                let app_config:AppConfig = serde_json::from_str(value.as_str())
-                    .map_err(|e| {
-                        error!("AppConfig serde_json::from_str failed: {:?} {}", e,value.as_str());
-                        e
-                    })?;
-                let pod_item = create_pod_item_by_app_config(full_appid.as_str(),&app_config);
+                let full_appid = format!("{}@{}", app_id, user_id);
+                let app_config: AppConfig = serde_json::from_str(value.as_str()).map_err(|e| {
+                    error!(
+                        "AppConfig serde_json::from_str failed: {:?} {}",
+                        e,
+                        value.as_str()
+                    );
+                    e
+                })?;
+                let pod_item = create_pod_item_by_app_config(full_appid.as_str(), &app_config);
                 pod_scheduler.add_pod(pod_item);
             }
         }
@@ -216,15 +239,14 @@ fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> R
         //add service pod
         if key.starts_with("services/") && key.ends_with("/config") {
             let service_name = key.split('/').nth(1).unwrap();
-            let service_config:KernelServiceConfig = serde_json::from_str(value.as_str())
+            let service_config: KernelServiceConfig = serde_json::from_str(value.as_str())
                 .map_err(|e| {
                     error!("KernelServiceConfig serde_json::from_str failed: {:?}", e);
                     e
                 })?;
-            let pod_item = create_pod_item_by_service_config(service_name,&service_config);
+            let pod_item = create_pod_item_by_service_config(service_name, &service_config);
             pod_scheduler.add_pod(pod_item);
         }
-
 
         //add pod_instance
         //if key.starts_with("nodes/") && key.ends_with("/config") {
@@ -232,21 +254,25 @@ fn create_scheduler_by_input_config(input_config: &HashMap<String, String>) -> R
         //}
     }
 
-
-    Ok((pod_scheduler,device_list))
+    Ok((pod_scheduler, device_list))
 }
 
-fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodScheduler,device_list:&HashMap<String,DeviceInfo>,input_config:&HashMap<String,String>) -> Result<HashMap<String,KVAction>> {
+fn schedule_action_to_tx_actions(
+    action: &SchedulerAction,
+    pod_scheduler: &PodScheduler,
+    device_list: &HashMap<String, DeviceInfo>,
+    input_config: &HashMap<String, String>,
+) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
     match action {
-        SchedulerAction::ChangeNodeStatus(node_id,node_status) => {
-            let key = format!("nodes/{}/config",node_id);
+        SchedulerAction::ChangeNodeStatus(node_id, node_status) => {
+            let key = format!("nodes/{}/config", node_id);
             let mut set_paths = HashMap::new();
-            set_paths.insert("state".to_string(),Some(json!(node_status.to_string())));
+            set_paths.insert("state".to_string(), Some(json!(node_status.to_string())));
             //TODO:需要将insert替换成合并
-            result.insert(key,KVAction::SetByJsonPath(set_paths));
+            result.insert(key, KVAction::SetByJsonPath(set_paths));
         }
-        SchedulerAction::ChangePodStatus(pod_id,pod_status) => {
+        SchedulerAction::ChangePodStatus(pod_id, pod_status) => {
             let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
             if pod_item.is_none() {
                 return Err(anyhow::anyhow!("pod_item not found"));
@@ -254,11 +280,11 @@ fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodSched
             let pod_item = pod_item.unwrap();
             match pod_item.pod_type {
                 PodItemType::App => {
-                   let set_state_action = set_app_service_state(pod_id.as_str(),pod_status)?;
-                   result.extend(set_state_action);
+                    let set_state_action = set_app_service_state(pod_id.as_str(), pod_status)?;
+                    result.extend(set_state_action);
                 }
                 PodItemType::Service => {
-                    let set_state_action = set_service_state(pod_id.as_str(),pod_status)?;
+                    let set_state_action = set_service_state(pod_id.as_str(), pod_status)?;
                     result.extend(set_state_action);
                 }
             }
@@ -276,23 +302,29 @@ fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodSched
             let pod_item = pod_item.unwrap();
             match pod_item.pod_type {
                 PodItemType::App => {
-                    let instance_action = instance_app_service(new_instance,&device_list,&input_config)?;
+                    let instance_action =
+                        instance_app_service(new_instance, &device_list, &input_config)?;
                     result.extend(instance_action);
                 }
                 PodItemType::Service => {
-                    let service_config = input_config.get(format!("services/{}/config",pod_item.id.as_str()).as_str());
+                    let service_config = input_config
+                        .get(format!("services/{}/config", pod_item.id.as_str()).as_str());
                     if service_config.is_none() {
-                        return Err(anyhow::anyhow!("service_config {} not found",pod_item.id.as_str()));
+                        return Err(anyhow::anyhow!(
+                            "service_config {} not found",
+                            pod_item.id.as_str()
+                        ));
                     }
                     let service_config = service_config.unwrap();
-                    let service_config:KernelServiceConfig = serde_json::from_str(service_config.as_str())?;
-                    let instance_action = instance_service(new_instance,&service_config)?;
+                    let service_config: KernelServiceConfig =
+                        serde_json::from_str(service_config.as_str())?;
+                    let instance_action = instance_service(new_instance, &service_config)?;
                     result.extend(instance_action);
                 }
             }
         }
         SchedulerAction::RemovePodInstance(instance_id) => {
-            let (pod_id,node_id) = parse_instance_id(instance_id.as_str())?;
+            let (pod_id, node_id) = parse_instance_id(instance_id.as_str())?;
             let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
             if pod_item.is_none() {
                 return Err(anyhow::anyhow!("pod_item not found"));
@@ -314,9 +346,9 @@ fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodSched
                 }
             }
         }
-        SchedulerAction::UpdatePodInstance(instance_id,pod_instance) => {
+        SchedulerAction::UpdatePodInstance(instance_id, pod_instance) => {
             //相对比较复杂的操作:需要根据pod的类型,来执行更新实例化操作
-            let (pod_id,node_id) = parse_instance_id(instance_id.as_str())?;
+            let (pod_id, node_id) = parse_instance_id(instance_id.as_str())?;
             let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
             if pod_item.is_none() {
                 return Err(anyhow::anyhow!("pod_item not found"));
@@ -337,7 +369,7 @@ fn schedule_action_to_tx_actions(action:&SchedulerAction,pod_scheduler:&PodSched
     Ok(result)
 }
 
-async fn schedule_loop(is_boot:bool) -> Result<()> {
+async fn schedule_loop(is_boot: bool) -> Result<()> {
     let mut loop_step = 0;
     let is_running = true;
     //info!("schedule loop start...");
@@ -354,39 +386,53 @@ async fn schedule_loop(is_boot:bool) -> Result<()> {
         }
 
         let rpc_session_token = rpc_session_token_str.unwrap();
-        let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
+        let system_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
         let input_config = system_config_client.dump_configs_for_scheduler().await;
         if input_config.is_err() {
-            error!("dump_configs_for_scheduler failed: {:?}", input_config.err().unwrap());
+            error!(
+                "dump_configs_for_scheduler failed: {:?}",
+                input_config.err().unwrap()
+            );
             continue;
         }
         let input_config = input_config.unwrap();
         //cover value to hashmap
         let input_config = serde_json::from_value(input_config);
         if input_config.is_err() {
-            error!("serde_json::from_value failed: {:?}", input_config.err().unwrap());
+            error!(
+                "serde_json::from_value failed: {:?}",
+                input_config.err().unwrap()
+            );
             continue;
         }
         let input_config = input_config.unwrap();
 
         //init scheduler
-        let (mut pod_scheduler,device_list) = create_scheduler_by_input_config(&input_config)?;
+        let (mut pod_scheduler, device_list) = create_scheduler_by_input_config(&input_config)?;
 
         //schedule
         let action_list = pod_scheduler.schedule();
         if action_list.is_err() {
-            error!("pod_scheduler.schedule failed: {:?}", action_list.err().unwrap());
+            error!(
+                "pod_scheduler.schedule failed: {:?}",
+                action_list.err().unwrap()
+            );
             return Err(anyhow::anyhow!("pod_scheduler.schedule failed"));
         }
 
         let action_list = action_list.unwrap();
         let mut tx_actions = HashMap::new();
         for action in action_list {
-            let new_tx_actions = schedule_action_to_tx_actions(&action,&pod_scheduler,&device_list,&input_config)?;
-            extend_kv_action_map(&mut tx_actions,&new_tx_actions);
+            let new_tx_actions = schedule_action_to_tx_actions(
+                &action,
+                &pod_scheduler,
+                &device_list,
+                &input_config,
+            )?;
+            extend_kv_action_map(&mut tx_actions, &new_tx_actions);
         }
         //TODO 记录"上一次调度成功的信息"
-        
+
         //执行调度动作
         let ret = system_config_client.exec_tx(tx_actions, None).await;
         if ret.is_err() {
@@ -397,21 +443,21 @@ async fn schedule_loop(is_boot:bool) -> Result<()> {
         }
     }
     Ok(())
-
 }
 
-async fn service_main(is_boot:bool) -> Result<i32> {
-    init_logging("scheduler",true);
+async fn service_main(is_boot: bool) -> Result<i32> {
+    init_logging("scheduler", true);
     info!("Starting scheduler service............................");
-
 
     if is_boot {
         info!("do_boot_scheduler,scheduler run once");
-        let runtime = init_buckyos_api_runtime("scheduler",None,BuckyOSRuntimeType::KernelService).await
-        .map_err(|e| {
-            error!("init_buckyos_api_runtime failed: {:?}", e);
-            e
-        })?;
+        let runtime =
+            init_buckyos_api_runtime("scheduler", None, BuckyOSRuntimeType::KernelService)
+                .await
+                .map_err(|e| {
+                    error!("init_buckyos_api_runtime failed: {:?}", e);
+                    e
+                })?;
         set_buckyos_api_runtime(runtime);
         do_boot_scheduler().await.map_err(|e| {
             error!("do_boot_scheduler failed: {:?}", e);
@@ -420,11 +466,13 @@ async fn service_main(is_boot:bool) -> Result<i32> {
         return Ok(0);
     } else {
         info!("Enter schedule loop.");
-        let mut runtime = init_buckyos_api_runtime("scheduler",None,BuckyOSRuntimeType::KernelService).await
-            .map_err(|e| {
-                error!("init_buckyos_api_runtime failed: {:?}", e);
-                e
-            })?;
+        let mut runtime =
+            init_buckyos_api_runtime("scheduler", None, BuckyOSRuntimeType::KernelService)
+                .await
+                .map_err(|e| {
+                    error!("init_buckyos_api_runtime failed: {:?}", e);
+                    e
+                })?;
         runtime.login().await.map_err(|e| {
             error!("login failed: {:?}", e);
             e
@@ -458,8 +506,8 @@ async fn main() {
 
 #[cfg(test)]
 mod test {
-    use tokio::test;
     use super::*;
+    use tokio::test;
     #[tokio::test]
     async fn test_schedule_loop() {
         service_main(true).await;
@@ -468,20 +516,19 @@ mod test {
     #[tokio::test]
     async fn test_template() {
         let start_params = create_init_list_by_template().await.unwrap();
-        for (key,value) in start_params.iter() {
-            let json_value= serde_json::from_str(value);
+        for (key, value) in start_params.iter() {
+            let json_value = serde_json::from_str(value);
             if json_value.is_ok() {
-                let json_value:serde_json::Value = json_value.unwrap();
-                println!("{}:\t{:?}",key,json_value);
+                let json_value: serde_json::Value = json_value.unwrap();
+                println!("{}:\t{:?}", key, json_value);
             } else {
-                println!("{}:\t{}",key,value);
+                println!("{}:\t{}", key, value);
             }
         }
         //println!("start_params:{}",serde_json::to_string(&start_params).unwrap());
     }
     #[tokio::test]
     async fn test_simple_schedule() {
-
         let input_config_str = r#"
 # users : users/{{user_id}}/info , user_id is never changed, user_name can changed. User root cann't be deleted and always exists
 "users/root/info" = '{"type":"root","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
@@ -818,10 +865,10 @@ g, app2, app
 }
 """
         "#;
-        buckyos_kit::init_logging("scheduler",false);
-        let input_config: HashMap<String, String> = toml::from_str(input_config_str).unwrap();
-        //let schedule_result = do_one_ood_schedule(&input_config).await;
-        //let schedule_result = schedule_result.unwrap();
-        println!("schedule_result:{}",serde_json::to_string(&schedule_result).unwrap());
+        // buckyos_kit::init_logging("scheduler",false);
+        // let input_config: HashMap<String, String> = toml::from_str(input_config_str).unwrap();
+        // //let schedule_result = do_one_ood_schedule(&input_config).await;
+        // //let schedule_result = schedule_result.unwrap();
+        // println!("schedule_result:{}",serde_json::to_string(&schedule_result).unwrap());
     }
 }

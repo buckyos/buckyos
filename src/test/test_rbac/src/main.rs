@@ -121,37 +121,37 @@ async fn test() -> std::result::Result<(), String> {
         })?;
     println!("<== test DELETE system/test_rbac/set via admin + kernel, pass");
 
-    println!("==> test SET users/aaa/apps/app-test/settings via admin + kernel, should success");
+    println!("==> test SET users/aaa/apps/sys-test/settings via admin + kernel, should success");
     let _result = client
         .call(
             "sys_config_set",
-            json!({"key": "users/aaa/apps/app-test/settings", "value": "test_rbac_set_value"}),
+            json!({"key": "users/aaa/apps/sys-test/settings", "value": "test_rbac_set_value"}),
         )
         .await
         .map_err(|e| {
             println!(
-                "Failed to set users/aaa/apps/app-test/settings via admin + kernel: {}",
+                "Failed to set users/aaa/apps/sys-test/settings via admin + kernel: {}",
                 e
             );
             return e.to_string();
         })?;
-    println!("<== test SET users/aaa/apps/app-test/settings via admin + kernel, pass");
+    println!("<== test SET users/aaa/apps/sys-test/settings via admin + kernel, pass");
 
-    println!("==> test GET users/aaa/apps/app-test/settings via admin + kernel, should success");
+    println!("==> test GET users/aaa/apps/sys-test/settings via admin + kernel, should success");
     let _result = client
         .call(
             "sys_config_get",
-            json!({"key": "users/aaa/apps/app-test/settings"}),
+            json!({"key": "users/aaa/apps/sys-test/settings"}),
         )
         .await
         .map_err(|e| {
             println!(
-                "Failed to get users/aaa/apps/app-test/settings via admin + kernel: {}",
+                "Failed to get users/aaa/apps/sys-test/settings via admin + kernel: {}",
                 e
             );
             return e.to_string();
         })?;
-    println!("<== test GET users/aaa/apps/app-test/settings via admin + kernel, pass");
+    println!("<== test GET users/aaa/apps/sys-test/settings via admin + kernel, pass");
 
     println!("***********************");
     println!("End admin + kernel test");
