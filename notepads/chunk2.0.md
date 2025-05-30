@@ -165,3 +165,18 @@ copy_chunk_list(reader,cyfs_resp_header)
 虽然可以用soft link用文件系统实现知识图谱，但GraphDB支持的高级查询（这些查询还是比较学术的，并不清楚在实际产品中是否有价值）
 
 
+## 基于ObjectMap的 DirObject
+
+支持两种模式：
+1. zip模式，使用 full_path:fileobjid 的模式
+2. tree模式，使用 path:fileobjid , path:treeid 的模式
+
+tree模式需要构造跟多的object map对象，但可以实现子目录的复用，对于目录的移动非常的友好。如果要组织的是日常使用的文件系统,tree模式肯定要好过zip模式
+
+zip模式比较适合发布一个完整的package(包括基于该package构建一个有少量修改的新版本)。比如传统的bittorrent发布
+
+
+### 站在备份的角度
+
+- 扫描磁盘，构建fileobject,构建dirobject(深度扫描)
+- fileobject可以边构建边上传
