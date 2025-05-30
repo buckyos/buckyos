@@ -1,4 +1,4 @@
-use std::io::SeekFrom;
+use std::{io::SeekFrom, sync::Arc};
 
 use buckyos_kit::*;
 use cyfs_gateway_lib::*;
@@ -7,7 +7,7 @@ use hex::ToHex;
 use jsonwebtoken::EncodingKey;
 use log::*;
 use ndn_lib::*;
-use rand::{Rng, RngCore};
+use rand::{rand_core::le, Rng, RngCore};
 use serde_json::json;
 use tokio::{
     fs,
@@ -317,6 +317,39 @@ async fn read_chunk(ndn_mgr_id: &str, chunk_id: &ChunkId) -> Vec<u8> {
         .expect("read chunk from ndn-mgr failed");
 
     buffer
+}
+
+async fn write_chunk_may_concurrency(
+    ndn_mgr_id: &str,
+    chunk_id: &ChunkId,
+    chunk_data: &[u8],
+) -> NdnResult<()> {
+    let ret =
+        NamedDataMgr::open_chunk_writer(Some(ndn_mgr_id), chunk_id, chunk_data.len() as u64, 0)
+            .await;
+    match ret {
+        Ok((mut chunk_writer, _progress_info)) => {
+            chunk_writer
+                .write_all(chunk_data)
+                .await
+                .expect("write chunk to ndn-mgr failed");
+
+            NamedDataMgr::complete_chunk_writer(Some(ndn_mgr_id), chunk_id)
+                .await
+                .expect("wait chunk writer complete failed.");
+            Ok(())
+        }
+        Err(err) => match err {
+            NdnError::AlreadyExists(_) | NdnError::InComplete(_) => {
+                info!("Chunk writer already exists or incomplete, skipping write.");
+                Err(err)
+            }
+            _ => {
+                assert!(false, "Unexpected error type: {:?}", err);
+                Err(err)
+            }
+        },
+    }
 }
 
 type NdnServerHost = String;
@@ -3520,7 +3553,8 @@ async fn ndn_2_zone_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
 
         let download_path = tempfile::tempdir()
             .unwrap()
@@ -3658,7 +3692,8 @@ async fn ndn_2_zone_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
 
         let (mut reader, resp_headers) = zone_a_client
             .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
@@ -3781,7 +3816,8 @@ async fn ndn_2_zone_r_link_innerpath_file_verify_failed() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
 
         let ret = zone_a_client
             .download_chunk_to_local(
@@ -3912,7 +3948,8 @@ async fn ndn_2_zone_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
         let ret = zone_a_client
             .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await;
@@ -3945,7 +3982,6 @@ async fn ndn_2_zone_r_link_innerpath_file_verify_failed() {
                 }
             },
         }
-        
     }
 
     {
@@ -3980,8 +4016,8 @@ async fn ndn_2_zone_r_link_innerpath_file_verify_failed() {
             .join(chunk_id.to_base32());
         let _ = std::fs::remove_file(download_path.as_path());
 
-
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
+        let r_link_inner_path =
+            format!("http://{}/ndn/{}/content", local_ndn_server_host, obj_path,);
         let ret = zone_a_client
             .download_chunk_to_local(
                 r_link_inner_path.as_str(),
@@ -4080,4 +4116,440 @@ async fn ndn_2_zone_r_link_innerpath_file_verify_failed() {
         );
         std::fs::remove_file(download_path.as_path()).expect("remove download chunk file failed");
     }
+}
+
+async fn read_chunk_concurrency(
+    chunk_url: &str,
+    ndn_client: &NdnClient,
+    file_id: &ObjId,
+    chunk_id: &ChunkId,
+    chunk_data: &[u8],
+    source_ndn_mgr_id: &str,
+) {
+    let mut chunk_is_ready = false;
+    let (mut reader, resp_headers) = loop {
+        let ret = ndn_client
+            .open_chunk_reader_by_url(chunk_url, Some(chunk_id.clone()), None)
+            .await;
+
+        match ret {
+            Ok((reader, resp_headers)) => {
+                let (chunk_state, chunk_size, progress) =
+                    NamedDataMgr::query_chunk_state(Some(source_ndn_mgr_id), chunk_id)
+                        .await
+                        .expect("query chunk state failed");
+                assert_eq!(
+                    chunk_state,
+                    ChunkState::Completed,
+                    "chunk state should be complete"
+                );
+                assert_eq!(
+                    chunk_size,
+                    chunk_data.len() as u64,
+                    "chunk size should match with chunk data length"
+                );
+                break (reader, resp_headers);
+            }
+            Err(err) => {
+                assert!(
+                    !chunk_is_ready,
+                    "open chunk reader failed when chunk is ready!"
+                );
+                let chunk_state_ret =
+                    NamedDataMgr::query_chunk_state(Some(source_ndn_mgr_id), chunk_id).await;
+                match chunk_state_ret {
+                    Ok((chunk_state, chunk_size, progress)) => {
+                        assert_eq!(
+                            chunk_size,
+                            chunk_data.len() as u64,
+                            "chunk size should match with chunk data length"
+                        );
+                        match chunk_state {
+                            ChunkState::NotExist => {
+                                info!("Chunk not found as expected");
+                            }
+                            ChunkState::New => {
+                                info!("Chunk is new as expected");
+                            }
+                            ChunkState::Completed => {
+                                info!("Chunk is completed as expected");
+                                chunk_is_ready = true;
+                            }
+                            _ => panic!("Unexpected chunk state"),
+                        }
+                    }
+                    Err(e) => panic!("query chunk state failed: {:?}", e),
+                }
+
+                match err {
+                    NdnError::NotFound(_) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        continue;
+                    }
+                    NdnError::InComplete(_) | NdnError::InvalidState(_) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        continue;
+                    }
+                    _ => panic!("unexpect error"),
+                }
+            }
+        }
+    };
+
+    let content_len = resp_headers
+        .obj_size
+        .expect("content-length should exist in http-headers");
+    assert_eq!(
+        content_len,
+        chunk_data.len() as u64,
+        "content-length in http-header should equal with chunk.len"
+    );
+    assert_eq!(
+        resp_headers.obj_id,
+        Some(chunk_id.to_obj_id()),
+        "obj-id in http-header should equal with chunk-id"
+    );
+    assert!(
+        resp_headers.path_obj.is_none(),
+        "path-obj should be None for o-link"
+    );
+    assert_eq!(
+        resp_headers.root_obj_id,
+        Some(file_id.clone()),
+        "root-obj-id in http-header should equal with file-id"
+    );
+
+    let mut buffer = vec![0u8, 0];
+    let len = reader
+        .read_to_end(&mut buffer)
+        .await
+        .expect("read chunk failed");
+    assert_eq!(
+        len as u64, content_len,
+        "length of data in http-body should equal with content-length"
+    );
+    assert_eq!(
+        len,
+        buffer.len(),
+        "length of read data should equal with content-length"
+    );
+    assert_eq!(buffer, chunk_data, "chunk content mismatch");
+}
+
+#[tokio::test]
+async fn ndn_2_zone_o_link_innerpath_file_concurrency() {
+    init_logging("ndn_2_zone_o_link_innerpath_file_concurrency", false);
+
+    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (local_ndn_client, local_ndn_server_host) =
+        init_local_ndn_server(ndn_mgr_id.as_str()).await;
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (target_ndn_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
+    let zone_a_client =
+        init_ndn_client(ndn_mgr_id.as_str(), LOCAL_PRIVATE_KEY, "test.buckyos.io").await;
+    let zone_b_client = init_ndn_client(
+        target_ndn_mgr_id.as_str(),
+        NODE_B_PRIVATE_KEY,
+        "bob.web3.buckyos.io",
+    )
+    .await;
+
+    let local_target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (local_target_ndn_client, local_target_ndn_server_host) =
+        init_local_ndn_server(local_target_ndn_mgr_id.as_str()).await;
+
+    // 构造一个500M左右的文件对象
+    let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj_with_len(
+        15,
+        500 * 1024 * 1024 + rand::rng().random_range(0..100 * 1024 * 1024),
+    );
+
+    let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+    assert_eq!(file_id, cal_file_id, "file-id mismatch");
+
+    let ndn_mgr_id_arc = Arc::new(ndn_mgr_id);
+    let zone_b_mgr_id_arc = Arc::new(target_ndn_mgr_id);
+    let local_target_ndn_mgr_id_arc = Arc::new(local_target_ndn_mgr_id);
+    let file_id_arc = Arc::new(file_id);
+    let chunk_id_arc = Arc::new(chunk_id);
+    let chunk_data_arc = Arc::new(chunk_data);
+    let zone_a_client_arc = Arc::new(zone_a_client);
+    let zone_b_client_arc = Arc::new(zone_b_client);
+    let local_target_ndn_client_arc = Arc::new(local_target_ndn_client);
+
+    // 启动一个task, 向ndn_mgr_id并发尝试写入chunk
+    let write_chunk_task = {
+        let ndn_mgr_id_arc = ndn_mgr_id_arc.clone();
+        let chunk_id_arc = chunk_id_arc.clone();
+        let chunk_data_arc = chunk_data_arc.clone();
+        tokio::spawn(async move {
+            let rets = futures::future::join_all((0..10).into_iter().map(|_| {
+                write_chunk_may_concurrency(
+                    ndn_mgr_id_arc.as_str(),
+                    chunk_id_arc.as_ref(),
+                    chunk_data_arc.as_slice(),
+                )
+            }))
+            .await;
+
+            let ok_count = rets.iter().filter(|ret| ret.is_ok()).count();
+
+            assert_eq!(ok_count, 1, "only 1 write chunk should success");
+        })
+    };
+
+    // 启动一个task，向ndn_mgr_id循环尝试写入file_obj
+    NamedDataMgr::put_object(
+        Some(ndn_mgr_id_arc.as_str()),
+        file_id_arc.as_ref(),
+        file_obj_str.as_str(),
+    )
+    .await
+    .expect("pub object to file failed");
+
+    // zone_a_client从local_ndn_server_host通过o-link获取文件内容；用read_chunk_concurrency同时发起10次并发读请求；这10次读请求放入一个独立task
+    let o_link_inner_path = format!(
+        "http://{}/ndn/{}/content",
+        local_ndn_server_host,
+        file_id_arc.to_string()
+    );
+    let zone_a_read_chunk_task = {
+        let ndn_mgr_id_arc = ndn_mgr_id_arc.clone();
+        let chunk_id_arc = chunk_id_arc.clone();
+        let chunk_data_arc = chunk_data_arc.clone();
+        let file_id_arc = file_id_arc.clone();
+        let zone_a_client_arc = zone_a_client_arc.clone();
+        tokio::spawn(async move {
+            futures::future::join_all((0..10).into_iter().map(|_| {
+                read_chunk_concurrency(
+                    o_link_inner_path.as_str(),
+                    zone_a_client_arc.as_ref(),
+                    file_id_arc.as_ref(),
+                    chunk_id_arc.as_ref(),
+                    chunk_data_arc.as_slice(),
+                    ndn_mgr_id_arc.as_str(),
+                )
+            }))
+            .await;
+        })
+    };
+
+    // zone_b_client从zone_a_client通过o-link获取文件内容；用read_chunk_concurrency同时发起10次并发读请求；这10次读请求放入一个独立task
+    let o_link_inner_path = format!(
+        "http://{}/ndn/{}/content",
+        "test.buckyos.io",
+        file_id_arc.to_string()
+    );
+    let zone_b_read_chunk_task = {
+        let ndn_mgr_id_arc = ndn_mgr_id_arc.clone();
+        let chunk_id_arc = chunk_id_arc.clone();
+        let chunk_data_arc = chunk_data_arc.clone();
+        let file_id_arc = file_id_arc.clone();
+        let zone_b_client_arc = zone_b_client_arc.clone();
+        tokio::spawn(async move {
+            futures::future::join_all((0..10).into_iter().map(|_| {
+                read_chunk_concurrency(
+                    o_link_inner_path.as_str(),
+                    zone_b_client_arc.as_ref(),
+                    file_id_arc.as_ref(),
+                    chunk_id_arc.as_ref(),
+                    chunk_data_arc.as_slice(),
+                    ndn_mgr_id_arc.as_str(),
+                )
+            }))
+            .await;
+        })
+    };
+
+    // local_target_ndn_client从zone_a_client通过o-link获取文件内容；用read_chunk_concurrency同时发起10次并发读请求；这10次读请求放入一个独立task
+    let o_link_inner_path = format!(
+        "http://{}/ndn/test.buckyos.io/content",
+        file_id_arc.to_string()
+    );
+    let local_target_ndn_read_chunk_task = {
+        let ndn_mgr_id_arc = local_target_ndn_mgr_id_arc.clone();
+        let chunk_id_arc = chunk_id_arc.clone();
+        let chunk_data_arc = chunk_data_arc.clone();
+        let file_id_arc = file_id_arc.clone();
+        let local_target_ndn_client_arc = local_target_ndn_client_arc.clone();
+        tokio::spawn(async move {
+            futures::future::join_all((0..10).into_iter().map(|_| {
+                read_chunk_concurrency(
+                    o_link_inner_path.as_str(),
+                    &local_target_ndn_client_arc.as_ref(),
+                    file_id_arc.as_ref(),
+                    chunk_id_arc.as_ref(),
+                    chunk_data_arc.as_slice(),
+                    ndn_mgr_id_arc.as_str(),
+                )
+            }))
+            .await;
+        })
+    };
+
+    // join并等待所有的task完成
+    futures::join!(
+        write_chunk_task,
+        zone_a_read_chunk_task,
+        zone_b_read_chunk_task,
+        local_target_ndn_read_chunk_task
+    );
+    info!("All tasks completed successfully");
+}
+
+#[tokio::test]
+async fn ndn_2_zone_r_link_innerpath_file_concurrency() {
+    init_logging("ndn_2_zone_r_link_innerpath_file_concurrency", false);
+
+    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (local_ndn_client, local_ndn_server_host) =
+        init_local_ndn_server(ndn_mgr_id.as_str()).await;
+    let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (target_ndn_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
+    let zone_a_client =
+        init_ndn_client(ndn_mgr_id.as_str(), LOCAL_PRIVATE_KEY, "test.buckyos.io").await;
+    let zone_b_client = init_ndn_client(
+        target_ndn_mgr_id.as_str(),
+        NODE_B_PRIVATE_KEY,
+        "bob.web3.buckyos.io",
+    )
+    .await;
+
+    let local_target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (local_target_ndn_client, local_target_ndn_server_host) =
+        init_local_ndn_server(local_target_ndn_mgr_id.as_str()).await;
+
+    // 构造一个500M左右的文件对象
+    let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj_with_len(
+        15,
+        500 * 1024 * 1024 + rand::rng().random_range(0..100 * 1024 * 1024),
+    );
+
+    let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
+    assert_eq!(file_id, cal_file_id, "file-id mismatch");
+
+    let ndn_mgr_id_arc = Arc::new(ndn_mgr_id);
+    let zone_b_mgr_id_arc = Arc::new(target_ndn_mgr_id);
+    let local_target_ndn_mgr_id_arc = Arc::new(local_target_ndn_mgr_id);
+    let file_id_arc = Arc::new(file_id);
+    let chunk_id_arc = Arc::new(chunk_id);
+    let chunk_data_arc = Arc::new(chunk_data);
+    let zone_a_client_arc = Arc::new(zone_a_client);
+    let zone_b_client_arc = Arc::new(zone_b_client);
+    let local_target_ndn_client_arc = Arc::new(local_target_ndn_client);
+
+    // 启动一个task, 向ndn_mgr_id并发尝试写入chunk
+    let write_chunk_task = {
+        let ndn_mgr_id_arc = ndn_mgr_id_arc.clone();
+        let chunk_id_arc = chunk_id_arc.clone();
+        let chunk_data_arc = chunk_data_arc.clone();
+        tokio::spawn(async move {
+            let rets = futures::future::join_all((0..10).into_iter().map(|_| {
+                write_chunk_may_concurrency(
+                    ndn_mgr_id_arc.as_str(),
+                    chunk_id_arc.as_ref(),
+                    chunk_data_arc.as_slice(),
+                )
+            }))
+            .await;
+
+            let ok_count = rets.iter().filter(|ret| ret.is_ok()).count();
+
+            assert_eq!(ok_count, 1, "only 1 write chunk should success");
+        })
+    };
+
+    // 启动一个task，向ndn_mgr_id循环尝试写入file_obj
+    let file_ndn_path = "/test_file_path";
+    NamedDataMgr::pub_object_to_file(
+        Some(ndn_mgr_id_arc.as_str()),
+        serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
+        OBJ_TYPE_FILE,
+        file_ndn_path,
+        "test_non_file_obj_user_id",
+        "test_non_file_obj_app_id",
+    )
+    .await
+    .expect("pub object to file failed");
+
+    // zone_a_client从local_ndn_server_host通过o-link获取文件内容；用read_chunk_concurrency同时发起10次并发读请求；这10次读请求放入一个独立task
+    let r_link_inner_path = format!(
+        "http://{}/ndn/{}/content",
+        local_ndn_server_host, file_ndn_path
+    );
+    let zone_a_read_chunk_task = {
+        let ndn_mgr_id_arc = ndn_mgr_id_arc.clone();
+        let chunk_id_arc = chunk_id_arc.clone();
+        let chunk_data_arc = chunk_data_arc.clone();
+        let file_id_arc = file_id_arc.clone();
+        let zone_a_client_arc = zone_a_client_arc.clone();
+        tokio::spawn(async move {
+            futures::future::join_all((0..10).into_iter().map(|_| {
+                read_chunk_concurrency(
+                    r_link_inner_path.as_str(),
+                    zone_a_client_arc.as_ref(),
+                    file_id_arc.as_ref(),
+                    chunk_id_arc.as_ref(),
+                    chunk_data_arc.as_slice(),
+                    ndn_mgr_id_arc.as_str(),
+                )
+            }))
+            .await;
+        })
+    };
+
+    // zone_b_client从zone_a_client通过o-link获取文件内容；用read_chunk_concurrency同时发起10次并发读请求；这10次读请求放入一个独立task
+    let r_link_inner_path = format!("http://{}/ndn/{}/content", "test.buckyos.io", file_ndn_path);
+    let zone_b_read_chunk_task = {
+        let ndn_mgr_id_arc = ndn_mgr_id_arc.clone();
+        let chunk_id_arc = chunk_id_arc.clone();
+        let chunk_data_arc = chunk_data_arc.clone();
+        let file_id_arc = file_id_arc.clone();
+        let zone_b_client_arc = zone_b_client_arc.clone();
+        tokio::spawn(async move {
+            futures::future::join_all((0..10).into_iter().map(|_| {
+                read_chunk_concurrency(
+                    r_link_inner_path.as_str(),
+                    zone_b_client_arc.as_ref(),
+                    file_id_arc.as_ref(),
+                    chunk_id_arc.as_ref(),
+                    chunk_data_arc.as_slice(),
+                    ndn_mgr_id_arc.as_str(),
+                )
+            }))
+            .await;
+        })
+    };
+
+    // local_target_ndn_client从zone_a_client通过o-link获取文件内容；用read_chunk_concurrency同时发起10次并发读请求；这10次读请求放入一个独立task
+    let r_link_inner_path = format!("http://{}/ndn/test.buckyos.io/content", file_ndn_path);
+    let local_target_ndn_read_chunk_task = {
+        let ndn_mgr_id_arc = local_target_ndn_mgr_id_arc.clone();
+        let chunk_id_arc = chunk_id_arc.clone();
+        let chunk_data_arc = chunk_data_arc.clone();
+        let file_id_arc = file_id_arc.clone();
+        let local_target_ndn_client_arc = local_target_ndn_client_arc.clone();
+        tokio::spawn(async move {
+            futures::future::join_all((0..10).into_iter().map(|_| {
+                read_chunk_concurrency(
+                    r_link_inner_path.as_str(),
+                    &local_target_ndn_client_arc.as_ref(),
+                    file_id_arc.as_ref(),
+                    chunk_id_arc.as_ref(),
+                    chunk_data_arc.as_slice(),
+                    ndn_mgr_id_arc.as_str(),
+                )
+            }))
+            .await;
+        })
+    };
+
+    // join并等待所有的task完成
+    futures::join!(
+        write_chunk_task,
+        zone_a_read_chunk_task,
+        zone_b_read_chunk_task,
+        local_target_ndn_read_chunk_task
+    );
+    info!("All tasks completed successfully");
 }
