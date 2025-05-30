@@ -222,7 +222,7 @@
 # node config
 "nodes/ood1/config" = """ 
 {
-    "state:":"Ready",
+    "state":"Ready",
     "is_running":true,
     "revision" : 0,
     "kernel":{
