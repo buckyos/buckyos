@@ -359,7 +359,7 @@ async fn main() -> Result<(), String> {
         }
         Some(("sys_config", matches)) => {
             if let Some(key) = matches.get_one::<String>("get") {
-                println!("Get system config, key[{}]", key);
+                // println!("Get system config, key[{}]", key);
                 sys_config::get_config(key).await;
                 return Ok(());
             }
