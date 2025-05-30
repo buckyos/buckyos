@@ -174,8 +174,8 @@ async fn init_ndn_client(ndn_mgr_id: &str, private_key: &str, target_ndn_host: &
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_chunk_ok() {
-    init_logging("ndn_diff_zone_chunk_ok", false);
+async fn ndn_2_zone_chunk_ok() {
+    init_logging("ndn_2_zone_chunk_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, _) = init_local_ndn_server(ndn_mgr_id.as_str()).await;
@@ -218,8 +218,8 @@ async fn ndn_diff_zone_chunk_ok() {
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_chunk_not_found() {
-    init_logging("ndn_diff_zone_chunk_not_found", false);
+async fn ndn_2_zone_chunk_not_found() {
+    init_logging("ndn_2_zone_chunk_not_found", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, _) = init_local_ndn_server(ndn_mgr_id.as_str()).await;
@@ -280,8 +280,8 @@ async fn ndn_diff_zone_chunk_not_found() {
 }
 
 #[tokio::test]
-async fn ndn_diff_zone_chunk_verify_failed() {
-    init_logging("ndn_diff_zone_chunk_verify_failed", false);
+async fn ndn_2_zone_chunk_verify_failed() {
+    init_logging("ndn_2_zone_chunk_verify_failed", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (local_ndn_client, _) = init_local_ndn_server(ndn_mgr_id.as_str()).await;
