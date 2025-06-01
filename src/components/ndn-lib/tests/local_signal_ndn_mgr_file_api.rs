@@ -839,8 +839,7 @@ async fn ndn_local_o_link_innerpath_file_ok() {
             "should be same as chunk-content"
         );
 
-        std::fs::remove_file(download_path.as_path())
-            .expect("remove downloaded chunk failed");
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
 
         let (download_chunk_id, download_chunk_len) = ndn_client
             .download_chunk_to_local(
@@ -869,8 +868,7 @@ async fn ndn_local_o_link_innerpath_file_ok() {
             "should be same as chunk-content"
         );
 
-        std::fs::remove_file(download_path.as_path())
-            .expect("remove downloaded chunk failed");
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
     }
 }
 
@@ -1170,8 +1168,7 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             download_chunk, fake_chunk_data,
             "should be same as fake chunk-content"
         );
-        std::fs::remove_file(download_path.as_path())
-            .expect("remove downloaded chunk failed");
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
     }
 
     {
@@ -1311,8 +1308,7 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             download_chunk, fake_chunk_data,
             "should be same as fake chunk-content"
         );
-        std::fs::remove_file(download_path.as_path())
-            .expect("remove downloaded chunk failed");
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
     }
 
     {
@@ -1422,8 +1418,7 @@ async fn ndn_local_o_link_innerpath_file_verify_failed() {
             download_chunk, chunk_data,
             "should be same as chunk-content"
         );
-        std::fs::remove_file(download_path.as_path())
-            .expect("remove downloaded chunk failed");
+        std::fs::remove_file(download_path.as_path()).expect("remove downloaded chunk failed");
     }
 }
 
