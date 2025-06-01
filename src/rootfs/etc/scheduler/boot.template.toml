@@ -366,7 +366,7 @@ p, app, dfs://users/*/appdata/{app}/*, read|write,allow
 p, app, dfs://users/*/cache/{app}/*, read|write,allow
 
 
-p, admin,kv://users/{user}/*,read,allow
+p, admin,kv://users/{user}/*,read|write,allow
 p, admin,dfs://users/{user}/*,read|write,allow
 p, admin,kv://services/*,read|write,allow
 p, admin,dfs://library/*,read|write,allow
@@ -414,7 +414,7 @@ p, app, kv://users/*/apps/{app}/info,read,allow
 p, app, dfs://users/*/appdata/{app}/*, read|write,allow
 p, app, dfs://users/*/cache/{app}/*, read|write,allow
 
-p, admin,kv://users/{user}/*,read,allow
+p, admin,kv://users/{user}/*,read|write,allow
 p, admin,dfs://users/{user}/*,read|write,allow
 p, admin,kv://services/*,read|write,allow
 p, admin,dfs://library/*,read|write,allow
