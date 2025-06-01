@@ -49,12 +49,16 @@ async fn test_object_array() {
     // Save to file
     let data_dir = std::env::temp_dir().join("ndn-test-object-array");
 
+    // Set some meta data
+    let meta = format!("Test object array with {} items", ar.len());
+    ar.set_meta(Some(meta)).unwrap();
+
     ar.save().await.unwrap();
     ar.flush().await.unwrap();
 
 
     // Test load from file, in read-only mode
-    let mut reader = ObjectArray::open(HashMethod::Sha256, &id, true).await.unwrap();
+    let mut reader = ObjectArray::open(&id, true).await.unwrap();
 
     let id2 = reader.calc_obj_id().await.unwrap();
     assert_eq!(id, id2, "Load object ID unmatch");
@@ -65,6 +69,10 @@ async fn test_object_array() {
         let ret = reader.get_object(i).unwrap();
         assert_eq!(ret.as_ref(), Some(&obj_id), "Get object failed");
     }
+
+    // Test get meta
+    let meta2 = reader.get_meta().unwrap().unwrap();
+    assert_eq!(meta, meta2, "Get meta failed");
 
     // Test get with proof path
     let item = reader.get_object_with_proof(0).await.unwrap().unwrap();

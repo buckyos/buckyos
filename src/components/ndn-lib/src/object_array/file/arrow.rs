@@ -1,7 +1,6 @@
 use super::super::memory_cache::ObjectArrayMemoryCache;
 use super::super::storage::{
-    ObjectArrayCacheType, ObjectArrayInnerCache, ObjectArrayStorageType,
-    ObjectArrayStorageWriter,
+    ObjectArrayCacheType, ObjectArrayInnerCache, ObjectArrayStorageType, ObjectArrayStorageWriter,
 };
 use crate::ObjId;
 use crate::{NdnError, NdnResult};
@@ -37,6 +36,39 @@ impl ObjectArrayArrowCache {
 
     pub fn new(schema: Arc<Schema>, batch: RecordBatch) -> Self {
         Self { schema, batch }
+    }
+
+    fn put_meta(&mut self, value: Option<String>) -> NdnResult<()> {
+        let fields = self.schema.fields().clone();
+        let mut metadata = self.schema.metadata().clone();
+        if let Some(val) = value {
+            metadata.insert("meta".to_string(), val);
+        } else {
+            metadata.remove("meta");
+        }
+
+        let new_schema = Arc::new(Schema::new_with_metadata(fields, metadata));
+
+        // reuse existing ArrayRef without any copy
+        let columns = self.batch.columns().iter().cloned().collect();
+        let new_batch = RecordBatch::try_new(new_schema.clone(), columns).map_err(|e| {
+            let msg = format!("Failed to create new record batch: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        self.schema = new_schema;
+        self.batch = new_batch;
+
+        Ok(())
+    }
+
+    fn get_meta(&self) -> NdnResult<Option<String>> {
+        if let Some(meta) = self.schema.metadata().get("meta") {
+            Ok(Some(meta.to_string()))
+        } else {
+            Ok(None)
+        }
     }
 
     fn get(&self, index: usize) -> NdnResult<Option<ObjId>> {
@@ -106,6 +138,12 @@ impl ObjectArrayArrowCache {
     }
 
     pub fn into_memory_cache(self) -> Box<dyn ObjectArrayInnerCache> {
+        let meta = if let Some(meta) = self.schema.metadata().get("meta") {
+            Some(meta.to_string())
+        } else {
+            None
+        };
+
         let obj_type_array = self
             .batch
             .column(0)
@@ -126,7 +164,7 @@ impl ObjectArrayArrowCache {
             cache.push(ObjId::new_by_raw(obj_type, obj_hash.to_vec()));
         }
 
-        Box::new(ObjectArrayMemoryCache::new_array(cache))
+        Box::new(ObjectArrayMemoryCache::new_array(meta, cache))
     }
 }
 
@@ -152,6 +190,15 @@ impl ObjectArrayInnerCache for ObjectArrayArrowCache {
 
         let ret = s.into_memory_cache();
         Ok(ret)
+    }
+
+    // Use to store meta data
+    fn put_meta(&mut self, value: Option<String>) -> NdnResult<()> {
+        self.put_meta(value)
+    }
+
+    fn get_meta(&self) -> NdnResult<Option<String>> {
+        self.get_meta()
     }
 
     fn get(&self, index: usize) -> NdnResult<Option<ObjId>> {
@@ -288,6 +335,10 @@ impl ObjectArrayStorageWriter for ObjectArrayArrowWriter {
         Ok(self.file_path.clone())
     }
 
+    async fn put_meta(&mut self, value: Option<String>) -> NdnResult<()> {
+        self.put_meta(value).await
+    }
+    
     async fn append(&mut self, value: &ObjId) -> NdnResult<()> {
         self.append(value).await
     }

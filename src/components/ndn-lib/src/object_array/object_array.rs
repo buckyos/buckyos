@@ -12,10 +12,17 @@ use crate::mtree::{
 use crate::{HashMethod, ObjId, OBJ_TYPE_LIST};
 use crate::{NdnError, NdnResult};
 use arrow::csv::writer;
+use serde::{Serialize, Deserialize};
 use core::hash;
 use http_types::cache;
 use std::io::SeekFrom;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ObjectArrayMeta {
+    pub hash_method: HashMethod,
+    pub ext: Option<String>,
+}
 
 #[derive(Clone, Debug)]
 pub struct ObjectArrayItem {
@@ -24,7 +31,7 @@ pub struct ObjectArrayItem {
 }
 
 pub struct ObjectArray {
-    hash_method: HashMethod,
+    meta: ObjectArrayMeta,
     storage_type: ObjectArrayStorageType,
     cache: Box<dyn ObjectArrayInnerCache>,
     is_dirty: bool,
@@ -37,7 +44,10 @@ impl ObjectArray {
             ObjectArrayCacheFactory::create_cache(ObjectArrayCacheType::Memory);
 
         Self {
-            hash_method,
+            meta: ObjectArrayMeta {
+                hash_method: hash_method.clone(),
+                ext: None, // We can add more metadata in the future
+            },
             storage_type: storage_type.unwrap_or(ObjectArrayStorageType::default()),
             cache,
             is_dirty: false,
@@ -46,12 +56,12 @@ impl ObjectArray {
     }
 
     pub fn new_from_cache(
-        hash_method: HashMethod,
+        meta: ObjectArrayMeta,
         cache: Box<dyn ObjectArrayInnerCache>,
         storage_type: ObjectArrayStorageType,
     ) -> NdnResult<Self> {
         let obj_array = Self {
-            hash_method,
+            meta,
             storage_type,
             cache,
             is_dirty: false,
@@ -65,10 +75,14 @@ impl ObjectArray {
         self.cache.is_readonly()
     }
 
+    pub fn hash_method(&self) -> HashMethod {
+        self.meta.hash_method
+    }
+
     pub fn clone(&self, read_only: bool) -> NdnResult<Self> {
         let cache = self.cache.clone_cache(read_only)?;
         let ret = Self {
-            hash_method: self.hash_method.clone(),
+            meta: self.meta.clone(),
             storage_type: self.storage_type.clone(),
             cache,
             is_dirty: self.is_dirty,
@@ -89,9 +103,19 @@ impl ObjectArray {
         }
     }
 
+    pub fn set_meta(&mut self, meta: Option<String>) -> NdnResult<()> {
+        self.meta.ext = meta;
+
+        Ok(())
+    }
+
+    pub fn get_meta(&self) -> NdnResult<Option<&str>> {
+        Ok(self.meta.ext.as_deref())
+    }
+
     pub fn append_object(&mut self, obj_id: &ObjId) -> NdnResult<()> {
         // Check if obj_id.obj_hash has the same length as hash_method
-        if obj_id.obj_hash.len() != self.hash_method.hash_bytes() {
+        if obj_id.obj_hash.len() != self.meta.hash_method.hash_bytes() {
             let msg = format!(
                 "Object hash length does not match hash method: {}",
                 obj_id.obj_hash.len()
@@ -108,7 +132,7 @@ impl ObjectArray {
 
     pub fn insert_object(&mut self, index: usize, obj_id: &ObjId) -> NdnResult<()> {
         // Check if obj_id.obj_hash has the same length as hash_method
-        if obj_id.obj_hash.len() != self.hash_method.hash_bytes() {
+        if obj_id.obj_hash.len() != self.meta.hash_method.hash_bytes() {
             let msg = format!(
                 "Object hash length does not match hash method: {}",
                 obj_id.obj_hash.len()
@@ -292,14 +316,14 @@ impl ObjectArray {
     // Regenerate the merkle tree without checking the dirty flag
     async fn regenerate_merkle_tree(&mut self) -> NdnResult<()> {
         let count = self.cache.len() as u64;
-        let leaf_size = self.hash_method.hash_bytes() as u64;
+        let leaf_size = self.hash_method().hash_bytes() as u64;
         let data_size = count as u64 * leaf_size;
 
         // TODO now use the memory buffer to store the merkle tree, need to optimize for further usage
         let buf_size = MerkleTreeObjectGenerator::estimate_output_bytes(
             data_size,
             leaf_size,
-            Some(self.hash_method),
+            Some(self.hash_method()),
         );
         let buf = SharedBuffer::with_size(buf_size as usize);
         let stream = MtreeReadWriteSeekWithSharedBuffer::new(buf);
@@ -308,7 +332,7 @@ impl ObjectArray {
         let mut mtree_generator = MerkleTreeObjectGenerator::new(
             data_size,
             leaf_size,
-            Some(self.hash_method),
+            Some(self.hash_method()),
             mtree_writer,
         )
         .await?;
@@ -372,6 +396,16 @@ impl ObjectArray {
             )
             .await?;
 
+        // Write the meta to the storage
+        let meta = serde_json::to_string(&self.meta)
+            .map_err(|e| {
+                let msg = format!("Error serializing meta: {}", e);
+                error!("{}", msg);
+                NdnError::InvalidData(msg)
+            })?;
+
+        writer.put_meta(Some(meta)).await?;
+
         // Write the object array to the storage
         // TODO: use batch read and write to improve performance
         for i in 0..self.cache.len() {
@@ -384,16 +418,30 @@ impl ObjectArray {
         Ok(())
     }
 
-    // FIXME: should we save hash_method to the storage?
     pub async fn open(
-        hash_method: HashMethod,
         container_id: &ObjId,
         read_only: bool,
     ) -> NdnResult<Self> {
         let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
         let (cache, storage_type) = factory.open(container_id, read_only).await?;
+        
+        // First load meta from the cache and deserialize it, so we can get the hash method
+        let meta = cache.get_meta()?;
+        let meta: ObjectArrayMeta = match meta {
+            Some(meta) => serde_json::from_slice(meta.as_bytes())
+                .map_err(|e| {
+                    let msg = format!("Error deserializing meta: {}", e);
+                    error!("{}", msg);
+                    NdnError::InvalidData(msg)
+                })?,
+            None => {
+                let msg= format!("Object array meta not found for: {:?}", container_id);
+                error!("{}", msg);
+                return Err(NdnError::InvalidData(msg));
+            }
+        };
 
-        let obj_array = Self::new_from_cache(hash_method, cache, storage_type)?;
+        let obj_array = Self::new_from_cache(meta, cache, storage_type)?;
 
         Ok(obj_array)
     }

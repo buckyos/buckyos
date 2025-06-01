@@ -4,17 +4,28 @@ use super::super::memory_cache::ObjectArrayMemoryCache;
 use super::super::storage::{ObjectArrayStorageWriter, ObjectArrayInnerCache};
 use crate::{ObjId, NdnResult, NdnError};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ObjectArrayJSONData {
+    // The meta data is optional, it can be used to store additional information about the object array.
+    meta: Option<String>,
+
+    data: Vec<ObjId>,
+}
+
 pub struct ObjectArrayJSONWriter {
     file_path: PathBuf,
 
-    data: Vec<ObjId>,
+    data: ObjectArrayJSONData,
 }
 
 impl ObjectArrayJSONWriter {
     pub fn new(file_path: PathBuf) -> Self {
         Self {
             file_path,
-            data: Vec::new(),
+            data: ObjectArrayJSONData {
+                meta: None,
+                data: Vec::new(),
+            },
         }
     }
 }
@@ -26,13 +37,19 @@ impl ObjectArrayStorageWriter for ObjectArrayJSONWriter {
         Ok(self.file_path.clone())
     }
 
+    // Use to store meta data
+    async fn put_meta(&mut self, value: Option<String>) -> NdnResult<()> {
+        self.data.meta = value;
+        Ok(())
+    }
+    
     async fn append(&mut self, value: &ObjId) -> NdnResult<()> {
-        self.data.push(value.clone());
+        self.data.data.push(value.clone());
         Ok(())
     }
 
     async fn len(&self) -> NdnResult<usize> {
-        Ok(self.data.len())
+        Ok(self.data.data.len())
     }
 
     async fn flush(&mut self) -> NdnResult<()> {
@@ -80,13 +97,13 @@ impl ObjectArrayJSONReader {
         })?;
 
         // Deserialize the data from JSON
-        let data: Vec<ObjId> = serde_json::from_reader(file).map_err(|e| {
+        let data: ObjectArrayJSONData = serde_json::from_reader(file).map_err(|e| {
             let msg = format!("Failed to read data from file: {:?}, {}", file_path, e);
             error!("{}", msg);
             NdnError::IoError(msg)
         })?;
 
-        let cache = ObjectArrayMemoryCache::new_array(data);
+        let cache = ObjectArrayMemoryCache::new_array(data.meta, data.data);
         let ret = ObjectArrayJSONReader::new(Box::new(cache));
 
         Ok(ret)

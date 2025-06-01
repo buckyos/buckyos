@@ -2,18 +2,23 @@ use super::storage::{ObjectArrayCacheType, ObjectArrayInnerCache};
 use crate::{NdnError, NdnResult, ObjId};
 
 pub struct ObjectArrayMemoryCache {
+    /// The storage for the object array, storing ObjId.
+    meta: Option<String>,
+
+    /// The storage for the object array, storing ObjId.
     storage: Vec<ObjId>,
 }
 
 impl ObjectArrayMemoryCache {
     pub fn new() -> Self {
         Self {
+            meta: None,
             storage: Vec::new(),
         }
     }
 
-    pub fn new_array(storage: Vec<ObjId>) -> Self {
-        Self { storage }
+    pub fn new_array(meta: Option<String>, storage: Vec<ObjId>) -> Self {
+        Self { meta, storage }
     }
 }
 
@@ -32,8 +37,17 @@ impl ObjectArrayInnerCache for ObjectArrayMemoryCache {
     }
 
     fn clone_cache(&self, _read_only: bool) -> NdnResult<Box<dyn ObjectArrayInnerCache>> {
-        let new_cache = ObjectArrayMemoryCache::new_array(self.storage.clone());
+        let new_cache = ObjectArrayMemoryCache::new_array(self.meta.clone(), self.storage.clone());
         Ok(Box::new(new_cache))
+    }
+
+    fn put_meta(&mut self, value: Option<String>) -> NdnResult<()> {
+        self.meta = value;
+        Ok(())
+    }
+
+    fn get_meta(&self) -> NdnResult<Option<String>> {
+        Ok(self.meta.clone())
     }
 
     fn append(&mut self, value: &ObjId) -> NdnResult<()> {
