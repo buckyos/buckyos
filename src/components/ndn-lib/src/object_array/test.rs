@@ -29,6 +29,9 @@ fn gen_random_obj_id(seed: &str) -> ObjId {
 async fn test_object_array() {
     let mut ar = ObjectArray::new(HashMethod::Sha256, Some(ObjectArrayStorageType::JSONFile));
 
+    let meta = format!("Test object array with {} items", ar.len());
+    ar.set_meta(Some(meta.clone())).unwrap();
+
     for i in 0..100 {
         let obj_id = gen_random_obj_id(&format!("test-{}", i));
         ar.append_object(&obj_id).unwrap();
@@ -50,8 +53,8 @@ async fn test_object_array() {
     let data_dir = std::env::temp_dir().join("ndn-test-object-array");
 
     // Set some meta data
-    let meta = format!("Test object array with {} items", ar.len());
-    ar.set_meta(Some(meta)).unwrap();
+    let meta1 = format!("Test object array with {} items again", ar.len());
+    ar.set_meta(Some(meta1.clone())).unwrap();
 
     ar.save().await.unwrap();
     ar.flush().await.unwrap();
@@ -72,7 +75,7 @@ async fn test_object_array() {
 
     // Test get meta
     let meta2 = reader.get_meta().unwrap().unwrap();
-    assert_eq!(meta, meta2, "Get meta failed");
+    assert_eq!(meta1, meta2, "Get meta failed");
 
     // Test get with proof path
     let item = reader.get_object_with_proof(0).await.unwrap().unwrap();

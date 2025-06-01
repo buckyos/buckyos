@@ -56,7 +56,7 @@ async fn test_trie_object_map() {
     println!("Test object map");
     let key_pairs = generate_key_value_pairs("test", 100);
     println!("Key pairs generated");
-    let mut obj_map = TrieObjectMap::new(HashMethod::Keccak256).await.unwrap();
+    let mut obj_map = TrieObjectMap::new(HashMethod::Keccak256, None).await.unwrap();
     println!("Object map created");
 
     let count = 100;
