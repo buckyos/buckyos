@@ -949,7 +949,7 @@ impl NamedDataMgr {
         file_reader.seek(SeekFrom::Start(0)).await;
         let (chunk_raw_id,chunk_size) = chunk_hasher.calc_from_reader(&mut file_reader).await.unwrap();
     
-        let chunk_id = ChunkId::from_hash_result(&chunk_raw_id, chunk_type.as_str());
+        let chunk_id = ChunkId::from_hash_result(chunk_size, &chunk_raw_id, chunk_type.as_str());
         info!("pub_local_file_as_fileobj:calc chunk_id success,chunk_id:{},chunk_size:{}", chunk_id.to_string(),chunk_size);
         let real_named_mgr = named_mgr.lock().await;
         let is_exist = real_named_mgr.is_chunk_exist_impl(&chunk_id).await.unwrap();

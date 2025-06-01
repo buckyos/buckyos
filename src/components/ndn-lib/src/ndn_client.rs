@@ -610,7 +610,7 @@ impl NdnClient {
         let chunk_type = hasher.hash_type.clone();
         let (hash_result,_) = hasher.calc_from_reader(&mut file).await
             .map_err(|e| NdnError::Internal(format!("Failed to calculate hash: {}", e)))?;
-        let file_chunk_id = ChunkId::from_hash_result(&hash_result, &chunk_type.as_str());
+        let file_chunk_id = ChunkId::from_hash_result(file_size, &hash_result, &chunk_type.as_str());
  
         Ok(file_chunk_id == content_chunk_id)
     }

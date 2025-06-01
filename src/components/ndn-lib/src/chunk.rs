@@ -47,8 +47,15 @@ impl ChunkId {
         Self { hash_type:obj_id.obj_type.clone(), hash_result:obj_id.obj_hash.clone() }
     }
 
-    pub fn from_hash_result(hash_result: &[u8],hash_type: &str) -> Self {
-        Self { hash_type:hash_type.to_string(), hash_result:hash_result.to_vec() }
+    pub fn from_hash_result(data_length: u64, hash_result: &[u8], hash_type: &str) -> Self {
+        let mut length_buf = unsigned_varint::encode::u64_buffer();
+        let length_encoded = unsigned_varint::encode::u64(data_length, &mut length_buf);
+
+        let mut encoded = Vec::with_capacity(length_encoded.len() + hash_result.len());
+        encoded.extend_from_slice(length_encoded);
+        encoded.extend_from_slice(hash_result);
+
+        Self { hash_type:hash_type.to_string(), hash_result: encoded.to_vec() }
     }
 
     pub fn to_string(&self) -> String {
@@ -72,8 +79,33 @@ impl ChunkId {
 
     pub fn get_length(&self) -> Option<u64> {
         //mix hash can get length from hash_hex_string
-        None
+
+        // Decode varint length from the beginning of the hash result
+        if self.hash_result.is_empty() {
+            return None;
+        }
+
+        match unsigned_varint::decode::u64(&self.hash_result) {
+            Ok((length, _)) => Some(length),
+            Err(_) => None, // If decoding fails, return None
+        }
     }    
+
+    pub fn get_hash(&self) -> &[u8] {
+        //mix hash can get length from hash_hex_string
+        if self.hash_result.is_empty() {
+            return &[];
+        }
+
+        // Skip the varint length part
+        // let mut cursor = std::io::Cursor::new(&self.hash_result);
+        match unsigned_varint::decode::u64(&self.hash_result) {
+            Ok((_length, hash)) => {
+                hash
+            },
+            Err(_) => &self.hash_result, // If decoding fails, return the whole hash result
+        }
+    }
 
     pub fn equal(&self, hash_bytes: &[u8])->bool {
         self.hash_result == hash_bytes
@@ -83,6 +115,7 @@ impl ChunkId {
 
 pub struct ChunkHasher {
     pub hash_type:HashMethod,
+    pub hash_length: u64,
     pub hasher: Box<dyn Hasher + Send + Sync>,
     //can extend other hash type in the future
 }
@@ -97,6 +130,7 @@ impl ChunkHasher {
 
         Ok(Self {
             hash_type:hash_method,
+            hash_length: 0,
             hasher:hasher,
         })
     }
@@ -106,6 +140,7 @@ impl ChunkHasher {
 
         Ok(Self {
             hash_type,
+            hash_length: 0,
             hasher,
         })
     }
@@ -120,16 +155,31 @@ impl ChunkHasher {
             hash_str_type = hash_type.unwrap().as_str().unwrap();
         }
         let hash_method = HashMethod::from_str(hash_str_type)?;
+
+        // Load hash length
+        let hash_length = state_json.get("hash_length")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        // Load hasher state
         let mut hasher = HashHelper::create_hasher(hash_method)?;
         hasher.restore_from_state(state_json)?;
+
+
         Ok(Self {
-            hash_type:hash_method,
+            hash_type: hash_method,
+            hash_length,
             hasher,
         })
     }
 
     pub fn save_state(&self) -> NdnResult<serde_json::Value> {
-        self.hasher.save_state()
+        let mut v = self.hasher.save_state()?;
+
+        // Add hash length
+        v.as_object_mut().unwrap().insert("hash_length".to_string(), json!(self.hash_length));
+
+        Ok(v)
     }
 
     //return the hash result and the total read size
@@ -155,20 +205,25 @@ impl ChunkHasher {
             total_read += n as u64;
         }
 
+        self.hash_length += total_read;
+
         Ok((self.hasher.finalize().to_vec(), total_read))
     }
 
     pub fn calc_from_bytes(mut self,bytes: &[u8]) -> Vec<u8> {
+        self.hash_length += bytes.len() as u64;
         self.hasher.update_from_bytes(bytes);
         self.hasher.finalize().to_vec()
     }
 
     pub fn calc_chunkid_from_bytes(mut self,bytes: &[u8]) -> ChunkId {
+        self.hash_length += bytes.len() as u64;
         self.hasher.update_from_bytes(bytes);
         self.finalize_chunk_id()
     }
 
     pub fn update_from_bytes(&mut self, bytes: &[u8]) {
+        self.hash_length += bytes.len() as u64;
         self.hasher.update_from_bytes(bytes);
     }
 
@@ -179,7 +234,7 @@ impl ChunkHasher {
     pub fn finalize_chunk_id(self) -> ChunkId {
         let hash_type_str = self.hash_type.as_str();
         let hash_result = self.hasher.finalize();
-        ChunkId::from_hash_result(&hash_result, &hash_type_str)
+        ChunkId::from_hash_result(self.hash_length, &hash_result, &hash_type_str)
     }
 }
 
@@ -265,7 +320,7 @@ pub async fn calculate_file_chunk_id(file_path: &str,hash_method:HashMethod) -> 
     
     let mut hasher = ChunkHasher::new_with_hash_type(hash_method)?;
     let (hash_result,file_size) = hasher.calc_from_reader(&mut file_reader).await?;
-    Ok((ChunkId::from_hash_result(&hash_result, hash_method.as_str()),file_size))
+    Ok((ChunkId::from_hash_result(file_size, &hash_result, hash_method.as_str()),file_size))
 }
 
 pub async fn copy_chunk<R, W, F>(
@@ -327,6 +382,30 @@ mod tests {
     use rand::Rng;
 
 
+    #[test] 
+    fn test_var_length() {
+        let mut buffer = vec![0u8; 2048];
+        let mut rng = rand::thread_rng();
+        rng.fill(&mut buffer[..]);
+
+        let mut length_buf = unsigned_varint::encode::u64_buffer();
+        let length_encoded = unsigned_varint::encode::u64(2048, &mut length_buf);
+        println!("length_encoded: {:?}", length_encoded);
+
+       // Decode length
+        let (decoded_length, rest) = unsigned_varint::decode::u64(&length_encoded).unwrap();
+        println!("decoded_length: {}, rest: {:?}", decoded_length, rest);
+        assert_eq!(decoded_length, 2048);
+
+        let chunk_id = ChunkId::from_hash_result(2048, &buffer, "sha256");
+        println!("chunk_id: {}", chunk_id.to_string());
+
+        let length = chunk_id.get_length().unwrap_or(0);
+        println!("chunk_id length: {}", length);
+        assert_eq!(length, 2048);
+
+    }
+
     #[test]
     fn test_chunk_hasher_save_state() {
         let mut buffer = vec![0u8; 2048];
@@ -336,16 +415,23 @@ mod tests {
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();
         let hash_result = chunk_hasher.calc_from_bytes(&buffer);
 
+    
         let hash_result_restored = {
             let mut chunk_hasher = ChunkHasher::new(None).unwrap();
             chunk_hasher.update_from_bytes(&buffer[..1024]);
             let state_json = chunk_hasher.save_state().unwrap();
             println!("state_json:{}",state_json.to_string());
 
-
             let mut chunk_hasher_restored = ChunkHasher::restore_from_state(state_json).unwrap();
             chunk_hasher_restored.update_from_bytes(&buffer[1024..]);
-            chunk_hasher_restored.finalize()
+            // let hash = chunk_hasher_restored.finalize();
+
+            let chunk_id = chunk_hasher_restored.finalize_chunk_id();
+            let length = chunk_id.get_length().unwrap_or(0);
+            println!("chunk_id: {}, length: {}", chunk_id.to_string(), length);
+            assert_eq!(length, 2048);
+
+            chunk_id.get_hash().to_vec()
         };
 
         assert_eq!(hash_result, hash_result_restored);
