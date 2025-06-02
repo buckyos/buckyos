@@ -41,6 +41,25 @@ async fn test_object_array() {
         assert_eq!(ret.as_ref(), Some(&obj_id), "Get object failed");
     }
 
+    // Test Iterator
+    {
+        let mut iter = ar.iter();
+        for i in 0..100 {
+            let obj_id = gen_random_obj_id(&format!("test-{}", i));
+            let ret = iter.next().unwrap();
+            assert_eq!(ret, obj_id, "Iterator get object failed");
+        }
+        assert!(iter.next().is_none(), "Iterator should be empty after all items");
+
+        let mut iter = ar.iter().rev();
+        for i in (0..100).rev() {
+            let obj_id = gen_random_obj_id(&format!("test-{}", i));
+            let ret = iter.next().unwrap();
+            assert_eq!(ret, obj_id, "Reverse iterator get object failed");
+        }
+        assert!(iter.next().is_none(), "Reverse iterator should be empty after all items");
+    }
+
     // Flush object id, and will gen mtree inner
     let id = ar.get_obj_id();
     assert!(id.is_none());

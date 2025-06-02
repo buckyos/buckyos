@@ -1,7 +1,5 @@
-
-use super::storage::ObjectArrayInnerCache;
-use crate::{ObjId, NdnResult};
-
+use super::{storage::ObjectArrayInnerCache, ObjectArray};
+use crate::{NdnResult, ObjId};
 
 // Iterator over the object array, providing ObjId items
 pub struct ObjectArrayIter<'a> {
@@ -9,7 +7,7 @@ pub struct ObjectArrayIter<'a> {
     indices: std::ops::Range<usize>,
 }
 
-impl <'a> ObjectArrayIter<'a> {
+impl<'a> ObjectArrayIter<'a> {
     pub fn new(cache: &'a dyn ObjectArrayInnerCache) -> Self {
         let len = cache.len();
         Self {
@@ -43,8 +41,25 @@ impl<'a> Iterator for ObjectArrayIter<'a> {
 
     // Implement size_hint to help performance optimization
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.indices.end - self.indices.start;
-        (remaining, Some(remaining))
+        self.indices.size_hint()
+    }
+}
+
+impl<'a> DoubleEndedIterator for ObjectArrayIter<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self.indices.next_back() {
+            Some(index) => {
+                match self.cache.get(index) {
+                    Ok(Some(id)) => Some(id),
+                    Ok(None) => {
+                        // If the item is None, we just skip it
+                        self.next_back() // Call next_back again to get the previous item
+                    }
+                    Err(_) => None,
+                }
+            }
+            None => None,
+        }
     }
 }
 
@@ -91,3 +106,21 @@ impl Iterator for ObjectArrayOwnedIter {
 }
 
 impl ExactSizeIterator for ObjectArrayOwnedIter {}
+
+impl DoubleEndedIterator for ObjectArrayOwnedIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self.indices.next_back() {
+            Some(index) => {
+                match self.cache.get(index) {
+                    Ok(Some(id)) => Some(id),
+                    Ok(None) => {
+                        // If the item is None, we just skip it
+                        self.next_back() // Call next_back again to get the previous item
+                    }
+                    Err(_) => None,
+                }
+            }
+            None => None,
+        }
+    }
+}
