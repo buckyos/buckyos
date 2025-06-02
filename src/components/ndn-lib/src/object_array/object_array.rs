@@ -1,3 +1,4 @@
+use super::iter::{ObjectArrayIter, ObjectArrayOwnedIter};
 use super::proof::ObjectArrayItemProof;
 use super::storage::{
     ObjectArrayCacheType, ObjectArrayInnerCache, ObjectArrayStorageType, ObjectArrayStorageWriter,
@@ -12,9 +13,9 @@ use crate::mtree::{
 use crate::{HashMethod, ObjId, OBJ_TYPE_LIST};
 use crate::{NdnError, NdnResult};
 use arrow::csv::writer;
-use serde::{Serialize, Deserialize};
 use core::hash;
 use http_types::cache;
+use serde::{Deserialize, Serialize};
 use std::io::SeekFrom;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -97,10 +98,7 @@ impl ObjectArray {
     }
 
     pub fn iter(&self) -> ObjectArrayIter<'_> {
-        ObjectArrayIter {
-            cache: &*self.cache,
-            indices: 0..self.cache.len(),
-        }
+        ObjectArrayIter::new(&*self.cache)
     }
 
     pub fn set_meta(&mut self, meta: Option<String>) -> NdnResult<()> {
@@ -397,12 +395,11 @@ impl ObjectArray {
             .await?;
 
         // Write the meta to the storage
-        let meta = serde_json::to_string(&self.meta)
-            .map_err(|e| {
-                let msg = format!("Error serializing meta: {}", e);
-                error!("{}", msg);
-                NdnError::InvalidData(msg)
-            })?;
+        let meta = serde_json::to_string(&self.meta).map_err(|e| {
+            let msg = format!("Error serializing meta: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
 
         writer.put_meta(Some(meta)).await?;
 
@@ -418,24 +415,20 @@ impl ObjectArray {
         Ok(())
     }
 
-    pub async fn open(
-        container_id: &ObjId,
-        read_only: bool,
-    ) -> NdnResult<Self> {
+    pub async fn open(container_id: &ObjId, read_only: bool) -> NdnResult<Self> {
         let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
         let (cache, storage_type) = factory.open(container_id, read_only).await?;
-        
+
         // First load meta from the cache and deserialize it, so we can get the hash method
         let meta = cache.get_meta()?;
         let meta: ObjectArrayMeta = match meta {
-            Some(meta) => serde_json::from_slice(meta.as_bytes())
-                .map_err(|e| {
-                    let msg = format!("Error deserializing meta: {}", e);
-                    error!("{}", msg);
-                    NdnError::InvalidData(msg)
-                })?,
+            Some(meta) => serde_json::from_slice(meta.as_bytes()).map_err(|e| {
+                let msg = format!("Error deserializing meta: {}", e);
+                error!("{}", msg);
+                NdnError::InvalidData(msg)
+            })?,
             None => {
-                let msg= format!("Object array meta not found for: {:?}", container_id);
+                let msg = format!("Object array meta not found for: {:?}", container_id);
                 error!("{}", msg);
                 return Err(NdnError::InvalidData(msg));
             }
@@ -447,87 +440,14 @@ impl ObjectArray {
     }
 }
 
-// Iterator over the object array, providing ObjId items
-pub struct ObjectArrayIter<'a> {
-    cache: &'a dyn ObjectArrayInnerCache,
-    indices: std::ops::Range<usize>,
-}
-
-impl<'a> Iterator for ObjectArrayIter<'a> {
-    type Item = ObjId;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.indices.next() {
-            Some(index) => {
-                match self.cache.get(index) {
-                    Ok(Some(id)) => Some(id),
-                    Ok(None) => {
-                        // If the item is None, we just skip it
-                        self.next() // Call next again to get the next item
-                    }
-                    Err(_) => {
-                        // FIXME: What should we do on error? just return None now
-                        None
-                    }
-                }
-            }
-            None => None,
-        }
-    }
-
-    // Implement size_hint to help performance optimization
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.indices.end - self.indices.start;
-        (remaining, Some(remaining))
-    }
-}
-
-// Because we always known the size of the iterator, we can implement ExactSizeIterator
-impl<'a> ExactSizeIterator for ObjectArrayIter<'a> {}
-
 impl IntoIterator for ObjectArray {
     type Item = ObjId;
     type IntoIter = ObjectArrayOwnedIter;
 
     fn into_iter(self) -> Self::IntoIter {
-        let len = self.cache.len();
-        ObjectArrayOwnedIter {
-            cache: self.cache,
-            indices: 0..len,
-        }
+        ObjectArrayOwnedIter::new(self.cache)
     }
 }
-
-// This iterator consumes the ObjectArray and provides ObjId items
-pub struct ObjectArrayOwnedIter {
-    cache: Box<dyn ObjectArrayInnerCache>,
-    indices: std::ops::Range<usize>,
-}
-
-impl Iterator for ObjectArrayOwnedIter {
-    type Item = ObjId;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.indices.next() {
-            Some(index) => {
-                match self.cache.get(index) {
-                    Ok(Some(id)) => Some(id),
-                    Ok(None) => {
-                        // If the item is None, we just skip it
-                        self.next() // Call next again to get the next item
-                    }
-                    Err(_) => {
-                        // FIXME: What should we do on error? just return None now
-                        None
-                    }
-                }
-            }
-            None => None,
-        }
-    }
-}
-
-impl ExactSizeIterator for ObjectArrayOwnedIter {}
 
 pub struct ObjectArrayProofVerifier {
     hash_method: HashMethod,
