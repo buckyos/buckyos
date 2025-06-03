@@ -549,11 +549,13 @@ impl NsProvider for SNServer {
                 record_type.to_string()
             )));
         }
-
-        let full_server_host = format!("{}.", self.server_host.as_str());
-        let req_full_name = format!("{}.", name);
+        let mut req_full_name = name.to_string();
+        if !name.ends_with(".") {
+            req_full_name = format!("{}.", name);
+        }
+        
         if name == self.server_host
-            || name == full_server_host
+            || req_full_name == self.server_host
             || self.server_aliases.contains(&req_full_name)
             || self.server_aliases.contains(&name.to_string())
         {
