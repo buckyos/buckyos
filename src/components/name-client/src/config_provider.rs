@@ -227,6 +227,10 @@ impl NsProvider for LocalConfigDnsProvider {
 
     async fn query(&self, domain: &str, record_type: Option<RecordType>, _from_ip: Option<IpAddr>) -> NSResult<NameInfo> {
         let record_type = record_type.unwrap_or(RecordType::A);
+        let mut domain = domain.to_string();
+        if domain.ends_with(".") {
+            domain = domain.trim_end_matches('.').to_string();
+        }
         
         // 获取内部配置的锁
         let mut inner = self.inner.lock().unwrap();
@@ -237,14 +241,14 @@ impl NsProvider for LocalConfigDnsProvider {
         }
         
         // First check for exact match
-        let config = inner.config.domains.get(domain);
+        let config = inner.config.domains.get(&domain);
         if config.is_none() {
             for (pattern, config) in &inner.config.domains {
                 if pattern.contains('*') {
-                    if Self::matches_wildcard(pattern, domain) {
+                    if Self::matches_wildcard(pattern, &domain) {
                         debug!("{} found in matches_wildcard {}",domain,pattern);
                         return Self::convert_domain_config_to_records(
-                            domain,
+                            &domain,
                             config,
                             record_type
                         );
@@ -253,10 +257,10 @@ impl NsProvider for LocalConfigDnsProvider {
             }
             return Err(NSError::NotFound(domain.to_string()));
         }
-        debug!("{} found in dns-local-config!",domain);
+        debug!("{} found in dns-local-config!",&domain);
         let config = config.unwrap();
         return Self::convert_domain_config_to_records(
-            domain,
+            &domain,
             config,
             record_type
         );
@@ -349,7 +353,7 @@ A = ["192.168.1.106"]
         let temp_file = create_test_config();
         let provider = LocalConfigDnsProvider::new(temp_file.path()).unwrap();
         // Test exact domain match
-        let result = provider.query("www.example.com", Some(RecordType::A), None).await.unwrap();
+        let result = provider.query("www.example.com.", Some(RecordType::A), None).await.unwrap();
         assert_eq!(result.name, "www.example.com");
         assert_eq!(result.ttl.unwrap(), 300);
         assert_eq!(result.address.len(), 1);
