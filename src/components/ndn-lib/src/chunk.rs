@@ -18,6 +18,42 @@ pub const COPY_CHUNK_BUFFER_SIZE: usize = CACL_HASH_PIECE_SIZE as usize;
 
 pub type ChunkReader = Pin<Box<dyn AsyncRead + Unpin + Send>>;
 pub type ChunkWriter = Pin<Box<dyn AsyncWrite + Unpin + Send>>;
+
+
+pub struct ChunkIdHashHelper;
+
+impl ChunkIdHashHelper {
+    pub fn get_length(hash_type: &str, hash_result: &[u8]) -> Option<u64> {
+        //mix hash can get length from hash_hex_string
+
+        // Decode varint length from the beginning of the hash result
+        if hash_result.is_empty() {
+            return None;
+        }
+
+        match unsigned_varint::decode::u64(&hash_result) {
+            Ok((length, _)) => Some(length),
+            Err(_) => None, // If decoding fails, return None
+        }
+    }    
+
+    pub fn get_hash<'a>(hash_type: &str, hash_result: &'a [u8]) -> &'a [u8] {
+        //mix hash can get length from hash_hex_string
+        if hash_result.is_empty() {
+            return &[];
+        }
+
+        // Skip the varint length part
+        // let mut cursor = std::io::Cursor::new(&self.hash_result);
+        match unsigned_varint::decode::u64(&hash_result) {
+            Ok((_length, hash)) => {
+                hash
+            },
+            Err(_) => &hash_result, // If decoding fails, return the whole hash result
+        }
+    }
+}
+
 //We support 3 types of chunktype:qcid, sha256, mix at this time
 //单个
 #[derive(Debug, Clone,Eq, PartialEq)]
@@ -34,6 +70,13 @@ impl ChunkId {
             return Err(NdnError::InvalidId(format!("invalid chunk id:{}",chunk_id_str)));
         }
         Ok(Self { hash_type:obj_id.obj_type, hash_result:obj_id.obj_hash })
+    }
+
+    pub fn as_chunk_id_ref(&self) -> ChunkIdRef {
+        ChunkIdRef {
+            hash_type: &self.hash_type,
+            hash_result: &self.hash_result,
+        }
     }
 
     pub fn to_obj_id(&self) -> ObjId {
@@ -78,33 +121,11 @@ impl ChunkId {
     }
 
     pub fn get_length(&self) -> Option<u64> {
-        //mix hash can get length from hash_hex_string
-
-        // Decode varint length from the beginning of the hash result
-        if self.hash_result.is_empty() {
-            return None;
-        }
-
-        match unsigned_varint::decode::u64(&self.hash_result) {
-            Ok((length, _)) => Some(length),
-            Err(_) => None, // If decoding fails, return None
-        }
+        ChunkIdHashHelper::get_length(&self.hash_type, &self.hash_result)
     }    
 
     pub fn get_hash(&self) -> &[u8] {
-        //mix hash can get length from hash_hex_string
-        if self.hash_result.is_empty() {
-            return &[];
-        }
-
-        // Skip the varint length part
-        // let mut cursor = std::io::Cursor::new(&self.hash_result);
-        match unsigned_varint::decode::u64(&self.hash_result) {
-            Ok((_length, hash)) => {
-                hash
-            },
-            Err(_) => &self.hash_result, // If decoding fails, return the whole hash result
-        }
+        ChunkIdHashHelper::get_hash(&self.hash_type, &self.hash_result)
     }
 
     pub fn equal(&self, hash_bytes: &[u8])->bool {
@@ -112,6 +133,43 @@ impl ChunkId {
     }
 }
 
+impl Into<ObjId> for ChunkId {
+    fn into(self) -> ObjId {
+        ObjId {
+            obj_type: self.hash_type,
+            obj_hash: self.hash_result,
+        }
+    }
+}
+
+pub struct ChunkIdRef<'a> {
+    pub hash_type: &'a str,
+    pub hash_result: &'a [u8],
+}
+
+impl<'a> ChunkIdRef<'a> {
+    pub fn new(chunk_id: &'a ChunkId) -> Self {
+        Self {
+            hash_type: &chunk_id.hash_type,
+            hash_result: &chunk_id.hash_result,
+        }
+    }
+
+    pub fn from_obj_id(obj_id: &'a ObjId) -> Self {
+        Self {
+            hash_type: &obj_id.obj_type,
+            hash_result: &obj_id.obj_hash,
+        }
+    }
+
+    pub fn get_length(&self) -> Option<u64> {
+        ChunkIdHashHelper::get_length(self.hash_type, self.hash_result)
+    }    
+
+    pub fn get_hash(&self) -> &[u8] {
+        ChunkIdHashHelper::get_hash(self.hash_type, self.hash_result)
+    }
+}
 
 pub struct ChunkHasher {
     pub hash_type:HashMethod,
