@@ -180,6 +180,28 @@ impl ObjectArray {
         self.cache.get(index)
     }
 
+    // Change the storage type for the object array, this will not change the cache
+    // When the storage type is changed, you should call `save()` to persist the changes
+    // to the new storage type.
+    pub async fn change_storage_type(
+        &mut self,
+        storage_type: ObjectArrayStorageType,
+    ) -> NdnResult<()> {
+        if self.storage_type == storage_type {
+            return Ok(());
+        }
+
+        info!(
+            "Changing storage type from {:?} to {:?}, {:?}",
+            self.storage_type, storage_type, self.get_obj_id(),
+        );
+
+        // Change the storage type
+        self.storage_type = storage_type;
+
+        Ok(())
+    }
+
     // Get the object ID and proof for the object at the given index, the mtree must be exists
     pub async fn get_object_with_proof(
         &mut self,

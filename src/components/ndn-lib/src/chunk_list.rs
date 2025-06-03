@@ -33,12 +33,31 @@ impl DerefMut for ChunkList {
 }
 
 impl ChunkList {
-    pub fn new() -> Self {
+    pub fn new_by_obj_data(obj_data: serde_json::Value) -> Self {
         unimplemented!()
     }
 
-    pub fn new_by_obj_data(obj_data: serde_json::Value) -> Self {
-        unimplemented!()
+    // Load an existing chunk list from the object id.
+    pub async fn open(
+        obj_id: &ObjId,
+    ) -> NdnResult<Self> {
+        let chunk_list_imp = ObjectArray::open(obj_id, true).await?;
+        let meta_str = chunk_list_imp.get_meta()?.ok_or_else(|| {
+            let msg = format!("Chunk list meta not found for {}", obj_id);
+            error!("{}", msg);
+            crate::NdnError::InvalidData(msg)
+        })?;
+
+        let meta: ChunkListMeta = serde_json::from_str(&meta_str).map_err(|e| {
+            let msg = format!("Failed to deserialize chunk list meta: {}", e);
+            error!("{}", msg);
+            crate::NdnError::InvalidData(msg)
+        })?;
+
+        Ok(Self {
+            meta,
+            chunk_list_imp,
+        })
     }
 
     // The objid should be flush and calculate when loaded or built.
@@ -52,8 +71,24 @@ impl ChunkList {
         chunk_list_id
     }
 
+    pub fn get_hash_method(&self) -> HashMethod {
+        self.chunk_list_imp.hash_method()
+    }
+
+    pub fn get_meta(&self) -> &ChunkListMeta {
+        &self.meta
+    }
+
+    pub fn get_len(&self) -> usize {
+        self.chunk_list_imp.len()
+    }
+
     pub fn is_chunklist(obj_id: &ObjId) -> bool {
-        unimplemented!()
+        if obj_id.obj_type == OBJ_TYPE_CHUNK_LIST {
+            true
+        } else {
+            false
+        }
     }
 
     pub fn is_simple_chunklist(&self) -> bool {
@@ -351,5 +386,160 @@ impl ChunkList {
 
     pub fn get_total_size(&self) -> u64 {
         self.meta.total_size
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkListMode {
+    Simple, // Simple mode, used for small chunk lists
+    Normal, // Normal mode, used for larger chunk lists
+}
+
+pub struct ChunkListBuilder {
+    meta: ChunkListMeta,
+    list: ObjectArray,
+}
+
+impl ChunkListBuilder {
+    pub fn new(hash_method: HashMethod, count: Option<usize>) -> Self {
+        let mode = Self::select_mode(count);
+        let storage_type = match mode {
+            ChunkListMode::Simple => crate::ObjectArrayStorageType::JSONFile,
+            ChunkListMode::Normal => crate::ObjectArrayStorageType::Arrow,
+        };
+
+        Self {
+            meta: ChunkListMeta {
+                total_size: 0,
+                fix_size: None,
+            },
+            list: ObjectArray::new(hash_method, Some(storage_type)),
+        }
+    }
+
+    pub fn from_chunk_list(chunk_list: &ChunkList) -> NdnResult<Self> {
+        let ret = Self {
+            meta: chunk_list.meta.clone(),
+            list: chunk_list.chunk_list_imp.clone(false)?, // Clone in read-write mode
+        };
+
+        Ok(ret)
+    }
+
+    pub fn from_chunk_list_owned(
+        chunk_list: ChunkList,
+    ) -> Self {
+        let ret = Self {
+            meta: chunk_list.meta,
+            list: chunk_list.chunk_list_imp, // Clone in read-write mode
+        };
+
+        ret
+    }
+
+    pub fn select_mode(count: Option<usize>) -> ChunkListMode {
+        if let Some(c) = count {
+            if c <= CHUNK_LIST_MODE_THRESHOLD {
+                ChunkListMode::Simple
+            } else {
+                ChunkListMode::Normal
+            }
+        } else {
+            ChunkListMode::Normal // Default to Normal if count is None
+        }
+    }
+
+    pub fn with_total_size(mut self, size: u64) -> Self {
+        self.meta.total_size = size;
+        self
+    }
+
+    pub fn with_fixed_size(mut self, size: u64) -> Self {
+        self.meta.fix_size = Some(size);
+        self
+    }
+
+    pub fn with_var_size(mut self) -> Self {
+        self.meta.fix_size = None;
+        self
+    }
+
+    // Just append the chunk id to the list, no need to increment total size.
+    pub fn append(&mut self, chunk_id: ChunkId) -> NdnResult<()> {
+        let obj_id = chunk_id.into();
+        self.list.append_object(&obj_id)?;
+
+        Ok(())
+    }
+
+    // Just insert the chunk id at the specified index, no need to increment total size.
+    pub fn insert(&mut self, index: usize, chunk_id: ChunkId) -> NdnResult<()> {
+        let obj_id = chunk_id.into();
+        self.list.insert_object(index, &obj_id)?;
+
+        Ok(())
+    }
+
+    // Append a chunk with its size, and update the total size.
+    pub fn append_with_size(&mut self, chunk_id: ChunkId, size: u64) -> NdnResult<()> {
+        let obj_id = chunk_id.into();
+        self.list.append_object(&obj_id)?;
+
+        // Update total size
+        self.meta.total_size += size;
+
+        Ok(())
+    }
+
+    // Insert a chunk with its size at the specified index, and update the total size.
+    pub fn insert_with_size(
+        &mut self,
+        index: usize,
+        chunk_id: ChunkId,
+        size: u64,
+    ) -> NdnResult<()> {
+        let obj_id = chunk_id.into();
+        self.list.insert_object(index, &obj_id)?;
+
+        // Update total size
+        self.meta.total_size += size;
+
+        Ok(())
+    }
+
+    pub async fn build(mut self) -> NdnResult<ChunkList> {
+        let meta_str = serde_json::to_string(&self.meta).map_err(|e| {
+            let msg = format!("Failed to serialize chunk list meta: {}", e);
+            error!("{}", msg);
+            crate::NdnError::InvalidData(msg)
+        })?;
+
+        self.list.set_meta(Some(meta_str));
+
+        // First, flush the list to ensure the mtree is built and the object id is calculated.
+        self.list.flush().await?;
+
+        // Ensure the object mode is set correctly
+        let len = self.list.len();
+        match Self::select_mode(Some(len)) {
+            ChunkListMode::Simple => {
+                self.list
+                    .change_storage_type(crate::ObjectArrayStorageType::JSONFile);
+            }
+            ChunkListMode::Normal => {
+                self.list
+                    .change_storage_type(crate::ObjectArrayStorageType::Arrow);
+            }
+        }
+
+        // Save
+        self.list.save().await?;
+
+        let ret=  ChunkList {
+            meta: self.meta,
+            chunk_list_imp: self.list,
+        };
+
+        Ok(ret)
     }
 }
