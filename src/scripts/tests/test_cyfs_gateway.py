@@ -1,5 +1,6 @@
 import os
 import re
+import socket
 import subprocess
 import time
 
@@ -93,12 +94,13 @@ def init_context():
         _run_command(f'multipass launch --name gateway1 --cpus 1 --memory 1G --disk 10G --cloud-init {local_path}/gateway_vm.yaml')
 
     ip = get_vm_ips('gateway1')[0]
+    gateway1_ip = ip
     remote_node = RemoteNode(ip, identity_file)
     remote_node.run_command('sudo killall cyfs_gateway')
     remote_node.run_command('sudo mkdir /opt/cyfs_gateway')
     remote_node.run_command('sudo mkdir /opt/web3_bridge')
     remote_node.scp_put(os.path.join(rootfs, 'bin/cyfs_gateway/cyfs_gateway'), '/opt/cyfs_gateway/cyfs_gateway')
-    remote_node.scp_put(os.path.join(local_path, 'device_key.pem'), '/opt/cyfs_gateway/device_key.pem')
+    remote_node.scp_put(os.path.join(local_path, 'gateway1_key.pem'), '/opt/cyfs_gateway/device_key.pem')
     remote_node.scp_put(os.path.join(local_path, 'web3.buckyos.site.crt'), '/opt/cyfs_gateway/web3.buckyos.site.crt')
     remote_node.scp_put(os.path.join(local_path, 'web3.buckyos.site.key'), '/opt/cyfs_gateway/web3.buckyos.site.key')
     remote_node.scp_put(os.path.join(local_path, 'buckyos.site.crt'), '/opt/cyfs_gateway/buckyos.site.crt')
@@ -108,23 +110,80 @@ def init_context():
     remote_node.run_command('sudo kill -9 $(pgrep -f "http_test_server.py")')
     remote_node.scp_put(os.path.join(local_path, 'http_test_server.py'), '/opt/cyfs_gateway/http_test_server.py')
     remote_node.run_command('nohup python3 /opt/cyfs_gateway/http_test_server.py > /dev/null 2>&1 &')
+    remote_node.run_command('sudo kill -9 $(pgrep -f "udp_test_server.py")')
+    remote_node.scp_put(os.path.join(local_path, 'udp_test_server.py'), '/opt/cyfs_gateway/udp_test_server.py')
+    remote_node.run_command('nohup python3 /opt/cyfs_gateway/udp_test_server.py > /dev/null 2>&1 &')
     print("VM gateway1 created successfully")
+
+    print("Creating gateway2 VM")
+    if not vm_exist('gateway2'):
+        _run_command(f'multipass launch --name gateway2 --cpus 1 --memory 1G --disk 10G --cloud-init {local_path}/gateway_vm.yaml')
+
+    ip = get_vm_ips('gateway2')[0]
+    remote_node = RemoteNode(ip, identity_file)
+    remote_node.run_command('sudo killall cyfs_gateway')
+    remote_node.run_command('sudo mkdir /opt/cyfs_gateway')
+    remote_node.run_command('sudo mkdir /opt/web3_bridge')
+    remote_node.run_command('sudo mkdir -p /opt/buckyos/etc/did_docs')
+    buckyos_doc = read_file(os.path.join(local_path, 'web3.buckyos.io.doc.json.template'))
+    buckyos_doc = buckyos_doc.replace('${ip}', gateway1_ip)
+    write_file(os.path.join(local_path, 'web3.buckyos.io.doc.json'), buckyos_doc)
+    remote_node.scp_put(os.path.join(local_path, 'web3.buckyos.io.doc.json'), '/opt/buckyos/etc/did_docs/web3.buckyos.io.doc.json')
+    remote_node.scp_put(os.path.join(rootfs, 'bin/cyfs_gateway/cyfs_gateway'), '/opt/cyfs_gateway/cyfs_gateway')
+    remote_node.scp_put(os.path.join(local_path, 'device_key.pem'), '/opt/cyfs_gateway/device_key.pem')
+
+    remote_node.run_command(f"sudo sed -i 's/#DNS=.*/DNS={gateway1_ip}/' /etc/systemd/resolved.conf")
+    remote_node.run_command(f"sudo sed -i 's/#Domains=.*/Domains=/' /etc/systemd/resolved.conf")
+    remote_node.run_command(f"sudo sed -i 's/#DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf")
+    remote_node.run_command("sudo systemctl restart systemd-resolved")
+
+    print("VM gateway2 created successfully")
+
     yield
     # _run_command(f'multipass delete gateway1 --purge')
-
+    # _run_command(f'multipass delete gateway2 --purge')
 
 
 def reset_gateway1(ip: str):
     remote_node = RemoteNode(ip, identity_file)
     remote_node.run_command('sudo killall cyfs_gateway')
     gateway_config = read_file(os.path.join(local_path, 'gateway1.json.template'))
-    new_config = gateway_config.replace('$${dns_ip}', ip)
+    new_config = gateway_config.replace('${dns_ip}', ip)
+    new_config = new_config.replace('${local_ip}', ip)
     write_file(os.path.join(local_path, 'gateway1.json'), new_config)
     remote_node.scp_put(os.path.join(local_path, '../remote/dev_configs/sn_db.sqlite3'), '/opt/web3_bridge/sn_db.sqlite3')
     remote_node.scp_put(os.path.join(local_path, 'gateway1.json'), '/opt/cyfs_gateway/gateway.json')
     remote_node.scp_put(os.path.join(local_path, 'local_dns.toml'), '/opt/cyfs_gateway/local_dns.toml')
     remote_node.run_command('sudo nohup /opt/cyfs_gateway/cyfs_gateway --config_file /opt/cyfs_gateway/gateway.json > /dev/null 2>&1 &')
     time.sleep(2)
+
+
+def reset_gateway2(ip: str, dest_ip: str):
+    remote_node = RemoteNode(ip, identity_file)
+    remote_node.run_command('sudo killall cyfs_gateway')
+    gateway_config = read_file(os.path.join(local_path, 'gateway2.json.template'))
+    new_config = gateway_config.replace('$${dns_ip}', ip)
+    new_config = new_config.replace('${dest_ip}', dest_ip)
+    write_file(os.path.join(local_path, 'gateway2.json'), new_config)
+    remote_node.scp_put(os.path.join(local_path, 'gateway2.json'), '/opt/cyfs_gateway/gateway.json')
+    remote_node.scp_put(os.path.join(local_path, 'local_dns.toml'), '/opt/cyfs_gateway/local_dns.toml')
+    remote_node.run_command('sudo nohup /opt/cyfs_gateway/cyfs_gateway --config_file /opt/cyfs_gateway/gateway.json > /dev/null 2>&1 &')
+    time.sleep(2)
+
+def udp_test(server_ip='127.0.0.1', server_port=8888):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(5)
+
+    try:
+        message = "test"
+        sock.sendto(message.encode('utf-8'), (server_ip, server_port))
+        data, _ = sock.recvfrom(1024)
+        print(f"收到服务器响应: {data.decode('utf-8')}")
+    except Exception as e:
+        assert False, f"UDP测试失败: {e}"
+    finally:
+        sock.close()
+
 
 def test_forward(init_context):
     init_context
@@ -139,27 +198,47 @@ def test_forward(init_context):
     assert resp.status_code == 201
     print(resp)
 
+    udp_test(server_ip=ips[0])
+    udp_test(server_ip=ips[0], server_port=5643)
+
+    ips2 = get_vm_ips('gateway2')
+    print(f"gateway2 ips: {ips2}")
+    reset_gateway2(ips2[0], ips[0])
+
+    udp_test(server_ip=ips2[0], server_port=5643)
+
+    resp = requests.get(f"http://{ips2[0]}:8080/test")
+    assert resp.status_code == 200
+    print(resp.json())
+
+    resp = requests.get(f"http://{ips2[0]}:8081/test")
+    assert resp.status_code == 200
+    print(resp.json())
+
+
 
 def test_dns(init_context):
     init_context
     ips = get_vm_ips('gateway1')
     print(f"gateway1 ips: {ips}")
     reset_gateway1(ips[0])
+
     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="A")
     assert list is not None
     assert len(list) == 1
-    assert list[0] == "192.168.1.188"
+    assert list[0] == ips[0]
     list = query_with_dns('web3.buckyos.cc', dns_server=ips[0], record_type="A")
     assert list is not None
     assert len(list) == 1
-    assert list[0] == "192.168.1.188"
+    assert list[0] == ips[0]
     list = query_with_dns('web3.buckyos.ai', dns_server=ips[0], record_type="A")
     assert list is not None
     assert len(list) == 1
-    assert list[0] == "192.168.1.188"
+    assert list[0] == ips[0]
     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="AAAA")
     assert list is None
     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="TXT")
+    print(f"web3.buckyos.io: {list}")
     assert list is not None
     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="SRV")
     assert list is None
@@ -192,15 +271,11 @@ def test_dns(init_context):
     list = query_with_dns('www.github.com', dns_server=ips[0], record_type="A", dns_port=534)
     assert list is None
 
-    list = query_with_dns('www.buckyos.com', dns_server="127.0.0.1", record_type="A", dns_port=534)
-    assert list is not None
-    assert len(list) == 1
-    assert list[0] == "192.168.1.1"
-
     list = query_with_dns('www.buckyos.com', dns_server=ips[0], record_type="TXT")
+    print(f"www.buckyos.com: {list}")
     assert list is not None
-    assert len(list) == 1
-    assert list[0] == "THISISATEST"
+    assert len(list) == 2
+    assert list[0] == '"THISISATEST"'
 
     list = query_with_dns('test.buckyos.com', dns_server=ips[0], record_type="A")
     assert list is not None

@@ -5,7 +5,7 @@
     "main_sn" : {
       "type" : "cyfs-sn",
       "host":"web3.buckyos.io",
-      "ip":"192.168.1.188",
+      "ip":"${local_ip}",
       "aliases":["web3.buckyos.cc", "web3.buckyos.ai"],
       "zone_config_jwt":"TODO",
       "zone_config_pkx":"TODO"
@@ -176,7 +176,7 @@
     },
     "main_dns_server":{
       "type":"cyfs-dns",
-      "bind":"$${dns_ip}",
+      "bind":"${dns_ip}",
       "port": 53,
       "resolver_chain": [
         {
@@ -197,7 +197,7 @@
     },
      "second_dns_server":{
        "type":"cyfs-dns",
-       "bind":"$${dns_ip}",
+       "bind":"${dns_ip}",
        "port": 534,
        "resolver_chain": [
          {
@@ -219,9 +219,17 @@
       "type":"forward",
 	  "target":"tcp:///127.0.0.1:8000"
     },
+    "rtcp://0.0.0.0:8081":{
+      "type":"forward",
+	  "target":"tcp:///127.0.0.1:8000"
+    },
     "tcp://0.0.0.0:443":{
       "type":"server",
       "id":"main_http_server"
+    },
+    "udp://0.0.0.0:5643": {
+      "type": "forward",
+      "target": "udp:///127.0.0.1:8888"
     }
   },
   "includes": []

@@ -1749,18 +1749,18 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             {
                 "kty": "OKP",
                 "crv": "Ed25519",
-                "x": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc"
+                "x": "5bUuyWLOKyCre9az_IhJVIuOw8bA0gyKjstcYGHbaPE"
             }
         );
         let ood_key_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(ood_public_key).unwrap();
         let mut device_config = DeviceConfig::new(
             "ood1",
-            "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
+            "5bUuyWLOKyCre9az_IhJVIuOw8bA0gyKjstcYGHbaPE".to_string(),
         );
         device_config.iss = "did:bns:lzc".to_string();
 
         let json_str = serde_json::to_string(&device_config).unwrap();
-        println!("ood json_str: {:?}", json_str);
+        println!("ood json_str: {}", json_str);
 
         let encoded = device_config.encode(Some(&owner_private_key)).unwrap();
         println!("ood encoded: {:?}", encoded);

@@ -193,4 +193,5 @@ def query_with_dns(domain, dns_server="8.8.8.8", record_type="A", dns_port=53) -
             records.append(record.to_text())
         return records
     except Exception as e:
+        print(f"DNS query failed: {e}")
         return None
