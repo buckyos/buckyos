@@ -384,7 +384,7 @@ impl ObjectArray {
         Ok(())
     }
 
-    pub async fn save(&mut self) -> NdnResult<()> {
+    pub async fn save(&self) -> NdnResult<()> {
         let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
         let mut writer = factory
             .open_writer(

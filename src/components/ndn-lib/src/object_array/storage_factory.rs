@@ -67,9 +67,6 @@ impl ObjectArrayStorageFactory {
                 let writer = ObjectArrayJSONWriter::new(file_path);
                 Ok(Box::new(writer))
             }
-            ObjectArrayStorageType::SQLite => {
-                unimplemented!("SQLite storage is not implemented yet");
-            }
         }
     }
 
@@ -135,9 +132,6 @@ impl ObjectArrayStorageFactory {
             ObjectArrayStorageType::JSONFile => {
                 self.data_path.join(format!("{}.json", id.to_base32()))
             }
-            ObjectArrayStorageType::SQLite => {
-                unimplemented!("SQLite storage is not implemented yet")
-            }
         };
 
         self.open_inner(&file_path, readonly, storage_type).await
@@ -157,9 +151,6 @@ impl ObjectArrayStorageFactory {
             ObjectArrayStorageType::JSONFile => {
                 let reader = ObjectArrayJSONReader::open(&file_path, readonly).await?;
                 Ok(reader.into_cache())
-            }
-            ObjectArrayStorageType::SQLite => {
-                unimplemented!("SQLite storage is not implemented yet");
             }
         }
     }

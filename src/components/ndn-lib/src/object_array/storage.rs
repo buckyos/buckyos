@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObjectArrayStorageType {
     Arrow,
-    SQLite,
     JSONFile,
 }
 
@@ -26,6 +25,7 @@ impl Default for ObjectArrayCacheType {
         ObjectArrayCacheType::Memory
     }
 }
+
 #[async_trait::async_trait]
 pub trait ObjectArrayInnerCache: Send + Sync {
     fn get_type(&self) -> ObjectArrayCacheType;
