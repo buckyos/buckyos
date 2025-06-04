@@ -1,11 +1,13 @@
 use crate::NdnResult;
 use crate::ObjectArray;
 use crate::ObjectArrayOwnedIter;
-use crate::{ChunkId, ChunkIdRef, HashMethod, ObjId, OBJ_TYPE_CHUNK_LIST};
+use crate::{ChunkId, ChunkIdRef, HashMethod, OBJ_TYPE_CHUNK_LIST};
 use core::hash;
 use serde::{Deserialize, Serialize};
 use std::io::SeekFrom;
 use std::ops::{Deref, DerefMut};
+use crate::object::{build_named_object_by_json, ObjId};
+
 
 pub const CHUNK_LIST_MODE_THRESHOLD: usize = 1024; // Threshold for chunk list normal and simple mode
 
@@ -13,6 +15,14 @@ pub const CHUNK_LIST_MODE_THRESHOLD: usize = 1024; // Threshold for chunk list n
 pub struct ChunkListMeta {
     pub total_size: u64,       // Total size of the chunk list
     pub fix_size: Option<u64>, // Fixed size of each chunk, if None, it is a var chunk size list
+}
+
+// Use to calculate the ChunkListId
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkListBody {
+    pub object_array: ObjId,
+    pub total_size: u64,
+    pub fix_size: Option<u64>,
 }
 
 pub struct ChunkList {
@@ -34,10 +44,6 @@ impl DerefMut for ChunkList {
 }
 
 impl ChunkList {
-    pub fn new_by_obj_data(obj_data: serde_json::Value) -> Self {
-        unimplemented!()
-    }
-
     pub fn new(meta: ChunkListMeta, list: ObjectArray) -> Self {
         Self {
             meta,
@@ -46,19 +52,19 @@ impl ChunkList {
     }
     
     // Load an existing chunk list from the object id.
-    pub async fn open(obj_id: &ObjId) -> NdnResult<Self> {
-        let chunk_list_imp = ObjectArray::open(obj_id, true).await?;
-        let meta_str = chunk_list_imp.get_meta()?.ok_or_else(|| {
-            let msg = format!("Chunk list meta not found for {}", obj_id);
-            error!("{}", msg);
-            crate::NdnError::InvalidData(msg)
-        })?;
+    pub async fn open(obj_data: serde_json::Value) -> NdnResult<Self> {
+        let body: ChunkListBody = serde_json::from_value(obj_data)
+            .map_err(|e| {
+                let msg = format!("Failed to parse chunk list body: {}", e);
+                error!("{}", msg);
+                crate::NdnError::InvalidData(msg)
+            })?;
 
-        let meta: ChunkListMeta = serde_json::from_str(&meta_str).map_err(|e| {
-            let msg = format!("Failed to deserialize chunk list meta: {}", e);
-            error!("{}", msg);
-            crate::NdnError::InvalidData(msg)
-        })?;
+        let chunk_list_imp = ObjectArray::open(&body.object_array, true).await?;
+        let meta = ChunkListMeta {
+            total_size: body.total_size,
+            fix_size: body.fix_size,
+        };
 
         Ok(Self {
             meta,
@@ -79,15 +85,27 @@ impl ChunkList {
         (self.meta, self.chunk_list_imp)
     }
 
-    // The objid should be flush and calculate when loaded or built.
     pub fn get_chunk_list_id(&self) -> ObjId {
+        self.calc_chunk_list_id().0
+    }
+
+    // The objid should be flush and calculate when loaded or built.
+    pub fn calc_chunk_list_id(&self) -> (ObjId, String) {
         let id = self.chunk_list_imp.get_obj_id().unwrap();
-        let chunk_list_id = ObjId {
-            obj_type: OBJ_TYPE_CHUNK_LIST.to_owned(),
-            obj_hash: id.obj_hash,
+
+        let body = ChunkListBody {
+            object_array: id,
+            total_size: self.meta.total_size,
+            fix_size: self.meta.fix_size,
         };
 
-        chunk_list_id
+        let (obj_id, s) = build_named_object_by_json(
+            OBJ_TYPE_CHUNK_LIST,
+            &serde_json::to_value(&body).expect("Failed to serialize ChunkListBody"),
+        );
+
+        // Return the object id and its string representation
+        (obj_id, s)
     }
 
     pub fn get_hash_method(&self) -> HashMethod {

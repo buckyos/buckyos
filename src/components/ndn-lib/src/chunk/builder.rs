@@ -1,10 +1,8 @@
-use super::chunk_list::{
-    ChunkList, ChunkListMeta, CHUNK_LIST_MODE_THRESHOLD,
-};
-use crate::object_array::{ObjectArray, ObjectArrayStorageType};
-use crate::hash::HashMethod;
-use crate::NdnResult;
 use super::chunk::ChunkId;
+use super::chunk_list::{ChunkList, ChunkListBody, ChunkListMeta, CHUNK_LIST_MODE_THRESHOLD};
+use crate::hash::HashMethod;
+use crate::object_array::{ObjectArray, ObjectArrayStorageType};
+use crate::NdnResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkListMode {
@@ -34,6 +32,27 @@ impl ChunkListBuilder {
         }
     }
 
+    pub async fn open(obj_data: serde_json::Value) -> NdnResult<Self> {
+        let body: ChunkListBody = serde_json::from_value(obj_data).map_err(|e| {
+            let msg = format!("Failed to parse chunk list body: {}", e);
+            error!("{}", msg);
+            crate::NdnError::InvalidData(msg)
+        })?;
+
+        let chunk_list_imp = ObjectArray::open(&body.object_array, false).await?;
+        let meta = ChunkListMeta {
+            total_size: body.total_size,
+            fix_size: body.fix_size,
+        };
+
+        let ret = ChunkListBuilder {
+            meta,
+            list: chunk_list_imp,
+        };
+
+        Ok(ret)
+    }
+
     pub fn from_chunk_list(chunk_list: &ChunkList) -> NdnResult<Self> {
         let chunk_list = chunk_list.clone(false)?; // Clone in read-write mode
         let (meta, chunk_list) = chunk_list.into_parts();
@@ -54,10 +73,7 @@ impl ChunkListBuilder {
             chunk_list
         };
 
-        let ret = Self {
-            meta,
-            list,
-        };
+        let ret = Self { meta, list };
 
         Ok(ret)
     }

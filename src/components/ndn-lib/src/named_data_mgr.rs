@@ -771,7 +771,7 @@ impl NamedDataMgr {
             mgr.get_object_impl(chunklist_id, None).await?
         };
         
-        let chunklist = ChunkList::new_by_obj_data(obj_data);
+        let chunklist = ChunkList::open(obj_data).await?;
         
         // 3. 计算起始位置
         let (chunk_index, chunk_offset) = chunklist.get_chunk_index_by_offset(seek_from)?;
