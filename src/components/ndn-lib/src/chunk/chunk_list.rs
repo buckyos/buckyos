@@ -11,8 +11,8 @@ pub const CHUNK_LIST_MODE_THRESHOLD: usize = 1024; // Threshold for chunk list n
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkListMeta {
-    total_size: u64,       // Total size of the chunk list
-    fix_size: Option<u64>, // Fixed size of each chunk, if None, it is a var chunk size list
+    pub total_size: u64,       // Total size of the chunk list
+    pub fix_size: Option<u64>, // Fixed size of each chunk, if None, it is a var chunk size list
 }
 
 pub struct ChunkList {
@@ -38,6 +38,13 @@ impl ChunkList {
         unimplemented!()
     }
 
+    pub fn new(meta: ChunkListMeta, list: ObjectArray) -> Self {
+        Self {
+            meta,
+            chunk_list_imp: list,
+        }
+    }
+    
     // Load an existing chunk list from the object id.
     pub async fn open(obj_id: &ObjId) -> NdnResult<Self> {
         let chunk_list_imp = ObjectArray::open(obj_id, true).await?;
@@ -57,6 +64,19 @@ impl ChunkList {
             meta,
             chunk_list_imp,
         })
+    }
+
+    pub fn clone(&self, read_only: bool) -> NdnResult<Self> {
+        let ret = Self {
+            meta: self.meta.clone(),
+            chunk_list_imp: self.chunk_list_imp.clone(read_only)?,
+        };
+
+        Ok(ret)
+    }
+
+    pub fn into_parts(self) -> (ChunkListMeta, ObjectArray) {
+        (self.meta, self.chunk_list_imp)
     }
 
     // The objid should be flush and calculate when loaded or built.
@@ -471,158 +491,5 @@ impl IntoIterator for ChunkList {
 
     fn into_iter(self) -> Self::IntoIter {
         ChunkListOwnedIter::new(self)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChunkListMode {
-    Simple, // Simple mode, used for small chunk lists
-    Normal, // Normal mode, used for larger chunk lists
-}
-
-pub struct ChunkListBuilder {
-    meta: ChunkListMeta,
-    list: ObjectArray,
-}
-
-impl ChunkListBuilder {
-    pub fn new(hash_method: HashMethod, count: Option<usize>) -> Self {
-        let mode = Self::select_mode(count);
-        let storage_type = match mode {
-            ChunkListMode::Simple => crate::ObjectArrayStorageType::JSONFile,
-            ChunkListMode::Normal => crate::ObjectArrayStorageType::Arrow,
-        };
-
-        Self {
-            meta: ChunkListMeta {
-                total_size: 0,
-                fix_size: None,
-            },
-            list: ObjectArray::new(hash_method, Some(storage_type)),
-        }
-    }
-
-    pub fn from_chunk_list(chunk_list: &ChunkList) -> NdnResult<Self> {
-        let ret = Self {
-            meta: chunk_list.meta.clone(),
-            list: chunk_list.chunk_list_imp.clone(false)?, // Clone in read-write mode
-        };
-
-        Ok(ret)
-    }
-
-    pub fn from_chunk_list_owned(chunk_list: ChunkList) -> Self {
-        let ret = Self {
-            meta: chunk_list.meta,
-            list: chunk_list.chunk_list_imp, // Clone in read-write mode
-        };
-
-        ret
-    }
-
-    pub fn select_mode(count: Option<usize>) -> ChunkListMode {
-        if let Some(c) = count {
-            if c <= CHUNK_LIST_MODE_THRESHOLD {
-                ChunkListMode::Simple
-            } else {
-                ChunkListMode::Normal
-            }
-        } else {
-            ChunkListMode::Normal // Default to Normal if count is None
-        }
-    }
-
-    pub fn with_total_size(mut self, size: u64) -> Self {
-        self.meta.total_size = size;
-        self
-    }
-
-    pub fn with_fixed_size(mut self, size: u64) -> Self {
-        self.meta.fix_size = Some(size);
-        self
-    }
-
-    pub fn with_var_size(mut self) -> Self {
-        self.meta.fix_size = None;
-        self
-    }
-
-    // Just append the chunk id to the list, no need to increment total size.
-    pub fn append(&mut self, chunk_id: ChunkId) -> NdnResult<()> {
-        let obj_id = chunk_id.into();
-        self.list.append_object(&obj_id)?;
-
-        Ok(())
-    }
-
-    // Just insert the chunk id at the specified index, no need to increment total size.
-    pub fn insert(&mut self, index: usize, chunk_id: ChunkId) -> NdnResult<()> {
-        let obj_id = chunk_id.into();
-        self.list.insert_object(index, &obj_id)?;
-
-        Ok(())
-    }
-
-    // Append a chunk with its size, and update the total size.
-    pub fn append_with_size(&mut self, chunk_id: ChunkId, size: u64) -> NdnResult<()> {
-        let obj_id = chunk_id.into();
-        self.list.append_object(&obj_id)?;
-
-        // Update total size
-        self.meta.total_size += size;
-
-        Ok(())
-    }
-
-    // Insert a chunk with its size at the specified index, and update the total size.
-    pub fn insert_with_size(
-        &mut self,
-        index: usize,
-        chunk_id: ChunkId,
-        size: u64,
-    ) -> NdnResult<()> {
-        let obj_id = chunk_id.into();
-        self.list.insert_object(index, &obj_id)?;
-
-        // Update total size
-        self.meta.total_size += size;
-
-        Ok(())
-    }
-
-    pub async fn build(mut self) -> NdnResult<ChunkList> {
-        let meta_str = serde_json::to_string(&self.meta).map_err(|e| {
-            let msg = format!("Failed to serialize chunk list meta: {}", e);
-            error!("{}", msg);
-            crate::NdnError::InvalidData(msg)
-        })?;
-
-        self.list.set_meta(Some(meta_str));
-
-        // First, flush the list to ensure the mtree is built and the object id is calculated.
-        self.list.flush().await?;
-
-        // Ensure the object mode is set correctly
-        let len = self.list.len();
-        match Self::select_mode(Some(len)) {
-            ChunkListMode::Simple => {
-                self.list
-                    .change_storage_type(crate::ObjectArrayStorageType::JSONFile);
-            }
-            ChunkListMode::Normal => {
-                self.list
-                    .change_storage_type(crate::ObjectArrayStorageType::Arrow);
-            }
-        }
-
-        // Save
-        self.list.save().await?;
-
-        let ret = ChunkList {
-            meta: self.meta,
-            chunk_list_imp: self.list,
-        };
-
-        Ok(ret)
     }
 }
