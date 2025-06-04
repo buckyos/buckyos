@@ -1,5 +1,6 @@
 use crate::NdnResult;
 use crate::ObjectArray;
+use crate::ObjectArrayOwnedIter;
 use crate::{ChunkId, ChunkIdRef, HashMethod, ObjId, OBJ_TYPE_CHUNK_LIST};
 use core::hash;
 use serde::{Deserialize, Serialize};
@@ -38,9 +39,7 @@ impl ChunkList {
     }
 
     // Load an existing chunk list from the object id.
-    pub async fn open(
-        obj_id: &ObjId,
-    ) -> NdnResult<Self> {
+    pub async fn open(obj_id: &ObjId) -> NdnResult<Self> {
         let chunk_list_imp = ObjectArray::open(obj_id, true).await?;
         let meta_str = chunk_list_imp.get_meta()?.ok_or_else(|| {
             let msg = format!("Chunk list meta not found for {}", obj_id);
@@ -81,6 +80,10 @@ impl ChunkList {
 
     pub fn get_len(&self) -> usize {
         self.chunk_list_imp.len()
+    }
+
+    pub fn iter(&self) -> ChunkListIter<'_> {
+        ChunkListIter::new(self)
     }
 
     pub fn is_chunklist(obj_id: &ObjId) -> bool {
@@ -389,6 +392,88 @@ impl ChunkList {
     }
 }
 
+pub struct ChunkListIter<'a> {
+    iter: crate::ObjectArrayIter<'a>,
+}
+
+impl<'a> ChunkListIter<'a> {
+    pub fn new(chunk_list: &'a ChunkList) -> Self {
+        Self {
+            iter: chunk_list.chunk_list_imp.iter(),
+        }
+    }
+}
+
+impl<'a> Iterator for ChunkListIter<'a> {
+    type Item = ChunkId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|obj_id| {
+            obj_id.into() // Convert ObjId to ChunkId
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+impl<'a> DoubleEndedIterator for ChunkListIter<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.iter.next_back().map(|obj_id| {
+            obj_id.into() // Convert ObjId to ChunkId
+        })
+    }
+}
+
+impl<'a> ExactSizeIterator for ChunkListIter<'a> {}
+
+
+pub struct ChunkListOwnedIter {
+    iter: ObjectArrayOwnedIter,
+}
+
+impl ChunkListOwnedIter {
+    pub fn new(chunk_list: ChunkList) -> Self {
+        Self {
+            iter: chunk_list.chunk_list_imp.into_iter(),
+        }
+    }
+}
+
+impl Iterator for ChunkListOwnedIter {
+    type Item = ChunkId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|obj_id| {
+            obj_id.into() // Convert ObjId to ChunkId
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+impl ExactSizeIterator for ChunkListOwnedIter {}
+
+impl DoubleEndedIterator for ChunkListOwnedIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.iter.next_back().map(|obj_id| {
+            obj_id.into() // Convert ObjId to ChunkId
+        })
+    }
+}
+
+impl IntoIterator for ChunkList {
+    type Item = ChunkId;
+    type IntoIter = ChunkListOwnedIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ChunkListOwnedIter::new(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkListMode {
     Simple, // Simple mode, used for small chunk lists
@@ -426,9 +511,7 @@ impl ChunkListBuilder {
         Ok(ret)
     }
 
-    pub fn from_chunk_list_owned(
-        chunk_list: ChunkList,
-    ) -> Self {
+    pub fn from_chunk_list_owned(chunk_list: ChunkList) -> Self {
         let ret = Self {
             meta: chunk_list.meta,
             list: chunk_list.chunk_list_imp, // Clone in read-write mode
@@ -535,7 +618,7 @@ impl ChunkListBuilder {
         // Save
         self.list.save().await?;
 
-        let ret=  ChunkList {
+        let ret = ChunkList {
             meta: self.meta,
             chunk_list_imp: self.list,
         };

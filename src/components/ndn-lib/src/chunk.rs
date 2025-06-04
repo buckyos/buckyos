@@ -142,6 +142,15 @@ impl Into<ObjId> for ChunkId {
     }
 }
 
+impl From<ObjId> for ChunkId {
+    fn from(obj_id: ObjId) -> Self {
+        Self {
+            hash_type: obj_id.obj_type,
+            hash_result: obj_id.obj_hash,
+        }
+    }
+}
+
 pub struct ChunkIdRef<'a> {
     pub hash_type: &'a str,
     pub hash_result: &'a [u8],
