@@ -772,17 +772,20 @@ impl NamedDataMgr {
         };
         
         let chunklist = ChunkList::open(obj_data).await?;
+        let total_size = chunklist.get_total_size();
         
         // 3. 计算起始位置
         let (chunk_index, chunk_offset) = chunklist.get_chunk_index_by_offset(seek_from)?;
         
         // 4. 获取第一个 chunk 的 reader
-        let first_chunk_id = chunklist.get_object(chunk_index as usize)?;
+        let first_chunk_id = chunklist.get_chunk(chunk_index as usize)?;
         if first_chunk_id.is_none() {
-            return Err(NdnError::NotFound(format!("chunk {} not found", chunk_index)));
+            let msg = format!("chunk {} not found in chunklist {}", chunk_index, chunklist_id);
+            warn!("open_chunklist_reader: {}", msg);
+            return Err(NdnError::NotFound(msg));
         }
+
         let first_chunk_id = first_chunk_id.unwrap();
-        let first_chunk_id = ChunkId::from_obj_id(&first_chunk_id);
         
         let (first_reader, _) = {
             let mgr = named_mgr.lock().await;
@@ -794,8 +797,10 @@ impl NamedDataMgr {
         //    .into_iter()
         //    .skip(chunk_index + 1);
         let chunk_ids = vec![first_chunk_id];
-        
-        let stream = stream::iter(chunk_ids.iter())
+        let renmaining_chunks = chunklist.into_iter()
+            .skip(chunk_index as usize + 1);
+
+        let stream = stream::iter(renmaining_chunks)
             .map(move |chunk_id| {
                 let mgr_id = mgr_id.map(|s| s.to_string());
                 async move {
@@ -814,7 +819,7 @@ impl NamedDataMgr {
         // 7. 组合 readers
         //let combined_reader = Box::pin(first_reader.chain(stream_reader));
         
-        Ok((first_reader, chunklist.get_total_size()))
+        Ok((first_reader, total_size))
     }
 
     //return chunk_id,progress_info 

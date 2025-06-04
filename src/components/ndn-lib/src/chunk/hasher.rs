@@ -1,9 +1,9 @@
-use super::chunk::{ChunkId, CACL_HASH_PIECE_SIZE, QCID_HASH_PIECE_SIZE, COPY_CHUNK_BUFFER_SIZE};
+use super::chunk::{ChunkId, CALC_HASH_PIECE_SIZE, COPY_CHUNK_BUFFER_SIZE, QCID_HASH_PIECE_SIZE};
 use crate::hash::DEFAULT_HASH_METHOD;
 use crate::{HashHelper, HashMethod, Hasher, NdnError, NdnResult};
 use sha2::{Digest, Sha256};
-use std::{future::Future, io::SeekFrom, ops::Range, path::PathBuf, pin::Pin};
 use std::str::FromStr;
+use std::{future::Future, io::SeekFrom, ops::Range, path::PathBuf, pin::Pin};
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite};
 
 pub struct ChunkHasher {
@@ -85,7 +85,7 @@ impl ChunkHasher {
     ) -> NdnResult<(Vec<u8>, u64)> {
         //TODO: add other hash type support
 
-        let mut buffer = vec![0u8; CACL_HASH_PIECE_SIZE as usize];
+        let mut buffer = vec![0u8; CALC_HASH_PIECE_SIZE as usize];
         let mut total_read = 0;
         loop {
             let n = reader.read(&mut buffer).await.map_err(|e| {

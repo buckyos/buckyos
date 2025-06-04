@@ -149,6 +149,15 @@ impl ChunkList {
         }
     }
 
+    pub fn get_chunk(&self, index: usize) -> NdnResult<Option<ChunkId>> {
+        let obj_id = self.chunk_list_imp.get_object(index)?;
+        if let Some(obj_id) = obj_id {
+            Ok(Some(ChunkId::from(obj_id)))
+        } else {
+            Ok(None)
+        }
+    }
+
     //return (chunk_index,chunk_offset)
     pub fn get_chunk_index_by_offset(&self, offset: SeekFrom) -> NdnResult<(u64, u64)> {
         match offset {

@@ -1,24 +1,23 @@
+use crate::hash::*;
+use crate::{object::ObjId, NdnError, NdnResult};
 use async_trait::async_trait;
-use base58::{ToBase58, FromBase58};
-use sha2::{Sha256, Digest};
-use crypto_common::hazmat::{SerializedState, SerializableState};
-use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite};
-use std::{future::Future, io::SeekFrom, ops::Range, path::PathBuf, pin::Pin};
-use serde_json::{json, Value};
+use base58::{FromBase58, ToBase58};
+use crypto_common::hazmat::{SerializableState, SerializedState};
 use hex;
 use log::*;
-use crate::{object::{ObjId}, NdnError, NdnResult};
-use crate::hash::*;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::str::FromStr;
+use std::{future::Future, io::SeekFrom, ops::Range, path::PathBuf, pin::Pin};
+use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite};
 
-pub const CACL_HASH_PIECE_SIZE: u64 = 1024*1024;
+pub const CALC_HASH_PIECE_SIZE: u64 = 1024 * 1024;
 pub const QCID_HASH_PIECE_SIZE: u64 = 4096;
-pub const MAX_CHUNK_SIZE: u64 = 1024*1024*1024*2;
-pub const COPY_CHUNK_BUFFER_SIZE: usize = CACL_HASH_PIECE_SIZE as usize;
+pub const MAX_CHUNK_SIZE: u64 = 1024 * 1024 * 1024 * 2;
+pub const COPY_CHUNK_BUFFER_SIZE: usize = CALC_HASH_PIECE_SIZE as usize;
 
 pub type ChunkReader = Pin<Box<dyn AsyncRead + Unpin + Send>>;
 pub type ChunkWriter = Pin<Box<dyn AsyncWrite + Unpin + Send>>;
-
 
 pub struct ChunkIdHashHelper;
 
@@ -35,7 +34,7 @@ impl ChunkIdHashHelper {
             Ok((length, _)) => Some(length),
             Err(_) => None, // If decoding fails, return None
         }
-    }    
+    }
 
     pub fn get_hash<'a>(hash_type: &str, hash_result: &'a [u8]) -> &'a [u8] {
         //mix hash can get length from hash_hex_string
@@ -46,9 +45,7 @@ impl ChunkIdHashHelper {
         // Skip the varint length part
         // let mut cursor = std::io::Cursor::new(&self.hash_result);
         match unsigned_varint::decode::u64(&hash_result) {
-            Ok((_length, hash)) => {
-                hash
-            },
+            Ok((_length, hash)) => hash,
             Err(_) => &hash_result, // If decoding fails, return the whole hash result
         }
     }
@@ -56,20 +53,26 @@ impl ChunkIdHashHelper {
 
 //We support 3 types of chunktype:qcid, sha256, mix at this time
 //单个
-#[derive(Debug, Clone,Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ChunkId {
-    pub hash_type:String,
+    pub hash_type: String,
     pub hash_result: Vec<u8>,
 }
 
 //TODO: add mix hash support
 impl ChunkId {
-    pub fn new(chunk_id_str:&str) -> NdnResult<Self> {
+    pub fn new(chunk_id_str: &str) -> NdnResult<Self> {
         let obj_id = ObjId::new(chunk_id_str)?;
         if !obj_id.is_chunk() {
-            return Err(NdnError::InvalidId(format!("invalid chunk id:{}",chunk_id_str)));
+            return Err(NdnError::InvalidId(format!(
+                "invalid chunk id:{}",
+                chunk_id_str
+            )));
         }
-        Ok(Self { hash_type:obj_id.obj_type, hash_result:obj_id.obj_hash })
+        Ok(Self {
+            hash_type: obj_id.obj_type,
+            hash_result: obj_id.obj_hash,
+        })
     }
 
     pub fn as_chunk_id_ref(&self) -> ChunkIdRef {
@@ -87,7 +90,10 @@ impl ChunkId {
     }
 
     pub fn from_obj_id(obj_id: &ObjId) -> Self {
-        Self { hash_type:obj_id.obj_type.clone(), hash_result:obj_id.obj_hash.clone() }
+        Self {
+            hash_type: obj_id.obj_type.clone(),
+            hash_result: obj_id.obj_hash.clone(),
+        }
     }
 
     pub fn from_hash_result(data_length: u64, hash_result: &[u8], hash_type: &str) -> Self {
@@ -98,7 +104,10 @@ impl ChunkId {
         encoded.extend_from_slice(length_encoded);
         encoded.extend_from_slice(hash_result);
 
-        Self { hash_type:hash_type.to_string(), hash_result: encoded.to_vec() }
+        Self {
+            hash_type: hash_type.to_string(),
+            hash_result: encoded.to_vec(),
+        }
     }
 
     pub fn to_string(&self) -> String {
@@ -106,13 +115,16 @@ impl ChunkId {
         format!("{}:{}", self.hash_type, hex_str)
     }
 
-    pub fn to_base32(&self)->String {
-        let mut vec_result:Vec<u8> = Vec::new();
+    pub fn to_base32(&self) -> String {
+        let mut vec_result: Vec<u8> = Vec::new();
         vec_result.extend_from_slice(self.hash_type.as_bytes());
         vec_result.push(b':');
         vec_result.extend_from_slice(&self.hash_result);
-        
-        base32::encode(base32::Alphabet::Rfc4648Lower{ padding: false }, &vec_result)
+
+        base32::encode(
+            base32::Alphabet::Rfc4648Lower { padding: false },
+            &vec_result,
+        )
     }
 
     pub fn to_did_string(&self) -> String {
@@ -122,13 +134,13 @@ impl ChunkId {
 
     pub fn get_length(&self) -> Option<u64> {
         ChunkIdHashHelper::get_length(&self.hash_type, &self.hash_result)
-    }    
+    }
 
     pub fn get_hash(&self) -> &[u8] {
         ChunkIdHashHelper::get_hash(&self.hash_type, &self.hash_result)
     }
 
-    pub fn equal(&self, hash_bytes: &[u8])->bool {
+    pub fn equal(&self, hash_bytes: &[u8]) -> bool {
         self.hash_result == hash_bytes
     }
 }
@@ -173,22 +185,19 @@ impl<'a> ChunkIdRef<'a> {
 
     pub fn get_length(&self) -> Option<u64> {
         ChunkIdHashHelper::get_length(self.hash_type, self.hash_result)
-    }    
+    }
 
     pub fn get_hash(&self) -> &[u8] {
         ChunkIdHashHelper::get_hash(self.hash_type, self.hash_result)
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use rand::Rng;
 
-
-    #[test] 
+    #[test]
     fn test_var_length() {
         let mut buffer = vec![0u8; 2048];
         let mut rng = rand::thread_rng();
@@ -198,7 +207,7 @@ mod tests {
         let length_encoded = unsigned_varint::encode::u64(2048, &mut length_buf);
         println!("length_encoded: {:?}", length_encoded);
 
-       // Decode length
+        // Decode length
         let (decoded_length, rest) = unsigned_varint::decode::u64(&length_encoded).unwrap();
         println!("decoded_length: {}, rest: {:?}", decoded_length, rest);
         assert_eq!(decoded_length, 2048);
@@ -209,6 +218,5 @@ mod tests {
         let length = chunk_id.get_length().unwrap_or(0);
         println!("chunk_id length: {}", length);
         assert_eq!(length, 2048);
-
     }
 }
