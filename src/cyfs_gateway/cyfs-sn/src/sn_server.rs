@@ -549,15 +549,14 @@ impl NsProvider for SNServer {
                 record_type.to_string()
             )));
         }
-        let mut req_full_name = name.to_string();
-        if !name.ends_with(".") {
-            req_full_name = format!("{}.", name);
+        let mut req_real_name:String = name.to_string();
+        if name.ends_with(".") {
+            req_real_name = name.trim_end_matches('.').to_string();
         }
         
-        if name == self.server_host
-            || req_full_name == self.server_host
-            || self.server_aliases.contains(&req_full_name)
-            || self.server_aliases.contains(&name.to_string())
+        if req_real_name == self.server_host 
+        || self.server_aliases.contains(&req_real_name)
+
         {
             //返回当前服务器的地址
             match record_type {

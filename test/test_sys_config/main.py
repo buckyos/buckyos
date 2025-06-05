@@ -218,8 +218,27 @@ def system():
         if line.startswith('g'):
             base_policy_group_rules.append(line)
     test_permission_rules(base_policy_rules, base_policy_group_rules)
-    return
 
+    model = buckycli(["--get", f"system/rbac/model"])
+    result = isToml(model)
+    assert result == True, "system/rbac/model is not toml"
+
+    policy = buckycli(["--get", f"system/rbac/policy"])
+    policy_rules = []
+    policy_group_rules =[]
+    for line in policy.split('\n'):
+        if line == "":
+            continue
+        if line.startswith('p'):
+            policy_rules.append(line)
+        if line.startswith('g'):
+            policy_group_rules.append(line)
+    test_permission_rules(policy_rules, policy_group_rules)
+
+    system_pkgs = buckycli(["--get", f"system/system_pkgs"])
+    
+
+    return
 
     for key in keys:
         stdout = buckycli(["--list", f"system/{key}"])
@@ -267,6 +286,33 @@ def buckycli(cmd: list[str]):
         sys.exit(1)
     # print(f"run `buckycli sys_config --list devices` OK, stdout: {result.returncode}")
     return result.stdout
+
+def isToml(content: str):
+    try:
+        # 简单验证TOML格式的基本结构
+        lines = content.strip().split('\n')
+        current_section = None
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            # 检查section标记 [section]
+            if line.startswith('[') and line.endswith(']'):
+                current_section = line[1:-1]
+                continue
+                
+            # 检查key-value对
+            if '=' in line:
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+                
+                # key必须存在
+                if not key:
+                    return False
+    except ValueError as e:
+        return False
+    return True
 
 
 def test_permission_rules(rules, group_rules):
