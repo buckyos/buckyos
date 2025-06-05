@@ -796,7 +796,7 @@ impl NamedDataMgr {
         //let remaining_chunks = chunklist
         //    .into_iter()
         //    .skip(chunk_index + 1);
-        let chunk_ids = vec![first_chunk_id];
+        // let first_stream = stream::once(async { first_reader });
         let renmaining_chunks = chunklist.into_iter()
             .skip(chunk_index as usize + 1);
 
@@ -814,11 +814,12 @@ impl NamedDataMgr {
             .buffered(2);  // 最多同时打开2个文件
         
         // 6. 创建 StreamReader
-        //let stream_reader = StreamReader::new(stream);
+        // let stream_reader = StreamReader::new(stream);
         
         // 7. 组合 readers
         //let combined_reader = Box::pin(first_reader.chain(stream_reader));
         
+        //let stream = first_stream.chain(stream);
         Ok((first_reader, total_size))
     }
 
@@ -996,6 +997,8 @@ impl NamedDataMgr {
     
 }
 
+
+pub type NamedDataMgrRef = Arc<tokio::sync::Mutex<NamedDataMgr>>;
 
 #[cfg(test)]
 mod tests {

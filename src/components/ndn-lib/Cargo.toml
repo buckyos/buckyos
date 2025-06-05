@@ -49,6 +49,7 @@ arrow = "55.0"
 chrono = "*"
 once_cell = "*"
 unsigned-varint = "*"
+pin-project = "*"
 
 [dev-dependencies]
 tempfile = "*"
