@@ -44,6 +44,15 @@ impl HashMethod {
         }
     }
 
+    pub fn as_mix_str(&self) -> &str {
+        match self {
+            Self::Sha256 => "mix256",
+            Self::Sha512 => "mix512",
+            Self::Blake2s256 => "mixblake2s256",
+            Self::Keccak256 => "mixkeccak256",
+        }
+    }
+
     pub fn hash_bytes(&self) -> usize {
         match self {
             Self::Sha256 => 32,
@@ -52,6 +61,19 @@ impl HashMethod {
             Self::Keccak256 => 32,
         }
     }
+
+    // Return the hash method from string, and a flag indicating if it is a mix hash
+    pub fn parse(s: &str) -> NdnResult<(Self, bool)> {
+        let is_mix = s.starts_with("mix");
+        let hash_method = HashMethod::from_str(s)?;
+        Ok((hash_method, is_mix))
+    }
+}
+
+impl ToString for HashMethod {
+    fn to_string(&self) -> String {
+        self.as_str().to_string()
+    }
 }
 
 impl FromStr for HashMethod {
@@ -59,10 +81,10 @@ impl FromStr for HashMethod {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "sha256" => Ok(Self::Sha256),
-            "sha512" => Ok(Self::Sha512),
-            "blake2s256" => Ok(Self::Blake2s256),
-            "keccak256" => Ok(Self::Keccak256),
+            "sha256" | "mix256" => Ok(Self::Sha256),
+            "sha512" | "mix512" => Ok(Self::Sha512),
+            "blake2s256" | "mixblake2s256" => Ok(Self::Blake2s256),
+            "keccak256" | "mixkeccak256" => Ok(Self::Keccak256),
             _ => {
                 let msg = format!("Invalid hash method: {}", s);
                 error!("{}", msg);

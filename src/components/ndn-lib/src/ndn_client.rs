@@ -610,7 +610,7 @@ impl NdnClient {
         let chunk_type = hasher.hash_type.clone();
         let (hash_result,_) = hasher.calc_from_reader(&mut file).await
             .map_err(|e| NdnError::Internal(format!("Failed to calculate hash: {}", e)))?;
-        let file_chunk_id = ChunkId::from_hash_result(file_size, &hash_result, &chunk_type.as_str());
+        let file_chunk_id = ChunkId::mix_from_hash_result(file_size, &hash_result, chunk_type);
  
         Ok(file_chunk_id == content_chunk_id)
     }
@@ -794,7 +794,7 @@ mod tests {
         let chunk_a_size:u64 = 1024*1024 + 321;
         let chunk_a = generate_random_bytes(chunk_a_size);
         let mut hasher = ChunkHasher::new(None).unwrap();
-        let chunk_id_a = hasher.calc_chunkid_from_bytes(&chunk_a);
+        let chunk_id_a = hasher.calc_mix_chunk_id_from_bytes(&chunk_a);
         info!("chunk_id_a:{}",chunk_id_a.to_string());
         let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_a, chunk_a_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_a).await.unwrap();
@@ -804,7 +804,7 @@ mod tests {
         let chunk_b_size:u64 = 1024*1024*3 + 321*71;
         let chunk_b = generate_random_bytes(chunk_b_size);
         let mut hasher = ChunkHasher::new(None).unwrap();
-        let chunk_id_b = hasher.calc_chunkid_from_bytes(&chunk_b);
+        let chunk_id_b = hasher.calc_mix_chunk_id_from_bytes(&chunk_b);
         info!("chunk_id_b:{}",chunk_id_b.to_string());
         let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_b, chunk_b_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_b).await.unwrap();
@@ -813,7 +813,7 @@ mod tests {
         let chunk_c_size:u64 = 1024*1024*3 + 321*71;
         let chunk_c = generate_random_bytes(chunk_c_size);
         let mut hasher = ChunkHasher::new(None).unwrap();
-        let chunk_id_c = hasher.calc_chunkid_from_bytes(&chunk_c);
+        let chunk_id_c = hasher.calc_mix_chunk_id_from_bytes(&chunk_c);
         info!("chunk_id_c:{}",chunk_id_c.to_string());
         let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_c, chunk_c_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_c).await.unwrap();

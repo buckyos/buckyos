@@ -23,30 +23,53 @@ pub struct ChunkIdHashHelper;
 
 impl ChunkIdHashHelper {
     pub fn get_length(hash_type: &str, hash_result: &[u8]) -> Option<u64> {
-        //mix hash can get length from hash_hex_string
-
         // Decode varint length from the beginning of the hash result
         if hash_result.is_empty() {
             return None;
         }
 
-        match unsigned_varint::decode::u64(&hash_result) {
-            Ok((length, _)) => Some(length),
-            Err(_) => None, // If decoding fails, return None
+        // Check if the hash type is "mix" to handle special case
+        match HashMethod::parse(hash_type) {
+            Ok((hash_method, is_mix)) => {
+                if is_mix {
+                    match unsigned_varint::decode::u64(&hash_result) {
+                        Ok((length, _)) => Some(length),
+                        Err(_) => None, // If decoding fails, return None
+                    }
+                } else {
+                    // For none-mix hash types, we assume no length encoding
+                    None
+                }
+            }
+            _ => {
+                // For other hash types, we assume no length encoding
+                None
+            }
         }
     }
 
     pub fn get_hash<'a>(hash_type: &str, hash_result: &'a [u8]) -> &'a [u8] {
         //mix hash can get length from hash_hex_string
         if hash_result.is_empty() {
-            return &[];
+            return hash_result;
         }
 
-        // Skip the varint length part
-        // let mut cursor = std::io::Cursor::new(&self.hash_result);
-        match unsigned_varint::decode::u64(&hash_result) {
-            Ok((_length, hash)) => hash,
-            Err(_) => &hash_result, // If decoding fails, return the whole hash result
+        match HashMethod::parse(hash_type) {
+            Ok((hash_method, is_mix)) => {
+                if is_mix {
+                    match unsigned_varint::decode::u64(&hash_result) {
+                        Ok((_length, hash)) => hash,
+                        Err(_) => &hash_result, // If decoding fails, directly return the whole hash result
+                    }
+                } else {
+                    // For none-mix hash types, we assume no length encoding
+                    &hash_result
+                }
+            }
+            _ => {
+                // For other hash types, we assume no length encoding
+                &hash_result
+            }
         }
     }
 }
@@ -96,7 +119,20 @@ impl ChunkId {
         }
     }
 
-    pub fn from_hash_result(data_length: u64, hash_result: &[u8], hash_type: &str) -> Self {
+    // Create a new ChunkId without length encoding
+    pub fn from_hash_result(hash_result: &[u8], hash_method: HashMethod) -> Self {
+        Self {
+            hash_type: hash_method.to_string(),
+            hash_result: hash_result.to_vec(),
+        }
+    }
+
+    // Create a new ChunkId with length encoding, in mix mode
+    pub fn mix_from_hash_result(
+        data_length: u64,
+        hash_result: &[u8],
+        hash_method: HashMethod,
+    ) -> Self {
         let mut length_buf = unsigned_varint::encode::u64_buffer();
         let length_encoded = unsigned_varint::encode::u64(data_length, &mut length_buf);
 
@@ -105,7 +141,7 @@ impl ChunkId {
         encoded.extend_from_slice(hash_result);
 
         Self {
-            hash_type: hash_type.to_string(),
+            hash_type: hash_method.as_mix_str().to_string(),
             hash_result: encoded.to_vec(),
         }
     }
@@ -212,7 +248,7 @@ mod tests {
         println!("decoded_length: {}, rest: {:?}", decoded_length, rest);
         assert_eq!(decoded_length, 2048);
 
-        let chunk_id = ChunkId::from_hash_result(2048, &buffer, "sha256");
+        let chunk_id = ChunkId::mix_from_hash_result(2048, &buffer, HashMethod::sha256);
         println!("chunk_id: {}", chunk_id.to_string());
 
         let length = chunk_id.get_length().unwrap_or(0);

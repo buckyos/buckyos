@@ -114,10 +114,16 @@ impl ChunkHasher {
         self.hasher.finalize().to_vec()
     }
 
-    pub fn calc_chunkid_from_bytes(mut self, bytes: &[u8]) -> ChunkId {
+    pub fn calc_chunk_id_from_bytes(mut self, bytes: &[u8]) -> ChunkId {
         self.hash_length += bytes.len() as u64;
         self.hasher.update_from_bytes(bytes);
         self.finalize_chunk_id()
+    }
+
+    pub fn calc_mix_chunk_id_from_bytes(mut self, bytes: &[u8]) -> ChunkId {
+        self.hash_length += bytes.len() as u64;
+        self.hasher.update_from_bytes(bytes);
+        self.finalize_mix_chunk_id()
     }
 
     pub fn update_from_bytes(&mut self, bytes: &[u8]) {
@@ -130,9 +136,13 @@ impl ChunkHasher {
     }
 
     pub fn finalize_chunk_id(self) -> ChunkId {
-        let hash_type_str = self.hash_type.as_str();
         let hash_result = self.hasher.finalize();
-        ChunkId::from_hash_result(self.hash_length, &hash_result, &hash_type_str)
+        ChunkId::from_hash_result(&hash_result, self.hash_type)
+    }
+
+    pub fn finalize_mix_chunk_id(self) -> ChunkId {
+        let hash_result = self.hasher.finalize();
+        ChunkId::mix_from_hash_result(self.hash_length, &hash_result, self.hash_type)
     }
 }
 
@@ -229,7 +239,7 @@ pub async fn calculate_file_chunk_id(
     let mut hasher = ChunkHasher::new_with_hash_type(hash_method)?;
     let (hash_result, file_size) = hasher.calc_from_reader(&mut file_reader).await?;
     Ok((
-        ChunkId::from_hash_result(file_size, &hash_result, hash_method.as_str()),
+        ChunkId::mix_from_hash_result(file_size, &hash_result, hash_method),
         file_size,
     ))
 }
