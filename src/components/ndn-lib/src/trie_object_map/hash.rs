@@ -3,7 +3,7 @@ use hash_db::Hasher;
 use generic_array::GenericArray;
 use typenum::{U64, U32};
 
-pub struct Sha256Hasher;
+pub(super) struct Sha256Hasher;
 
 impl Hasher for Sha256Hasher {
     type Out = GenericArray<u8, U32>;
@@ -16,7 +16,7 @@ impl Hasher for Sha256Hasher {
     }
 }
 
-pub struct Sha512Hasher;
+pub(super) struct Sha512Hasher;
 
 impl Hasher for Sha512Hasher {
     type Out = GenericArray<u8, U64>;
@@ -30,7 +30,7 @@ impl Hasher for Sha512Hasher {
 }
 
 #[derive(Default)]
-pub struct Blake2s256Hasher;
+pub(super) struct Blake2s256Hasher;
 
 impl Hasher for Blake2s256Hasher {
     type Out = GenericArray<u8, U32>;
@@ -44,7 +44,7 @@ impl Hasher for Blake2s256Hasher {
 }
 
 #[derive(Default)]
-pub struct Keccak256Hasher;
+pub(super) struct Keccak256Hasher;
 
 impl Hasher for Keccak256Hasher {
     type Out = GenericArray<u8, U32>;
