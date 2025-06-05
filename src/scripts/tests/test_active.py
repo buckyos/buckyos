@@ -18,19 +18,19 @@ from remote_device import remote_device
 
 @pytest.fixture(scope='module')
 def init_context():
-    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'init'], check=True)
-    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'network'], check=True)
-    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'create'], check=True)
-    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'install', '--all'], check=True)
-    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'active_sn'], check=True)
-    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'start_sn'], check=True)
-    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'active'], check=True)
-    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'start', '--all'], check=True)
+    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'init'], check=True)
+    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'network'], check=True)
+    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'create'], check=True)
+    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'install', '--all'], check=True)
+    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'active_sn'], check=True)
+    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'start_sn'], check=True)
+    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'active'], check=True)
+    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'start', '--all'], check=True)
     subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'deviceinfo'], check=True)
     with open(os.path.join(local_path, '../remote/dev_configs/device_info.json'), 'r') as f:
         resp = json.load(f)
     yield resp
-    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'clean', '--force'], check=True)
+    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'clean', '--force'], check=True)
 
 
 def parse_node_info(info: str):
@@ -142,17 +142,54 @@ def reset_active(node: str):
     time.sleep(3)
 
 
-def reset_sn_server(node: str):
+def read_file(file_path: str):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        return f.read()
+
+
+def write_file(file_path: str, content: str):
+    with open(file_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+
+def reset_sn_server(node: str, node_ip: str, config: str = "test"):
     device = remote_device(node)
     device.run_command('sudo python3 /opt/web3_bridge/stop.py')
+    gateway_config = read_file(os.path.join(local_path, 'sn.json.template'))
+    new_config = gateway_config.replace('${sn_ip}', node_ip)
+    write_file(os.path.join(local_path, 'sn.json'), new_config)
+    device.scp_put(os.path.join(local_path, 'sn.json'), '/opt/web3_bridge/web3_gateway.json')
+
+    gateway_config = read_file(os.path.join(local_path, 'zone_dns.toml.template'))
+    new_config = gateway_config.replace('${config}', f'DID={config};')
+    write_file(os.path.join(local_path, 'zone_dns.toml'), new_config)
+    device.scp_put(os.path.join(local_path, 'zone_dns.toml'), '/opt/web3_bridge/zone_dns.toml')
+
     device.scp_put(os.path.join(local_path, '../remote/dev_configs/sn_db.sqlite3'), '/opt/web3_bridge/sn_db.sqlite3')
     device.run_command('sudo python3 /opt/web3_bridge/start.py')
-    time.sleep(3)
+    time.sleep(5)
+
+
+def kill_sn_server(node: str):
+    device = remote_device(node)
+    device.run_command('sudo python3 /opt/web3_bridge/stop.py')
+    time.sleep(1)
 
 
 @pytest.mark.asyncio
 async def test_active_no_sn(init_context):
     nodes = init_context
+
+    sn_ip = None
+    for node_id, node in nodes.items():
+        if node_id == 'sn':
+            sn_ip = node.get('ipv4')[0]
+            break
+
+    if sn_ip is None:
+        assert False, "sn node not found"
+
+
     for node_id, node in nodes.items():
         if node_id == 'nodeA2':
             reset_active('nodeA2')
@@ -162,6 +199,8 @@ async def test_active_no_sn(init_context):
 
             zone_boot_config_jwt = await generate_zone_boot_config_jwt(ip, "", owner_private_key)
             print(zone_boot_config_jwt)
+
+            reset_sn_server("sn", sn_ip, zone_boot_config_jwt)
 
             zone_name = "buckyos.test.com"
             req = {
@@ -201,13 +240,16 @@ async def test_active_no_sn(init_context):
                 "admin_password_hash": hash_password("test", "testtest"),
             }
             await do_active(ip, req)
+            time.sleep(3)
+
+            device = remote_device("nodeA2")
+            device.run_command('sudo nohup /opt/buckyos/bin/node_daemon/node_daemon --enable_active > /dev/null 2>&1 &')
+            time.sleep(10)
 
 
 @pytest.mark.asyncio
-async def test_active_with_sn(init_context):
+async def test_active_no_sn2(init_context):
     nodes = init_context
-
-    # reset_sn_server('sn')
 
     sn_ip = None
     for node_id, node in nodes.items():
@@ -217,6 +259,57 @@ async def test_active_with_sn(init_context):
 
     if sn_ip is None:
         assert False, "sn node not found"
+
+
+    for node_id, node in nodes.items():
+        if node_id == 'nodeA2':
+            reset_active('nodeA2')
+            ip = node.get('ipv4')[0]
+            owner_public_key, owner_private_key = await generate_key_pair(ip)
+            public_key, private_key = await generate_key_pair(ip)
+
+            zone_boot_config_jwt = await generate_zone_boot_config_jwt(ip, "web3.buckyos.io", owner_private_key)
+            print(zone_boot_config_jwt)
+
+            reset_sn_server("sn", sn_ip, zone_boot_config_jwt)
+
+            zone_name = "buckyos.test.com"
+
+            req = {
+                "user_name": "test",
+                "zone_name": zone_name,
+                "sn_url": "",
+                "sn_host": "",
+                "gateway_type": "PortForward",
+                "public_key": owner_public_key,
+                "private_key": owner_private_key,
+                "device_public_key": public_key,
+                "device_private_key": private_key,
+                "guest_access": True,
+                "admin_password_hash": hash_password("test", "testtest"),
+            }
+            await do_active(ip, req)
+            time.sleep(3)
+
+            device = remote_device("nodeA2")
+            device.run_command('sudo nohup /opt/buckyos/bin/node_daemon/node_daemon --enable_active > /dev/null 2>&1 &')
+            time.sleep(10)
+
+
+@pytest.mark.asyncio
+async def test_active_with_sn(init_context):
+    nodes = init_context
+
+    sn_ip = None
+    for node_id, node in nodes.items():
+        if node_id == 'sn':
+            sn_ip = node.get('ipv4')[0]
+            break
+
+    if sn_ip is None:
+        assert False, "sn node not found"
+
+    reset_sn_server('sn', sn_ip)
 
     for node_id, node in nodes.items():
         if node_id == 'nodeB1':
@@ -255,8 +348,6 @@ async def test_active_with_sn(init_context):
             }
             await do_active(ip, req, False)
 
-            time.sleep(2)
-
             req = {
                 "user_name": "test",
                 "zone_name": "test.web3.buckyos.io",
@@ -271,6 +362,54 @@ async def test_active_with_sn(init_context):
                 "admin_password_hash": hash_password("test", "testtest"),
             }
             await do_active(ip, req)
+
+            resp = query_with_dns("test.web3.buckyos.io", dns_server=sn_ip)
+            print(f'test.web3.buckyos.io ips {resp}')
+
+            resp = query_with_dns("ood1.test.web3.buckyos.io", dns_server=sn_ip)
+            print(f'ood1.test.web3.buckyos.io ips {resp}')
+
+
+@pytest.mark.asyncio
+async def test_active_with_sn_invalid(init_context):
+    nodes = init_context
+
+    kill_sn_server('sn')
+
+    sn_ip = None
+    for node_id, node in nodes.items():
+        if node_id == 'sn':
+            sn_ip = node.get('ipv4')[0]
+            break
+
+    if sn_ip is None:
+        assert False, "sn node not found"
+
+    for node_id, node in nodes.items():
+        if node_id == 'nodeB1':
+            reset_active('nodeB1')
+            ip = node.get('ipv4')[0]
+            owner_public_key, owner_private_key = await generate_key_pair(ip)
+
+            public_key, private_key = await generate_key_pair(ip)
+
+            zone_boot_config_jwt = await generate_zone_boot_config_jwt(ip, "", owner_private_key)
+            print(zone_boot_config_jwt)
+
+            req = {
+                "user_name": "test",
+                "zone_name": "test.web3.buckyos.io",
+                "sn_url": "http://web3.buckyos.io/kapi/sn",
+                "sn_host": "web3.buckyos.io",
+                "gateway_type": "BuckyForward",
+                "public_key": owner_public_key,
+                "private_key": owner_private_key,
+                "device_public_key": public_key,
+                "device_private_key": private_key,
+                "guest_access": True,
+                "admin_password_hash": hash_password("test", "testtest"),
+            }
+            await do_active(ip, req, check_success=False)
 
             resp = query_with_dns("test.web3.buckyos.io", dns_server=sn_ip)
             print(f'test.web3.buckyos.io ips {resp}')
