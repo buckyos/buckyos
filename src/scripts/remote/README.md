@@ -69,7 +69,11 @@ SN: sn.buckyos.io / web3.buckyos.io
 
 ### 执行创建失败
 出现错误提示，`Error: launch failed: Remote "" is unknown or unreachable.`
-可能是vm的镜像服务器链接不上，可等待后重试，或者手动切换镜像服务。
+
+1 可能是vm的镜像服务器链接不上，可等待后重试，或者手动切换镜像服务。
+2 或者multipass daemon 没有启动成功
+检查multipassd 是否root启动
+`root         166       1  0 May26 ?        00:10:09 /snap/multipass/14535/bin/multipassd --verbosity debug --logger platform`
 
 ### vm的ssh 密钥
 使用`dev_configs/ssh/id_rsa` 这个私钥的时候，可能会出现提示私钥权限过大，需要手动修改。
