@@ -67,6 +67,10 @@ SN: sn.buckyos.io / web3.buckyos.io
 
 ## 注意事项
 
+### 执行创建失败
+出现错误提示，`Error: launch failed: Remote "" is unknown or unreachable.`
+可能是vm的镜像服务器链接不上，可等待后重试，或者手动切换镜像服务。
+
 ### vm的ssh 密钥
 使用`dev_configs/ssh/id_rsa` 这个私钥的时候，可能会出现提示私钥权限过大，需要手动修改。
 `chmod 600 dev_configs/ssh/id_rsa`
