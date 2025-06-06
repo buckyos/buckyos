@@ -38,16 +38,22 @@ impl ObjectArrayArrowCache {
         Self { schema, batch }
     }
 
-    fn put_meta(&mut self, value: Option<String>) -> NdnResult<()> {
-        let fields = self.schema.fields().clone();
-        let mut metadata = self.schema.metadata().clone();
-        if let Some(val) = value {
+    fn modify_schema_meta(schema: &Arc<Schema>, meta: Option<String>) -> Arc<Schema> {
+        let fields = schema.fields().clone();
+
+        let mut metadata = schema.metadata().clone();
+        if let Some(val) = meta {
             metadata.insert("meta".to_string(), val);
         } else {
             metadata.remove("meta");
         }
 
         let new_schema = Arc::new(Schema::new_with_metadata(fields, metadata));
+        new_schema
+    }
+
+    fn put_meta(&mut self, value: Option<String>) -> NdnResult<()> {
+        let new_schema = Self::modify_schema_meta(&self.schema, value);
 
         // reuse existing ArrayRef without any copy
         let columns = self.batch.columns().iter().cloned().collect();
@@ -277,6 +283,12 @@ impl ObjectArrayArrowWriter {
         }
     }
 
+    async fn put_meta(&mut self, value: Option<String>) -> NdnResult<()> {
+        self.schema = ObjectArrayArrowCache::modify_schema_meta(&self.schema, value);
+
+        Ok(())
+    }
+
     async fn append(&mut self, value: &ObjId) -> NdnResult<()> {
         self.obj_type_builder.append_value(&value.obj_type);
         self.obj_hash_builder.append_value(&value.obj_hash);
@@ -338,7 +350,7 @@ impl ObjectArrayStorageWriter for ObjectArrayArrowWriter {
     async fn put_meta(&mut self, value: Option<String>) -> NdnResult<()> {
         self.put_meta(value).await
     }
-    
+
     async fn append(&mut self, value: &ObjId) -> NdnResult<()> {
         self.append(value).await
     }
