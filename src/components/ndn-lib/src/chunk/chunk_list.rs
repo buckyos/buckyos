@@ -85,12 +85,12 @@ impl ChunkList {
         (self.meta, self.chunk_list_imp)
     }
 
-    pub fn get_id(&self) -> ObjId {
-        self.calc_id().0
+    pub fn get_obj_id(&self) -> ObjId {
+        self.calc_obj_id().0
     }
 
-    // The objid should be flush and calculate when loaded or built.
-    pub fn calc_id(&self) -> (ObjId, String) {
+    // The obj_id should be flush and calculate when loaded or built.
+    pub fn calc_obj_id(&self) -> (ObjId, String) {
         let id = self.chunk_list_imp.get_obj_id().unwrap();
 
         let body = ChunkListBody {
@@ -185,7 +185,7 @@ impl ChunkList {
                                 "Chunk index {} exceeds total chunks {}, {}",
                                 chunk_index,
                                 total_chunks,
-                                self.get_id(),
+                                self.get_obj_id(),
                             );
                             warn!("{}", msg);
                             return Err(crate::NdnError::OffsetTooLarge(msg));
@@ -197,7 +197,7 @@ impl ChunkList {
                                 "Chunk offset {} exceeds fixed size {}, {}",
                                 chunk_offset,
                                 fix_size,
-                                self.get_id(),
+                                self.get_obj_id(),
                             );
                             warn!("{}", msg);
                             return Err(crate::NdnError::OffsetTooLarge(msg));
@@ -227,7 +227,7 @@ impl ChunkList {
                             "Offset {} exceeds total size of chunk list {}, {}",
                             pos,
                             total_size,
-                            self.get_id(),
+                            self.get_obj_id(),
                         );
                         warn!("{}", msg);
                         Err(crate::NdnError::OffsetTooLarge(msg))
@@ -247,7 +247,7 @@ impl ChunkList {
                         let total_size = fix_size.checked_mul(total_chunks).ok_or_else(|| {
                             let msg = format!(
                                 "Total size overflow for chunk list: {}",
-                                self.get_id()
+                                self.get_obj_id()
                             );
                             error!("{}", msg);
                             crate::NdnError::OffsetTooLarge(msg)
@@ -258,7 +258,7 @@ impl ChunkList {
                             let msg = format!(
                                 "Offset {} from end is negative, cannot seek: {}",
                                 offset,
-                                self.get_id()
+                                self.get_obj_id()
                             );
                             error!("{}", msg);
                             return Err(crate::NdnError::OffsetTooLarge(msg));
@@ -269,7 +269,7 @@ impl ChunkList {
                                 "Absolute position {} exceeds total size {}, {}",
                                 absolute_pos,
                                 total_size,
-                                self.get_id(),
+                                self.get_obj_id(),
                             );
                             warn!("{}", msg);
                             return Err(crate::NdnError::OffsetTooLarge(msg));
@@ -300,7 +300,7 @@ impl ChunkList {
                             let msg = format!(
                                 "Offset {} from end is not negative, cannot seek: {}",
                                 offset,
-                                self.get_id()
+                                self.get_obj_id()
                             );
                             error!("{}", msg);
                             return Err(crate::NdnError::OffsetTooLarge(msg));
@@ -313,7 +313,7 @@ impl ChunkList {
                                 "Offset {} from end exceeds total size {}, {}",
                                 offset,
                                 total_size,
-                                self.get_id(),
+                                self.get_obj_id(),
                             );
                             warn!("{}", msg);
                             return Err(crate::NdnError::OffsetTooLarge(msg));
@@ -341,7 +341,7 @@ impl ChunkList {
                                         "Chunk offset {} exceeds chunk length {}, {}",
                                         chunk_offset,
                                         length,
-                                        self.get_id(),
+                                        self.get_obj_id(),
                                     );
                                     warn!("{}", msg);
                                     return Err(crate::NdnError::OffsetTooLarge(msg));
@@ -355,7 +355,7 @@ impl ChunkList {
                             "Offset {} from end exceeds total size of chunk list {}, {}",
                             offset,
                             total_size,
-                            self.get_id(),
+                            self.get_obj_id(),
                         );
                         warn!("{}", msg);
                         Err(crate::NdnError::OffsetTooLarge(msg))
@@ -377,7 +377,7 @@ impl ChunkList {
                 "Chunk index {} exceeds total chunks {}, {}",
                 index,
                 self.chunk_list_imp.len(),
-                self.get_id(),
+                self.get_obj_id(),
             );
             warn!("{}", msg);
             return Err(crate::NdnError::OffsetTooLarge(msg));
@@ -396,7 +396,7 @@ impl ChunkList {
                         "Index {} multiplied by fixed size {} overflow, {}",
                         index,
                         fix_size,
-                        self.get_id(),
+                        self.get_obj_id(),
                     );
                     error!("{}", msg);
                     crate::NdnError::OffsetTooLarge(msg)
@@ -417,7 +417,7 @@ impl ChunkList {
                         let msg = format!(
                             "Total size overflow when calculating chunk offset for index {}, {}",
                             index,
-                            self.get_id(),
+                            self.get_obj_id(),
                         );
                         error!("{}", msg);
                         crate::NdnError::OffsetTooLarge(msg)
@@ -432,7 +432,7 @@ impl ChunkList {
                     "Chunk index {} exceeds total chunks {}, {}",
                     index,
                     self.chunk_list_imp.len(),
-                    self.get_id(),
+                    self.get_obj_id(),
                 );
                 warn!("{}", msg);
                 Err(crate::NdnError::OffsetTooLarge(msg))

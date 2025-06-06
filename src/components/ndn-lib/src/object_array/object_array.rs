@@ -103,6 +103,18 @@ impl ObjectArray {
         self.meta.hash_method
     }
 
+    pub fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    pub fn storage_type(&self) -> ObjectArrayStorageType {
+        self.storage_type
+    }
+
+    pub fn iter(&self) -> ObjectArrayIter<'_> {
+        ObjectArrayIter::new(&*self.cache)
+    }
+    
     pub fn clone(&self, read_only: bool) -> NdnResult<Self> {
         let cache = self.cache.clone_cache(read_only)?;
         let ret = Self {
@@ -114,14 +126,6 @@ impl ObjectArray {
         };
 
         Ok(ret)
-    }
-
-    pub fn len(&self) -> usize {
-        self.cache.len()
-    }
-
-    pub fn iter(&self) -> ObjectArrayIter<'_> {
-        ObjectArrayIter::new(&*self.cache)
     }
 
     pub fn set_meta(&mut self, meta: Option<String>) -> NdnResult<()> {

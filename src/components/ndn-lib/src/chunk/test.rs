@@ -4,7 +4,7 @@ use rand::Rng;
 use rand::SeedableRng;
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::object_array::{ObjectArrayStorageFactory, GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY};
+use crate::object_array::{ObjectArrayStorageFactory, GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY, ObjectArrayStorageType};
 
 
 async fn gen_random_file(seed: u64, len: usize, path: &Path) {
@@ -85,7 +85,7 @@ async fn gen_fix_size_chunk_list_from_file(file_path: &Path, chunk_size: usize) 
     println!("Append all chunks to builder");
 
     let chunk_list = builder.build().await.unwrap();
-    let (chunk_list_id, body) = chunk_list.calc_id();
+    let (chunk_list_id, body) = chunk_list.calc_obj_id();
     println!("Generated chunk list ID: {}", chunk_list_id.to_base32());
 
     chunk_list
@@ -130,5 +130,10 @@ async fn test_chunk_list_main() {
     println!(
         "Chunk list generated successfully with {} chunks",
         chunk_list.len()
+    );
+
+    assert_eq!(chunk_list.storage_type(), 
+        ObjectArrayStorageType::Arrow,
+        "Chunk list storage type should be Arrow"
     );
 }

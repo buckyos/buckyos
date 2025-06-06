@@ -36,7 +36,7 @@ impl ChunkListReader {
         seek_from: SeekFrom,
         auto_cache: bool,
     ) -> NdnResult<Self> {
-        let chunk_list_id = chunk_list.get_id().to_base32();
+        let chunk_list_id = chunk_list.get_obj_id().to_base32();
 
         // Calculate the first chunk index and offset based on the seek_from position
         let (chunk_index, chunk_offset) = chunk_list.get_chunk_index_by_offset(seek_from)?;
