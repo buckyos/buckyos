@@ -248,7 +248,7 @@ mod tests {
         println!("decoded_length: {}, rest: {:?}", decoded_length, rest);
         assert_eq!(decoded_length, 2048);
 
-        let chunk_id = ChunkId::mix_from_hash_result(2048, &buffer, HashMethod::sha256);
+        let chunk_id = ChunkId::mix_from_hash_result(2048, &buffer, HashMethod::Sha256);
         println!("chunk_id: {}", chunk_id.to_string());
 
         let length = chunk_id.get_length().unwrap_or(0);

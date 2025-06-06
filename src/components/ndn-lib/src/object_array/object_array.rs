@@ -19,6 +19,29 @@ use serde::{Deserialize, Serialize};
 use std::io::SeekFrom;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
+// Because the object may be ObjectId or ChunkId, which maybe have mix mode, so we need to check the hash length
+fn get_obj_hash<'a>(obj_id: &'a ObjId, hash_method: HashMethod) -> NdnResult<&'a [u8]> {
+    if obj_id.obj_hash.len() < hash_method.hash_bytes() {
+        let msg = format!(
+            "Object hash length does not match hash method: {}",
+            obj_id.obj_hash.len()
+        );
+        error!("{}", msg);
+        return Err(NdnError::InvalidData(msg));
+    }
+
+    // We use the last hash bytes as the object hash
+    if obj_id.obj_hash.len() > hash_method.hash_bytes() {
+        // obj_id is a chunk id with mix mode, we need to get the last hash bytes
+        // FIXME: Should we check if the hash type is valid?
+        let start = obj_id.obj_hash.len() - hash_method.hash_bytes();
+        return Ok(&obj_id.obj_hash[start..]);
+    } else {
+        // If the hash length is equal, we can return the whole hash
+        return Ok(&obj_id.obj_hash);
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ObjectArrayMeta {
     pub hash_method: HashMethod,
@@ -112,15 +135,8 @@ impl ObjectArray {
     }
 
     pub fn append_object(&mut self, obj_id: &ObjId) -> NdnResult<()> {
-        // Check if obj_id.obj_hash has the same length as hash_method
-        if obj_id.obj_hash.len() != self.meta.hash_method.hash_bytes() {
-            let msg = format!(
-                "Object hash length does not match hash method: {}",
-                obj_id.obj_hash.len()
-            );
-            error!("{}", msg);
-            return Err(NdnError::InvalidData(msg));
-        }
+        // Check if obj_id.obj_hash is valid
+        get_obj_hash(obj_id, self.meta.hash_method)?;
 
         self.cache.append(obj_id)?;
         self.is_dirty = true;
@@ -129,15 +145,8 @@ impl ObjectArray {
     }
 
     pub fn insert_object(&mut self, index: usize, obj_id: &ObjId) -> NdnResult<()> {
-        // Check if obj_id.obj_hash has the same length as hash_method
-        if obj_id.obj_hash.len() != self.meta.hash_method.hash_bytes() {
-            let msg = format!(
-                "Object hash length does not match hash method: {}",
-                obj_id.obj_hash.len()
-            );
-            error!("{}", msg);
-            return Err(NdnError::InvalidData(msg));
-        }
+        // Check if obj_id.obj_hash is valid
+        get_obj_hash(obj_id, self.meta.hash_method)?;
 
         self.cache.insert(index, obj_id)?;
         self.is_dirty = true;
@@ -193,7 +202,9 @@ impl ObjectArray {
 
         info!(
             "Changing storage type from {:?} to {:?}, {:?}",
-            self.storage_type, storage_type, self.get_obj_id(),
+            self.storage_type,
+            storage_type,
+            self.get_obj_id(),
         );
 
         // Change the storage type
@@ -291,10 +302,9 @@ impl ObjectArray {
             }
 
             let mtree_proof = mtree.get_proof_path_by_leaf_index(index as u64).await?;
-            let proof = ObjectArrayItemProof { proof: mtree_proof };
+            let proof: ObjectArrayItemProof = ObjectArrayItemProof { proof: mtree_proof };
 
             let obj_id = obj_list[i].clone();
-            let obj_id = ObjId::new_by_raw(obj_id.obj_type.clone(), obj_id.obj_hash.clone());
             ret.push(Some(ObjectArrayItem { obj_id, proof }));
         }
 
@@ -361,7 +371,7 @@ impl ObjectArray {
             let obj_id = self.cache.get(i)?.unwrap();
 
             mtree_generator
-                .append_leaf_hashes(&vec![obj_id.obj_hash.clone()])
+                .append_leaf_hashes(&vec![get_obj_hash(&obj_id, self.hash_method())?.to_vec()])
                 .await
                 .map_err(|e| {
                     let msg = format!("Error appending leaf hashes: {}", e);
@@ -493,7 +503,7 @@ impl ObjectArrayProofVerifier {
         }
 
         // The first item is the leaf node, which is the item itself
-        if proof.proof[0].1 != obj_id.obj_hash {
+        if proof.proof[0].1 != get_obj_hash(obj_id, self.hash_method)? {
             let msg = format!(
                 "Unmatched object array leaf hash: expected {:?}, got {:?}",
                 obj_id, proof.proof[0].1
