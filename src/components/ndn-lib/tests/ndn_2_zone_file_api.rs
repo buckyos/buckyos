@@ -4388,12 +4388,17 @@ async fn ndn_2_zone_o_link_innerpath_file_concurrency() {
     };
 
     // join并等待所有的task完成
-    futures::join!(
+    let rets = futures::join!(
         write_chunk_task,
         zone_a_read_chunk_task,
         zone_b_read_chunk_task,
         local_target_ndn_read_chunk_task
     );
+
+    rets.0.unwrap();
+    rets.1.unwrap();
+    rets.2.unwrap();
+    rets.3.unwrap();
     info!("All tasks completed successfully");
 }
 
@@ -4545,11 +4550,16 @@ async fn ndn_2_zone_r_link_innerpath_file_concurrency() {
     };
 
     // join并等待所有的task完成
-    futures::join!(
+    let rets = futures::join!(
         write_chunk_task,
         zone_a_read_chunk_task,
         zone_b_read_chunk_task,
         local_target_ndn_read_chunk_task
     );
+
+    rets.0.unwrap();
+    rets.1.unwrap();
+    rets.2.unwrap();
+    rets.3.unwrap();
     info!("All tasks completed successfully");
 }
