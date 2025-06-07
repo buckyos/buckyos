@@ -13,7 +13,7 @@ use log::*;
 use futures_util::stream;
 use futures_util::stream::StreamExt;
 use tokio_util::io::StreamReader;
-use crate::{build_named_object_by_json, ChunkHasher, ChunkId, ChunkReadSeek, ChunkState, FileObject, NamedDataStore, NdnError, NdnResult, PathObject};
+use crate::{build_named_object_by_json, ChunkHasher, ChunkId, ChunkListReader, ChunkReadSeek, ChunkState, FileObject, NamedDataStore, NdnError, NdnResult, PathObject};
 use memmap::Mmap;
 use std::{path::PathBuf, pin::Pin};
 use std::io::SeekFrom;
@@ -771,56 +771,12 @@ impl NamedDataMgr {
             mgr.get_object_impl(chunklist_id, None).await?
         };
         
-        let chunklist = ChunkList::open(obj_data).await?;
-        let total_size = chunklist.get_total_size();
+        let chunk_list = ChunkList::open(obj_data).await?;
+        let total_size = chunk_list.get_total_size();
         
-        // 3. 计算起始位置
-        let (chunk_index, chunk_offset) = chunklist.get_chunk_index_by_offset(seek_from)?;
-        
-        // 4. 获取第一个 chunk 的 reader
-        let first_chunk_id = chunklist.get_chunk(chunk_index as usize)?;
-        if first_chunk_id.is_none() {
-            let msg = format!("chunk {} not found in chunklist {}", chunk_index, chunklist_id);
-            warn!("open_chunklist_reader: {}", msg);
-            return Err(NdnError::NotFound(msg));
-        }
+        let reader = ChunkListReader::new(named_mgr, chunk_list, seek_from, auto_cache).await?;
 
-        let first_chunk_id = first_chunk_id.unwrap();
-        
-        let (first_reader, _) = {
-            let mgr = named_mgr.lock().await;
-            mgr.open_chunk_reader_impl(&first_chunk_id, SeekFrom::Start(chunk_offset), auto_cache).await?
-        };
-        
-        // 5. 创建后续 chunks 的 stream
-        //let remaining_chunks = chunklist
-        //    .into_iter()
-        //    .skip(chunk_index + 1);
-        // let first_stream = stream::once(async { first_reader });
-        let renmaining_chunks = chunklist.into_iter()
-            .skip(chunk_index as usize + 1);
-
-        let stream = stream::iter(renmaining_chunks)
-            .map(move |chunk_id| {
-                let mgr_id = mgr_id.map(|s| s.to_string());
-                async move {
-                    let mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id.as_deref()).await
-                        .ok_or_else(|| NdnError::NotFound("named data mgr not found".to_string()))?;
-                    let mgr = mgr.lock().await;
-                    let (reader, _) = mgr.open_chunk_reader_impl(&chunk_id, SeekFrom::Start(0), auto_cache).await?;
-                    Ok::<_, NdnError>(reader)
-                }
-            })
-            .buffered(2);  // 最多同时打开2个文件
-        
-        // 6. 创建 StreamReader
-        // let stream_reader = StreamReader::new(stream);
-        
-        // 7. 组合 readers
-        //let combined_reader = Box::pin(first_reader.chain(stream_reader));
-        
-        //let stream = first_stream.chain(stream);
-        Ok((first_reader, total_size))
+        Ok((Box::pin(reader), total_size))
     }
 
     //return chunk_id,progress_info 
