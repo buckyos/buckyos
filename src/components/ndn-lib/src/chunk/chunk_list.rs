@@ -1,15 +1,47 @@
+use crate::object::{build_named_object_by_json, ObjId};
 use crate::NdnResult;
 use crate::ObjectArray;
 use crate::ObjectArrayOwnedIter;
-use crate::{ChunkId, ChunkIdRef, HashMethod, OBJ_TYPE_CHUNK_LIST};
+use crate::{
+    ChunkId, ChunkIdRef, HashMethod, OBJ_TYPE_CHUNK_LIST, OBJ_TYPE_CHUNK_LIST_FIX_SIZE,
+    OBJ_TYPE_CHUNK_LIST_SIMPLE, OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE,
+};
 use core::hash;
 use serde::{Deserialize, Serialize};
 use std::io::SeekFrom;
 use std::ops::{Deref, DerefMut};
-use crate::object::{build_named_object_by_json, ObjId};
-
 
 pub const CHUNK_LIST_MODE_THRESHOLD: usize = 1024; // Threshold for chunk list normal and simple mode
+
+pub struct ChunkListId {}
+
+impl ChunkListId {
+    pub fn is_chunk_list(obj_id: &ObjId) -> bool {
+        obj_id.obj_type == OBJ_TYPE_CHUNK_LIST
+            || obj_id.obj_type == OBJ_TYPE_CHUNK_LIST_FIX_SIZE
+            || obj_id.obj_type == OBJ_TYPE_CHUNK_LIST_SIMPLE
+            || obj_id.obj_type == OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE
+    }
+
+    pub fn is_simple_chunk_list(obj_id: &ObjId) -> bool {
+        obj_id.obj_type == OBJ_TYPE_CHUNK_LIST_SIMPLE
+            || obj_id.obj_type == OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE
+    }
+
+    pub fn is_normal_chunk_list(obj_id: &ObjId) -> bool {
+        obj_id.obj_type == OBJ_TYPE_CHUNK_LIST || obj_id.obj_type == OBJ_TYPE_CHUNK_LIST_FIX_SIZE
+    }
+
+    pub fn is_fixed_size_chunk_list(obj_id: &ObjId) -> bool {
+        obj_id.obj_type == OBJ_TYPE_CHUNK_LIST_FIX_SIZE
+            || obj_id.obj_type == OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE
+    }
+
+    pub fn is_variable_size_chunk_list(obj_id: &ObjId) -> bool {
+        obj_id.obj_type == OBJ_TYPE_CHUNK_LIST || obj_id.obj_type == OBJ_TYPE_CHUNK_LIST_SIMPLE
+    }
+}
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkListMeta {
@@ -50,15 +82,14 @@ impl ChunkList {
             chunk_list_imp: list,
         }
     }
-    
+
     // Load an existing chunk list from the object id.
     pub async fn open(obj_data: serde_json::Value) -> NdnResult<Self> {
-        let body: ChunkListBody = serde_json::from_value(obj_data)
-            .map_err(|e| {
-                let msg = format!("Failed to parse chunk list body: {}", e);
-                error!("{}", msg);
-                crate::NdnError::InvalidData(msg)
-            })?;
+        let body: ChunkListBody = serde_json::from_value(obj_data).map_err(|e| {
+            let msg = format!("Failed to parse chunk list body: {}", e);
+            error!("{}", msg);
+            crate::NdnError::InvalidData(msg)
+        })?;
 
         let chunk_list_imp = ObjectArray::open(&body.object_array, true).await?;
         let meta = ChunkListMeta {
@@ -99,8 +130,22 @@ impl ChunkList {
             fix_size: self.meta.fix_size,
         };
 
+        let chunk_list_type = if self.is_simple_chunk_list() {
+            if self.is_fixed_size_chunk_list() {
+                OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE
+            } else {
+                OBJ_TYPE_CHUNK_LIST_SIMPLE
+            }
+        } else {
+            if self.is_fixed_size_chunk_list() {
+                OBJ_TYPE_CHUNK_LIST_FIX_SIZE
+            } else {
+                OBJ_TYPE_CHUNK_LIST
+            }
+        };
+
         let (obj_id, s) = build_named_object_by_json(
-            OBJ_TYPE_CHUNK_LIST,
+            chunk_list_type,
             &serde_json::to_value(&body).expect("Failed to serialize ChunkListBody"),
         );
 
@@ -476,7 +521,6 @@ impl<'a> DoubleEndedIterator for ChunkListIter<'a> {
 }
 
 impl<'a> ExactSizeIterator for ChunkListIter<'a> {}
-
 
 pub struct ChunkListOwnedIter {
     iter: ObjectArrayOwnedIter,
