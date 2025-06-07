@@ -58,6 +58,7 @@ pub struct ObjectArray {
     meta: ObjectArrayMeta,
     storage_type: ObjectArrayStorageType,
     cache: Box<dyn ObjectArrayInnerCache>,
+    obj_id: Option<ObjId>, // The object ID of the array, can be None if not calculated yet
     is_dirty: bool,
     mtree: Option<MerkleTreeObject>,
 }
@@ -74,6 +75,7 @@ impl ObjectArray {
             },
             storage_type: storage_type.unwrap_or(ObjectArrayStorageType::default()),
             cache,
+            obj_id: None, // The object ID is not calculated ye
             is_dirty: false,
             mtree: None,
         }
@@ -88,6 +90,7 @@ impl ObjectArray {
             meta,
             storage_type,
             cache,
+            obj_id: None, // The object ID is not calculated yet
             is_dirty: false,
             mtree: None,
         };
@@ -114,13 +117,14 @@ impl ObjectArray {
     pub fn iter(&self) -> ObjectArrayIter<'_> {
         ObjectArrayIter::new(&*self.cache)
     }
-    
+
     pub fn clone(&self, read_only: bool) -> NdnResult<Self> {
         let cache = self.cache.clone_cache(read_only)?;
         let ret = Self {
             meta: self.meta.clone(),
             storage_type: self.storage_type.clone(),
             cache,
+            obj_id: self.obj_id.clone(),
             is_dirty: self.is_dirty,
             mtree: None, // FIXME: Should we clone the mtree result if exists?
         };
@@ -318,14 +322,7 @@ impl ObjectArray {
     // Get the object ID for the array if mtree is not None, otherwise return None
     // WARNING: This method don't check if the mtree is dirty
     pub fn get_obj_id(&self) -> Option<ObjId> {
-        if self.mtree.is_none() {
-            return None;
-        }
-
-        // Get the root hash from the mtree
-        let root_hash = self.mtree.as_ref().unwrap().get_root_hash();
-        let obj_id = ObjId::new_by_raw(OBJ_TYPE_LIST.to_string(), root_hash);
-        Some(obj_id)
+        self.obj_id.clone()
     }
 
     // Calculate the object ID for the array
@@ -340,8 +337,7 @@ impl ObjectArray {
         // Check if the mtree is dirty
         if self.is_dirty || self.mtree.is_none() {
             // If the mtree is dirty or first loaded, we need to regenerate it
-            self.regenerate_merkle_tree().await?;
-            self.is_dirty = false;
+            self.flush_impl().await?;
         }
 
         Ok(self.get_obj_id().unwrap())
@@ -413,9 +409,16 @@ impl ObjectArray {
             return Ok(());
         }
 
-        self.regenerate_merkle_tree().await?;
+        self.flush_impl().await
+    }
 
+    async fn flush_impl(&mut self) -> NdnResult<()> {
+        self.regenerate_merkle_tree().await?;
         self.is_dirty = false;
+
+        let root_hash = self.mtree.as_ref().unwrap().get_root_hash();
+        let obj_id = ObjId::new_by_raw(OBJ_TYPE_LIST.to_string(), root_hash);
+        self.obj_id = Some(obj_id);
 
         Ok(())
     }
