@@ -224,15 +224,17 @@ async fn scan_files(dir: &Path) -> Result<Vec<IndexedFile>, Box<dyn std::error::
 
 // File name format: for file like name.1.json, name.2.toml, for dir like dir.3, etc.
 fn extract_index_from_filename(path: &Path) -> Option<u32> {
-    let file_stem = if path.is_file() {
-        path.file_stem()?.to_str()?
-    } else {
-        path.file_name()?.to_str()?
-    };
-
+    let file_stem = path.file_name()?.to_str()?;
+    //println!("file_stem: {}", file_stem);
     let index_part = file_stem.rsplit('.').next()?; 
-    
-    index_part.parse::<u32>().ok()
+    //println!("index_part: {}", index_part);
+    let index = index_part.parse::<u32>().ok();
+    if index.is_none() {
+        let index_part =  file_stem.rsplit('.').nth(1)?;
+        let index = index_part.parse::<u32>().ok();
+        return index;
+    }
+    return index;
 }
 
 async fn load_dir_without_root(dir: &Path) -> Result<Vec<ConfigItem>, Box<dyn std::error::Error>> {

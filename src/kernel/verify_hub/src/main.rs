@@ -584,9 +584,9 @@ mod test {
 
     #[tokio::test]
     async fn test_login_and_verify() {
-        let zone_config = ZoneConfig::get_test_config();
-        env::set_var("BUCKYOS_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
-        env::set_var("SESSION_TOKEN", "abcdefg");//for test only
+        //let zone_config = ZoneConfig::new_test_config();
+        //env::set_var("BUCKYOS_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
+        //env::set_var("SESSION_TOKEN", "abcdefg");//for test only
         
 
         let server = task::spawn(async {

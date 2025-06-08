@@ -478,6 +478,7 @@ mod tests {
             "description" : "Home Station",
             "author" : "did:bns:buckyos",
             "pub_time":1715760000,
+
             "pkg_list" : {
                 "amd64_docker_image" : {
                     "pkg_id":"home-station-x86-img",
@@ -500,7 +501,15 @@ mod tests {
                 "amd64_linux_app" :{
                     "pkg_id" : "home-station-linux-app"
                 }
+            },
+            "install_config":{
+                "data_mount_point":["/data"],
+                "cache_mount_point":["/cache"],
+                "local_cache_mount_point":["/local_cache"],
+                "tcp_ports":{"www":80},
+                "udp_ports":{"dns":53}
             }
+
         });
         let app_doc:AppDoc = serde_json::from_value(app_doc).unwrap();
         println!("{}#{}", app_doc.pkg_name, app_doc.version);
