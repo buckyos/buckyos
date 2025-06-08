@@ -21,7 +21,7 @@ pub fn init_logging(app_name: &str,is_service:bool) {
         .set_location_level(LevelFilter::Debug)
         .build();
 
-    CombinedLogger::init(vec![
+    let init_result = CombinedLogger::init(vec![
         TermLogger::new(
             log_level,
             config.clone(),
@@ -33,7 +33,10 @@ pub fn init_logging(app_name: &str,is_service:bool) {
             config,
             File::options().append(true).create(true).open(log_file).unwrap(),
         ),
-    ])
-    .unwrap();
+    ]);
+    
+    if init_result.is_err() {
+        println!("Failed to init logging: {}", init_result.err().unwrap());
+    }
 
 }
