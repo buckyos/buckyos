@@ -104,6 +104,16 @@ async fn test_object_map() {
     obj_map3.flush().await.unwrap();
     let objid4 = obj_map3.get_obj_id().unwrap();
     assert_eq!(objid, objid4, "Object ID unmatch");
+
+    // Test Iterator
+    let mut iter = obj_map3.iter();
+    let mut count = 0;
+    while let Some((key, obj_id, _)) = iter.next() {
+        println!("key: {}, obj_id: {}", key, obj_id.to_string());
+        count += 1;
+    }
+
+    
 }
 
 

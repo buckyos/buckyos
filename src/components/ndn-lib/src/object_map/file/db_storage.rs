@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 struct ObjectMapSqliteStorageChunkIterator {
     conn: Arc<Mutex<Option<Connection>>>,
     buffer: VecDeque<(String, ObjId, Option<u64>)>,
-    offset: usize,
+
+    // Use last_key instead of offset to avoid large offset performance issue
+    last_key: Option<String>,
     chunk_size: usize,
 
     finished: bool,
@@ -24,7 +26,7 @@ impl ObjectMapSqliteStorageChunkIterator {
         Self {
             conn,
             buffer: VecDeque::new(),
-            offset: 0,
+            last_key: None,
             chunk_size,
             finished: false,
         }
@@ -42,9 +44,17 @@ impl ObjectMapSqliteStorageChunkIterator {
             NdnError::DbError(msg)
         })?;
 
+        let query = if let Some(ref last_key) = self.last_key {
+            format!(
+                "SELECT key, value, mtree_index FROM object_map WHERE key > ?1 ORDER BY key LIMIT ?2"
+            )
+        } else {
+            "SELECT key, value, mtree_index FROM object_map ORDER BY key LIMIT ?1 OFFSET ?2".to_string()
+        };
+
         let mut stmt = conn
             .prepare(
-                "SELECT key, value, mtree_index FROM object_map ORDER BY key LIMIT ?1 OFFSET ?2",
+                &query,
             )
             .map_err(|e| {
                 let msg = format!("Failed to prepare next statement: {}", e);
@@ -52,8 +62,14 @@ impl ObjectMapSqliteStorageChunkIterator {
                 NdnError::DbError(msg)
             })?;
 
+        let params = if self.last_key.is_some() {
+            params![self.last_key.as_ref(), self.chunk_size as u64]
+        } else {
+            params![self.chunk_size as u64, 0u64]
+        };
+
         let rows = stmt
-            .query_map(params![self.chunk_size as u64, self.offset as u64], |r| {
+            .query_map(params, |r| {
                 let key: String = r.get(0)?;
                 let value: String = r.get(1)?;
                 let mtree_index: Option<i64> = r.get(2)?;
@@ -84,10 +100,12 @@ impl ObjectMapSqliteStorageChunkIterator {
             self.buffer.push_back(row?);
         }
 
-        if self.buffer.is_empty() {
-            self.finished = true;
+        // Update last_key to the last key in the current buffer
+        if let Some(last) = self.buffer.back() {
+            self.last_key = Some(last.0.clone());
         } else {
-            self.offset += self.chunk_size;
+            self.last_key = None;
+            self.finished = true;
         }
 
         Ok(())
