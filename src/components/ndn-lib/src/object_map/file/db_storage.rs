@@ -1,10 +1,113 @@
-use super::super::storage::{ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapStorageType};
+use super::super::storage::{
+    ObjectMapInnerStorage, ObjectMapInnerStorageStat, ObjectMapStorageType,
+};
 use crate::{NdnError, NdnResult, ObjId};
+use futures::TryFutureExt;
 use rusqlite::types::{FromSql, ToSql, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
+use std::collections::VecDeque;
 use std::error;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+struct ObjectMapSqliteStorageChunkIterator {
+    conn: Arc<Mutex<Option<Connection>>>,
+    buffer: VecDeque<(String, ObjId, Option<u64>)>,
+    offset: usize,
+    chunk_size: usize,
+
+    finished: bool,
+}
+
+impl ObjectMapSqliteStorageChunkIterator {
+    fn new(conn: Arc<Mutex<Option<Connection>>>, chunk_size: usize) -> Self {
+        Self {
+            conn,
+            buffer: VecDeque::new(),
+            offset: 0,
+            chunk_size,
+            finished: false,
+        }
+    }
+
+    fn fetch_next_chunk(&mut self) -> NdnResult<()> {
+        if self.finished {
+            return Ok(());
+        }
+
+        let mut lock = self.conn.lock().unwrap();
+        let conn = lock.as_mut().ok_or_else(|| {
+            let msg = "Connection is not initialized".to_string();
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT key, value, mtree_index FROM object_map ORDER BY key LIMIT ?1 OFFSET ?2",
+            )
+            .map_err(|e| {
+                let msg = format!("Failed to prepare next statement: {}", e);
+                error!("{}", msg);
+                NdnError::DbError(msg)
+            })?;
+
+        let rows = stmt
+            .query_map(params![self.chunk_size as u64, self.offset as u64], |r| {
+                let key: String = r.get(0)?;
+                let value: String = r.get(1)?;
+                let mtree_index: Option<i64> = r.get(2)?;
+                Ok((key, value, mtree_index.map(|i| i as u64)))
+            })
+            .map_err(|e| {
+                let msg = format!("Failed to query object_map: {}", e);
+                error!("{}", msg);
+                NdnError::DbError(msg)
+            })?;
+
+        for row in rows {
+            let row = row
+                .map(|(key, value, mtree_index)| {
+                    let obj_id = ObjId::new(&value).map_err(|e| {
+                        let msg = format!("Failed to parse ObjId from value: {}, {}", value, e);
+                        error!("{}", msg);
+                        NdnError::DbError(msg)
+                    })?;
+                    Ok((key, obj_id, mtree_index))
+                })
+                .map_err(|e| {
+                    let msg = format!("Failed to map row: {}", e);
+                    error!("{}", msg);
+                    NdnError::DbError(msg)
+                })?;
+
+            self.buffer.push_back(row?);
+        }
+
+        if self.buffer.is_empty() {
+            self.finished = true;
+        } else {
+            self.offset += self.chunk_size;
+        }
+
+        Ok(())
+    }
+}
+
+impl Iterator for ObjectMapSqliteStorageChunkIterator {
+    type Item = (String, ObjId, Option<u64>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.buffer.is_empty() {
+            if let Err(e) = self.fetch_next_chunk() {
+                error!("Failed to fetch next chunk: {}", e);
+                return None;
+            }
+        }
+
+        self.buffer.pop_front()
+    }
+}
 
 #[derive(Clone)]
 pub struct ObjectMapSqliteStorage {
@@ -24,11 +127,7 @@ impl ObjectMapSqliteStorage {
 
         Self::init_tables(&conn)?;
 
-        Ok(Self::new_with_connection(
-            db_path,
-            conn,
-            read_only,
-        ))
+        Ok(Self::new_with_connection(db_path, conn, read_only))
     }
 
     fn new_with_connection(db_path: PathBuf, conn: Connection, read_only: bool) -> Self {
@@ -286,6 +385,11 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         Ok(keys)
     }
 
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId, Option<u64>)> + 'a> {
+        let iter = ObjectMapSqliteStorageChunkIterator::new(self.conn.clone(), 64);
+        Box::new(iter)
+    }
+
     async fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat> {
         let mut lock = self.conn.lock().unwrap();
         let conn = lock.as_ref().unwrap();
@@ -413,12 +517,16 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
             .map(|v| v.map(|i: Vec<u8>| i))
     }
 
-    async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
+    async fn clone(
+        &self,
+        target: &Path,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         if read_only {
             let ret = Self::new(target.to_path_buf(), read_only)?;
             Ok(Box::new(ret))
         } else {
-            self.clone_for_modify(target,).await
+            self.clone_for_modify(target).await
         }
     }
 
@@ -433,7 +541,10 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
 
         // Check if target file exists
         if file.exists() {
-            warn!("Target object map storage file already exists: {}, now will overwrite it", file.display());
+            warn!(
+                "Target object map storage file already exists: {}, now will overwrite it",
+                file.display()
+            );
         }
 
         // First close the current connection, then try to rename the file, and then open a new connection to the file.

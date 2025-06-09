@@ -35,6 +35,8 @@ pub trait ObjectMapInnerStorage: Send + Sync {
     async fn list(&self, page_index: usize, page_size: usize) -> NdnResult<Vec<String>>;
     async fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat>;
 
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId, Option<u64>)> + 'a>;
+
     // Use to store meta data
     async fn put_meta(&mut self, value: &[u8]) -> NdnResult<()>;
     async fn get_meta(&self) -> NdnResult<Option<Vec<u8>>>;

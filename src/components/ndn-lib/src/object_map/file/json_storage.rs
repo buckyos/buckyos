@@ -338,6 +338,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
             Ok(vec![])
         }
     }
+
     async fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat> {
         if let Some(data) = &self.data {
             Ok(ObjectMapInnerStorageStat {
@@ -345,6 +346,18 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
             })
         } else {
             Ok(ObjectMapInnerStorageStat { total_count: 0 })
+        }
+    }
+
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId, Option<u64>)> + 'a> {
+        if let Some(data) = &self.data {
+            Box::new(
+                data.content
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.value.clone(), v.mtree_index)),
+            )
+        } else {
+            Box::new(std::iter::empty())
         }
     }
 

@@ -329,6 +329,11 @@ impl ObjectMap {
         self.is_dirty
     }
 
+    pub fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId, Option<u64>)> + 'a> {
+        let iter = self.storage.iter();
+        Box::new(iter)
+    }
+    
     // Regenerate the merkle tree without checking the dirty flag
     async fn regenerate_merkle_tree(&mut self) -> NdnResult<()> {
         let count = self.storage.stat().await?.total_count;

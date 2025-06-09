@@ -104,6 +104,14 @@ impl ObjectMapInnerStorage for MemoryStorage {
         })
     }
 
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId, Option<u64>)> + 'a> {
+        Box::new(
+            self.storage
+                .iter()
+                .map(|(key, item)| (key.clone(), item.value.clone(), item.mtree_index)),
+        )
+    }
+
     async fn put_meta(&mut self, value: &[u8]) -> NdnResult<()> {
         // Check if the storage is read-only
         self.check_read_only()?;
