@@ -5,6 +5,7 @@ use crate::{HashMethod, NdnError, NdnResult, ObjId};
 use generic_array::{ArrayLength, GenericArray};
 use hash_db::{HashDB, HashDBRef, Hasher};
 use memory_db::{HashKey, MemoryDB};
+use serde::de::value;
 use std::borrow::Borrow;
 use std::path::Path;
 use std::sync::Arc;
@@ -69,16 +70,22 @@ where
         self.read_only
     }
 
-    async fn put(&self, key: &[u8], value: &[u8]) -> NdnResult<()> {
+    async fn put(&self, key: &str, value: &ObjId) -> NdnResult<()> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
         let mut db_write = self.db.write().await;
         let mut root = self.root.write().await;
 
+        let value = bincode::serialize(value).map_err(|e| {
+            let msg = format!("Failed to serialize obj_id value: {}, {:?}", value, e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
         let mut trie =
             GenericTrieDBMutBuilder::from_existing(db_write.as_hash_db_mut(), &mut root).build();
-        trie.insert(key, value).map_err(|e| {
+        trie.insert(key.as_bytes(), &value).map_err(|e| {
             let msg = format!("Failed to insert key-value pair: {:?}", e);
             error!("{}", msg);
             NdnError::DbError(msg)
@@ -90,22 +97,33 @@ where
         Ok(())
     }
 
-    async fn get(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>> {
+    async fn get(&self, key: &str) -> NdnResult<Option<ObjId>> {
         let db_read = self.db.read().await;
         let db = db_read.as_ref().as_hash_db();
         let root = self.root.read().await;
 
         let trie = GenericTrieDBBuilder::new(&db as &dyn HashDBRef<H, Vec<u8>>, &root).build();
-        let value = trie.get(key).map_err(|e| {
+        let value = trie.get(key.as_bytes()).map_err(|e| {
             let msg = format!("Failed to get value for key: {:?}", e);
             error!("{}", msg);
             NdnError::DbError(msg)
         })?;
 
-        Ok(value)
+        if value.is_none() {
+            return Ok(None);
+        }
+
+        let value = value.unwrap();
+        let value: ObjId = bincode::deserialize(&value).map_err(|e| {
+            let msg = format!("Failed to deserialize obj_id value: {:?}, {:?}", value, e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        Ok(Some(value))
     }
 
-    async fn remove(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>> {
+    async fn remove(&self, key: &str) -> NdnResult<Option<ObjId>> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -115,7 +133,7 @@ where
             GenericTrieDBMutBuilder::from_existing(db_write.as_hash_db_mut(), &mut root).build();
 
         // First get value
-        let value = trie.get(key).map_err(|e| {
+        let value = trie.get(key.as_bytes()).map_err(|e| {
             let msg = format!("Failed to get value for key: {:?}", e);
             error!("{}", msg);
             NdnError::DbError(msg)
@@ -127,7 +145,7 @@ where
         }
         let value = value.unwrap();
 
-        let remove_value = trie.remove(key).map_err(|e| {
+        let remove_value = trie.remove(key.as_bytes()).map_err(|e| {
             let msg = format!("Failed to get value for key: {:?}", e);
             error!("{}", msg);
             NdnError::DbError(msg)
@@ -138,21 +156,27 @@ where
             "Value should be present after remove"
         );
 
-        info!("Removed key: {:?}, value: {:?}", key, value);
+        info!("Removed key: {}, value: {:?}", key, value);
 
         // The trie will auto commit when it goes out of scope, but we can also call commit explicitly if needed.
         // trie.commit();
 
+        let value: ObjId = bincode::deserialize(&value).map_err(|e| {
+            let msg = format!("Failed to deserialize obj_id value: {:?}, {:?}", value, e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
         Ok(Some(value))
     }
 
-    async fn is_exist(&self, key: &[u8]) -> NdnResult<bool> {
+    async fn is_exist(&self, key: &str) -> NdnResult<bool> {
         let db_read = self.db.read().await;
         let db = db_read.as_ref().as_hash_db();
         let root = self.root.read().await;
 
         let trie = GenericTrieDBBuilder::new(&db as &dyn HashDBRef<H, Vec<u8>>, &root).build();
-        let exists = trie.contains(key).map_err(|e| {
+        let exists = trie.contains(key.as_bytes()).map_err(|e| {
             let msg = format!("Failed to check existence for key: {:?}", e);
             error!("{}", msg);
             NdnError::DbError(msg)
@@ -182,14 +206,14 @@ where
         root.as_ref().to_vec()
     }
 
-    async fn generate_proof(&self, key: &[u8]) -> NdnResult<Vec<Vec<u8>>> {
+    async fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>> {
         let db_read = self.db.read().await;
         let db = db_read.as_ref();
         let root = self.root.read().await;
         // let trie = Sha256TrieDBBuilder::new(&*db_read, &*self.root.read().unwrap()).build();
 
         let proof =
-            generate_proof::<_, GenericLayout<H>, _, &[u8]>(&db.as_hash_db(), &root, &vec![key])
+            generate_proof::<_, GenericLayout<H>, _, &[u8]>(&db.as_hash_db(), &root, &vec![key.as_bytes()])
                 .map_err(|e| {
                     let msg = format!("Failed to generate proof for key: {:?}", e);
                     error!("{}", msg);
@@ -260,68 +284,3 @@ pub trait TrieObjectMapProofVerifier: Send + Sync {
 }
 
 pub type TrieObjectMapProofVerifierRef = Arc<Box<dyn TrieObjectMapProofVerifier>>;
-
-pub struct GenericTrieObjectMapProofVerifier<H: Hasher> {
-    _marker: std::marker::PhantomData<H>,
-}
-
-impl<H> GenericTrieObjectMapProofVerifier<H>
-where
-    H: Hasher + Send + Sync + 'static,
-    H::Out: HashFromSlice,
-{
-    pub fn new() -> Self {
-        Self {
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<H> TrieObjectMapProofVerifier for GenericTrieObjectMapProofVerifier<H>
-where
-    H: Hasher + Send + Sync + 'static,
-    H::Out: HashFromSlice,
-{
-    fn verify(
-        &self,
-        proof_nodes: &Vec<Vec<u8>>,
-        root_hash: &[u8],
-        key: &[u8],
-        value: &[u8],
-    ) -> NdnResult<TrieObjectMapProofVerifyResult> {
-        use trie_db::proof::{verify_proof, VerifyError};
-
-        let root_hash: H::Out = H::Out::from_slice(root_hash)?;
-
-        let ret = verify_proof::<GenericLayout<H>, _, _, &[u8]>(
-            &root_hash,
-            proof_nodes,
-            &vec![(key, Some(value))], // The data to be verified, if the data is None, it means to check the existence of the key
-        );
-
-        // println!("Verify proof: key = {:?}, root = {:?}, ret = {:?}", key, root_hash, ret);
-        let ret = match ret {
-            Ok(_) => TrieObjectMapProofVerifyResult::Ok,
-            Err(e) => match &e {
-                VerifyError::ExtraneousNode => TrieObjectMapProofVerifyResult::ExtraneousNode,
-                VerifyError::ExtraneousValue(_) => TrieObjectMapProofVerifyResult::ExtraneousValue,
-                VerifyError::ExtraneousHashReference(_) => {
-                    TrieObjectMapProofVerifyResult::ExtraneousHashReference
-                }
-                VerifyError::ValueMismatch(_) => TrieObjectMapProofVerifyResult::ValueMismatch,
-                VerifyError::RootMismatch(_) => TrieObjectMapProofVerifyResult::RootMismatch,
-                VerifyError::InvalidChildReference(_) => {
-                    TrieObjectMapProofVerifyResult::InvalidChildReference
-                }
-                VerifyError::IncompleteProof => TrieObjectMapProofVerifyResult::IncompleteProof,
-                _ => {
-                    let msg = format!("Verification error: {:?}, {:?}", key, e);
-                    info!("{}", msg);
-                    TrieObjectMapProofVerifyResult::Other
-                }
-            },
-        };
-
-        Ok(ret)
-    }
-}

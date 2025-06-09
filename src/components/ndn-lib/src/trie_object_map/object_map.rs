@@ -9,41 +9,12 @@ use crate::{NdnError, NdnResult};
 use crate::{PathObject, OBJ_TYPE_MTREE, OBJ_TYPE_OBJMAPT};
 use bincode::de;
 use crypto_common::Key;
+use log::kv::value;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub use super::storage::TrieObjectMapProofVerifyResult;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TrieObjectMapItem {
-    pub obj_id: ObjId,
-}
-
-impl TrieObjectMapItem {
-    pub fn new(obj_id: ObjId) -> Self {
-        Self { obj_id }
-    }
-
-    pub fn encode(&self) -> NdnResult<Vec<u8>> {
-        let bytes = bincode::serialize(self).map_err(|e| {
-            let msg = format!("Error serializing TrieObjectMapItem: {}", e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-
-        Ok(bytes)
-    }
-
-    pub fn decode(data: &[u8]) -> NdnResult<Self> {
-        let ret = bincode::deserialize(data).map_err(|e| {
-            let msg = format!("Error deserializing TrieObjectMapItem: {}", e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-
-        Ok(ret)
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct TrieObjectMapItemProof {
@@ -146,36 +117,20 @@ impl TrieObjectMap {
         self.hash_method
     }
 
-    pub async fn put_object(&self, key: &str, obj_id: ObjId) -> NdnResult<()> {
-        let item = TrieObjectMapItem::new(obj_id);
-        let value = item.encode()?;
-        self.db.put(key.as_bytes(), &value).await?;
-
-        Ok(())
+    pub async fn put_object(&self, key: &str, obj_id: &ObjId) -> NdnResult<()> {
+        self.db.put(key, &obj_id).await
     }
 
     pub async fn get_object(&self, key: &str) -> NdnResult<Option<ObjId>> {
-        match self.db.get(key.as_bytes()).await? {
-            Some(value) => {
-                let item = TrieObjectMapItem::decode(&value)?;
-                Ok(Some(item.obj_id))
-            }
-            None => Ok(None),
-        }
+        self.db.get(key).await
     }
 
-    pub async fn remove_object(&self, key: &str) -> NdnResult<Option<(ObjId)>> {
-        let value = self.db.remove(key.as_bytes()).await?;
-        if let Some(value) = value {
-            let item = TrieObjectMapItem::decode(&value)?;
-            Ok(Some((item.obj_id)))
-        } else {
-            Ok(None)
-        }
+    pub async fn remove_object(&self, key: &str) -> NdnResult<Option<ObjId>> {
+        self.db.remove(key).await
     }
 
     pub async fn is_object_exist(&self, key: &str) -> NdnResult<bool> {
-        self.db.is_exist(key.as_bytes()).await
+        self.db.is_exist(key).await
     }
 
     // Should not call this function if in read-only mode
@@ -230,7 +185,7 @@ impl TrieObjectMap {
         &self,
         key: &str,
     ) -> NdnResult<Option<TrieObjectMapItemProof>> {
-        let proof_nodes = self.db.generate_proof(key.as_bytes()).await?;
+        let proof_nodes = self.db.generate_proof(key).await?;
         let root_hash = self.db.root().await;
 
         Ok(Some(TrieObjectMapItemProof {
@@ -272,8 +227,11 @@ impl TrieObjectMapProofVerifierHelper {
         obj_id: &ObjId,
         proof: &TrieObjectMapItemProof,
     ) -> NdnResult<TrieObjectMapProofVerifyResult> {
-        let item = TrieObjectMapItem::new(obj_id.clone());
-        let value = item.encode()?;
+        let value = bincode::serialize(obj_id).map_err(|e| {
+            let msg = format!("Error serializing ObjId: {}, {}", obj_id, e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
 
         self.verify(key, value.as_ref(), proof)
     }

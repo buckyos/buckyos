@@ -40,13 +40,16 @@ pub trait TrieObjectMapInnerStorage: Send + Sync {
     fn is_readonly(&self) -> bool;
     fn get_type(&self) -> TrieObjectMapStorageType;
 
-    async fn put(&self, key: &[u8], value: &[u8]) -> NdnResult<()>;
-    async fn get(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>>;
-    async fn remove(&self, key: &[u8]) -> NdnResult<Option<Vec<u8>>>;
-    async fn is_exist(&self, key: &[u8]) -> NdnResult<bool>;
+    async fn put(&self, key: &str, value: &ObjId) -> NdnResult<()>;
+    async fn get(&self, key: &str) -> NdnResult<Option<ObjId>>;
+    async fn remove(&self, key: &str) -> NdnResult<Option<ObjId>>;
+    async fn is_exist(&self, key: &str) -> NdnResult<bool>;
     async fn commit(&self) -> NdnResult<()>;
     async fn root(&self) -> Vec<u8>;
-    async fn generate_proof(&self, key: &[u8]) -> NdnResult<Vec<Vec<u8>>>;
+
+    // fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId, Option<u64>)> + 'a>;
+
+    async fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>>;
 
     // Clone the storage to a new file.
     // If the target file exists, it will be failed.
