@@ -1,0 +1,11 @@
+{
+  "zone_did": "did:bns:devtest",
+  "owner_public_key": {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
+  },
+  "owner_did": "did:bns:devtest",
+  "device_doc_jwt": "eyJhbGciOiJFZERTQSJ9.eyJAY29udGV4dCI6Imh0dHBzOi8vd3d3LnczLm9yZy9ucy9kaWQvdjEiLCJpZCI6ImRpZDpkZXY6QmIzMjVmMmVkMFhTeHJQUzVzS1FhWDd5bFk5Smg5cmZldlhpaWRLQTF6YyIsInZlcmlmaWNhdGlvbk1ldGhvZCI6W3sidHlwZSI6IkVkMjU1MTlWZXJpZmljYXRpb25LZXkyMDIwIiwiaWQiOiIjbWFpbl9rZXkiLCJjb250cm9sbGVyIjoiZGlkOmRldjpCYjMyNWYyZWQwWFN4clBTNXNLUWFYN3lsWTlKaDlyZmV2WGlpZEtBMXpjIiwicHVibGljS2V5SndrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoiQmIzMjVmMmVkMFhTeHJQUzVzS1FhWDd5bFk5Smg5cmZldlhpaWRLQTF6YyJ9fV0sImF1dGhlbnRpY2F0aW9uIjpbIiNtYWluX2tleSJdLCJhc3NlcnRpb25fbWV0aG9kIjpbIiNtYWluX2tleSJdLCJleHAiOjIwNjMyNjk5OTEsImlhdCI6MTc0NzkwOTk5MSwiZGV2aWNlX3R5cGUiOiJub2RlIiwibmFtZSI6Im5vZGUxIiwiaXNzIjoiZGlkOmJuczpkZXZ0ZXN0In0.irFoDKt2vCN4zIOErH7ujYKfUuHAjCYVj0CgrHvTvHCTDEhP8HBYnVtv-KPZtF1Y0vEZwWTxC7g4wO_suxzSAg",
+  "zone_iat": 1743478939
+}
