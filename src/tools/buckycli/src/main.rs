@@ -1,6 +1,7 @@
 #[allow(unused_mut, dead_code, unused_variables)]
 mod package_cmd;
 mod sys_config;
+mod did;
 
 use std::path::Path;
 use buckyos_api::*;
@@ -9,7 +10,15 @@ use package_cmd::*;
 
 
 fn is_local_cmd(cmd_name: &str) -> bool {
-    cmd_name == "version" || cmd_name == "install_pkg" || cmd_name == "pack_pkg" || cmd_name == "load_pkg" || cmd_name == "set_pkg_meta"
+    const LOCAL_COMMANDS: &[&str] = &[
+        "version",
+        "install_pkg", 
+        "pack_pkg",
+        "load_pkg",
+        "set_pkg_meta",
+        "did"
+    ];
+    LOCAL_COMMANDS.contains(&cmd_name)
 }
 
 #[tokio::main]
@@ -175,6 +184,52 @@ async fn main() -> Result<(), String> {
                         .num_args(2)
                         .help("set system config with file content. filename = file path.
     buckycli sys_config --set_file $key $filename")
+                )
+        )
+        .subcommand(
+            Command::new("did")
+               .about("generate did")
+               .arg(
+                    Arg::new("genkey")
+                       .long("genkey")
+                       .help("generate a  pair of did key")
+                )
+                .arg(
+                    Arg::new("open")
+                      .long("open")
+                      .value_name("filepath")
+                      .help("open config file and show")
+                )
+                .arg(
+                    Arg::new("create_user")
+                      .long("create_user")
+                      .help("create a user (userconfig)")
+                )
+                .arg(
+                    Arg::new("create_device")
+                      .long("create_device")
+                      .help("create a device (deviceconfig)")
+                )
+                .arg(
+                    Arg::new("create_zoneboot")
+                      .long("create_zoneboot")
+                      .help("create a zone_boot_config")
+                )
+                .arg(
+                    Arg::new("create_zone")
+                      .long("create_zone")
+                      .help("create zone config")
+                )
+        )
+        .subcommand(
+            Command::new("sign")
+                .about("sign any data")
+                .arg(
+                    Arg::new("json")
+                    .long("json")
+                    .value_name("data")
+                    .help("sign any given json data and return the JWT content")
+                    .required(true)
                 )
         )
         .get_matches();
@@ -395,6 +450,15 @@ async fn main() -> Result<(), String> {
         }
         Some(("connect", _matches)) => {
             sys_config::connect_into().await;
+        }
+        Some(("sign", matches)) => {
+            did::sign_json_data(matches, private_key).await;
+        }
+        Some(("did", matches)) => {
+            if let Some(_key) = matches.get_one::<String>("genkey") {
+                // did::genkey();
+                // return Ok(());
+            }
         }
         _ => {
             println!("unknown command!");
