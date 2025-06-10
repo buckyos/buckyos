@@ -18,9 +18,9 @@ pub struct TrieObjectMapStorageFactory {
 }
 
 impl TrieObjectMapStorageFactory {
-    pub fn new(data_dir: &Path, default_storage_type: Option<TrieObjectMapStorageType>) -> Self {
+    pub fn new(data_dir: PathBuf, default_storage_type: Option<TrieObjectMapStorageType>) -> Self {
         Self {
-            data_dir: data_dir.to_path_buf(),
+            data_dir,
             default_storage_type: default_storage_type
                 .unwrap_or(TrieObjectMapStorageType::default()),
             temp_file_index: AtomicU64::new(0),

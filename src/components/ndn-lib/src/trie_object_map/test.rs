@@ -1,7 +1,8 @@
 use super::object_map::{
-    TrieObjectMapProofNodesCodec, TrieObjectMapProofVerifierHelper, TrieObjectMapProofVerifyResult,
-    TrieObjectMap,
+    TrieObjectMap, TrieObjectMapProofNodesCodec, TrieObjectMapProofVerifierHelper,
+    TrieObjectMapProofVerifyResult,
 };
+use super::storage_factory::{TrieObjectMapStorageFactory, GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY};
 use crate::hash::{HashHelper, HashMethod};
 use crate::ObjId;
 use crate::OBJ_TYPE_FILE;
@@ -32,18 +33,17 @@ fn generate_random_path_key(rng: &mut StdRng) -> String {
     path
 }
 
-fn generate_key_value_pair(seed: &str, count: usize) -> (String, ObjId, Vec<u8>) {
+fn generate_key_value_pair(seed: &str, count: usize) -> (String, ObjId) {
     let seed = HashHelper::calc_hash(HashMethod::Sha256, seed.as_bytes());
     let mut rng: StdRng = SeedableRng::from_seed(seed.try_into().unwrap());
 
     let hash = generate_random_buf(&mut rng, HashMethod::Keccak256.hash_bytes());
     let obj_id = ObjId::new_by_raw(OBJ_TYPE_FILE.to_owned(), hash);
 
-    let meta = generate_random_buf(&mut rng, 16);
-    (generate_random_path_key(&mut rng), obj_id, meta)
+    (generate_random_path_key(&mut rng), obj_id)
 }
 
-fn generate_key_value_pairs(seed: &str, count: usize) -> Vec<(String, ObjId, Vec<u8>)> {
+fn generate_key_value_pairs(seed: &str, count: usize) -> Vec<(String, ObjId)> {
     let mut pairs = Vec::new();
     for i in 0..count {
         pairs.push(generate_key_value_pair(&format!("{}-{}", seed, i), count));
@@ -51,12 +51,10 @@ fn generate_key_value_pairs(seed: &str, count: usize) -> Vec<(String, ObjId, Vec
     pairs
 }
 
-#[test]
-async fn test_trie_object_map() {
-    println!("Test object map");
-    let key_pairs = generate_key_value_pairs("test", 100);
-    println!("Key pairs generated");
-    let mut obj_map = TrieObjectMap::new(HashMethod::Keccak256, None).await.unwrap();
+async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
+    let mut obj_map = TrieObjectMap::new(HashMethod::Keccak256, None)
+        .await
+        .unwrap();
     println!("Object map created");
 
     let count = 100;
@@ -64,12 +62,8 @@ async fn test_trie_object_map() {
         println!("Test object map: {}/{}", i, count);
         let key = key_pairs[i].0.as_ref();
         let obj_id = key_pairs[i].1.clone();
-        let meta = key_pairs[i].2.clone();
 
-        obj_map
-            .put_object(key, obj_id.clone())
-            .await
-            .unwrap();
+        obj_map.put_object(key, &obj_id).await.unwrap();
 
         println!("Put object success: {}", key);
 
@@ -98,8 +92,8 @@ async fn test_trie_object_map() {
         assert_eq!(proof.root_hash.len() > 0, true);
         println!("Get object proof path success: {}", key);
 
-        println!("Proof nodes: {:?}", proof.proof_nodes);
-        println!("Root hash: {:?}", proof.root_hash);
+        // println!("Proof nodes: {:?}", proof.proof_nodes);
+        // println!("Root hash: {:?}", proof.root_hash);
 
         // Test proof path with invalid key
         let key1 = format!("{}/1000", key);
@@ -112,28 +106,11 @@ async fn test_trie_object_map() {
         let verifier = TrieObjectMapProofVerifierHelper::new(obj_map.hash_method());
 
         // First test verify with right value
-        let ret = verifier
-            .verify_object(&key, &obj_id,  &proof)
-            .unwrap();
+        let ret = verifier.verify_object(&key, &obj_id, &proof).unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::Ok);
 
-        // Test verification without meta
-        let ret = verifier.verify_object(&key, &obj_id, &proof).unwrap();
-        assert_eq!(ret, TrieObjectMapProofVerifyResult::RootMismatch);
-
-        // Test verification with error value
-        let mut error_meta = meta.clone();
-        error_meta[0] = if error_meta[0] == 0 { 1 } else { 0 };
-
-        let ret = verifier
-            .verify_object(&key, &obj_id, &proof)
-            .unwrap();
-        assert_eq!(ret, TrieObjectMapProofVerifyResult::RootMismatch);
-
         // Test verification with invalid value
-        let ret = verifier
-            .verify_object(&key1, &obj_id,  &proof1)
-            .unwrap();
+        let ret = verifier.verify_object(&key1, &obj_id, &proof1).unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::ValueMismatch);
 
         // Test remove
@@ -158,9 +135,7 @@ async fn test_trie_object_map() {
 
         // Test verification after remove
         proof.root_hash = root_hash.clone();
-        let ret = verifier
-            .verify_object(&key, &obj_id, &proof)
-            .unwrap();
+        let ret = verifier.verify_object(&key, &obj_id, &proof).unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::RootMismatch);
         println!("Verify after remove success: {}", key);
 
@@ -170,4 +145,26 @@ async fn test_trie_object_map() {
         let proof_nodes = TrieObjectMapProofNodesCodec::decode(&s).unwrap();
         assert_eq!(proof_nodes.len(), proof.proof_nodes.len());
     }
+}
+
+
+#[test]
+async fn test_trie_object_map() {
+    let temp_dir = std::env::temp_dir();
+    let data_dir = temp_dir.join("ndn_test_trie_object_map");
+    if !data_dir.exists() {
+        std::fs::create_dir_all(&data_dir).expect("Failed to create test data directory");
+    } else {
+        // Clean up the directory if it already exists
+        // std::fs::remove_dir_all(&data_dir).expect("Failed to remove existing test data directory");
+        // std::fs::create_dir_all(&data_dir).expect("Failed to recreate test data directory");
+    }
+
+    GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY.set(TrieObjectMapStorageFactory::new(data_dir, None));
+
+    println!("Test object map");
+    let key_pairs = generate_key_value_pairs("test", 100);
+    println!("Key pairs generated");
+
+    test_op_and_proof(key_pairs.as_slice()).await;
 }
