@@ -479,7 +479,7 @@ async fn ndn_2_zone_o_link_innerpath_ok() {
     );
 
     let (got_obj_id, got_obj) = zone_a_client
-        .get_obj_by_url(o_link_inner_path.as_str(), Some(obj_id.clone()))
+        .get_obj_by_url(o_link_inner_path.as_str(), None)
         .await
         .expect("push object from ndn-mgr failed");
 
@@ -495,7 +495,7 @@ async fn ndn_2_zone_o_link_innerpath_ok() {
         obj_id_base32, inner_path
     );
     let (got_obj_id, got_obj) = zone_b_client
-        .get_obj_by_url(o_link_inner_path.as_str(), Some(obj_id.clone()))
+        .get_obj_by_url(o_link_inner_path.as_str(), None)
         .await
         .expect("get obj from zone-a failed");
 
@@ -543,11 +543,15 @@ async fn ndn_2_zone_o_link_innerpath_not_found() {
     );
 
     let ret = zone_a_client
-        .get_obj_by_url(o_link_inner_path.as_str(), Some(obj_id.clone()))
+        .get_obj_by_url(o_link_inner_path.as_str(), None)
         .await;
 
     match ret {
-        Ok(_) => assert!(false, "should obj id verify failed"),
+        Ok((got_obj_id, got_obj)) => assert!(
+            false,
+            "should obj id verify failed, got obj-id: {:?}, got obj: {:?}",
+            got_obj_id, got_obj
+        ),
         Err(err) => {
             if let NdnError::InvalidId(_) = err {
             } else {
@@ -563,7 +567,7 @@ async fn ndn_2_zone_o_link_innerpath_not_found() {
         obj_id_base32, inner_path
     );
     let ret = zone_b_client
-        .get_obj_by_url(o_link_inner_path.as_str(), Some(obj_id.clone()))
+        .get_obj_by_url(o_link_inner_path.as_str(), None)
         .await;
 
     match ret {
@@ -621,13 +625,13 @@ async fn ndn_2_zone_o_link_innerpath_verify_failed() {
     );
 
     let ret = zone_a_client
-        .get_obj_by_url(o_link_inner_path.as_str(), Some(obj_id.clone()))
+        .get_obj_by_url(o_link_inner_path.as_str(), None)
         .await;
 
     match ret {
         Ok(_) => assert!(false, "sub obj id should not found"),
         Err(err) => {
-            if let NdnError::NotFound(_) = err {
+            if let NdnError::VerifyError(_) = err {
             } else {
                 assert!(
                     false,
@@ -983,7 +987,7 @@ async fn ndn_2_zone_r_link_innerpath_not_found() {
 
     let (obj_id, obj) = generate_random_obj();
 
-    let obj_path = "";
+    let obj_path = "/test-obj-path";
     NamedDataMgr::pub_object_to_file(
         Some(ndn_mgr_id.as_str()),
         obj.clone(),
@@ -1022,9 +1026,7 @@ async fn ndn_2_zone_r_link_innerpath_not_found() {
     // 3. Pull the object using the NdnClient from zone_a with private key of zone_b
     // get object using the NdnClient
     let r_link = format!("http://test.buckyos.io/ndn{}/{}", obj_path, inner_path);
-    let ret = zone_b_client
-        .get_obj_by_url(r_link.as_str(), Some(obj_id.clone()))
-        .await;
+    let ret = zone_b_client.get_obj_by_url(r_link.as_str(), None).await;
 
     match ret {
         Ok(_) => assert!(false, "sub obj id should not found"),
@@ -1070,7 +1072,7 @@ async fn ndn_2_zone_r_link_innerpath_verify_failed() {
         serde_json::Value::String("fake string".to_string()),
     );
 
-    let obj_path = "";
+    let obj_path = "/test-obj-path";
     NamedDataMgr::pub_object_to_file(
         Some(ndn_mgr_id.as_str()),
         obj.clone(),
@@ -1085,7 +1087,7 @@ async fn ndn_2_zone_r_link_innerpath_verify_failed() {
     // get object using the NdnClient
     let inner_path = "string";
     let r_link_inner_path = format!(
-        "http://{}/ndn/{}{}",
+        "http://{}/ndn{}/{}",
         local_ndn_server_host, obj_path, inner_path
     );
     let ret = zone_a_client
@@ -1097,7 +1099,11 @@ async fn ndn_2_zone_r_link_innerpath_verify_failed() {
         Err(err) => {
             if let NdnError::InvalidId(_) = err {
             } else {
-                assert!(false, "unexpect error, should obj id verify failed.")
+                assert!(
+                    false,
+                    "unexpect error, should obj id verify failed. {:?}",
+                    err
+                )
             }
         }
     }

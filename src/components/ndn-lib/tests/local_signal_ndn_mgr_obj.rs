@@ -770,7 +770,7 @@ async fn ndn_local_r_link_verify_failed() {
     .expect("pub object to file failed");
 
     // get object using the NdnClient
-    let r_link = format!("http://{}/ndn/{}", ndn_host, obj_path);
+    let r_link = format!("http://{}/ndn{}", ndn_host, obj_path);
     let ret = ndn_client
         .get_obj_by_url(r_link.as_str(), Some(obj_id.clone()))
         .await;
@@ -780,7 +780,11 @@ async fn ndn_local_r_link_verify_failed() {
         Err(err) => {
             if let NdnError::InvalidId(_) = err {
             } else {
-                assert!(false, "unexpect error, should obj id verify failed.")
+                assert!(
+                    false,
+                    "unexpect error, should obj id verify failed. {:?}",
+                    err
+                );
             }
         }
     }
@@ -838,7 +842,7 @@ async fn ndn_local_r_link_innerpath_not_found() {
 
     let (obj_id, obj) = generate_random_obj();
 
-    let obj_path = "";
+    let obj_path = "/test-obj-path";
     NamedDataMgr::pub_object_to_file(
         Some(ndn_mgr_id.as_str()),
         obj.clone(),
@@ -852,7 +856,7 @@ async fn ndn_local_r_link_innerpath_not_found() {
 
     // get object using the NdnClient
     let inner_path = "notexist";
-    let r_link_inner_path = format!("http://{}/ndn/{}{}", ndn_host, obj_path, inner_path);
+    let r_link_inner_path = format!("http://{}/ndn{}/{}", ndn_host, obj_path, inner_path);
     let ret = ndn_client
         .get_obj_by_url(r_link_inner_path.as_str(), None)
         .await;
@@ -889,7 +893,7 @@ async fn ndn_local_r_link_innerpath_verify_failed() {
         serde_json::Value::String("fake string".to_string()),
     );
 
-    let obj_path = "";
+    let obj_path = "/test-obj-path";
     NamedDataMgr::pub_object_to_file(
         Some(ndn_mgr_id.as_str()),
         obj.clone(),
@@ -903,7 +907,7 @@ async fn ndn_local_r_link_innerpath_verify_failed() {
 
     // get object using the NdnClient
     let inner_path = "string";
-    let r_link_inner_path = format!("http://{}/ndn/{}{}", ndn_host, obj_path, inner_path);
+    let r_link_inner_path = format!("http://{}/ndn{}/{}", ndn_host, obj_path, inner_path);
     let ret = ndn_client
         .get_obj_by_url(r_link_inner_path.as_str(), None)
         .await;
@@ -913,7 +917,11 @@ async fn ndn_local_r_link_innerpath_verify_failed() {
         Err(err) => {
             if let NdnError::InvalidId(_) = err {
             } else {
-                assert!(false, "unexpect error, should obj id verify failed.")
+                assert!(
+                    false,
+                    "unexpect error, should obj id verify failed. {:?}",
+                    err
+                )
             }
         }
     }

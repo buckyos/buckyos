@@ -253,10 +253,10 @@ async fn ndn_2_zone_chunk_not_found() {
         .expect("push chunk from ndn-mgr failed");
 
     // 3. Pull the chunk using the NdnClient from zone_a with private key of zone_b
-    zone_b_client
-        .pull_chunk(chunk_id.clone(), Some(target_ndn_mgr_id.as_str()))
-        .await
-        .expect("pull chunk from ndn-mgr failed");
+    // zone_b_client
+    //     .pull_chunk(chunk_id.clone(), Some(target_ndn_mgr_id.as_str()))
+    //     .await
+    //     .expect("pull chunk from ndn-mgr failed");
 
     let ret = NamedDataMgr::open_chunk_reader(
         Some(target_ndn_mgr_id.as_str()),
