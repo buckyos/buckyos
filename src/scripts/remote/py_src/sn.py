@@ -83,8 +83,10 @@ def update_node_dns(node, ip):
     node.run_command(f"sudo sed -i 's/#DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf")
     node.run_command("sudo systemctl restart systemd-resolved")
 
-    # 这node_daemon和buckycli 启动时候的DNS，只读/etc/resolv.conf, 只能硬改这文件了
-    # node.run_command(f"sudo echo nameserver {ip} > /etc/resolv.conf")
+    # 重启systemd-resolved之后，
+    # 把 /etc/resolv.conf中，以.1 结尾的 IP地址的行注释掉
+    # 这个地址是，Multipass虚拟网络的默认网关及DNS中继地址，会导致DNS解析错误
+    node.run_command("sudo sed -ri '/^nameserver [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.1$/ s/^/# /' /etc/resolv.conf")
 
     # sudo resolvectl dns ens3 ""
     # sudo resolvectl dns ens4 ""
