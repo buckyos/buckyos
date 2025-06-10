@@ -97,11 +97,7 @@ where
 
     async fn get(&self, key: &str) -> NdnResult<Option<ObjId>> {
         let db = &self.db.as_hash_db() as &dyn HashDBRef<H, Vec<u8>>;
-        let trie = GenericTrieDBBuilder::new(
-            db,
-            &self.root,
-        )
-        .build();
+        let trie = GenericTrieDBBuilder::new(db, &self.root).build();
         let value = trie.get(key.as_bytes()).map_err(|e| {
             let msg = format!("Failed to get value for key: {:?}", e);
             error!("{}", msg);
@@ -170,9 +166,7 @@ where
 
     async fn is_exist(&self, key: &str) -> NdnResult<bool> {
         let db = &self.db.as_hash_db() as &dyn HashDBRef<H, Vec<u8>>;
-        let trie =
-            GenericTrieDBBuilder::new(db, &self.root)
-                .build();
+        let trie = GenericTrieDBBuilder::new(db, &self.root).build();
         let exists = trie.contains(key.as_bytes()).map_err(|e| {
             let msg = format!("Failed to check existence for key: {:?}", e);
             error!("{}", msg);
@@ -187,7 +181,8 @@ where
         self.check_read_only()?;
 
         let mut trie =
-            GenericTrieDBMutBuilder::from_existing(self.db.as_hash_db_mut(), &mut self.root).build();
+            GenericTrieDBMutBuilder::from_existing(self.db.as_hash_db_mut(), &mut self.root)
+                .build();
         trie.commit();
 
         // let new_root = trie.root_hash().to_vec();
@@ -197,6 +192,29 @@ where
 
     async fn root(&self) -> Vec<u8> {
         self.root.as_ref().to_vec()
+    }
+
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId)> + 'a> {
+        let iter = self.db.iter();
+        Box::new(iter.filter_map(|(k, v)| {
+            let key = String::from_utf8(k.to_vec())
+                .map_err(|e| {
+                    let msg = format!("Failed to convert key to string: {:?}, {:?}", k, e);
+                    error!("{}", msg);
+                    NdnError::InvalidData(msg)
+                })
+                .ok()?;
+
+            let value: ObjId = bincode::deserialize(&v)
+                .map_err(|e| {
+                    let msg = format!("Failed to deserialize obj_id value: {:?}, {:?}", v, e);
+                    error!("{}", msg);
+                    NdnError::InvalidData(msg)
+                })
+                .ok()?;
+
+            Some((key, value))
+        }))
     }
 
     async fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>> {
@@ -221,7 +239,6 @@ where
         target: &Path,
         read_only: bool,
     ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>> {
-
         // Clone the database
         let cloned_db = self.db.clone(target, read_only).await?;
 

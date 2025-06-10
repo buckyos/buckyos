@@ -1,7 +1,6 @@
 use super::file::{TrieObjectMapSqliteStorage, TrieObjectMapJSONFileStorage};
 use super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
 use super::inner_storage::{ TrieObjectMapInnerStorageWrapper};
-use super::memory_storage::TrieObjectMapMemoryStorage;
 use super::storage::{
     GenericTrieObjectMapProofVerifier, TrieObjectMapProofVerifier, HashFromSlice,
 };

@@ -352,6 +352,14 @@ where
         TrieObjectMapStorageType::JSONFile
     }
 
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (Vec<u8>, T)> + 'a> {
+        Box::new(
+            self.data
+                .iter()
+                .map(|(k, (v, _))| (k.as_ref().to_vec(), v.clone())),
+        )
+    }
+
     // Clone the storage to a new file.
     // If the target file exists, it will be failed.
     async fn clone(

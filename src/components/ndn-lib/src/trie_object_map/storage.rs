@@ -27,6 +27,8 @@ impl Default for TrieObjectMapStorageType {
 pub trait HashDBWithFile<H: Hasher, T>: Send + Sync + HashDB<H, T> {
     fn get_type(&self) -> TrieObjectMapStorageType;
 
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (Vec<u8>, T)> + 'a>;
+
     // Clone the storage to a new file.
     // If the target file exists, it will be failed.
     async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn HashDBWithFile<H, T>>>;
@@ -47,7 +49,7 @@ pub trait TrieObjectMapInnerStorage: Send + Sync {
     async fn commit(&mut self) -> NdnResult<()>;
     async fn root(&self) -> Vec<u8>;
 
-    // fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId, Option<u64>)> + 'a>;
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId)> + 'a>;
 
     async fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>>;
 
