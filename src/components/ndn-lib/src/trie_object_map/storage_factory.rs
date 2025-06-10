@@ -161,7 +161,7 @@ impl TrieObjectMapStorageFactory {
     pub async fn save(
         &self,
         container_id: &ObjId,
-        storage: &dyn TrieObjectMapInnerStorage,
+        storage: &mut dyn TrieObjectMapInnerStorage,
     ) -> NdnResult<()> {
         let file = self.get_file_path_by_id(Some(container_id), storage.get_type());
 
