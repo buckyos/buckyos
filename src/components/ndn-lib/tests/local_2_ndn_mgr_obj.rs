@@ -341,7 +341,6 @@ async fn ndn_local_2_mgr_o_link_ok() {
     let (target_ndn_client, _target_ndn_url) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
 
     // get object using the NdnClient
-    let inner_path = "obj";
     let o_link = format!("http://{}/ndn/{}", ndn_host, obj_id_base32);
     let (got_obj_id, got_obj) = target_ndn_client
         .get_obj_by_url(o_link.as_str(), None)
@@ -351,9 +350,7 @@ async fn ndn_local_2_mgr_o_link_ok() {
     assert_eq!(got_obj_id, obj_id, "got obj-id mismatch");
 
     let (_, got_obj_str) = build_named_object_by_json("non-test-obj", &got_obj);
-    let (_, expect_obj_str) =
-        build_named_object_by_json("non-test-obj", obj.get(inner_path).unwrap());
-    assert_eq!(got_obj_str, expect_obj_str, "got obj mismatch");
+    assert_eq!(got_obj_str, obj_str, "got obj mismatch");
 }
 
 #[tokio::test]
@@ -373,11 +370,10 @@ async fn ndn_local_2_mgr_o_link_not_found() {
         .expect("put object in local failed");
 
     let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let (target_ndn_client, _target_ndn_url) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
+    let (target_ndn_client, target_ndn_host) = init_ndn_server(target_ndn_mgr_id.as_str()).await;
 
     // get object using the NdnClient
-    let inner_path = "notexist";
-    let o_link = format!("http://{}/ndn/{}", ndn_host, obj_id_base32);
+    let o_link = format!("http://{}/ndn/{}", target_ndn_host, obj_id_base32);
     let ret = target_ndn_client
         .get_obj_by_url(o_link.as_str(), None)
         .await;
@@ -387,7 +383,11 @@ async fn ndn_local_2_mgr_o_link_not_found() {
         Err(err) => {
             if let NdnError::InvalidId(_) = err {
             } else {
-                assert!(false, "unexpect error, should obj id verify failed.")
+                assert!(
+                    false,
+                    "unexpect error, should obj id verify failed. {:?}",
+                    err
+                )
             }
         }
     }
@@ -833,7 +833,7 @@ async fn ndn_local_2_mgr_r_link_innerpath_not_found() {
 
     let (obj_id, obj) = generate_random_obj();
 
-    let obj_path = "";
+    let obj_path = "/test-obj-path";
     NamedDataMgr::pub_object_to_file(
         Some(ndn_mgr_id.as_str()),
         obj.clone(),
@@ -850,7 +850,7 @@ async fn ndn_local_2_mgr_r_link_innerpath_not_found() {
 
     // get object using the NdnClient
     let inner_path = "notexist";
-    let r_link_inner_path = format!("http://{}/ndn/{}{}", ndn_host, obj_path, inner_path);
+    let r_link_inner_path = format!("http://{}/ndn{}/{}", ndn_host, obj_path, inner_path);
     let ret = target_ndn_client
         .get_obj_by_url(r_link_inner_path.as_str(), None)
         .await;
@@ -887,7 +887,7 @@ async fn ndn_local_2_mgr_r_link_innerpath_verify_failed() {
         serde_json::Value::String("fake string".to_string()),
     );
 
-    let obj_path = "";
+    let obj_path = "/test-obj-path";
     NamedDataMgr::pub_object_to_file(
         Some(ndn_mgr_id.as_str()),
         obj.clone(),
@@ -904,7 +904,7 @@ async fn ndn_local_2_mgr_r_link_innerpath_verify_failed() {
 
     // get object using the NdnClient
     let inner_path = "string";
-    let r_link_inner_path = format!("http://{}/ndn/{}{}", ndn_host, obj_path, inner_path);
+    let r_link_inner_path = format!("http://{}/ndn{}/{}", ndn_host, obj_path, inner_path);
     let ret = target_ndn_client
         .get_obj_by_url(r_link_inner_path.as_str(), None)
         .await;
@@ -914,7 +914,11 @@ async fn ndn_local_2_mgr_r_link_innerpath_verify_failed() {
         Err(err) => {
             if let NdnError::InvalidId(_) = err {
             } else {
-                assert!(false, "unexpect error, should obj id verify failed.")
+                assert!(
+                    false,
+                    "unexpect error, should obj id verify failed.{:?}",
+                    err
+                )
             }
         }
     }

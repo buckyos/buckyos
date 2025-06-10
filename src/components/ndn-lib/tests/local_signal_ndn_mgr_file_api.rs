@@ -1478,6 +1478,8 @@ async fn ndn_local_r_link_innerpath_file_ok() {
         .await
         .expect("pub object to file failed");
 
+        let (file_id, _file_obj_str) = file_obj.gen_obj_id();
+
         assert_eq!(
             file_obj.content,
             chunk_id.to_string(),
@@ -1489,7 +1491,7 @@ async fn ndn_local_r_link_innerpath_file_ok() {
             "file content-ndn-path should be same as ndn-path"
         );
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn{}/content", ndn_host, obj_path,);
         let (mut reader, resp_headers) = ndn_client
             .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await
@@ -1801,7 +1803,7 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn{}/content", ndn_host, obj_path,);
         let ret = ndn_client
             .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await;
@@ -1816,7 +1818,7 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
             }
         }
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/notexist", ndn_host, obj_path);
+        let r_link_inner_path = format!("http://{}/ndn{}/notexist", ndn_host, obj_path);
         let ret = ndn_client
             .get_obj_by_url(r_link_inner_path.as_str(), None)
             .await;
@@ -1857,7 +1859,7 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
         // .await
         // .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn{}/content", ndn_host, obj_path,);
 
         let download_path = tempfile::tempdir()
             .unwrap()
@@ -1940,7 +1942,7 @@ async fn ndn_local_r_link_innerpath_file_not_found() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/notexist", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn{}/notexist", ndn_host, obj_path,);
 
         let ret = ndn_client
             .get_obj_by_url(r_link_inner_path.as_str(), None)
@@ -1984,25 +1986,35 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         )
         .await;
 
-        let (cal_file_id, file_obj_str) = fake_file_obj.gen_obj_id();
-        assert_ne!(file_id, cal_file_id, "file-id should not match");
+        let (fake_file_id, fake_file_obj_str) = fake_file_obj.gen_obj_id();
+        assert_ne!(file_id, fake_file_id, "file-id should not match");
 
         let obj_path = "/test_file_path";
-        NamedDataMgr::pub_object_to_file(
+        NamedDataMgr::put_object(
             Some(ndn_mgr_id.as_str()),
-            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
-            OBJ_TYPE_FILE,
-            obj_path,
-            "test_non_file_obj_user_id",
-            "test_non_file_obj_app_id",
+            &file_id,
+            fake_file_obj_str.as_str(),
         )
         .await
-        .expect("pub object to file failed");
+        .expect("put object in local failed");
+        NamedDataMgr::create_file(
+            Some(ndn_mgr_id.as_str()),
+            obj_path,
+            &file_id,
+            "test_non_file_obj_app_id",
+            "test_non_file_obj_user_id",
+        )
+        .await
+        .expect("create file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn{}/content", ndn_host, obj_path,);
 
         let ret = ndn_client
-            .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
+            .open_chunk_reader_by_url(
+                r_link_inner_path.as_str(),
+                Some(fake_chunk_id.clone()),
+                None,
+            )
             .await;
 
         match ret {
@@ -2012,7 +2024,7 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
                     info!("Chunk verify error as expected");
                 }
                 _ => {
-                    assert!(false, "Unexpected error type");
+                    assert!(false, "Unexpected error type, {:?}", err);
                 }
             },
         }
@@ -2033,22 +2045,28 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         )
         .await;
 
-        let (cal_file_id, file_obj_str) = file_obj.gen_obj_id();
-        assert_eq!(file_id, cal_file_id, "file-id should not match");
+        let (fake_file_id, fake_file_obj_str) = fake_file_obj.gen_obj_id();
+        assert_eq!(file_id, fake_file_id, "file-id should not match");
 
         let obj_path = "/test_file_path";
-        NamedDataMgr::pub_object_to_file(
+        NamedDataMgr::put_object(
             Some(ndn_mgr_id.as_str()),
-            serde_json::to_value(&file_obj).expect("Failed to serialize FileObject"),
-            OBJ_TYPE_FILE,
-            obj_path,
-            "test_non_file_obj_user_id",
-            "test_non_file_obj_app_id",
+            &file_id,
+            fake_file_obj_str.as_str(),
         )
         .await
-        .expect("pub object to file failed");
+        .expect("put object in local failed");
+        NamedDataMgr::create_file(
+            Some(ndn_mgr_id.as_str()),
+            obj_path,
+            &file_id,
+            "test_non_file_obj_app_id",
+            "test_non_file_obj_user_id",
+        )
+        .await
+        .expect("create file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn{}/content", ndn_host, obj_path,);
 
         let download_path = tempfile::tempdir()
             .unwrap()
@@ -2135,7 +2153,7 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn{}/content", ndn_host, obj_path,);
 
         let (mut reader, resp_headers) = ndn_client
             .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
@@ -2207,7 +2225,7 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn{}/content", ndn_host, obj_path,);
 
         let download_path = tempfile::tempdir()
             .unwrap()
@@ -2295,7 +2313,7 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn{}/content", ndn_host, obj_path,);
         let ret = ndn_client
             .open_chunk_reader_by_url(r_link_inner_path.as_str(), Some(chunk_id.clone()), None)
             .await;
@@ -2337,7 +2355,7 @@ async fn ndn_local_r_link_innerpath_file_verify_failed() {
         .await
         .expect("pub object to file failed");
 
-        let r_link_inner_path = format!("http://{}/ndn/{}/content", ndn_host, obj_path,);
+        let r_link_inner_path = format!("http://{}/ndn{}/content", ndn_host, obj_path,);
 
         let download_path = tempfile::tempdir()
             .unwrap()
