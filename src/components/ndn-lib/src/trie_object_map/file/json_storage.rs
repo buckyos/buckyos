@@ -50,8 +50,8 @@ where
     KF: KeyFunction<H>,
 {
     pub fn new(file: PathBuf, read_only: bool) -> NdnResult<Self> {
-        let hashed_null_node = H::hash(&[]);
-        let null_node_data = T::from(&[]);
+        let hashed_null_node = H::hash(&[0u8][..]);
+        let null_node_data = [0u8][..].into();
 
         let mut ret = Self {
             file: file.clone(),
@@ -356,7 +356,13 @@ where
         Box::new(
             self.data
                 .iter()
-                .map(|(k, (v, _))| (k.as_ref().to_vec(), v.clone())),
+                .filter_map(|(k, (v, ref_count))| {
+                    if *ref_count > 0 {
+                        Some((k.as_ref().to_vec(), v.clone()))
+                    } else {
+                        None
+                    }
+                }),
         )
     }
 
@@ -385,3 +391,120 @@ where
 use memory_db::HashKey;
 
 pub type TrieObjectMapJSONFileStorage<H> = MemoryDBExt<H, HashKey<H>, Vec<u8>>;
+
+
+#[cfg(test)]
+mod test {
+    use crate::trie_object_map::storage;
+
+    use super::super::super::hash::Sha256Hasher;
+    use super::*;
+    use hash_db::HashDB;
+    use memory_db::{HashKey, MemoryDB};
+    use std::{hash::Hash, path::PathBuf, vec};
+
+    #[test]
+    fn test_trie_object_map_json_file_storage() {
+        type TestStorage = MemoryDBExt<Sha256Hasher, HashKey<Sha256Hasher>, Vec<u8>>;
+        type H = Sha256Hasher;
+        type TestMemoryDB = MemoryDB<Sha256Hasher, HashKey<Sha256Hasher>, Vec<u8>>;
+
+        buckyos_kit::init_logging("test-trie-object-map-json-storage", false);
+
+        // Get system temp directory
+        let data_dir = std::env::temp_dir().join("ndn-test-trie-object-map-json-storage");
+        if !data_dir.exists() {
+            println!("Creating test data directory: {:?}", data_dir);
+            std::fs::create_dir_all(&data_dir).unwrap();
+        } else {
+            println!("Using existing test data directory: {:?}", data_dir);
+        }
+
+        let db_path = data_dir.join("test_trie_object_map.json");
+        if db_path.exists() {
+            println!("Removing existing test database file: {:?}", db_path);
+            std::fs::remove_file(&db_path).unwrap();
+        }
+        let mut storage = TestStorage::new(db_path.clone(), false).unwrap();
+        //let mut storage = TestMemoryDB::default();
+
+        // Test as HashDB
+        let value = b"test_value".to_vec();
+        let key = H::hash(&value);
+        let node = vec![0u8; 32];
+        let prefix = (node.as_ref(), None);
+
+        HashDB::insert(&mut storage, prefix, &value);
+        let retrieved_value = HashDB::get(&storage, &key, prefix).unwrap();
+        assert_eq!(retrieved_value, value);
+        assert!(HashDB::contains(&storage, &key, prefix));
+
+        storage.remove(&key, prefix);
+        assert!(!HashDB::contains(&storage, &key, prefix));
+        assert!(HashDB::get(&storage, &key, prefix).is_none());
+        assert!(HashDB::get(&storage, &H::hash(b"non_existent_key"), prefix).is_none());
+
+        // Insert one value twice and then should be removed twice before it is really removed
+        {
+            let value = b"test_value1".to_vec();
+            let key = H::hash(&value);
+            let node = vec![0u8; 32];
+            let prefix = (node.as_ref(), None);
+
+            HashDB::insert(&mut storage, prefix, &value);
+            HashDB::insert(&mut storage, prefix, &value);
+
+            HashDB::remove(&mut storage, &key, prefix);
+
+            // Get the value again, it should be existing
+            let retrieved_value = HashDB::get(&storage, &key, prefix).unwrap();
+            assert_eq!(retrieved_value, value);
+
+            assert!(HashDB::contains(&storage, &key, prefix));
+
+            // Remove the value again, it should be removed
+            HashDB::remove(&mut storage, &key, prefix);
+
+            assert!(!HashDB::contains(&storage, &key, prefix));
+            assert!(HashDB::get(&storage, &key, prefix).is_none());
+        }
+
+        // Test first remove and then insert again
+        let value = b"test_value2".to_vec();
+        let key = H::hash(&value);
+        {
+            let node = vec![0u8; 32];
+            let prefix = (node.as_ref(), None);
+
+            // First remove the value
+            HashDB::remove(&mut storage, &key, prefix);
+            assert!(!HashDB::contains(&storage, &key, prefix));
+            assert!(HashDB::get(&storage, &key, prefix).is_none());
+
+            // First insert the value will not be existing
+            HashDB::insert(&mut storage, prefix, &value);
+            assert!(!HashDB::contains(&storage, &key, prefix));
+            assert!(HashDB::get(&storage, &key, prefix).is_none());
+
+            // Insert the value again, it should be existing
+            HashDB::insert(&mut storage, prefix, &value);
+            assert!(HashDB::contains(&storage, &key, prefix));
+            let retrieved_value = HashDB::get(&storage, &key, prefix).unwrap();
+            assert_eq!(retrieved_value, value);
+        }
+
+        // Test iterating over the storage
+        let mut iter = storage.iter();
+        let mut count = 0;
+        while let Some((k, v)) = iter.next() {
+            assert_eq!(k.as_slice(), key.as_ref() as &[u8]);
+            assert_eq!(v, value);
+            println!("Iterated key: {:?}, value: {:?}", key, v);
+            count += 1;
+        }
+
+        storage.save(&db_path).unwrap();
+        println!("Test completed successfully, data saved to: {:?}", db_path);
+    }
+}
+
