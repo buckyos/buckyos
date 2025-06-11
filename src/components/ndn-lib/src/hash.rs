@@ -24,6 +24,7 @@ pub const DEFAULT_HASH_METHOD: &str = "sha256";
 pub enum HashMethod {
     Sha256,
     Sha512,
+    QCID,
     Blake2s256,
     Keccak256,
 }
@@ -39,6 +40,7 @@ impl HashMethod {
         match self {
             Self::Sha256 => "sha256",
             Self::Sha512 => "sha512",
+            Self::QCID => "qcid",   // QCID is a special case, not a hash method, use sha256 for hash
             Self::Blake2s256 => "blake2s256",
             Self::Keccak256 => "keccak256",
         }
@@ -48,6 +50,7 @@ impl HashMethod {
         match self {
             Self::Sha256 => "mix256",
             Self::Sha512 => "mix512",
+            Self::QCID => "mixqcid",
             Self::Blake2s256 => "mixblake2s256",
             Self::Keccak256 => "mixkeccak256",
         }
@@ -57,6 +60,7 @@ impl HashMethod {
         match self {
             Self::Sha256 => 32,
             Self::Sha512 => 64,
+            Self::QCID => 32,
             Self::Blake2s256 => 32,
             Self::Keccak256 => 32,
         }
@@ -83,6 +87,7 @@ impl FromStr for HashMethod {
         match s {
             "sha256" | "mix256" => Ok(Self::Sha256),
             "sha512" | "mix512" => Ok(Self::Sha512),
+            "qcid" | "mixqcid" => Ok(Self::QCID),
             "blake2s256" | "mixblake2s256" => Ok(Self::Blake2s256),
             "keccak256" | "mixkeccak256" => Ok(Self::Keccak256),
             _ => {
@@ -247,6 +252,9 @@ impl HashHelper {
                 sha3::Digest::update(&mut hasher, data);
                 hasher.finalize().to_vec()
             }
+            HashMethod::QCID => {
+                unimplemented!("QCID hash method not implemented yet");
+            }
         }
     }
 
@@ -284,6 +292,9 @@ impl HashHelper {
         
                 hasher.finalize().to_vec()
             }
+            HashMethod::QCID => {
+                unimplemented!("QCID hash method not implemented yet");
+            }
         }
     }
 
@@ -312,6 +323,9 @@ impl HashHelper {
                 sha3::Digest::update(&mut hasher, left);
                 sha3::Digest::update(&mut hasher, right);
                 hasher.finalize().to_vec()
+            }
+            HashMethod::QCID => {
+                unimplemented!("QCID hash method not implemented yet");
             }
         }
     }

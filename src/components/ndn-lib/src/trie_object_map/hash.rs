@@ -56,3 +56,17 @@ impl Hasher for Keccak256Hasher {
         GenericArray::clone_from_slice(&value)
     }
 }
+
+#[derive(Default)]
+pub(super) struct  QCIDHasher;
+
+impl Hasher for QCIDHasher {
+    type Out = GenericArray<u8, U32>;
+    type StdHasher = std::collections::hash_map::DefaultHasher;
+    const LENGTH: usize = 32;
+
+    fn hash(data: &[u8]) -> Self::Out {
+        let value = HashHelper::calc_hash(HashMethod::QCID, data);
+        GenericArray::clone_from_slice(&value)
+    }
+}

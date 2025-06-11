@@ -1,11 +1,12 @@
 use std::{collections::{BTreeMap, HashMap}, ops::Range};
 use name_lib::EncodedDocument;
 use sha2::{Sha256, Digest};
-use crate::{NdnResult, NdnError};
+use crate::{HashMethod, NdnError, NdnResult};
 use crate::{OBJ_TYPE_FILE,OBJ_TYPE_DIR,OBJ_TYPE_MTREE,OBJ_TYPE_OBJMAPT,OBJ_TYPE_PACK,OBJ_TYPE_LIST};
 use serde::{Deserialize, Serialize};
 use jsonwebtoken::{encode, EncodingKey};
 use std::fmt::Display;
+use std::str::FromStr;
 
 //objid link to a did::EncodedDocument
 #[derive(Debug, Clone,Eq, PartialEq, Serialize, Deserialize)]
@@ -63,10 +64,13 @@ impl ObjId {
             return true;
         }
 
-        match self.obj_type.as_str() {
-            "sha256" => true,
-            "qcid" => true,
-            _ => false,
+        match HashMethod::from_str(&self.obj_type) {
+            Ok(_hash_method) => {
+                true
+            },
+            Err(_) => {
+                false
+            }
         }
     }
 

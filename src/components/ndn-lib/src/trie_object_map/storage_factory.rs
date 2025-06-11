@@ -96,6 +96,11 @@ impl TrieObjectMapStorageFactory {
                 self.open::<Keccak256Hasher>(container_id, read_only, storage_type)
                     .await
             }
+            HashMethod::QCID => {
+                let msg = "QCID hash method is not supported for TrieObjectMap".to_string();
+                error!("{}", msg);
+                Err(NdnError::Unsupported(msg))
+            }
         }
     }
 
@@ -277,6 +282,11 @@ impl TrieObjectMapStorageFactory {
             HashMethod::Sha512 => Self::create_verifier::<Sha512Hasher>(),
             HashMethod::Blake2s256 => Self::create_verifier::<Blake2s256Hasher>(),
             HashMethod::Keccak256 => Self::create_verifier::<Keccak256Hasher>(),
+            HashMethod::QCID => {
+                let msg = "QCID hash method is not supported for TrieObjectMap".to_string();
+                error!("{}", msg);
+                panic!("{}", NdnError::Unsupported(msg));
+            }
         }
     }
 }
