@@ -109,7 +109,12 @@ pub fn get_by_json_path(data: &Value, path: &str) -> Option<Value> {
             current.get(part).unwrap_or(&json!(null))
         };
     }
-    Some(current.clone())
+    
+    if current.is_null() {
+        None
+    } else {
+        Some(current.clone())
+    }
 }
 
 pub fn extend_kv_action_map(dest_map: &mut HashMap<String, KVAction>, from_map: &HashMap<String, KVAction>) {

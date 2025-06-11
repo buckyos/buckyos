@@ -197,6 +197,7 @@ impl NdnClient {
             obj_id_from_url = Some(obj_id);
             obj_inner_path = inner_path;
         }
+        //info!("get_obj_by_url:obj_id_from_url:{:?},obj_inner_path:{:?}",obj_id_from_url,obj_inner_path);
         // 使用标准HTTP协议打开URL获取对象
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -256,6 +257,10 @@ impl NdnClient {
             }
         } else {
             //URL is a Semantic Object Link (CYFS R-Link)
+            if cyfs_resp_headers.obj_id.is_none() {
+                return Err(NdnError::InvalidId("no obj id".to_string()));
+            }
+            
             let obj_id = cyfs_resp_headers.obj_id.clone().unwrap();
             let real_target_obj = NdnClient::verify_obj_id(&obj_id,&obj_str)?;
             //let real_path = 
