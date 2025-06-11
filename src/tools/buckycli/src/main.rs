@@ -188,12 +188,8 @@ async fn main() -> Result<(), String> {
         )
         .subcommand(
             Command::new("did")
-               .about("generate did")
-               .arg(
-                    Arg::new("genkey")
-                       .long("genkey")
-                       .help("generate a  pair of did key")
-                )
+                .about("did manager")
+                .subcommand(Command::new("genkey").about("generate a  pair of did key"))
                 .arg(
                     Arg::new("open")
                       .long("open")
@@ -203,12 +199,17 @@ async fn main() -> Result<(), String> {
                 .arg(
                     Arg::new("create_user")
                       .long("create_user")
+                      .value_names(&["name", "owner_jwk"])  // 定义两个占位符名称
+                      .num_args(2)
                       .help("create a user (userconfig)")
                 )
                 .arg(
                     Arg::new("create_device")
                       .long("create_device")
-                      .help("create a device (deviceconfig)")
+                      .value_names(&["user_name", "zone_name", "owner_jwk", "user_private_key"]) 
+                      .num_args(4)
+                      .help("create a device (deviceconfig).
+                     user_private_key is a file path")
                 )
                 .arg(
                     Arg::new("create_zoneboot")
@@ -454,11 +455,8 @@ async fn main() -> Result<(), String> {
         Some(("sign", matches)) => {
             did::sign_json_data(matches, private_key).await;
         }
-        Some(("did", matches)) => {
-            if let Some(_key) = matches.get_one::<String>("genkey") {
-                // did::genkey();
-                // return Ok(());
-            }
+        Some(("did", sub_matches)) => {
+            did::did_matches(sub_matches);
         }
         _ => {
             println!("unknown command!");
