@@ -50,6 +50,7 @@ pub fn cyfs_get_obj_id_from_url(cyfs_url:&str)->NdnResult<(ObjId,Option<String>)
 // }
 
 pub fn get_cyfs_resp_headers(headers:&HeaderMap)->NdnResult<CYFSHttpRespHeaders> {
+    debug!("get_cyfs_resp_headers:headers:{:?}",headers);
     let mut real_obj_id = None;
     let obj_id = headers.get("cyfs-obj-id");
     if obj_id.is_some() {
@@ -58,7 +59,7 @@ pub fn get_cyfs_resp_headers(headers:&HeaderMap)->NdnResult<CYFSHttpRespHeaders>
     }
 
     let mut real_chunk_size = None;
-    let chunk_size = headers.get("Content-Length");
+    let chunk_size = headers.get("cyfs-obj-size");
     if chunk_size.is_some() {
         let chunk_size = chunk_size.unwrap().to_str().unwrap();
         let chunk_size = chunk_size.parse::<u64>().map_err(|e| {
