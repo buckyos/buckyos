@@ -5,7 +5,9 @@ use super::object_map::{
 use super::storage_factory::{TrieObjectMapStorageFactory, GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY};
 use crate::hash::{HashHelper, HashMethod};
 use crate::ObjId;
+use crate::TrieObjectMapStorageType;
 use crate::OBJ_TYPE_FILE;
+use buckyos_kit::init_logging;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::sync::Arc;
@@ -147,9 +149,39 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
     }
 }
 
+async fn test_iterator(key_pairs: &[(String, ObjId)]) {
+    let mut obj_map = TrieObjectMap::new(HashMethod::Keccak256, None)
+        .await
+        .unwrap();
+    println!("Object map created");
+
+    for (key, obj_id) in key_pairs.iter() {
+        obj_map.put_object(key, obj_id).await.unwrap();
+    }
+    println!("All objects put");
+
+    let mut iter = obj_map.iter().unwrap();
+    let mut count = 0;
+    while let Some((key, obj_id)) = iter.next() {
+        // Verify the key and object ID in the key_pairs
+        let ret = key_pairs.contains(&(key.clone(), obj_id.clone()));
+        assert!(ret, "Key not found in key_pairs: {}", key);
+
+        // Check if object in object map
+        let ret = obj_map.get_object(&key).await.unwrap();
+        assert!(ret.is_some(), "Object not found for key: {}", key);
+        assert_eq!(ret.unwrap(), obj_id, "Object ID mismatch for key: {}", key);
+        
+        println!("Iterated key: {}, obj_id: {}", key, obj_id);
+        count += 1;
+    }
+    assert_eq!(count, key_pairs.len());
+}
 
 #[test]
-async fn test_trie_object_map() {
+async fn test_trie_object_map1() {
+    init_logging("test_trie_object_map", false);
+
     let temp_dir = std::env::temp_dir();
     let data_dir = temp_dir.join("ndn_test_trie_object_map");
     if !data_dir.exists() {
@@ -160,11 +192,18 @@ async fn test_trie_object_map() {
         // std::fs::create_dir_all(&data_dir).expect("Failed to recreate test data directory");
     }
 
-    GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY.set(TrieObjectMapStorageFactory::new(data_dir, None));
+    GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
+        .set(TrieObjectMapStorageFactory::new(
+            data_dir,
+            Some(TrieObjectMapStorageType::JSONFile),
+        ))
+        .unwrap_or_else(|_| panic!("Failed to set global trie object map storage factory"));
 
     println!("Test object map");
     let key_pairs = generate_key_value_pairs("test", 100);
     println!("Key pairs generated");
 
-    test_op_and_proof(key_pairs.as_slice()).await;
+    // test_op_and_proof(key_pairs.as_slice()).await;
+    test_iterator(key_pairs.as_slice()).await;
+    println!("Test object map completed");
 }

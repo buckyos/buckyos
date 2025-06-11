@@ -131,8 +131,8 @@ impl TrieObjectMap {
         self.db.is_exist(key).await
     }
 
-    pub fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId)> + 'a> {
-        Box::new(self.db.iter())
+    pub fn iter<'a>(&'a self) -> NdnResult<Box<dyn Iterator<Item = (String, ObjId)> + 'a>> {
+        Ok(Box::new(self.db.iter()?))
     }
     
     // Should not call this function if in read-only mode

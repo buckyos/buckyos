@@ -7,18 +7,86 @@ use crate::{HashMethod, NdnError, NdnResult, ObjId};
 use generic_array::{ArrayLength, GenericArray};
 use hash_db::{HashDB, HashDBRef, Hasher};
 use memory_db::{HashKey, MemoryDB};
+use ouroboros::self_referencing;
 use serde::de::value;
 use std::borrow::Borrow;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use trie_db::proof::generate_proof;
-use trie_db::{NodeCodec, Trie, TrieLayout, TrieMut, Value};
+use trie_db::{NodeCodec, Trie, TrieDB, TrieLayout, TrieMut, Value};
 
 type GenericTrieDB<'a, 'cache, H> = trie_db::TrieDB<'a, 'cache, GenericLayout<H>>;
 type GenericTrieDBBuilder<'a, 'cache, H> = trie_db::TrieDBBuilder<'a, 'cache, GenericLayout<H>>;
 type GenericTrieDBMut<'a, H> = trie_db::TrieDBMut<'a, GenericLayout<H>>;
 type GenericTrieDBMutBuilder<'a, H> = trie_db::TrieDBMutBuilder<'a, GenericLayout<H>>;
+
+#[self_referencing]
+pub struct TrieObjectMapInnerStorageWrapperIterator<'a, H: Hasher> {
+    root: &'a <H as Hasher>::Out,
+    trie_db: TrieDB<'a, 'a, GenericLayout<H>>,
+
+    #[borrows(trie_db)]
+    #[covariant]
+    iter: Box<dyn Iterator<Item = (String, ObjId)> + 'this>,
+}
+
+impl<'a, H: Hasher> TrieObjectMapInnerStorageWrapperIterator<'a, H> {
+    pub fn create(
+        db: &'a Box<dyn HashDBWithFile<H, Vec<u8>>>,
+        root: &'a <H as Hasher>::Out,
+    ) -> NdnResult<Self> {
+        let trie_db = GenericTrieDBBuilder::new(&*db as &dyn HashDBRef<H, Vec<u8>>, root).build();
+
+        let mut ret = Self::try_new(root, trie_db, |trie_db| {
+            // Create an iterator over the trie database
+            let iter = trie_db.iter().map_err(|e| {
+                let msg = format!("Failed to create iterator: {:?}", e);
+                error!("{}", msg);
+                NdnError::DbError(msg)
+            })?;
+
+            let iter = iter.filter_map(|item| {
+                let (k, v) = item
+                    .map_err(|e| {
+                        let msg = format!("Failed to iterate over trie: {:?}", e);
+                        error!("{}", msg);
+                        NdnError::DbError(msg)
+                    })
+                    .ok()?;
+
+                let key = String::from_utf8(k.to_vec())
+                    .map_err(|e| {
+                        let msg = format!("Failed to convert key to string: {:?}, {:?}", k, e);
+                        error!("{}", msg);
+                        NdnError::InvalidData(msg)
+                    })
+                    .ok()?;
+
+                let value: ObjId = bincode::deserialize(&v)
+                    .map_err(|e| {
+                        let msg = format!("Failed to deserialize obj_id value: {:?}, {:?}", v, e);
+                        error!("{}", msg);
+                        NdnError::InvalidData(msg)
+                    })
+                    .ok()?;
+
+                Some((key, value))
+            });
+
+            Ok(Box::new(iter))
+        })?;
+
+        Ok(ret)
+    }
+}
+
+impl<'a, H: Hasher> Iterator for TrieObjectMapInnerStorageWrapperIterator<'a, H> {
+    type Item = (String, ObjId);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.with_iter_mut(|iter| iter.next())
+    }
+}
 
 pub struct TrieObjectMapInnerStorageWrapper<H: Hasher> {
     storage_type: TrieObjectMapStorageType,
@@ -194,27 +262,10 @@ where
         self.root.as_ref().to_vec()
     }
 
-    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId)> + 'a> {
-        let iter = self.db.iter();
-        Box::new(iter.filter_map(|(k, v)| {
-            let key = String::from_utf8(k.to_vec())
-                .map_err(|e| {
-                    let msg = format!("Failed to convert key to string: {:?}, {:?}", k, e);
-                    error!("{}", msg);
-                    NdnError::InvalidData(msg)
-                })
-                .ok()?;
+    fn iter<'a>(&'a self) -> NdnResult<Box<dyn Iterator<Item = (String, ObjId)> + 'a>> {
+        let mut iter = TrieObjectMapInnerStorageWrapperIterator::create(&self.db, &self.root)?;
 
-            let value: ObjId = bincode::deserialize(&v)
-                .map_err(|e| {
-                    let msg = format!("Failed to deserialize obj_id value: {:?}, {:?}", v, e);
-                    error!("{}", msg);
-                    NdnError::InvalidData(msg)
-                })
-                .ok()?;
-
-            Some((key, value))
-        }))
+        Ok(Box::new(iter))
     }
 
     async fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>> {
