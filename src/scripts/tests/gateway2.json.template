@@ -29,7 +29,7 @@
     },
     "tcp://0.0.0.0:8081":{
       "type":"forward",
-	  "target":"rtcp://web3.buckyos.io/${dest_ip}:8081"
+	  "target":"rtcp://web3.buckyos.io/127.0.0.1:8000"
     },
 	 "udp://0.0.0.0:5643": {
 	   "type": "forward",
