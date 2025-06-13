@@ -7,8 +7,14 @@ import subprocess
 
 def info_device():
     # multipass exec sn -- bash -c "ps -ef | grep -v bash | grep -v grep | grep web3_gateway"
-    subprocess.run(["multipass", "exec", "sn", "--", "bash", "-c", "ps -ef | grep -v bash | grep -v grep | grep web3_gateway"])
+    result = subprocess.run(["multipass", "exec", "sn", "--", "bash", "-c", "ps -ef | grep -v bash | grep -v grep | grep web3_gateway"], capture_output=True, text=True)
+    if not result.stdout.strip():
+        print("sn gateway no running")
 
+    # 检查 nodeB1 
+    result = subprocess.run(["multipass", "exec", "nodeB1", "--", "bash", "-c", "ps -ef | grep -v bash | grep -v grep | grep node_daemon"], capture_output=True, text=True)
+    if not result.stdout.strip():
+        print("nodeB1 node_daemon no running")
 
     # sn log
     # multipass exec sn -- tail -f  /opt/buckyos/logs/cyfs_gateway/cyfs_gateway_{pid}.log
