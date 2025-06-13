@@ -110,6 +110,15 @@ impl ObjId {
         base32::encode(base32::Alphabet::Rfc4648Lower{ padding: false }, &vec_result)
     }
 
+    pub fn to_bytes(&self)->Vec<u8> {
+        ObjIdBytesCodec::to_bytes(&self.obj_type, &self.obj_hash)
+    }
+
+    pub fn from_bytes(objid_bytes:&[u8])->NdnResult<Self> {
+        let (obj_type, obj_hash) = ObjIdBytesCodec::from_bytes(objid_bytes)?;
+        Ok(Self { obj_type, obj_hash })
+    }
+
     pub fn from_hostname(hostname: &str) -> NdnResult<Self> {
         let sub_host = hostname.split(".").collect::<Vec<&str>>();
         let first_part = sub_host[0];
@@ -136,9 +145,67 @@ impl ObjId {
     }
 }
 
+pub struct ObjIdBytesCodec{}
+
+impl ObjIdBytesCodec {
+    pub fn to_bytes(obj_type: &str, obj_hash: &[u8]) -> Vec<u8> {
+        let mut vec_result:Vec<u8> = Vec::with_capacity(obj_type.len() + obj_hash.len() + 1);
+        vec_result.extend_from_slice(obj_type.as_bytes());
+        vec_result.push(b':');
+        vec_result.extend_from_slice(obj_hash);
+        return vec_result;
+    }
+
+    pub fn from_bytes(objid_bytes: &[u8])->NdnResult<(String, Vec<u8>)> {
+        if objid_bytes.len() < 3 {
+            return Err(NdnError::InvalidId("objid bytes too short".to_string()));
+        }
+        let pos = objid_bytes.iter()
+            .position(|&x| x == b':')
+            .ok_or_else(|| NdnError::InvalidId("separator ':' not found".to_string()))?;
+
+        let obj_type = String::from_utf8(objid_bytes[..pos].to_vec())
+            .map_err(|_| NdnError::InvalidId("invalid utf8 in obj_type".to_string()))?;
+        let obj_hash = objid_bytes[pos + 1..].to_vec();
+
+        Ok(( obj_type, obj_hash ))
+    }
+
+}
+
 impl Display for ObjId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.to_base32())
+    }
+}
+
+impl From<ObjId> for Vec<u8> {
+    fn from(obj_id: ObjId) -> Self {
+        obj_id.to_bytes()
+    }
+}
+
+impl TryFrom<&[u8]> for ObjId {
+    type Error = NdnError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(value)
+    }
+}
+
+impl TryFrom<Vec<u8>> for ObjId {
+    type Error = NdnError;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        Self::from_bytes(&value)
+    }
+}
+
+impl TryFrom<&str> for ObjId {
+    type Error = NdnError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
@@ -231,9 +298,17 @@ mod tests {
     use super::*;
     use serde_json::json;
     use crate::cyfs_http::cyfs_get_obj_id_from_url;
+
     #[test]
     fn test_obj_id() {
         let obj_id = ObjId::new("sha256:0203040506").unwrap();
+
+        // Test bytes encoding
+        let obj_bytes = obj_id.to_bytes();
+        let obj_id = ObjId::from_bytes(&obj_bytes).unwrap();
+        assert_eq!(obj_id.obj_type, "sha256");
+        assert_eq!(obj_id.obj_hash, hex::decode("0203040506").unwrap());
+
         //println!("obj_id : {:?}",obj_id);
         assert_eq!(obj_id.to_string(),"sha256:0203040506");
         //println!("obj_id to base32 : {}",obj_id.to_base32());
@@ -259,6 +334,8 @@ mod tests {
         assert_eq!(obj_id6.to_string(),"sha256:0203040506");
         assert_eq!(obj_path4,Some("/abc/sha256:0203040506/def/test.txt".to_string()));
     }
+
+
     #[test]
     fn test_build_obj_id() {
         let json_value = json!({"age":18,"name":"test"});
