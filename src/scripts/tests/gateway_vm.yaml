@@ -1,0 +1,14 @@
+users:
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+  - chpasswd: null
+    disable_root: false
+    expire: false
+    name: root
+    passwd: $6$rounds=4096$vumjqMkVLNRXUvJw$iaiDsWKCGKgjeC7sp.PpGw6BOJkUaRCQ.XInFhfq39DEp6lRNswnyF4gVrE9UW7qqIF0zvQisY/OwglgPO2oc1
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE+1ahNCB868koYLULmy7IG/HEz5j41oFO7Pe76tho4K
+        lzc@buckydev02
+      - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCNXoiYQKccPuuTQaXO0WXAb+SDLxgw1Mo4PPuwEDBmInkrk6LuIsfydoXpjjXnc60YLy/JPyVqjL9wsv6VOAesGd648jUMJP7NRPbXk2xnqB3Ptb9BpiziSY4N5bltixxufqDICFvfO9UEabmPvwuhrYgUDzULoO7+Xlmtwv+SVK+vs7c7Ggge4aBe67JwT/8bJJXJU9EvytPCmkFEdI/KkLttrtWj2vk7HALUsePeWoLMKJq3rfSN/uTzA4W643k+4BtCbR//oFOxo9cMzoy6Ho1WjiOwtKMkPajBPSsAv9fuWhXp5od1vCInM+KQ8ZAhP7YuAbPiB1E0+3vbQiw9aGhgVuUlPrldQxHBsMMTtLFixSdBJD+Ows3qZ0eSLdCyX8G79WSq7FfzrszWGxRLWjc4r4HbzTE3o0CY4zjDMRXN664qv4y+dGiE9+F+eJiHyit+Pz9u+DwzgOqNRX6Y8GMzC9DzukQGPr/vo7WLejHVOgdIuKx/CU8nvHDMiPeBC88PB3zh0diiX8QrbLLsS2vZJS8HTZbdzD9bhDpIU34mHEel44nq0KPoYx40o7hV7vdMQFynyqtZWOaeLxR91EglEUsKBQJ1Exc7mJcCygabe8XoL47rkV4h5TovCPs3er/B3sITNgjAXGIiClX6XYiu+r8qH3PQB3kvigjxgQ==
+        aa@AA
+    ssh_pwauth: true
