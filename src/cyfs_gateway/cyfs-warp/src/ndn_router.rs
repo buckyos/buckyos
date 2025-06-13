@@ -24,7 +24,7 @@ enum GetObjResultBody {
 }
 
 struct GetObjResult {
-    pub real_obj_id:ObjId,
+    pub real_obj_id:Option<ObjId>,
     pub real_body:GetObjResultBody,
     pub path_obj_jwt:Option<String>,
 }
@@ -34,15 +34,15 @@ struct GetObjResult {
 impl GetObjResult {
     pub fn new_chunk_result(real_obj_id:ObjId,real_body:ChunkReader,chunk_size:u64)->Self {
         let body = GetObjResultBody::Reader(real_body,chunk_size);
-        Self { real_obj_id, real_body:body, path_obj_jwt:None }
+        Self { real_obj_id:Some(real_obj_id), real_body:body, path_obj_jwt:None }
     }
 
     pub fn new_named_obj_result(real_obj_id:ObjId,real_body:Value)->Self {
         let body = GetObjResultBody::NamedObj(real_body);
-        Self { real_obj_id, real_body:body, path_obj_jwt:None }
+        Self { real_obj_id:Some(real_obj_id), real_body:body, path_obj_jwt:None }
     }
 
-    pub fn new_value_result(real_obj_id:ObjId,real_body:Value)->Self {
+    pub fn new_value_result(real_obj_id:Option<ObjId>,real_body:Value)->Self {
         let body_str = serde_json::to_string(&real_body).unwrap();
         let body = GetObjResultBody::TextRecord(body_str);
        
@@ -78,8 +78,11 @@ pub struct InnerPathInfo {
 
 async fn build_response_by_obj_get_result(obj_get_result:GetObjResult,start:u64,inner_path_info:Option<InnerPathInfo>)->Result<Response<Body>> {
     let body_result;
-    let mut result = Response::builder()
-                    .header("cyfs-obj-id", obj_get_result.real_obj_id.to_base32());
+    let mut result = Response::builder();
+
+    if obj_get_result.real_obj_id.is_some() {
+        result = result.header("cyfs-obj-id", obj_get_result.real_obj_id.unwrap().to_base32());
+    }
 
     if inner_path_info.is_some() {
         let inner_path_info = inner_path_info.unwrap();
@@ -303,7 +306,7 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
                 if root_obj_id_result.is_ok() {
                    
                     let (the_root_obj_id,_the_path_obj_jwt,the_inner_path) = root_obj_id_result.unwrap();
-                    info!("ndn_router:select_obj_id_by_path_impl success,sub_path:{},inner_path:{} ",sub_path,the_inner_path.clone().unwrap_or("None".to_string()));
+                    info!("ndn_router:select_obj_id_by_path_impl success,ndn_path:{},obj_inner_path:{} ",sub_path,the_inner_path.clone().unwrap_or("None".to_string()));
                     
                     if the_inner_path.is_none() {
                         return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not found"));
@@ -320,8 +323,9 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
                         let root_obj_json = real_named_mgr.get_object_impl(&the_root_obj_id, None).await?;
                         let obj_filed = get_by_json_path(&root_obj_json, &_inner_obj_path.clone().unwrap());
                         if obj_filed.is_none() {
+                            warn!("ndn_router:cann't found target object,inner_obj_path {} is not valid",_inner_obj_path.clone().unwrap());
                             return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not valid"));
-                        }
+                        } 
                         //this is the target content or target obj_id
                         let obj_filed = obj_filed.unwrap();
                         if obj_filed.is_string() {
@@ -330,9 +334,11 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
                             if p_obj_id.is_ok() {
                                 obj_id = Some(p_obj_id.unwrap());
                             } else {
+                                //obj_id = Some(the_root_obj_id.clone());
                                 obj_content = Some(obj_filed);
                             }
                         } else {
+                            //obj_id = Some(the_root_obj_id.clone());
                             obj_content = Some(obj_filed);
                         }
                         inner_path_obj = Some(InnerPathInfo {
@@ -349,8 +355,9 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
     let mut get_result:GetObjResult;
     if obj_content.is_some() {
         //root_obj/inner_path = obj_content
-        //get_result = get_obj_result(named_mgr2, &obj_id, start, inner_obj_p).await?;     
-        get_result = GetObjResult::new_value_result(obj_id.unwrap(),obj_content.unwrap());  
+        //get_result = get_obj_result(named_mgr2, &obj_id, start, inner_obj_p).await?;    
+        //info!("ndn_router:get_obj_result success,obj_id:{:?},obj_content:{:?}",&obj_id,&obj_content);
+        get_result = GetObjResult::new_value_result(obj_id,obj_content.unwrap());  
     } else {
         if obj_id.is_none() {
             return Err(anyhow::anyhow!("ndn_router:failed to get obj id from request!,request.uri():{}",req.uri()));

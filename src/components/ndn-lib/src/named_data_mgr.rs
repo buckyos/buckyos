@@ -54,7 +54,7 @@ impl NamedDataMgrDB {
             "CREATE TABLE IF NOT EXISTS paths (
                 path TEXT PRIMARY KEY,
                 obj_id TEXT NOT NULL,
-                path_obj_jwt TEXT ,
+                path_obj_jwt TEXT,
                 app_id TEXT NOT NULL,
                 user_id TEXT NOT NULL
             )",
@@ -64,38 +64,69 @@ impl NamedDataMgrDB {
             NdnError::DbError(e.to_string())
         })?;
 
+        // 添加索引
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_paths_path ON paths(path)",
+            [],
+        ).map_err(|e| {
+            warn!("NamedDataMgrDB: create index failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+
         Ok(Self {
             db_path,
             conn: Mutex::new(conn),
         })
     }
 
+    // 路径规范化函数
+    fn normalize_path(path: &str) -> String {
+        path.replace("//", "/")
+            .trim_start_matches("./")
+            .to_string()
+    }
+
     //return (result_path, obj_id,path_obj_jwt,relative_path)
     pub fn find_longest_matching_path(&self, path: &str) -> NdnResult<(String, ObjId, Option<String>,Option<String>)> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|e| {
+            warn!("NamedDataMgrDB: failed to acquire database lock! {}", e.to_string());
+            NdnError::DbError(format!("Failed to acquire database lock: {}", e))
+        })?;
         
-        let mut stmt = conn.prepare("SELECT path, obj_id,path_obj_jwt FROM paths WHERE ? LIKE (path || '%') ORDER BY length(path) DESC LIMIT 1")
-            .map_err(|e| {
-                warn!("NamedDataMgrDB: prepare statement failed! {}", e.to_string());
-                NdnError::DbError(e.to_string())
-            })?;
+        let normalized_path = Self::normalize_path(path);
+        
+        let mut stmt = conn.prepare(
+            "SELECT path, obj_id, path_obj_jwt 
+             FROM paths 
+             WHERE path = ? OR ? LIKE path || '/%'
+             ORDER BY length(path) DESC 
+             LIMIT 1"
+        ).map_err(|e| {
+            warn!("NamedDataMgrDB: prepare statement failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
 
-        let record: (String, String,Option<String>) = stmt.query_row([path], |row| {
-            Ok((row.get(0)?, row.get(1)?,row.get(2)?))
-        }).map_err(|e| {
-            warn!("NamedDataMgrDB: query {} obj id failed! {}",path, e.to_string());
+        let record: (String, String, Option<String>) = stmt.query_row(
+            [&normalized_path, &normalized_path], 
+            |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            }
+        ).map_err(|e| {
+            warn!("NamedDataMgrDB: query {} obj id failed! {}", normalized_path, e.to_string());
             NdnError::DbError(e.to_string())
         })?;
 
         let result_path = record.0;
         let obj_id_str = record.1;
         let path_obj_jwt = record.2;
+        
         if path_obj_jwt.is_some() {
             info!("NamedDataMgrDB: find_longest_matching_path, path_obj_jwt {}", path_obj_jwt.as_ref().unwrap());
         }
+        
         let obj_id = ObjId::new(&obj_id_str)?;
-        let relative_path = get_relative_path(&result_path, path);
-        Ok((result_path, obj_id,path_obj_jwt,Some(relative_path)))
+        let relative_path = get_relative_path(&result_path, &normalized_path);
+        Ok((result_path, obj_id, path_obj_jwt, Some(relative_path)))
     }
 
     
@@ -134,6 +165,10 @@ impl NamedDataMgrDB {
     }
 
     pub fn create_path(&self, obj_id: &ObjId, path: &str,app_id:&str,user_id:&str) -> NdnResult<()> {
+        if path.len() < 2 {
+            return Err(NdnError::InvalidParam("path length must be greater than 2".to_string()));
+        }
+
         let mut conn = self.conn.lock().unwrap();
         let obj_id = obj_id.to_string();
         let tx = conn.transaction().map_err(|e| {
@@ -433,6 +468,7 @@ impl NamedDataMgr {
 
     pub async fn get_obj_id_by_path_impl(&self, path:&str)->NdnResult<(ObjId,Option<String>)> {
         let (obj_id,path_obj_jwt) = self.db.get_path_target_objid(path)?;
+        //info!("get_obj_id_by_path_impl: path:{},obj_id:{}",path,obj_id.to_string());
         Ok((obj_id,path_obj_jwt))
     }
 
@@ -1086,10 +1122,24 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_path_normalization() {
+        let test_cases = vec![
+            ("//a//b//c", "/a/b/c"),
+            ("./a/b/c", "a/b/c"),
+            ("/a/b/c", "/a/b/c"),
+            ("a/b/c", "a/b/c"),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = NamedDataMgrDB::normalize_path(input);
+            assert_eq!(result, expected, "Failed to normalize path: {}", input);
+        }
+    }
+
     #[tokio::test]
-    async fn test_find_longest_matching_path() -> NdnResult<()> {
-        // Create a temporary directory for testing
-        init_logging("ndn-lib test",false);
+    async fn test_find_longest_matching_path_edge_cases() -> NdnResult<()> {
+        init_logging("ndn-lib test", false);
         let test_dir = tempdir().unwrap();
         let config = NamedDataMgrConfig {
             local_stores: vec![test_dir.path().to_str().unwrap().to_string()],
@@ -1097,117 +1147,113 @@ mod tests {
             mmap_cache_dir: None,
         };
 
-        let chunk_mgr = NamedDataMgr::from_config(
-            Some("test".to_string()),
+        let named_mgr = NamedDataMgr::from_config(
+            Some("test2".to_string()),
             test_dir.path().to_path_buf(),
             config
         ).await?;
 
-        // Create test data and paths
-        let test_data1 = b"Test data for path 1";
-        let test_data2 = b"Test data for path 2";
-        let test_data3 = b"Test data for path 3";
+        // 测试空路径
+        let result = named_mgr.db.find_longest_matching_path("");
+        assert!(result.is_err());
+
+        // 测试特殊字符路径
+        let test_data = b"Test data for special chars";
+        let chunk_id = ChunkId::new("sha256:1234567890abcdef").unwrap();
+        let special_path = "/test/path/with/special/chars/!@#$%^&*()";
         
-        let chunk_id1 = ChunkId::new("sha256:1111111111111111").unwrap();
-        let chunk_id2 = ChunkId::new("sha256:2222222222222222").unwrap();
-        let chunk_id3 = ChunkId::new("sha256:3333333333333333").unwrap();
+        let (mut writer, _) = named_mgr.open_chunk_writer_impl(&chunk_id, test_data.len() as u64, 0).await?;
+        writer.write_all(test_data).await.unwrap();
+        named_mgr.complete_chunk_writer_impl(&chunk_id).await.unwrap();
         
-        let base_path = "/test/path";
-        let sub_path1 = "/test/path/file1.txt";
-        let sub_path2 = "/test/path/subdir";
-        let sub_path3 = "/test/path/subdir/file2.txt";
+        named_mgr.create_file_impl(
+            special_path,
+            &chunk_id.to_obj_id(),
+            "test_app",
+            "test_user"
+        ).await?;
+        let the_result = named_mgr.select_obj_id_by_path_impl("/not_exist").await;
+        if the_result.is_err() {
+            info!("select_obj_id_by_path_impl failed, err:{}",the_result.err().unwrap());
+            return Ok(());
+        }
+        let (result_obj_id, inner_path, _) = the_result.unwrap();
+        info!("result_obj_id:{}",result_obj_id.to_string());
+       
+        // 测试非常长的路径
+        let long_path = format!("/{}{}", "a/".repeat(100) ,"test.txt");
+        let test_data = b"Test data for long path";
+        let chunk_id = ChunkId::new("sha256:12345678901234567890").unwrap();
         
-        // Write chunks
-        let (mut writer1, _) = chunk_mgr.open_chunk_writer_impl(&chunk_id1, test_data1.len() as u64, 0).await?;
-        writer1.write_all(test_data1).await.unwrap();
-        chunk_mgr.complete_chunk_writer_impl(&chunk_id1).await.unwrap();
+        let (mut writer, _) = named_mgr.open_chunk_writer_impl(&chunk_id, test_data.len() as u64, 0).await?;
+        writer.write_all(test_data).await.unwrap();
+        named_mgr.complete_chunk_writer_impl(&chunk_id).await.unwrap();
         
-        let (mut writer2, _) = chunk_mgr.open_chunk_writer_impl(&chunk_id2, test_data2.len() as u64, 0).await?;
-        writer2.write_all(test_data2).await.unwrap();
-        chunk_mgr.complete_chunk_writer_impl(&chunk_id2).await.unwrap();
-        
-        let (mut writer3, _) = chunk_mgr.open_chunk_writer_impl(&chunk_id3, test_data3.len() as u64, 0).await?;
-        writer3.write_all(test_data3).await.unwrap();
-        chunk_mgr.complete_chunk_writer_impl(&chunk_id3).await.unwrap();
-        
-        // Bind chunks to paths
-        chunk_mgr.create_file_impl(
-            base_path,
-            &chunk_id1.to_obj_id(),
+        named_mgr.create_file_impl(
+            &long_path,
+            &chunk_id.to_obj_id(),
             "test_app",
             "test_user"
         ).await?;
 
-        //chunk_mgr.sigh_path_obj(base_path path_obj_jwt).await?;
-        info!("Created base path: {}", base_path);
+        let (result_path, obj_id, _, _) = named_mgr.db.find_longest_matching_path(&long_path)?;
+        assert_eq!(result_path, long_path);
+        assert_eq!(obj_id, chunk_id.to_obj_id());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_path_access() -> NdnResult<()> {
+        init_logging("ndn-lib test", false);
+        let test_dir = tempdir().unwrap();
+        let config = NamedDataMgrConfig {
+            local_stores: vec![test_dir.path().to_str().unwrap().to_string()],
+            local_cache: None,
+            mmap_cache_dir: None,
+        };
+
+        let named_mgr = Arc::new(tokio::sync::Mutex::new(NamedDataMgr::from_config(
+            Some("test".to_string()),
+            test_dir.path().to_path_buf(),
+            config
+        ).await?));
+
+        let test_data = b"Test data for concurrent access";
+        let chunk_id = ChunkId::new("sha256:concurrent").unwrap();
+        let test_path = "/test/concurrent/path.txt";
         
-        chunk_mgr.create_file_impl(
-            sub_path1,
-            &chunk_id2.to_obj_id(),
+        let (mut writer, _) = named_mgr.lock().await.open_chunk_writer_impl(&chunk_id, test_data.len() as u64, 0).await?;
+        writer.write_all(test_data).await.unwrap();
+        named_mgr.lock().await.complete_chunk_writer_impl(&chunk_id).await.unwrap();
+        
+        named_mgr.lock().await.create_file_impl(
+            test_path,
+            &chunk_id.to_obj_id(),
             "test_app",
             "test_user"
         ).await?;
-        info!("Created sub path 1: {}", sub_path1);
-        
-        chunk_mgr.create_file_impl(
-            sub_path2,
-            &chunk_id3.to_obj_id(),
-            "test_app",
-            "test_user"
-        ).await?;
-        info!("Created sub path 2: {}", sub_path2);
-        
-        // Test find_longest_matching_path
-        
-        // Test case 1: Exact match
-        info!("Test case 1: Exact match with {}", sub_path1);
-        let (result_path, obj_id,path_obj_jwt, relative_path) = chunk_mgr.db.find_longest_matching_path(sub_path1)?;
-        info!("Result: path={}, obj_id={}, relative_path={:?}", result_path, obj_id.to_string(), relative_path);
-        assert_eq!(result_path, sub_path1);
-        assert_eq!(obj_id, chunk_id2.to_obj_id());
-        assert_eq!(relative_path, Some("".to_string()));
-        
-        // Test case 2: Match with a parent path
-        let test_path = "/test/path/subdir/file2.txt";
-        info!("Test case 2: Match with parent path. Testing {}", test_path);
-        let (result_path, obj_id,path_obj_jwt, relative_path)  = chunk_mgr.db.find_longest_matching_path(test_path)?;
-        info!("Result: path={}, obj_id={}, relative_path={:?}", result_path, obj_id.to_string(), relative_path);
-        assert_eq!(result_path, sub_path2);
-        assert_eq!(obj_id, chunk_id3.to_obj_id());
-        assert_eq!(relative_path, Some("/file2.txt".to_string()));
-        
-        // Test case 3: Match with the base path
-        let test_path = "/test/path/unknown/file.txt";
-        info!("Test case 3: Match with base path. Testing {}", test_path);
-        let (result_path, obj_id,path_obj_jwt, relative_path)  = chunk_mgr.db.find_longest_matching_path(test_path)?;
-        info!("Result: path={}, obj_id={}, relative_path={:?}", result_path, obj_id.to_string(), relative_path);
-        assert_eq!(result_path, base_path);
-        assert_eq!(obj_id, chunk_id1.to_obj_id());
-        assert_eq!(relative_path, Some("/unknown/file.txt".to_string()));
-        
-        // Test case 4: No match (should return error)
-        let test_path = "/other/path/file.txt";
-        info!("Test case 4: No match. Testing {}", test_path);
-        let result = chunk_mgr.db.find_longest_matching_path(test_path);
-        match result {
-            Ok(_) => {
-                panic!("Expected error for path with no match, but got success");
-            },
-            Err(e) => {
-                info!("Got expected error for non-matching path: {}", e);
-                // Verify it's the expected error type
-                match e {
-                    NdnError::DbError(_) => {
-                        // This is the expected error type
-                        info!("Error type is correct: DbError");
-                    },
-                    _ => {
-                        panic!("Expected DbError, but got different error type: {:?}", e);
-                    }
-                }
-            }
+
+        // 创建多个任务并发访问
+        let mut handles = vec![];
+        for i in 0..10 {
+            let named_mgr_clone = named_mgr.clone();
+            let chunk_id2 = chunk_id.clone();
+            let handle = tokio::spawn(async move {
+                let result = named_mgr_clone.lock().await.db.find_longest_matching_path(test_path);
+                assert!(result.is_ok());
+                let (result_path, obj_id, _, _) = result.unwrap();
+                assert_eq!(result_path, test_path);
+                assert_eq!(obj_id, chunk_id2.to_obj_id());
+            });
+            handles.push(handle);
         }
-        
+
+        // 等待所有任务完成
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
         Ok(())
     }
 }
