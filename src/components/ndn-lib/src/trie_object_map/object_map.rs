@@ -50,10 +50,10 @@ impl TrieObjectMapItemProof {
     }
 }
 
-#[derive(Clone)]
+
 pub struct TrieObjectMap {
     hash_method: HashMethod,
-    db: TrieObjectMapInnerStorageRef,
+    db: Box<dyn TrieObjectMapInnerStorage>,
 }
 
 impl TrieObjectMap {
@@ -66,7 +66,6 @@ impl TrieObjectMap {
             .unwrap()
             .open_by_hash_method(None, false, storage_type, hash_method)
             .await?;
-        let db = Arc::new(db);
 
         Ok(Self { hash_method, db })
     }
@@ -92,7 +91,6 @@ impl TrieObjectMap {
                 e
             })?;
 
-        let db = Arc::new(db);
         Ok(Self { hash_method, db })
     }
 
@@ -117,7 +115,7 @@ impl TrieObjectMap {
         self.hash_method
     }
 
-    pub async fn put_object(&self, key: &str, obj_id: &ObjId) -> NdnResult<()> {
+    pub async fn put_object(&mut self, key: &str, obj_id: &ObjId) -> NdnResult<()> {
         self.db.put(key, &obj_id).await
     }
 
@@ -125,7 +123,7 @@ impl TrieObjectMap {
         self.db.get(key).await
     }
 
-    pub async fn remove_object(&self, key: &str) -> NdnResult<Option<ObjId>> {
+    pub async fn remove_object(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
         self.db.remove(key).await
     }
 
@@ -133,6 +131,10 @@ impl TrieObjectMap {
         self.db.is_exist(key).await
     }
 
+    pub fn iter<'a>(&'a self) -> NdnResult<Box<dyn Iterator<Item = (String, ObjId)> + 'a>> {
+        Ok(Box::new(self.db.iter()?))
+    }
+    
     // Should not call this function if in read-only mode
     pub async fn save(&mut self) -> NdnResult<()> {
         if self.is_read_only() {
@@ -146,7 +148,7 @@ impl TrieObjectMap {
         GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .save(&obj_id, &**self.db)
+            .save(&obj_id, self.db.as_mut())
             .await
             .map_err(|e| {
                 let msg = format!("Error saving object map: {}", e);
@@ -165,7 +167,7 @@ impl TrieObjectMap {
         let mut new_storage = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .clone(&obj_id, &**self.db, read_only)
+            .clone(&obj_id, &*self.db, read_only)
             .await
             .map_err(|e| {
                 let msg = format!("Error cloning object map storage: {}", e);
@@ -175,7 +177,7 @@ impl TrieObjectMap {
 
         let ret = TrieObjectMap {
             hash_method: self.hash_method.clone(),
-            db: Arc::new(new_storage),
+            db: new_storage,
         };
 
         Ok(ret)

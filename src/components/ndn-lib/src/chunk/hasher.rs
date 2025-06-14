@@ -15,9 +15,12 @@ pub struct ChunkHasher {
 
 impl ChunkHasher {
     pub fn new(hash_type: Option<&str>) -> NdnResult<Self> {
-        //default is sha256
-        let hash_type = hash_type.unwrap_or("sha256");
-        let hash_method = HashMethod::from_str(hash_type)?;
+        // default is sha256
+        let hash_method = match hash_type {
+            Some(ht) => HashMethod::from_str(ht)?,
+            None => HashMethod::default(),
+        };
+        
         let hasher = HashHelper::create_hasher(hash_method)?;
 
         Ok(Self {

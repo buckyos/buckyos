@@ -1,5 +1,8 @@
 use crate::hash::*;
-use crate::{object::ObjId, NdnError, NdnResult};
+use crate::{
+    object::{ObjId, ObjIdBytesCodec},
+    NdnError, NdnResult,
+};
 use async_trait::async_trait;
 use base58::{FromBase58, ToBase58};
 use crypto_common::hazmat::{SerializableState, SerializedState};
@@ -168,6 +171,18 @@ impl ChunkId {
         format!("did:{}:{}", self.hash_type, hex_str)
     }
 
+    pub fn to_bytes(&self) -> Vec<u8> {
+        ObjIdBytesCodec::to_bytes(&self.hash_type, &self.hash_result)
+    }
+
+    pub fn from_bytes(chunk_id_bytes: &[u8]) -> NdnResult<Self> {
+        let (hash_type, hash_result) = ObjIdBytesCodec::from_bytes(chunk_id_bytes)?;
+        Ok(Self {
+            hash_type,
+            hash_result,
+        })
+    }
+
     pub fn get_length(&self) -> Option<u64> {
         ChunkIdHashHelper::get_length(&self.hash_type, &self.hash_result)
     }
@@ -196,6 +211,28 @@ impl From<ObjId> for ChunkId {
             hash_type: obj_id.obj_type,
             hash_result: obj_id.obj_hash,
         }
+    }
+}
+
+impl From<ChunkId> for Vec<u8> {
+    fn from(chunk_id: ChunkId) -> Self {
+        chunk_id.to_bytes()
+    }
+}
+
+impl TryFrom<&[u8]> for ChunkId {
+    type Error = NdnError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(value)
+    }
+}
+
+impl TryFrom<Vec<u8>> for ChunkId {
+    type Error = NdnError;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        Self::from_bytes(&value)
     }
 }
 

@@ -451,6 +451,10 @@ impl ChunkList {
                 // Variable size chunks, need to calculate based on the chunk list
                 let mut total_size: u64 = 0;
                 for (i, obj_id) in self.chunk_list_imp.iter().enumerate() {
+                    if i as u64 == index {
+                        return Ok(total_size);
+                    }
+
                     let chunk_id = ChunkIdRef::from_obj_id(&obj_id);
                     let length = chunk_id.get_length().ok_or_else(|| {
                         let msg = format!("Failed to get length for chunk id: {}", obj_id);
@@ -467,10 +471,6 @@ impl ChunkList {
                         error!("{}", msg);
                         crate::NdnError::OffsetTooLarge(msg)
                     })?;
-
-                    if i as u64 == index {
-                        return Ok(total_size);
-                    }
                 }
 
                 let msg = format!(

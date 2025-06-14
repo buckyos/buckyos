@@ -5,9 +5,124 @@ use memory_db::KeyFunction;
 use rusqlite::types::{FromSql, ToSql, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
 use std::borrow::Borrow;
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+struct TrieObjectMapSqliteStorageChunkIterator<T> {
+    conn: Arc<Mutex<Option<Connection>>>,
+    buffer: VecDeque<(Vec<u8>, T)>,
+
+    // Use last_key instead of offset to avoid large offset performance issue
+    last_key: Option<Vec<u8>>,
+    chunk_size: usize,
+
+    finished: bool,
+}
+
+impl<T> TrieObjectMapSqliteStorageChunkIterator<T>
+where
+    T: for<'a> From<&'a [u8]> + Default + AsRef<[u8]> + Clone + Send + Sync,
+{
+    fn new(conn: Arc<Mutex<Option<Connection>>>, chunk_size: usize) -> Self {
+        Self {
+            conn,
+            buffer: VecDeque::new(),
+            last_key: None,
+            chunk_size,
+            finished: false,
+        }
+    }
+
+    fn fetch_next_chunk(&mut self) -> NdnResult<()> {
+        if self.finished {
+            return Ok(());
+        }
+
+        let mut lock = self.conn.lock().unwrap();
+        let conn = lock.as_mut().ok_or_else(|| {
+            let msg = "Connection is not initialized".to_string();
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        let query = if let Some(ref last_key) = self.last_key {
+            "SELECT key, value, ref_count FROM trie_data WHERE key > ?1 ORDER BY key LIMIT ?2"
+        } else {
+            "SELECT key, value, ref_count FROM trie_data ORDER BY key LIMIT ?1 OFFSET ?2"
+        };
+
+        let mut stmt = conn.prepare(&query).map_err(|e| {
+            let msg = format!("Failed to prepare next statement: {}", e);
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        let params = if self.last_key.is_some() {
+            params![self.last_key.as_ref(), self.chunk_size as u64]
+        } else {
+            params![self.chunk_size as u64, 0u64]
+        };
+
+        let rows = stmt
+            .query_map(params, |r| {
+                let key: Vec<u8> = r.get(0)?;
+                let value: Vec<u8> = r.get(1)?;
+                let value: T = T::from(value.as_ref());
+                let ref_count: i32 = r.get(2)?;
+                Ok((key, value, ref_count))
+            })
+            .map_err(|e| {
+                let msg = format!("Failed to query object_map: {}", e);
+                error!("{}", msg);
+                NdnError::DbError(msg)
+            })?;
+
+        for row in rows {
+            let (key, value, ref_count) = row.map_err(|e| {
+                let msg = format!("Failed to map row: {}", e);
+                error!("{}", msg);
+                NdnError::DbError(msg)
+            })?;
+
+            if ref_count <= 0 {
+                // Skip rows with ref_count <= 0
+                continue;
+            }
+
+            self.buffer.push_back((key, value));
+        }
+
+        // Update last_key to the last key in the current buffer
+        if let Some(last) = self.buffer.back() {
+            self.last_key = Some(last.0.clone());
+        } else {
+            self.last_key = None;
+            self.finished = true;
+        }
+
+        Ok(())
+    }
+}
+
+impl<T> Iterator for TrieObjectMapSqliteStorageChunkIterator<T>
+where
+    T: for<'a> From<&'a [u8]> + Default + AsRef<[u8]> + Clone + Send + Sync,
+{
+    type Item = (Vec<u8>, T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.buffer.is_empty() {
+            if let Err(e) = self.fetch_next_chunk() {
+                error!("Failed to fetch next chunk: {}", e);
+                return None;
+            }
+        }
+
+        self.buffer.pop_front()
+    }
+}
 
 pub(crate) struct SqliteStorage<H, KF, T>
 where
@@ -114,7 +229,6 @@ where
     }
 
     fn emplace_value(&self, key: &KF::Key, value: T) -> NdnResult<()> {
-
         // Use transaction to ensure atomicity
         let mut conn = self.conn.lock().unwrap();
         let conn = conn.as_mut().unwrap();
@@ -197,7 +311,6 @@ where
     }
 
     fn remove_value(&self, key: &KF::Key) -> NdnResult<()> {
-
         // Use transaction to ensure atomicity
         let mut conn = self.conn.lock().unwrap();
         let conn = conn.as_mut().unwrap();
@@ -305,7 +418,6 @@ where
     }
 
     async fn save(&mut self, file: &Path) -> NdnResult<()> {
-
         // Check if file is same as current file
         if file == self.file {
             warn!("Target file is same as current file: {}", file.display());
@@ -476,6 +588,13 @@ where
 {
     fn get_type(&self) -> TrieObjectMapStorageType {
         TrieObjectMapStorageType::SQLite
+    }
+
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (Vec<u8>, T)> + 'a> {
+        let conn = self.conn.clone();
+        let chunk_size: usize = 64; // Adjust chunk size as needed
+        let iter = TrieObjectMapSqliteStorageChunkIterator::new(conn, chunk_size);
+        Box::new(iter)
     }
 
     // Clone the storage to a new file.

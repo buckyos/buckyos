@@ -27,6 +27,8 @@ impl Default for TrieObjectMapStorageType {
 pub trait HashDBWithFile<H: Hasher, T>: Send + Sync + HashDB<H, T> {
     fn get_type(&self) -> TrieObjectMapStorageType;
 
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (Vec<u8>, T)> + 'a>;
+
     // Clone the storage to a new file.
     // If the target file exists, it will be failed.
     async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn HashDBWithFile<H, T>>>;
@@ -35,19 +37,37 @@ pub trait HashDBWithFile<H: Hasher, T>: Send + Sync + HashDB<H, T> {
     async fn save(&mut self, file: &Path) -> NdnResult<()>;
 }
 
+impl<'a, H: Hasher, T> HashDBRef<H, T> for &'a dyn HashDBWithFile<H, T> {
+	fn get(&self, key: &H::Out, prefix: hash_db::Prefix) -> Option<T> {
+		HashDB::get(*self, key, prefix)
+	}
+	fn contains(&self, key: &H::Out, prefix: hash_db::Prefix) -> bool {
+		HashDB::contains(*self, key, prefix)
+	}
+}
+
+impl<'a, H: Hasher, T> HashDBRef<H, T> for Box<dyn HashDBWithFile<H, T>> {
+	fn get(&self, key: &H::Out, prefix: hash_db::Prefix) -> Option<T> {
+		HashDB::get(self.as_ref(), key, prefix)
+	}
+	fn contains(&self, key: &H::Out, prefix: hash_db::Prefix) -> bool {
+		HashDB::contains(self.as_ref(), key, prefix)
+	}
+}
+
 #[async_trait::async_trait]
 pub trait TrieObjectMapInnerStorage: Send + Sync {
     fn is_readonly(&self) -> bool;
     fn get_type(&self) -> TrieObjectMapStorageType;
 
-    async fn put(&self, key: &str, value: &ObjId) -> NdnResult<()>;
+    async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()>;
     async fn get(&self, key: &str) -> NdnResult<Option<ObjId>>;
-    async fn remove(&self, key: &str) -> NdnResult<Option<ObjId>>;
+    async fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>>;
     async fn is_exist(&self, key: &str) -> NdnResult<bool>;
-    async fn commit(&self) -> NdnResult<()>;
+    async fn commit(&mut self) -> NdnResult<()>;
     async fn root(&self) -> Vec<u8>;
 
-    // fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId, Option<u64>)> + 'a>;
+    fn iter<'a>(&'a self) -> NdnResult<Box<dyn Iterator<Item = (String, ObjId)> + 'a>>;
 
     async fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>>;
 
@@ -56,7 +76,7 @@ pub trait TrieObjectMapInnerStorage: Send + Sync {
     async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>>;
 
     // If file is diff from the current one, it will be saved to the file.
-    async fn save(&self, file: &Path) -> NdnResult<()>;
+    async fn save(&mut self, file: &Path) -> NdnResult<()>;
 }
 
 pub type TrieObjectMapInnerStorageRef = Arc<Box<dyn TrieObjectMapInnerStorage>>;

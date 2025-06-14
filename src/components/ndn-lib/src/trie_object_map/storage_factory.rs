@@ -1,7 +1,6 @@
 use super::file::{TrieObjectMapSqliteStorage, TrieObjectMapJSONFileStorage};
 use super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
 use super::inner_storage::{ TrieObjectMapInnerStorageWrapper};
-use super::memory_storage::TrieObjectMapMemoryStorage;
 use super::storage::{
     GenericTrieObjectMapProofVerifier, TrieObjectMapProofVerifier, HashFromSlice,
 };
@@ -19,9 +18,9 @@ pub struct TrieObjectMapStorageFactory {
 }
 
 impl TrieObjectMapStorageFactory {
-    pub fn new(data_dir: &Path, default_storage_type: Option<TrieObjectMapStorageType>) -> Self {
+    pub fn new(data_dir: PathBuf, default_storage_type: Option<TrieObjectMapStorageType>) -> Self {
         Self {
-            data_dir: data_dir.to_path_buf(),
+            data_dir,
             default_storage_type: default_storage_type
                 .unwrap_or(TrieObjectMapStorageType::default()),
             temp_file_index: AtomicU64::new(0),
@@ -97,6 +96,11 @@ impl TrieObjectMapStorageFactory {
                 self.open::<Keccak256Hasher>(container_id, read_only, storage_type)
                     .await
             }
+            HashMethod::QCID => {
+                let msg = "QCID hash method is not supported for TrieObjectMap".to_string();
+                error!("{}", msg);
+                Err(NdnError::Unsupported(msg))
+            }
         }
     }
 
@@ -161,7 +165,7 @@ impl TrieObjectMapStorageFactory {
     pub async fn save(
         &self,
         container_id: &ObjId,
-        storage: &dyn TrieObjectMapInnerStorage,
+        storage: &mut dyn TrieObjectMapInnerStorage,
     ) -> NdnResult<()> {
         let file = self.get_file_path_by_id(Some(container_id), storage.get_type());
 
@@ -278,6 +282,11 @@ impl TrieObjectMapStorageFactory {
             HashMethod::Sha512 => Self::create_verifier::<Sha512Hasher>(),
             HashMethod::Blake2s256 => Self::create_verifier::<Blake2s256Hasher>(),
             HashMethod::Keccak256 => Self::create_verifier::<Keccak256Hasher>(),
+            HashMethod::QCID => {
+                let msg = "QCID hash method is not supported for TrieObjectMap".to_string();
+                error!("{}", msg);
+                panic!("{}", NdnError::Unsupported(msg));
+            }
         }
     }
 }

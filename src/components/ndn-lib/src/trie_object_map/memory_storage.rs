@@ -3,6 +3,7 @@ use super::storage::HashDBWithFile;
 use hash_db::Hasher as KeyHasher;
 use memory_db::{HashKey, KeyFunction, MemoryDB};
 
+/*
 pub type TrieObjectMapMemoryStorage<H> = MemoryDB<H, HashKey<H>, Vec<u8>>;
 pub type TrieObjectMapMemorySha256Storage = TrieObjectMapMemoryStorage<Sha256Hasher>;
 pub type TrieObjectMapMemorySha512Storage = TrieObjectMapMemoryStorage<Sha512Hasher>;
@@ -28,6 +29,10 @@ where
         super::storage::TrieObjectMapStorageType::Memory
     }
 
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a> {
+        Box::new(self.data.iter().map(|(k, v)| (k.as_ref(), v)))
+    }
+
     async fn clone(
         &self,
         _target: &std::path::Path,
@@ -42,3 +47,4 @@ where
         Ok(())
     }
 }
+*/
