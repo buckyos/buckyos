@@ -475,6 +475,46 @@ async fn ndn_local_chunklist_basic_fix_len() {
         .expect("verify chunk list should success for exclude object");
     assert!(!is_ok, "verify chunk list should fail for exclude object");
 
+    let verify_fake_index =
+        async |chunk_list: &mut ChunkList, real_index: usize, fake_index: usize| -> () {
+            let proof_item = chunk_list
+                .get_object_with_proof(real_index)
+                .await
+                .expect("get object with proof failed")
+                .expect("object with proof should be some");
+            let mut fake_0_proof_item = proof_item.clone();
+            fake_0_proof_item
+                .proof
+                .proof
+                .get_mut(0)
+                .expect("proof len should >= 2")
+                .0 = fake_index as u64; // set the first proof item index to fake
+            let is_ok = verifier
+                .verify(
+                    &chunk_array_id,
+                    &fake_0_proof_item.obj_id,
+                    &fake_0_proof_item.proof,
+                )
+                .expect("verify chunk list should success for exclude object");
+            assert!(
+                !is_ok,
+                "verify chunk list should failed for sub-object index error"
+            );
+        };
+
+    verify_fake_index(&mut fix_mix_chunk_list, 0, 2).await;
+    verify_fake_index(&mut fix_mix_chunk_list, 0, 4).await;
+    verify_fake_index(&mut fix_mix_chunk_list, 0, 5).await;
+    verify_fake_index(&mut fix_mix_chunk_list, 0, 100).await;
+    verify_fake_index(&mut fix_mix_chunk_list, 4, 2).await;
+    verify_fake_index(&mut fix_mix_chunk_list, 4, 0).await;
+    verify_fake_index(&mut fix_mix_chunk_list, 4, 5).await;
+    verify_fake_index(&mut fix_mix_chunk_list, 4, 100).await;
+    verify_fake_index(&mut fix_mix_chunk_list, 2, 0).await;
+    verify_fake_index(&mut fix_mix_chunk_list, 2, 4).await;
+    verify_fake_index(&mut fix_mix_chunk_list, 2, 5).await;
+    verify_fake_index(&mut fix_mix_chunk_list, 2, 100).await;
+
     let check_batch =
         async |chunk_list: &mut ChunkList, batch: &[usize], larger_index: &[usize]| -> () {
             info!("check batch: {:?}", batch);
