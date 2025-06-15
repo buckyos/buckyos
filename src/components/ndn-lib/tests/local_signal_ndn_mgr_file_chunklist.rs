@@ -727,9 +727,9 @@ async fn ndn_local_chunklist_basic_fix_len() {
 
 #[tokio::test]
 async fn ndn_local_chunklist_basic_var_len() {
-    init_logging("ndn_local_chunklist_basic_fix_len", false);
+    init_logging("ndn_local_chunklist_basic_var_len", false);
 
-    info!("ndn_local_chunklist_basic_fix_len test start...");
+    info!("ndn_local_chunklist_basic_var_len test start...");
     init_obj_array_storage_factory().await;
 
     let mut rng = rand::rng();
@@ -995,14 +995,14 @@ async fn ndn_local_chunklist_basic_var_len() {
         .get_chunk_index_by_offset(SeekFrom::Current(500))
         .expect_err("get chunk index by offset 500 should fail for not supported");
 
-    info!("ndn_local_chunklist_basic_fix_len test end.");
+    info!("ndn_local_chunklist_basic_var_len test end.");
 }
 
 #[tokio::test]
 async fn ndn_local_chunklist_basic_var_no_mix_len() {
-    init_logging("ndn_local_chunklist_basic_fix_len", false);
+    init_logging("ndn_local_chunklist_basic_var_no_mix_len", false);
 
-    info!("ndn_local_chunklist_basic_fix_len test start...");
+    info!("ndn_local_chunklist_basic_var_no_mix_len test start...");
     init_obj_array_storage_factory().await;
 
     let mut rng = rand::rng();
@@ -1263,7 +1263,7 @@ async fn ndn_local_chunklist_basic_var_no_mix_len() {
         .get_chunk_index_by_offset(SeekFrom::Current(500))
         .expect_err("get chunk index by offset 500 should fail for not supported");
 
-    info!("ndn_local_chunklist_basic_fix_len test end.");
+    info!("ndn_local_chunklist_basic_var_no_mix_len test end.");
 }
 
 #[tokio::test]
