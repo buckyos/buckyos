@@ -447,6 +447,11 @@ async fn ndn_local_chunklist_basic_fix_len() {
             "chunk_list {} object id check failed",
             idx
         );
+        assert_eq!(
+            item.proof.proof.get(0).expect("proof should >=2").0,
+            idx as u64,
+            "proof[0].0 should be the index of list"
+        );
         let is_ok = verifier
             .verify(&chunk_array_id, &item.obj_id, &item.proof)
             .expect("verify chunk list failed");
