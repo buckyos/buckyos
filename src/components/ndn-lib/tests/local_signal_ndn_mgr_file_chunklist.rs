@@ -447,9 +447,10 @@ async fn ndn_local_chunklist_basic_fix_len() {
             "chunk_list {} object id check failed",
             idx
         );
-        verifier
+        let is_ok = verifier
             .verify(&chunk_array_id, &item.obj_id, &item.proof)
             .expect("verify chunk list failed");
+        assert!(is_ok, "verify chunk list failed for object {}", idx);
     }
 
     let ret = fix_mix_chunk_list.get_object_with_proof(5).await;
@@ -462,6 +463,17 @@ async fn ndn_local_chunklist_basic_fix_len() {
         ret.is_err() || ret.unwrap().is_none(),
         "get object with proof for out of range should fail"
     );
+
+    let new_chunk = generate_random_chunk(chunk_fix_size);
+    let item = fix_mix_chunk_list
+        .get_object_with_proof(0)
+        .await
+        .expect("get object with proof failed")
+        .expect("object with proof should be some");
+    let is_ok = verifier
+        .verify(&chunk_array_id, &new_chunk.0.to_obj_id(), &item.proof)
+        .expect("verify chunk list should success for exclude object");
+    assert!(!is_ok, "verify chunk list should fail for exclude object");
 
     let check_batch =
         async |chunk_list: &mut ChunkList, batch: &[usize], larger_index: &[usize]| -> () {
@@ -504,9 +516,10 @@ async fn ndn_local_chunklist_basic_fix_len() {
                         "chunk_list {} object id check failed for out of range",
                         chunk_pos
                     );
-                    verifier
+                    let is_ok = verifier
                         .verify(&chunk_array_id, &item.obj_id, &item.proof)
                         .expect("verify chunk list failed");
+                    assert!(is_ok, "verify chunk list failed for object {}", chunk_pos);
                 }
             }
         };
@@ -596,9 +609,10 @@ async fn ndn_local_chunklist_basic_fix_len() {
                     "chunk_list {} object id check failed",
                     chunk_pos
                 );
-                verifier
+                let is_ok = verifier
                     .verify(&chunk_array_id, &item.obj_id, &item.proof)
                     .expect("verify chunk list failed");
+                assert!(is_ok, "verify chunk list failed for object {}", chunk_pos);
             }
         }
     };
@@ -662,6 +676,7 @@ async fn ndn_local_chunklist_basic_fix_len() {
                 == 0,
         "should empty"
     );
+
     info!("ndn_local_chunklist_basic_fix_len test end.");
 }
 
@@ -1361,7 +1376,7 @@ async fn ndn_local_chunklist_not_found() {
     info!("chunk_list_id: {}", chunk_list_id.to_string());
 
     // delete the chunk list storage file
-    let _ = std::fs::remove_file(
+    let remove_json_ret = std::fs::remove_file(
         storage_dir.join(
             chunk_list
                 .deref()
@@ -1371,7 +1386,7 @@ async fn ndn_local_chunklist_not_found() {
                 + ".json",
         ),
     );
-    let _ = std::fs::remove_file(
+    let remove_arrow_ret = std::fs::remove_file(
         storage_dir.join(
             chunk_list
                 .deref()
@@ -1380,6 +1395,11 @@ async fn ndn_local_chunklist_not_found() {
                 .to_base32()
                 + ".arrow",
         ),
+    );
+
+    assert!(
+        remove_json_ret.is_ok() || remove_arrow_ret.is_ok(),
+        "remove chunk list storage file failed"
     );
 
     info!(
@@ -1399,4 +1419,165 @@ async fn ndn_local_chunklist_not_found() {
         );
 
     info!("ndn_local_chunklist_not_found test end.");
+}
+
+#[tokio::test]
+async fn ndn_local_chunklist_verify_failed() {
+    init_logging("ndn_local_chunklist_verify_failed", false);
+
+    info!("ndn_local_chunklist_verify_failed test start...");
+    let storage_dir = init_obj_array_storage_factory().await;
+    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
+
+    let verifier = ObjectArrayProofVerifier::new(HashMethod::Sha256);
+
+    let chunks = generate_random_chunk_list(5, None);
+    let total_size: u64 = chunks.iter().map(|c| c.1.len() as u64).sum();
+
+    let mut chunk_list_builder =
+        ChunkListBuilder::new(HashMethod::Sha256, None).with_total_size(total_size);
+
+    for (chunk_id, chunk_data) in chunks.iter() {
+        write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
+        chunk_list_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+
+    let mut chunk_list = chunk_list_builder
+        .build()
+        .await
+        .expect("build chunk list failed");
+
+    let (chunk_list_id, chunk_list_str) = chunk_list.calc_obj_id();
+    NamedDataMgr::put_object(
+        Some(ndn_mgr_id.as_str()),
+        &chunk_list_id,
+        chunk_list_str.as_str(),
+    )
+    .await
+    .expect("put chunk_list to ndn-mgr failed");
+    info!("chunk_list_id: {}", chunk_list_id.to_string());
+
+    let chunk_array_id = chunk_list
+        .deref()
+        .get_obj_id()
+        .expect("should calc obj-array id");
+
+    let (append_chunk_id, append_chunk_data) = generate_random_chunk(1024 * 1024);
+    let mut append_chunk_list_builder = ChunkListBuilder::from_chunk_list(&chunk_list)
+        .expect("create chunk-list builder for append failed");
+    append_chunk_list_builder
+        .append_with_size(append_chunk_id.clone(), append_chunk_data.len() as u64)
+        .expect("append chunk to chunk list failed");
+    let mut append_chunk_list = append_chunk_list_builder
+        .build()
+        .await
+        .expect("build append chunk list failed");
+    let (append_chunk_list_id, append_chunk_list_str) = append_chunk_list.calc_obj_id();
+    let append_chunk_array_id = append_chunk_list
+        .deref()
+        .get_obj_id()
+        .expect("id of ObjectArray for append chunk list should exist");
+    // instead the chunk list storage file
+    let remove_json_ret =
+        std::fs::remove_file(storage_dir.join(chunk_array_id.to_base32() + ".json"));
+    let copy_json_ret = std::fs::copy(
+        storage_dir.join(append_chunk_array_id.to_base32() + ".json"),
+        storage_dir.join(chunk_array_id.to_base32() + ".json"),
+    );
+    let remove_arrow_ret =
+        std::fs::remove_file(storage_dir.join(chunk_array_id.to_base32() + ".arrow"));
+    let copy_arrow_ret = std::fs::copy(
+        storage_dir.join(append_chunk_array_id.to_base32() + ".arrow"),
+        storage_dir.join(chunk_array_id.to_base32() + ".arrow"),
+    );
+
+    assert!(
+        copy_json_ret.is_ok()
+            || copy_arrow_ret.is_ok(),
+        "instead append chunk list storage file failed, remove-json: {:?}, copy-json: {:?}, remove-arrow: {:?}, copy-arrow: {:?}", remove_json_ret, copy_json_ret, remove_arrow_ret, copy_arrow_ret
+    );
+
+    let chunk_list_json = NamedDataMgr::get_object(Some(ndn_mgr_id.as_str()), &chunk_list_id, None)
+        .await
+        .expect("open chunk list reader from ndn-mgr failed.");
+
+    let mut fake_chunk_list = ChunkListBuilder::open(chunk_list_json)
+        .await
+        .expect("build chunk list from ndn-mgr should success for object-array has been replaced")
+        .build()
+        .await
+        .expect("build chunk list from ndn-mgr failed");
+    assert_eq!(
+        fake_chunk_list.deref().get_obj_id().unwrap(),
+        append_chunk_array_id,
+        "chunk list id check failed after replace"
+    );
+
+    for i in 0..chunk_list.get_len() {
+        let fake_chunk_id = fake_chunk_list
+            .get_chunk(i)
+            .expect("get chunk failed")
+            .expect("chunk_list object check failed");
+        assert_eq!(
+            fake_chunk_id,
+            chunk_list.get_chunk(i).unwrap().unwrap(),
+            "chunk_list {} object check failed after replace",
+            i
+        );
+
+        let item = chunk_list
+            .get_object_with_proof(i)
+            .await
+            .expect("get_object_with_proof should fail for chunk_list has been replaced")
+            .expect("get_object_with_proof should return error");
+        let is_ok = verifier
+            .verify(&chunk_array_id, &fake_chunk_id.to_obj_id(), &item.proof)
+            .expect("should success for chunk_list has been replaced");
+        assert!(is_ok, "should success for item is not in fake chunk_list");
+        let fake_item = fake_chunk_list
+            .get_object_with_proof(i)
+            .await
+            .expect("get_object_with_proof should success for chunk_list has been replaced")
+            .expect("get_object_with_proof should return object");
+        let is_ok = verifier
+            .verify(
+                &append_chunk_array_id,
+                &fake_chunk_id.to_obj_id(),
+                &fake_item.proof,
+            )
+            .expect("should success for chunk_list has been replaced");
+        assert!(is_ok, "should success for item is in fake chunk_list");
+    }
+
+    let fake_chunk_id = fake_chunk_list
+        .get_chunk(chunk_list.get_len())
+        .expect("get chunk failed")
+        .expect("chunk_list object check failed");
+    let fake_item = fake_chunk_list
+        .get_object_with_proof(chunk_list.get_len())
+        .await
+        .expect("get_object_with_proof should success for chunk_list has been replaced")
+        .expect("get_object_with_proof should return object");
+    let is_ok = verifier
+        .verify(
+            &append_chunk_array_id,
+            &fake_chunk_id.to_obj_id(),
+            &fake_item.proof,
+        )
+        .expect("should success for chunk_list has been replaced");
+    assert!(is_ok, "should success for item is in fake chunk_list");
+
+    let is_ok = verifier
+        .verify(
+            &chunk_array_id,
+            &fake_chunk_id.to_obj_id(),
+            &fake_item.proof,
+        )
+        .expect("should success for chunk_list has been replaced");
+    assert!(!is_ok, "should fail for chunk_list has been replaced");
+
+    info!("ndn_local_chunklist_verify_failed test end.");
 }
