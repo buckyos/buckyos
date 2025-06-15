@@ -93,9 +93,10 @@ impl HashNodeLocator {
     }
 
     // Get the verify path of the leaf node by the leaf index
-    // The result is a vector of (depth, index) tuple, depth start 0, and from bottom to top
+    // The result is a vector of (depth, index, leaf_index) tuple, depth start 0, and from bottom to top
     // Index is the index of the node node in the stream, start from 0, and from left to right
-    pub fn get_proof_path_by_leaf_index(&self, leaf_index: u64) -> NdnResult<Vec<(u32, u64)>> {
+    // The leaf_index is the index of the leaf node in current level, start from 0, and from left to right
+    pub fn get_proof_path_by_leaf_index(&self, leaf_index: u64) -> NdnResult<Vec<(u32, u64, u64)>> {
         if leaf_index >= self.leaf_count {
             let msg = format!(
                 "Leaf index out of range: {} vs {}",
@@ -108,21 +109,21 @@ impl HashNodeLocator {
         let mut ret = Vec::new();
 
         // First push the leaf node
-        ret.push((0, leaf_index));
+        ret.push((0, leaf_index, leaf_index));
 
         let mut index = leaf_index;
         for depth in 0..self.total_depth {
             // Get sibling index of the node in the current depth
             let sibling_index = if index % 2 == 0 { index + 1 } else { index - 1 };
             let stream_index = self.calc_index_in_stream(depth, sibling_index);
-            ret.push((depth, stream_index));
+            ret.push((depth, stream_index, sibling_index));
 
             index = index / 2;
         }
 
         // Finally, add the root node
         let stream_index = self.calc_index_in_stream(self.total_depth, 0);
-        ret.push((self.total_depth, stream_index));
+        ret.push((self.total_depth, stream_index, 0));
 
         Ok(ret)
     }
