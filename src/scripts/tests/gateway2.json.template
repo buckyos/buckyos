@@ -1,0 +1,40 @@
+{
+  "device_name":"web3.buckyos.io",
+  "device_key_path":"/opt/cyfs_gateway/device_key.pem",
+  "inner_services":{
+  },
+  "servers":{
+    "main_dns_server":{
+      "type":"cyfs-dns",
+      "bind":"$${dns_ip}",
+      "port": 53,
+      "resolver_chain": [
+        {
+           "type":"LocalConfig",
+           "path":"/opt/cyfs_gateway/local_dns.toml"
+        },
+        {
+          "type": "dns",
+          "cache": true
+        }
+      ],
+      "fallback": ["223.5.5.5","6.6.6.6"]
+    }
+  },
+
+  "dispatcher" : {
+    "tcp://0.0.0.0:8080":{
+      "type":"forward",
+	  "target":"tcp:///${dest_ip}:8080"
+    },
+    "tcp://0.0.0.0:8081":{
+      "type":"forward",
+	  "target":"rtcp://web3.buckyos.io/127.0.0.1:8000"
+    },
+	 "udp://0.0.0.0:5643": {
+	   "type": "forward",
+	   "target": "udp:///${dest_ip}:5643"
+	 }
+  },
+  "includes": []
+}
