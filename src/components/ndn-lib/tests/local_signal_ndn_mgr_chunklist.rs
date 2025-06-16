@@ -50,7 +50,7 @@ fn generate_random_chunk_list(count: usize, fix_size: Option<u64>) -> Vec<(Chunk
         let (chunk_id, chunk_data) = if let Some(size) = fix_size {
             generate_random_chunk_mix(size)
         } else {
-            generate_random_chunk(rand::rng().random_range(1024u64..1024 * 1024 * 10))
+            generate_random_chunk_mix(rand::rng().random_range(1024u64..1024 * 1024 * 10))
         };
         chunk_list.push((chunk_id, chunk_data));
     }

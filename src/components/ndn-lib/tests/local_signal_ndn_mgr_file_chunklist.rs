@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
 };
 
+use base64::write;
 use buckyos_kit::*;
 use cyfs_gateway_lib::*;
 use cyfs_warp::*;
@@ -50,7 +51,7 @@ fn generate_random_chunk_list(count: usize, fix_size: Option<u64>) -> Vec<(Chunk
         let (chunk_id, chunk_data) = if let Some(size) = fix_size {
             generate_random_chunk_mix(size)
         } else {
-            generate_random_chunk(rand::rng().random_range(1024u64..1024 * 1024 * 10))
+            generate_random_chunk_mix(rand::rng().random_range(1024u64..1024 * 1024 * 10))
         };
         chunk_list.push((chunk_id, chunk_data));
     }
@@ -178,1116 +179,40 @@ async fn init_obj_array_storage_factory() -> PathBuf {
 }
 
 #[tokio::test]
-async fn ndn_local_chunklist_basic_fix_len() {
-    init_logging("ndn_local_chunklist_basic_fix_len", false);
+async fn ndn_local_file_chunklist_rechunk_split() {
+    init_logging("ndn_local_file_chunklist_rechunk_split", false);
 
-    info!("ndn_local_chunklist_basic_fix_len test start...");
-    init_obj_array_storage_factory().await;
-
-    let mut rng = rand::rng();
-    let chunk_fix_size: u64 = 1024 * 1024 + 513; // 1MB + x bytes
-
-    let chunk_size1: u64 = chunk_fix_size;
-    let (chunk_id1, chunk_data1) = generate_random_chunk_mix(chunk_fix_size);
-
-    let chunk_size2: u64 = chunk_fix_size;
-    let (chunk_id2, chunk_data2) = generate_random_chunk_mix(chunk_fix_size);
-
-    let chunk_size3: u64 = chunk_fix_size;
-    let (chunk_id3, chunk_data3) = generate_random_chunk_mix(chunk_fix_size);
-
-    let chunk_size4: u64 = chunk_fix_size;
-    let (chunk_id4, chunk_data4) = generate_random_chunk_mix(chunk_fix_size);
-
-    let chunk_size5: u64 = chunk_fix_size;
-    let (chunk_id5, chunk_data5) = generate_random_chunk_mix(chunk_fix_size);
-
-    let mut fix_mix_chunk_list_builder = ChunkListBuilder::new(HashMethod::Sha256, None)
-        .with_total_size(chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5)
-        .with_fixed_size(chunk_fix_size);
-
-    // [1]
-    fix_mix_chunk_list_builder
-        .append(chunk_id1.clone())
-        .expect("append chunk_id1 to chunk_arr failed");
-    // [1, 2]
-    fix_mix_chunk_list_builder
-        .append(chunk_id2.clone())
-        .expect("append chunk_id1 to chunk_arr failed");
-    // [1, 3, 2]
-    fix_mix_chunk_list_builder
-        .insert(1, chunk_id3.clone())
-        .expect("insert chunk_id3 to chunk_arr failed");
-    // [4, 1, 3, 2]
-    fix_mix_chunk_list_builder
-        .insert(0, chunk_id4.clone())
-        .expect("insert chunk_id4 to chunk_arr failed");
-    // [4, 1, 3, 2, 5]
-    fix_mix_chunk_list_builder
-        .insert(4, chunk_id5.clone())
-        .expect("insert chunk_id4 to chunk_arr failed");
-    fix_mix_chunk_list_builder
-        .insert(6, chunk_id5.clone())
-        .expect_err("insert pos 6 to chunk_arr should fail for out of range");
-
-    let mut fix_mix_chunk_list = fix_mix_chunk_list_builder
-        .build()
-        .await
-        .expect("build chunk list failed");
-
-    assert_eq!(
-        fix_mix_chunk_list.get_total_size(),
-        chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5,
-        "chunk_list total size check failed"
-    );
-    assert!(
-        fix_mix_chunk_list.is_fixed_size_chunk_list(),
-        "chunk_list fix size check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list.get_len(),
-        5,
-        "chunk_list length check failed"
-    );
-
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk(0)
-            .expect("get chunk 0 failed")
-            .expect("chunk_list first object check failed"),
-        chunk_id4,
-        "chunk_list first object check failed"
-    );
-
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk(1)
-            .expect("get chunk 1 failed")
-            .expect("chunk_list second object check failed"),
-        chunk_id1,
-        "chunk_list second object check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk(2)
-            .expect("get chunk 2 failed")
-            .expect("chunk_list third object check failed"),
-        chunk_id3,
-        "chunk_list third object check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk(3)
-            .expect("get chunk 3 failed")
-            .expect("chunk_list fourth object check failed"),
-        chunk_id2,
-        "chunk_list fourth object check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk(4)
-            .expect("get chunk 4 failed")
-            .expect("chunk_list fifth object check failed"),
-        chunk_id5,
-        "chunk_list fifth object check failed"
-    );
-    assert!(
-        fix_mix_chunk_list
-            .get_chunk(5)
-            .expect("should Ok(None) for larger index")
-            .is_none(),
-        "chunk_list sixth object check failed"
-    );
-    assert_eq!(fix_mix_chunk_list.get_meta().fix_size, Some(chunk_fix_size));
-
-    // from start
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(0))
-            .expect("get chunk index by offset 0 failed"),
-        (0, 0),
-        "chunk_list first object index check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_offset_by_index(0)
-            .expect("get chunk offset by index 0 failed"),
-        0,
-        "chunk_list first object offset check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(chunk_fix_size * 3))
-            .expect("get chunk index by offset failed"),
-        (3, 0),
-        "chunk_list 3 object index check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_offset_by_index(3)
-            .expect("get chunk offset by index 3 failed"),
-        chunk_fix_size * 3,
-        "chunk_list 3 object offset check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(chunk_fix_size * 4))
-            .expect("get chunk index by offset failed"),
-        (4, 0),
-        "chunk_list 4 object index check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(chunk_fix_size * 5 - 1))
-            .expect("get chunk index by offset failed"),
-        (4, chunk_fix_size - 1),
-        "chunk_list 4 object index check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_offset_by_index(4)
-            .expect("get chunk offset by index 4 failed"),
-        chunk_fix_size * 4,
-        "chunk_list 4 object offset check failed"
-    );
-    fix_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Start(chunk_fix_size * 5))
-        .expect_err("should fail for out of range");
-    fix_mix_chunk_list
-        .get_chunk_offset_by_index(5)
-        .expect_err("should fail for out of range");
-    fix_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Start(chunk_fix_size * 6))
-        .expect_err("should fail for out of range");
-    fix_mix_chunk_list
-        .get_chunk_offset_by_index(6)
-        .expect_err("should fail for out of range");
-
-    let chunk_offset = rng.random_range(1..chunk_fix_size - 1);
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(chunk_fix_size + chunk_offset))
-            .expect("get chunk index by offset failed"),
-        (1, chunk_offset),
-        "chunk_list 1.x object index check failed"
-    );
-
-    // from end
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(-1))
-            .expect("get chunk index by offset 0 failed"),
-        (4, chunk_fix_size - 1),
-        "chunk_list first object index check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(-(chunk_fix_size as i64) * 3 - 1))
-            .expect("get chunk index by offset failed"),
-        (1, chunk_fix_size - 1),
-        "chunk_list 3 object index check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(-(chunk_fix_size as i64) * 4 - 1))
-            .expect("get chunk index by offset failed"),
-        (0, chunk_fix_size - 1),
-        "chunk_list 4 object index check failed"
-    );
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(-(chunk_fix_size as i64) * 5))
-            .expect("get chunk index by offset failed"),
-        (0, 0),
-        "chunk_list 0 object index check failed"
-    );
-    fix_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(-(chunk_fix_size as i64) * 5 - 1))
-        .expect_err("should fail for out of range");
-    fix_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(-(chunk_fix_size as i64) * 6))
-        .expect_err("should fail for out of range");
-    fix_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(1))
-        .expect_err("should fail for out of range");
-
-    let chunk_offset = rng.random_range(2..(chunk_fix_size as i64) - 1);
-    assert_eq!(
-        fix_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(-(chunk_fix_size as i64) - chunk_offset))
-            .expect("get chunk index by offset failed"),
-        (3, (chunk_fix_size - chunk_offset as u64)),
-        "chunk_list 3.x object index check failed"
-    );
-
-    fix_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Current(500))
-        .expect_err("get chunk index by offset 500 should fail for not supported");
-
-    // verify
-    let chunk_array = fix_mix_chunk_list.deref();
-    let chunk_array_id = chunk_array
-        .get_obj_id()
-        .expect("id for obj-array of chunklist should calc complete");
-    let verifier = ObjectArrayProofVerifier::new(HashMethod::Sha256);
-    for idx in 0..chunk_array.len() {
-        // TODO: why mut needed?
-        let item = fix_mix_chunk_list
-            .get_object_with_proof(idx)
-            .await
-            .expect("get object with proof failed")
-            .expect("object with proof should be some");
-        assert_eq!(
-            item.obj_id,
-            fix_mix_chunk_list
-                .get_chunk(idx)
-                .expect("chunk_list object id check failed")
-                .expect("chunk_list object should be some")
-                .to_obj_id(),
-            "chunk_list {} object id check failed",
-            idx
-        );
-        assert_eq!(
-            item.proof.proof.get(0).expect("proof should >=2").0,
-            idx as u64,
-            "proof[0].0 should be the index of list"
-        );
-        let is_ok = verifier
-            .verify(&chunk_array_id, &item.obj_id, &item.proof)
-            .expect("verify chunk list failed");
-        assert!(is_ok, "verify chunk list failed for object {}", idx);
-    }
-
-    let ret = fix_mix_chunk_list.get_object_with_proof(5).await;
-    assert!(
-        ret.is_err() || ret.unwrap().is_none(),
-        "get object with proof for out of range should fail"
-    );
-    let ret = fix_mix_chunk_list.get_object_with_proof(100).await;
-    assert!(
-        ret.is_err() || ret.unwrap().is_none(),
-        "get object with proof for out of range should fail"
-    );
-
-    let new_chunk = generate_random_chunk(chunk_fix_size);
-    let item = fix_mix_chunk_list
-        .get_object_with_proof(0)
-        .await
-        .expect("get object with proof failed")
-        .expect("object with proof should be some");
-    let is_ok = verifier
-        .verify(&chunk_array_id, &new_chunk.0.to_obj_id(), &item.proof)
-        .expect("verify chunk list should success for exclude object");
-    assert!(!is_ok, "verify chunk list should fail for exclude object");
-
-    let verify_fake_index =
-        async |chunk_list: &mut ChunkList, real_index: usize, fake_index: usize| -> () {
-            let proof_item = chunk_list
-                .get_object_with_proof(real_index)
-                .await
-                .expect("get object with proof failed")
-                .expect("object with proof should be some");
-            let mut fake_0_proof_item = proof_item.clone();
-            fake_0_proof_item
-                .proof
-                .proof
-                .get_mut(0)
-                .expect("proof len should >= 2")
-                .0 = fake_index as u64; // set the first proof item index to fake
-            let is_ok = verifier
-                .verify(
-                    &chunk_array_id,
-                    &fake_0_proof_item.obj_id,
-                    &fake_0_proof_item.proof,
-                )
-                .expect("verify chunk list should success for exclude object");
-            assert!(
-                !is_ok,
-                "verify chunk list should failed for sub-object index error"
-            );
-        };
-
-    verify_fake_index(&mut fix_mix_chunk_list, 0, 2).await;
-    verify_fake_index(&mut fix_mix_chunk_list, 0, 4).await;
-    verify_fake_index(&mut fix_mix_chunk_list, 0, 5).await;
-    verify_fake_index(&mut fix_mix_chunk_list, 0, 100).await;
-    verify_fake_index(&mut fix_mix_chunk_list, 4, 2).await;
-    verify_fake_index(&mut fix_mix_chunk_list, 4, 0).await;
-    verify_fake_index(&mut fix_mix_chunk_list, 4, 5).await;
-    verify_fake_index(&mut fix_mix_chunk_list, 4, 100).await;
-    verify_fake_index(&mut fix_mix_chunk_list, 2, 0).await;
-    verify_fake_index(&mut fix_mix_chunk_list, 2, 4).await;
-    verify_fake_index(&mut fix_mix_chunk_list, 2, 5).await;
-    verify_fake_index(&mut fix_mix_chunk_list, 2, 100).await;
-
-    let check_batch =
-        async |chunk_list: &mut ChunkList, batch: &[usize], larger_index: &[usize]| -> () {
-            info!("check batch: {:?}", batch);
-            let larger_index = HashSet::<usize>::from_iter(larger_index.iter().cloned());
-            let obj_item_vec = chunk_list
-                .batch_get_object_with_proof(batch)
-                .await
-                .expect("batch get object with proof failed");
-            assert_eq!(
-                obj_item_vec.len(),
-                batch.len(),
-                "batch get object with proof length check failed for out of range"
-            );
-
-            for (idx, chunk_pos) in batch.iter().enumerate() {
-                let item = obj_item_vec
-                    .get(idx)
-                    .expect("batch get object with proof item should be some");
-                if larger_index.contains(&idx) {
-                    assert!(
-                        item.is_none(),
-                        "batch get object with proof item {} should be none",
-                        idx
-                    );
-                } else {
-                    assert!(
-                        item.is_some(),
-                        "batch get object with proof item {} should be some",
-                        idx
-                    );
-                    let item = item.as_ref().expect("item should be some");
-                    assert_eq!(
-                        item.obj_id,
-                        chunk_list
-                            .deref()
-                            .get_object(*chunk_pos)
-                            .expect("chunk_list object id check failed")
-                            .expect("chunk_list object should be some"),
-                        "chunk_list {} object id check failed for out of range",
-                        chunk_pos
-                    );
-                    let is_ok = verifier
-                        .verify(&chunk_array_id, &item.obj_id, &item.proof)
-                        .expect("verify chunk list failed");
-                    assert!(is_ok, "verify chunk list failed for object {}", chunk_pos);
-                }
-            }
-        };
-
-    check_batch(&mut fix_mix_chunk_list, &[0], &[]).await;
-    check_batch(&mut fix_mix_chunk_list, &[2], &[]).await;
-    check_batch(&mut fix_mix_chunk_list, &[4], &[]).await;
-    check_batch(&mut fix_mix_chunk_list, &[0, 1, 2, 3, 4], &[]).await;
-    check_batch(&mut fix_mix_chunk_list, &[0, 1, 2], &[]).await;
-    check_batch(&mut fix_mix_chunk_list, &[2, 3, 4], &[]).await;
-    check_batch(&mut fix_mix_chunk_list, &[0, 2], &[]).await;
-    check_batch(&mut fix_mix_chunk_list, &[2, 4], &[]).await;
-    check_batch(&mut fix_mix_chunk_list, &[2, 3], &[]).await;
-    check_batch(&mut fix_mix_chunk_list, &[1, 3], &[]).await;
-    check_batch(&mut fix_mix_chunk_list, &[3, 0, 2, 4, 1], &[]).await; // random order
-    check_batch(&mut fix_mix_chunk_list, &[3, 0, 3, 4, 1], &[]).await; // repeat
-
-    // small large
-    check_batch(&mut fix_mix_chunk_list, &[5], &[0]).await;
-    check_batch(&mut fix_mix_chunk_list, &[0, 5], &[1]).await;
-    check_batch(&mut fix_mix_chunk_list, &[2, 5], &[1]).await;
-    check_batch(&mut fix_mix_chunk_list, &[4, 5], &[1]).await;
-    check_batch(&mut fix_mix_chunk_list, &[5, 0], &[0]).await;
-    check_batch(&mut fix_mix_chunk_list, &[5, 2], &[0]).await;
-    check_batch(&mut fix_mix_chunk_list, &[5, 4], &[0]).await;
-    check_batch(&mut fix_mix_chunk_list, &[0, 1, 5], &[2]).await;
-    check_batch(&mut fix_mix_chunk_list, &[3, 1, 5], &[2]).await;
-
-    // more large
-    check_batch(&mut fix_mix_chunk_list, &[100], &[0]).await;
-    check_batch(&mut fix_mix_chunk_list, &[0, 100], &[1]).await;
-    check_batch(&mut fix_mix_chunk_list, &[2, 100], &[1]).await;
-    check_batch(&mut fix_mix_chunk_list, &[4, 100], &[1]).await;
-    check_batch(&mut fix_mix_chunk_list, &[100, 0], &[0]).await;
-    check_batch(&mut fix_mix_chunk_list, &[100, 2], &[0]).await;
-    check_batch(&mut fix_mix_chunk_list, &[100, 4], &[0]).await;
-    check_batch(&mut fix_mix_chunk_list, &[0, 1, 100], &[2]).await;
-    check_batch(&mut fix_mix_chunk_list, &[3, 1, 100], &[2]).await;
-
-    let check_range = async |chunk_list: &mut ChunkList, start_pos: usize, end_pos: usize| -> () {
-        info!("check range: {:?}, {:?}", start_pos, end_pos);
-        let obj_item_vec = chunk_list
-            .range_get_object_with_proof(start_pos, end_pos)
-            .await
-            .expect("batch get object with proof failed");
-        if end_pos > chunk_list.get_len() {
-            assert!(
-                obj_item_vec.is_empty()
-                    || obj_item_vec.len() == end_pos - start_pos
-                    || obj_item_vec.len() == chunk_list.get_len() - start_pos,
-                "batch get object with proof should be empty for out of range"
-            );
-            return;
-        } else {
-            assert_eq!(
-                obj_item_vec.len(),
-                end_pos - start_pos,
-                "batch get object with proof length check failed for out of range"
-            );
-        }
-
-        for (idx, chunk_pos) in (start_pos..end_pos).into_iter().enumerate() {
-            if chunk_pos >= chunk_list.get_len() {
-                let item = obj_item_vec.get(idx);
-                assert!(
-                    item.is_none() || item.as_ref().unwrap().is_none(),
-                    "batch get object with proof item {} should be none",
-                    idx
-                );
-            } else {
-                let item = obj_item_vec
-                    .get(idx)
-                    .expect("batch get object with proof item should be some");
-                assert!(
-                    item.is_some(),
-                    "batch get object with proof item {} should be some",
-                    idx
-                );
-                let item = item.as_ref().expect("item should be some");
-                assert_eq!(
-                    item.obj_id,
-                    chunk_list
-                        .deref()
-                        .get_object(chunk_pos)
-                        .expect("chunk_list object id check failed")
-                        .expect("chunk_list object should be some"),
-                    "chunk_list {} object id check failed",
-                    chunk_pos
-                );
-                let is_ok = verifier
-                    .verify(&chunk_array_id, &item.obj_id, &item.proof)
-                    .expect("verify chunk list failed");
-                assert!(is_ok, "verify chunk list failed for object {}", chunk_pos);
-            }
-        }
-    };
-
-    check_range(&mut fix_mix_chunk_list, 0, 1).await;
-    check_range(&mut fix_mix_chunk_list, 2, 3).await;
-    check_range(&mut fix_mix_chunk_list, 4, 5).await;
-    check_range(&mut fix_mix_chunk_list, 0, 5).await;
-    check_range(&mut fix_mix_chunk_list, 0, 3).await;
-    check_range(&mut fix_mix_chunk_list, 2, 5).await;
-    check_range(&mut fix_mix_chunk_list, 1, 4).await;
-
-    // small large
-    check_range(&mut fix_mix_chunk_list, 0, 6).await;
-    check_range(&mut fix_mix_chunk_list, 2, 6).await;
-    check_range(&mut fix_mix_chunk_list, 4, 6).await;
-    check_range(&mut fix_mix_chunk_list, 5, 6).await;
-
-    // more large
-    check_range(&mut fix_mix_chunk_list, 0, 100).await;
-    check_range(&mut fix_mix_chunk_list, 2, 100).await;
-    check_range(&mut fix_mix_chunk_list, 4, 100).await;
-    check_range(&mut fix_mix_chunk_list, 5, 100).await;
-    check_range(&mut fix_mix_chunk_list, 100, 150).await;
-
-    let obj_item_vec_ret = fix_mix_chunk_list.range_get_object_with_proof(3, 2).await;
-    assert!(
-        obj_item_vec_ret.is_err()
-            || obj_item_vec_ret.as_ref().unwrap().is_empty()
-            || obj_item_vec_ret
-                .unwrap()
-                .iter()
-                .filter(|item| item.is_some())
-                .count()
-                == 0,
-        "should empty"
-    );
-
-    let obj_item_vec_ret = fix_mix_chunk_list.range_get_object_with_proof(6, 2).await;
-    assert!(
-        obj_item_vec_ret.is_err()
-            || obj_item_vec_ret.as_ref().unwrap().is_empty()
-            || obj_item_vec_ret
-                .unwrap()
-                .iter()
-                .filter(|item| item.is_some())
-                .count()
-                == 0,
-        "should empty"
-    );
-
-    let obj_item_vec_ret = fix_mix_chunk_list.range_get_object_with_proof(6, 5).await;
-    assert!(
-        obj_item_vec_ret.is_err()
-            || obj_item_vec_ret.as_ref().unwrap().is_empty()
-            || obj_item_vec_ret
-                .unwrap()
-                .iter()
-                .filter(|item| item.is_some())
-                .count()
-                == 0,
-        "should empty"
-    );
-
-    info!("ndn_local_chunklist_basic_fix_len test end.");
-}
-
-#[tokio::test]
-async fn ndn_local_chunklist_basic_var_len() {
-    init_logging("ndn_local_chunklist_basic_var_len", false);
-
-    info!("ndn_local_chunklist_basic_var_len test start...");
-    init_obj_array_storage_factory().await;
-
-    let mut rng = rand::rng();
-
-    let chunk_size1: u64 = 1024 * 1024 + 513;
-    let (chunk_id1, chunk_data1) = generate_random_chunk_mix(chunk_size1);
-
-    let chunk_size2: u64 = 1024 * 1024 * 3 + 5;
-    let (chunk_id2, chunk_data2) = generate_random_chunk_mix(chunk_size2);
-
-    let chunk_size3: u64 = 1024 + 13;
-    let (chunk_id3, chunk_data3) = generate_random_chunk_mix(chunk_size3);
-
-    let chunk_size4: u64 = 1024 * 2 + 113;
-    let (chunk_id4, chunk_data4) = generate_random_chunk_mix(chunk_size4);
-
-    let chunk_size5: u64 = 1024 * 1024 * 2 + 53;
-    let (chunk_id5, chunk_data5) = generate_random_chunk_mix(chunk_size5);
-
-    let mut var_mix_chunk_list_builder = ChunkListBuilder::new(HashMethod::Sha256, None)
-        .with_total_size(chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5)
-        .with_var_size();
-
-    // [1]
-    var_mix_chunk_list_builder
-        .append(chunk_id1.clone())
-        .expect("append chunk_id1 to chunk_arr failed");
-    // [1, 2]
-    var_mix_chunk_list_builder
-        .append(chunk_id2.clone())
-        .expect("append chunk_id1 to chunk_arr failed");
-    // [1, 2, 3]
-    var_mix_chunk_list_builder
-        .append(chunk_id3.clone())
-        .expect("insert chunk_id3 to chunk_arr failed");
-    // [1, 2, 3, 4]
-    var_mix_chunk_list_builder
-        .append(chunk_id4.clone())
-        .expect("insert chunk_id4 to chunk_arr failed");
-    // [1, 2, 3, 4, 5]
-    var_mix_chunk_list_builder
-        .append(chunk_id5.clone())
-        .expect("insert chunk_id4 to chunk_arr failed");
-
-    let var_mix_chunk_list = var_mix_chunk_list_builder
-        .build()
-        .await
-        .expect("build chunk list failed");
-
-    assert_eq!(
-        var_mix_chunk_list.get_total_size(),
-        chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5,
-        "var_mix_chunk_list total size check failed"
-    );
-    assert!(
-        !var_mix_chunk_list.is_fixed_size_chunk_list(),
-        "chunk_list fix size check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list.get_len(),
-        5,
-        "chunk_list length check failed"
-    );
-
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk(0)
-            .expect("get chunk 0 failed")
-            .expect("chunk_list first object check failed"),
-        chunk_id1,
-        "chunk_list first object check failed"
-    );
-
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk(1)
-            .expect("get chunk 1 failed")
-            .expect("chunk_list second object check failed"),
-        chunk_id2,
-        "chunk_list second object check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk(2)
-            .expect("get chunk 2 failed")
-            .expect("chunk_list third object check failed"),
-        chunk_id3,
-        "chunk_list third object check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk(3)
-            .expect("get chunk 3 failed")
-            .expect("chunk_list fourth object check failed"),
-        chunk_id4,
-        "chunk_list fourth object check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk(4)
-            .expect("get chunk 4 failed")
-            .expect("chunk_list fifth object check failed"),
-        chunk_id5,
-        "chunk_list fifth object check failed"
-    );
-    assert!(
-        var_mix_chunk_list
-            .get_chunk(5)
-            .expect("should Ok(None) for larger index")
-            .is_none(),
-        "chunk_list sixth object check failed"
-    );
-    assert_eq!(var_mix_chunk_list.get_meta().fix_size, None);
-
-    // from start
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(0))
-            .expect("get chunk index by offset 0 failed"),
-        (0, 0),
-        "chunk_list first object index check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_offset_by_index(0)
-            .expect("get chunk offset by index 0 failed"),
-        0,
-        "chunk_list first object offset check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(chunk_size1 + chunk_size2 + chunk_size3))
-            .expect("get chunk index by offset failed"),
-        (3, 0),
-        "chunk_list 3 object index check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_offset_by_index(3)
-            .expect("get chunk offset by index 3 failed"),
-        chunk_size1 + chunk_size2 + chunk_size3,
-        "chunk_list 3 object offset check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(
-                chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4
-            ))
-            .expect("get chunk index by offset failed"),
-        (4, 0),
-        "chunk_list 4 object index check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(
-                chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5 - 1
-            ))
-            .expect("get chunk index by offset failed"),
-        (4, chunk_size5 - 1),
-        "chunk_list 4 object index check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_offset_by_index(4)
-            .expect("get chunk offset by index 4 failed"),
-        chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4,
-        "chunk_list 4 object offset check failed"
-    );
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Start(
-            chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5,
-        ))
-        .expect_err("should fail for out of range");
-    var_mix_chunk_list
-        .get_chunk_offset_by_index(5)
-        .expect_err("should fail for out of range");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Start(
-            chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5 + chunk_size5,
-        ))
-        .expect_err("should fail for out of range");
-    var_mix_chunk_list
-        .get_chunk_offset_by_index(6)
-        .expect_err("should fail for out of range");
-
-    let chunk_offset = rng.random_range(1..chunk_size2 - 1);
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(chunk_size1 + chunk_offset))
-            .expect("get chunk index by offset failed"),
-        (1, chunk_offset),
-        "chunk_list 1.x object index check failed"
-    );
-
-    // from end
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(-1))
-            .expect("get chunk index by offset 0 failed"),
-        (4, chunk_size5 - 1),
-        "chunk_list first object index check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(
-                -((chunk_size4 + chunk_size5 + chunk_size3) as i64) - 1
-            ))
-            .expect("get chunk index by offset failed"),
-        (1, chunk_size2 - 1),
-        "chunk_list 1 object index check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(
-                -((chunk_size3 + chunk_size4 + chunk_size5 + chunk_size2) as i64) - 1
-            ))
-            .expect("get chunk index by offset failed"),
-        (0, chunk_size1 - 1),
-        "chunk_list 0 object index check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(
-                -((chunk_size1
-                    + chunk_size2
-                    + chunk_size3
-                    + chunk_size4
-                    + chunk_size5
-                    + chunk_size5) as i64)
-            ))
-            .expect("get chunk index by offset failed"),
-        (0, 0),
-        "chunk_list 0 object index check failed"
-    );
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(
-            -((chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5 + chunk_size5)
-                as i64)
-                - 1,
-        ))
-        .expect_err("should fail for out of range");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(
-            -((chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5 + chunk_size5)
-                as i64)
-                * 6,
-        ))
-        .expect_err("should fail for out of range");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(1))
-        .expect_err("should fail for out of range");
-
-    let chunk_offset = rng.random_range(2..(chunk_size5 as i64) - 1);
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(-(chunk_size5 as i64) - chunk_offset))
-            .expect("get chunk index by offset failed"),
-        (3, (chunk_size4 - chunk_offset as u64)),
-        "chunk_list 3.x object index check failed"
-    );
-
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Current(500))
-        .expect_err("get chunk index by offset 500 should fail for not supported");
-
-    info!("ndn_local_chunklist_basic_var_len test end.");
-}
-
-#[tokio::test]
-async fn ndn_local_chunklist_basic_var_no_mix_len() {
-    init_logging("ndn_local_chunklist_basic_var_no_mix_len", false);
-
-    info!("ndn_local_chunklist_basic_var_no_mix_len test start...");
-    init_obj_array_storage_factory().await;
-
-    let mut rng = rand::rng();
-
-    let chunk_size1: u64 = 1024 * 1024 + 513;
-    let (chunk_id1, chunk_data1) = generate_random_chunk_mix(chunk_size1);
-
-    let chunk_size2: u64 = 1024 * 1024 * 3 + 5;
-    let (chunk_id2, chunk_data2) = generate_random_chunk_mix(chunk_size2);
-
-    let chunk_size3: u64 = 1024 + 13;
-    let (chunk_id3, chunk_data3) = generate_random_chunk(chunk_size3);
-
-    let chunk_size4: u64 = 1024 * 2 + 113;
-    let (chunk_id4, chunk_data4) = generate_random_chunk_mix(chunk_size4);
-
-    let chunk_size5: u64 = 1024 * 1024 * 2 + 53;
-    let (chunk_id5, chunk_data5) = generate_random_chunk_mix(chunk_size5);
-
-    let mut var_mix_chunk_list_builder = ChunkListBuilder::new(HashMethod::Sha256, None)
-        .with_total_size(chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5)
-        .with_var_size();
-
-    // [1]
-    var_mix_chunk_list_builder
-        .append(chunk_id1.clone())
-        .expect("append chunk_id1 to chunk_arr failed");
-    // [1, 2]
-    var_mix_chunk_list_builder
-        .append(chunk_id2.clone())
-        .expect("append chunk_id1 to chunk_arr failed");
-    // [1, 2, 3]
-    var_mix_chunk_list_builder
-        .append(chunk_id3.clone())
-        .expect("insert chunk_id3 to chunk_arr failed");
-    // [1, 2, 3, 4]
-    var_mix_chunk_list_builder
-        .append(chunk_id4.clone())
-        .expect("insert chunk_id4 to chunk_arr failed");
-    // [1, 2, 3, 4, 5]
-    var_mix_chunk_list_builder
-        .append(chunk_id5.clone())
-        .expect("insert chunk_id4 to chunk_arr failed");
-
-    let var_mix_chunk_list = var_mix_chunk_list_builder
-        .build()
-        .await
-        .expect("build chunk list failed");
-
-    assert_eq!(
-        var_mix_chunk_list.get_total_size(),
-        chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5,
-        "var_mix_chunk_list total size check failed"
-    );
-    assert!(
-        !var_mix_chunk_list.is_fixed_size_chunk_list(),
-        "chunk_list fix size check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list.get_len(),
-        5,
-        "chunk_list length check failed"
-    );
-
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk(0)
-            .expect("get chunk 0 failed")
-            .expect("chunk_list first object check failed"),
-        chunk_id1,
-        "chunk_list first object check failed"
-    );
-
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk(1)
-            .expect("get chunk 1 failed")
-            .expect("chunk_list second object check failed"),
-        chunk_id2,
-        "chunk_list second object check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk(2)
-            .expect("get chunk 2 failed")
-            .expect("chunk_list third object check failed"),
-        chunk_id3,
-        "chunk_list third object check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk(3)
-            .expect("get chunk 3 failed")
-            .expect("chunk_list fourth object check failed"),
-        chunk_id4,
-        "chunk_list fourth object check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk(4)
-            .expect("get chunk 4 failed")
-            .expect("chunk_list fifth object check failed"),
-        chunk_id5,
-        "chunk_list fifth object check failed"
-    );
-    assert!(
-        var_mix_chunk_list
-            .get_chunk(5)
-            .expect("should Ok(None) for larger index")
-            .is_none(),
-        "chunk_list sixth object check failed"
-    );
-    assert_eq!(var_mix_chunk_list.get_meta().fix_size, None);
-
-    // from start
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(0))
-            .expect("get chunk index by offset 0 failed"),
-        (0, 0),
-        "chunk_list first object index check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_offset_by_index(0)
-            .expect("get chunk offset by index 0 failed"),
-        0,
-        "chunk_list first object offset check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(chunk_size1 + chunk_size2))
-            .expect("get chunk index by offset failed"),
-        (2, 0),
-        "chunk_list 3 object index check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_offset_by_index(2)
-            .expect("get chunk offset by index 3 failed"),
-        chunk_size1 + chunk_size2,
-        "chunk_list 3 object offset check failed"
-    );
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Start(chunk_size1 + chunk_size2 + 1))
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Start(chunk_size1 + chunk_size2 + chunk_size3))
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Start(
-            chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4,
-        ))
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Start(
-            chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5 - 1,
-        ))
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Start(
-            chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5,
-        ))
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Start(
-            chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5 + 123456789,
-        ))
-        .expect_err("unknown offset for chunk[>=2]");
-
-    var_mix_chunk_list
-        .get_chunk_offset_by_index(3)
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_offset_by_index(4)
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_offset_by_index(5)
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_offset_by_index(123456)
-        .expect_err("unknown offset for chunk[>=2]");
-
-    let chunk_offset = rng.random_range(1..chunk_size2 - 1);
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::Start(chunk_size1 + chunk_offset))
-            .expect("get chunk index by offset failed"),
-        (1, chunk_offset),
-        "chunk_list 1.x object index check failed"
-    );
-
-    // from end
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(-1))
-            .expect("get chunk index by offset 0 failed"),
-        (4, chunk_size5 - 1),
-        "chunk_list -1 object index check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(-((chunk_size5) as i64) - 1))
-            .expect("get chunk index by offset failed"),
-        (3, chunk_size4 - 1),
-        "chunk_list 3 object index check failed"
-    );
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(-((chunk_size4 + chunk_size5) as i64)))
-            .expect("get chunk index by offset failed"),
-        (3, 0),
-        "chunk_list 3 object index check failed"
-    );
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(-((chunk_size4 + chunk_size5) as i64) - 1))
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(
-            -((chunk_size3 + chunk_size4 + chunk_size5) as i64) - 1,
-        ))
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(
-            -((chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5) as i64) - 1,
-        ))
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(
-            -((chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5) as i64) - 1,
-        ))
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(
-            -((chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5) as i64),
-        ))
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(
-            -((chunk_size1 + chunk_size2 + chunk_size3 + chunk_size4 + chunk_size5) as i64)
-                - 123456789,
-        ))
-        .expect_err("unknown offset for chunk[>=2]");
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::End(1))
-        .expect_err("should fail for out of range");
-
-    let chunk_offset = rng.random_range(2..(chunk_size5 as i64) - 1);
-    assert_eq!(
-        var_mix_chunk_list
-            .get_chunk_index_by_offset(SeekFrom::End(-(chunk_size5 as i64) - chunk_offset))
-            .expect("get chunk index by offset failed"),
-        (3, (chunk_size4 - chunk_offset as u64)),
-        "chunk_list 3.x object index check failed"
-    );
-
-    var_mix_chunk_list
-        .get_chunk_index_by_offset(SeekFrom::Current(500))
-        .expect_err("get chunk index by offset 500 should fail for not supported");
-
-    info!("ndn_local_chunklist_basic_var_no_mix_len test end.");
-}
-
-#[tokio::test]
-async fn ndn_local_chunklist_ok() {
-    init_logging("ndn_local_chunklist_ok", false);
-
-    info!("ndn_local_chunklist_ok test start...");
+    info!("ndn_local_file_chunklist_rechunk_split test start...");
     init_obj_array_storage_factory().await;
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
 
-    let chunks = generate_random_chunk_list(5, None);
+    let chunks = generate_random_chunk_list(10, None);
     let total_size: u64 = chunks.iter().map(|c| c.1.len() as u64).sum();
+
+    let (chunk0_id, chunk0_data) = chunks.get(0).unwrap();
+    write_chunk(ndn_mgr_id.as_str(), chunk0_id, chunk0_data.as_slice()).await;
+
+    // File(chunk0)
+    let file0 = FileObject::new(
+        "ndn_local_file_chunklist_rechunk_split_v0".to_string(),
+        chunk0_data.len() as u64,
+        chunk0_id.to_string(),
+    );
+
+    let (file0_id, file0_str) = file0.gen_obj_id();
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file0_id, file0_str.as_str())
+        .await
+        .expect("put file0 to ndn-mgr failed");
+
+    info!("file0_id: {}", file0_id.to_string());
 
     let mut chunk_list_builder =
         ChunkListBuilder::new(HashMethod::Sha256, None).with_total_size(total_size);
 
-    for (chunk_id, chunk_data) in chunks.iter() {
-        write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
-        chunk_list_builder
-            .append(chunk_id.clone())
-            .expect("append chunk to chunk_arr failed");
-    }
-
+    chunk_list_builder
+        .append(chunk0_id.clone())
+        .expect("append chunk to chunk_arr failed");
     let chunk_list = chunk_list_builder
         .build()
         .await
@@ -1301,98 +226,319 @@ async fn ndn_local_chunklist_ok() {
     )
     .await
     .expect("put chunk_list to ndn-mgr failed");
-    info!("chunk_list_id: {}", chunk_list_id.to_string());
 
-    let chunk_list_json = NamedDataMgr::get_object(Some(ndn_mgr_id.as_str()), &chunk_list_id, None)
-        .await
-        .expect("open chunk list reader from ndn-mgr failed.");
+    // File([chunk0]) -> file0
+    let mut file1 = FileObject::new(
+        "ndn_local_file_chunklist_rechunk_split_v1".to_string(),
+        chunk0_data.len() as u64,
+        chunk_list_id.to_string(),
+    );
 
-    let got_chunk_list = ChunkListBuilder::open(chunk_list_json)
+    file1.links = Some(vec![LinkData::SameAs(file0_id.clone())]);
+
+    let (file1_id, file1_str) = file1.gen_obj_id();
+    info!("file1_id: {}", file1_id.to_string());
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file1_id, file1_str.as_str())
         .await
-        .expect("open chunk list from ndn-mgr failed")
+        .expect("put file1 to ndn-mgr failed");
+
+    let file1_content_url = format!("http://{}/ndn/{}/content", ndn_host, file1_id.to_string());
+    let (mut reader, resp_headers) = ndn_client
+        .open_chunk_reader_by_url(file1_content_url.as_str(), None, None)
+        .await
+        .expect("open file1 content reader failed");
+
+    let content_len = resp_headers
+        .obj_size
+        .expect("content-length should exist in http-headers");
+    assert_eq!(
+        content_len,
+        chunk0_data.len() as u64,
+        "content-length in http-header should equal with read_len"
+    );
+    assert_eq!(
+        resp_headers.obj_id,
+        Some(chunk_list_id),
+        "obj-id in http-header should equal with chunk-id"
+    );
+    assert!(
+        resp_headers.path_obj.is_none(),
+        "path-obj should be None for o-link"
+    );
+    assert_eq!(
+        resp_headers.root_obj_id,
+        Some(file1_id.clone()),
+        "root-obj-id in http-header should equal with file-id"
+    );
+
+    let mut buffer = vec![0u8, 0];
+    let len = reader
+        .read_to_end(&mut buffer)
+        .await
+        .expect("read chunk failed");
+    assert_eq!(
+        len as u64, content_len,
+        "length of data in http-body should equal with content-length"
+    );
+    assert_eq!(
+        len,
+        buffer.len(),
+        "length of read data should equal with content-length"
+    );
+    assert_eq!(
+        buffer.as_slice(),
+        chunk0_data.as_slice(),
+        "chunk range mismatch"
+    );
+
+    // File([chunk0[0], chunk0[1], chunk0[2]]) -> file0
+    let part0_len = rand::rng().random_range(1u64..chunk0_data.len() as u64 - 5);
+    let part1_len = rand::rng().random_range(1u64..chunk0_data.len() as u64 - part0_len - 2);
+    let part2_len = chunk0_data.len() as u64 - part0_len - part1_len;
+    let part_lens = vec![
+        (0, part0_len),
+        (part0_len, part1_len),
+        (part0_len + part1_len, part2_len),
+    ];
+    let part_chunks = part_lens
+        .iter()
+        .map(|(start_pos, len)| {
+            let hasher = ChunkHasher::new(None).expect("hash failed.");
+            let hash = hasher.calc_from_bytes(
+                &chunk0_data.as_slice()[*start_pos as usize..(*start_pos + *len) as usize],
+            );
+            let chunk_id = ChunkId::mix_from_hash_result(*len, &hash, HashMethod::Sha256);
+            info!("chunk_id: {}", chunk_id.to_string());
+            chunk_id
+        })
+        .collect::<Vec<_>>();
+    let mut chunk_list_builder =
+        ChunkListBuilder::new(HashMethod::Sha256, None).with_total_size(chunk0_data.len() as u64);
+
+    for (idx, chunk_id) in part_chunks.iter().enumerate() {
+        chunk_list_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+    let chunk_list = chunk_list_builder
         .build()
         .await
-        .expect("build chunk list from ndn-mgr failed");
-
-    let (got_chunk_list_id, got_chunk_list_str) = got_chunk_list.calc_obj_id();
-    assert_eq!(
-        got_chunk_list_id, chunk_list_id,
-        "chunk_list id check failed"
-    );
-    assert_eq!(
-        got_chunk_list_str, chunk_list_str,
-        "chunk_list string check failed"
-    );
-
-    assert_eq!(
-        got_chunk_list.get_total_size(),
-        total_size,
-        "chunk_list total size check failed"
-    );
-    assert!(
-        !got_chunk_list.is_fixed_size_chunk_list(),
-        "chunk_list fix size check failed"
-    );
-    assert_eq!(
-        got_chunk_list.get_len(),
-        chunks.len(),
-        "chunk_list length check failed"
+        .expect("build chunk list failed");
+    let (chunk_list_id, chunk_list_str) = chunk_list.calc_obj_id();
+    NamedDataMgr::put_object(
+        Some(ndn_mgr_id.as_str()),
+        &chunk_list_id,
+        chunk_list_str.as_str(),
+    )
+    .await
+    .expect("put chunk_list to ndn-mgr failed");
+    let mut file2 = FileObject::new(
+        "ndn_local_file_chunklist_rechunk_split_v2".to_string(),
+        chunk0_data.len() as u64,
+        chunk_list_id.to_string(),
     );
 
-    for idx in 0..got_chunk_list.get_len() {
-        assert_eq!(
-            got_chunk_list.get_chunk(idx).expect("get chunk failed"),
-            chunks.get(idx).map(|(id, _)| id.clone()),
-            "chunk_list {} object check failed",
-            idx
-        );
+    file2.links = Some(vec![LinkData::SameAs(file0_id.clone())]);
 
-        let (mut chunk_reader, chunk_size) = NamedDataMgr::open_chunk_reader(
-            Some(ndn_mgr_id.as_str()),
-            &got_chunk_list.get_chunk(idx).unwrap().unwrap(),
-            SeekFrom::Start(0),
-            false,
-        )
+    let (file2_id, file2_str) = file2.gen_obj_id();
+    info!("file2_id: {}", file2_id.to_string());
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file2_id, file2_str.as_str())
         .await
-        .expect("open chunk list reader from ndn-mgr failed.");
-        assert_eq!(
-            chunk_size,
-            chunks.get(idx).unwrap().1.len() as u64,
-            "chunk_list first object size check failed"
-        );
+        .expect("put file2 to ndn-mgr failed");
 
-        let mut buffer = vec![0u8; chunk_size as usize];
-        chunk_reader
-            .read_exact(&mut buffer)
-            .await
-            .expect("read chunk list from ndn-mgr failed");
-        assert_eq!(
-            buffer,
-            chunks.get(idx).unwrap().1,
-            "chunk_list first object content check failed"
-        );
-    }
+    let file2_content_url = format!("http://{}/ndn/{}/content", ndn_host, file2_id.to_string());
+    let (mut reader, resp_headers) = ndn_client
+        .open_chunk_reader_by_url(file2_content_url.as_str(), None, None)
+        .await
+        .expect("open file2 content reader failed");
+
+    let content_len = resp_headers
+        .obj_size
+        .expect("content-length should exist in http-headers");
+    assert_eq!(
+        content_len,
+        chunk0_data.len() as u64,
+        "content-length in http-header should equal with read_len"
+    );
+    assert_eq!(
+        resp_headers.obj_id,
+        Some(chunk_list_id.clone()),
+        "obj-id in http-header should equal with chunk-id"
+    );
     assert!(
-        got_chunk_list
-            .get_chunk(chunks.len())
-            .expect("should Ok(None) for larger index")
-            .is_none(),
-        "chunk_list sixth object check failed"
+        resp_headers.path_obj.is_none(),
+        "path-obj should be None for o-link"
+    );
+    assert_eq!(
+        resp_headers.root_obj_id,
+        Some(file2_id.clone()),
+        "root-obj-id in http-header should equal with file-id"
+    );
+
+    let mut buffer = vec![0u8, 0];
+    let len = reader
+        .read_to_end(&mut buffer)
+        .await
+        .expect("read chunk failed");
+    assert_eq!(
+        len as u64, content_len,
+        "length of data in http-body should equal with content-length"
+    );
+    assert_eq!(
+        len,
+        buffer.len(),
+        "length of read data should equal with content-length"
+    );
+    assert_eq!(
+        buffer.as_slice(),
+        chunk0_data.as_slice(),
+        "chunk range mismatch"
+    );
+
+    // File([chunk0[0], chunk0[1], chunk0[2]]) -> file1
+    let mut file3 = FileObject::new(
+        "ndn_local_file_chunklist_rechunk_split_v3".to_string(),
+        chunk0_data.len() as u64,
+        chunk_list_id.to_string(),
+    );
+
+    file3.links = Some(vec![LinkData::SameAs(file1_id.clone())]);
+
+    let (file3_id, file3_str) = file3.gen_obj_id();
+    info!("file3_id: {}", file3_id.to_string());
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file3_id, file3_str.as_str())
+        .await
+        .expect("put file3 to ndn-mgr failed");
+
+    let file3_content_url = format!("http://{}/ndn/{}/content", ndn_host, file3_id.to_string());
+    let (mut reader, resp_headers) = ndn_client
+        .open_chunk_reader_by_url(file3_content_url.as_str(), None, None)
+        .await
+        .expect("open file3 content reader failed");
+
+    let content_len = resp_headers
+        .obj_size
+        .expect("content-length should exist in http-headers");
+    assert_eq!(
+        content_len,
+        chunk0_data.len() as u64,
+        "content-length in http-header should equal with read_len"
+    );
+    assert_eq!(
+        resp_headers.obj_id,
+        Some(chunk_list_id.clone()),
+        "obj-id in http-header should equal with chunk-id"
+    );
+    assert!(
+        resp_headers.path_obj.is_none(),
+        "path-obj should be None for o-link"
+    );
+    assert_eq!(
+        resp_headers.root_obj_id,
+        Some(file3_id.clone()),
+        "root-obj-id in http-header should equal with file-id"
+    );
+
+    let mut buffer = vec![0u8, 0];
+    let len = reader
+        .read_to_end(&mut buffer)
+        .await
+        .expect("read chunk failed");
+    assert_eq!(
+        len as u64, content_len,
+        "length of data in http-body should equal with content-length"
+    );
+    assert_eq!(
+        len,
+        buffer.len(),
+        "length of read data should equal with content-length"
+    );
+    assert_eq!(
+        buffer.as_slice(),
+        chunk0_data.as_slice(),
+        "chunk range mismatch"
+    );
+
+    // File([chunk0[0], chunk0[1], chunk0[2]]) -> file0 & file1
+    let mut file4 = FileObject::new(
+        "ndn_local_file_chunklist_rechunk_split_v4".to_string(),
+        chunk0_data.len() as u64,
+        chunk_list_id.to_string(),
+    );
+
+    file4.links = Some(vec![
+        LinkData::SameAs(file1_id.clone()),
+        LinkData::SameAs(file0_id.clone()),
+    ]);
+
+    let (file4_id, file4_str) = file4.gen_obj_id();
+    info!("file4_id: {}", file4_id.to_string());
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file4_id, file4_str.as_str())
+        .await
+        .expect("put file4 to ndn-mgr failed");
+
+    let file4_content_url = format!("http://{}/ndn/{}/content", ndn_host, file4_id.to_string());
+    let (mut reader, resp_headers) = ndn_client
+        .open_chunk_reader_by_url(file4_content_url.as_str(), None, None)
+        .await
+        .expect("open file4 content reader failed");
+
+    let content_len = resp_headers
+        .obj_size
+        .expect("content-length should exist in http-headers");
+    assert_eq!(
+        content_len,
+        chunk0_data.len() as u64,
+        "content-length in http-header should equal with read_len"
+    );
+    assert_eq!(
+        resp_headers.obj_id,
+        Some(chunk_list_id),
+        "obj-id in http-header should equal with chunk-id"
+    );
+    assert!(
+        resp_headers.path_obj.is_none(),
+        "path-obj should be None for o-link"
+    );
+    assert_eq!(
+        resp_headers.root_obj_id,
+        Some(file4_id.clone()),
+        "root-obj-id in http-header should equal with file-id"
+    );
+
+    let mut buffer = vec![0u8, 0];
+    let len = reader
+        .read_to_end(&mut buffer)
+        .await
+        .expect("read chunk failed");
+    assert_eq!(
+        len as u64, content_len,
+        "length of data in http-body should equal with content-length"
+    );
+    assert_eq!(
+        len,
+        buffer.len(),
+        "length of read data should equal with content-length"
+    );
+    assert_eq!(
+        buffer.as_slice(),
+        chunk0_data.as_slice(),
+        "chunk range mismatch"
     );
 
     info!("ndn_local_chunklist_ok test end.");
 }
 
 #[tokio::test]
-async fn ndn_local_chunklist_not_found() {
-    init_logging("ndn_local_chunklist_not_found", false);
+async fn ndn_local_file_chunklist_rechunk_combine() {
+    init_logging("ndn_local_file_chunklist_rechunk_combine", false);
 
-    info!("ndn_local_chunklist_not_found test start...");
-    let storage_dir = init_obj_array_storage_factory().await;
+    info!("ndn_local_file_chunklist_rechunk_combine test start...");
+    init_obj_array_storage_factory().await;
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
 
-    let chunks = generate_random_chunk_list(5, None);
+    let chunks = generate_random_chunk_list(10, None);
     let total_size: u64 = chunks.iter().map(|c| c.1.len() as u64).sum();
 
     let mut chunk_list_builder =
@@ -1418,211 +564,665 @@ async fn ndn_local_chunklist_not_found() {
     )
     .await
     .expect("put chunk_list to ndn-mgr failed");
-    info!("chunk_list_id: {}", chunk_list_id.to_string());
 
-    // delete the chunk list storage file
-    let remove_json_ret = std::fs::remove_file(
-        storage_dir.join(
-            chunk_list
-                .deref()
-                .get_obj_id()
-                .expect("should calc obj-array id")
-                .to_base32()
-                + ".json",
-        ),
-    );
-    let remove_arrow_ret = std::fs::remove_file(
-        storage_dir.join(
-            chunk_list
-                .deref()
-                .get_obj_id()
-                .expect("should calc obj-array id")
-                .to_base32()
-                + ".arrow",
-        ),
+    // File([chunk0, chunk1, chunk2, chunk3, chunk4 ... chunk9])
+    let mut file0 = FileObject::new(
+        "ndn_local_file_chunklist_rechunk_combine_v0".to_string(),
+        total_size,
+        chunk_list_id.to_string(),
     );
 
+    let (file0_id, file0_str) = file0.gen_obj_id();
+    info!("file0_id: {}", file0_id.to_string());
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file0_id, file0_str.as_str())
+        .await
+        .expect("put file0 to ndn-mgr failed");
+
+    let combine_chunk_data = chunks
+        .iter()
+        .map(|c| c.1.as_slice())
+        .collect::<Vec<_>>()
+        .concat();
+    let hasher = ChunkHasher::new(None).expect("hash failed.");
+    let hash = hasher.calc_from_bytes(combine_chunk_data.as_slice());
+    let combine_chunk_id =
+        ChunkId::mix_from_hash_result(combine_chunk_data.len() as u64, &hash, HashMethod::Sha256);
+    info!("combine_chunk_id: {}", combine_chunk_id.to_string());
+
+    // File(chunk0 + chunk1 + ... + chunk9) -> file0
+    let mut file1 = FileObject::new(
+        "ndn_local_file_chunklist_rechunk_combine_v0".to_string(),
+        combine_chunk_data.len() as u64,
+        combine_chunk_id.to_string(),
+    );
+
+    file1.links = Some(vec![LinkData::SameAs(file0_id.clone())]);
+
+    let (file1_id, file1_str) = file1.gen_obj_id();
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file1_id, file1_str.as_str())
+        .await
+        .expect("put file1 to ndn-mgr failed");
+
+    info!("file1_id: {}", file1_id.to_string());
+
+    let file1_content_url = format!("http://{}/ndn/{}/content", ndn_host, file1_id.to_string());
+    let (mut reader, resp_headers) = ndn_client
+        .open_chunk_reader_by_url(file1_content_url.as_str(), None, None)
+        .await
+        .expect("open file1 content reader failed");
+
+    let content_len = resp_headers
+        .obj_size
+        .expect("content-length should exist in http-headers");
+    assert_eq!(
+        content_len,
+        combine_chunk_data.len() as u64,
+        "content-length in http-header should equal with read_len"
+    );
+    assert_eq!(
+        resp_headers.obj_id,
+        Some(combine_chunk_id.to_obj_id()),
+        "obj-id in http-header should equal with chunk-id"
+    );
     assert!(
-        remove_json_ret.is_ok() || remove_arrow_ret.is_ok(),
-        "remove chunk list storage file failed"
+        resp_headers.path_obj.is_none(),
+        "path-obj should be None for o-link"
+    );
+    assert_eq!(
+        resp_headers.root_obj_id,
+        Some(file1_id.clone()),
+        "root-obj-id in http-header should equal with file-id"
     );
 
-    info!(
-        "ndn_local_chunklist_not_found chunk_list_id: {:?}",
-        chunk_list_id
+    let mut buffer = vec![0u8, 0];
+    let len = reader
+        .read_to_end(&mut buffer)
+        .await
+        .expect("read chunk failed");
+    assert_eq!(
+        len as u64, content_len,
+        "length of data in http-body should equal with content-length"
+    );
+    assert_eq!(
+        len,
+        buffer.len(),
+        "length of read data should equal with content-length"
+    );
+    assert_eq!(
+        buffer.as_slice(),
+        combine_chunk_data.as_slice(),
+        "chunk range mismatch"
     );
 
-    let chunk_list_json = NamedDataMgr::get_object(Some(ndn_mgr_id.as_str()), &chunk_list_id, None)
-        .await
-        .expect("open chunk list reader from ndn-mgr failed.");
-
-    ChunkListBuilder::open(chunk_list_json)
-        .await
-        .map(|_| ())
-        .expect_err(
-            "build chunk list from ndn-mgr should failed for object-array has been deleted",
-        );
-
-    info!("ndn_local_chunklist_not_found test end.");
-}
-
-#[tokio::test]
-async fn ndn_local_chunklist_verify_failed() {
-    init_logging("ndn_local_chunklist_verify_failed", false);
-
-    info!("ndn_local_chunklist_verify_failed test start...");
-    let storage_dir = init_obj_array_storage_factory().await;
-    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
-
-    let verifier = ObjectArrayProofVerifier::new(HashMethod::Sha256);
-
-    let chunks = generate_random_chunk_list(5, None);
-    let total_size: u64 = chunks.iter().map(|c| c.1.len() as u64).sum();
-
+    // File([chunk0 + chunk1 + ... + chunk9]) -> file0
     let mut chunk_list_builder =
         ChunkListBuilder::new(HashMethod::Sha256, None).with_total_size(total_size);
 
-    for (chunk_id, chunk_data) in chunks.iter() {
-        write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
-        chunk_list_builder
-            .append(chunk_id.clone())
-            .expect("append chunk to chunk_arr failed");
-    }
+    chunk_list_builder
+        .append(combine_chunk_id.clone())
+        .expect("append chunk to chunk_arr failed");
 
-    let mut chunk_list = chunk_list_builder
+    let combine_chunk_list = chunk_list_builder
         .build()
         .await
         .expect("build chunk list failed");
 
-    let (chunk_list_id, chunk_list_str) = chunk_list.calc_obj_id();
+    let (combine_chunk_list_id, combine_chunk_list_str) = combine_chunk_list.calc_obj_id();
     NamedDataMgr::put_object(
         Some(ndn_mgr_id.as_str()),
-        &chunk_list_id,
-        chunk_list_str.as_str(),
+        &combine_chunk_list_id,
+        combine_chunk_list_str.as_str(),
     )
     .await
     .expect("put chunk_list to ndn-mgr failed");
-    info!("chunk_list_id: {}", chunk_list_id.to_string());
 
-    let chunk_array_id = chunk_list
-        .deref()
-        .get_obj_id()
-        .expect("should calc obj-array id");
-
-    let (append_chunk_id, append_chunk_data) = generate_random_chunk(1024 * 1024);
-    let mut append_chunk_list_builder = ChunkListBuilder::from_chunk_list(&chunk_list)
-        .expect("create chunk-list builder for append failed");
-    append_chunk_list_builder
-        .append_with_size(append_chunk_id.clone(), append_chunk_data.len() as u64)
-        .expect("append chunk to chunk list failed");
-    let mut append_chunk_list = append_chunk_list_builder
-        .build()
-        .await
-        .expect("build append chunk list failed");
-    let (append_chunk_list_id, append_chunk_list_str) = append_chunk_list.calc_obj_id();
-    let append_chunk_array_id = append_chunk_list
-        .deref()
-        .get_obj_id()
-        .expect("id of ObjectArray for append chunk list should exist");
-    // instead the chunk list storage file
-    let remove_json_ret =
-        std::fs::remove_file(storage_dir.join(chunk_array_id.to_base32() + ".json"));
-    let copy_json_ret = std::fs::copy(
-        storage_dir.join(append_chunk_array_id.to_base32() + ".json"),
-        storage_dir.join(chunk_array_id.to_base32() + ".json"),
-    );
-    let remove_arrow_ret =
-        std::fs::remove_file(storage_dir.join(chunk_array_id.to_base32() + ".arrow"));
-    let copy_arrow_ret = std::fs::copy(
-        storage_dir.join(append_chunk_array_id.to_base32() + ".arrow"),
-        storage_dir.join(chunk_array_id.to_base32() + ".arrow"),
+    let mut file2 = FileObject::new(
+        "ndn_local_file_chunklist_rechunk_combine_v2".to_string(),
+        combine_chunk_data.len() as u64,
+        combine_chunk_list_id.to_string(),
     );
 
-    assert!(
-        copy_json_ret.is_ok()
-            || copy_arrow_ret.is_ok(),
-        "instead append chunk list storage file failed, remove-json: {:?}, copy-json: {:?}, remove-arrow: {:?}, copy-arrow: {:?}", remove_json_ret, copy_json_ret, remove_arrow_ret, copy_arrow_ret
-    );
+    file2.links = Some(vec![LinkData::SameAs(file0_id.clone())]);
 
-    let chunk_list_json = NamedDataMgr::get_object(Some(ndn_mgr_id.as_str()), &chunk_list_id, None)
+    let (file2_id, file2_str) = file2.gen_obj_id();
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file2_id, file2_str.as_str())
         .await
-        .expect("open chunk list reader from ndn-mgr failed.");
+        .expect("put file2 to ndn-mgr failed");
 
-    let mut fake_chunk_list = ChunkListBuilder::open(chunk_list_json)
+    info!("file2_id: {}", file2_id.to_string());
+
+    let file2_content_url = format!("http://{}/ndn/{}/content", ndn_host, file2_id.to_string());
+    let (mut reader, resp_headers) = ndn_client
+        .open_chunk_reader_by_url(file2_content_url.as_str(), None, None)
         .await
-        .expect("build chunk list from ndn-mgr should success for object-array has been replaced")
-        .build()
-        .await
-        .expect("build chunk list from ndn-mgr failed");
+        .expect("open file1 content reader failed");
+
+    let content_len = resp_headers
+        .obj_size
+        .expect("content-length should exist in http-headers");
     assert_eq!(
-        fake_chunk_list.deref().get_obj_id().unwrap(),
-        append_chunk_array_id,
-        "chunk list id check failed after replace"
+        content_len,
+        combine_chunk_data.len() as u64,
+        "content-length in http-header should equal with read_len"
+    );
+    assert_eq!(
+        resp_headers.obj_id,
+        Some(combine_chunk_list_id.clone()),
+        "obj-id in http-header should equal with chunk-id"
+    );
+    assert!(
+        resp_headers.path_obj.is_none(),
+        "path-obj should be None for o-link"
+    );
+    assert_eq!(
+        resp_headers.root_obj_id,
+        Some(file2_id.clone()),
+        "root-obj-id in http-header should equal with file-id"
     );
 
-    for i in 0..chunk_list.get_len() {
-        let fake_chunk_id = fake_chunk_list
-            .get_chunk(i)
-            .expect("get chunk failed")
-            .expect("chunk_list object check failed");
-        assert_eq!(
-            fake_chunk_id,
-            chunk_list.get_chunk(i).unwrap().unwrap(),
-            "chunk_list {} object check failed after replace",
-            i
-        );
+    let mut buffer = vec![0u8, 0];
+    let len = reader
+        .read_to_end(&mut buffer)
+        .await
+        .expect("read chunk failed");
+    assert_eq!(
+        len as u64, content_len,
+        "length of data in http-body should equal with content-length"
+    );
+    assert_eq!(
+        len,
+        buffer.len(),
+        "length of read data should equal with content-length"
+    );
+    assert_eq!(
+        buffer.as_slice(),
+        combine_chunk_data.as_slice(),
+        "chunk range mismatch"
+    );
 
-        let item = chunk_list
-            .get_object_with_proof(i)
-            .await
-            .expect("get_object_with_proof should fail for chunk_list has been replaced")
-            .expect("get_object_with_proof should return error");
-        let is_ok = verifier
-            .verify(&chunk_array_id, &fake_chunk_id.to_obj_id(), &item.proof)
-            .expect("should success for chunk_list has been replaced");
-        assert!(is_ok, "should success for item is not in fake chunk_list");
-        let fake_item = fake_chunk_list
-            .get_object_with_proof(i)
-            .await
-            .expect("get_object_with_proof should success for chunk_list has been replaced")
-            .expect("get_object_with_proof should return object");
-        let is_ok = verifier
-            .verify(
-                &append_chunk_array_id,
-                &fake_chunk_id.to_obj_id(),
-                &fake_item.proof,
-            )
-            .expect("should success for chunk_list has been replaced");
-        assert!(is_ok, "should success for item is in fake chunk_list");
+    info!("ndn_local_file_chunklist_rechunk_combine test end.");
+}
+
+#[tokio::test]
+async fn ndn_local_file_chunklist_delta() {
+    init_logging("ndn_local_file_chunklist_delta", false);
+
+    info!("ndn_local_file_chunklist_delta test start...");
+    init_obj_array_storage_factory().await;
+    let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
+    let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
+
+    let chunks_0_3 = generate_random_chunk_list(3, None);
+    let chunks_3_6 = generate_random_chunk_list(3, None);
+    let chunks_6_9 = generate_random_chunk_list(3, None);
+    let chunks_9_12 = generate_random_chunk_list(3, None);
+
+    // File0(chunks_3_6.concat())
+    let combine_chunks_3_6 = chunks_3_6
+        .iter()
+        .map(|c| c.1.as_slice())
+        .collect::<Vec<_>>()
+        .concat();
+
+    let hasher = ChunkHasher::new(None).expect("hash failed.");
+    let hash = hasher.calc_from_bytes(combine_chunks_3_6.as_slice());
+    let combine_chunk_3_6_id =
+        ChunkId::mix_from_hash_result(combine_chunks_3_6.len() as u64, &hash, HashMethod::Sha256);
+
+    write_chunk(
+        ndn_mgr_id.as_str(),
+        &combine_chunk_3_6_id,
+        combine_chunks_3_6.as_slice(),
+    )
+    .await;
+
+    let mut file0 = FileObject::new(
+        "ndn_local_file_chunklist_delta_v0".to_string(),
+        combine_chunks_3_6.len() as u64,
+        combine_chunk_3_6_id.to_string(),
+    );
+
+    let (file0_id, file0_str) = file0.gen_obj_id();
+    info!("file0_id: {}", file0_id.to_string());
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file0_id, file0_str.as_str())
+        .await
+        .expect("put file0 to ndn-mgr failed");
+
+    // File1(chunks_3_6) -> File0
+    let mut chunk_list_3_6_builder = ChunkListBuilder::new(HashMethod::Sha256, None)
+        .with_total_size(combine_chunks_3_6.len() as u64);
+    for (chunk_id, chunk_data) in chunks_3_6.iter() {
+        chunk_list_3_6_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+    let chunk_list_3_6 = chunk_list_3_6_builder
+        .build()
+        .await
+        .expect("build chunk list failed");
+    let (chunk_list_3_6_id, chunk_list_3_6_str) = chunk_list_3_6.calc_obj_id();
+    NamedDataMgr::put_object(
+        Some(ndn_mgr_id.as_str()),
+        &chunk_list_3_6_id,
+        chunk_list_3_6_str.as_str(),
+    )
+    .await
+    .expect("put chunk_list to ndn-mgr failed");
+
+    let mut file1 = FileObject::new(
+        "ndn_local_file_chunklist_delta_v1".to_string(),
+        combine_chunks_3_6.len() as u64,
+        chunk_list_3_6_id.to_string(),
+    );
+
+    file1.links = Some(vec![LinkData::SameAs(file0_id.clone())]);
+
+    let (file1_id, file1_str) = file1.gen_obj_id();
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file1_id, file1_str.as_str())
+        .await
+        .expect("put file1 to ndn-mgr failed");
+
+    info!("file1_id: {}", file1_id.to_string());
+
+    let file1_content_url = format!("http://{}/ndn/{}/content", ndn_host, file1_id.to_string());
+    let (mut reader, resp_headers) = ndn_client
+        .open_chunk_reader_by_url(file1_content_url.as_str(), None, None)
+        .await
+        .expect("open file1 content reader failed");
+
+    let content_len = resp_headers
+        .obj_size
+        .expect("content-length should exist in http-headers");
+    assert_eq!(
+        content_len,
+        combine_chunks_3_6.len() as u64,
+        "content-length in http-header should equal with read_len"
+    );
+    assert_eq!(
+        resp_headers.obj_id,
+        Some(chunk_list_3_6_id.clone()),
+        "obj-id in http-header should equal with chunk-id"
+    );
+    assert!(
+        resp_headers.path_obj.is_none(),
+        "path-obj should be None for o-link"
+    );
+    assert_eq!(
+        resp_headers.root_obj_id,
+        Some(file1_id.clone()),
+        "root-obj-id in http-header should equal with file-id"
+    );
+
+    let mut buffer = vec![0u8, 0];
+    let len = reader
+        .read_to_end(&mut buffer)
+        .await
+        .expect("read chunk failed");
+    assert_eq!(
+        len as u64, content_len,
+        "length of data in http-body should equal with content-length"
+    );
+    assert_eq!(
+        len,
+        buffer.len(),
+        "length of read data should equal with content-length"
+    );
+    assert_eq!(
+        buffer.as_slice(),
+        combine_chunks_3_6.as_slice(),
+        "chunk range mismatch"
+    );
+
+    // File2([...chunks_0_3, ...chunks_3_6]) // insert head
+    let file2_len = chunks_0_3.iter().map(|(_, d)| d.len() as u64).sum::<u64>()
+        + chunks_3_6.iter().map(|(_, d)| d.len() as u64).sum::<u64>();
+    let mut chunk_list_0_6_builder =
+        ChunkListBuilder::new(HashMethod::Sha256, None).with_total_size(file2_len);
+    for (chunk_id, chunk_data) in chunks_0_3.iter() {
+        write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
+        chunk_list_0_6_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+    for (chunk_id, chunk_data) in chunks_3_6.iter() {
+        chunk_list_0_6_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+    let chunk_list_0_6 = chunk_list_0_6_builder
+        .build()
+        .await
+        .expect("build chunk list failed");
+    let (chunk_list_0_6_id, chunk_list_0_6_str) = chunk_list_0_6.calc_obj_id();
+    NamedDataMgr::put_object(
+        Some(ndn_mgr_id.as_str()),
+        &chunk_list_0_6_id,
+        chunk_list_0_6_str.as_str(),
+    )
+    .await
+    .expect("put chunk_list to ndn-mgr failed");
+
+    let mut file2 = FileObject::new(
+        "ndn_local_file_chunklist_delta_v2".to_string(),
+        file2_len,
+        chunk_list_0_6_id.to_string(),
+    );
+
+    let (file2_id, file2_str) = file2.gen_obj_id();
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file2_id, file2_str.as_str())
+        .await
+        .expect("put file2 to ndn-mgr failed");
+
+    info!("file2_id: {}", file2_id.to_string());
+
+    let file2_content_url = format!("http://{}/ndn/{}/content", ndn_host, file2_id.to_string());
+    let (mut reader, resp_headers) = ndn_client
+        .open_chunk_reader_by_url(file2_content_url.as_str(), None, None)
+        .await
+        .expect("open file1 content reader failed");
+
+    let content_len = resp_headers
+        .obj_size
+        .expect("content-length should exist in http-headers");
+    assert_eq!(
+        content_len, file2_len,
+        "content-length in http-header should equal with read_len"
+    );
+    assert_eq!(
+        resp_headers.obj_id,
+        Some(chunk_list_0_6_id.clone()),
+        "obj-id in http-header should equal with chunk-id"
+    );
+    assert!(
+        resp_headers.path_obj.is_none(),
+        "path-obj should be None for o-link"
+    );
+    assert_eq!(
+        resp_headers.root_obj_id,
+        Some(file2_id.clone()),
+        "root-obj-id in http-header should equal with file-id"
+    );
+
+    let mut buffer = vec![0u8, 0];
+    let len = reader
+        .read_to_end(&mut buffer)
+        .await
+        .expect("read chunk failed");
+    assert_eq!(
+        len as u64, content_len,
+        "length of data in http-body should equal with content-length"
+    );
+    assert_eq!(
+        len,
+        buffer.len(),
+        "length of read data should equal with content-length"
+    );
+
+    let mut pos = 0;
+    for chunk_data in [
+        chunks_0_3
+            .iter()
+            .map(|(_, d)| d.as_slice())
+            .collect::<Vec<_>>(),
+        chunks_3_6
+            .iter()
+            .map(|(_, d)| d.as_slice())
+            .collect::<Vec<_>>(),
+    ]
+    .concat()
+    {
+        let chunk_len = chunk_data.len() as u64;
+        assert_eq!(
+            &buffer.as_slice()[pos as usize..(pos + chunk_len as u64) as usize],
+            chunk_data,
+            "chunk range mismatch for chunk_id",
+        );
+        pos += chunk_len;
     }
 
-    let fake_chunk_id = fake_chunk_list
-        .get_chunk(chunk_list.get_len())
-        .expect("get chunk failed")
-        .expect("chunk_list object check failed");
-    let fake_item = fake_chunk_list
-        .get_object_with_proof(chunk_list.get_len())
+    // File3([...chunks_0_3, ...chunks_3_6, ...chunks_9_12]) // insert tail
+    let file3_len = chunks_0_3.iter().map(|(_, d)| d.len() as u64).sum::<u64>()
+        + chunks_3_6.iter().map(|(_, d)| d.len() as u64).sum::<u64>()
+        + chunks_9_12.iter().map(|(_, d)| d.len() as u64).sum::<u64>();
+    let mut chunk_list_0_6_9_12_builder =
+        ChunkListBuilder::new(HashMethod::Sha256, None).with_total_size(file3_len);
+    for (chunk_id, chunk_data) in chunks_0_3.iter() {
+        chunk_list_0_6_9_12_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+    for (chunk_id, chunk_data) in chunks_3_6.iter() {
+        chunk_list_0_6_9_12_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+    for (chunk_id, chunk_data) in chunks_9_12.iter() {
+        write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
+        chunk_list_0_6_9_12_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+    let chunk_list_0_6_9_12 = chunk_list_0_6_9_12_builder
+        .build()
         .await
-        .expect("get_object_with_proof should success for chunk_list has been replaced")
-        .expect("get_object_with_proof should return object");
-    let is_ok = verifier
-        .verify(
-            &append_chunk_array_id,
-            &fake_chunk_id.to_obj_id(),
-            &fake_item.proof,
-        )
-        .expect("should success for chunk_list has been replaced");
-    assert!(is_ok, "should success for item is in fake chunk_list");
+        .expect("build chunk list failed");
+    let (chunk_list_0_6_9_12_id, chunk_list_0_6_9_12_str) = chunk_list_0_6_9_12.calc_obj_id();
+    NamedDataMgr::put_object(
+        Some(ndn_mgr_id.as_str()),
+        &chunk_list_0_6_9_12_id,
+        chunk_list_0_6_9_12_str.as_str(),
+    )
+    .await
+    .expect("put chunk_list to ndn-mgr failed");
 
-    let is_ok = verifier
-        .verify(
-            &chunk_array_id,
-            &fake_chunk_id.to_obj_id(),
-            &fake_item.proof,
-        )
-        .expect("should success for chunk_list has been replaced");
-    assert!(!is_ok, "should fail for chunk_list has been replaced");
+    let mut file3 = FileObject::new(
+        "ndn_local_file_chunklist_delta_v3".to_string(),
+        file3_len,
+        chunk_list_0_6_9_12_id.to_string(),
+    );
 
-    info!("ndn_local_chunklist_verify_failed test end.");
+    let (file3_id, file3_str) = file3.gen_obj_id();
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file3_id, file3_str.as_str())
+        .await
+        .expect("put file3 to ndn-mgr failed");
+
+    info!("file3_id: {}", file3_id.to_string());
+
+    let file3_content_url = format!("http://{}/ndn/{}/content", ndn_host, file3_id.to_string());
+    let (mut reader, resp_headers) = ndn_client
+        .open_chunk_reader_by_url(file3_content_url.as_str(), None, None)
+        .await
+        .expect("open file3 content reader failed");
+
+    let content_len = resp_headers
+        .obj_size
+        .expect("content-length should exist in http-headers");
+    assert_eq!(
+        content_len, file3_len,
+        "content-length in http-header should equal with read_len"
+    );
+    assert_eq!(
+        resp_headers.obj_id,
+        Some(chunk_list_0_6_9_12_id.clone()),
+        "obj-id in http-header should equal with chunk-id"
+    );
+    assert!(
+        resp_headers.path_obj.is_none(),
+        "path-obj should be None for o-link"
+    );
+    assert_eq!(
+        resp_headers.root_obj_id,
+        Some(file3_id.clone()),
+        "root-obj-id in http-header should equal with file-id"
+    );
+
+    let mut buffer = vec![0u8, 0];
+    let len = reader
+        .read_to_end(&mut buffer)
+        .await
+        .expect("read chunk failed");
+    assert_eq!(
+        len as u64, content_len,
+        "length of data in http-body should equal with content-length"
+    );
+    assert_eq!(
+        len,
+        buffer.len(),
+        "length of read data should equal with content-length"
+    );
+
+    let mut pos = 0;
+    for chunk_data in [
+        chunks_0_3
+            .iter()
+            .map(|(_, d)| d.as_slice())
+            .collect::<Vec<_>>(),
+        chunks_3_6
+            .iter()
+            .map(|(_, d)| d.as_slice())
+            .collect::<Vec<_>>(),
+        chunks_9_12
+            .iter()
+            .map(|(_, d)| d.as_slice())
+            .collect::<Vec<_>>(),
+    ]
+    .concat()
+    {
+        let chunk_len = chunk_data.len() as u64;
+        assert_eq!(
+            &buffer.as_slice()[pos as usize..(pos + chunk_len as u64) as usize],
+            chunk_data,
+            "chunk range mismatch for chunk_id",
+        );
+        pos += chunk_len;
+    }
+
+    // File4([...chunks_0_3, ...chunks_3_6, ...chunks_6_9, ...chunks_9_12]) // insert middle
+    let file4_len = chunks_0_3.iter().map(|(_, d)| d.len() as u64).sum::<u64>()
+        + chunks_3_6.iter().map(|(_, d)| d.len() as u64).sum::<u64>()
+        + chunks_6_9.iter().map(|(_, d)| d.len() as u64).sum::<u64>()
+        + chunks_9_12.iter().map(|(_, d)| d.len() as u64).sum::<u64>();
+    let mut chunk_list_0_12_builder =
+        ChunkListBuilder::new(HashMethod::Sha256, None).with_total_size(file4_len);
+    for (chunk_id, chunk_data) in chunks_0_3.iter() {
+        chunk_list_0_12_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+    for (chunk_id, chunk_data) in chunks_3_6.iter() {
+        chunk_list_0_12_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+    for (chunk_id, chunk_data) in chunks_6_9.iter() {
+        write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
+        chunk_list_0_12_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+    for (chunk_id, chunk_data) in chunks_9_12.iter() {
+        chunk_list_0_12_builder
+            .append(chunk_id.clone())
+            .expect("append chunk to chunk_arr failed");
+    }
+    let chunk_list_0_12 = chunk_list_0_12_builder
+        .build()
+        .await
+        .expect("build chunk list failed");
+    let (chunk_list_0_12_id, chunk_list_0_12_str) = chunk_list_0_12.calc_obj_id();
+    NamedDataMgr::put_object(
+        Some(ndn_mgr_id.as_str()),
+        &chunk_list_0_12_id,
+        chunk_list_0_12_str.as_str(),
+    )
+    .await
+    .expect("put chunk_list to ndn-mgr failed");
+
+    let mut file4 = FileObject::new(
+        "ndn_local_file_chunklist_delta_v4".to_string(),
+        file4_len,
+        chunk_list_0_12_id.to_string(),
+    );
+
+    let (file4_id, file4_str) = file4.gen_obj_id();
+    NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file4_id, file4_str.as_str())
+        .await
+        .expect("put file4 to ndn-mgr failed");
+
+    info!("file3_id: {}", file3_id.to_string());
+
+    let file4_content_url = format!("http://{}/ndn/{}/content", ndn_host, file4_id.to_string());
+    let (mut reader, resp_headers) = ndn_client
+        .open_chunk_reader_by_url(file4_content_url.as_str(), None, None)
+        .await
+        .expect("open file3 content reader failed");
+
+    let content_len = resp_headers
+        .obj_size
+        .expect("content-length should exist in http-headers");
+    assert_eq!(
+        content_len, file4_len,
+        "content-length in http-header should equal with read_len"
+    );
+    assert_eq!(
+        resp_headers.obj_id,
+        Some(chunk_list_0_12_id.clone()),
+        "obj-id in http-header should equal with chunk-id"
+    );
+    assert!(
+        resp_headers.path_obj.is_none(),
+        "path-obj should be None for o-link"
+    );
+    assert_eq!(
+        resp_headers.root_obj_id,
+        Some(file4_id.clone()),
+        "root-obj-id in http-header should equal with file-id"
+    );
+
+    let mut buffer = vec![0u8, 0];
+    let len = reader
+        .read_to_end(&mut buffer)
+        .await
+        .expect("read chunk failed");
+    assert_eq!(
+        len as u64, content_len,
+        "length of data in http-body should equal with content-length"
+    );
+    assert_eq!(
+        len,
+        buffer.len(),
+        "length of read data should equal with content-length"
+    );
+
+    let mut pos = 0;
+    for chunk_data in [
+        chunks_0_3
+            .iter()
+            .map(|(_, d)| d.as_slice())
+            .collect::<Vec<_>>(),
+        chunks_3_6
+            .iter()
+            .map(|(_, d)| d.as_slice())
+            .collect::<Vec<_>>(),
+        chunks_6_9
+            .iter()
+            .map(|(_, d)| d.as_slice())
+            .collect::<Vec<_>>(),
+        chunks_9_12
+            .iter()
+            .map(|(_, d)| d.as_slice())
+            .collect::<Vec<_>>(),
+    ]
+    .concat()
+    {
+        let chunk_len = chunk_data.len() as u64;
+        assert_eq!(
+            &buffer.as_slice()[pos as usize..(pos + chunk_len as u64) as usize],
+            chunk_data,
+            "chunk range mismatch for chunk_id",
+        );
+        pos += chunk_len;
+    }
+
+    info!("ndn_local_file_chunklist_delta test end.");
 }
