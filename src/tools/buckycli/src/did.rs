@@ -2,7 +2,8 @@ use buckyos_kit::get_buckyos_system_etc_dir;
 use clap::ArgMatches;
 use jsonwebtoken::EncodingKey;
 use name_lib::{
-    generate_ed25519_key_pair, DIDDocumentTrait, DeviceConfig, NodeIdentityConfig, OwnerConfig, DID,
+    generate_ed25519_key_pair, DIDDocumentTrait, DeviceConfig, NodeIdentityConfig, OwnerConfig,
+    ZoneBootConfig, DID,
 };
 use ndn_lib::named_obj_to_jwt;
 use std::fs::File;
@@ -100,7 +101,18 @@ pub(crate) fn did_matches(matches: &ArgMatches) {
     }
 
     if let Some(_value) = matches.get_one::<String>("create_zoneboot") {
-        return did_create_zoneboot();
+        let values: Vec<&String> = matches
+            .get_many::<String>("create_zoneboot")
+            .expect("missing oods and sn_host ")
+            .collect();
+        let oods = values[0];
+        let sn_host = Some(values[1].to_string());
+        let oods: Vec<&str> = oods.split(",").collect();
+        let mut oods_vec = Vec::new();
+        for ood in oods {
+            oods_vec.push(ood.to_string());
+        }
+        return did_create_zoneboot(oods_vec, sn_host);
     }
     if let Some(_value) = matches.get_one::<String>("create_zone") {
         return did_create_zone();
@@ -229,8 +241,32 @@ fn did_create_device_config(
     );
 }
 
-fn did_create_zoneboot() {
-    unimplemented!()
+fn did_create_zoneboot(oods: Vec<String>, sn_host: Option<String>) {
+    // 获取当前时间戳
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let exp = now + 3600 * 24 * 365 * 10;
+
+    let zone_boot_config = ZoneBootConfig {
+        id: None,
+        oods,
+        sn: sn_host,
+        exp,
+        iat: now as u32,
+        owner: None,
+        owner_key: None,
+        gateway_devs: vec![],
+        extra_info: std::collections::HashMap::new(),
+    };
+    let zone_boot_config_json_str = serde_json::to_string_pretty(&zone_boot_config).unwrap();
+
+    let mut zone_boot_config_file = std::fs::File::create("zone.json").unwrap();
+    zone_boot_config_file
+        .write_all(zone_boot_config_json_str.as_bytes())
+        .unwrap();
+    println!("zone boot config created!");
 }
 
 fn did_create_zone() {

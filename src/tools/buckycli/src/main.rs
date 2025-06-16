@@ -214,6 +214,8 @@ async fn main() -> Result<(), String> {
                 .arg(
                     Arg::new("create_zoneboot")
                       .long("create_zoneboot")
+                      .value_names(&["oods", "sn_host"])
+                      .num_args(2)
                       .help("create a zone_boot_config")
                 )
                 .arg(
