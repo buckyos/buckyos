@@ -314,6 +314,7 @@ impl ObjectArray {
 
             let obj_id = obj_list[i].clone();
             ret.push(Some(ObjectArrayItem { obj_id, proof }));
+            i += 1;
         }
 
         Ok(ret)
