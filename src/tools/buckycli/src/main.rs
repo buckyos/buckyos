@@ -8,7 +8,6 @@ use buckyos_api::*;
 use clap::{Arg, Command};
 use package_cmd::*;
 
-
 fn is_local_cmd(cmd_name: &str) -> bool {
     const LOCAL_COMMANDS: &[&str] = &[
         "version",
@@ -184,6 +183,14 @@ async fn main() -> Result<(), String> {
                         .num_args(2)
                         .help("set system config with file content. filename = file path.
     buckycli sys_config --set_file $key $filename")
+                )
+                .arg(
+                    Arg::new("append")
+                        .long("append")
+                        .value_names(&["key", "value"])  // 定义两个占位符名称
+                        .num_args(2)
+                        .help("append system config,
+    buckycli sys_config --append $key $value")
                 )
         )
         .subcommand(
@@ -436,6 +443,17 @@ async fn main() -> Result<(), String> {
             if let Some(key) = matches.get_one::<String>("list") {
                 // println!("List system config, key[{}]", key);
                 sys_config::list_config(key).await;
+                return Ok(());
+            }
+            if let Some(_key) = matches.get_one::<String>("append") {
+                let config_values: Vec<&String> = matches
+                    .get_many::<String>("append")
+                    .expect("必须提供 key 和 value 参数")
+                    .collect();
+                let key = config_values[0];
+                let value = config_values[1];
+                println!("Append system config, key[{}]: {}", key, value);
+                sys_config::append_config(key, value).await;
                 return Ok(());
             }
             if let Some(_key) = matches.get_one::<String>("set_file") {
