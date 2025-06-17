@@ -19,8 +19,8 @@ pub struct NamedDataMgrRouteConfig {
     pub guest_access:bool,// 是否允许zone外访问
     #[serde(default = "default_true")]
     //是否将chunkid放在路径的第一级，
-    //如果为true，则使用https://ndn.$zoneid/$chunkid/index.html?ref=www.buckyos.org 
-    //如果为false，则将chunkid放在host的第一段https://$chunkid.ndn.$zoneid/index.html?ref=www.buckyos.org 
+    //如果为true，则使用https://ndn.$zoneid/$chunkid/index.html?ref=www.buckyos.org
+    //如果为false，则将chunkid放在host的第一段https://$chunkid.ndn.$zoneid/index.html?ref=www.buckyos.org
     pub is_object_id_in_path:bool,
     #[serde(default = "default_true")]
     pub enable_mgr_file_path:bool,// 是否使用mgr路径模式
@@ -30,10 +30,10 @@ pub struct NamedDataMgrRouteConfig {
 
 impl Default for NamedDataMgrRouteConfig {
     fn default()->Self {
-        Self { 
-            named_data_mgr_id:"default".to_string(), 
-            read_only:true, 
-            guest_access:false, 
+        Self {
+            named_data_mgr_id:"default".to_string(),
+            read_only:true,
+            guest_access:false,
             is_object_id_in_path:true,
             enable_mgr_file_path:true,
             enable_zone_put_chunk:true,
@@ -47,7 +47,7 @@ pub struct HostConfig {
     #[serde(default)]
     pub enable_cors: bool,
     #[serde(default)]
-    pub redirect_to_https: bool, 
+    pub redirect_to_https: bool,
     #[serde(default)]
     pub tls: TlsConfig,
     pub routes: HashMap<String, RouteConfig>,
@@ -114,7 +114,7 @@ fn default_enable_cors() -> bool {
 #[derive(Debug, Deserialize, Clone)]
 pub struct RouteConfig {
     #[serde(default = "default_enable_cors")]
-    pub enable_cors: bool, 
+    pub enable_cors: bool,
     pub response: Option<ResponseRouteConfig>,
     pub upstream: Option<UpstreamRouteConfig>,
     pub local_dir: Option<String>,
@@ -179,7 +179,7 @@ pub enum DNSProviderType {
     DNS,//query name info by system
     SN,//query name info by sn server
     LocalConfig,
-    
+
 }
 
 #[derive(Deserialize,Clone,Debug)]
@@ -338,7 +338,7 @@ pub fn gen_demo_gateway_json_config() -> String {
                 },
                 {
                     "order":3,
-                    "type":"dns" 
+                    "type":"dns"
                 }
 
             ],
@@ -377,7 +377,7 @@ pub fn gen_demo_gateway_json_config() -> String {
             "target":"192.168.1.102:6001"
         }
     }
-}    
+}
     "#;
 
     return result.to_string();
