@@ -13,7 +13,7 @@ use crate::linux_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 #[cfg(target_os = "windows")]
 use crate::windows_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 #[cfg(target_os = "macos")]
-use crate::linux_smb::{update_samba_conf, stop_smb_service, check_samba_status};
+use crate::macos_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 use crate::samba::{SmbItem, SmbUserItem};
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -29,7 +29,7 @@ mod linux_smb;
 mod windows_smb;
 
 #[cfg(target_os = "macos")]
-mod linux_smb;
+mod macos_smb;
 
 mod samba;
 mod error;
