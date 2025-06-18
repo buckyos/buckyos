@@ -399,6 +399,7 @@ p, root, dfs://*, read|write,allow
 p, root, ndn://*, read|write,allow
 
 p, ood,kv://*,read,allow
+p, ood,kv://users/*/apps/*,read|write,allow
 p, ood,kv://nodes/{device}/*,read|write,allow
 
 p, client,kv://devices/{device}/*,read,allow
