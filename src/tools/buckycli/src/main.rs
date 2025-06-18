@@ -201,14 +201,15 @@ async fn main() -> Result<(), String> {
                     Arg::new("open")
                       .long("open")
                       .value_name("filepath")
-                      .help("open config file and show")
+                      .help("Open config file and display")
                 )
                 .arg(
                     Arg::new("create_user")
                       .long("create_user")
                       .value_names(&["name", "owner_jwk"])  // 定义两个占位符名称
                       .num_args(2)
-                      .help("create a user (userconfig)")
+                      .help("Create the user_config.json file in current dir
+owner_jwk look like this '{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\"14pk3c3XO9_xro5S6vSr_Tvq5eTXbFY8Mop-Vj1D0z8\"}'")
                 )
                 .arg(
                     Arg::new("create_device")
@@ -216,14 +217,15 @@ async fn main() -> Result<(), String> {
                       .value_names(&["user_name", "zone_name", "owner_jwk", "user_private_key"]) 
                       .num_args(4)
                       .help("create a device (deviceconfig).
-                     user_private_key is a file path")
+The arg `user_private_key` is a file path")
                 )
                 .arg(
                     Arg::new("create_zoneboot")
                       .long("create_zoneboot")
                       .value_names(&["oods", "sn_host"])
                       .num_args(2)
-                      .help("create a zone_boot_config")
+                      .help("create a zone_boot_config.
+oods look like this 'ood1,ood2'.")
                 )
                 .arg(
                     Arg::new("create_zone")
