@@ -15,6 +15,7 @@ import py_src.clog as clog
 import py_src.clean as clean
 import py_src.sn as sn
 import py_src.state as state
+import py_src.run as run
 
 
 # 配置文件路径
@@ -41,6 +42,7 @@ def print_usage():
     print("  ./main.py start --all              # 全部vm，启动buckyos, 但是不会启动sn")
     print("  ./main.py stop <device_id>         # 停止buckyos")
     print("  ./main.py stop --all               # 全部vm，停止buckyos")
+    print("  ./main.py all_in_one               # 一键快速启动配置内的所有vm，包括安装激活启动步骤")
     print("  ./main.py clog                     # 收集node日志")
     print("  ./main.py info                     # list vm device info")
 
@@ -102,14 +104,11 @@ def purge():
 
 def init(): 
     # check config file
-
     if not os.path.exists(ENV_CONFIG):
         print(f"Config file not found: {ENV_CONFIG}")
         sys.exit(1)
     print(f"VM Using config file: {ENV_CONFIG}")
   
-
-
 
 
 
@@ -151,6 +150,7 @@ def active():
     
     sn.update_node_dns(nodeB1, sn_ip[0])
     sn.update_node_dns(nodeA2, sn_ip[0])
+
 
 
 def main():
@@ -249,7 +249,8 @@ def main():
             for device_id in all_devices:
                 device = remote_device.remote_device(device_id)
                 clog.get_device_log(device)
-
+        case "all_in_one":
+            run.run()
         case _:
             print("unknown command")
             print("")
