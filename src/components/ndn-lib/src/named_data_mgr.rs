@@ -368,6 +368,7 @@ impl NamedDataMgr {
 
         let named_data_mgr = named_data_mgr_map.get(&named_mgr_key);
         if named_data_mgr.is_some() {
+            debug!("NamedDataMgr: get named data mgr by id:{}", named_mgr_key);
             return Some(named_data_mgr.unwrap().clone());
         }
 

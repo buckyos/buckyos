@@ -1,6 +1,6 @@
 use buckyos_kit::get_by_json_path;
 use log::*;
-use anyhow::Result;
+use crate::{RouterResult,RouterError};
 use hyper::{Request,Response,Body,StatusCode};
 
 use std::{io::SeekFrom, sync::Arc};
@@ -22,6 +22,7 @@ enum LoadedObjBody {
     Reader(ChunkReader,u64),//reader, chunk_size, embeded obj_string
     TextRecord(String),//text_record, verify_obj path  
 }
+
 
 struct LoadedObj {
     pub real_obj_id:Option<ObjId>,
@@ -50,7 +51,7 @@ impl LoadedObj {
     }
 }
 
-async fn load_obj(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset:u64)->Result<LoadedObj> {
+async fn load_obj(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset:u64)->RouterResult<LoadedObj> {
     let real_mgr = mgr.lock().await;
     if obj_id.is_chunk() {
         let chunk_id = ChunkId::from_obj_id(&obj_id);
@@ -58,14 +59,23 @@ async fn load_obj(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset
         let (chunk_reader,chunk_size) = real_mgr.open_chunk_reader_impl(&chunk_id, seek_from, true).await
             .map_err(|e| {
                 warn!("get chunk reader by objid failed: {}", e);
-                anyhow::anyhow!("get chunk reader by objid failed: {}", e)
+                match(e) {
+                    NdnError::NotFound(e) => RouterError::NotFound(e),
+                    _ => RouterError::Internal(format!("get chunk reader by objid failed: {}", e))
+                }
             })?;
 
         debug!("ndn route -> chunk: {}, chunk_size: {}, offset: {}", obj_id.to_base32(), chunk_size, offset);
         return Ok(LoadedObj::new_chunk_result(obj_id.clone(),chunk_reader,chunk_size));
     } else  {
         //TODO: Add chunklist support
-        let obj_body = real_mgr.get_object_impl(&obj_id,None).await?;
+        let obj_body = real_mgr.get_object_impl(&obj_id,None).await.map_err(|e| {
+            warn!("get object by objid failed: {}", e);
+            match(e) {
+                NdnError::NotFound(e) => RouterError::NotFound(e),
+                _ => RouterError::Internal(format!("get object by objid failed: {}", e))
+            }
+        })?;
         debug!("ndn route -> obj {}", obj_body.to_string());
         return Ok(LoadedObj::new_named_obj_result(obj_id.clone(),obj_body));
     }
@@ -77,9 +87,10 @@ pub struct InnerPathInfo {
     pub inner_proof:Option<String>,
 }
 
-async fn build_response_by_obj_get_result(obj_load_result:LoadedObj,start:u64,inner_path_info:Option<InnerPathInfo>)->Result<Response<Body>> {
+async fn build_response_by_obj_get_result(obj_load_result:LoadedObj,start:u64,inner_path_info:Option<InnerPathInfo>)->RouterResult<Response<Body>> {
     let body_result;
     let mut result = Response::builder();
+    debug!("ndn_router:build_response_by_obj_get_result: obj_load_result: {:?}", obj_load_result.real_obj_id);
 
     if obj_load_result.real_obj_id.is_some() {
         result = result.header("cyfs-obj-id", obj_load_result.real_obj_id.unwrap().to_base32());
@@ -102,54 +113,58 @@ async fn build_response_by_obj_get_result(obj_load_result:LoadedObj,start:u64,in
         LoadedObjBody::NamedObj(json_value) => {
             result = result.header("Content-Type", "application/json")
             .status(StatusCode::OK);
-            body_result = result.body(Body::from(serde_json::to_string(&json_value)?))?;
+            body_result = result.body(Body::from(serde_json::to_string(&json_value).map_err(|e| {
+                RouterError::Internal(format!("Failed to convert json value to string: {}", e))
+            })?)).unwrap();
         }
         LoadedObjBody::Reader(chunk_reader,chunk_size) => {
-
             let stream = tokio_util::io::ReaderStream::new(chunk_reader);
             result = result.header("Accept-Ranges", "bytes")
                 .header("Content-Type", "application/octet-stream")
                 .header("Cache-Control", "public,max-age=31536000")
                 .header("cyfs-obj-size", chunk_size.to_string());
+
             if start > 0 {
+                debug!("ndn_router:build_response_by_obj_get_result: Content-Range: bytes {}-{}/{}", start, chunk_size - 1, chunk_size);
                 result = result.header("Content-Range", format!("bytes {}-{}/{}", start, chunk_size - 1, chunk_size))
                 .header("Content-Length", chunk_size - start)
                 .status(StatusCode::PARTIAL_CONTENT);
-            } else {          
+            } else { 
+                debug!("ndn_router:build_response_by_obj_get_result: Content-Length: {}", chunk_size);
                 result = result.header("Content-Length", chunk_size)
                 .status(StatusCode::OK);
             }
-            body_result = result.body(Body::wrap_stream(stream))?;
+            body_result = result.body(Body::wrap_stream(stream)).unwrap();
         }
         LoadedObjBody::TextRecord(text_record) => {
             result = result.header("Content-Type", "plain/text")
                 .status(StatusCode::OK);
-            body_result = result.body(Body::from(text_record))?;
+            body_result = result.body(Body::from(text_record)).unwrap();
         }
     }
     Ok(body_result)
 }
 
-pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, _host: &str, _client_ip:IpAddr,_route_path: &str) -> Result<Response<Body>> {
+pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, _host: &str, _client_ip:IpAddr,_route_path: &str) -> RouterResult<Response<Body>> {
     if mgr_config.read_only {
         error!("Named manager is read only,cann't process put");
-        return Err(anyhow::anyhow!("Named manager is read only"));
+        return Err(RouterError::Forbidden("Named manager is read only".to_string()));
     }
     
     if !mgr_config.enable_zone_put_chunk {
         error!("Named manager is not enable zone put chunk");
-        return Err(anyhow::anyhow!("Named manager is not enable zone put chunk"));
+        return Err(RouterError::Forbidden("Named manager is not enable zone put chunk".to_string()));
     }
 
     let path = req.uri().path();
     let obj_id = match ObjId::from_path(path) {
         Ok((id, _)) => id,
-        Err(_) => return Err(anyhow::anyhow!("Invalid object ID in path"))
+        Err(_) => return Err(RouterError::BadRequest("Invalid object ID in path".to_string()))
     };
     
     let named_mgr_id = mgr_config.named_data_mgr_id.clone();
     let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(named_mgr_id.as_str())).await
-        .ok_or_else(|| anyhow::anyhow!("Named manager not found: {}", named_mgr_id))?;
+        .ok_or_else(|| RouterError::NotFound(format!("Named manager not found: {}", named_mgr_id)))?;
     
     let named_mgr_lock = named_mgr.lock().await;
     let chunk_id = ChunkId::from_obj_id(&obj_id);
@@ -163,12 +178,18 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
         // 如果是最后一块数据，完成写入
 
     // 打开写入器
-    let (chunk_writer, _) = named_mgr_lock.open_chunk_writer_impl(&chunk_id, total_size, 0).await?;
+    let (chunk_writer, _) = named_mgr_lock.open_chunk_writer_impl(&chunk_id, total_size, 0).await.map_err(|e| {
+        warn!("Failed to open chunk writer: {}", e);
+        match(e) {
+            NdnError::NotFound(e) => RouterError::NotFound(e),
+            _ => RouterError::Internal(format!("Failed to open chunk writer: {}", e))
+        }
+    })?;
     drop(named_mgr_lock);
     
     // 读取整个请求体到内存
     let body_bytes = hyper::body::to_bytes(req.into_body()).await
-        .map_err(|e| anyhow::anyhow!("Failed to read request body: {}", e))?;
+        .map_err(|e| RouterError::BadRequest(format!("Failed to read request body: {}", e)))?;
     
     // 创建一个内存读取器
     let chunk_reader = std::io::Cursor::new(body_bytes);
@@ -183,33 +204,46 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
     ).await
         .map_err(|e| {
             warn!("Failed to copy chunk: {}", e);
-            anyhow::anyhow!("Failed to copy chunk: {}", e)
+            match(e) {
+                NdnError::NotFound(e) => RouterError::NotFound(e),
+                _ => RouterError::Internal(format!("Failed to copy chunk: {}", e))
+            }
         })?;
     
     if write_result == total_size {
         let named_mgr_lock = named_mgr.lock().await;
-        named_mgr_lock.complete_chunk_writer_impl(&chunk_id).await?;
+        named_mgr_lock.complete_chunk_writer_impl(&chunk_id).await.map_err(|e| {
+            warn!("Failed to complete chunk: {}", e);
+            RouterError::Internal(format!("Failed to complete chunk: {}", e))
+        })?;
     } else {
         warn!("Failed to complete chunk: {}", write_result);
-        return Err(anyhow::anyhow!("Failed to complete chunk: {}", write_result));
+        return Err(RouterError::Internal(format!("Failed to complete chunk: {}", write_result)));
     }
     
     return Ok(Response::builder()
         .status(StatusCode::OK)
-        .body(Body::empty())?);
+        .body(Body::empty()).unwrap());
 }
 
-pub async fn handle_chunk_status(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, _host: &str, _client_ip:IpAddr,_route_path: &str) -> Result<Response<Body>> {
+pub async fn handle_chunk_status(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, _host: &str, _client_ip:IpAddr,_route_path: &str) -> RouterResult<Response<Body>> {
     let path = req.uri().path();
     let obj_id = match ObjId::from_path(path) {
         Ok((id, _)) => id,
-        Err(_) => return Err(anyhow::anyhow!("Invalid object ID in path"))
+        Err(_) => return Err(RouterError::BadRequest("Invalid object ID in path".to_string()))
     };
     
 
     let chunk_id = ChunkId::from_obj_id(&obj_id);
 
-    let (chunk_state,chunk_size,progress) = NamedDataMgr::query_chunk_state(Some(mgr_config.named_data_mgr_id.as_str()),&chunk_id).await?;
+    let (chunk_state,chunk_size,progress) = NamedDataMgr::query_chunk_state(
+        Some(mgr_config.named_data_mgr_id.as_str()),&chunk_id).await.map_err(|e| {
+        warn!("Failed to query chunk state: {}", e);
+        match(e) {
+            NdnError::NotFound(e) => RouterError::NotFound(e),
+            _ => RouterError::Internal(format!("Failed to query chunk state: {}", e))
+        }
+    })?;
     let status_code;
     match chunk_state {
         ChunkState::New => {
@@ -236,18 +270,19 @@ pub async fn handle_chunk_status(mgr_config: &NamedDataMgrRouteConfig, req: Requ
         .header("Content-Length", chunk_size.to_string())
         .header("cyfs-chunk-status", chunk_state.to_str())
         .header("cyfs-chunk-progress", progress)
-        .body(Body::empty())?);
+        .body(Body::empty()).unwrap());
 }
 
 
-pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
+pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> RouterResult<Response<Body>> {
     let named_mgr_id = mgr_config.named_data_mgr_id.clone();
     let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some(named_mgr_id.as_str())).await;
    
     if named_mgr.is_none() {
         warn!("Named manager not found: {}", named_mgr_id);
-        return Err(anyhow::anyhow!("Named manager not found: {}", named_mgr_id));
+        return Err(RouterError::NotFound(format!("Named manager not found: {}", named_mgr_id)));
     }
+    debug!("named manager founded!");
     let named_mgr = named_mgr.unwrap();
     let named_mgr2 = named_mgr.clone();
 
@@ -258,7 +293,7 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
         (start,_) = parse_range(range_str,u64::MAX)
             .map_err(|e| {
                 warn!("parse range failed: {}", e);
-                anyhow::anyhow!("parse range failed: {}", e)
+                RouterError::BadRequest(format!("parse range failed: {}", e))
             })?;
     }
 
@@ -286,17 +321,21 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
         if obj_id_result.is_ok() {
             let (the_obj_id,the_obj_path) = obj_id_result.unwrap();
             if the_obj_path.is_some() {
+                debug!("get root object_id and inner_path from url");
                 _inner_obj_path = the_obj_path;
                 root_obj_id = Some(the_obj_id);
             } else {
+                debug!("get object id from url");
                 obj_id = Some(the_obj_id);
             }
         }
     } 
 
-    let real_named_mgr = named_mgr.lock().await;
+
+
     if obj_id.is_none() && mgr_config.enable_mgr_file_path {
         let sub_path = buckyos_kit::get_relative_path(route_path, req_path);
+        let real_named_mgr = named_mgr.lock().await;
         let target_obj_result = real_named_mgr.get_obj_id_by_path_impl(&sub_path).await;
         if target_obj_result.is_ok() {
             info!("ndn_router:get_obj_id_by_path success,ndn_path:{}",sub_path);
@@ -310,17 +349,17 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
             if root_obj_id_result.is_ok() {
                 let (the_root_obj_id,_the_path_obj_jwt,the_inner_path) = root_obj_id_result.unwrap();
                 if the_inner_path.is_none() {
-                    return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not found"));
+                    return Err(RouterError::NotFound("ndn_router:cann't found target object,inner_obj_path is not found".to_string()));
                 }
                 _inner_obj_path = the_inner_path.clone();
                 info!("ndn_router:select_obj_id_by_path success,ndn_path:{},obj_inner_path:{} ",sub_path,the_inner_path.clone().unwrap_or("None".to_string()));
                 if the_root_obj_id.is_chunk() {
-                    return Err(anyhow::anyhow!("ndn_router:chunk is not supported to be root obj"));
+                    return Err(RouterError::BadRequest("ndn_router:chunk is not supported to be root obj".to_string()));
                 }
                 if the_root_obj_id.is_big_container() {
                     //TODO: not support now
                     warn!("ndn_router:big container is not supported to be root obj");
-                    return Err(anyhow::anyhow!("ndn_router:big container is not supported to be root obj"));
+                    return Err(RouterError::BadRequest("ndn_router:big container is not supported to be root obj".to_string()));
                 } 
                 root_obj_id = Some(the_root_obj_id);
             }
@@ -328,18 +367,28 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
     } 
 
     if obj_id.is_none() && root_obj_id.is_none() {
-        return Err(anyhow::anyhow!("NotFound! failed to get obj id from request!,request.uri():{}",req.uri()));
+        warn!("ndn_router:cann't get obj id from request!,request.uri():{}",req.uri());
+        return Err(RouterError::NotFound(format!("NotFound! failed to get obj id from request!,request.uri():{}",req.uri())));
     }
 
+    debug!("ndn_router will load object, obj_id: {:?},root_obj_id: {:?}",obj_id,root_obj_id);
     //load obj
     if _inner_obj_path.is_some() {
         let root_obj_id = root_obj_id.unwrap();
         let inner_obj_path = _inner_obj_path.unwrap();
-        let root_obj_json = real_named_mgr.get_object_impl(&root_obj_id, None).await?;
+        let real_named_mgr = named_mgr.lock().await;
+        let root_obj_json = real_named_mgr.get_object_impl(&root_obj_id, None).await.map_err(|e| {
+            warn!("Failed to get object: {}", e);
+            match(e) {
+                NdnError::NotFound(e) => RouterError::NotFound(e),
+                _ => RouterError::Internal(format!("Failed to get object: {}", e))
+            }
+        })?;
+
         let obj_filed = get_by_json_path(&root_obj_json, &inner_obj_path);
         if obj_filed.is_none() {
             warn!("ndn_router:cann't found target object,inner_obj_path {} is not valid",&inner_obj_path);
-            return Err(anyhow::anyhow!("ndn_router:cann't found target object,inner_obj_path is not valid"));
+            return Err(RouterError::BadRequest("ndn_router:cann't found target object,inner_obj_path is not valid".to_string()));
         } 
 
         //this is the target content or target obj_id
@@ -348,7 +397,6 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
             inner_obj_path: inner_obj_path,
             inner_proof: None,
         });   
-
 
         let obj_filed = obj_filed.unwrap();
         if obj_filed.is_string() {
@@ -367,17 +415,24 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
             return Ok(response);
         }
     } 
-
+    debug!("ndn_router:obj_id: {:?}",obj_id);
     let obj_id = obj_id.unwrap();
+    debug!("ndn_router:before load obj");
     let mut load_result:LoadedObj = load_obj(named_mgr2, &obj_id, start).await?;
     load_result.path_obj_jwt = path_obj_jwt;
-    let response = build_response_by_obj_get_result(load_result, start,inner_path_info).await?;
+    let response = build_response_by_obj_get_result(load_result, start,inner_path_info).await.map_err(
+        |e| {
+            warn!("ndn_router:build_response_by_obj_get_result failed: {}", e);
+            e
+        }
+    )?;
+    debug!("ndn_router:build_response_by_obj_get_result success");
     return Ok(response);
 
 }
 
 
-pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> Result<Response<Body>> {
+pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>, host: &str, _client_ip:IpAddr,route_path: &str) -> RouterResult<Response<Body>> {
     if req.method() == hyper::Method::PUT || req.method() == hyper::Method::PATCH{
         return handle_chunk_put(mgr_config, req, host, _client_ip, route_path).await;
     }
@@ -390,7 +445,7 @@ pub async fn handle_ndn(mgr_config: &NamedDataMgrRouteConfig, req: Request<Body>
         return handle_ndn_get(mgr_config, req, host, _client_ip, route_path).await;
     }
     
-    return Err(anyhow::anyhow!("Invalid method: {}", req.method()));
+    return Err(RouterError::BadRequest(format!("Invalid method: {}", req.method())));
 }
 
 
@@ -414,6 +469,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ndn_basic_op() {
+        std::env::set_var("BUCKY_LOG", "debug");
         init_logging("ndn_client_test",false);
         let test_server_config = json!({
             "tls_port":3243,

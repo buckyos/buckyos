@@ -28,6 +28,7 @@ mime_guess = "*"
 async-stream = "*"
 rand = "*"
 async-trait = "*"
+thiserror = "*"
 
 tokio-stream = { version = "*", features = ["full"] }
 ndn-lib = { path = "../../components/ndn-lib" }
