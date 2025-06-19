@@ -32,7 +32,8 @@ lazy_static! {
 }
 
 lazy_static! {
-    static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> = Arc::new(Mutex::new(SledStore::new().unwrap()));
+    static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> =
+        Arc::new(Mutex::new(SledStore::new().unwrap()));
 }
 
 async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
@@ -643,12 +644,12 @@ fn init_log_config() {
     CombinedLogger::init(vec![
         // 将日志输出到标准输出，例如终端
         TermLogger::new(
-            LevelFilter::Info,
+            LevelFilter::Debug,
             config.clone(),
             TerminalMode::Mixed,
             ColorChoice::Auto,
         ),
-        WriteLogger::new(LevelFilter::Info, config, File::create(log_path).unwrap()),
+        WriteLogger::new(LevelFilter::Debug, config, File::create(log_path).unwrap()),
     ])
     .unwrap();
 }
@@ -756,7 +757,8 @@ async fn init_by_boot_config() -> Result<()> {
 }
 
 async fn service_main() {
-    init_log_config();
+    //init_log_config();
+    init_logging("system_config_service", true);
     info!("Starting system config service............................");
     init_by_boot_config().await.unwrap();
     // Select the rear end storage, here you can switch different implementation

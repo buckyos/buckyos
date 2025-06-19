@@ -8,7 +8,6 @@ use buckyos_api::*;
 use clap::{Arg, Command};
 use package_cmd::*;
 
-
 fn is_local_cmd(cmd_name: &str) -> bool {
     const LOCAL_COMMANDS: &[&str] = &[
         "version",
@@ -185,35 +184,48 @@ async fn main() -> Result<(), String> {
                         .help("set system config with file content. filename = file path.
     buckycli sys_config --set_file $key $filename")
                 )
+                .arg(
+                    Arg::new("append")
+                        .long("append")
+                        .value_names(&["key", "value"])  // 定义两个占位符名称
+                        .num_args(2)
+                        .help("append system config,
+    buckycli sys_config --append $key $value")
+                )
         )
         .subcommand(
             Command::new("did")
-               .about("generate did")
-               .arg(
-                    Arg::new("genkey")
-                       .long("genkey")
-                       .help("generate a  pair of did key")
-                )
+                .about("did manager")
+                .subcommand(Command::new("genkey").about("generate a  pair of did key"))
                 .arg(
                     Arg::new("open")
                       .long("open")
                       .value_name("filepath")
-                      .help("open config file and show")
+                      .help("Open config file and display")
                 )
                 .arg(
                     Arg::new("create_user")
                       .long("create_user")
-                      .help("create a user (userconfig)")
+                      .value_names(&["name", "owner_jwk"])  // 定义两个占位符名称
+                      .num_args(2)
+                      .help("Create the user_config.json file in current dir
+owner_jwk look like this '{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\"14pk3c3XO9_xro5S6vSr_Tvq5eTXbFY8Mop-Vj1D0z8\"}'")
                 )
                 .arg(
                     Arg::new("create_device")
                       .long("create_device")
-                      .help("create a device (deviceconfig)")
+                      .value_names(&["user_name", "zone_name", "owner_jwk", "user_private_key"]) 
+                      .num_args(4)
+                      .help("create a device (deviceconfig).
+The arg `user_private_key` is a file path")
                 )
                 .arg(
                     Arg::new("create_zoneboot")
                       .long("create_zoneboot")
-                      .help("create a zone_boot_config")
+                      .value_names(&["oods", "sn_host"])
+                      .num_args(2)
+                      .help("create a zone_boot_config.
+oods look like this 'ood1,ood2'.")
                 )
                 .arg(
                     Arg::new("create_zone")
@@ -435,6 +447,17 @@ async fn main() -> Result<(), String> {
                 sys_config::list_config(key).await;
                 return Ok(());
             }
+            if let Some(_key) = matches.get_one::<String>("append") {
+                let config_values: Vec<&String> = matches
+                    .get_many::<String>("append")
+                    .expect("必须提供 key 和 value 参数")
+                    .collect();
+                let key = config_values[0];
+                let value = config_values[1];
+                println!("Append system config, key[{}]: {}", key, value);
+                sys_config::append_config(key, value).await;
+                return Ok(());
+            }
             if let Some(_key) = matches.get_one::<String>("set_file") {
                 let config_values: Vec<&String> = matches
                     .get_many::<String>("set_file")
@@ -454,11 +477,8 @@ async fn main() -> Result<(), String> {
         Some(("sign", matches)) => {
             did::sign_json_data(matches, private_key).await;
         }
-        Some(("did", matches)) => {
-            if let Some(_key) = matches.get_one::<String>("genkey") {
-                // did::genkey();
-                // return Ok(());
-            }
+        Some(("did", sub_matches)) => {
+            did::did_matches(sub_matches);
         }
         _ => {
             println!("unknown command!");
