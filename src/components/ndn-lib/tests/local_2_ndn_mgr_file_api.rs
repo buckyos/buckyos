@@ -452,7 +452,7 @@ async fn ndn_local_2_mgr_file_not_found() {
         NamedDataMgr::put_object(Some(ndn_mgr_id.as_str()), &file_id, file_obj_str.as_str())
             .await
             .expect("put file-object in local failed");
-
+        info!("check file-obj in target ndn-mgr");
         check_file_obj(target_ndn_mgr_id.as_str(), &file_id, Some(None), None).await;
 
         let ret = NamedDataMgr::open_chunk_reader(
@@ -530,7 +530,7 @@ async fn ndn_local_2_mgr_file_not_found() {
         assert_eq!(got_obj_str, file_obj_str, "got file-obj mismatch");
 
         check_file_obj(
-            target_ndn_mgr_id.as_str(),
+            ndn_mgr_id.as_str(),
             &file_id,
             Some(Some(&file_obj)),
             None,
