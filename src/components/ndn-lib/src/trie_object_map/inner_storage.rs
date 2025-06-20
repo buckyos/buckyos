@@ -268,6 +268,55 @@ where
         Ok(Box::new(iter))
     }
 
+    fn traverse(&self, callback: &mut dyn FnMut(String, ObjId) -> NdnResult<()>) -> NdnResult<()> {
+        let db = &self.db.as_hash_db() as &dyn HashDBRef<H, Vec<u8>>;
+        let trie = GenericTrieDBBuilder::new(db, &self.root).build();
+        let iter = trie.iter().map_err(|e| {
+            let msg = format!("Failed to create iterator: {:?}", e);
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+        let iter = trie.iter().map_err(|e| {
+            let msg = format!("Failed to create iterator: {:?}", e);
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        let iter = iter.filter_map(|item| {
+            let (k, v) = item
+                .map_err(|e| {
+                    let msg = format!("Failed to iterate over trie: {:?}", e);
+                    error!("{}", msg);
+                    NdnError::DbError(msg)
+                })
+                .ok()?;
+
+            let key = String::from_utf8(k.to_vec())
+                .map_err(|e| {
+                    let msg = format!("Failed to convert key to string: {:?}, {:?}", k, e);
+                    error!("{}", msg);
+                    NdnError::InvalidData(msg)
+                })
+                .ok()?;
+
+            let value: ObjId = bincode::deserialize(&v)
+                .map_err(|e| {
+                    let msg = format!("Failed to deserialize obj_id value: {:?}, {:?}", v, e);
+                    error!("{}", msg);
+                    NdnError::InvalidData(msg)
+                })
+                .ok()?;
+
+            Some((key, value))
+        });
+
+        for (key, value) in iter {
+            callback(key, value)?;
+        }
+
+        Ok(())
+    }
+
     async fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>> {
         // let trie = Sha256TrieDBBuilder::new(&*db_read, &*self.root.read().unwrap()).build();
 

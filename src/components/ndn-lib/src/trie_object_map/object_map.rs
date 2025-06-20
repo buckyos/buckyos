@@ -134,6 +134,10 @@ impl TrieObjectMap {
     pub fn iter<'a>(&'a self) -> NdnResult<Box<dyn Iterator<Item = (String, ObjId)> + 'a>> {
         Ok(Box::new(self.db.iter()?))
     }
+
+    pub fn traverse(&self, callback: &mut dyn FnMut(String, ObjId) -> NdnResult<()>) -> NdnResult<()> {
+        self.db.traverse(callback)
+    }
     
     // Should not call this function if in read-only mode
     pub async fn save(&mut self) -> NdnResult<()> {

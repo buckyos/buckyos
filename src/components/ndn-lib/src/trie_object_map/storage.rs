@@ -68,6 +68,7 @@ pub trait TrieObjectMapInnerStorage: Send + Sync {
     async fn root(&self) -> Vec<u8>;
 
     fn iter<'a>(&'a self) -> NdnResult<Box<dyn Iterator<Item = (String, ObjId)> + 'a>>;
+    fn traverse(&self, callback: &mut dyn FnMut(String, ObjId) -> NdnResult<()>) -> NdnResult<()>;
 
     async fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>>;
 
