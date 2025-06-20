@@ -1524,7 +1524,7 @@ async fn ndn_local_r_link_innerpath_file_ok() {
             "root-obj-id in http-header should equal with file-id"
         );
 
-        let mut buffer = vec![0u8, 0];
+        let mut buffer =  Vec::new(); 
         let len = reader
             .read_to_end(&mut buffer)
             .await
