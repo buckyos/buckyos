@@ -356,10 +356,9 @@ impl NdnClient {
             .map_err(|e| NdnError::RemoteError(format!("Request failed: {}", e)))?;
         
         if !res.status().is_success() {
-            return Err(NdnError::RemoteError(
-                format!("HTTP error: {} for {}", res.status(), chunk_url)
-            ));
+            return Err(NdnError::from_http_status(res.status(),chunk_url.to_string()));
         }
+        
         let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
         let content_length = res.content_length();
         if content_length.is_none() {
