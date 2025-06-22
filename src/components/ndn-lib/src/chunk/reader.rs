@@ -1,6 +1,6 @@
 use super::chunk::{ChunkId, ChunkReader};
 use super::chunk_list::{ChunkList, ChunkListOwnedIter};
-use crate::named_data_mgr::NamedDataMgrRef;
+use crate::named_data::NamedDataMgrRef;
 use crate::{chunk, NdnError, NdnResult};
 use futures::{future::BoxFuture, FutureExt};
 use pin_project::pin_project;

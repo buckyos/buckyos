@@ -178,6 +178,33 @@ async fn test_iterator(key_pairs: &[(String, ObjId)]) {
     assert_eq!(count, key_pairs.len());
 }
 
+
+async fn test_traverse(key_pairs: &[(String, ObjId)]) {
+    let mut obj_map = TrieObjectMap::new(HashMethod::Keccak256, None)
+        .await
+        .unwrap();
+    println!("Object map created");
+
+    for (key, obj_id) in key_pairs.iter() {
+        obj_map.put_object(key, obj_id).await.unwrap();
+    }
+    println!("All objects put");
+
+    let mut count = 0;
+    obj_map.traverse(&mut |key: String, obj_id: ObjId| {
+        // Verify the key and object ID in the key_pairs
+        let ret = key_pairs.contains(&(key.clone(), obj_id.clone()));
+        assert!(ret, "Key not found in key_pairs: {}", key);
+
+        println!("Traversed key: {}, obj_id: {}", key, obj_id);
+        count += 1;
+
+        Ok(())
+    });
+
+    assert_eq!(count, key_pairs.len());
+}
+
 #[test]
 async fn test_trie_object_map1() {
     init_logging("test_trie_object_map", false);
@@ -203,7 +230,13 @@ async fn test_trie_object_map1() {
     let key_pairs = generate_key_value_pairs("test", 100);
     println!("Key pairs generated");
 
+    // test_iterator(key_pairs.as_slice()).await;
+    test_traverse(key_pairs.as_slice()).await;
+
     // test_op_and_proof(key_pairs.as_slice()).await;
-    test_iterator(key_pairs.as_slice()).await;
+    tokio::task::spawn(async move {
+        test_traverse(key_pairs.as_slice()).await;
+    }).await.unwrap();
+   
     println!("Test object map completed");
 }

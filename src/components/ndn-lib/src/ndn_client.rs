@@ -31,7 +31,7 @@ pub struct NdnGetChunkResult {
     pub reader : ChunkReader,
 }
 
-use crate::{chunk, named_data_mgr, ChunkReader, ObjId, MAX_CHUNK_SIZE};
+use crate::{chunk, ChunkReader, ObjId, MAX_CHUNK_SIZE};
 use crate::{ChunkId,NdnResult,NamedDataMgr,NdnError,ChunkReadSeek,ChunkHasher};
 pub struct NdnClient {
     default_ndn_mgr_id:Option<String>,

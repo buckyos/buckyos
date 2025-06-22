@@ -1,7 +1,7 @@
 use crate::chunk::*;
 use crate::hash::HashMethod;
-use crate::named_data_mgr::NamedDataMgrRef;
-use crate::named_data_mgr::{NamedDataMgr, NamedDataMgrConfig};
+use crate::NamedDataMgrRef;
+use crate::{NamedDataMgr, NamedDataMgrConfig};
 use crate::object_array::{
     ObjectArrayStorageFactory, ObjectArrayStorageType, GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY,
 };
