@@ -905,6 +905,7 @@ pub struct NodeIdentityConfig {
 }
 
 impl NodeIdentityConfig {
+
     pub fn load_node_identity_config(file_path: &PathBuf) -> NSResult<(NodeIdentityConfig)> {
         let contents = std::fs::read_to_string(file_path.clone()).map_err(|err| {
             error!("read {} failed! {}", file_path.to_string_lossy(), err);

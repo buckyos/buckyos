@@ -41,6 +41,7 @@ impl BuckyOSMachineConfig {
         if machine_config.is_err() {
             return None;
         }
+        info!("load machine config from machine.json success.");
         return Some(machine_config.unwrap());
     }
 }

@@ -59,8 +59,8 @@ async fn load_obj(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset
         let (chunk_reader,chunk_size) = real_mgr.open_chunk_reader_impl(&chunk_id, seek_from, true).await
             .map_err(|e| {
                 warn!("get chunk reader by objid failed: {}", e);
-                match(e) {
-                    NdnError::NotFound(e) => RouterError::NotFound(e),
+                match e {
+                    NdnError::NotFound(e2) => RouterError::NotFound(e2),
                     _ => RouterError::Internal(format!("get chunk reader by objid failed: {}", e))
                 }
             })?;
@@ -71,8 +71,8 @@ async fn load_obj(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset
         //TODO: Add chunklist support
         let obj_body = real_mgr.get_object_impl(&obj_id,None).await.map_err(|e| {
             warn!("get object by objid failed: {}", e);
-            match(e) {
-                NdnError::NotFound(e) => RouterError::NotFound(e),
+            match e {
+                NdnError::NotFound(e2) => RouterError::NotFound(e2),
                 _ => RouterError::Internal(format!("get object by objid failed: {}", e))
             }
         })?;
@@ -180,8 +180,8 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
     // 打开写入器
     let (chunk_writer, _) = named_mgr_lock.open_chunk_writer_impl(&chunk_id, total_size, 0).await.map_err(|e| {
         warn!("Failed to open chunk writer: {}", e);
-        match(e) {
-            NdnError::NotFound(e) => RouterError::NotFound(e),
+        match e {
+            NdnError::NotFound(e2) => RouterError::NotFound(e2),
             _ => RouterError::Internal(format!("Failed to open chunk writer: {}", e))
         }
     })?;
@@ -204,8 +204,8 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
     ).await
         .map_err(|e| {
             warn!("Failed to copy chunk: {}", e);
-            match(e) {
-                NdnError::NotFound(e) => RouterError::NotFound(e),
+            match e {
+                NdnError::NotFound(e2) => RouterError::NotFound(e2),
                 _ => RouterError::Internal(format!("Failed to copy chunk: {}", e))
             }
         })?;
@@ -239,8 +239,8 @@ pub async fn handle_chunk_status(mgr_config: &NamedDataMgrRouteConfig, req: Requ
     let (chunk_state,chunk_size,progress) = NamedDataMgr::query_chunk_state(
         Some(mgr_config.named_data_mgr_id.as_str()),&chunk_id).await.map_err(|e| {
         warn!("Failed to query chunk state: {}", e);
-        match(e) {
-            NdnError::NotFound(e) => RouterError::NotFound(e),
+        match e {
+            NdnError::NotFound(e2) => RouterError::NotFound(e2),
             _ => RouterError::Internal(format!("Failed to query chunk state: {}", e))
         }
     })?;
@@ -299,7 +299,6 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
 
     let req_path = req.uri().path();
     let mut obj_id:Option<ObjId> = None;
-    let mut obj_content:Option<Value> = None;
     let mut path_obj_jwt:Option<String> = None;
 
     let mut root_obj_id:Option<ObjId> = None;
@@ -379,8 +378,8 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
         let real_named_mgr = named_mgr.lock().await;
         let root_obj_json = real_named_mgr.get_object_impl(&root_obj_id, None).await.map_err(|e| {
             warn!("Failed to get object: {}", e);
-            match(e) {
-                NdnError::NotFound(e) => RouterError::NotFound(e),
+            match e {
+                NdnError::NotFound(e2) => RouterError::NotFound(e2),
                 _ => RouterError::Internal(format!("Failed to get object: {}", e))
             }
         })?;

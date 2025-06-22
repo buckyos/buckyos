@@ -4,7 +4,6 @@ mod kv_provider;
 mod sled_provider;
 
 use std::collections::HashMap;
-use std::fs::File;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,7 +12,6 @@ use log::*;
 
 use lazy_static::lazy_static;
 use serde_json::Value;
-use simplelog::*;
 use tokio::sync::Mutex;
 use warp::Filter;
 
@@ -627,31 +625,6 @@ async fn process_request(
     } else {
         return Err(RPCErrors::NoPermission("No session token".to_string()));
     }
-}
-
-fn init_log_config() {
-    // 创建一个日志配置对象
-    let config = ConfigBuilder::new()
-        .set_time_format_custom(format_description!(
-            "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"
-        ))
-        .build();
-
-    let log_path = get_buckyos_root_dir()
-        .join("logs")
-        .join("system_config_service.log");
-    // 初始化日志器
-    CombinedLogger::init(vec![
-        // 将日志输出到标准输出，例如终端
-        TermLogger::new(
-            LevelFilter::Debug,
-            config.clone(),
-            TerminalMode::Mixed,
-            ColorChoice::Auto,
-        ),
-        WriteLogger::new(LevelFilter::Debug, config, File::create(log_path).unwrap()),
-    ])
-    .unwrap();
 }
 
 async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
