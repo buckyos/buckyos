@@ -60,17 +60,17 @@ pub trait TrieObjectMapInnerStorage: Send + Sync {
     fn is_readonly(&self) -> bool;
     fn get_type(&self) -> TrieObjectMapStorageType;
 
-    async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()>;
-    async fn get(&self, key: &str) -> NdnResult<Option<ObjId>>;
-    async fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>>;
-    async fn is_exist(&self, key: &str) -> NdnResult<bool>;
-    async fn commit(&mut self) -> NdnResult<()>;
-    async fn root(&self) -> Vec<u8>;
+    fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()>;
+    fn get(&self, key: &str) -> NdnResult<Option<ObjId>>;
+    fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>>;
+    fn is_exist(&self, key: &str) -> NdnResult<bool>;
+    fn commit(&mut self) -> NdnResult<()>;
+    fn root(&self) -> Vec<u8>;
 
     fn iter<'a>(&'a self) -> NdnResult<Box<dyn Iterator<Item = (String, ObjId)> + 'a>>;
     fn traverse(&self, callback: &mut dyn FnMut(String, ObjId) -> NdnResult<()>) -> NdnResult<()>;
 
-    async fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>>;
+    fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>>;
 
     // Clone the storage to a new file.
     // If the target file exists, it will be failed.

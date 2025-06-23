@@ -138,7 +138,7 @@ where
         self.read_only
     }
 
-    async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
+    fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -163,7 +163,7 @@ where
         Ok(())
     }
 
-    async fn get(&self, key: &str) -> NdnResult<Option<ObjId>> {
+    fn get(&self, key: &str) -> NdnResult<Option<ObjId>> {
         let db = &self.db.as_hash_db() as &dyn HashDBRef<H, Vec<u8>>;
         let trie = GenericTrieDBBuilder::new(db, &self.root).build();
         let value = trie.get(key.as_bytes()).map_err(|e| {
@@ -186,7 +186,7 @@ where
         Ok(Some(value))
     }
 
-    async fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
+    fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -232,7 +232,7 @@ where
         Ok(Some(value))
     }
 
-    async fn is_exist(&self, key: &str) -> NdnResult<bool> {
+    fn is_exist(&self, key: &str) -> NdnResult<bool> {
         let db = &self.db.as_hash_db() as &dyn HashDBRef<H, Vec<u8>>;
         let trie = GenericTrieDBBuilder::new(db, &self.root).build();
         let exists = trie.contains(key.as_bytes()).map_err(|e| {
@@ -244,7 +244,7 @@ where
         Ok(exists)
     }
 
-    async fn commit(&mut self) -> NdnResult<()> {
+    fn commit(&mut self) -> NdnResult<()> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -258,7 +258,7 @@ where
         Ok(())
     }
 
-    async fn root(&self) -> Vec<u8> {
+    fn root(&self) -> Vec<u8> {
         self.root.as_ref().to_vec()
     }
 
@@ -317,7 +317,7 @@ where
         Ok(())
     }
 
-    async fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>> {
+    fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>> {
         // let trie = Sha256TrieDBBuilder::new(&*db_read, &*self.root.read().unwrap()).build();
 
         let proof = generate_proof::<_, GenericLayout<H>, _, &[u8]>(

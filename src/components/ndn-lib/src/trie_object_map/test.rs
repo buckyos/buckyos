@@ -65,12 +65,12 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
         let key = key_pairs[i].0.as_ref();
         let obj_id = key_pairs[i].1.clone();
 
-        obj_map.put_object(key, &obj_id).await.unwrap();
+        obj_map.put_object(key, &obj_id).unwrap();
 
         println!("Put object success: {}", key);
 
         // Test get object
-        let ret = obj_map.get_object(key).await.unwrap();
+        let ret = obj_map.get_object(key).unwrap();
         if ret.is_none() {
             panic!("Object not found for key: {}, {}", i, key);
         }
@@ -80,13 +80,13 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
         println!("Get object success: {}", key);
 
         // Test exist
-        let ret = obj_map.is_object_exist(&key).await.unwrap();
+        let ret = obj_map.is_object_exist(&key).unwrap();
         assert_eq!(ret, true);
 
         println!("Object exist: {}", key);
 
         // Test proof path
-        let proof = obj_map.get_object_proof_path(key).await.unwrap();
+        let proof = obj_map.get_object_proof_path(key).unwrap();
         assert!(proof.is_some());
         let mut proof = proof.unwrap();
         assert_eq!(proof.proof_nodes.len() > 0, true);
@@ -99,7 +99,7 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
 
         // Test proof path with invalid key
         let key1 = format!("{}/1000", key);
-        let proof1 = obj_map.get_object_proof_path(&key1).await.unwrap();
+        let proof1 = obj_map.get_object_proof_path(&key1).unwrap();
         assert!(proof1.is_some());
         println!("Get object proof path with invalid key success: {}", key1);
         let proof1 = proof1.unwrap();
@@ -116,10 +116,10 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
         assert_eq!(ret, TrieObjectMapProofVerifyResult::ValueMismatch);
 
         // Test remove
-        let prev_root_hash = obj_map.get_root_hash().await;
+        let prev_root_hash = obj_map.get_root_hash();
         assert!(proof.root_hash == prev_root_hash);
         if i % 2 == 0 {
-            let ret = obj_map.remove_object(&key).await.unwrap().unwrap();
+            let ret = obj_map.remove_object(&key).unwrap().unwrap();
             assert_eq!(ret, obj_id);
 
             println!("Remove object success: {}", key);
@@ -128,7 +128,7 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
         }
 
         // Test root hash after remove
-        let root_hash = obj_map.get_root_hash().await;
+        let root_hash = obj_map.get_root_hash();
         assert_ne!(prev_root_hash, root_hash);
         println!(
             "Root hash changed after remove: {:?} -> {:?}",
@@ -156,7 +156,7 @@ async fn test_iterator(key_pairs: &[(String, ObjId)]) {
     println!("Object map created");
 
     for (key, obj_id) in key_pairs.iter() {
-        obj_map.put_object(key, obj_id).await.unwrap();
+        obj_map.put_object(key, obj_id).unwrap();
     }
     println!("All objects put");
 
@@ -168,7 +168,7 @@ async fn test_iterator(key_pairs: &[(String, ObjId)]) {
         assert!(ret, "Key not found in key_pairs: {}", key);
 
         // Check if object in object map
-        let ret = obj_map.get_object(&key).await.unwrap();
+        let ret = obj_map.get_object(&key).unwrap();
         assert!(ret.is_some(), "Object not found for key: {}", key);
         assert_eq!(ret.unwrap(), obj_id, "Object ID mismatch for key: {}", key);
         
@@ -186,7 +186,7 @@ async fn test_traverse(key_pairs: &[(String, ObjId)]) {
     println!("Object map created");
 
     for (key, obj_id) in key_pairs.iter() {
-        obj_map.put_object(key, obj_id).await.unwrap();
+        obj_map.put_object(key, obj_id).unwrap();
     }
     println!("All objects put");
 
