@@ -215,7 +215,7 @@ impl GatewayConfig {
                                     let new_path =
                                         adjust_path(route_config.local_dir.as_ref().unwrap())
                                             .map_err(|e| format!("adjust path failed! {}", e))?;
-                                    info!(
+                                    debug!(
                                         "adjust host {}.{} local path {} to {}",
                                         host,
                                         route,

@@ -63,9 +63,7 @@ pub fn get_buckyos_service_local_data_dir(service_name: &str,disk_id: Option<&st
 }
 
 pub fn adjust_path(old_path: &str) -> std::io::Result<PathBuf> {
-    let new_path= old_path.replace("{BUCKYOS_ROOT}", &get_buckyos_root_dir().to_string_lossy());
-    // can adjust other Placeholders
-
+    let new_path= old_path.replace("{BUCKYOS_ROOT}", &get_buckyos_root_dir().to_string_lossy().replace("\\", "/"));
     std::path::absolute(new_path)?.canonicalize()
 }
 
