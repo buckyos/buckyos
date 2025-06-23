@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     io::SeekFrom,
-    ops::{Deref, Index},
+    ops::Deref,
     path::PathBuf,
 };
 
@@ -9,7 +9,6 @@ use buckyos_kit::*;
 use cyfs_gateway_lib::*;
 use cyfs_warp::*;
 use hex::ToHex;
-use jsonwebtoken::EncodingKey;
 use log::*;
 use ndn_lib::*;
 use rand::{Rng, RngCore};
@@ -1516,7 +1515,7 @@ async fn ndn_local_chunklist_verify_failed() {
     append_chunk_list_builder
         .append_with_size(append_chunk_id.clone(), append_chunk_data.len() as u64)
         .expect("append chunk to chunk list failed");
-    let mut append_chunk_list = append_chunk_list_builder
+    let append_chunk_list = append_chunk_list_builder
         .build()
         .await
         .expect("build append chunk list failed");

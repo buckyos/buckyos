@@ -1,7 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::SeekFrom,
-    ops::{Deref, Index},
     path::PathBuf,
 };
 
@@ -9,7 +8,6 @@ use buckyos_kit::*;
 use cyfs_gateway_lib::*;
 use cyfs_warp::*;
 use hex::ToHex;
-use jsonwebtoken::EncodingKey;
 use log::*;
 use ndn_lib::*;
 use rand::{Rng, RngCore};
@@ -187,7 +185,7 @@ async fn ndn_local_obj_map_basic() {
     info!("ndn_local_obj_map_basic test start...");
     init_obj_map_storage_factory().await;
 
-    let mut rng = rand::rng();
+    let rng = rand::rng();
     let chunk_fix_size: u64 = 1024 * 1024 + 513; // 1MB + x bytes
 
     let chunk_size1: u64 = chunk_fix_size;
@@ -299,7 +297,7 @@ async fn ndn_local_obj_map_basic() {
         .expect("verify chunk list should success for exclude object");
     assert!(!is_ok, "verify chunk list should fail for fake object");
 
-    let mut fake_key_proof = proof.clone();
+    let fake_key_proof = proof.clone();
     fake_obj_proof.item.key = "fake-key".to_string();
     let is_ok = verifier
         .verify(

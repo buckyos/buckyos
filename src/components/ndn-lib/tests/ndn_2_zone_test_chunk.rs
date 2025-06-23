@@ -33,7 +33,7 @@ fn generate_random_bytes(size: u64) -> Vec<u8> {
 
 fn generate_random_chunk(size: u64) -> (ChunkId, Vec<u8>) {
     let chunk_data = generate_random_bytes(size);
-    let mut hasher = ChunkHasher::new(None).expect("hash failed.");
+    let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&chunk_data);
     let chunk_id = ChunkId::from_sha256_result(&hash);
     info!("chunk_id: {}", chunk_id.to_string());
@@ -326,7 +326,7 @@ async fn ndn_2_zone_chunk_verify_failed() {
 
     assert_eq!(buffer, fake_chunk_data, "chunk-content check failed");
 
-    let mut hasher = ChunkHasher::new(None).expect("hash failed.");
+    let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&buffer);
     let fake_chunk_id = ChunkId::from_sha256_result(&hash);
     assert_ne!(fake_chunk_id, chunk_id, "chunk-id should mismatch");

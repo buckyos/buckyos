@@ -1,16 +1,12 @@
 use std::{
-    collections::HashSet,
     io::SeekFrom,
-    ops::{Deref, Index},
     path::PathBuf,
 };
 
-use base64::write;
 use buckyos_kit::*;
 use cyfs_gateway_lib::*;
 use cyfs_warp::*;
 use hex::ToHex;
-use jsonwebtoken::EncodingKey;
 use log::*;
 use ndn_lib::*;
 use rand::{Rng, RngCore};
@@ -566,7 +562,7 @@ async fn ndn_local_file_chunklist_rechunk_combine() {
     .expect("put chunk_list to ndn-mgr failed");
 
     // File([chunk0, chunk1, chunk2, chunk3, chunk4 ... chunk9])
-    let mut file0 = FileObject::new(
+    let file0 = FileObject::new(
         "ndn_local_file_chunklist_rechunk_combine_v0".to_string(),
         total_size,
         chunk_list_id.to_string(),
@@ -776,7 +772,7 @@ async fn ndn_local_file_chunklist_delta() {
     )
     .await;
 
-    let mut file0 = FileObject::new(
+    let file0 = FileObject::new(
         "ndn_local_file_chunklist_delta_v0".to_string(),
         combine_chunks_3_6.len() as u64,
         combine_chunk_3_6_id.to_string(),
@@ -902,7 +898,7 @@ async fn ndn_local_file_chunklist_delta() {
     .await
     .expect("put chunk_list to ndn-mgr failed");
 
-    let mut file2 = FileObject::new(
+    let file2 = FileObject::new(
         "ndn_local_file_chunklist_delta_v2".to_string(),
         file2_len,
         chunk_list_0_6_id.to_string(),
@@ -1015,7 +1011,7 @@ async fn ndn_local_file_chunklist_delta() {
     .await
     .expect("put chunk_list to ndn-mgr failed");
 
-    let mut file3 = FileObject::new(
+    let file3 = FileObject::new(
         "ndn_local_file_chunklist_delta_v3".to_string(),
         file3_len,
         chunk_list_0_6_9_12_id.to_string(),
@@ -1138,7 +1134,7 @@ async fn ndn_local_file_chunklist_delta() {
     .await
     .expect("put chunk_list to ndn-mgr failed");
 
-    let mut file4 = FileObject::new(
+    let file4 = FileObject::new(
         "ndn_local_file_chunklist_delta_v4".to_string(),
         file4_len,
         chunk_list_0_12_id.to_string(),
