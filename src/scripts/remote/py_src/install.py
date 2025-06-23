@@ -1,35 +1,27 @@
-#!/usr/bin/env python3
-# install.py $device_id 
-
-# 将工程目录下准备好的 rootfs目录先打好一个tar包上传,然后在进行安装.
-# 安装的时候如果目标设备的 /opt/buckyos目录不存在,则会把tar包的内容释放到 /opt/buckyos,
-# 把保存在配置文件中的device_id的身份配置文件复制到/opt/buckyos/etc目录,
-# 如果/opt/buckyos目录存在,则只更新/opt/buckyos/bin 目录
-
 import sys
 import os
-import json
+# import json
 import tempfile
 import subprocess
-from remote_device import remote_device
+import remote_device
+import get_device_info
+import util
 
-def print_usage():
-    print("Usage: install.py <device_id>")
-    sys.exit(1)
 
 def get_project_dir():
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    project_root =  os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     return project_root
 
 def create_rootfs_tarball():
     """创建rootfs的tar包"""
     # 获取当前工程根目录
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    project_root =  get_project_dir()
     rootfs_path = os.path.join(project_root, "rootfs")
     
     print(f"rootfs_path: {rootfs_path}")
     if not os.path.exists(rootfs_path):
-        raise Exception("rootfs directory not found")
+        print("rootfs directory not found")
+        sys.exit(1)
 
     # 检查是否存在bin文件
     node_daemon_bin_path = os.path.join(rootfs_path, "bin", "node_daemon", "node_daemon")
@@ -66,8 +58,7 @@ def install_sn(device):
 
 
 def install(device_id: str):
-    device = remote_device(device_id)
-    
+    device = remote_device.remote_device(device_id)
     try:
         if  device.has_app("web3_bridge"):
             install_sn(device)
@@ -139,3 +130,19 @@ def install(device_id: str):
     except Exception as e:
         print(f"Error during installation: {str(e)}", file=sys.stderr)
         return False
+
+
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: install.py <device_id>")
+        print("Usage: install.py --all")
+        return
+    device_id = sys.argv[2]
+    if device_id == "--all":
+        all_devices = get_device_info.read_from_config(info_path=util.VM_DEVICE_CONFIG)
+        for device_id in all_devices:
+            print(f"install target device_id: {device_id}")
+            install(device_id)
+    else:
+        print(f"install target device_id: {device_id}")
+        install(device_id)

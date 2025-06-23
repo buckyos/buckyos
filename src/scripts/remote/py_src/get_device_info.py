@@ -1,8 +1,9 @@
 import json
 import subprocess
 import re
+import util
 
-def get_device_info(info_path = "device_info.json"):
+def get_device_info(info_path = util.VM_DEVICE_CONFIG):
     # 运行multipass list命令获取设备信息
     try:
         result = subprocess.run(['multipass', 'list'], capture_output=True, text=True)
@@ -51,7 +52,7 @@ def get_device_info(info_path = "device_info.json"):
 
 
 
-def read_from_config(info_path = "device_info.json"):
+def read_from_config(info_path=util.VM_DEVICE_CONFIG):
     with open(info_path, 'r') as f:
         g_all_devices = json.load(f)
         return g_all_devices

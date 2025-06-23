@@ -1,16 +1,23 @@
-#!/usr/bin/env python3
-
 import sys
 import os
 import json
 import subprocess
 import time
-from remote_device import remote_device
 
-def print_usage():
-    print("Usage: create_vm.py config_file")
-    print("Uses the same config file format as remote_device")
-    sys.exit(1)
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
+import util
+
+# create vm by read demo_env.json
+def create():
+    if not os.path.exists(util.ENV_CONFIG):
+        print(f"Config file not found: {util.ENV_CONFIG}")
+        sys.exit(1)
+    print(f"Using config file: {util.ENV_CONFIG}")
+    creator = VMCreator(util.ENV_CONFIG, util.CONFIG_BASE)
+    creator.create_all()
+
 
 class VMCreator:
     def __init__(self, config_path: str, config_base: str):

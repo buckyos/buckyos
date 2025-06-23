@@ -5,6 +5,10 @@ import os
 import yaml  # 新增导入 yaml 模块
 import json
 
+import sn
+import active
+import start
+
 
 
 
@@ -26,8 +30,16 @@ def run():
     print(f"nodeB1_state:  {nodeB1_state}")
 
     if sn_state == "Running" and nodeA2_state == "Running" and nodeB1_state == "Running":
+        # check service start
         print("\nAll VMs are Running")
-        check_active()
+        sn.active_sn()
+        active.active()
+
+        sn.start_sn()
+
+        sys.argv = ['', '', '--all'] 
+        start.main()
+        # check_active()
         #next step
         #check active
     # else:

@@ -5,6 +5,12 @@ import os
 import yaml
 
 
+# 配置文件路径
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_BASE = os.path.join(BASE_DIR, "dev_configs")
+ENV_CONFIG = os.path.join(CONFIG_BASE, "dev_vm_config.json")
+VM_DEVICE_CONFIG = os.path.join(CONFIG_BASE, "device_info.json")
+id_rsa_path = os.path.join(CONFIG_BASE, "ssh/id_rsa")
 
 
 

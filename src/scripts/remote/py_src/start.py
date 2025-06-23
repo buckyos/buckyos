@@ -3,7 +3,10 @@
 import sys
 import os
 import time
-from remote_device import remote_device
+import remote_device
+import state
+import util
+import get_device_info
 
 def print_usage():
     print("Usage: start.py device_id [app_id]")
@@ -42,24 +45,27 @@ def start_all_apps(device: remote_device) -> bool:
     return success
 
 def main():
-    if len(sys.argv) < 2:
-        print_usage()
-    
-    device_id = sys.argv[1]
-    device = remote_device(device_id)
-    app_id = sys.argv[2] if len(sys.argv) > 2 else None
-    
-    try:
-        if app_id:
-            success = start_app(device, app_id)
-        else:
-            success = start_all_apps(device)
+    if len(sys.argv) < 3:
+        print("Usage: main.py start <device_id>")
+        return
+    device_id = sys.argv[2]
+    if device_id == "sn":
+        print("use start_sn replace")
+        sys.exit(0)
+    if not state.check_sn_gateway():
+        print("sn gateway is not running")
+        sys.exit(0)
 
-        sys.exit(0 if success else 1)
-        
-    except Exception as e:
-        print(f"Error: {str(e)}", file=sys.stderr)
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
+    if device_id == "--all":
+        all_devices = get_device_info.read_from_config()
+        for device_id in all_devices:
+            # 不在这里启动sn，在start_sn中启动
+            if device_id == "sn":
+                continue
+            print(f"start target device[{device_id}]")
+            device = remote_device.remote_device(device_id)
+            start_all_apps(device)
+    else:
+        print(f"start target device[{device_id}]")
+        device = remote_device.remote_device(device_id)
+        start_all_apps(device)
