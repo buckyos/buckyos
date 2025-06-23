@@ -41,7 +41,10 @@ async fn create_init_list_by_template() -> Result<HashMap<String, String>> {
     let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
     start_params["verify_hub_key"] = json!(private_key_pem);
     start_params["verify_hub_public_key"] = json!(public_key_jwk.to_string());
-    start_params["BUCKYOS_ROOT"] = json!(get_buckyos_root_dir().to_string_lossy().to_string());
+    
+    // 将Windows路径中的反斜杠转换为正斜杠，避免TOML转义问题
+    let buckyos_root = get_buckyos_root_dir().to_string_lossy().to_string().replace('\\', "/");
+    start_params["BUCKYOS_ROOT"] = json!(buckyos_root);
 
     let mut engine = upon::Engine::new();
     engine.add_template("config", &template_str)?;

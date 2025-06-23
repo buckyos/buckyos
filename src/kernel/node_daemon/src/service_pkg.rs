@@ -103,14 +103,23 @@ impl ServicePkg {
             })?;
 
         let params_str = params.map(|p| p.join(" ")).unwrap_or_default();
-        
-        debug!(
-            "# run {} {} => {} \n\t {}",
-            op_file.display(),
-            params_str,
-            result,
-            String::from_utf8_lossy(&output)
-        );
+        if result == 0 {
+            debug!(
+                "# run {} {} => {} \n\t {}",
+                op_file.display(),
+                params_str,
+                result,
+                String::from_utf8_lossy(&output)
+            );
+        } else {
+            info!(
+                "# run {} {} => {} \n\t {}",
+                op_file.display(),
+                params_str,
+                result,
+                String::from_utf8_lossy(&output)
+            ); 
+        }
         Ok(result)
     }
 
