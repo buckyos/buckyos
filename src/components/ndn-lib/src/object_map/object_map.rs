@@ -222,7 +222,7 @@ impl ObjectMap {
         Ok(stat.total_count as usize)
     }
 
-    pub async fn put_object(&mut self, key: &str, obj_id: ObjId) -> NdnResult<()> {
+    pub async fn put_object(&mut self, key: &str, obj_id: &ObjId) -> NdnResult<()> {
         self.storage.put(&key, &obj_id).await.map_err(|e| {
             let msg = format!("Error putting object map item: {}", e);
             error!("{}", msg);

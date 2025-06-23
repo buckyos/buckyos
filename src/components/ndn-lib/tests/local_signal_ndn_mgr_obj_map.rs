@@ -219,7 +219,7 @@ async fn ndn_local_obj_map_basic() {
 
     for (name, (chunk_id, chunk_data)) in chunks.iter() {
         obj_map
-            .put_object(*name, chunk_id.to_obj_id())
+            .put_object(*name, &chunk_id.to_obj_id())
             .await
             .expect(&format!("put {} to obj-map failed", name));
     }
@@ -342,7 +342,7 @@ async fn ndn_local_obj_map_ok() {
     for (chunk_id, chunk_data) in chunks.iter() {
         write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
         obj_map
-            .put_object(chunk_id.to_string().as_str(), chunk_id.to_obj_id())
+            .put_object(chunk_id.to_string().as_str(), &chunk_id.to_obj_id())
             .await
             .expect("put chunk to obj-map failed");
     }
@@ -444,7 +444,7 @@ async fn ndn_local_obj_map_not_found() {
     for (chunk_id, chunk_data) in chunks.iter() {
         write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
         obj_map
-            .put_object(chunk_id.to_string().as_str(), chunk_id.to_obj_id())
+            .put_object(chunk_id.to_string().as_str(), &chunk_id.to_obj_id())
             .await
             .expect("put chunk to obj-map failed");
     }
@@ -494,7 +494,7 @@ async fn ndn_local_obj_map_verify_failed() {
     for (chunk_id, chunk_data) in chunks.iter() {
         write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
         obj_map
-            .put_object(chunk_id.to_string().as_str(), chunk_id.to_obj_id())
+            .put_object(chunk_id.to_string().as_str(), &chunk_id.to_obj_id())
             .await
             .expect("put chunk to obj-map failed");
     }
@@ -511,7 +511,7 @@ async fn ndn_local_obj_map_verify_failed() {
     append_obj_map
         .put_object(
             append_chunk_id.to_string().as_str(),
-            append_chunk_id.to_obj_id(),
+            &append_chunk_id.to_obj_id(),
         )
         .await
         .expect("put append chunk to obj-map failed");

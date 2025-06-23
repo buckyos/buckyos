@@ -740,7 +740,7 @@ mod tests {
     use serde_json::json;
     use cyfs_gateway_lib::*;
     use cyfs_warp::*;
-    use rand::{thread_rng, RngCore};
+    use rand::{rng, RngCore};
 
     fn generate_random_bytes(size: u64) -> Vec<u8> {
         let mut rng = rand::rng();

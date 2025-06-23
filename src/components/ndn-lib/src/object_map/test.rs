@@ -23,7 +23,7 @@ async fn test_object_map() {
         let hash = generate_random_buf(&i.to_string(), HashMethod::Sha256.hash_bytes());
         let obj_id = ObjId::new_by_raw(OBJ_TYPE_FILE.to_owned(), hash);
 
-        obj_map.put_object(&key, obj_id.clone())
+        obj_map.put_object(&key, &obj_id)
             .await
             .unwrap();
 
@@ -99,7 +99,7 @@ async fn test_object_map() {
     assert_eq!(objid3, objid4, "Object ID unmatch");
 
     // Then reinsert key1
-    obj_map3.put_object("key1", obj_item2.unwrap()).await.unwrap();
+    obj_map3.put_object("key1", &obj_item2.unwrap()).await.unwrap();
 
     obj_map3.flush().await.unwrap();
     let objid4 = obj_map3.get_obj_id().unwrap();

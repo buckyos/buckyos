@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn test_var_length() {
         let mut buffer = vec![0u8; 2048];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         rng.fill(&mut buffer[..]);
 
         let mut length_buf = unsigned_varint::encode::u64_buffer();

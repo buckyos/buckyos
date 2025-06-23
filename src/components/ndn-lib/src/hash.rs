@@ -338,7 +338,7 @@ mod tests {
 
     fn test_hasher_state_save_restore(hash_method: HashMethod) {
         let mut buffer = vec![0u8; 2048];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         rng.fill(&mut buffer[..]);
 
         let mut hasher = HashHelper::create_hasher(hash_method).unwrap();
