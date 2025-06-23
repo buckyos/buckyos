@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use name_lib::EncodedDocument;
 use crate::{ChunkReader,ChunkWriter,ChunkHasher, ChunkId, LinkData, NdnError, NdnResult, ObjId, ObjectLink};
-use super::def::{ChunkItem, ChunkState};
+use super::def::{ChunkItem, ChunkState, ndn_get_time_now};
 
 pub(crate) struct NamedDataDb {
     db_path: String,
@@ -229,10 +229,7 @@ impl NamedDataDb {
     }
 
     pub async fn set_object(&self, obj_id: &ObjId, obj_type: &str, obj_str: &str) -> NdnResult<()> {
-        let now_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let now_time = ndn_get_time_now();
 
         let conn = self.conn.lock().await;
         conn.execute(

@@ -71,6 +71,14 @@ impl FromSql for ChunkState {
     }
 }
 
+// Function to get the current time in milliseconds since UNIX epoch
+pub fn ndn_get_time_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
 pub struct ChunkItem {
     pub chunk_id: ChunkId,
     pub chunk_size: u64,
@@ -83,10 +91,7 @@ pub struct ChunkItem {
 
 impl ChunkItem {
     pub fn new(chunk_id: &ChunkId, chunk_size: u64, description: Option<&str>) -> Self {
-        let now_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let now_time = ndn_get_time_now();
         Self {
             chunk_id: chunk_id.clone(),
             chunk_size,
@@ -110,3 +115,30 @@ pub trait ChunkReadSeek: AsyncRead + AsyncSeek {}
 
 // Blanket implementation for any type that implements both traits
 impl<T: AsyncRead + AsyncSeek> ChunkReadSeek for T {}
+
+
+// ObjectRelationType enum to represent the type of relation between objects
+#[repr(i32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ObjectRelationType {
+    Contains = 0,
+    References = 1,
+}
+
+impl ObjectRelationType {
+    pub fn as_i32(self) -> i32 {
+        self as i32
+    }
+}
+
+impl TryFrom<i32> for ObjectRelationType {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(ObjectRelationType::Contains),
+            1 => Ok(ObjectRelationType::References),
+            _ => Err(format!("Invalid ObjectRelationType value: {}", value)),
+        }
+    }
+}
