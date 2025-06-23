@@ -35,8 +35,7 @@ impl From<NdnError> for std_io::Error {
         std_io::Error::new(std_io::ErrorKind::Other, err.to_string())
     }
 }
-
-pub(crate) struct NamedDataMgrDB {
+pub struct NamedDataMgrDB {
     db_path: String,
     conn: Mutex<Connection>,
 }
@@ -70,7 +69,7 @@ impl NamedDataMgrDB {
             "CREATE TABLE IF NOT EXISTS paths (
                 path TEXT PRIMARY KEY,
                 obj_id TEXT NOT NULL,
-                path_obj_jwt TEXT ,
+                path_obj_jwt TEXT,
                 app_id TEXT NOT NULL,
                 user_id TEXT NOT NULL
             )",
@@ -84,10 +83,25 @@ impl NamedDataMgrDB {
             NdnError::DbError(e.to_string())
         })?;
 
+        // 添加索引
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_paths_path ON paths(path)",
+            [],
+        )
+        .map_err(|e| {
+            warn!("NamedDataMgrDB: create index failed! {}", e.to_string());
+            NdnError::DbError(e.to_string())
+        })?;
+
         Ok(Self {
             db_path,
             conn: Mutex::new(conn),
         })
+    }
+
+    // 路径规范化函数
+    pub fn normalize_path(path: &str) -> String {
+        path.replace("//", "/").trim_start_matches("./").to_string()
     }
 
     //return (result_path, obj_id,path_obj_jwt,relative_path)
@@ -182,10 +196,19 @@ impl NamedDataMgrDB {
         app_id: &str,
         user_id: &str,
     ) -> NdnResult<()> {
+        if path.len() < 2 {
+            return Err(NdnError::InvalidParam(
+                "path length must be greater than 2".to_string(),
+            ));
+        }
+
         let mut conn = self.conn.lock().unwrap();
         let obj_id = obj_id.to_string();
         let tx = conn.transaction().map_err(|e| {
-            warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
+            warn!(
+                "NamedDataMgrDB: tx.transaction error, create path failed! {}",
+                e.to_string()
+            );
             NdnError::DbError(e.to_string())
         })?;
 
@@ -194,12 +217,19 @@ impl NamedDataMgrDB {
             [&path, obj_id.as_str(), app_id, user_id],
         )
         .map_err(|e| {
-            warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
+            warn!(
+                "NamedDataMgrDB: tx.execute error, create path failed! {:?}",
+                &e
+            );
+
             NdnError::DbError(e.to_string())
         })?;
 
         tx.commit().map_err(|e| {
-            warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
+            warn!(
+                "NamedDataMgrDB:tx.commit error, create path failed! {}",
+                e.to_string()
+            );
             NdnError::DbError(e.to_string())
         })?;
         Ok(())

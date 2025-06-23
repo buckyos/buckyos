@@ -80,7 +80,7 @@ impl NamedDataMgrDB {
     }
 
     // 路径规范化函数
-    fn normalize_path(path: &str) -> String {
+    pub fn normalize_path(path: &str) -> String {
         path.replace("//", "/")
             .trim_start_matches("./")
             .to_string()
@@ -913,7 +913,7 @@ impl NamedDataMgr {
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();
         file_reader.seek(SeekFrom::Start(0)).await;
         let (chunk_raw_id,chunk_size) = chunk_hasher.calc_from_reader(&mut file_reader).await.unwrap();
-    
+
         let chunk_id = ChunkId::from_sha256_result(&chunk_raw_id);
         info!("pub_local_file_as_fileobj:calc chunk_id success,chunk_id:{},chunk_size:{}", chunk_id.to_string(),chunk_size);
         let real_named_mgr = named_mgr.lock().await;

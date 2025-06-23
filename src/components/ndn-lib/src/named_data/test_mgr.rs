@@ -1,7 +1,8 @@
 use super::*;
-use crate::{FileObject, NdnResult, ChunkId, NamedDataMgr, NamedDataMgrConfig, NdnError, ObjId};
+use crate::{ChunkId, FileObject, NamedDataMgr, NamedDataMgrConfig, NdnError, NdnResult, ObjId};
 use buckyos_kit::*;
 use std::io::SeekFrom;
+use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -197,8 +198,23 @@ async fn test_get_chunk_mgr_by_id() -> NdnResult<()> {
     Ok(())
 }
 
+#[test]
+fn test_path_normalization() {
+    let test_cases = vec![
+        ("//a//b//c", "/a/b/c"),
+        ("./a/b/c", "a/b/c"),
+        ("/a/b/c", "/a/b/c"),
+        ("a/b/c", "a/b/c"),
+    ];
+
+    for (input, expected) in test_cases {
+        let result = NamedDataMgrDB::normalize_path(input);
+        assert_eq!(result, expected, "Failed to normalize path: {}", input);
+    }
+}
+
 #[tokio::test]
-async fn test_find_longest_matching_path() -> NdnResult<()> {
+async fn test_find_longest_matching_path_edge_cases() -> NdnResult<()> {
     // Create a temporary directory for testing
     init_logging("ndn-lib test", false);
     let test_dir = tempdir().unwrap();
@@ -342,6 +358,75 @@ async fn test_find_longest_matching_path() -> NdnResult<()> {
                 }
             }
         }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_concurrent_path_access() -> NdnResult<()> {
+    init_logging("ndn-lib test", false);
+    let test_dir = tempdir().unwrap();
+    let config = NamedDataMgrConfig {
+        local_stores: vec![test_dir.path().to_str().unwrap().to_string()],
+        local_cache: None,
+        mmap_cache_dir: None,
+    };
+
+    let named_mgr = Arc::new(tokio::sync::Mutex::new(
+        NamedDataMgr::from_config(
+            Some("test".to_string()),
+            test_dir.path().to_path_buf(),
+            config,
+        )
+        .await?,
+    ));
+
+    let test_data = b"Test data for concurrent access";
+    let chunk_id = ChunkId::new("sha256:concurrent").unwrap();
+    let test_path = "/test/concurrent/path.txt";
+
+    let (mut writer, _) = named_mgr
+        .lock()
+        .await
+        .open_chunk_writer_impl(&chunk_id, test_data.len() as u64, 0)
+        .await?;
+    writer.write_all(test_data).await.unwrap();
+    named_mgr
+        .lock()
+        .await
+        .complete_chunk_writer_impl(&chunk_id)
+        .await
+        .unwrap();
+
+    named_mgr
+        .lock()
+        .await
+        .create_file_impl(test_path, &chunk_id.to_obj_id(), "test_app", "test_user")
+        .await?;
+
+    // 创建多个任务并发访问
+    let mut handles = vec![];
+    for i in 0..10 {
+        let named_mgr_clone = named_mgr.clone();
+        let chunk_id2 = chunk_id.clone();
+        let handle = tokio::spawn(async move {
+            let result = named_mgr_clone
+                .lock()
+                .await
+                .db()
+                .find_longest_matching_path(test_path);
+            assert!(result.is_ok());
+            let (result_path, obj_id, _, _) = result.unwrap();
+            assert_eq!(result_path, test_path);
+            assert_eq!(obj_id, chunk_id2.to_obj_id());
+        });
+        handles.push(handle);
+    }
+
+    // 等待所有任务完成
+    for handle in handles {
+        handle.await.unwrap();
     }
 
     Ok(())

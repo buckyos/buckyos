@@ -130,6 +130,13 @@ impl ChunkId {
         }
     }
 
+    pub fn from_sha256_result(hash_result: &[u8]) -> Self {
+        Self {
+            hash_type: HashMethod::Sha256.to_string(),
+            hash_result: hash_result.to_vec(),
+        }
+    }
+    
     // Create a new ChunkId with length encoding, in mix mode
     pub fn mix_from_hash_result(
         data_length: u64,

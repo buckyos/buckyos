@@ -7,7 +7,7 @@ use hex::ToHex;
 use jsonwebtoken::EncodingKey;
 use log::*;
 use ndn_lib::*;
-use rand::{rand_core::le, Rng, RngCore};
+use rand::{Rng, RngCore};
 use serde_json::json;
 use tokio::{
     fs,
@@ -38,7 +38,7 @@ fn generate_random_chunk(size: u64) -> (ChunkId, Vec<u8>) {
     let chunk_data = generate_random_bytes(size);
     let mut hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_sha256_result(&hash);
+    let chunk_id = ChunkId::from_hash_result(&hash, HashMethod::Sha256);
     info!("chunk_id: {}", chunk_id.to_string());
     (chunk_id, chunk_data)
 }

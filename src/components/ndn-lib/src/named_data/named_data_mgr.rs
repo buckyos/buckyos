@@ -1,3 +1,4 @@
+use super::named_data_mgr_db::NamedDataMgrDB;
 use crate::{
     build_named_object_by_json, ChunkHasher, ChunkId, ChunkListReader, ChunkReadSeek, ChunkState,
     FileObject, NamedDataStore, NdnError, NdnResult, PathObject,
@@ -28,7 +29,6 @@ use tokio::{
 };
 use tokio_util::bytes::BytesMut;
 use tokio_util::io::StreamReader;
-use super::named_data_mgr_db::NamedDataMgrDB;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamedDataMgrConfig {
@@ -68,6 +68,7 @@ impl NamedDataMgr {
 
         let named_data_mgr = named_data_mgr_map.get(&named_mgr_key);
         if named_data_mgr.is_some() {
+            debug!("NamedDataMgr: get named data mgr by id:{}", named_mgr_key);
             return Some(named_data_mgr.unwrap().clone());
         }
 
@@ -192,6 +193,7 @@ impl NamedDataMgr {
 
     pub async fn get_obj_id_by_path_impl(&self, path: &str) -> NdnResult<(ObjId, Option<String>)> {
         let (obj_id, path_obj_jwt) = self.db.get_path_target_objid(path)?;
+        //info!("get_obj_id_by_path_impl: path:{},obj_id:{}",path,obj_id.to_string());
         Ok((obj_id, path_obj_jwt))
     }
 
@@ -608,7 +610,7 @@ impl NamedDataMgr {
         seek_from: SeekFrom,
         auto_cache: bool,
     ) -> NdnResult<(ChunkReader, u64)> {
-        // 1. 获取 named_mgr
+        // 1. Get named data manager by id
         let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id)
             .await
             .ok_or_else(|| {
@@ -618,7 +620,7 @@ impl NamedDataMgr {
                 ))
             })?;
 
-        // 2. 获取 chunklist 对象
+        // 2. Get chunklist object
         let obj_data = {
             let mgr = named_mgr.lock().await;
             mgr.get_object_impl(chunklist_id, None).await?
@@ -817,6 +819,7 @@ impl NamedDataMgr {
         debug!("open local_file_path success");
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();
         let chunk_type = chunk_hasher.hash_type.clone();
+
         file_reader.seek(SeekFrom::Start(0)).await;
         let (chunk_raw_id, chunk_size) = chunk_hasher
             .calc_from_reader(&mut file_reader)
