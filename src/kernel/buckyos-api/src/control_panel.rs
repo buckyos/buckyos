@@ -4,6 +4,7 @@ use std::sync::Arc;
 use name_lib::DeviceConfig;
 use name_lib::DeviceInfo;
 use name_lib::ZoneConfig;
+use name_lib::OwnerConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use serde_json::Value;
@@ -12,6 +13,7 @@ use log::*;
 use ::kRPC::*;
 use crate::system_config::*;
 use package_lib::PackageMeta;
+use crate::KVAction;
 
 #[derive(Serialize, Deserialize)]
 pub struct InstallConfig {
@@ -327,6 +329,53 @@ impl ControlPanelClient {
         Ok(device_config)
     }
 
+    pub async fn add_user(&self, user_config:&OwnerConfig,is_admin:bool) -> Result<u64> {
+        //0. check user_config.name is valid
+        //1. create users/{user_id}/doc
+        //2. create users/{user_id}/settings
+        //3. add user to rbac group
+        let user_id = user_config.name.clone();
+        let user_doc_path = format!("users/{}/doc", user_id);
+        let user_settings_path = format!("users/{}/settings", user_id);
+        
+        // 将用户配置序列化为 JSON 字符串
+        let user_doc_str = serde_json::to_string(user_config)
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to serialize user config: {}", e)))?;
+            
+        // 创建默认用户设置
+        let default_settings = json!({
+            "theme": "light",
+            "language": "en",
+            "notifications": true
+        });
+        let settings_str = serde_json::to_string(&default_settings)
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to serialize settings: {}", e)))?;
+
+        // 准备事务操作
+        let mut tx_actions = HashMap::new();
+        
+        // 1. 创建用户文档
+        tx_actions.insert(user_doc_path, KVAction::Create(user_doc_str));
+        
+        // 2. 创建用户设置
+        tx_actions.insert(user_settings_path, KVAction::Create(settings_str));
+        
+        // 3. 添加用户到 RBAC 组
+        let rbac_policy = if is_admin {
+            format!("\ng, {}, admin", user_id)
+        } else {
+            format!("\ng, {}, user", user_id)
+        };
+        tx_actions.insert("system/rbac/policy".to_string(), KVAction::Append(rbac_policy));
+        
+        // 执行事务
+        self.system_config_client.exec_tx(tx_actions, None).await
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to execute user creation transaction: {}", e)))?;
+
+        info!("Successfully added user {} with admin={}", user_id, is_admin);
+        Ok(0)
+    }
+
     //TODO: help app installer dev easy to generate right app-index
     pub async fn install_app_service(&self,user_id:&str,app_config:&AppConfig,shortcut:Option<String>) -> Result<u64> {
         // TODO: if you want install a web-client-app, use another function
@@ -429,6 +478,7 @@ mod tests {
             "description" : "Home Station",
             "author" : "did:bns:buckyos",
             "pub_time":1715760000,
+
             "pkg_list" : {
                 "amd64_docker_image" : {
                     "pkg_id":"home-station-x86-img",
@@ -451,7 +501,15 @@ mod tests {
                 "amd64_linux_app" :{
                     "pkg_id" : "home-station-linux-app"
                 }
+            },
+            "install_config":{
+                "data_mount_point":["/data"],
+                "cache_mount_point":["/cache"],
+                "local_cache_mount_point":["/local_cache"],
+                "tcp_ports":{"www":80},
+                "udp_ports":{"dns":53}
             }
+
         });
         let app_doc:AppDoc = serde_json::from_value(app_doc).unwrap();
         println!("{}#{}", app_doc.pkg_name, app_doc.version);

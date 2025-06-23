@@ -1,6 +1,14 @@
 import json
 import os
 import subprocess
+
+# 当前目录下的id_rsa
+id_rsa_path = os.path.join(os.path.dirname(__file__), "dev_configs/ssh/id_rsa")
+
+# 配置文件路径
+CONFIG_BASE = os.path.join(os.path.dirname(__file__), "dev_configs")
+ENV_CONFIG = os.path.join(CONFIG_BASE, "dev_vm_config.json")
+VM_DEVICE_CONFIG = os.path.join(CONFIG_BASE, "device_info.json")
         
 class remote_device:
     def __init__(self, device_id: str):
@@ -28,26 +36,22 @@ class remote_device:
 
 
     def _load_device_info(self):
-        # 配置文件在 ~/.buckyos_dev/device_info.json
-        config_path = os.path.expanduser('~/.buckyos_dev/device_info.json')
+        print(f"load device info from {VM_DEVICE_CONFIG}")
         try:
-            with open(config_path, 'r') as f:
+            with open(VM_DEVICE_CONFIG, 'r') as f:
                 configs = json.load(f)
                 return configs.get(self.device_id, {})
         except FileNotFoundError:
-            print("~/.buckyos_dev/device_info.json not found")
+            print(f"{VM_DEVICE_CONFIG} not found")
             return None    
         
     def _load_config(self):
-        # 配置文件在 ~/.buckyos_dev/env_config.json
-        config_path = os.path.expanduser('~/.buckyos_dev/env_config.json')
-        #print(f"loading config from {config_path}")
         try:
-            with open(config_path, 'r') as f:
+            with open(ENV_CONFIG, 'r') as f:
                 configs = json.load(f)
                 return configs.get(self.device_id, {})
         except FileNotFoundError:
-            print("~/.buckyos_dev/env_config.json not found")
+            print(f"{ENV_CONFIG} not found")
             return None
     
     def scp_pull(self, remote_path, local_path, recursive=False):
@@ -59,7 +63,10 @@ class remote_device:
             local_path: 本地目标路径
             recursive: 是否递归复制目录
         """
-        scp_command = ["scp"]
+        scp_command = [
+            "scp",
+            '-i', id_rsa_path,
+        ]
         if recursive:
             scp_command.append("-r")
         
@@ -81,7 +88,10 @@ class remote_device:
             remote_path: 远程目标路径
             recursive: 是否递归复制目录
         """
-        scp_command = ["scp"]
+        scp_command = [
+            "scp",
+            '-i', id_rsa_path,
+        ]
         if recursive:
             scp_command.append("-r")
         
@@ -100,9 +110,11 @@ class remote_device:
             'ssh',
             '-o', 'StrictHostKeyChecking=no',
             '-p', str(self.remote_port),
+            '-i', id_rsa_path,
             f"{self.remote_username}@{self.remote_ip}",
             command
         ]
+        print(f"run_command: {ssh_command}")
         
         try:
             result = subprocess.run(

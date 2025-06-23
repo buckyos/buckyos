@@ -26,10 +26,17 @@ def create_rootfs_tarball():
     # 获取当前工程根目录
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     rootfs_path = os.path.join(project_root, "rootfs")
-
+    
     print(f"rootfs_path: {rootfs_path}")
     if not os.path.exists(rootfs_path):
         raise Exception("rootfs directory not found")
+
+    # 检查是否存在bin文件
+    node_daemon_bin_path = os.path.join(rootfs_path, "bin", "node_daemon", "node_daemon")
+    if not os.path.exists(node_daemon_bin_path):
+        print(f"没有编译， node_daemon_bin_path : {node_daemon_bin_path}")
+        sys.exit(1)
+
     
     # 创建临时tar包
     with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as tmp_file:
@@ -41,8 +48,20 @@ def create_rootfs_tarball():
         shell=True,
         check=True
     )
-    
+
     return tar_path
+
+
+def install_sn(device): 
+        # sn 节点
+    print("uploading web3_bridge ...")
+    project_dir = get_project_dir()
+    print(f"project_dir, {project_dir}")
+    device.run_command("sudo mkdir -p /opt/web3_bridge")
+    device.scp_put(f"{project_dir}/web3_bridge/start.py", "/opt/web3_bridge/start.py")
+    device.scp_put(f"{project_dir}/web3_bridge/stop.py", "/opt/web3_bridge/stop.py")
+    device.scp_put(f"{project_dir}/web3_bridge/web3_gateway", "/opt/web3_bridge/web3_gateway")
+    print("web3_bridge uploaded")
 
 
 
@@ -50,10 +69,16 @@ def install(device_id: str):
     device = remote_device(device_id)
     
     try:
+        if  device.has_app("web3_bridge"):
+            install_sn(device)
+            sys.exit(0)
+
+
         # 1. 创建tar包
         print("Creating rootfs tarball...")
         tar_path = create_rootfs_tarball()
-        
+        print(f"tar_path: {tar_path}")
+
         # 2. 检查远程目录是否存在
         stdout, stderr = device.run_command("test -d /opt/buckyos && echo 'exists' || echo 'not_exists'")
         is_fresh_install = 'not_exists' in stdout
@@ -85,18 +110,11 @@ def install(device_id: str):
                 f"cd /opt/buckyos && tar xzf {remote_tar} ./bin",
             ]
 
-        if device.has_app("web3_bridge"):
-            print("uploading web3_bridge ...")
-            project_dir = get_project_dir()
-            device.scp_put(f"{project_dir}/web3_bridge", "/opt/web3_bridge", recursive=True)
-
         for cmd in install_commands:
             print(f"Running remote command: {cmd}")
             stdout, stderr = device.run_command(cmd)
             if stderr:
                 raise Exception(f"Installation failed: {stderr}")
-            
-        
         
         # 6. 如果是新安装，复制配置文件
         #if is_fresh_install and 'identity_file' in device.config:
@@ -121,24 +139,3 @@ def install(device_id: str):
     except Exception as e:
         print(f"Error during installation: {str(e)}", file=sys.stderr)
         return False
-
-g_all_devices = None
-
-def main():
-    if len(sys.argv) != 2:
-        print_usage()
-    
-    config_path = os.path.expanduser("~/buckyos_dev_env.json")
-    with open(config_path, 'r') as f:
-        g_all_devices = json.load(f)
-
-    device_id = sys.argv[1]
-    try:
-        success = install(device_id)
-        sys.exit(0 if success else 1)
-    except Exception as e:
-        print(f"Error: {str(e)}", file=sys.stderr)
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()

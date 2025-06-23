@@ -19,7 +19,7 @@ use anyhow::Result;
 use cyfs_gateway_lib::*;
 use cyfs_sn::get_sn_server_by_id;
 use futures::stream::{self, StreamExt};
-use name_client::{DnsProvider, NameInfo, NsProvider, RecordType};
+use name_client::{DnsProvider, LocalConfigDnsProvider, NameInfo, NsProvider, RecordType};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -54,10 +54,14 @@ pub async fn create_ns_provider(
 ) -> Result<Box<dyn NsProvider>> {
     match provider_config.provider_type {
         DNSProviderType::DNS => {
-            let dns_provider = DnsProvider::new(None);
+            let dns_provider = DnsProvider::new_with_config(provider_config.config.clone())?;
             Ok(Box::new(dns_provider))
         }
-        
+        DNSProviderType::LocalConfig => {
+            let local_provider = LocalConfigDnsProvider::new_with_config(provider_config.config.clone())?;
+            Ok(Box::new(local_provider))
+        }
+
         DNSProviderType::SN => {
             let sn_server_id = provider_config.config.get("server_id");
             if sn_server_id.is_none() {
@@ -154,7 +158,7 @@ fn nameinfo_to_rdata(record_type: &str, name_info: &NameInfo) -> Result<Vec<RDat
                     warn!("TXT is too long, split it");
                     let s1 = txt[0..254].to_string();
                     let s2 = txt[254..].to_string();
-    
+
                     records.push(RData::TXT(TXT::new(vec![s1, s2])));
                 } else {
                     records.push(RData::TXT(TXT::new(vec![txt])));
@@ -172,7 +176,7 @@ fn nameinfo_to_rdata(record_type: &str, name_info: &NameInfo) -> Result<Vec<RDat
                     records.push(RData::TXT(TXT::new(vec![format!("PKX={};", pk_x)])));
                 }
             }
-           
+
             return Ok(records);
         }
         _ => {
@@ -329,20 +333,27 @@ impl DNSServer {
             return Ok(header.into());
         }
 
-        if let Some(server_name) = self.config.this_name.as_ref() {
-            if !name.ends_with(server_name.as_str()) {
-                info!("All providers can't resolve name:{} enter fallback", name);
-                // for server_name in self.config.fallback.iter() {
-                //     let resp_message = self.handle_fallback(request,server_name,response.clone()).await;
-                //     if resp_message.is_ok() {
+        // if let Some(server_name) = self.config.this_name.as_ref() {
+        //     if !name.ends_with(server_name.as_str()) {
+        // info!(
+        //     "All providers can't resolve name:{}, {} enter fallback",
+        //     name,
+        //     server_name.as_str()
+        // );
+        // for server_name in self.config.fallback.iter() {
+        //     let resp_message = self.handle_fallback(request,server_name,response.clone()).await;
+        //     if resp_message.is_ok() {
 
-                //         return resp_info;
-                //     }
-                // }
-            }
-        }
+        //         return resp_info;
+        //     }
+        // }
+        //     }
+        // }
 
-        warn!("All providers can't resolve name:{}", name);
+        warn!(
+            "[{:?}] All providers can't resolve name:{}",
+            record_type, name
+        );
         return Err(Error::NameNotFound("".to_string()));
     }
 }

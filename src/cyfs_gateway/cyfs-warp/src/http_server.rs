@@ -181,12 +181,9 @@ impl CyfsWarpServer {
     ) -> Result<Response<Body>, hyper::Error> {
         match router.route(req, client_ip).await {
             Ok(response) => Ok(response),
-            Err(_e) => {
-                //error!("Error handling request: {}", e.to_string());
-                Ok(Response::builder()
-                    .status(500)
-                    .body(Body::from("Internal Server Error"))
-                    .unwrap())
+            Err(e) => {
+                let response = e.build_response();
+                Ok(response)
             }
         }
     }
@@ -247,8 +244,8 @@ impl CyfsWarpServer {
             }
             if host_config.tls.cert_path.is_some() && host_config.tls.key_path.is_some() {
                 let cert_file = File::open(&host_config.tls.cert_path.as_ref().unwrap()).map_err(|e| {
-                    error!("Failed to open cert file: {}", e);
-                    anyhow::anyhow!("Failed to open cert file: {}", e)
+                    error!("Failed to open cert file: {} {}", host_config.tls.cert_path.as_ref().unwrap(), e);
+                    anyhow::anyhow!("Failed to open cert file:{} {}", host_config.tls.cert_path.as_ref().unwrap(), e)
                 })?;
                 let mut cert_file = BufReader::new(cert_file);
                 let certs = rustls_pemfile::certs(&mut cert_file).unwrap();
@@ -260,8 +257,8 @@ impl CyfsWarpServer {
                 //let cert = cert.remove(0);
                 debug!("load tls cert: {:?} OK",cert);
                 let key_file = File::open(&host_config.tls.key_path.as_ref().unwrap()).map_err(|e| {
-                    error!("Failed to open key file: {}", e);
-                    anyhow::anyhow!("Failed to open key file: {}", e)
+                    error!("Failed to open key file: {} {}", host_config.tls.key_path.as_ref().unwrap(), e);
+                    anyhow::anyhow!("Failed to open key file: {} {}", host_config.tls.key_path.as_ref().unwrap(), e)
                 })?;
                 let mut key_file = BufReader::new(key_file);
                 let mut keys = pkcs8_private_keys(&mut key_file).unwrap();

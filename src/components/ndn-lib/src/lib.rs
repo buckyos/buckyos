@@ -26,6 +26,7 @@ pub use object_map::*;
 pub use trie_object_map::*;
 pub use object_array::*;
 
+use reqwest::StatusCode;
 use thiserror::Error;
 
 #[macro_use]
@@ -74,6 +75,16 @@ pub enum NdnError {
 
     #[error("Unsupported operation: {0}")]
     Unsupported(String),
+}
+
+impl NdnError {
+    pub fn from_http_status(code: StatusCode,info:String) -> Self {
+        match code {
+            StatusCode::NOT_FOUND => NdnError::NotFound(info),
+            StatusCode::INTERNAL_SERVER_ERROR => NdnError::Internal(info),
+            _ => NdnError::RemoteError(format!("HTTP error: {} for {}", code, info)),
+        }
+    }
 }
 
 

@@ -4,53 +4,24 @@ import tempfile
 import subprocess
 import platform
 
-def build():
-    import shutil
+src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../apps/tray-controller")
+target_dir = os.path.join(tempfile.gettempdir(), "rust_build", "tray_controller")
 
-    src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../apps/tray-controller")
-    target_dir = os.path.join(tempfile.gettempdir(), "rust_build", "tray_controller")
+def clean(target_dir):
+    print(f"Cleaning build artifacts at {target_dir}")
+    subprocess.run(["cargo", "clean", "--target-dir", target_dir], check=True, cwd=src_dir)
 
-    def clean(target_dir):
-        print(f"Cleaning build artifacts at {target_dir}")
-        subprocess.run(["cargo", "clean", "--target-dir", target_dir], check=True, cwd=src_dir)
+def build_rust(target_dir, target):
+    print(f"Building Rust code, target_dir is {target_dir}, target is {target}")
+    env = os.environ.copy()
+    env["OPENSSL_STATIC"] = "1"
+    env["RUSTFLAGS"] = "-C target-feature=+crt-static --cfg tokio_unstable"
+    subprocess.run(["cargo", "build", "--target", target, "--release", "--target-dir", target_dir], 
+                    check=True, 
+                    cwd=src_dir, 
+                    env=env)
 
-    def build_rust(target_dir, target):
-        print(f"Building Rust code, target_dir is {target_dir}, target is {target}")
-        env = os.environ.copy()
-        env["OPENSSL_STATIC"] = "1"
-        env["RUSTFLAGS"] = "-C target-feature=+crt-static --cfg tokio_unstable"
-        subprocess.run(["cargo", "build", "--target", target, "--release", "--target-dir", target_dir], 
-                       check=True, 
-                       cwd=src_dir, 
-                       env=env)
-
-    args = sys.argv[1:]
-    if len(args) == 0:
-        print("NEED ARGUMENT: clean|amd64|aarch64")
-        exit(1)
-
-    system = platform.system() # Linux / Windows / Darwin
-    arch = platform.machine() # x86_64 / AMD64 / arm64 / arm
-    
-    target = ""
-    if system == "Linux" and (arch == "x86_64" or arch == "AMD64"):
-        target = "x86_64-unknown-linux-musl"
-    elif system == "Windows" and (arch == "x86_64" or arch == "AMD64"):
-        target = "x86_64-pc-windows-msvc"
-#     elif system == "Linux" and (arch == "x86_64" or arch == "AMD64"):
-#         target = "aarch64-unknown-linux-gnu"
-    elif system == "Darwin" and (arch == "arm64" or arch == "arm"):
-        target = "aarch64-apple-darwin"
-
-    if len(args) > 0:
-        os.makedirs(target_dir, exist_ok=True)
-        if args[0] == "clean":
-            clean(target_dir)
-        elif args[0] == "amd64":
-            target = "x86_64-unknown-linux-musl"
-        elif args[0] == "aarch64":
-            target = "aarch64-unknown-linux-gnu"
-
+def build(target):
     build_rust(target_dir, target)
 
 def prepare_win(auto_win_sdk: bool):
@@ -110,11 +81,28 @@ def prepare_win(auto_win_sdk: bool):
 
 if __name__ == "__main__":
     auto_win_sdk = False
-    for arg in sys.argv:
+
+    target = ""
+    system = platform.system() # Linux / Windows / Darwin
+    arch = platform.machine() # x86_64 / AMD64 / arm64 / arm
+    if system == "Linux" and (arch == "x86_64" or arch == "AMD64"):
+        target = "x86_64-unknown-linux-musl"
+    elif system == "Windows" and (arch == "x86_64" or arch == "AMD64"):
+        target = "x86_64-pc-windows-msvc"
+    elif system == "Darwin" and (arch == "arm64" or arch == "arm"):
+        target = "aarch64-apple-darwin"
+    
+    for arg in sys.argv[1:]:
         if arg == "--auto-win-sdk":
             auto_win_sdk = True
+        elif arg.startswith("--target="):
+            target = arg.split("=")[1]
+        elif arg == "clean":
+            clean(target_dir)
+            exit(0)
 
-    if os.name == 'nt':
+    if system == 'Windows':
         prepare_win(auto_win_sdk)
 
-    build()
+    os.makedirs(target_dir, exist_ok=True)
+    build(target)

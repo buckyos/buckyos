@@ -13,12 +13,13 @@ def print_usage():
     sys.exit(1)
 
 class VMCreator:
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, config_base: str):
         with open(config_path, 'r') as f:
             self.devices = json.load(f)
         
         # 验证配置文件
         self._validate_config()
+        self.config_base = config_base
         
     def _validate_config(self):
         """验证配置文件格式"""
@@ -57,17 +58,18 @@ class VMCreator:
         cpu = vm_config.get('cpu', 1)
         memory = vm_config.get('memory', '1G')
         disk = vm_config.get('disk', '10G')
-        
+        init_yaml = os.path.join(self.config_base, 'vm_init.yaml')
         # 创建VM的基本命令
-        cmd = f"multipass launch --name {device_id} --cpus {cpu} --memory {memory} --disk {disk} --cloud-init vm_init.yaml "
+        cmd = f"multipass launch --name {device_id} --cpus {cpu} --memory {memory} --disk {disk} --cloud-init {init_yaml} "
+
         
         # 添加网络配置
         if 'network' in vm_config:
             net_config = vm_config['network']
             if net_config['type'] == 'bridge':
-                cmd += f"--network name={net_config['bridge']} "
-        
+                cmd += f"--network name={net_config['bridge']}"
         # 启动VM
+        print(f"Running command: {cmd}")
         self._run_command(cmd)
         time.sleep(5)  # 等待VM完全启动
     
@@ -102,21 +104,21 @@ class VMCreator:
 
         # TODO: 通过multipass list 获取所有vm的ip
 
-def main():
-    if len(sys.argv) != 2:
-        print_usage()
+# def main():
+#     if len(sys.argv) != 2:
+#         print_usage()
     
-    config_file = sys.argv[1]
-    if not os.path.exists(config_file):
-        print(f"Config file not found: {config_file}")
-        sys.exit(1)
+#     config_file = sys.argv[1]
+#     if not os.path.exists(config_file):
+#         print(f"Config file not found: {config_file}")
+#         sys.exit(1)
     
-    try:
-        creator = VMCreator(config_file)
-        creator.create_all()
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        sys.exit(1)
+#     try:
+#         creator = VMCreator(config_file)
+#         creator.create_all()
+#     except Exception as e:
+#         print(f"Error: {str(e)}")
+#         sys.exit(1)
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

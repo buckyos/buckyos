@@ -235,6 +235,7 @@ impl NdnClient {
             obj_id_from_url = Some(obj_id);
             obj_inner_path = inner_path;
         }
+        //info!("get_obj_by_url:obj_id_from_url:{:?},obj_inner_path:{:?}",obj_id_from_url,obj_inner_path);
         // 使用标准HTTP协议打开URL获取对象
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -247,9 +248,9 @@ impl NdnClient {
             .map_err(|e| NdnError::RemoteError(format!("Request failed: {}", e)))?;
         
         if !res.status().is_success() {
-            return Err(NdnError::RemoteError(
-                format!("HTTP error: {} for {}", res.status(), url)
-            ));
+            //cover res.status to NdnError
+            let err = NdnError::from_http_status(res.status(),url.to_string());
+            return Err(err);
         }
         
         let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
@@ -294,6 +295,10 @@ impl NdnClient {
             }
         } else {
             //URL is a Semantic Object Link (CYFS R-Link)
+            if cyfs_resp_headers.obj_id.is_none() {
+                return Err(NdnError::InvalidId("no obj id".to_string()));
+            }
+            
             let obj_id = cyfs_resp_headers.obj_id.clone().unwrap();
             let real_target_obj = NdnClient::verify_obj_id(&obj_id,&obj_str)?;
             //let real_path = 
@@ -389,10 +394,9 @@ impl NdnClient {
             .map_err(|e| NdnError::RemoteError(format!("Request failed: {}", e)))?;
         
         if !res.status().is_success() {
-            return Err(NdnError::RemoteError(
-                format!("HTTP error: {} for {}", res.status(), chunk_url)
-            ));
+            return Err(NdnError::from_http_status(res.status(),chunk_url.to_string()));
         }
+        
         let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
         let content_length = res.content_length();
         if content_length.is_none() {

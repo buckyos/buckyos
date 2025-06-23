@@ -27,7 +27,7 @@ def build(skip_web_app, skip_install, target, with_tray_controller, auto_win_sdk
     if with_tray_controller:
         if platform.system() == "Windows":
             build_tray_controller.prepare_win(auto_win_sdk)
-        build_tray_controller.build()
+        build_tray_controller.build(target)
         tray_controller_target_dir = os.path.join(temp_dir, "rust_build", "tray_controller")
         prepare_rootfs.strip_and_copy_rust_file(os.path.join(tray_controller_target_dir, target), "tray-controller", prepare_rootfs.root_bin_dir)
 
@@ -66,6 +66,8 @@ if __name__ == "__main__":
             auto_win_sdk = True
         if arg == "--tray-controller":
             with_tray_controller = True
+        if arg.startswith("--target="):
+            target = arg.split("=")[1]
 
 
     print(f"will build buckyos: with_tray_controller={with_tray_controller}, auto_win_sdk={auto_win_sdk}")

@@ -1,0 +1,3 @@
+["buckyos.test.com"]
+ttl = 300
+TXT="${config}"

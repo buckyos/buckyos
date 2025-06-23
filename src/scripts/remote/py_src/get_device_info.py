@@ -2,7 +2,7 @@ import json
 import subprocess
 import re
 
-def get_device_info():
+def get_device_info(info_path = "device_info.json"):
     # 运行multipass list命令获取设备信息
     try:
         result = subprocess.run(['multipass', 'list'], capture_output=True, text=True)
@@ -36,10 +36,10 @@ def get_device_info():
                     
         
         # 保存到JSON文件
-        with open('device_info.json', 'w', encoding='utf-8') as f:
+        with open(info_path, 'w', encoding='utf-8') as f:
             json.dump(devices, f, indent=4, ensure_ascii=False)
             
-        print("Devices information has been successfully saved in device_info.json")
+        print(f"Devices information has been successfully saved in {info_path}")
         return devices
         
     except subprocess.CalledProcessError as e:
@@ -49,5 +49,9 @@ def get_device_info():
         print(f"An error occurred: {e}")
         return None
 
-if __name__ == '__main__':
-    get_device_info()
+
+
+def read_from_config(info_path = "device_info.json"):
+    with open(info_path, 'r') as f:
+        g_all_devices = json.load(f)
+        return g_all_devices

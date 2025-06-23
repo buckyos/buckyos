@@ -19,12 +19,13 @@
             "bind":"0.0.0.0",
             "http_port":80,
             "tls_port":443,
-            "default_tls_host":"*.web3.buckyos.io",
+            "default_tls_host":"*.buckyos.ai",
             "hosts": {
-                "web3.buckyos.io": {
+                "web3.buckyos.ai": {
                     "tls": {
-                        "cert_path": "fullchain.pem",
-                        "key_path": "privkey.pem"
+                                "disable_tls": false,
+                        "cert_path": "fullchain.cer",
+                        "key_path": "buckyos.ai.key"
                     },
                     "enable_cors":true,
                     "routes": {
@@ -36,10 +37,11 @@
                         }
                     }
                 },
-                "*.web3.buckyos.io": {
+                "sn.buckyos.ai": {
                     "tls": {
-                        "cert_path": "fullchain.pem",
-                        "key_path": "privkey.pem"
+						"disable_tls": false,
+                        "cert_path": "fullchain.cer",
+                        "key_path": "buckyos.ai.key"
                     },
                     "routes": {
                         "/":{
@@ -63,7 +65,7 @@
             "type":"cyfs-dns",
             "bind":"0.0.0.0",
             "port":2053,
-            "this_name":"buckyos.io",
+            "this_name":"buckyos.ai",
             "resolver_chain": [
                 {
                   "type": "SN",

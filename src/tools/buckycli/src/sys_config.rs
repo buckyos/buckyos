@@ -1,7 +1,6 @@
-
+use buckyos_api::*;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
-use buckyos_api::*;
 
 pub async fn get_config(key: &str) {
     let api_runtime = get_buckyos_api_runtime().unwrap();
@@ -9,10 +8,10 @@ pub async fn get_config(key: &str) {
     let result = syc_cfg_client.get(key).await;
     match result {
         Ok(value) => {
-            println!("value:");
+            // println!("value:");
             println!("{}", value.0);
-            println!("version:");
-            println!("{}", value.1);
+            // println!("version:");
+            // println!("{}", value.1);
         }
         Err(err) => println!("config get error: {}", err),
     }
@@ -28,9 +27,27 @@ pub async fn set_config(key: &str, value: &str) {
     }
 }
 
+pub async fn append_config(key: &str, value: &str) {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
+    let result = syc_cfg_client.append(key, value).await;
+    match result {
+        Ok(version) => println!("{} 已追加 {}, version: {}", key, value, version),
+        Err(err) => println!("config append error: {}", err),
+    }
+}
 
-
-
+pub async fn list_config(key: &str) {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
+    let result = syc_cfg_client.list(key).await;
+    match result {
+        Ok(value) => value.iter().for_each(|item| {
+            println!("{}", item);
+        }),
+        Err(err) => println!("config list error: {}", err),
+    }
+}
 
 pub async fn connect_into() {
     let api_runtime = get_buckyos_api_runtime().unwrap();
@@ -41,7 +58,7 @@ pub async fn connect_into() {
         println!("connect system config service failed {}", e.to_string());
         return;
     }
-    
+
     println!("connect to system_config_service success");
     // handle input
     let mut rl = DefaultEditor::new().unwrap();
@@ -67,10 +84,10 @@ pub async fn connect_into() {
                         let result = syc_cfg_client.get(key).await;
                         match result {
                             Ok(value) => {
-                                println!("value:");
+                                // println!("value:");
                                 println!("{}", value.0);
-                                println!("version:");
-                                println!("{}", value.1);
+                                // println!("version:");
+                                // println!("{}", value.1);
                             }
                             Err(err) => println!("config get error: {}", err),
                         }
@@ -85,16 +102,14 @@ pub async fn connect_into() {
                         let value = parts[2];
                         let result = syc_cfg_client.set(key, value).await;
                         match result {
-                            Ok(version) => println!("{} 已设置为 {}, version: {}", key, value, version),
+                            Ok(version) => {
+                                println!("{} 已设置为 {}, version: {}", key, value, version)
+                            }
                             Err(err) => println!("config set error: {}", err),
                         }
                     }
                     "list" => {
-                        if parts.len()!= 2 {
-                            println!("用法: list <key>");
-                            continue;
-                        }
-                        let key = parts[1];
+                        let key = if parts.len() > 1 { parts[1] } else { "" };
                         let result = syc_cfg_client.list(key).await;
                         match result {
                             Ok(value) => {
@@ -106,7 +121,7 @@ pub async fn connect_into() {
                         }
                     }
                     "del" => {
-                        if parts.len()!= 2 {
+                        if parts.len() != 2 {
                             println!("用法: del <key>");
                             continue;
                         }
@@ -118,7 +133,7 @@ pub async fn connect_into() {
                         }
                     }
                     "set_jpath" | "set_jsonpath" => {
-                        if parts.len()!= 4 {
+                        if parts.len() != 4 {
                             println!("用法: jsonpath <key>/<json_path> <value>");
                             continue;
                         }

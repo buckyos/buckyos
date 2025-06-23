@@ -1,14 +1,13 @@
 .vscode
-.idea
+**/.idea
 .VSCodeCounter
-src/kernel/node_active/node_modules/
-test/test_jwt/node_modules/
 *.bkp
 *.exe
 package-lock.json
+pyvenv.cfg
+__pycache__
 src/kernel/node_active/dist/
 src/kernel/buckyos_sdk/dist/
-src/kernel/buckyos_sdk/node_modules/
 src/kernel/task_manager/tasks.db
 src/rootfs/bin/node_active/
 src/rootfs/bin/cyfs_gateway/cyfs_gateway
@@ -23,16 +22,24 @@ src/rootfs/bin/buckycli/buckycli
 /src/rootfs/bin/sys_test/
 src/rootfs/logs
 src/rootfs/tmp
-src/apps/control_panel/src/node_modules/.modules.yaml
-src/apps/control_panel/src/node_modules/.bin/handlebars
-src/apps/control_panel/src/node_modules/
 src/apps/control_panel/src/dist/
 src/apps/sys_test/dist/
-src/apps/sys_test/node_modules/
 
-/src/scripts/__pycache__/
+src/web3_bridge/web3_gateway
+
+/src/scripts/remote/device_info.json
+/src/scripts/remote/dev_configs/device_info.json
+/src/scripts/remote/lib*
+/src/scripts/remote/bin*
+/src/scripts/remote/include
+/src/scripts/remote/network-cache
+/src/scripts/remote/dev_configs/sn_server/web3_gateway.json
+/src/scripts/remote/clog
+
 target/
 cargo.lock
 pnpm-lock.yaml
 
 src/Cargo.lock
+**/node_modules
+.pnpm-store

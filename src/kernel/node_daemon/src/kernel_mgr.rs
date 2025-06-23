@@ -94,7 +94,7 @@ impl RunItemControl for KernelServiceRunItem {
                 );
             })?;
 
-        let env_key = get_session_token_env_key(&self.app_id,false);;
+        let env_key = get_session_token_env_key(&self.app_id,false);
         std::env::set_var(env_key.as_str(), device_session_token_jwt);
 
         let result = self.service_pkg
