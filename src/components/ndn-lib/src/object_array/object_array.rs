@@ -17,6 +17,7 @@ use core::hash;
 use http_types::cache;
 use serde::{Deserialize, Serialize};
 use std::io::SeekFrom;
+use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 // Because the object may be ObjectId or ChunkId, which maybe have mix mode, so we need to check the hash length
@@ -422,6 +423,21 @@ impl ObjectArray {
         self.obj_id = Some(obj_id);
 
         Ok(())
+    }
+
+    // Get the storage file path for the object array
+    // This will return None if the object ID is not generated yet
+    // The target file must be created by the `save()` method
+    pub fn get_storage_file_path(&self) -> Option<PathBuf> {
+        let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
+        let id = self.get_obj_id();
+        if id.is_none() {
+            return None;
+        }
+        let id = id.unwrap();
+
+        let file_path = factory.get_file_path(&id, self.storage_type.clone());
+        Some(file_path)
     }
 
     pub async fn save(&self) -> NdnResult<()> {

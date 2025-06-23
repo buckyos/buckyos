@@ -1,3 +1,4 @@
+pub use super::storage::TrieObjectMapProofVerifyResult;
 use super::storage::{
     TrieObjectMapInnerStorage, TrieObjectMapInnerStorageRef, TrieObjectMapProofVerifierRef,
     TrieObjectMapStorageType,
@@ -11,10 +12,8 @@ use bincode::de;
 use crypto_common::Key;
 use log::kv::value;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
-
-pub use super::storage::TrieObjectMapProofVerifyResult;
-
 
 #[derive(Debug, Clone)]
 pub struct TrieObjectMapItemProof {
@@ -49,7 +48,6 @@ impl TrieObjectMapItemProof {
         ObjId::new_by_raw(OBJ_TYPE_MTREE.to_owned(), self.root_hash.clone())
     }
 }
-
 
 pub struct TrieObjectMap {
     hash_method: HashMethod,
@@ -135,10 +133,25 @@ impl TrieObjectMap {
         Ok(Box::new(self.db.iter()?))
     }
 
-    pub fn traverse(&self, callback: &mut dyn FnMut(String, ObjId) -> NdnResult<()>) -> NdnResult<()> {
+    pub fn traverse(
+        &self,
+        callback: &mut dyn FnMut(String, ObjId) -> NdnResult<()>,
+    ) -> NdnResult<()> {
         self.db.traverse(callback)
     }
-    
+
+    pub async fn get_storage_file_path(&self) -> Option<PathBuf> {
+        let id = self.get_obj_id().await;
+
+        if self.get_storage_type() == TrieObjectMapStorageType::Memory {
+            return None; // Memory storage does not have a file path
+        }
+
+        let factory = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY.get().unwrap();
+        let file_path = factory.get_file_path_by_id(Some(&id), self.get_storage_type());
+        Some(file_path)
+    }
+
     // Should not call this function if in read-only mode
     pub async fn save(&mut self) -> NdnResult<()> {
         if self.is_read_only() {

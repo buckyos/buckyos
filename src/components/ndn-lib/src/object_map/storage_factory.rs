@@ -24,7 +24,8 @@ impl ObjectMapStorageFactory {
         }
     }
 
-    fn get_file_path_by_id(&self, container_id: Option<&ObjId>, storage_type: ObjectMapStorageType) -> PathBuf {
+    // The storage type must not be Memory, as it does not have a file path.
+    pub fn get_file_path_by_id(&self, container_id: Option<&ObjId>, storage_type: ObjectMapStorageType) -> PathBuf {
         let file_name = match storage_type {
             ObjectMapStorageType::Memory => {
                 unreachable!("Memory storage does not have a file path");

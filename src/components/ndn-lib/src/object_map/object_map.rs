@@ -16,6 +16,7 @@ use sha2::Digest;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io::SeekFrom;
+use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -333,7 +334,7 @@ impl ObjectMap {
         let iter = self.storage.iter();
         Box::new(iter)
     }
-    
+
     // Regenerate the merkle tree without checking the dirty flag
     async fn regenerate_merkle_tree(&mut self) -> NdnResult<()> {
         let count = self.storage.stat().await?.total_count;
@@ -454,6 +455,24 @@ impl ObjectMap {
         self.flush().await?;
 
         Ok(self.obj_id.clone().unwrap())
+    }
+
+    // Get the storage file path for the object map
+    // This will return None if the object ID is not generated yet
+    // The target file must be created by the `save()` method
+    pub fn get_storage_file_path(&self) -> Option<PathBuf> {
+        let id = self.get_obj_id();
+        if id.is_none() {
+            return None;
+        }
+
+        if self.get_storage_type() == ObjectMapStorageType::Memory {
+            return None; // Memory storage does not have a file path
+        }
+
+        let factory = GLOBAL_OBJECT_MAP_STORAGE_FACTORY.get().unwrap();
+        let file_path = factory.get_file_path_by_id(Some(&id.unwrap()), self.get_storage_type());
+        Some(file_path)
     }
 
     // Should not call this function if in read-only mode

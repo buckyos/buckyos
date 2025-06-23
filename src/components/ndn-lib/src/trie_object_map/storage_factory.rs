@@ -27,7 +27,7 @@ impl TrieObjectMapStorageFactory {
         }
     }
 
-    fn get_file_path_by_id(
+    pub fn get_file_path_by_id(
         &self,
         container_id: Option<&ObjId>,
         storage_type: TrieObjectMapStorageType,

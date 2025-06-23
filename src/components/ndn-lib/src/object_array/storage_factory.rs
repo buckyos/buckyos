@@ -36,6 +36,13 @@ impl ObjectArrayStorageFactory {
         }
     }
 
+    pub fn get_file_path(&self, id: &ObjId, storage_type: ObjectArrayStorageType) -> PathBuf {
+        match storage_type {
+            ObjectArrayStorageType::Arrow => self.data_path.join(format!("{}.arrow", id.to_base32())),
+            ObjectArrayStorageType::JSONFile => self.data_path.join(format!("{}.json", id.to_base32())),
+        }
+    }
+
     pub async fn open_writer(
         &self,
         id: &ObjId,
@@ -56,14 +63,14 @@ impl ObjectArrayStorageFactory {
         }
 
         let storage_type = storage_type.unwrap_or(ObjectArrayStorageType::default());
+        let file_path = self.get_file_path(id, storage_type);
+    
         match storage_type {
             ObjectArrayStorageType::Arrow => {
-                let file_path = self.data_path.join(format!("{}.arrow", id.to_base32()));
                 let writer = ObjectArrayArrowWriter::new(file_path, len);
                 Ok(Box::new(writer))
             }
             ObjectArrayStorageType::JSONFile => {
-                let file_path = self.data_path.join(format!("{}.json", id.to_base32()));
                 let writer = ObjectArrayJSONWriter::new(file_path);
                 Ok(Box::new(writer))
             }
@@ -125,14 +132,7 @@ impl ObjectArrayStorageFactory {
         readonly: bool,
         storage_type: ObjectArrayStorageType,
     ) -> NdnResult<Box<dyn ObjectArrayInnerCache>> {
-        let file_path = match storage_type {
-            ObjectArrayStorageType::Arrow => {
-                self.data_path.join(format!("{}.arrow", id.to_base32()))
-            }
-            ObjectArrayStorageType::JSONFile => {
-                self.data_path.join(format!("{}.json", id.to_base32()))
-            }
-        };
+        let file_path = self.get_file_path(id, storage_type);
 
         self.open_inner(&file_path, readonly, storage_type).await
     }
