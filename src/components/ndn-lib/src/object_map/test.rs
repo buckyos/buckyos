@@ -23,9 +23,7 @@ async fn test_object_map() {
         let hash = generate_random_buf(&i.to_string(), HashMethod::Sha256.hash_bytes());
         let obj_id = ObjId::new_by_raw(OBJ_TYPE_FILE.to_owned(), hash);
 
-        obj_map.put_object(&key, &obj_id)
-            .await
-            .unwrap();
+        obj_map.put_object(&key, &obj_id).await.unwrap();
 
         // Test get object
         let ret = obj_map.get_object(&key).await.unwrap().unwrap();
@@ -44,7 +42,7 @@ async fn test_object_map() {
 
     obj_map.flush().await.unwrap();
 
-    let objid = obj_map.get_obj_id().unwrap();
+    let (objid, obj_content) = obj_map.calc_obj_id().unwrap();
     println!("objid: {}", objid.to_string());
 
     obj_map.save().await.unwrap();
@@ -62,13 +60,16 @@ async fn test_object_map() {
             let proof = proof.unwrap();
 
             let verifier = ObjectMapProofVerifier::new(obj_map.hash_method());
-            let ret = verifier.verify(&objid, &proof).unwrap(); 
+            let ret = verifier
+                .verify_with_obj_data_str(&obj_content, &proof)
+                .unwrap();
             assert_eq!(ret, true);
         }
     }
 
     // Test reopen object map for read
-    let mut obj_map2 = ObjectMap::open(&objid, true, None).await.unwrap();
+    let obj_content = serde_json::from_str(&obj_content).unwrap();
+    let mut obj_map2 = ObjectMap::open(obj_content, true).await.unwrap();
     obj_map2.flush().await.unwrap();
 
     let objid2 = obj_map2.get_obj_id().unwrap();
@@ -87,19 +88,23 @@ async fn test_object_map() {
     assert!(obj_item2.is_some(), "Remove object failed");
 
     // Regenerate container ID
-    let objid3 = obj_map3.calc_obj_id().await.unwrap();
+    obj_map3.flush().await.unwrap();
+    let (objid3, _content) = obj_map3.calc_obj_id().unwrap();
     assert_ne!(objid, objid3, "Object ID unmatch");
 
     // Then save it to new file
     obj_map3.save().await.unwrap();
 
     // Clone for read-only
-    let obj_map_read= obj_map3.clone(true).await.unwrap();
+    let obj_map_read = obj_map3.clone(true).await.unwrap();
     let objid4 = obj_map_read.get_obj_id().unwrap();
     assert_eq!(objid3, objid4, "Object ID unmatch");
 
     // Then reinsert key1
-    obj_map3.put_object("key1", &obj_item2.unwrap()).await.unwrap();
+    obj_map3
+        .put_object("key1", &obj_item2.unwrap())
+        .await
+        .unwrap();
 
     obj_map3.flush().await.unwrap();
     let objid4 = obj_map3.get_obj_id().unwrap();
@@ -112,10 +117,7 @@ async fn test_object_map() {
         println!("key: {}, obj_id: {}", key, obj_id.to_string());
         count += 1;
     }
-
-    
 }
-
 
 #[test]
 async fn test_object_map_main() {
@@ -129,6 +131,6 @@ async fn test_object_map_main() {
     GLOBAL_OBJECT_MAP_STORAGE_FACTORY
         .set(factory)
         .unwrap_or_else(|_| panic!("Failed to set global object map storage factory"));
-    
+
     test_object_map().await;
 }

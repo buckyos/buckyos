@@ -25,21 +25,21 @@ impl ObjectMapStorageFactory {
     }
 
     // The storage type must not be Memory, as it does not have a file path.
-    pub fn get_file_path_by_id(&self, container_id: Option<&ObjId>, storage_type: ObjectMapStorageType) -> PathBuf {
+    pub fn get_file_path_by_id(&self, root_hash: Option<&str>, storage_type: ObjectMapStorageType) -> PathBuf {
         let file_name = match storage_type {
             ObjectMapStorageType::Memory => {
                 unreachable!("Memory storage does not have a file path");
             }
             ObjectMapStorageType::SQLite => {
-                if let Some(id) = container_id {
-                    id.to_base32()
+                if let Some(hash) = root_hash {
+                    hash.to_string()
                 } else {
                     self.get_temp_file_name(storage_type)
                 }
             }
             ObjectMapStorageType::JSONFile => {
-                if let Some(id) = container_id {
-                    id.to_base32()
+                if let Some(hash) = root_hash {
+                    hash.to_string()
                 } else {
                     self.get_temp_file_name(storage_type)
                 }
@@ -68,7 +68,7 @@ impl ObjectMapStorageFactory {
     
     pub async fn open(
         &self,
-        container_id: Option<&ObjId>,
+        root_hash: Option<&str>,
         read_only: bool,
         storage_type: Option<ObjectMapStorageType>,
     ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
@@ -92,12 +92,12 @@ impl ObjectMapStorageFactory {
                 Err(NdnError::PermissionDenied(msg))
             }
             ObjectMapStorageType::SQLite => {
-                let file = self.get_file_path_by_id(container_id, storage_type);
+                let file = self.get_file_path_by_id(root_hash, storage_type);
                 let storage = ObjectMapSqliteStorage::new(file, read_only)?;
                 Ok(Box::new(storage))
             }
             ObjectMapStorageType::JSONFile => {
-                let file = self.get_file_path_by_id(container_id, storage_type);
+                let file = self.get_file_path_by_id(root_hash, storage_type);
                 let storage = ObjectMapJSONStorage::new(file, read_only)?;
                 Ok(Box::new(storage))
             }
@@ -106,27 +106,27 @@ impl ObjectMapStorageFactory {
 
     pub async fn save(
         &self,
-        container_id: &ObjId,
+        root_hash: &str,
         storage: &mut dyn ObjectMapInnerStorage,
     ) -> NdnResult<()> {
-        let file = self.get_file_path_by_id(Some(container_id), storage.get_type());
+        let file = self.get_file_path_by_id(Some(root_hash), storage.get_type());
 
         storage.save(&file).await
     }
 
     pub async fn clone(
         &self,
-        container_id: &ObjId,
+        root_hash: &str,
         storage: &dyn ObjectMapInnerStorage,
         read_only: bool,
     ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         let file_name = if read_only {
-            container_id.to_base32()
+            root_hash.to_string()
         } else {
             let index = self.temp_file_index.fetch_add(1, Ordering::SeqCst);
             format!(
                 "clone_{}_{}_{}.{}",
-                container_id.to_base32(),
+                root_hash,
                 index,
                 chrono::Utc::now().timestamp(), 
                 Self::get_file_ext(storage.get_type()),

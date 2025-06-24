@@ -6,10 +6,11 @@ use crate::mtree::{
 };
 use crate::object::ObjId;
 use crate::{
+    build_named_object_by_json,
     hash::{HashHelper, HashMethod},
     NdnError, NdnResult,
 };
-use crate::{MerkleTreeProofPathVerifier, OBJ_TYPE_OBJMAP};
+use crate::{Base32Codec, MerkleTreeProofPathVerifier, OBJ_TYPE_OBJMAP};
 use core::hash;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -63,24 +64,25 @@ impl ObjectMapItem {
     */
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct ObjectMapMeta {
-    // Default is Sha256
-    pub hash_method: HashMethod,
-}
-
 #[derive(Debug, Clone)]
 pub struct ObjectMapItemProof {
     pub item: ObjectMapItem,
     pub proof: Vec<(u64, Vec<u8>)>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ObjectMapBody {
+    pub root_hash: String, // The root hash of the merkle tree, encode as base32
+    pub hash_method: HashMethod,
+    pub storage_type: ObjectMapStorageType,
+}
+
 pub struct ObjectMap {
-    pub meta: ObjectMapMeta,
+    pub hash_method: HashMethod,
     pub is_dirty: bool,
     pub storage: Box<dyn ObjectMapInnerStorage>,
     pub mtree: Option<MerkleTreeObject>,
-    pub obj_id: Option<ObjId>, // Same as the root hash of the mtree
+    pub obj_id: Option<ObjId>, // Cache the object ID for the object map, updated on flush
 }
 
 impl ObjectMap {
@@ -100,17 +102,8 @@ impl ObjectMap {
                 e
             })?;
 
-        // First save the meta to storage
-        let meta = ObjectMapMeta { hash_method };
-        let data = bincode::serialize(&meta).unwrap();
-        storage.put_meta(&data).await.map_err(|e| {
-            let msg = format!("Error putting object map meta: {}", e);
-            error!("{}", msg);
-            e
-        })?;
-
         Ok(Self {
-            meta,
+            hash_method,
             is_dirty: false,
             storage,
             mtree: None,
@@ -127,40 +120,26 @@ impl ObjectMap {
     }
 
     // Load object map from storage
-    pub async fn open(
-        container_id: &ObjId,
-        read_only: bool,
-        storage_type: Option<ObjectMapStorageType>,
-    ) -> NdnResult<Self> {
-        let storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
-            .get()
-            .unwrap()
-            .open(Some(container_id), read_only, storage_type)
-            .await
-            .map_err(|e| {
-                let msg = format!("Error opening object map storage: {}, {}", container_id, e);
-                error!("{}", msg);
-                e
-            })?;
-
-        // First load meta from storage
-        let ret = storage.get_meta().await.map_err(|e| {
-            let msg = format!("Error getting object map meta: {}, {}", container_id, e);
-            error!("{}", msg);
-            e
-        })?;
-
-        if ret.is_none() {
-            let msg = "Object map meta is not found".to_string();
-            error!("{}", msg);
-            return Err(NdnError::InvalidData(msg));
-        }
-
-        let meta: ObjectMapMeta = bincode::deserialize(&ret.unwrap()).map_err(|e| {
-            let msg = format!("Error decoding object map meta: {}", e);
+    pub async fn open(obj_data: serde_json::Value, read_only: bool) -> NdnResult<Self> {
+        let body: ObjectMapBody = serde_json::from_value(obj_data).map_err(|e| {
+            let msg = format!("Error decoding object map body: {}", e);
             error!("{}", msg);
             NdnError::InvalidData(msg)
         })?;
+
+        let storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
+            .get()
+            .unwrap()
+            .open(Some(&body.root_hash), read_only, Some(body.storage_type))
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "Error opening object map storage: {}, {}",
+                    body.root_hash, e
+                );
+                error!("{}", msg);
+                e
+            })?;
 
         // Try load mtree data from storage
         let ret = storage.load_mtree_data().await.map_err(|e| {
@@ -188,7 +167,7 @@ impl ObjectMap {
         };
 
         let mut map = Self {
-            meta,
+            hash_method: body.hash_method,
             is_dirty: false,
             storage,
             mtree,
@@ -202,14 +181,34 @@ impl ObjectMap {
         Ok(map)
     }
 
-    // If mtree exists, return the current objid, otherwise return None
+    // If mtree exists, return the current obj id, otherwise return None
     // If mtree is dirty, then should call flush/calc_obj_id to regenerate the mtree first
     pub fn get_obj_id(&self) -> Option<ObjId> {
         self.obj_id.clone()
     }
 
+    pub fn calc_obj_id(&self) -> Option<(ObjId, String)> {
+        let root_hash = self.get_root_hash_str();
+        if root_hash.is_none() {
+            return None;
+        }
+        let root_hash = root_hash.unwrap();
+        let body = ObjectMapBody {
+            root_hash,
+            hash_method: self.hash_method.clone(),
+            storage_type: self.get_storage_type(),
+        };
+
+        let (obj_id, s) = build_named_object_by_json(
+            OBJ_TYPE_OBJMAP,
+            &serde_json::to_value(&body).expect("Failed to serialize ObjectMapBody"),
+        );
+
+        Some((obj_id, s))
+    }
+
     pub fn hash_method(&self) -> HashMethod {
-        self.meta.hash_method
+        self.hash_method
     }
 
     pub async fn len(&self) -> NdnResult<usize> {
@@ -345,7 +344,7 @@ impl ObjectMap {
         let buf_size = MerkleTreeObjectGenerator::estimate_output_bytes(
             data_size,
             leaf_size,
-            Some(self.meta.hash_method),
+            Some(self.hash_method),
         );
         let buf = SharedBuffer::with_size(buf_size as usize);
         let stream = MtreeReadWriteSeekWithSharedBuffer::new(buf);
@@ -354,7 +353,7 @@ impl ObjectMap {
         let mut mtree_generator = MerkleTreeObjectGenerator::new(
             data_size,
             leaf_size,
-            Some(self.meta.hash_method),
+            Some(self.hash_method),
             mtree_writer,
         )
         .await?;
@@ -380,7 +379,7 @@ impl ObjectMap {
 
                 let item = item.unwrap();
                 let hash = HashHelper::calc_hash_list(
-                    self.meta.hash_method,
+                    self.hash_method,
                     &[key.as_bytes(), item.obj_hash.as_slice()],
                 );
 
@@ -443,26 +442,24 @@ impl ObjectMap {
         self.regenerate_merkle_tree().await?;
         self.is_dirty = false;
 
-        let root_hash = self.get_root_hash().unwrap();
-        let obj_id = ObjId::new_by_raw(OBJ_TYPE_OBJMAP.to_owned(), root_hash);
-        self.obj_id = Some(obj_id.clone());
-        info!("Calculated object map id: {}", obj_id);
+        let (obj_id, _content) = self.calc_obj_id().unwrap();
+        info!(
+            "Calculated object map root hash and id: {}, {}",
+            self.get_root_hash_str().unwrap(),
+            obj_id
+        );
+
+        self.obj_id = Some(obj_id);
 
         Ok(())
-    }
-
-    pub async fn calc_obj_id(&mut self) -> NdnResult<ObjId> {
-        self.flush().await?;
-
-        Ok(self.obj_id.clone().unwrap())
     }
 
     // Get the storage file path for the object map
     // This will return None if the object ID is not generated yet
     // The target file must be created by the `save()` method
     pub fn get_storage_file_path(&self) -> Option<PathBuf> {
-        let id = self.get_obj_id();
-        if id.is_none() {
+        let root_hash = self.get_root_hash_str();
+        if root_hash.is_none() {
             return None;
         }
 
@@ -471,7 +468,8 @@ impl ObjectMap {
         }
 
         let factory = GLOBAL_OBJECT_MAP_STORAGE_FACTORY.get().unwrap();
-        let file_path = factory.get_file_path_by_id(Some(&id.unwrap()), self.get_storage_type());
+        let file_path =
+            factory.get_file_path_by_id(Some(&root_hash.unwrap()), self.get_storage_type());
         Some(file_path)
     }
 
@@ -485,19 +483,19 @@ impl ObjectMap {
 
         self.flush().await?;
 
-        let obj_id = self.get_obj_id();
-        if obj_id.is_none() {
-            let msg = "Object map is empty".to_string();
+        let root_hash = self.get_root_hash_str();
+        if root_hash.is_none() {
+            let msg = "Object map root hash is empty".to_string();
             error!("{}", msg);
             return Err(NdnError::InvalidState(msg));
         }
 
-        let obj_id = obj_id.unwrap();
+        let root_hash = root_hash.unwrap();
 
         GLOBAL_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .save(&obj_id, &mut *self.storage)
+            .save(&root_hash, &mut *self.storage)
             .await
             .map_err(|e| {
                 let msg = format!("Error saving object map: {}", e);
@@ -505,7 +503,7 @@ impl ObjectMap {
                 e
             })?;
 
-        info!("Saved object map to storage: {}", obj_id);
+        info!("Saved object map to storage: {}", root_hash);
 
         Ok(())
     }
@@ -517,19 +515,19 @@ impl ObjectMap {
             return Err(NdnError::InvalidState(msg));
         }
 
-        let obj_id = self.get_obj_id();
-        if obj_id.is_none() {
-            let msg = "Object map is empty".to_string();
+        let root_hash = self.get_root_hash_str();
+        if root_hash.is_none() {
+            let msg = "Object map root hash is empty".to_string();
             error!("{}", msg);
             return Err(NdnError::InvalidState(msg));
         }
 
-        let obj_id = obj_id.unwrap();
+        let root_hash = root_hash.unwrap();
 
         let mut new_storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .clone(&obj_id, &*self.storage, read_only)
+            .clone(&root_hash, &*self.storage, read_only)
             .await
             .map_err(|e| {
                 let msg = format!("Error cloning object map storage: {}", e);
@@ -537,18 +535,23 @@ impl ObjectMap {
                 e
             })?;
 
-        let ret = Self {
-            meta: self.meta.clone(),
+        let mut ret = Self {
+            hash_method: self.hash_method.clone(),
             is_dirty: true,
             storage: new_storage,
             mtree: None,
             obj_id: self.obj_id.clone(),
         };
 
+        if read_only {
+            // If read-only, we don't need to regenerate the mtree
+            ret.is_dirty = false;
+        }
+
         Ok(ret)
     }
 
-    fn get_root_hash(&self) -> Option<Vec<u8>> {
+    pub fn get_root_hash(&self) -> Option<Vec<u8>> {
         if self.mtree.is_none() {
             return None;
         }
@@ -556,6 +559,11 @@ impl ObjectMap {
         let mtree = self.mtree.as_ref().unwrap();
         let root_hash = mtree.get_root_hash();
         Some(root_hash)
+    }
+
+    pub fn get_root_hash_str(&self) -> Option<String> {
+        self.get_root_hash()
+            .map(|hash| Base32Codec::to_base32(&hash))
     }
 }
 
@@ -568,7 +576,41 @@ impl ObjectMapProofVerifier {
         Self { hash_method }
     }
 
-    pub fn verify(&self, object_map: &ObjId, proof: &ObjectMapItemProof) -> NdnResult<bool> {
+    pub fn verify_with_obj_data_str(
+        &self,
+        obj_data: &str,
+        proof: &ObjectMapItemProof,
+    ) -> NdnResult<bool> {
+        // Parse the object data as JSON
+        let body: ObjectMapBody = serde_json::from_str(obj_data).map_err(|e| {
+            let msg = format!("Error decoding object map body: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        let root_hash = body.root_hash;
+        self.verify(&root_hash, proof)
+    }
+
+    pub fn verify_with_obj_data(
+        &self,
+        obj_data: serde_json::Value,
+        proof: &ObjectMapItemProof,
+    ) -> NdnResult<bool> {
+        // Get the root hash from the object data
+        let body: ObjectMapBody = serde_json::from_value(obj_data).map_err(|e| {
+            let msg = format!("Error decoding object map body: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        let root_hash = body.root_hash;
+        self.verify(&root_hash, proof)
+    }
+
+    // root_hash is the object map's root hash, which is the body.root_hash field, encoded as base32
+    // proof is the ObjectMapItemProof, which contains the item and the proof path
+    pub fn verify(&self, root_hash: &str, proof: &ObjectMapItemProof) -> NdnResult<bool> {
         if proof.proof.len() < 2 {
             let msg = format!("Invalid proof path length: {}", proof.proof.len());
             error!("{}", msg);
@@ -581,18 +623,24 @@ impl ObjectMapProofVerifier {
         // The first item is the leaf node, which is the item itself
         if proof.proof[0].1 != item_hash {
             let msg = format!(
-                "Unmatched objectmap leaf hash: expected {:?}, got {:?}",
+                "Unmatched object map leaf hash: expected {:?}, got {:?}",
                 item_hash, proof.proof[0].1
             );
             error!("{}", msg);
             return Err(NdnError::InvalidData(msg));
         }
 
-        // The last item is the root node, which is objid.hash field
-        if proof.proof[proof.proof.len() - 1].1 != object_map.obj_hash {
+        let root_hash = Base32Codec::from_base32(root_hash).map_err(|e| {
+            let msg = format!("Error decoding root hash: {}, {}", root_hash, e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        // The last item is the root node, which is the expected root hash
+        if proof.proof[proof.proof.len() - 1].1 != root_hash {
             let msg = format!(
-                "Unmatched objectmap root hash: expected {:?}, got {:?}",
-                object_map.obj_hash,
+                "Unmatched object map root hash: expected {:?}, got {:?}",
+                root_hash,
                 proof.proof[proof.proof.len() - 1].1
             );
             error!("{}", msg);

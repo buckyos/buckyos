@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObjectMapStorageType {
     Memory,
     SQLite,
