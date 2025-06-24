@@ -4,6 +4,7 @@ use super::object_map::{
 };
 use super::storage_factory::{TrieObjectMapStorageFactory, GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY};
 use crate::hash::{HashHelper, HashMethod};
+use crate::trie_object_map::file;
 use crate::ObjId;
 use crate::TrieObjectMapStorageType;
 use crate::OBJ_TYPE_FILE;
@@ -205,6 +206,115 @@ async fn test_traverse(key_pairs: &[(String, ObjId)]) {
     assert_eq!(count, key_pairs.len());
 }
 
+async fn test_storage(key_pairs: &[(String, ObjId)]) {
+    let mut obj_map = TrieObjectMap::new(HashMethod::Keccak256, Some(TrieObjectMapStorageType::JSONFile))
+        .await
+        .unwrap();
+    println!("Object map created");
+
+    for (key, obj_id) in key_pairs.iter() {
+        obj_map.put_object(key, obj_id).unwrap();
+    }
+
+    let id = obj_map.get_obj_id();
+    println!("All objects put {}", id);
+
+    // Test iterator
+    let mut iter = obj_map.iter().unwrap();
+    let mut count = 0;
+    while let Some((key, obj_id)) = iter.next() {
+        // Verify the key and object ID in the key_pairs
+        let ret = key_pairs.contains(&(key.clone(), obj_id.clone()));
+        assert!(ret, "Key not found in key_pairs: {}", key);
+
+        // Check if object in object map
+        let ret = obj_map.get_object(&key).unwrap();
+        assert!(ret.is_some(), "Object not found for key: {}", key);
+        assert_eq!(ret.unwrap(), obj_id, "Object ID mismatch for key: {}", key);
+
+        // println!("Iterated key: {}, obj_id: {}", key, obj_id);
+        count += 1;
+    }
+    assert_eq!(count, key_pairs.len());
+    drop(iter);
+
+    for (key, obj_id) in key_pairs.iter() {
+        let ret: Option<ObjId> = obj_map.get_object(key).unwrap();
+        assert!(ret.is_some(), "Object not found for key: {}", key);
+        assert_eq!(ret.unwrap(), *obj_id, "Object ID mismatch for key: {}", key);
+    }
+
+    // Save the object map to storage
+    let storage = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY.get().unwrap();
+    let ret = obj_map.save().await;
+    assert!(ret.is_ok(), "Failed to save object map to storage");
+
+    let file_path = obj_map.get_storage_file_path();
+    assert!(file_path.is_some(), "Storage file path is None");
+    println!("Object map saved to storage at: {:?}", file_path);
+
+    // Load the object map from storage
+    let loaded_obj_map = TrieObjectMap::open(&id, true, HashMethod::Keccak256, None)
+        .await
+        .unwrap();
+    println!("Object map loaded from storage");
+
+    // List all objects in the loaded object map
+    let mut iter = loaded_obj_map.iter().unwrap();
+    let mut count = 0;
+    while let Some((key, obj_id)) = iter.next() {
+        // Verify the key and object ID in the key_pairs
+        let ret = key_pairs.contains(&(key.clone(), obj_id.clone()));
+        assert!(ret, "Key not found in key_pairs: {}", key);
+
+        // Check if object in object map
+        let ret = loaded_obj_map.get_object(&key).unwrap();
+        assert!(ret.is_some(), "Object not found for key: {}", key);
+        assert_eq!(ret.unwrap(), obj_id, "Object ID mismatch for key: {}", key);
+
+        // println!("Loaded iterated key: {}, obj_id: {}", key, obj_id);
+        count += 1;
+    }
+    println!("Total loaded objects: {}", count);
+
+    // Verify the loaded object map
+    for (key, obj_id) in key_pairs.iter() {
+        // println!("Verifying key: {}, obj_id: {}", key, obj_id);
+        let ret: Option<ObjId> = loaded_obj_map.get_object(key).unwrap();
+        assert!(ret.is_some(), "Object not found for key: {}", key);
+        assert_eq!(ret.unwrap(), *obj_id, "Object ID mismatch for key: {}", key);
+    }
+
+    // Clone for modification
+    let mut cloned_obj_map = obj_map.clone(false).await.unwrap();
+
+    println!("Object map cloned for modification");
+    for (key, obj_id) in key_pairs.iter() {
+        let ret = cloned_obj_map.get_object(key).unwrap();
+        assert!(ret.is_some(), "Object not found for key: {}", key);
+        assert_eq!(ret.unwrap(), *obj_id, "Object ID mismatch for key: {}", key);
+    }
+
+    // Remove first object
+    if let Some((key, obj_id)) = key_pairs.first() {
+        let ret = cloned_obj_map.remove_object(key).unwrap();
+        assert!(ret.is_some(), "Object not found for key: {}", key);
+        assert_eq!(ret.unwrap(), *obj_id, "Object ID mismatch for key: {}", key);
+        println!("Removed object: {}, obj_id: {}", key, obj_id);
+    } else {
+        panic!("No key pairs to remove");
+    }
+
+    // Gen new object map ID
+    let new_obj_id = cloned_obj_map.get_obj_id();
+    println!("New object map ID: {}", new_obj_id);
+    assert_ne!(new_obj_id, id, "New object map ID should be different from original");
+
+    // Verify the removed object
+    let ret: Option<ObjId> = cloned_obj_map.get_object(key_pairs.first().unwrap().0.as_ref()).unwrap();
+    assert!(ret.is_none(), "Object should not be found after removal");
+}
+
 #[test]
 async fn test_trie_object_map1() {
     init_logging("test_trie_object_map", false);
@@ -229,6 +339,8 @@ async fn test_trie_object_map1() {
     println!("Test object map");
     let key_pairs = generate_key_value_pairs("test", 100);
     println!("Key pairs generated");
+
+    test_storage(key_pairs.as_slice()).await;
 
     // test_iterator(key_pairs.as_slice()).await;
     test_traverse(key_pairs.as_slice()).await;

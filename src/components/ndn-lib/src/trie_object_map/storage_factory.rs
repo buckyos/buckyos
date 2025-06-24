@@ -1,8 +1,8 @@
-use super::file::{TrieObjectMapSqliteStorage, TrieObjectMapJSONFileStorage};
+use super::file::{TrieObjectMapJSONFileStorage, TrieObjectMapSqliteStorage};
 use super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
-use super::inner_storage::{ TrieObjectMapInnerStorageWrapper};
+use super::inner_storage::TrieObjectMapInnerStorageWrapper;
 use super::storage::{
-    GenericTrieObjectMapProofVerifier, TrieObjectMapProofVerifier, HashFromSlice,
+    GenericTrieObjectMapProofVerifier, HashFromSlice, TrieObjectMapProofVerifier,
 };
 use super::storage::{TrieObjectMapInnerStorage, TrieObjectMapStorageType};
 use crate::{HashDBWithFile, HashMethod, NdnError, NdnResult, ObjId};
@@ -127,6 +127,12 @@ impl TrieObjectMapStorageFactory {
         }
 
         let storage_type = storage_type.unwrap_or(self.default_storage_type);
+        let root: Option<<H as Hasher>::Out> = if let Some(id) = container_id {
+            Some(H::Out::from_slice(id.obj_hash.as_slice())?)
+        } else {
+            None
+        };
+
         match storage_type {
             TrieObjectMapStorageType::Memory => {
                 let msg = "Memory storage is not supported for open operation".to_string();
@@ -135,12 +141,16 @@ impl TrieObjectMapStorageFactory {
             }
             TrieObjectMapStorageType::SQLite => {
                 let file = self.get_file_path_by_id(container_id, storage_type);
-                info!("Opening TrieObjectMap SQLite storage at: {}", file.display());
+                info!(
+                    "Opening TrieObjectMap SQLite storage at: {}",
+                    file.display()
+                );
 
                 let db = TrieObjectMapSqliteStorage::<H>::new(file, read_only)?;
                 let storage = TrieObjectMapInnerStorageWrapper::<H>::new(
                     db.get_type(),
                     Box::new(db) as Box<dyn HashDBWithFile<H, Vec<u8>>>,
+                    root,
                     read_only,
                 );
                 let ret = Box::new(storage) as Box<dyn TrieObjectMapInnerStorage>;
@@ -155,6 +165,7 @@ impl TrieObjectMapStorageFactory {
                 let storage = TrieObjectMapInnerStorageWrapper::<H>::new(
                     db.get_type(),
                     Box::new(db) as Box<dyn HashDBWithFile<H, Vec<u8>>>,
+                    root,
                     read_only,
                 );
                 let ret = Box::new(storage) as Box<dyn TrieObjectMapInnerStorage>;

@@ -99,12 +99,15 @@ impl<H: Hasher + 'static> TrieObjectMapInnerStorageWrapper<H> {
     pub fn new(
         storage_type: TrieObjectMapStorageType,
         db: Box<dyn HashDBWithFile<H, Vec<u8>>>,
+        root: Option<<H as Hasher>::Out>,
         read_only: bool,
     ) -> Self
     where
         <H as hash_db::Hasher>::Out: AsRef<[u8]>,
     {
-        let root = <GenericLayout<H> as TrieLayout>::Codec::hashed_null_node();
+        let root = root.unwrap_or_else(||
+            <GenericLayout<H> as TrieLayout>::Codec::hashed_null_node()
+        );
         Self {
             storage_type,
             db,
@@ -341,10 +344,11 @@ where
     ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>> {
         // Clone the database
         let cloned_db = self.db.clone(target, read_only).await?;
+        let root = self.root.clone();
 
         // Create a new storage wrapper with the cloned database
         let new_storage =
-            TrieObjectMapInnerStorageWrapper::<H>::new(self.storage_type, cloned_db, read_only);
+            TrieObjectMapInnerStorageWrapper::<H>::new(self.storage_type, cloned_db, Some(root), read_only);
 
         Ok(Box::new(new_storage))
     }
