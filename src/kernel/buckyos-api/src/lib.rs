@@ -393,6 +393,16 @@ impl BuckyOSRuntime {
         Ok(())
     }
 
+    pub async fn refresh_token_from_verify_hub(&mut self) -> Result<()> {
+        let mut session_token = self.session_token.write().await;
+        if session_token.is_empty() {
+            
+        }
+        //let verify_hub_client = self.get_verify_hub_client().await?;
+        //let verify_hub_client.login_by_jwt(Some(real_session_token.token.as_ref().unwrap().clone()),None).await?;
+        Ok(())
+    }
+
 
     pub async fn login(&mut self) -> Result<()> {
         if !self.zone_id.is_valid() {
@@ -447,14 +457,6 @@ impl BuckyOSRuntime {
                 if appid != self.app_id {
                     return Err(RPCErrors::ReasonError("Session token is not valid".to_string()));
                 }
-
-                //self.user_id = Some(real_session_token.userid.clone().unwrap_or("root".to_string()));
-
-                // let trust_keys = self.trust_keys.read().await;
-                // real_session_token.verify_by_key_map(&trust_keys).map_err(|e| {
-                //     error!("api-runtime: session token is set,runtime_type:{:?},check and use current session token failed:{}",self.runtime_type,e);
-                //     RPCErrors::ReasonError(format!("session token is set,runtime_type:{:?},check and use current session token failed:{}",self.runtime_type,e))
-                // })?;
             }
             drop(session_token);
         }
@@ -521,7 +523,7 @@ impl BuckyOSRuntime {
     }
 
     async fn refresh_trust_keys(&self) -> Result<()> {
-        //zone_config 中包含trust_keys
+
         //从当前device_config中获取trust_keys
         if self.deivce_config.is_some() {
             let device_config = self.deivce_config.as_ref().unwrap();
@@ -536,6 +538,7 @@ impl BuckyOSRuntime {
             }
         }
 
+        //zone_config 中包含trust_keys
         if self.zone_config.is_some() {
             let zone_config = self.zone_config.as_ref().unwrap();
 

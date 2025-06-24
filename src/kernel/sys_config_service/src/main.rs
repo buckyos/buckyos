@@ -14,6 +14,7 @@ use lazy_static::lazy_static;
 use serde_json::Value;
 use tokio::sync::Mutex;
 use warp::Filter;
+use std::path::{Component, Path, PathBuf};
 
 use ::kRPC::*;
 use buckyos_kit::*;
@@ -34,6 +35,48 @@ lazy_static! {
         Arc::new(Mutex::new(SledStore::new().unwrap()));
 }
 
+fn normalize_path(path_str: &str) -> Result<String> {
+    let mut components = Path::new(path_str).components().peekable();
+    let mut normalized = PathBuf::new();
+
+    while let Some(comp) = components.next() {
+        match comp {
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push("..");
+                }
+            }
+            Component::CurDir => {
+                // 忽略当前目录
+            }
+            Component::Normal(c) => {
+                normalized.push(c);
+            }
+            Component::RootDir => {
+                normalized.push(comp);
+            }
+            Component::Prefix(p) => {
+                normalized.push(p.as_os_str()); // Windows 前缀（例如 C:\）
+            }
+        }
+    }
+
+    Ok(normalized.to_string_lossy().to_string())
+}
+
+fn get_full_res_path(key_path:&str) -> Result<(String,String)> {
+    let mut real_key_path = key_path;
+    if key_path.starts_with("kv://") {
+        real_key_path = &key_path[6..];
+    }
+
+    let key = real_key_path.trim_start_matches('/').trim_start_matches('\\');
+    let normalized_path = normalize_path(key)?;
+   
+    return Ok((format!("kv://{}", normalized_path.as_str()),normalized_path));
+}
+
+
 async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
     let key = params.get("key");
     if key.is_none() {
@@ -52,7 +95,7 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
     }
     let userid = session_token.userid.as_ref().unwrap();
 
-    let full_res_path = format!("kv://{}", key);
+    let (full_res_path,real_key_path) = get_full_res_path(key)?;
     let is_allowed = enforce(userid, None, full_res_path.as_str(), "read").await;
     if !is_allowed {
         warn!("No read permission");
@@ -61,7 +104,7 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
 
     let store = SYS_STORE.lock().await;
     let result = store
-        .get(String::from(key))
+        .get(real_key_path)
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     if result.is_none() {
@@ -92,7 +135,7 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
         return Err(RPCErrors::NoPermission("No userid".to_string()));
     }
     let userid = session_token.userid.as_ref().unwrap();
-    let full_res_path = format!("kv://{}", key);
+    let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -108,7 +151,7 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     let store = SYS_STORE.lock().await;
     info!("Set key:[{}] to value:[{}]", key, new_value);
     store
-        .set(String::from(key), String::from(new_value))
+        .set(real_key_path, String::from(new_value))
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
@@ -136,7 +179,7 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
         return Err(RPCErrors::NoPermission("No userid".to_string()));
     }
     let userid = session_token.userid.as_ref().unwrap();
-    let full_res_path = format!("kv://{}", key);
+    let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -152,7 +195,7 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
     let store = SYS_STORE.lock().await;
     info!("Create key:[{}] to value:[{}]", key, new_value);
     store
-        .create(key, new_value)
+        .create(&real_key_path, new_value)
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
@@ -175,7 +218,7 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
         return Err(RPCErrors::NoPermission("No userid".to_string()));
     }
     let userid = session_token.userid.as_ref().unwrap();
-    let full_res_path = format!("kv://{}", key);
+    let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -191,7 +234,7 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
     let store = SYS_STORE.lock().await;
     info!("Delete key:[{}]", key);
     store
-        .delete(key)
+        .delete(&real_key_path)
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
@@ -218,7 +261,7 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
         return Err(RPCErrors::NoPermission("No userid".to_string()));
     }
     let userid = session_token.userid.as_ref().unwrap();
-    let full_res_path = format!("kv://{}", key);
+    let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -233,17 +276,17 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
     //read and append
     let store = SYS_STORE.lock().await;
     let result = store
-        .get(String::from(key))
+        .get(real_key_path.clone())
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     if result.is_none() {
         warn!("key:[{}] not exist,cann't append", key);
-        return Err(RPCErrors::KeyNotExist);
+        return Err(RPCErrors::KeyNotExist(key.to_string()));
     } else {
         let old_value = result.unwrap();
         let new_value = format!("{}{}", old_value, append_value);
         store
-            .set(String::from(key), new_value)
+            .set(real_key_path, new_value)
             .await
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         return Ok(Value::Null);
@@ -280,7 +323,7 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
         return Err(RPCErrors::NoPermission("No userid".to_string()));
     }
     let userid = session_token.userid.as_ref().unwrap();
-    let full_res_path = format!("kv://{}", key);
+    let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -295,7 +338,7 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
     //do business logic
     let store = SYS_STORE.lock().await;
     store
-        .set_by_path(String::from(key), String::from(json_path), &new_value)
+        .set_by_path(real_key_path, String::from(json_path), &new_value)
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     //let result = store.get(String::from(key)).await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
@@ -325,7 +368,7 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
 
     // Process each action into KVAction
     for (key, action) in actions.as_object().unwrap() {
-        let full_res_path = format!("kv://{}", key);
+        let (full_res_path,real_key_path) = get_full_res_path(key)?;
         if !enforce(
             userid,
             session_token.appid.as_deref(),
@@ -336,7 +379,7 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
         {
             return Err(RPCErrors::NoPermission(format!(
                 "No write permission for key: {}",
-                key
+                &real_key_path
             )));
         }
 
@@ -344,7 +387,7 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
             .get("action")
             .ok_or(RPCErrors::ReasonError(format!(
                 "Missing action type for key: {}",
-                key
+                &real_key_path
             )))?
             .as_str()
             .ok_or(RPCErrors::ReasonError(
@@ -400,7 +443,7 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
                 )))
             }
         };
-        tx_actions.insert(key.clone(), kv_action);
+        tx_actions.insert(real_key_path.clone(), kv_action);
     }
     let mut real_main_key = None;
     let main_key = params.get("main_key");
@@ -435,7 +478,7 @@ async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<V
         return Err(RPCErrors::NoPermission("No userid".to_string()));
     }
     let userid = session_token.userid.as_ref().unwrap();
-    let full_res_path = format!("kv://{}", key);
+    let (full_res_path,real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
         session_token.appid.as_deref(),
@@ -450,7 +493,7 @@ async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<V
     //do business logic
     let store = SYS_STORE.lock().await;
     let result = store
-        .list_direct_children(key.to_string())
+        .list_direct_children(real_key_path)
         .await
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     Ok(Value::Array(
@@ -459,6 +502,8 @@ async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<V
 }
 
 async fn handle_refresh_trust_keys() -> Result<Value> {
+    TRUST_KEYS.lock().await.clear();
+    info!("TRUST_KEYS cleared,refresh_trust_keys");
     let store = SYS_STORE.lock().await;
     let zone_config = store.get("boot/config".to_string()).await;
     if zone_config.is_ok() {
@@ -482,6 +527,7 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
                         );
                         RPCErrors::ReasonError(err.to_string())
                     })?;
+
                 TRUST_KEYS
                     .lock()
                     .await
@@ -497,14 +543,9 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
                         error!("Failed to parse owner_public_key from zone_config: {}", err);
                         RPCErrors::ReasonError(err.to_string())
                     })?;
-                    TRUST_KEYS
-                        .lock()
-                        .await
-                        .insert(owner_did.to_string(), owner_public_key.clone());
-                    TRUST_KEYS
-                        .lock()
-                        .await
-                        .insert(owner_did.id.clone(), owner_public_key.clone());
+                    let mut trust_keys = TRUST_KEYS.lock().await;
+                    trust_keys.insert(owner_did.to_string(), owner_public_key.clone());
+                    trust_keys.insert("root".to_string(), owner_public_key.clone());
                     info!(
                         "update owner_public_key [{}],[{}] to trust keys",
                         owner_did.to_string(),
@@ -513,8 +554,43 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
                 }
             }
         }
+        
     }
 
+    let device_doc_str = std::env::var("BUCKYOS_THIS_DEVICE");
+    if device_doc_str.is_ok() {
+        let device_doc_str = device_doc_str.unwrap();
+        let device_doc: DeviceConfig = serde_json::from_str(&device_doc_str).unwrap();
+        //device_doc.iss
+        let devcie_key = device_doc.get_default_key();
+
+        if devcie_key.is_some() {
+            let devcie_key = devcie_key.unwrap();
+            let device_key_str = serde_json::to_string(&devcie_key).unwrap();
+            let real_key = DecodingKey::from_jwk(&devcie_key).unwrap();
+            TRUST_KEYS
+                .lock()
+                .await
+                .insert(device_doc.name.clone(), real_key.clone());
+            info!(
+                "Insert device name:[{}] - key:[{}] to trust keys",
+                device_doc.name, device_key_str
+            );
+
+            TRUST_KEYS
+                .lock()
+                .await
+                .insert(device_doc.id.to_string(), real_key);
+            info!(
+                "Insert device did:[{}] - key:[{}] to trust keys",
+                device_doc.id.to_string(),
+                device_key_str
+            );
+        }
+    } else {
+        error!("Missing BUCKYOS_THIS_DEVICE");
+    }
+    
     Ok(Value::Null)
 }
 
@@ -627,13 +703,54 @@ async fn process_request(
     }
 }
 
+async fn load_device_doc(device_name:&str) -> Result<DeviceConfig> {
+    let store = SYS_STORE.lock().await;
+    let device_doc = store.get(format!("devices/{}/doc", device_name))
+        .await.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    if device_doc.is_none() {
+        return Err(RPCErrors::KeyNotExist(format!("devices/{}/doc", device_name)));
+    }
+    let device_doc_str = device_doc.unwrap();
+    let device_doc: EncodedDocument = EncodedDocument::from_str(device_doc_str.clone())
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    let device_doc: DeviceConfig = DeviceConfig::decode(&device_doc, None)
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    return Ok(device_doc);
+}
+
 async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
     if token.is_self_verify() {
-        let trust_keys = TRUST_KEYS.lock().await;
-        token.verify_by_key_map(&trust_keys)?;
+        let mut trust_keys = TRUST_KEYS.lock().await;
+        let kid = token.verify_by_key_map(&trust_keys);
+        if kid.is_err() {
+            let kid_err = kid.err().unwrap();
+            match kid_err {
+                RPCErrors::KeyNotExist(kid) => {
+                    //kid is device name, try load device doc
+                    let device_doc = load_device_doc(kid.as_str()).await?;
+                    if device_doc.device_type != "ood" && device_doc.device_type != "node" {
+                        return Err(RPCErrors::ReasonError(format!("device type is not ood or node: {}", kid)));
+                    }
+                    let device_key = device_doc.get_default_key();
+                    if device_key.is_some() {
+                        let device_key = device_key.unwrap();
+                        info!("load device {} doc successfully, insert public key to trust keys", kid);
+                        trust_keys.insert(kid.clone(), DecodingKey::from_jwk(&device_key).unwrap());
+                    }
+                    token.verify_by_key_map(&trust_keys)?;
+                    return Ok(());
+                },
+                _ => {
+                    return Err(kid_err);
+                }
+            }
+        }
+        debug!("verify_session_token: {:?}", token);
+        return Ok(())
+    } else {
+        unimplemented!();
     }
-    info!("verify_session_token: {:?}", token);
-    Ok(())
+
 }
 
 async fn init_by_boot_config() -> Result<()> {
@@ -701,6 +818,7 @@ async fn init_by_boot_config() -> Result<()> {
     } else {
         error!("Missing BUCKYOS_THIS_DEVICE");
     }
+
     let zone_owner_str = std::env::var("BUCKY_ZONE_OWNER");
     if zone_owner_str.is_ok() {
         let zone_owner_key_str = zone_owner_str.unwrap();
@@ -721,10 +839,10 @@ async fn init_by_boot_config() -> Result<()> {
     }
     drop(store);
 
-    let r = handle_refresh_trust_keys().await;
-    if r.is_err() {
-        error!("Failed to refresh trust keys: {}", r.err().unwrap());
-    }
+    // let r = handle_refresh_trust_keys().await;
+    // if r.is_err() {
+    //     error!("Failed to refresh trust keys: {}", r.err().unwrap());
+    // }
 
     Ok(())
 }
@@ -910,7 +1028,7 @@ mod test {
             .await;
         assert!(result.is_err());
 
-        //test set by json path
+        //test set by json pathf
         println!("test set by json path");
         client
             .call(

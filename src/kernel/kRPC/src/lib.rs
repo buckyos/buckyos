@@ -34,8 +34,8 @@ pub enum RPCErrors {
     InvalidPassword,
     #[error("User Not Found:{0}")]
     UserNotFound(String),
-    #[error("Key not exist")]
-    KeyNotExist,
+    #[error("Key not exist: {0}")]
+    KeyNotExist(String),
     #[error("Service not valid: {0}")]
     ServiceNotValid(String),
 }

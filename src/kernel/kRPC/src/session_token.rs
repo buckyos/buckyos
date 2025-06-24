@@ -187,7 +187,8 @@ impl RPCSessionToken {
         Ok(())
     }
 
-    pub fn verify_by_key_map(&mut self,trust_keys:&HashMap<String,DecodingKey>) -> Result<()> {
+    //return kid
+    pub fn verify_by_key_map(&mut self,trust_keys:&HashMap<String,DecodingKey>) -> Result<String> {
         if !self.is_self_verify() {
             return Err(RPCErrors::InvalidToken("Not a self verify token".to_string()));
         }
@@ -206,8 +207,12 @@ impl RPCSessionToken {
         } else {
             kid = header.kid.unwrap();
         }    
-        let public_key = trust_keys.get(kid.as_str())
-            .ok_or(RPCErrors::InvalidToken("No trust key".to_string()))?;
+        let public_key = trust_keys.get(kid.as_str());
+        if public_key.is_none() {
+            return Err(RPCErrors::KeyNotExist(kid.clone()));
+        }
+        let public_key = public_key.unwrap();
+        
         let validation = Validation::new(header.alg);
         let decoded_token = decode::<serde_json::Value>(token_str, &public_key, &validation).map_err(
             |error| RPCErrors::InvalidToken(format!("JWT decode error:{}",error))
@@ -253,7 +258,7 @@ impl RPCSessionToken {
         }
 
         self.userid = Some(userid.to_string());
-        Ok(())
+        Ok(kid)
     }
 }
 

@@ -85,10 +85,10 @@ async fn load_token_from_cache(key:&str) -> Option<(u64,RPCSessionToken)> {
         return Some((create_nonce.clone(),token.clone()));
     }
 }
+
 async fn cache_token(key:&str,create_nonce:u64,token:RPCSessionToken) {
     TOKEN_CACHE.lock().await.insert(key.to_string(),(create_nonce,token));
 }
-
 
 async fn load_trustkey_from_cache(kid:&str) -> Option<DecodingKey> {
     let cache = TRUSTKEY_CACHE.lock().await;
@@ -361,6 +361,10 @@ async fn handle_query_userid(params:Value) -> Result<Value> {
     Err(RPCErrors::UserNotFound(username.to_string()))
 }
 
+async fn handle_refresh_token(params:Value) -> Result<Value> {
+    unimplemented!()
+}
+
 // async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
 //     let userid = params.get("userid")
 //     .ok_or(RPCErrors::ReasonError("Missing userid".to_string()))?;
@@ -454,6 +458,9 @@ async fn process_request(method:String,param:Value,req_seq:u64) -> ::kRPC::Resul
         },
         "verify_token" => {
             return handle_verify_session_token(param).await;
+        },
+        "refresh_token" => {
+            return handle_refresh_token(param).await;
         },
         // Add more methods here
         _ => Err(RPCErrors::UnknownMethod(String::from(method))),

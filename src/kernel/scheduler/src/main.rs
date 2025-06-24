@@ -126,7 +126,9 @@ async fn do_boot_scheduler() -> Result<()> {
         error!("schedule_loop failed: {:?}", boot_result.err().unwrap());
         return Err(anyhow::anyhow!("schedule_loop failed"));
     }
-
+    system_config_client.refresh_trust_keys().await?;
+    info!("system_config_service refresh trust keys success");
+    
     info!("boot scheduler success");
     return Ok(());
 }
