@@ -6,8 +6,8 @@ use super::storage::{
 use super::storage_factory::{TrieObjectMapStorageFactory, GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY};
 use crate::hash::HashMethod;
 use crate::object::ObjId;
-use crate::{NdnError, NdnResult};
-use crate::{PathObject, OBJ_TYPE_MTREE, OBJ_TYPE_OBJMAPT};
+use crate::{Base32Codec, NdnError, NdnResult, OBJ_TYPE_TRIE};
+use crate::{PathObject, build_named_object_by_json};
 use bincode::de;
 use crypto_common::Key;
 use log::kv::value;
@@ -44,9 +44,16 @@ impl TrieObjectMapItemProof {
         Ok(proof)
     }
 
-    pub fn root_id(&self) -> ObjId {
-        ObjId::new_by_raw(OBJ_TYPE_MTREE.to_owned(), self.root_hash.clone())
+    pub fn root_hash(&self) -> &[u8] {
+        &self.root_hash
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrieObjectMapBody {
+    pub root_hash: String, // Encoded in base32 format
+    pub hash_method: HashMethod,
+    pub storage_type: TrieObjectMapStorageType,
 }
 
 pub struct TrieObjectMap {
@@ -69,27 +76,33 @@ impl TrieObjectMap {
     }
 
     // Load object map from storage
-    pub async fn open(
-        container_id: &ObjId,
-        read_only: bool,
-        hash_method: HashMethod,
-        storage_type: Option<TrieObjectMapStorageType>,
-    ) -> NdnResult<Self> {
+    pub async fn open(obj_data: serde_json::Value, read_only: bool) -> NdnResult<Self> {
+        let body: TrieObjectMapBody = serde_json::from_value(obj_data).map_err(|e| {
+            let msg = format!("Error deserializing TrieObjectMapBody: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
         let db = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .open_by_hash_method(Some(container_id), read_only, storage_type, hash_method)
+            .open_by_hash_method(
+                Some(body.root_hash.as_str()),
+                read_only,
+                Some(body.storage_type),
+                body.hash_method,
+            )
             .await
             .map_err(|e| {
                 let msg = format!(
                     "Error opening trie object map storage: {}, {}",
-                    container_id, e
+                    body.root_hash, e
                 );
                 error!("{}", msg);
                 e
             })?;
 
-        Ok(Self { hash_method, db })
+        Ok(Self { hash_method: body.hash_method, db })
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -104,9 +117,27 @@ impl TrieObjectMap {
         self.db.root()
     }
 
+    fn get_root_hash_str(&self) -> String {
+        Base32Codec::to_base32(&self.db.root())
+    }
+
     pub fn get_obj_id(&self) -> ObjId {
-        let root_hash = self.db.root();
-        ObjId::new_by_raw(OBJ_TYPE_OBJMAPT.to_owned(), root_hash)
+        self.calc_obj_id().0
+    }
+
+    pub fn calc_obj_id(&self) -> (ObjId, String) {
+        let body = TrieObjectMapBody {
+            root_hash: self.get_root_hash_str(),
+            hash_method: self.hash_method.clone(),
+            storage_type: self.get_storage_type(),
+        };
+
+        let (obj_id, s) = build_named_object_by_json(
+            OBJ_TYPE_TRIE,
+            &serde_json::to_value(&body).expect("Failed to serialize ChunkListBody"),
+        );
+
+        (obj_id, s)
     }
 
     pub fn hash_method(&self) -> HashMethod {
@@ -141,14 +172,14 @@ impl TrieObjectMap {
     }
 
     pub fn get_storage_file_path(&self) -> Option<PathBuf> {
-        let id = self.get_obj_id();
-
         if self.get_storage_type() == TrieObjectMapStorageType::Memory {
             return None; // Memory storage does not have a file path
         }
 
+        let root_hash = self.get_root_hash_str();
+
         let factory = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY.get().unwrap();
-        let file_path = factory.get_file_path_by_id(Some(&id), self.get_storage_type());
+        let file_path = factory.get_file_path_by_id(Some(root_hash.as_str()), self.get_storage_type());
         Some(file_path)
     }
 
@@ -160,12 +191,12 @@ impl TrieObjectMap {
             return Err(NdnError::PermissionDenied(msg));
         }
 
-        let obj_id = self.get_obj_id();
+        let root_hash = self.get_root_hash_str();
 
         GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .save(&obj_id, self.db.as_mut())
+            .save(&root_hash, self.db.as_mut())
             .await
             .map_err(|e| {
                 let msg = format!("Error saving object map: {}", e);
@@ -173,18 +204,18 @@ impl TrieObjectMap {
                 e
             })?;
 
-        info!("Saved trie object map to storage: {}", obj_id);
+        info!("Saved trie object map to storage: {}", root_hash);
 
         Ok(())
     }
 
     pub async fn clone(&self, read_only: bool) -> NdnResult<Self> {
-        let obj_id = self.get_obj_id();
+        let root_hash = self.get_root_hash_str();
 
         let mut new_storage = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .clone(&obj_id, &*self.db, read_only)
+            .clone(&root_hash, &*self.db, read_only)
             .await
             .map_err(|e| {
                 let msg = format!("Error cloning object map storage: {}", e);
@@ -200,10 +231,7 @@ impl TrieObjectMap {
         Ok(ret)
     }
 
-    pub fn get_object_proof_path(
-        &self,
-        key: &str,
-    ) -> NdnResult<Option<TrieObjectMapItemProof>> {
+    pub fn get_object_proof_path(&self, key: &str) -> NdnResult<Option<TrieObjectMapItemProof>> {
         let proof_nodes = self.db.generate_proof(key)?;
         let root_hash = self.db.root();
 

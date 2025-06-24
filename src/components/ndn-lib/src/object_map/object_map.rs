@@ -9,7 +9,7 @@ use crate::{
     hash::{HashHelper, HashMethod},
     NdnError, NdnResult,
 };
-use crate::{MerkleTreeProofPathVerifier, OBJ_TYPE_OBJMAPT};
+use crate::{MerkleTreeProofPathVerifier, OBJ_TYPE_OBJMAP};
 use core::hash;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -444,7 +444,7 @@ impl ObjectMap {
         self.is_dirty = false;
 
         let root_hash = self.get_root_hash().unwrap();
-        let obj_id = ObjId::new_by_raw(OBJ_TYPE_OBJMAPT.to_owned(), root_hash);
+        let obj_id = ObjId::new_by_raw(OBJ_TYPE_OBJMAP.to_owned(), root_hash);
         self.obj_id = Some(obj_id.clone());
         info!("Calculated object map id: {}", obj_id);
 

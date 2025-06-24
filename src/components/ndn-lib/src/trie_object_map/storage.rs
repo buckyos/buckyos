@@ -9,8 +9,9 @@ use trie_db::proof::generate_proof;
 use trie_db::{NodeCodec, Trie, TrieLayout, TrieMut, Value};
 use std::borrow::Borrow;
 use std::path::Path;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrieObjectMapStorageType {
     Memory,
     SQLite,

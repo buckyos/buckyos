@@ -216,7 +216,7 @@ async fn test_storage(key_pairs: &[(String, ObjId)]) {
         obj_map.put_object(key, obj_id).unwrap();
     }
 
-    let id = obj_map.get_obj_id();
+    let (id, obj_content) = obj_map.calc_obj_id();
     println!("All objects put {}", id);
 
     // Test iterator
@@ -254,7 +254,8 @@ async fn test_storage(key_pairs: &[(String, ObjId)]) {
     println!("Object map saved to storage at: {:?}", file_path);
 
     // Load the object map from storage
-    let loaded_obj_map = TrieObjectMap::open(&id, true, HashMethod::Keccak256, None)
+    let content = serde_json::from_str(&obj_content).unwrap();
+    let loaded_obj_map = TrieObjectMap::open(content, true)
         .await
         .unwrap();
     println!("Object map loaded from storage");
@@ -345,6 +346,8 @@ async fn test_trie_object_map1() {
     // test_iterator(key_pairs.as_slice()).await;
     test_traverse(key_pairs.as_slice()).await;
 
+    test_op_and_proof(key_pairs.as_slice()).await;
+    
     // test_op_and_proof(key_pairs.as_slice()).await;
     tokio::task::spawn(async move {
         test_traverse(key_pairs.as_slice()).await;
