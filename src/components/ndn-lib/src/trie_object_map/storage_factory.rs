@@ -135,6 +135,7 @@ impl TrieObjectMapStorageFactory {
             }
             TrieObjectMapStorageType::SQLite => {
                 let file = self.get_file_path_by_id(container_id, storage_type);
+                info!("Opening TrieObjectMap SQLite storage at: {}", file.display());
 
                 let db = TrieObjectMapSqliteStorage::<H>::new(file, read_only)?;
                 let storage = TrieObjectMapInnerStorageWrapper::<H>::new(
@@ -148,6 +149,7 @@ impl TrieObjectMapStorageFactory {
             }
             TrieObjectMapStorageType::JSONFile => {
                 let file = self.get_file_path_by_id(container_id, storage_type);
+                info!("Opening TrieObjectMap JSON storage at: {}", file.display());
 
                 let db = TrieObjectMapJSONFileStorage::<H>::new(file, read_only)?;
                 let storage = TrieObjectMapInnerStorageWrapper::<H>::new(

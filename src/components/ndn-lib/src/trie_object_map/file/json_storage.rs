@@ -53,7 +53,7 @@ where
         let hashed_null_node = H::hash(&[0u8][..]);
         let null_node_data = [0u8][..].into();
 
-        let mut ret = Self {
+        let mut ret: MemoryDBExt<H, KF, T> = Self {
             file: file.clone(),
             read_only,
             is_dirty: false,
@@ -259,7 +259,7 @@ where
         if !file_path.exists() {
             let msg = format!("File does not exist: {:?}", file_path);
             error!("{}", msg);
-            return Err(NdnError::IoError(msg));
+            return Err(NdnError::NotFound(msg));
         }
 
         let file = std::fs::File::open(&file_path).map_err(|e| {
@@ -277,7 +277,7 @@ where
 
         self.data.clear();
 
-        for (encoded_key, (encoded_value, index)) in data {
+        for (encoded_key, (encoded_value, ref_count)) in data {
             let k: Vec<u8> = general_purpose::STANDARD
                 .decode(&encoded_key)
                 .map_err(|e| {
@@ -295,9 +295,10 @@ where
                 })?;
 
             self.data
-                .insert(KF::Key::from_slice(&k)?, (v.as_slice().into(), index));
+                .insert(KF::Key::from_slice(&k)?, (v.as_slice().into(), ref_count));
         }
 
+        info!("Loaded JSON storage from file: {:?}, count {}", file_path, self.data.len());
         Ok(())
     }
 
@@ -384,7 +385,7 @@ where
 
     // If file is diff from the current one, it will be saved to the file.
     async fn save(&mut self, file: &Path) -> NdnResult<()> {
-        self.save(file).await
+        MemoryDBFileExt::<H, KF, T>::save(self, file)
     }
 }
 
