@@ -254,6 +254,11 @@ impl ChunkList {
                         // Variable size chunks, need to calculate based on the chunk list
                         let mut total_size = 0;
                         for (index, obj_id) in self.chunk_list_imp.iter().enumerate() {
+                            // Check if we just at the beginning of current chunk
+                            if total_size == pos {
+                                return Ok((index as u64, 0));
+                            }
+
                             let chunk_id = ChunkIdRef::from_obj_id(&obj_id);
                             let length = chunk_id.get_length().ok_or_else(|| {
                                 let msg = format!("Failed to get length for chunk id: {}", obj_id);
@@ -378,9 +383,9 @@ impl ChunkList {
                             })?;
 
                             total_size += length;
-                            if total_size > offset {
+                            if total_size >= offset {
                                 let chunk_index = total_chunks - index - 1; // Reverse index
-                                let chunk_offset = length - (total_size - offset);
+                                let chunk_offset = total_size - offset;
                                 if chunk_offset >= length {
                                     let msg = format!(
                                         "Chunk offset {} exceeds chunk length {}, {}",
