@@ -121,8 +121,14 @@ impl ObjectMap {
 
     // Load object map from storage
     pub async fn open(obj_data: serde_json::Value, read_only: bool) -> NdnResult<Self> {
+        // First calc obj id with body
+        let (obj_id, _) = build_named_object_by_json(
+            OBJ_TYPE_OBJMAP,
+            &obj_data,
+        );
+
         let body: ObjectMapBody = serde_json::from_value(obj_data).map_err(|e| {
-            let msg = format!("Error decoding object map body: {}", e);
+            let msg = format!("Error decoding object map body: {} {}", e, obj_id);
             error!("{}", msg);
             NdnError::InvalidData(msg)
         })?;
@@ -166,12 +172,14 @@ impl ObjectMap {
             None
         };
 
+        
+
         let mut map = Self {
             hash_method: body.hash_method,
             is_dirty: false,
             storage,
             mtree,
-            obj_id: None,
+            obj_id: Some(obj_id),
         };
 
         if map.mtree.is_none() {
@@ -192,8 +200,9 @@ impl ObjectMap {
         if root_hash.is_none() {
             return None;
         }
+
         let root_hash = root_hash.unwrap();
-        let body = ObjectMapBody {
+        let body: ObjectMapBody = ObjectMapBody {
             root_hash,
             hash_method: self.hash_method.clone(),
             storage_type: self.get_storage_type(),

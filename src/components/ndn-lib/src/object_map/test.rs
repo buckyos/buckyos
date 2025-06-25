@@ -70,6 +70,9 @@ async fn test_object_map() {
     // Test reopen object map for read
     let obj_content = serde_json::from_str(&obj_content).unwrap();
     let mut obj_map2 = ObjectMap::open(obj_content, true).await.unwrap();
+    let objid2 = obj_map2.get_obj_id().unwrap();
+    assert_eq!(objid, objid2, "Object ID unmatch");
+    
     obj_map2.flush().await.unwrap();
 
     let objid2 = obj_map2.get_obj_id().unwrap();
