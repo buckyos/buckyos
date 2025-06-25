@@ -397,7 +397,7 @@ impl ChunkList {
                                     return Err(crate::NdnError::OffsetTooLarge(msg));
                                 }
 
-                                return Ok((index as u64, chunk_offset));
+                                return Ok((chunk_index as u64, chunk_offset));
                             }
                         }
 
