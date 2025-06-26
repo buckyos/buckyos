@@ -139,7 +139,7 @@ impl ObjectMap {
             .get()
             .unwrap()
             .open(
-                Some(&body.root_hash),
+                Some(&obj_id),
                 read_only,
                 Some(body.storage_type),
                 ObjectMapStorageOpenMode::OpenExisting,
@@ -480,10 +480,12 @@ impl ObjectMap {
     // This will return None if the object ID is not generated yet
     // The target file must be created by the `save()` method
     pub fn get_storage_file_path(&self) -> Option<PathBuf> {
-        let root_hash = self.get_root_hash_str();
-        if root_hash.is_none() {
-            return None;
+        let obj_id= self.get_obj_id();
+        if obj_id.is_none() {
+            return None; // Object ID is not set, cannot get file path
         }
+
+        let obj_id = obj_id.unwrap();
 
         if self.get_storage_type() == ObjectMapStorageType::Memory {
             return None; // Memory storage does not have a file path
@@ -491,7 +493,7 @@ impl ObjectMap {
 
         let factory = GLOBAL_OBJECT_MAP_STORAGE_FACTORY.get().unwrap();
         let file_path =
-            factory.get_file_path_by_id(Some(&root_hash.unwrap()), self.get_storage_type());
+            factory.get_file_path_by_id(Some(&obj_id), self.get_storage_type());
         Some(file_path)
     }
 
@@ -505,19 +507,19 @@ impl ObjectMap {
 
         self.flush_mtree().await?;
 
-        let root_hash = self.get_root_hash_str();
-        if root_hash.is_none() {
-            let msg = "Object map root hash is empty".to_string();
+        let obj_id = self.get_obj_id();
+        if obj_id.is_none() {
+            let msg = "Object map obj id is empty".to_string();
             error!("{}", msg);
             return Err(NdnError::InvalidState(msg));
         }
 
-        let root_hash = root_hash.unwrap();
+        let obj_id = obj_id.unwrap();
 
         GLOBAL_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .save(&root_hash, &mut *self.storage)
+            .save(&obj_id, &mut *self.storage)
             .await
             .map_err(|e| {
                 let msg = format!("Error saving object map: {}", e);
@@ -525,7 +527,7 @@ impl ObjectMap {
                 e
             })?;
 
-        info!("Saved object map to storage: {}", root_hash);
+        info!("Saved object map to storage: {}", obj_id.to_base32());
 
         Ok(())
     }
@@ -537,19 +539,18 @@ impl ObjectMap {
             return Err(NdnError::InvalidState(msg));
         }
 
-        let root_hash = self.get_root_hash_str();
-        if root_hash.is_none() {
-            let msg = "Object map root hash is empty".to_string();
+        let obj_id = self.get_obj_id();
+        if obj_id.is_none() {
+            let msg = "Object map obj id is empty".to_string();
             error!("{}", msg);
             return Err(NdnError::InvalidState(msg));
         }
-
-        let root_hash = root_hash.unwrap();
+        let obj_id = obj_id.unwrap();
 
         let mut new_storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .clone(&root_hash, &*self.storage, read_only)
+            .clone(&obj_id, &*self.storage, read_only)
             .await
             .map_err(|e| {
                 let msg = format!("Error cloning object map storage: {}", e);

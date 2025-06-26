@@ -35,7 +35,7 @@ impl TrieObjectMapStorageFactory {
 
     pub fn get_file_path_by_id(
         &self,
-        root_hash: Option<&str>,
+        obj_id: Option<&ObjId>,
         storage_type: TrieObjectMapStorageType,
     ) -> PathBuf {
         let file_name = match storage_type {
@@ -43,15 +43,15 @@ impl TrieObjectMapStorageFactory {
                 unreachable!("Memory storage does not have a file path");
             }
             TrieObjectMapStorageType::SQLite => {
-                if let Some(id) = root_hash {
-                    id.to_string()
+                if let Some(id) = obj_id {
+                    id.to_base32()
                 } else {
                     self.get_temp_file_name(storage_type)
                 }
             }
             TrieObjectMapStorageType::JSONFile => {
-                if let Some(id) = root_hash {
-                    id.to_string()
+                if let Some(id) = obj_id {
+                    id.to_base32()
                 } else {
                     self.get_temp_file_name(storage_type)
                 }
@@ -80,7 +80,7 @@ impl TrieObjectMapStorageFactory {
 
     pub async fn open_by_hash_method(
         &self,
-        root_hash: Option<&str>,
+        obj_info: Option<(&ObjId, &str)>,
         read_only: bool,
         storage_type: Option<TrieObjectMapStorageType>,
         hash_method: HashMethod,
@@ -88,19 +88,19 @@ impl TrieObjectMapStorageFactory {
     ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>> {
         match hash_method {
             HashMethod::Sha256 => {
-                self.open::<Sha256Hasher>(root_hash, read_only, storage_type, mode)
+                self.open::<Sha256Hasher>(obj_info, read_only, storage_type, mode)
                     .await
             }
             HashMethod::Sha512 => {
-                self.open::<Sha512Hasher>(root_hash, read_only, storage_type, mode)
+                self.open::<Sha512Hasher>(obj_info, read_only, storage_type, mode)
                     .await
             }
             HashMethod::Blake2s256 => {
-                self.open::<Blake2s256Hasher>(root_hash, read_only, storage_type, mode)
+                self.open::<Blake2s256Hasher>(obj_info, read_only, storage_type, mode)
                     .await
             }
             HashMethod::Keccak256 => {
-                self.open::<Keccak256Hasher>(root_hash, read_only, storage_type, mode)
+                self.open::<Keccak256Hasher>(obj_info, read_only, storage_type, mode)
                     .await
             }
             HashMethod::QCID => {
@@ -113,7 +113,7 @@ impl TrieObjectMapStorageFactory {
 
     pub async fn open<H>(
         &self,
-        root_hash: Option<&str>,
+        obj_info: Option<(&ObjId, &str)>,
         read_only: bool,
         storage_type: Option<TrieObjectMapStorageType>,
         mode: TrieObjectMapStorageOpenMode,
@@ -141,15 +141,16 @@ impl TrieObjectMapStorageFactory {
             return Err(NdnError::PermissionDenied(msg));
         }
 
-        let root: Option<<H as Hasher>::Out> = if let Some(id) = root_hash {
+        let (obj_id, root) = if let Some((id, root_hash)) = obj_info {
             // Decode the root hash from string to the appropriate type.
-            let root_hash = Base32Codec::from_base32(id)?;
-            Some(H::Out::from_slice(root_hash.as_slice())?)
+            let root_hash = Base32Codec::from_base32(root_hash)?;
+            let root_hash: <H as Hasher>::Out = <H::Out as HashFromSlice>::from_slice(root_hash.as_slice())?;
+            (Some(id), Some(root_hash))
         } else {
-            None
+            (None, None)
         };
 
-        let file = self.get_file_path_by_id(root_hash, storage_type);
+        let file = self.get_file_path_by_id(obj_id, storage_type);
         match mode {
             TrieObjectMapStorageOpenMode::CreateNew => {
                 if file.exists() {
@@ -213,27 +214,27 @@ impl TrieObjectMapStorageFactory {
 
     pub async fn save(
         &self,
-        root_hash: &str,
+        obj_id: &ObjId,
         storage: &mut dyn TrieObjectMapInnerStorage,
     ) -> NdnResult<()> {
-        let file = self.get_file_path_by_id(Some(root_hash), storage.get_type());
+        let file = self.get_file_path_by_id(Some(obj_id), storage.get_type());
 
         storage.save(&file).await
     }
 
     pub async fn clone(
         &self,
-        root_hash: &str,
+        obj_id: &ObjId,
         storage: &dyn TrieObjectMapInnerStorage,
         read_only: bool,
     ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>> {
         let file_name = if read_only {
-            root_hash.to_string()
+            obj_id.to_base32()
         } else {
             let index = self.temp_file_index.fetch_add(1, Ordering::SeqCst);
             format!(
                 "clone_{}_{}_{}.{}",
-                root_hash,
+                obj_id.to_base32(),
                 index,
                 chrono::Utc::now().timestamp(),
                 Self::get_file_ext(storage.get_type()),

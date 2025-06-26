@@ -33,7 +33,7 @@ impl ObjectMapStorageFactory {
     // The storage type must not be Memory, as it does not have a file path.
     pub fn get_file_path_by_id(
         &self,
-        root_hash: Option<&str>,
+        obj_id: Option<&ObjId>,
         storage_type: ObjectMapStorageType,
     ) -> PathBuf {
         let file_name = match storage_type {
@@ -41,15 +41,15 @@ impl ObjectMapStorageFactory {
                 unreachable!("Memory storage does not have a file path");
             }
             ObjectMapStorageType::SQLite => {
-                if let Some(hash) = root_hash {
-                    hash.to_string()
+                if let Some(obj_id) = obj_id {
+                    obj_id.to_base32()
                 } else {
                     self.get_temp_file_name(storage_type)
                 }
             }
             ObjectMapStorageType::JSONFile => {
-                if let Some(hash) = root_hash {
-                    hash.to_string()
+                if let Some(obj_id) = obj_id {
+                    obj_id.to_base32()
                 } else {
                     self.get_temp_file_name(storage_type)
                 }
@@ -78,7 +78,7 @@ impl ObjectMapStorageFactory {
 
     pub async fn open(
         &self,
-        root_hash: Option<&str>,
+        obj_id: Option<&ObjId>,
         read_only: bool,
         storage_type: Option<ObjectMapStorageType>,
         mode: ObjectMapStorageOpenMode,
@@ -102,7 +102,7 @@ impl ObjectMapStorageFactory {
             return Err(NdnError::PermissionDenied(msg));
         }
 
-        let file = self.get_file_path_by_id(root_hash, storage_type);
+        let file = self.get_file_path_by_id(obj_id, storage_type);
         match mode {
             ObjectMapStorageOpenMode::CreateNew => {
                 if file.exists() {
@@ -143,27 +143,27 @@ impl ObjectMapStorageFactory {
 
     pub async fn save(
         &self,
-        root_hash: &str,
+        obj_id: &ObjId,
         storage: &mut dyn ObjectMapInnerStorage,
     ) -> NdnResult<()> {
-        let file = self.get_file_path_by_id(Some(root_hash), storage.get_type());
+        let file = self.get_file_path_by_id(Some(obj_id), storage.get_type());
 
         storage.save(&file).await
     }
 
     pub async fn clone(
         &self,
-        root_hash: &str,
+        obj_id: &ObjId,
         storage: &dyn ObjectMapInnerStorage,
         read_only: bool,
     ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         let file_name = if read_only {
-            root_hash.to_string()
+            obj_id.to_base32()
         } else {
             let index = self.temp_file_index.fetch_add(1, Ordering::SeqCst);
             format!(
                 "clone_{}_{}_{}.{}",
-                root_hash,
+                obj_id.to_base32(),
                 index,
                 chrono::Utc::now().timestamp(),
                 Self::get_file_ext(storage.get_type()),

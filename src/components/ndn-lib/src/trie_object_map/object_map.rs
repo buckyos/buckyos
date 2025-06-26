@@ -86,6 +86,11 @@ impl TrieObjectMap {
 
     // Load object map from storage
     pub async fn open(obj_data: serde_json::Value, read_only: bool) -> NdnResult<Self> {
+         let (obj_id, s) = build_named_object_by_json(
+            OBJ_TYPE_TRIE,
+            &obj_data,
+        );
+
         let body: TrieObjectMapBody = serde_json::from_value(obj_data).map_err(|e| {
             let msg = format!("Error deserializing TrieObjectMapBody: {}", e);
             error!("{}", msg);
@@ -96,7 +101,7 @@ impl TrieObjectMap {
             .get()
             .unwrap()
             .open_by_hash_method(
-                Some(body.root_hash.as_str()),
+                Some((&obj_id, body.root_hash.as_str())),
                 read_only,
                 Some(body.storage_type),
                 body.hash_method,
@@ -189,11 +194,11 @@ impl TrieObjectMap {
             return None; // Memory storage does not have a file path
         }
 
-        let root_hash = self.get_root_hash_str();
+        let obj_id = self.get_obj_id();
 
         let factory = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY.get().unwrap();
         let file_path =
-            factory.get_file_path_by_id(Some(root_hash.as_str()), self.get_storage_type());
+            factory.get_file_path_by_id(Some(&obj_id), self.get_storage_type());
         Some(file_path)
     }
 
@@ -205,12 +210,12 @@ impl TrieObjectMap {
             return Err(NdnError::PermissionDenied(msg));
         }
 
-        let root_hash = self.get_root_hash_str();
+        let obj_id = self.get_obj_id();
 
         GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .save(&root_hash, self.db.as_mut())
+            .save(&obj_id, self.db.as_mut())
             .await
             .map_err(|e| {
                 let msg = format!("Error saving object map: {}", e);
@@ -218,18 +223,18 @@ impl TrieObjectMap {
                 e
             })?;
 
-        info!("Saved trie object map to storage: {}", root_hash);
+        info!("Saved trie object map to storage: {}", obj_id.to_base32());
 
         Ok(())
     }
 
     pub async fn clone(&self, read_only: bool) -> NdnResult<Self> {
-        let root_hash = self.get_root_hash_str();
+        let obj_id = self.get_obj_id();
 
         let mut new_storage = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .clone(&root_hash, &*self.db, read_only)
+            .clone(&obj_id, &*self.db, read_only)
             .await
             .map_err(|e| {
                 let msg = format!("Error cloning object map storage: {}", e);
