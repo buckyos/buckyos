@@ -1,11 +1,11 @@
 use crate::object::{build_named_object_by_json, ObjId};
 use crate::NdnResult;
-use crate::ObjectArray;
 use crate::ObjectArrayOwnedIter;
 use crate::{
     ChunkId, ChunkIdRef, HashMethod, OBJ_TYPE_CHUNK_LIST, OBJ_TYPE_CHUNK_LIST_FIX_SIZE,
     OBJ_TYPE_CHUNK_LIST_SIMPLE, OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE,
 };
+use crate::{ObjectArray, ObjectArrayBody};
 use core::hash;
 use serde::{Deserialize, Serialize};
 use std::io::SeekFrom;
@@ -42,7 +42,6 @@ impl ChunkListId {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkListMeta {
     pub total_size: u64,       // Total size of the chunk list
@@ -52,14 +51,61 @@ pub struct ChunkListMeta {
 // Use to calculate the ChunkListId
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkListBody {
-    pub object_array: ObjId,
-    pub total_size: u64,
+    pub object_array: ObjectArrayBody,
+    pub total_count: u64, // Total number of chunks in the chunk list
+    pub total_size: u64,  // Total size of the chunk list
     pub fix_size: Option<u64>,
+}
+
+impl ChunkListBody {
+    pub fn is_simple_chunk_list(&self) -> bool {
+        if self.total_count <= CHUNK_LIST_MODE_THRESHOLD as u64 {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_fixed_size_chunk_list(&self) -> bool {
+        if self.fix_size.is_some() {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_chunk_list_type(&self) -> &str {
+        if self.is_simple_chunk_list() {
+            if self.is_fixed_size_chunk_list() {
+                OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE
+            } else {
+                OBJ_TYPE_CHUNK_LIST_SIMPLE
+            }
+        } else {
+            if self.is_fixed_size_chunk_list() {
+                OBJ_TYPE_CHUNK_LIST_FIX_SIZE
+            } else {
+                OBJ_TYPE_CHUNK_LIST
+            }
+        }
+    }
+
+    pub fn calc_obj_id(&self) -> (ObjId, String) {
+        let chunk_list_type = self.get_chunk_list_type();
+        let (obj_id, s) = build_named_object_by_json(
+            chunk_list_type,
+            &serde_json::to_value(self).expect("Failed to serialize ChunkListBody"),
+        );
+
+        // Return the object id and its string representation
+        (obj_id, s)
+    }
 }
 
 pub struct ChunkList {
     meta: ChunkListMeta,
     chunk_list_imp: ObjectArray,
+    obj_id: ObjId,
 }
 
 impl Deref for ChunkList {
@@ -76,11 +122,27 @@ impl DerefMut for ChunkList {
 }
 
 impl ChunkList {
-    pub fn new(meta: ChunkListMeta, list: ObjectArray) -> Self {
-        Self {
+    pub fn new(meta: ChunkListMeta, list: ObjectArray) -> NdnResult<Self> {
+        let body = ChunkListBody {
+            object_array: list.get_body().ok_or_else(|| {
+                let msg = "Object array body is None".to_string();
+                error!("{}", msg);
+                crate::NdnError::InvalidData(msg)
+            })?,
+            total_count: list.len() as u64,
+            total_size: meta.total_size,
+            fix_size: meta.fix_size,
+        };
+
+        let (obj_id, _) = body.calc_obj_id();
+
+        let ret = Self {
             meta,
             chunk_list_imp: list,
-        }
+            obj_id,
+        };
+
+        Ok(ret)
     }
 
     // Load an existing chunk list from the object id.
@@ -91,7 +153,15 @@ impl ChunkList {
             crate::NdnError::InvalidData(msg)
         })?;
 
-        let chunk_list_imp = ObjectArray::open(&body.object_array, true).await?;
+        let (obj_id, _) = body.calc_obj_id();
+
+        let obj_array_body = serde_json::to_value(&body.object_array).map_err(|e| {
+            let msg = format!("Failed to serialize object array body: {}", e);
+            error!("{}", msg);
+            crate::NdnError::InvalidData(msg)
+        })?;
+
+        let chunk_list_imp = ObjectArray::open(obj_array_body, true).await?;
         let meta = ChunkListMeta {
             total_size: body.total_size,
             fix_size: body.fix_size,
@@ -100,6 +170,7 @@ impl ChunkList {
         Ok(Self {
             meta,
             chunk_list_imp,
+            obj_id,
         })
     }
 
@@ -107,6 +178,7 @@ impl ChunkList {
         let ret = Self {
             meta: self.meta.clone(),
             chunk_list_imp: self.chunk_list_imp.clone(read_only)?,
+            obj_id: self.obj_id.clone(),
         };
 
         Ok(ret)
@@ -116,40 +188,26 @@ impl ChunkList {
         (self.meta, self.chunk_list_imp)
     }
 
-    pub fn get_obj_id(&self) -> ObjId {
-        self.calc_obj_id().0
+    // ChunkList always has an obj_id, so we can use get_obj_id() to get it.
+    pub fn get_obj_id(&self) -> &ObjId {
+        &self.obj_id
     }
 
     // The obj_id should be flush and calculate when loaded or built.
     pub fn calc_obj_id(&self) -> (ObjId, String) {
-        let id = self.chunk_list_imp.get_obj_id().unwrap();
+        let object_array = self.chunk_list_imp.get_body();
+        if object_array.is_none() {
+            unreachable!("Object array body should not be None");
+        }
 
         let body = ChunkListBody {
-            object_array: id,
+            object_array: object_array.unwrap(),
+            total_count: self.chunk_list_imp.len() as u64,
             total_size: self.meta.total_size,
             fix_size: self.meta.fix_size,
         };
 
-        let chunk_list_type = if self.is_simple_chunk_list() {
-            if self.is_fixed_size_chunk_list() {
-                OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE
-            } else {
-                OBJ_TYPE_CHUNK_LIST_SIMPLE
-            }
-        } else {
-            if self.is_fixed_size_chunk_list() {
-                OBJ_TYPE_CHUNK_LIST_FIX_SIZE
-            } else {
-                OBJ_TYPE_CHUNK_LIST
-            }
-        };
-
-        let (obj_id, s) = build_named_object_by_json(
-            chunk_list_type,
-            &serde_json::to_value(&body).expect("Failed to serialize ChunkListBody"),
-        );
-
-        // Return the object id and its string representation
+        let (obj_id, s) = body.calc_obj_id();
         (obj_id, s)
     }
 

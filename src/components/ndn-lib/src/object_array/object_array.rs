@@ -10,12 +10,12 @@ use crate::mtree::{
     self, MerkleTreeObject, MerkleTreeObjectGenerator, MtreeReadSeek,
     MtreeReadWriteSeekWithSharedBuffer, MtreeWriteSeek, SharedBuffer,
 };
-use crate::{HashMethod, ObjId, OBJ_TYPE_LIST};
+use crate::{build_named_object_by_json, Base32Codec, HashMethod, ObjId, OBJ_TYPE_LIST};
 use crate::{NdnError, NdnResult};
-use arrow::csv::writer;
 use core::hash;
 use http_types::cache;
 use serde::{Deserialize, Serialize};
+use std::hash::Hash;
 use std::io::SeekFrom;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -44,9 +44,9 @@ fn get_obj_hash<'a>(obj_id: &'a ObjId, hash_method: HashMethod) -> NdnResult<&'a
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ObjectArrayMeta {
+pub struct ObjectArrayBody {
+    pub root_hash: String, // The root hash of the merkle tree, encoded as base32 string
     pub hash_method: HashMethod,
-    pub ext: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -56,12 +56,12 @@ pub struct ObjectArrayItem {
 }
 
 pub struct ObjectArray {
-    meta: ObjectArrayMeta,
+    hash_method: HashMethod,
     storage_type: ObjectArrayStorageType,
     cache: Box<dyn ObjectArrayInnerCache>,
-    obj_id: Option<ObjId>, // The object ID of the array, can be None if not calculated yet
     is_dirty: bool,
     mtree: Option<MerkleTreeObject>,
+    obj_id: Option<ObjId>, // The object ID of the array, can be None if not calculated yet
 }
 
 impl ObjectArray {
@@ -70,10 +70,7 @@ impl ObjectArray {
             ObjectArrayCacheFactory::create_cache(ObjectArrayCacheType::Memory);
 
         Self {
-            meta: ObjectArrayMeta {
-                hash_method: hash_method.clone(),
-                ext: None, // We can add more metadata in the future
-            },
+            hash_method,
             storage_type: storage_type.unwrap_or(ObjectArrayStorageType::default()),
             cache,
             obj_id: None, // The object ID is not calculated ye
@@ -82,16 +79,17 @@ impl ObjectArray {
         }
     }
 
-    pub fn new_from_cache(
-        meta: ObjectArrayMeta,
+    fn new_from_cache(
+        obj_id: ObjId,
+        hash_method: HashMethod,
         cache: Box<dyn ObjectArrayInnerCache>,
         storage_type: ObjectArrayStorageType,
     ) -> NdnResult<Self> {
         let obj_array = Self {
-            meta,
+            hash_method,
             storage_type,
             cache,
-            obj_id: None, // The object ID is not calculated yet
+            obj_id: Some(obj_id),
             is_dirty: false,
             mtree: None,
         };
@@ -104,7 +102,7 @@ impl ObjectArray {
     }
 
     pub fn hash_method(&self) -> HashMethod {
-        self.meta.hash_method
+        self.hash_method
     }
 
     pub fn len(&self) -> usize {
@@ -122,7 +120,7 @@ impl ObjectArray {
     pub fn clone(&self, read_only: bool) -> NdnResult<Self> {
         let cache = self.cache.clone_cache(read_only)?;
         let ret = Self {
-            meta: self.meta.clone(),
+            hash_method: self.hash_method.clone(),
             storage_type: self.storage_type.clone(),
             cache,
             obj_id: self.obj_id.clone(),
@@ -133,19 +131,9 @@ impl ObjectArray {
         Ok(ret)
     }
 
-    pub fn set_meta(&mut self, meta: Option<String>) -> NdnResult<()> {
-        self.meta.ext = meta;
-
-        Ok(())
-    }
-
-    pub fn get_meta(&self) -> NdnResult<Option<&str>> {
-        Ok(self.meta.ext.as_deref())
-    }
-
     pub fn append_object(&mut self, obj_id: &ObjId) -> NdnResult<()> {
         // Check if obj_id.obj_hash is valid
-        get_obj_hash(obj_id, self.meta.hash_method)?;
+        get_obj_hash(obj_id, self.hash_method)?;
 
         self.cache.append(obj_id)?;
         self.is_dirty = true;
@@ -155,7 +143,7 @@ impl ObjectArray {
 
     pub fn insert_object(&mut self, index: usize, obj_id: &ObjId) -> NdnResult<()> {
         // Check if obj_id.obj_hash is valid
-        get_obj_hash(obj_id, self.meta.hash_method)?;
+        get_obj_hash(obj_id, self.hash_method)?;
 
         self.cache.insert(index, obj_id)?;
         self.is_dirty = true;
@@ -321,6 +309,18 @@ impl ObjectArray {
         Ok(ret)
     }
 
+    pub fn get_body(&self) -> Option<ObjectArrayBody> {
+        let root_hash = self.get_root_hash_str();
+        if root_hash.is_none() {
+            return None;
+        }
+
+        Some(ObjectArrayBody {
+            root_hash: root_hash.unwrap(),
+            hash_method: self.hash_method.clone(),
+        })
+    }
+
     // Get the object ID for the array if mtree is not None, otherwise return None
     // WARNING: This method don't check if the mtree is dirty
     pub fn get_obj_id(&self) -> Option<ObjId> {
@@ -328,21 +328,39 @@ impl ObjectArray {
     }
 
     // Calculate the object ID for the array
-    // This is the same as the mtree root hash, but we need to check if the mtree is dirty
-    pub async fn calc_obj_id(&mut self) -> NdnResult<ObjId> {
-        if self.cache.len() == 0 {
-            let msg = "No objects in the array".to_string();
-            error!("{}", msg);
-            return Err(NdnError::InvalidData(msg));
+    pub fn calc_obj_id(&self) -> Option<(ObjId, String)> {
+        if self.is_dirty {
+            let msg = "Object map is dirty, should call flush_mtree at first".to_string();
+            warn!("{}", msg);
+            return None;
+        }
+        
+        let body = self.get_body();
+        if body.is_none() {
+            return None;
         }
 
-        // Check if the mtree is dirty
-        if self.is_dirty || self.mtree.is_none() {
-            // If the mtree is dirty or first loaded, we need to regenerate it
-            self.flush_mtree_impl().await?;
+        let body = body.unwrap();
+        let (obj_id, s) = build_named_object_by_json(
+            OBJ_TYPE_LIST,
+            &serde_json::to_value(&body).expect("Failed to serialize ObjectMapBody"),
+        );
+
+        Some((obj_id, s))
+    }
+
+    pub fn get_root_hash(&self) -> Option<Vec<u8>> {
+        if self.mtree.is_none() {
+            return None;
         }
 
-        Ok(self.get_obj_id().unwrap())
+        let root_hash = self.mtree.as_ref().unwrap().get_root_hash();
+        Some(root_hash)
+    }
+
+    pub fn get_root_hash_str(&self) -> Option<String> {
+        self.get_root_hash()
+            .map(|hash| Base32Codec::to_base32(&hash))
     }
 
     // Regenerate the merkle tree without checking the dirty flag
@@ -418,8 +436,12 @@ impl ObjectArray {
         self.regenerate_merkle_tree().await?;
         self.is_dirty = false;
 
-        let root_hash = self.mtree.as_ref().unwrap().get_root_hash();
-        let obj_id = ObjId::new_by_raw(OBJ_TYPE_LIST.to_string(), root_hash);
+        let (obj_id, _) = self.calc_obj_id().ok_or_else(|| {
+            let msg = "Failed to calculate object ID".to_string();
+            error!("{}", msg);
+            NdnError::InvalidState(msg)
+        })?;
+
         self.obj_id = Some(obj_id);
 
         Ok(())
@@ -450,15 +472,6 @@ impl ObjectArray {
             )
             .await?;
 
-        // Write the meta to the storage
-        let meta = serde_json::to_string(&self.meta).map_err(|e| {
-            let msg = format!("Error serializing meta: {}", e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-
-        writer.put_meta(Some(meta)).await?;
-
         // Write the object array to the storage
         // TODO: use batch read and write to improve performance
         for i in 0..self.cache.len() {
@@ -471,26 +484,20 @@ impl ObjectArray {
         Ok(())
     }
 
-    pub async fn open(container_id: &ObjId, read_only: bool) -> NdnResult<Self> {
+    pub async fn open(obj_data: serde_json::Value, read_only: bool) -> NdnResult<Self> {
+        // First calc obj id with body
+        let (obj_id, _) = build_named_object_by_json(OBJ_TYPE_LIST, &obj_data);
+
+        let body: ObjectArrayBody = serde_json::from_value(obj_data).map_err(|e| {
+            let msg = format!("Error decoding object array body: {} {}", e, obj_id);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
         let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
-        let (cache, storage_type) = factory.open(container_id, read_only).await?;
+        let (cache, storage_type) = factory.open(&obj_id, read_only).await?;
 
-        // First load meta from the cache and deserialize it, so we can get the hash method
-        let meta = cache.get_meta()?;
-        let meta: ObjectArrayMeta = match meta {
-            Some(meta) => serde_json::from_slice(meta.as_bytes()).map_err(|e| {
-                let msg = format!("Error deserializing meta: {}", e);
-                error!("{}", msg);
-                NdnError::InvalidData(msg)
-            })?,
-            None => {
-                let msg = format!("Object array meta not found for: {:?}", container_id);
-                error!("{}", msg);
-                return Err(NdnError::InvalidData(msg));
-            }
-        };
-
-        let obj_array = Self::new_from_cache(meta, cache, storage_type)?;
+        let obj_array = Self::new_from_cache(obj_id, body.hash_method, cache, storage_type)?;
 
         Ok(obj_array)
     }
@@ -514,9 +521,43 @@ impl ObjectArrayProofVerifier {
         Self { hash_method }
     }
 
+    pub fn verify_with_obj_data_str(
+        &self,
+        obj_data: &str,
+        obj_id: &ObjId,
+        proof: &ObjectArrayItemProof,
+    ) -> NdnResult<bool> {
+        // Parse the object data as JSON
+        let body: ObjectArrayBody = serde_json::from_str(obj_data).map_err(|e| {
+            let msg = format!("Error decoding object map body: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        let root_hash = body.root_hash;
+        self.verify(&root_hash, obj_id, proof)
+    }
+
+    pub fn verify_with_obj_data(
+        &self,
+        obj_data: serde_json::Value,
+        obj_id: &ObjId,
+        proof: &ObjectArrayItemProof,
+    ) -> NdnResult<bool> {
+        // Get the root hash from the object data
+        let body: ObjectArrayBody = serde_json::from_value(obj_data).map_err(|e| {
+            let msg = format!("Error decoding object array body: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        let root_hash = body.root_hash;
+        self.verify(&root_hash, obj_id, proof)
+    }
+
     pub fn verify(
         &self,
-        container_id: &ObjId,
+        root_hash: &str,
         obj_id: &ObjId,
         proof: &ObjectArrayItemProof,
     ) -> NdnResult<bool> {
@@ -536,11 +577,17 @@ impl ObjectArrayProofVerifier {
             return Ok(false);
         }
 
+        let root_hash = Base32Codec::from_base32(root_hash).map_err(|e| {
+            let msg = format!("Error decoding root hash: {}, {}", root_hash, e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
         // The last item is the root node, which is obj_id.obj_hash field
-        if proof.proof[proof.proof.len() - 1].1 != container_id.obj_hash {
+        if proof.proof[proof.proof.len() - 1].1 != root_hash {
             let msg = format!(
                 "Unmatched object array root hash: expected {:?}, got {:?}",
-                container_id.obj_hash,
+                root_hash,
                 proof.proof[proof.proof.len() - 1].1
             );
             warn!("{}", msg);

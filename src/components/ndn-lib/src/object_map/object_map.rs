@@ -200,14 +200,22 @@ impl ObjectMap {
         self.obj_id.clone()
     }
 
+    // Should call flush_mtree first to regenerate the mtree if it is dirty
+    // This will return None if the root hash is not set or the mtree is not
     pub fn calc_obj_id(&self) -> Option<(ObjId, String)> {
+        if self.is_dirty {
+            let msg = "Object map is dirty, should call flush_mtree at first".to_string();
+            warn!("{}", msg);
+            return None;
+        }
+        
         let root_hash = self.get_root_hash_str();
         if root_hash.is_none() {
             return None;
         }
 
         let root_hash = root_hash.unwrap();
-        let body: ObjectMapBody = ObjectMapBody {
+        let body = ObjectMapBody {
             root_hash,
             hash_method: self.hash_method.clone(),
             storage_type: self.get_storage_type(),

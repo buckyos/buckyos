@@ -39,7 +39,13 @@ impl ChunkListBuilder {
             crate::NdnError::InvalidData(msg)
         })?;
 
-        let chunk_list_imp = ObjectArray::open(&body.object_array, false).await?;
+        let obj_array = serde_json::to_value(&body.object_array).map_err(|e| {
+            let msg = format!("Failed to serialize object array: {}", e);
+            error!("{}", msg);
+            crate::NdnError::InvalidData(msg)
+        })?;
+
+        let chunk_list_imp = ObjectArray::open(obj_array, false).await?;
         let meta = ChunkListMeta {
             total_size: body.total_size,
             fix_size: body.fix_size,
@@ -149,14 +155,6 @@ impl ChunkListBuilder {
     }
 
     pub async fn build(mut self) -> NdnResult<ChunkList> {
-        let meta_str = serde_json::to_string(&self.meta).map_err(|e| {
-            let msg = format!("Failed to serialize chunk list meta: {}", e);
-            error!("{}", msg);
-            crate::NdnError::InvalidData(msg)
-        })?;
-
-        self.list.set_meta(Some(meta_str));
-
         // First, flush the list to ensure the mtree is built and the object id is calculated.
         self.list.flush_mtree().await?;
 
@@ -176,7 +174,7 @@ impl ChunkListBuilder {
         // Save
         self.list.save().await?;
 
-        let ret = ChunkList::new(self.meta, self.list);
+        let ret = ChunkList::new(self.meta, self.list)?;
 
         Ok(ret)
     }
