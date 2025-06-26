@@ -1,4 +1,4 @@
-use crate::{HashMethod, NdnError, NdnResult};
+use crate::{HashMethod, NdnError, NdnResult, OBJ_TYPE_TRIE};
 use crate::{
     OBJ_TYPE_DIR, OBJ_TYPE_FILE, OBJ_TYPE_LIST, OBJ_TYPE_MTREE, OBJ_TYPE_OBJMAP, OBJ_TYPE_PACK,
 };
@@ -87,6 +87,7 @@ impl ObjId {
         match self.obj_type.as_str() {
             OBJ_TYPE_MTREE => false,
             OBJ_TYPE_OBJMAP => false,
+            OBJ_TYPE_TRIE => false,
             OBJ_TYPE_PACK => false,
             OBJ_TYPE_LIST => false,
             _ => true,
@@ -237,8 +238,7 @@ impl TryFrom<&str> for ObjId {
 }
 
 pub fn build_obj_id(obj_type: &str, obj_json_str: &str) -> ObjId {
-    let vec_u8 = obj_json_str.as_bytes().to_vec();
-    let hash_value: Vec<u8> = Sha256::digest(&vec_u8).to_vec();
+    let hash_value: Vec<u8> = Sha256::digest(obj_json_str.as_bytes()).to_vec();
     ObjId::new_by_raw(obj_type.to_string(), hash_value)
 }
 
