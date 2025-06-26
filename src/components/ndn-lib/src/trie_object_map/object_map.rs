@@ -260,7 +260,7 @@ impl TrieObjectMapProofVerifierHelper {
     pub fn verify(
         &self,
         key: &str,
-        value: &[u8],
+        value: Option<&[u8]>,
         proof: &TrieObjectMapItemProof,
     ) -> NdnResult<TrieObjectMapProofVerifyResult> {
         let key_bytes = key.as_bytes();
@@ -271,16 +271,16 @@ impl TrieObjectMapProofVerifierHelper {
     pub fn verify_object(
         &self,
         key: &str,
-        obj_id: &ObjId,
+        obj_id: Option<&ObjId>,
         proof: &TrieObjectMapItemProof,
     ) -> NdnResult<TrieObjectMapProofVerifyResult> {
-        let value = bincode::serialize(obj_id).map_err(|e| {
-            let msg = format!("Error serializing ObjId: {}, {}", obj_id, e);
+        let obj_id = obj_id.map(|id| bincode::serialize(id)).transpose().map_err(|e| {
+            let msg = format!("Error serializing ObjId: {:?}, {}", obj_id, e);
             error!("{}", msg);
             NdnError::InvalidData(msg)
         })?;
 
-        self.verify(key, value.as_ref(), proof)
+        self.verify(key, obj_id.as_deref(), proof)
     }
 }
 

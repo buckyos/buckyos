@@ -100,6 +100,8 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
 
         // Test proof path with invalid key
         let key1 = format!("{}/1000", key);
+        let key2 = format!("{}/1001", key);
+        let key3 = "error_key";
         let proof1 = obj_map.get_object_proof_path(&key1).unwrap();
         assert!(proof1.is_some());
         println!("Get object proof path with invalid key success: {}", key1);
@@ -109,12 +111,26 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
         let verifier = TrieObjectMapProofVerifierHelper::new(obj_map.hash_method());
 
         // First test verify with right value
-        let ret = verifier.verify_object(&key, &obj_id, &proof).unwrap();
+        let ret = verifier.verify_object(&key, Some(&obj_id), &proof).unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::Ok);
 
-        // Test verification with invalid value
-        let ret = verifier.verify_object(&key1, &obj_id, &proof1).unwrap();
+        let ret = verifier.verify_object(&key, None, &proof).unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::ValueMismatch);
+
+        // Test verification with invalid value
+        let ret = verifier.verify_object(&key1, Some(&obj_id), &proof1).unwrap();
+        assert_eq!(ret, TrieObjectMapProofVerifyResult::ValueMismatch);
+
+        let ret = verifier.verify_object(&key1, None, &proof1).unwrap();
+        assert_eq!(ret, TrieObjectMapProofVerifyResult::Ok);
+
+        // Because key2 starts with key1, it should be verified as Ok (not exist)
+        let ret = verifier.verify_object(&key2, None, &proof1).unwrap();
+        assert_eq!(ret, TrieObjectMapProofVerifyResult::Ok);
+
+        // TODO - Test verification with extraneous node or Ok?
+        // let ret = verifier.verify_object(&key3, None, &proof1).unwrap();
+        // assert_eq!(ret, TrieObjectMapProofVerifyResult::ExtraneousNode);
 
         // Test remove
         let prev_root_hash = obj_map.get_root_hash();
@@ -138,9 +154,12 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
 
         // Test verification after remove
         proof.root_hash = root_hash.clone();
-        let ret = verifier.verify_object(&key, &obj_id, &proof).unwrap();
+        let ret = verifier.verify_object(&key, Some(&obj_id), &proof).unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::RootMismatch);
         println!("Verify after remove success: {}", key);
+
+        let ret = verifier.verify_object(&key, None, &proof1).unwrap();
+        assert_eq!(ret, TrieObjectMapProofVerifyResult::ExtraneousValue);
 
         // Test codec
         let s = TrieObjectMapProofNodesCodec::encode(&proof.proof_nodes).unwrap();
@@ -317,7 +336,7 @@ async fn test_storage(key_pairs: &[(String, ObjId)]) {
 }
 
 #[test]
-async fn test_trie_object_map1() {
+async fn test_trie_object_map() {
     init_logging("test_trie_object_map", false);
 
     let temp_dir = std::env::temp_dir();
@@ -347,7 +366,7 @@ async fn test_trie_object_map1() {
     test_traverse(key_pairs.as_slice()).await;
 
     test_op_and_proof(key_pairs.as_slice()).await;
-    
+
     // test_op_and_proof(key_pairs.as_slice()).await;
     tokio::task::spawn(async move {
         test_traverse(key_pairs.as_slice()).await;

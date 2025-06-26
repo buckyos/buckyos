@@ -104,7 +104,7 @@ pub trait TrieObjectMapProofVerifier: Send + Sync {
         proof_nodes: &Vec<Vec<u8>>,
         root_hash: &[u8],
         key: &[u8],
-        value: &[u8],
+        value: Option<&[u8]>,
     ) -> NdnResult<TrieObjectMapProofVerifyResult>;
 }
 
@@ -162,7 +162,7 @@ where
         proof_nodes: &Vec<Vec<u8>>,
         root_hash: &[u8],
         key: &[u8],
-        value: &[u8],
+        value: Option<&[u8]>,
     ) -> NdnResult<TrieObjectMapProofVerifyResult> {
         use trie_db::proof::{verify_proof, VerifyError};
 
@@ -171,7 +171,7 @@ where
         let ret = verify_proof::<GenericLayout<H>, _, _, &[u8]>(
             &root_hash,
             proof_nodes,
-            &vec![(key, Some(value))], // The data to be verified, if the data is None, it means to check the existence of the key
+            &vec![(key, value)], // The data to be verified, if the data is None, it means to check the existence of the key
         );
 
         // println!("Verify proof: key = {:?}, root = {:?}, ret = {:?}", key, root_hash, ret);
