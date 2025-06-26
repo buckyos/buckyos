@@ -158,7 +158,7 @@ impl ChunkListBuilder {
         self.list.set_meta(Some(meta_str));
 
         // First, flush the list to ensure the mtree is built and the object id is calculated.
-        self.list.flush().await?;
+        self.list.flush_mtree().await?;
 
         // Ensure the object mode is set correctly
         let len = self.list.len();

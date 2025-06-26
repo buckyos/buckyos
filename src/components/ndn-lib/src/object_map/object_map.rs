@@ -190,7 +190,7 @@ impl ObjectMap {
     }
 
     // If mtree exists, return the current obj id, otherwise return None
-    // If mtree is dirty, then should call flush/calc_obj_id to regenerate the mtree first
+    // If mtree is dirty, then should call flush_mtree/calc_obj_id to regenerate the mtree first
     pub fn get_obj_id(&self) -> Option<ObjId> {
         self.obj_id.clone()
     }
@@ -262,7 +262,7 @@ impl ObjectMap {
         }
 
         if self.is_dirty {
-            let msg = "Object map is dirty, should call flush at first".to_string();
+            let msg = "Object map is dirty, should call flush_mtree at first".to_string();
             error!("{}", msg);
             return Err(NdnError::InvalidState(msg));
         }
@@ -443,7 +443,7 @@ impl ObjectMap {
     }
 
     // Regenerate the merkle tree and object id if the mtree is dirty
-    pub async fn flush(&mut self) -> NdnResult<()> {
+    pub async fn flush_mtree(&mut self) -> NdnResult<()> {
         if !self.is_dirty && !self.mtree.is_none() {
             return Ok(());
         }
@@ -490,7 +490,7 @@ impl ObjectMap {
             return Err(NdnError::PermissionDenied(msg));
         }
 
-        self.flush().await?;
+        self.flush_mtree().await?;
 
         let root_hash = self.get_root_hash_str();
         if root_hash.is_none() {
@@ -519,7 +519,7 @@ impl ObjectMap {
 
     pub async fn clone(&self, read_only: bool) -> NdnResult<Self> {
         if self.is_dirty || self.mtree.is_none() {
-            let msg = "Object map is dirty, should call flush at first".to_string();
+            let msg = "Object map is dirty, should call flush_mtree at first".to_string();
             error!("{}", msg);
             return Err(NdnError::InvalidState(msg));
         }

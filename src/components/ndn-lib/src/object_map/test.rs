@@ -40,7 +40,7 @@ async fn test_object_map() {
         }
     }
 
-    obj_map.flush().await.unwrap();
+    obj_map.flush_mtree().await.unwrap();
 
     let (objid, obj_content) = obj_map.calc_obj_id().unwrap();
     println!("objid: {}", objid.to_string());
@@ -72,8 +72,8 @@ async fn test_object_map() {
     let mut obj_map2 = ObjectMap::open(obj_content, true).await.unwrap();
     let objid2 = obj_map2.get_obj_id().unwrap();
     assert_eq!(objid, objid2, "Object ID unmatch");
-    
-    obj_map2.flush().await.unwrap();
+
+    obj_map2.flush_mtree().await.unwrap();
 
     let objid2 = obj_map2.get_obj_id().unwrap();
     assert_eq!(objid, objid2, "Object ID unmatch");
@@ -91,7 +91,7 @@ async fn test_object_map() {
     assert!(obj_item2.is_some(), "Remove object failed");
 
     // Regenerate container ID
-    obj_map3.flush().await.unwrap();
+    obj_map3.flush_mtree().await.unwrap();
     let (objid3, _content) = obj_map3.calc_obj_id().unwrap();
     assert_ne!(objid, objid3, "Object ID unmatch");
 
@@ -109,7 +109,7 @@ async fn test_object_map() {
         .await
         .unwrap();
 
-    obj_map3.flush().await.unwrap();
+    obj_map3.flush_mtree().await.unwrap();
     let objid4 = obj_map3.get_obj_id().unwrap();
     assert_eq!(objid, objid4, "Object ID unmatch");
 

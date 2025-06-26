@@ -339,7 +339,7 @@ impl ObjectArray {
         // Check if the mtree is dirty
         if self.is_dirty || self.mtree.is_none() {
             // If the mtree is dirty or first loaded, we need to regenerate it
-            self.flush_impl().await?;
+            self.flush_mtree_impl().await?;
         }
 
         Ok(self.get_obj_id().unwrap())
@@ -406,15 +406,15 @@ impl ObjectArray {
         Ok(())
     }
 
-    pub async fn flush(&mut self) -> NdnResult<()> {
+    pub async fn flush_mtree(&mut self) -> NdnResult<()> {
         if !self.is_dirty && self.mtree.is_some() {
             return Ok(());
         }
 
-        self.flush_impl().await
+        self.flush_mtree_impl().await
     }
 
-    async fn flush_impl(&mut self) -> NdnResult<()> {
+    async fn flush_mtree_impl(&mut self) -> NdnResult<()> {
         self.regenerate_merkle_tree().await?;
         self.is_dirty = false;
 

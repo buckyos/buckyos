@@ -76,7 +76,7 @@ async fn test_object_array() {
     ar.set_meta(Some(meta1.clone())).unwrap();
 
     ar.save().await.unwrap();
-    ar.flush().await.unwrap();
+    ar.flush_mtree().await.unwrap();
 
 
     // Test load from file, in read-only mode
