@@ -11,6 +11,12 @@ use once_cell::sync::OnceCell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrieObjectMapStorageOpenMode {
+    CreateNew,
+    OpenExisting,
+}
+
 pub struct TrieObjectMapStorageFactory {
     data_dir: PathBuf,
     default_storage_type: TrieObjectMapStorageType,
@@ -78,22 +84,23 @@ impl TrieObjectMapStorageFactory {
         read_only: bool,
         storage_type: Option<TrieObjectMapStorageType>,
         hash_method: HashMethod,
+        mode: TrieObjectMapStorageOpenMode,
     ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>> {
         match hash_method {
             HashMethod::Sha256 => {
-                self.open::<Sha256Hasher>(root_hash, read_only, storage_type)
+                self.open::<Sha256Hasher>(root_hash, read_only, storage_type, mode)
                     .await
             }
             HashMethod::Sha512 => {
-                self.open::<Sha512Hasher>(root_hash, read_only, storage_type)
+                self.open::<Sha512Hasher>(root_hash, read_only, storage_type, mode)
                     .await
             }
             HashMethod::Blake2s256 => {
-                self.open::<Blake2s256Hasher>(root_hash, read_only, storage_type)
+                self.open::<Blake2s256Hasher>(root_hash, read_only, storage_type, mode)
                     .await
             }
             HashMethod::Keccak256 => {
-                self.open::<Keccak256Hasher>(root_hash, read_only, storage_type)
+                self.open::<Keccak256Hasher>(root_hash, read_only, storage_type, mode)
                     .await
             }
             HashMethod::QCID => {
@@ -109,6 +116,7 @@ impl TrieObjectMapStorageFactory {
         root_hash: Option<&str>,
         read_only: bool,
         storage_type: Option<TrieObjectMapStorageType>,
+        mode: TrieObjectMapStorageOpenMode,
     ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>>
     where
         H: Hasher + Send + Sync + 'static,
@@ -127,6 +135,12 @@ impl TrieObjectMapStorageFactory {
         }
 
         let storage_type = storage_type.unwrap_or(self.default_storage_type);
+        if storage_type == TrieObjectMapStorageType::Memory {
+            let msg = "Memory storage is not supported for open operation".to_string();
+            error!("{}", msg);
+            return Err(NdnError::PermissionDenied(msg));
+        }
+
         let root: Option<<H as Hasher>::Out> = if let Some(id) = root_hash {
             // Decode the root hash from string to the appropriate type.
             let root_hash = Base32Codec::from_base32(id)?;
@@ -135,19 +149,42 @@ impl TrieObjectMapStorageFactory {
             None
         };
 
-        match storage_type {
-            TrieObjectMapStorageType::Memory => {
-                let msg = "Memory storage is not supported for open operation".to_string();
-                error!("{}", msg);
-                Err(NdnError::PermissionDenied(msg))
+        let file = self.get_file_path_by_id(root_hash, storage_type);
+        match mode {
+            TrieObjectMapStorageOpenMode::CreateNew => {
+                if file.exists() {
+                    let msg = format!(
+                        "File {} already exists, cannot create new storage",
+                        file.display()
+                    );
+                    error!("{}", msg);
+                    return Err(NdnError::IoError(msg));
+                }
+
+                info!("Creating new TrieObjectMap storage at: {}", file.display());
             }
-            TrieObjectMapStorageType::SQLite => {
-                let file = self.get_file_path_by_id(root_hash, storage_type);
+            TrieObjectMapStorageOpenMode::OpenExisting => {
+                if !file.exists() {
+                    let msg = format!(
+                        "File {} does not exist, cannot open existing storage",
+                        file.display()
+                    );
+                    error!("{}", msg);
+                    return Err(NdnError::IoError(msg));
+                }
+
                 info!(
-                    "Opening TrieObjectMap SQLite storage at: {}",
+                    "Opening existing TrieObjectMap storage at: {}",
                     file.display()
                 );
+            }
+        }
 
+        match storage_type {
+            TrieObjectMapStorageType::Memory => {
+                unreachable!("Memory storage does not have a file path");
+            }
+            TrieObjectMapStorageType::SQLite => {
                 let db = TrieObjectMapSqliteStorage::<H>::new(file, read_only)?;
                 let storage = TrieObjectMapInnerStorageWrapper::<H>::new(
                     db.get_type(),
@@ -160,9 +197,6 @@ impl TrieObjectMapStorageFactory {
                 Ok(ret)
             }
             TrieObjectMapStorageType::JSONFile => {
-                let file = self.get_file_path_by_id(root_hash, storage_type);
-                info!("Opening TrieObjectMap JSON storage at: {}", file.display());
-
                 let db = TrieObjectMapJSONFileStorage::<H>::new(file, read_only)?;
                 let storage = TrieObjectMapInnerStorageWrapper::<H>::new(
                     db.get_type(),

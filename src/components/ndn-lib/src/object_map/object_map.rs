@@ -10,7 +10,7 @@ use crate::{
     hash::{HashHelper, HashMethod},
     NdnError, NdnResult,
 };
-use crate::{Base32Codec, MerkleTreeProofPathVerifier, OBJ_TYPE_OBJMAP};
+use crate::{Base32Codec, MerkleTreeProofPathVerifier, ObjectMapStorageOpenMode, OBJ_TYPE_OBJMAP};
 use core::hash;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -94,7 +94,12 @@ impl ObjectMap {
         let mut storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .open(None, false, storage_type)
+            .open(
+                None,
+                false,
+                storage_type,
+                ObjectMapStorageOpenMode::CreateNew,
+            )
             .await
             .map_err(|e| {
                 let msg = format!("Error opening object map storage: {}", e);
@@ -122,10 +127,7 @@ impl ObjectMap {
     // Load object map from storage
     pub async fn open(obj_data: serde_json::Value, read_only: bool) -> NdnResult<Self> {
         // First calc obj id with body
-        let (obj_id, _) = build_named_object_by_json(
-            OBJ_TYPE_OBJMAP,
-            &obj_data,
-        );
+        let (obj_id, _) = build_named_object_by_json(OBJ_TYPE_OBJMAP, &obj_data);
 
         let body: ObjectMapBody = serde_json::from_value(obj_data).map_err(|e| {
             let msg = format!("Error decoding object map body: {} {}", e, obj_id);
@@ -136,7 +138,12 @@ impl ObjectMap {
         let storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .open(Some(&body.root_hash), read_only, Some(body.storage_type))
+            .open(
+                Some(&body.root_hash),
+                read_only,
+                Some(body.storage_type),
+                ObjectMapStorageOpenMode::OpenExisting,
+            )
             .await
             .map_err(|e| {
                 let msg = format!(
@@ -171,8 +178,6 @@ impl ObjectMap {
         } else {
             None
         };
-
-        
 
         let mut map = Self {
             hash_method: body.hash_method,

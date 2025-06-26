@@ -3,11 +3,14 @@ use super::storage::{
     TrieObjectMapInnerStorage, TrieObjectMapInnerStorageRef, TrieObjectMapProofVerifierRef,
     TrieObjectMapStorageType,
 };
-use super::storage_factory::{TrieObjectMapStorageFactory, GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY};
+use super::storage_factory::{
+    TrieObjectMapStorageFactory, TrieObjectMapStorageOpenMode,
+    GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY,
+};
 use crate::hash::HashMethod;
 use crate::object::ObjId;
+use crate::{build_named_object_by_json, PathObject};
 use crate::{Base32Codec, NdnError, NdnResult, OBJ_TYPE_TRIE};
-use crate::{PathObject, build_named_object_by_json};
 use bincode::de;
 use crypto_common::Key;
 use log::kv::value;
@@ -69,7 +72,13 @@ impl TrieObjectMap {
         let db = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
             .get()
             .unwrap()
-            .open_by_hash_method(None, false, storage_type, hash_method)
+            .open_by_hash_method(
+                None,
+                false,
+                storage_type,
+                hash_method,
+                TrieObjectMapStorageOpenMode::CreateNew,
+            )
             .await?;
 
         Ok(Self { hash_method, db })
@@ -91,6 +100,7 @@ impl TrieObjectMap {
                 read_only,
                 Some(body.storage_type),
                 body.hash_method,
+                TrieObjectMapStorageOpenMode::OpenExisting,
             )
             .await
             .map_err(|e| {
@@ -102,7 +112,10 @@ impl TrieObjectMap {
                 e
             })?;
 
-        Ok(Self { hash_method: body.hash_method, db })
+        Ok(Self {
+            hash_method: body.hash_method,
+            db,
+        })
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -179,7 +192,8 @@ impl TrieObjectMap {
         let root_hash = self.get_root_hash_str();
 
         let factory = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY.get().unwrap();
-        let file_path = factory.get_file_path_by_id(Some(root_hash.as_str()), self.get_storage_type());
+        let file_path =
+            factory.get_file_path_by_id(Some(root_hash.as_str()), self.get_storage_type());
         Some(file_path)
     }
 
@@ -274,11 +288,14 @@ impl TrieObjectMapProofVerifierHelper {
         obj_id: Option<&ObjId>,
         proof: &TrieObjectMapItemProof,
     ) -> NdnResult<TrieObjectMapProofVerifyResult> {
-        let obj_id = obj_id.map(|id| bincode::serialize(id)).transpose().map_err(|e| {
-            let msg = format!("Error serializing ObjId: {:?}, {}", obj_id, e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
+        let obj_id = obj_id
+            .map(|id| bincode::serialize(id))
+            .transpose()
+            .map_err(|e| {
+                let msg = format!("Error serializing ObjId: {:?}, {}", obj_id, e);
+                error!("{}", msg);
+                NdnError::InvalidData(msg)
+            })?;
 
         self.verify(key, obj_id.as_deref(), proof)
     }

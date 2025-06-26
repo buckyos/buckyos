@@ -3,9 +3,15 @@ use super::memory_storage::MemoryStorage;
 use super::storage::{self, ObjectMapInnerStorage, ObjectMapStorageType};
 use crate::{NdnError, NdnResult, ObjId};
 use once_cell::sync::OnceCell;
+use serde_json::de;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectMapStorageOpenMode {
+    CreateNew,
+    OpenExisting,
+}
 
 pub struct ObjectMapStorageFactory {
     data_dir: PathBuf,
@@ -25,7 +31,11 @@ impl ObjectMapStorageFactory {
     }
 
     // The storage type must not be Memory, as it does not have a file path.
-    pub fn get_file_path_by_id(&self, root_hash: Option<&str>, storage_type: ObjectMapStorageType) -> PathBuf {
+    pub fn get_file_path_by_id(
+        &self,
+        root_hash: Option<&str>,
+        storage_type: ObjectMapStorageType,
+    ) -> PathBuf {
         let file_name = match storage_type {
             ObjectMapStorageType::Memory => {
                 unreachable!("Memory storage does not have a file path");
@@ -65,12 +75,13 @@ impl ObjectMapStorageFactory {
             }
         }
     }
-    
+
     pub async fn open(
         &self,
         root_hash: Option<&str>,
         read_only: bool,
         storage_type: Option<ObjectMapStorageType>,
+        mode: ObjectMapStorageOpenMode,
     ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         if !self.data_dir.exists() {
             std::fs::create_dir_all(&self.data_dir).map_err(|e| {
@@ -85,19 +96,45 @@ impl ObjectMapStorageFactory {
         }
 
         let storage_type = storage_type.unwrap_or(self.default_storage_type);
+        if storage_type == ObjectMapStorageType::Memory {
+            let msg = "Memory storage is not supported for open operation".to_string();
+            error!("{}", msg);
+            return Err(NdnError::PermissionDenied(msg));
+        }
+
+        let file = self.get_file_path_by_id(root_hash, storage_type);
+        match mode {
+            ObjectMapStorageOpenMode::CreateNew => {
+                if file.exists() {
+                    let msg = format!(
+                        "File {} already exists, cannot create new storage",
+                        file.display()
+                    );
+                    error!("{}", msg);
+                    return Err(NdnError::AlreadyExists(msg));
+                }
+            }
+            ObjectMapStorageOpenMode::OpenExisting => {
+                if !file.exists() {
+                    let msg = format!(
+                        "File {} does not exist, cannot open storage",
+                        file.display()
+                    );
+                    error!("{}", msg);
+                    return Err(NdnError::NotFound(msg));
+                }
+            }
+        }
+
         match storage_type {
             ObjectMapStorageType::Memory => {
-                let msg = "Memory storage is not supported for open operation".to_string();
-                error!("{}", msg);
-                Err(NdnError::PermissionDenied(msg))
+                unreachable!("Memory storage does not have a file path");
             }
             ObjectMapStorageType::SQLite => {
-                let file = self.get_file_path_by_id(root_hash, storage_type);
                 let storage = ObjectMapSqliteStorage::new(file, read_only)?;
                 Ok(Box::new(storage))
             }
             ObjectMapStorageType::JSONFile => {
-                let file = self.get_file_path_by_id(root_hash, storage_type);
                 let storage = ObjectMapJSONStorage::new(file, read_only)?;
                 Ok(Box::new(storage))
             }
@@ -128,7 +165,7 @@ impl ObjectMapStorageFactory {
                 "clone_{}_{}_{}.{}",
                 root_hash,
                 index,
-                chrono::Utc::now().timestamp(), 
+                chrono::Utc::now().timestamp(),
                 Self::get_file_ext(storage.get_type()),
             )
         };
@@ -148,7 +185,9 @@ impl ObjectMapStorageFactory {
 
     fn get_file_ext(storage_type: ObjectMapStorageType) -> &'static str {
         match storage_type {
-            ObjectMapStorageType::Memory => unreachable!("Memory storage does not have a file extension"),
+            ObjectMapStorageType::Memory => {
+                unreachable!("Memory storage does not have a file extension")
+            }
             ObjectMapStorageType::SQLite => "sqlite",
             ObjectMapStorageType::JSONFile => "json",
         }
