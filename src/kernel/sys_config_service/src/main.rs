@@ -35,34 +35,6 @@ lazy_static! {
         Arc::new(Mutex::new(SledStore::new().unwrap()));
 }
 
-fn normalize_path(path_str: &str) -> Result<String> {
-    let mut components = Path::new(path_str).components().peekable();
-    let mut normalized = PathBuf::new();
-
-    while let Some(comp) = components.next() {
-        match comp {
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    normalized.push("..");
-                }
-            }
-            Component::CurDir => {
-                // 忽略当前目录
-            }
-            Component::Normal(c) => {
-                normalized.push(c);
-            }
-            Component::RootDir => {
-                normalized.push(comp);
-            }
-            Component::Prefix(p) => {
-                normalized.push(p.as_os_str()); // Windows 前缀（例如 C:\）
-            }
-        }
-    }
-
-    Ok(normalized.to_string_lossy().to_string())
-}
 
 fn get_full_res_path(key_path:&str) -> Result<(String,String)> {
     let mut real_key_path = key_path;
@@ -71,7 +43,7 @@ fn get_full_res_path(key_path:&str) -> Result<(String,String)> {
     }
 
     let key = real_key_path.trim_start_matches('/').trim_start_matches('\\');
-    let normalized_path = normalize_path(key)?;
+    let normalized_path = normalize_path(key);
    
     return Ok((format!("kv://{}", normalized_path.as_str()),normalized_path));
 }
