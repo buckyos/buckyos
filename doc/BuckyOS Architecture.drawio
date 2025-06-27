@@ -785,7 +785,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="q0N88BQaiHxRkIq5dT2b" name="App Container">
-    <mxGraphModel dx="2771" dy="1001" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2771" dy="1002" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -1065,8 +1065,11 @@
         <mxCell id="BFy1MTNfwtilupp1LULl-4" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;verify-hub login流程&lt;/h1&gt;&lt;p&gt;1) 账户/密码登录&lt;/p&gt;&lt;p&gt;账户名是user_doc里的 user_name （创建后不可修改）,full_name作为显示的名字，是可以修改的；kv://users/$username/doc 的路径保证了username的唯一性&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;2) Token登录： 由trustkey 签名的JWT. JWT结构中的kid说明了该JWT是谁签名的. 登录逻辑会先确认该kid是否有效，然后再判断登录的userid / appid 是否有效&lt;/p&gt;&lt;p&gt;kid: root ，由系统的owner签名&lt;/p&gt;&lt;p&gt;kid:username, 由特定用户的私钥签名 （可以获得用户的sudo权限，比用户密码的权限略高）&lt;/p&gt;&lt;p&gt;kid:devicename, 系统里的OOD和Node的私钥签名。 kv://devices/$devicename/doc 保证了devicename的唯一性&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;3） 登录验证通过后，根据登录时的信息，verifvy-hub会签发一个JWT（有效期多少合适？）&lt;/span&gt;&lt;/p&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
           <mxGeometry x="-500" y="85" width="300" height="445" as="geometry" />
         </mxCell>
-        <mxCell id="BFy1MTNfwtilupp1LULl-5" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;服务校验session-token的通用流程&lt;/h1&gt;&lt;p&gt;1）根据kid在trust-key中得到公钥&lt;/p&gt;&lt;p&gt;有2个保存在zone-config中的kid是肯定会存在的&lt;/p&gt;&lt;p&gt;kid:root&lt;/p&gt;&lt;p&gt;kid:verify-hub&lt;/p&gt;&lt;p&gt;2）通过环境变量得到的kid （得不到zone_config时至少有一个可用的）&lt;/p&gt;&lt;p&gt;kid:当前设备的device_name(通过THIS_DEVICE）环境变量传入&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
-          <mxGeometry x="-500" y="540" width="300" height="290" as="geometry" />
+        <mxCell id="BFy1MTNfwtilupp1LULl-5" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;服务校验session-token的通用流程&lt;/h1&gt;&lt;p&gt;1）根据kid在trust-key中得到公钥&lt;/p&gt;&lt;p&gt;有2个保存在zone-config中的kid是肯定会存在的&lt;/p&gt;&lt;p&gt;kid:root&lt;/p&gt;&lt;p&gt;kid:verify-hub&lt;/p&gt;&lt;p&gt;2）通过环境变量得到的kid （得不到zone_config时至少有一个可用的）&lt;/p&gt;&lt;p&gt;kid:当前设备的device_name(通过THIS_DEVICE）环境变量传入&lt;/p&gt;&lt;p&gt;3）有一些session token,要求kid于userid一致（不允许授权给其它人）&lt;/p&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="-510" y="540" width="300" height="290" as="geometry" />
+        </mxCell>
+        <mxCell id="ZgWfReDg6R7gwXlHTyS7-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="oT2j73PS3qKXkgTkekL7-1" target="oT2j73PS3qKXkgTkekL7-2">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="oT2j73PS3qKXkgTkekL7-1" value="login_by_jwt" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
           <mxGeometry x="-650" y="1010" width="120" height="60" as="geometry" />
@@ -2431,7 +2434,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="UtNqsgmyMWqOYOfoDoeE" name="Page-15">
-    <mxGraphModel dx="2908" dy="1198" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2515" dy="841" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -2467,6 +2470,9 @@
         </mxCell>
         <mxCell id="khVfkF-Ww6TRZx32QxxV-11" value="包含的类似开源项目:&lt;div&gt;openclash / frp&lt;/div&gt;&lt;div&gt;ipfs&lt;/div&gt;&lt;div&gt;nginx&lt;/div&gt;&lt;div&gt;k8s&lt;/div&gt;&lt;div&gt;seaweed&lt;/div&gt;&lt;div&gt;git&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="20" y="480" width="250" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="3v2F_k2PB1Vnleqox-mW-1" value="on_new_stream" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="170" y="780" width="120" height="60" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

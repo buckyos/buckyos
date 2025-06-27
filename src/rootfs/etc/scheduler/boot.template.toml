@@ -124,7 +124,7 @@
 # frames & services
 "services/verify-hub/config" = """
 {
-    "name":"verify_hub",
+    "name":"verify-hub",
     "description":"verify hub is SSO service of buckyos",
     "vendor_did":"did:bns:buckyos",
     "pkg_id":"verify_hub",

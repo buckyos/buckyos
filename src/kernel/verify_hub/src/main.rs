@@ -108,7 +108,6 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
     //kid : {owner}
     //kid : #device_id
 
-
     if kid.is_none() {
         //return verify_hub's public key
         return load_trustkey_from_cache("verify-hub").await.ok_or(RPCErrors::ReasonError("Verify hub public key not found".to_string()));
@@ -170,6 +169,7 @@ async fn verify_jwt(jwt:&str) -> Result<(Option<String>,Value)> {
     return Ok((header.kid,decoded_token.claims));
 }
 
+// other service can use this api to verify session token which is issued by verify-hub
 async fn handle_verify_session_token(params:Value) -> Result<Value> {
     let session_token = params.get("session_token")
         .ok_or(RPCErrors::ReasonError("Missing session_token".to_string()))?;
@@ -200,7 +200,7 @@ async fn handle_login_by_jwt(params:Value,_login_nonce:u64) -> Result<RPCSession
     let jwt = jwt.as_str().ok_or(RPCErrors::ReasonError("Invalid jwt".to_string()))?;
 
 
-    let (iss,jwt_payload) = verify_jwt(jwt).await?;
+    let (iss_kid,jwt_payload) = verify_jwt(jwt).await?;
 
     let userid = jwt_payload.get("userid")
         .ok_or(RPCErrors::ReasonError("Missing userid".to_string()))?;
@@ -220,9 +220,9 @@ async fn handle_login_by_jwt(params:Value,_login_nonce:u64) -> Result<RPCSession
     if buckyos_get_unix_timestamp() > exp {
         return Err(RPCErrors::ReasonError("Token expired".to_string()));
     }
-    let iss = iss.ok_or(RPCErrors::ReasonError("Invalid iss".to_string()))?;
+    let iss_kid: String = iss_kid.ok_or(RPCErrors::ReasonError("Invalid iss_kid".to_string()))?;
     //load last login token from cache;
-    let key = format!("{}_{}_{}",userid,appid,iss);
+    let key = format!("{}_{}_{}",userid,appid,iss_kid);
     let cache_result = load_token_from_cache(key.as_str()).await;
     if cache_result.is_some() {
         
@@ -361,8 +361,13 @@ async fn handle_query_userid(params:Value) -> Result<Value> {
     Err(RPCErrors::UserNotFound(username.to_string()))
 }
 
-async fn handle_refresh_token(params:Value) -> Result<Value> {
-    unimplemented!()
+
+async fn handle_refresh_token(_params:Value) -> Result<Value> {
+    let mut trust_keys = TRUSTKEY_CACHE.lock().await;
+    trust_keys.clear();
+    Ok(json!({
+        "result": "success"
+    }))
 }
 
 // async fn handle_login_by_signature(params:Value,login_nonce:u64) -> Result<RPCSessionToken> {
@@ -467,7 +472,7 @@ async fn process_request(method:String,param:Value,req_seq:u64) -> ::kRPC::Resul
     }
 }
 
-async fn init_service_config() -> Result<()> {
+async fn load_service_config() -> Result<()> {
     //load zone config form env
     let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG").map_err(|error| RPCErrors::ReasonError(error.to_string()));
     if zone_config_str.is_err() {
@@ -517,9 +522,9 @@ async fn service_main() -> i32 {
     init_logging("verify_hub",true);
     info!("Starting verify_hub service...");
     //init service config from system config service and env
-    let _ = init_service_config().await.map_err(
+    let _ = load_service_config().await.map_err(
         |error| {
-            error!("init service config failed:{}",error);
+            error!("load service config failed:{}",error);
             return -1;
         }
     );
