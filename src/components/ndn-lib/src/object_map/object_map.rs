@@ -1,3 +1,4 @@
+use super::proof::ObjectMapItemProof;
 use super::storage::{ObjectMapInnerStorage, ObjectMapStorageType};
 use super::GLOBAL_OBJECT_MAP_STORAGE_FACTORY;
 use crate::mtree::{MerkleTreeObject, MerkleTreeObjectGenerator};
@@ -62,12 +63,6 @@ impl ObjectMapItem {
         Ok(ret)
     }
     */
-}
-
-#[derive(Debug, Clone)]
-pub struct ObjectMapItemProof {
-    pub item: ObjectMapItem,
-    pub proof: Vec<(u64, Vec<u8>)>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -208,7 +203,7 @@ impl ObjectMap {
             warn!("{}", msg);
             return None;
         }
-        
+
         let root_hash = self.get_root_hash_str();
         if root_hash.is_none() {
             return None;
@@ -480,7 +475,7 @@ impl ObjectMap {
     // This will return None if the object ID is not generated yet
     // The target file must be created by the `save()` method
     pub fn get_storage_file_path(&self) -> Option<PathBuf> {
-        let obj_id= self.get_obj_id();
+        let obj_id = self.get_obj_id();
         if obj_id.is_none() {
             return None; // Object ID is not set, cannot get file path
         }
@@ -492,8 +487,7 @@ impl ObjectMap {
         }
 
         let factory = GLOBAL_OBJECT_MAP_STORAGE_FACTORY.get().unwrap();
-        let file_path =
-            factory.get_file_path_by_id(Some(&obj_id), self.get_storage_type());
+        let file_path = factory.get_file_path_by_id(Some(&obj_id), self.get_storage_type());
         Some(file_path)
     }
 
@@ -587,90 +581,5 @@ impl ObjectMap {
     pub fn get_root_hash_str(&self) -> Option<String> {
         self.get_root_hash()
             .map(|hash| Base32Codec::to_base32(&hash))
-    }
-}
-
-pub struct ObjectMapProofVerifier {
-    hash_method: HashMethod,
-}
-
-impl ObjectMapProofVerifier {
-    pub fn new(hash_method: HashMethod) -> Self {
-        Self { hash_method }
-    }
-
-    pub fn verify_with_obj_data_str(
-        &self,
-        obj_data: &str,
-        proof: &ObjectMapItemProof,
-    ) -> NdnResult<bool> {
-        // Parse the object data as JSON
-        let body: ObjectMapBody = serde_json::from_str(obj_data).map_err(|e| {
-            let msg = format!("Error decoding object map body: {}", e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-
-        let root_hash = body.root_hash;
-        self.verify(&root_hash, proof)
-    }
-
-    pub fn verify_with_obj_data(
-        &self,
-        obj_data: serde_json::Value,
-        proof: &ObjectMapItemProof,
-    ) -> NdnResult<bool> {
-        // Get the root hash from the object data
-        let body: ObjectMapBody = serde_json::from_value(obj_data).map_err(|e| {
-            let msg = format!("Error decoding object map body: {}", e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-
-        let root_hash = body.root_hash;
-        self.verify(&root_hash, proof)
-    }
-
-    // root_hash is the object map's root hash, which is the body.root_hash field, encoded as base32
-    // proof is the ObjectMapItemProof, which contains the item and the proof path
-    pub fn verify(&self, root_hash: &str, proof: &ObjectMapItemProof) -> NdnResult<bool> {
-        if proof.proof.len() < 2 {
-            let msg = format!("Invalid proof path length: {}", proof.proof.len());
-            error!("{}", msg);
-            return Err(NdnError::InvalidParam(msg));
-        }
-
-        // First calculate the hash of the item
-        let item_hash = proof.item.calc_hash(self.hash_method);
-
-        // The first item is the leaf node, which is the item itself
-        if proof.proof[0].1 != item_hash {
-            let msg = format!(
-                "Unmatched object map leaf hash: expected {:?}, got {:?}",
-                item_hash, proof.proof[0].1
-            );
-            error!("{}", msg);
-            return Err(NdnError::InvalidData(msg));
-        }
-
-        let root_hash = Base32Codec::from_base32(root_hash).map_err(|e| {
-            let msg = format!("Error decoding root hash: {}, {}", root_hash, e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-
-        // The last item is the root node, which is the expected root hash
-        if proof.proof[proof.proof.len() - 1].1 != root_hash {
-            let msg = format!(
-                "Unmatched object map root hash: expected {:?}, got {:?}",
-                root_hash,
-                proof.proof[proof.proof.len() - 1].1
-            );
-            error!("{}", msg);
-            return Err(NdnError::InvalidData(msg));
-        }
-
-        let mtree_verifier = MerkleTreeProofPathVerifier::new(self.hash_method);
-        mtree_verifier.verify(&proof.proof)
     }
 }

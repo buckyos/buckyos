@@ -12,6 +12,7 @@ mod hash;
 mod object_map;
 mod trie_object_map;
 mod object_array;
+mod coll;
 
 pub use object::*;
 pub use chunk::*;
@@ -25,6 +26,7 @@ pub use mtree::*;
 pub use object_map::*;
 pub use trie_object_map::*;
 pub use object_array::*;
+pub use coll::*;
 
 use reqwest::StatusCode;
 use thiserror::Error;

@@ -5,13 +5,12 @@ use super::storage::{
 };
 use super::storage_factory::{ObjectArrayCacheFactory, ObjectArrayStorageFactory};
 use super::GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY;
-use crate::mtree::MerkleTreeProofPathVerifier;
 use crate::mtree::{
     self, MerkleTreeObject, MerkleTreeObjectGenerator, MtreeReadSeek,
     MtreeReadWriteSeekWithSharedBuffer, MtreeWriteSeek, SharedBuffer,
 };
 use crate::{build_named_object_by_json, Base32Codec, HashMethod, ObjId, OBJ_TYPE_LIST};
-use crate::{NdnError, NdnResult};
+use crate::{NdnError, NdnResult, get_obj_hash};
 use core::hash;
 use http_types::cache;
 use serde::{Deserialize, Serialize};
@@ -20,28 +19,6 @@ use std::io::SeekFrom;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-// Because the object may be ObjectId or ChunkId, which maybe have mix mode, so we need to check the hash length
-fn get_obj_hash<'a>(obj_id: &'a ObjId, hash_method: HashMethod) -> NdnResult<&'a [u8]> {
-    if obj_id.obj_hash.len() < hash_method.hash_bytes() {
-        let msg = format!(
-            "Object hash length does not match hash method: {}",
-            obj_id.obj_hash.len()
-        );
-        error!("{}", msg);
-        return Err(NdnError::InvalidData(msg));
-    }
-
-    // We use the last hash bytes as the object hash
-    if obj_id.obj_hash.len() > hash_method.hash_bytes() {
-        // obj_id is a chunk id with mix mode, we need to get the last hash bytes
-        // FIXME: Should we check if the hash type is valid?
-        let start = obj_id.obj_hash.len() - hash_method.hash_bytes();
-        return Ok(&obj_id.obj_hash[start..]);
-    } else {
-        // If the hash length is equal, we can return the whole hash
-        return Ok(&obj_id.obj_hash);
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ObjectArrayBody {
@@ -334,7 +311,7 @@ impl ObjectArray {
             warn!("{}", msg);
             return None;
         }
-        
+
         let body = self.get_body();
         if body.is_none() {
             return None;
@@ -509,92 +486,5 @@ impl IntoIterator for ObjectArray {
 
     fn into_iter(self) -> Self::IntoIter {
         ObjectArrayOwnedIter::new(self.cache)
-    }
-}
-
-pub struct ObjectArrayProofVerifier {
-    hash_method: HashMethod,
-}
-
-impl ObjectArrayProofVerifier {
-    pub fn new(hash_method: HashMethod) -> Self {
-        Self { hash_method }
-    }
-
-    pub fn verify_with_obj_data_str(
-        &self,
-        obj_data: &str,
-        obj_id: &ObjId,
-        proof: &ObjectArrayItemProof,
-    ) -> NdnResult<bool> {
-        // Parse the object data as JSON
-        let body: ObjectArrayBody = serde_json::from_str(obj_data).map_err(|e| {
-            let msg = format!("Error decoding object map body: {}", e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-
-        let root_hash = body.root_hash;
-        self.verify(&root_hash, obj_id, proof)
-    }
-
-    pub fn verify_with_obj_data(
-        &self,
-        obj_data: serde_json::Value,
-        obj_id: &ObjId,
-        proof: &ObjectArrayItemProof,
-    ) -> NdnResult<bool> {
-        // Get the root hash from the object data
-        let body: ObjectArrayBody = serde_json::from_value(obj_data).map_err(|e| {
-            let msg = format!("Error decoding object array body: {}", e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-
-        let root_hash = body.root_hash;
-        self.verify(&root_hash, obj_id, proof)
-    }
-
-    pub fn verify(
-        &self,
-        root_hash: &str,
-        obj_id: &ObjId,
-        proof: &ObjectArrayItemProof,
-    ) -> NdnResult<bool> {
-        if proof.proof.len() < 2 {
-            let msg = format!("Invalid proof path length: {}", proof.proof.len());
-            error!("{}", msg);
-            return Err(NdnError::InvalidParam(msg));
-        }
-
-        // The first item is the leaf node, which is the item itself
-        if proof.proof[0].1 != get_obj_hash(obj_id, self.hash_method)? {
-            let msg = format!(
-                "Unmatched object array leaf hash: expected {:?}, got {:?}",
-                obj_id, proof.proof[0].1
-            );
-            warn!("{}", msg);
-            return Ok(false);
-        }
-
-        let root_hash = Base32Codec::from_base32(root_hash).map_err(|e| {
-            let msg = format!("Error decoding root hash: {}, {}", root_hash, e);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-
-        // The last item is the root node, which is obj_id.obj_hash field
-        if proof.proof[proof.proof.len() - 1].1 != root_hash {
-            let msg = format!(
-                "Unmatched object array root hash: expected {:?}, got {:?}",
-                root_hash,
-                proof.proof[proof.proof.len() - 1].1
-            );
-            warn!("{}", msg);
-            return Ok(false);
-        }
-
-        let mtree_verifier = MerkleTreeProofPathVerifier::new(self.hash_method);
-        mtree_verifier.verify(&proof.proof)
     }
 }
