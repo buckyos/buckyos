@@ -493,7 +493,7 @@ async fn init_service_config() -> Result<()> {
     
     info!("start load config from system config service.");
     let system_config_client = SystemConfigClient::new(None,Some(session_token.as_str()));
-    let private_key_str = system_config_client.get("system/verify_hub/key").await;
+    let private_key_str = system_config_client.get("system/verify-hub/key").await;
     if private_key_str.is_ok() {
         let (private_key,_) = private_key_str.unwrap();
         let private_key = EncodingKey::from_ed_pem(private_key.as_bytes());

@@ -150,9 +150,11 @@ impl ActiveServer {
         let device_identity_str = serde_json::to_string(&node_identity).unwrap();
         tokio::fs::write(device_identity_file,device_identity_str.as_bytes()).await
             .map_err(|_|RPCErrors::ReasonError("Failed to write node_identity.json".to_string()))?;
-
+        let mut real_start_parms = req.params.clone();
+        let mut real_start_params = real_start_parms.as_object_mut().unwrap();
+        real_start_params.insert("ood_jwt".to_string(),Value::String(device_doc_jwt.to_string()));
         //write boot config
-        let start_params_str = serde_json::to_string(&req.params).unwrap();
+        let start_params_str = serde_json::to_string(&real_start_params).unwrap();
         let start_params_file = write_dir.join("start_config.json");
         tokio::fs::write(start_params_file,start_params_str.as_bytes()).await
             .map_err(|_|RPCErrors::ReasonError("Failed to write start params".to_string()))?;

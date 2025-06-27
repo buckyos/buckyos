@@ -633,9 +633,9 @@ async fn process_request(
                 warn!("session token expired: {}", session_token);
                 return Err(RPCErrors::TokenExpired(session_token));
             }
-            info!("session token is valid: {}", session_token);
+            debug!("session token is valid: {}", session_token);
         }
-        info!("ready to handle request : {}", method.as_str());
+        debug!("ready to handle request : {}", method.as_str());
         match method.as_str() {
             "sys_config_create" => {
                 return handle_create(param, &rpc_session_token).await;

@@ -145,7 +145,7 @@ impl RPCSessionToken {
 
         let decoded_json = decoded_token.claims.as_object()
             .ok_or(RPCErrors::InvalidToken("Invalid token".to_string()))?;
-        info!("decoded token: {:?}",decoded_json);
+        debug!("decoded token: {:?}",decoded_json);
 
         let userid = decoded_json.get("userid")
             .ok_or(RPCErrors::InvalidToken("Missing userid".to_string()))?;
@@ -220,7 +220,7 @@ impl RPCSessionToken {
 
         let decoded_json = decoded_token.claims.as_object()
             .ok_or(RPCErrors::InvalidToken("Invalid token".to_string()))?;
-        info!("decoded token: {:?}",decoded_json);
+        debug!("decoded token: {:?}",decoded_json);
 
         let userid = decoded_json.get("userid")
             .ok_or(RPCErrors::InvalidToken("Missing userid".to_string()))?;
