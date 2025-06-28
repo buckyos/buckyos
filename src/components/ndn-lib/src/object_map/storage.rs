@@ -1,8 +1,8 @@
+use crate::coll::CollectionStorageMode;
 use crate::{NdnResult, ObjId};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObjectMapStorageType {
@@ -14,6 +14,28 @@ pub enum ObjectMapStorageType {
 impl Default for ObjectMapStorageType {
     fn default() -> Self {
         ObjectMapStorageType::SQLite
+    }
+}
+
+impl ObjectMapStorageType {
+    pub fn is_memory(&self) -> bool {
+        matches!(self, ObjectMapStorageType::Memory)
+    }
+
+    pub fn is_sqlite(&self) -> bool {
+        matches!(self, ObjectMapStorageType::SQLite)
+    }
+
+    pub fn is_json_file(&self) -> bool {
+        matches!(self, ObjectMapStorageType::JSONFile)
+    }
+
+    pub fn select_storage_type(coll_mode: Option<CollectionStorageMode>) -> Self {
+        match coll_mode {
+            Some(CollectionStorageMode::Simple) => Self::JSONFile,
+            Some(CollectionStorageMode::Normal) => Self::SQLite,
+            None => Self::SQLite,
+        }
     }
 }
 
@@ -50,7 +72,11 @@ pub trait ObjectMapInnerStorage: Send + Sync {
 
     // Clone the storage to a new file.
     // If the target file exists, it will be failed.
-    async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn ObjectMapInnerStorage>>;
+    async fn clone(
+        &self,
+        target: &Path,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn ObjectMapInnerStorage>>;
 
     // If file is diff from the current one, it will be saved to the file.
     async fn save(&mut self, file: &Path) -> NdnResult<()>;

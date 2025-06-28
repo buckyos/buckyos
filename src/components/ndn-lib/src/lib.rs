@@ -97,9 +97,11 @@ pub const OBJ_TYPE_FILE: &str = "cyfile";
 pub const OBJ_TYPE_DIR: &str = "cydir";
 pub const OBJ_TYPE_PATH: &str = "cypath";
 pub const OBJ_TYPE_MTREE: &str = "cytree";
-pub const OBJ_TYPE_OBJMAP: &str = "cymap"; // object map
 pub const OBJ_TYPE_TRIE: &str = "cytrie"; // trie object map
 pub const OBJ_TYPE_PACK: &str = "cypack"; // object set
+
+pub const OBJ_TYPE_OBJMAP: &str = "cymap"; // object map
+pub const OBJ_TYPE_OBJMAP_SIMPLE: &str = "cymap-s"; // simple object map
 
 pub const OBJ_TYPE_LIST: &str = "cylist"; // object list
 pub const OBJ_TYPE_LIST_SIMPLE: &str = "cylist-s"; // simple object list
