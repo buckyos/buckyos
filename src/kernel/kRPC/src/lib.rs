@@ -74,6 +74,11 @@ impl kRPC {
         }
     }
 
+    pub async fn reset_session_token(&self) {
+        let mut session_token = self.session_token.write().await;
+        *session_token = None;
+    }
+
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
         //retry 2 times here.
         self._call(method, params).await

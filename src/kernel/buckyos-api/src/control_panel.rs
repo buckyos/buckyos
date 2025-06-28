@@ -272,6 +272,7 @@ impl ControlPanelClient {
     pub fn new(system_config_client: SystemConfigClient) -> Self {
         Self { system_config_client }
     }
+
     //return (rbac_model,rbac_policy)
     pub async fn load_rbac_config(&self) -> Result<(String,String)> {
         let rbac_model_path = "system/rbac/model";

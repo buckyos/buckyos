@@ -388,13 +388,11 @@ async fn schedule_loop(is_boot: bool) -> Result<()> {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         loop_step += 1;
         info!("schedule loop step:{}.", loop_step);
-        let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
-        if rpc_session_token_str.is_err() {
-            return Err(anyhow::anyhow!("SCHEDULER_SESSION_TOKEN is not set"));
-        }
-
-        let rpc_session_token = rpc_session_token_str.unwrap();
-        let system_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
+        let buckyos_api_runtime = get_buckyos_api_runtime().unwrap();
+        let system_config_client = buckyos_api_runtime.get_system_config_client().await.map_err(|e| {
+            error!("get_system_config_client failed: {:?}", e);
+            e
+        })?;
         let input_config = system_config_client.dump_configs_for_scheduler().await;
         if input_config.is_err() {
             error!(

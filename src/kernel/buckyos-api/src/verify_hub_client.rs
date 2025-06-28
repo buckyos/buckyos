@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 
 pub const VERIFY_HUB_SERVICE_NAME: &str = "verify-hub";
-pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60*10;
+pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60;
 
 pub struct VerifyHubClient {
     krpc_client: kRPC,
@@ -15,6 +15,7 @@ impl VerifyHubClient {
     }
 
     pub async fn login_by_jwt(&self, jwt: String, login_params: Option<Value>) -> Result<RPCSessionToken> {
+        self.krpc_client.reset_session_token().await;
         let mut params = json!({
             "type": "jwt",
             "jwt": jwt

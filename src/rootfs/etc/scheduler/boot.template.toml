@@ -444,7 +444,7 @@ g, {{user_name}},admin
 """
 
 # boot config will merge with zone_boot_config
-# todo:
+# if boot/config is modified, whole zone will be restarted
 "boot/config" = """
 {
   "@context": "https://www.w3.org/ns/did/v1",

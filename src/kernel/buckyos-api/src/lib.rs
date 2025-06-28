@@ -401,7 +401,9 @@ impl BuckyOSRuntime {
             debug!("session_token is empty,skip refresh token");
             return Ok(());
         }
-        let real_session_token = RPCSessionToken::from_string(session_token.as_str())?;
+        let session_token_str = session_token.clone();
+        let real_session_token = RPCSessionToken::from_string(session_token_str.as_str())?;
+        drop(session_token);
         if real_session_token.iss.is_some() {
             let iss = real_session_token.iss.unwrap();
             if iss != "verify-hub" {
@@ -410,20 +412,21 @@ impl BuckyOSRuntime {
             }
         }
         if real_session_token.exp.is_none() {
-            debug!("session_token is expired,skip refresh token");
+            info!("session_token is none,skip refresh token");
             return Ok(());
         }
         let expired_time = real_session_token.exp.unwrap();
         let now = buckyos_get_unix_timestamp();
         if now < expired_time - 30 {
-            debug!("session_token is expired,skip refresh token");
+            debug!("session_token is not expired,skip refresh token");
             return Ok(());
         }
 
         info!("session_token is close to expired,try to refresh token");
         let verify_hub_client = self.get_verify_hub_client().await?;
-        let login_result = verify_hub_client.login_by_jwt(session_token.clone(),None).await?;
+        let login_result = verify_hub_client.login_by_jwt(session_token_str,None).await?;
         info!("verify_hub_client login by jwt success,login_result: {:?}",login_result);
+        let mut session_token = self.session_token.write().await;
         *session_token = login_result.token.unwrap();
         Ok(())
     }
@@ -432,7 +435,7 @@ impl BuckyOSRuntime {
         let buckyos_api_runtime = get_buckyos_api_runtime().unwrap();
         let refresh_result = buckyos_api_runtime.refresh_token_from_verify_hub().await;
         if refresh_result.is_err() {
-            warn!("buckyos-pi-runtime::keep_alive failed {:?}",refresh_result.err().unwrap());
+            warn!("buckyos-api-runtime::keep_alive failed {:?}",refresh_result.err().unwrap());
         }
         Ok(())
     }
@@ -525,9 +528,10 @@ impl BuckyOSRuntime {
                 let mut timer = tokio::time::interval(Duration::from_secs(5));
                 loop {
                     timer.tick().await;
+                    info!("buckyos-api-runtime::keep_alive ...");
                     let result = BuckyOSRuntime::keep_alive().await;
                     if result.is_err() {
-                        warn!("buckyos-pi-runtime::keep_alive failed {:?}",result.err().unwrap());
+                        warn!("buckyos-api-runtime::keep_alive failed {:?}",result.err().unwrap());
                     }
                 }
             });

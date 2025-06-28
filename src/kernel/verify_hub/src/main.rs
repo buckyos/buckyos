@@ -153,13 +153,8 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
     //kid : {owner}
     //kid : #device_id
 
-    if kid.is_none() {
-        //return verify_hub's public key
-        return load_trustkey_from_cache("verify-hub").await.ok_or(RPCErrors::ReasonError("Verify hub public key not found".to_string()));
-    }
-
-    let kid = kid.as_ref().unwrap();
-    let cached_key = load_trustkey_from_cache(kid).await;
+    let kid = kid.clone().unwrap_or("verify-hub".to_string());
+    let cached_key = load_trustkey_from_cache(&kid).await;
     if cached_key.is_some() {
         return Ok(cached_key.unwrap());
     }
@@ -179,7 +174,7 @@ async fn get_trust_public_key_from_kid(kid:&Option<String>) -> Result<DecodingKe
         let rpc_token_str = rpc_token.to_string();
         let system_config_client = SystemConfigClient::new(None,Some(rpc_token_str.as_str()));
         let control_panel_client = ControlPanelClient::new(system_config_client);
-        let device_config = control_panel_client.get_device_config(kid).await;
+        let device_config = control_panel_client.get_device_config(&kid).await;
         if device_config.is_err() {
             warn!("load device {} config from system config service failed",kid);
             return Err(RPCErrors::ReasonError("Device config not found".to_string()));
@@ -276,7 +271,7 @@ async fn handle_login_by_jwt(params:Value,_login_nonce:u64) -> Result<RPCSession
             if session_id == 0 {
                 return Err(RPCErrors::ReasonError("Invalid session_id".to_string()));
             }
-            let session_key = format!("{}_{}_{}_{}",userid,appid,iss_kid,session_id);
+            let session_key = format!("{}_{}_{}",userid,appid,session_id);
             info!("handle refresh token by jwt for session:{}",session_key);
             let cache_result = load_token_from_cache(session_key.as_str()).await;
             if cache_result.is_none() {
@@ -288,7 +283,7 @@ async fn handle_login_by_jwt(params:Value,_login_nonce:u64) -> Result<RPCSession
                 warn!("Invalid nonce (session_nonce), old_token:{:?} req.token.nonce:{}",old_token,token_nonce);
                 return Err(RPCErrors::ReasonError("Invalid nonce (session_nonce)".to_string()));
             }
-            let session_token = generate_session_token(appid,userid,next_nonce,token_nonce,VERIFY_HUB_TOKEN_EXPIRE_TIME).await;
+            let session_token = generate_session_token(appid,userid,next_nonce,session_id,VERIFY_HUB_TOKEN_EXPIRE_TIME).await;
             //store session token to cache
             cache_token(session_key.as_str(),session_token.clone()).await;  //other service's jwt
             info!("refresh token success:{}",session_key);
@@ -296,7 +291,7 @@ async fn handle_login_by_jwt(params:Value,_login_nonce:u64) -> Result<RPCSession
         },
         _ => {
             info!("handle login by jwt");
-            let session_key = format!("{}_{}_{}_{}",userid,appid,iss_kid,token_nonce);
+            let session_key = format!("{}_{}_{}",userid,appid,token_nonce);
             
             if buckyos_get_unix_timestamp() > exp {
                 return Err(RPCErrors::ReasonError("Token expired".to_string()));
@@ -438,8 +433,8 @@ async fn handle_query_userid(params:Value) -> Result<Value> {
 
 
 async fn handle_refresh_token(_params:Value) -> Result<Value> {
-    let mut trust_keys = TRUSTKEY_CACHE.lock().await;
-    trust_keys.clear();
+    //let mut trust_keys = TRUSTKEY_CACHE.lock().await;
+    //trust_keys.clear();
     Ok(json!({
         "result": "success"
     }))
@@ -549,13 +544,13 @@ async fn process_request(method:String,param:Value,req_seq:u64) -> ::kRPC::Resul
 
 async fn load_service_config() -> Result<()> {
     //load zone config form env
-    let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG").map_err(|error| RPCErrors::ReasonError(error.to_string()));
-    if zone_config_str.is_err() {
-        warn!("BUCKYOS_ZONE_CONFIG not set,use default zone config for test!");
-        return Err(RPCErrors::ReasonError("BUCKYOS_ZONE_CONFIG not set".to_string()));
-    }
-    let zone_config_str = zone_config_str.unwrap();
-    info!("zone_config_str:{}",zone_config_str);
+    // let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG").map_err(|error| RPCErrors::ReasonError(error.to_string()));
+    // if zone_config_str.is_err() {
+    //     warn!("BUCKYOS_ZONE_CONFIG not set,use default zone config for test!");
+    //     return Err(RPCErrors::ReasonError("BUCKYOS_ZONE_CONFIG not set".to_string()));
+    // }
+    // let zone_config_str = zone_config_str.unwrap();
+    // info!("zone_config_str:{}",zone_config_str);
     
     info!("start load config from system config service.");
     let session_token = env::var("VERIFY_HUB_SESSION_TOKEN").map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
@@ -564,6 +559,8 @@ async fn load_service_config() -> Result<()> {
     info!("device_id:{}",device_id);
 
     let system_config_client = SystemConfigClient::new(None,Some(session_token.as_str()));
+
+    //load verify-hub private key from system config service
     let private_key_str = system_config_client.get("system/verify-hub/key").await;
     if private_key_str.is_ok() {
         let (private_key,_) = private_key_str.unwrap();
@@ -573,16 +570,32 @@ async fn load_service_config() -> Result<()> {
             let mut verify_hub_private_key = VERIFY_HUB_PRIVATE_KEY.write().await;
             *verify_hub_private_key = private_key;
         } else {
-            warn!("verify_hub private key format error,use default private key for test!");
+            warn!("verify_hub private key format error!");
             return Err(RPCErrors::ReasonError("verify_hub private key format error".to_string()));
         }
     } else {
-        warn!("verify_hub private key cann't load from system config service,use default private key for test!");
+        warn!("verify_hub private key cann't load from system config service!");
         return Err(RPCErrors::ReasonError("verify_hub private key cann't load from system config service".to_string()));
     }
 
+    let control_panel_client = ControlPanelClient::new(system_config_client);
+    let zone_config = control_panel_client.load_zone_config().await;
+    if zone_config.is_err() {
+        warn!("zone config cann't load from system config service,use default zone config for test!");
+        return Err(RPCErrors::ReasonError("zone config cann't load from system config service".to_string()));
+    }
+    let zone_config = zone_config.unwrap();
+    if zone_config.verify_hub_info.is_none() {
+        warn!("zone config verify_hub_info not found!");
+        return Err(RPCErrors::ReasonError("zone config verify_hub_info not found".to_string()));
+    }
+    let verify_hub_info = zone_config.verify_hub_info.as_ref().unwrap();
+    let verify_hub_pub_key = DecodingKey::from_jwk(&verify_hub_info.public_key)
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    cache_trustkey("verify-hub",verify_hub_pub_key).await;
+    
     let new_service_config = VerifyServiceConfig {
-        zone_config: serde_json::from_str(zone_config_str.as_str()).map_err(|error| RPCErrors::ReasonError(error.to_string()))?,
+        zone_config: zone_config,
         device_id: device_id,
     };
 
