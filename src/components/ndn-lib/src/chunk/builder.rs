@@ -1,14 +1,10 @@
 use super::chunk::ChunkId;
-use super::chunk_list::{ChunkList, ChunkListBody, ChunkListMeta, CHUNK_LIST_MODE_THRESHOLD};
+use super::chunk_list::{ChunkList, ChunkListBody, ChunkListMeta};
 use crate::hash::HashMethod;
 use crate::object_array::{ObjectArray, ObjectArrayStorageType};
 use crate::NdnResult;
+use crate::coll::CollectionStorageMode;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChunkListMode {
-    Simple, // Simple mode, used for small chunk lists
-    Normal, // Normal mode, used for larger chunk lists
-}
 
 pub struct ChunkListBuilder {
     meta: ChunkListMeta,
@@ -17,10 +13,10 @@ pub struct ChunkListBuilder {
 
 impl ChunkListBuilder {
     pub fn new(hash_method: HashMethod, count: Option<usize>) -> Self {
-        let mode = Self::select_mode(count);
+        let mode = CollectionStorageMode::select_mode(count.map(|c| c as u64));
         let storage_type = match mode {
-            ChunkListMode::Simple => crate::ObjectArrayStorageType::JSONFile,
-            ChunkListMode::Normal => crate::ObjectArrayStorageType::Arrow,
+            CollectionStorageMode::Simple => crate::ObjectArrayStorageType::JSONFile,
+            CollectionStorageMode::Normal => crate::ObjectArrayStorageType::Arrow,
         };
 
         Self {
@@ -82,18 +78,6 @@ impl ChunkListBuilder {
         let ret = Self { meta, list };
 
         Ok(ret)
-    }
-
-    pub fn select_mode(count: Option<usize>) -> ChunkListMode {
-        if let Some(c) = count {
-            if c <= CHUNK_LIST_MODE_THRESHOLD {
-                ChunkListMode::Simple
-            } else {
-                ChunkListMode::Normal
-            }
-        } else {
-            ChunkListMode::Normal // Default to Normal if count is None
-        }
     }
 
     pub fn with_total_size(mut self, size: u64) -> Self {
@@ -160,12 +144,12 @@ impl ChunkListBuilder {
 
         // Ensure the object mode is set correctly
         let len = self.list.len();
-        match Self::select_mode(Some(len)) {
-            ChunkListMode::Simple => {
+        match CollectionStorageMode::select_mode(Some(len as u64)) {
+            CollectionStorageMode::Simple => {
                 self.list
                     .change_storage_type(crate::ObjectArrayStorageType::JSONFile);
             }
-            ChunkListMode::Normal => {
+            CollectionStorageMode::Normal => {
                 self.list
                     .change_storage_type(crate::ObjectArrayStorageType::Arrow);
             }

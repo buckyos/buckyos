@@ -1,4 +1,4 @@
-use crate::{NdnError, NdnResult, HashMethod, ObjId};
+use crate::{HashMethod, NdnError, NdnResult, ObjId};
 
 // Because the object may be ObjectId or ChunkId, which maybe have mix mode, so we need to check the hash length
 pub fn get_obj_hash<'a>(obj_id: &'a ObjId, hash_method: HashMethod) -> NdnResult<&'a [u8]> {
@@ -20,5 +20,33 @@ pub fn get_obj_hash<'a>(obj_id: &'a ObjId, hash_method: HashMethod) -> NdnResult
     } else {
         // If the hash length is equal, we can return the whole hash
         return Ok(&obj_id.obj_hash);
+    }
+}
+
+pub const COLLECTION_STORAGE_MODE_THRESHOLD: u64 = 1024; // Threshold for collection normal and simple mode
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionStorageMode {
+    // Simple mode, used for small collections, always use JSON file storage
+    Simple,
+
+    // Normal mode, used for larger collections, always use Arrow/SQLITE storage
+    Normal,
+}
+
+impl CollectionStorageMode {
+    pub fn select_mode(count: Option<u64>) -> Self {
+        match count {
+            Some(c) if c <= COLLECTION_STORAGE_MODE_THRESHOLD => Self::Simple,
+            _ => Self::Normal,
+        }
+    }
+
+    pub fn is_simple(count: u64) -> bool {
+        count <= COLLECTION_STORAGE_MODE_THRESHOLD
+    }
+
+    pub fn is_normal(count: u64) -> bool {
+        !Self::is_simple(count)
     }
 }

@@ -3,15 +3,13 @@ use crate::NdnResult;
 use crate::ObjectArrayOwnedIter;
 use crate::{
     ChunkId, ChunkIdRef, HashMethod, OBJ_TYPE_CHUNK_LIST, OBJ_TYPE_CHUNK_LIST_FIX_SIZE,
-    OBJ_TYPE_CHUNK_LIST_SIMPLE, OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE,
+    OBJ_TYPE_CHUNK_LIST_SIMPLE, OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE, CollectionStorageMode,
 };
 use crate::{ObjectArray, ObjectArrayBody};
 use core::hash;
 use serde::{Deserialize, Serialize};
 use std::io::SeekFrom;
 use std::ops::{Deref, DerefMut};
-
-pub const CHUNK_LIST_MODE_THRESHOLD: usize = 1024; // Threshold for chunk list normal and simple mode
 
 pub struct ChunkListId {}
 
@@ -59,11 +57,7 @@ pub struct ChunkListBody {
 
 impl ChunkListBody {
     pub fn is_simple_chunk_list(&self) -> bool {
-        if self.total_count <= CHUNK_LIST_MODE_THRESHOLD as u64 {
-            true
-        } else {
-            false
-        }
+        CollectionStorageMode::is_simple(self.total_count)
     }
 
     pub fn is_fixed_size_chunk_list(&self) -> bool {
@@ -243,11 +237,7 @@ impl ChunkList {
 
     pub fn is_simple_chunk_list(&self) -> bool {
         let len = self.chunk_list_imp.len();
-        if len <= CHUNK_LIST_MODE_THRESHOLD {
-            true
-        } else {
-            false
-        }
+        CollectionStorageMode::is_simple(len as u64)
     }
 
     pub fn is_fixed_size_chunk_list(&self) -> bool {
