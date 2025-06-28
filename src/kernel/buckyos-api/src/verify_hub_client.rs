@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 
 pub const VERIFY_HUB_SERVICE_NAME: &str = "verify-hub";
-pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60;
+pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60*10;//10 minutes
 
 pub struct VerifyHubClient {
     krpc_client: kRPC,

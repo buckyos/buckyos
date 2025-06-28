@@ -395,7 +395,7 @@ impl BuckyOSRuntime {
         Ok(())
     }
 
-    pub async fn refresh_token_from_verify_hub(& self) -> Result<()> {
+    pub async fn renew_token_from_verify_hub(& self) -> Result<()> {
         let mut session_token = self.session_token.write().await;
         if session_token.is_empty() {
             debug!("session_token is empty,skip refresh token");
@@ -404,25 +404,29 @@ impl BuckyOSRuntime {
         let session_token_str = session_token.clone();
         let real_session_token = RPCSessionToken::from_string(session_token_str.as_str())?;
         drop(session_token);
-        if real_session_token.iss.is_some() {
-            let iss = real_session_token.iss.unwrap();
-            if iss != "verify-hub" {
-                debug!("session_token is not from verify-hub,skip refresh token");
-                return Ok(());
-            }
-        }
         if real_session_token.exp.is_none() {
             info!("session_token is none,skip refresh token");
             return Ok(());
         }
-        let expired_time = real_session_token.exp.unwrap();
-        let now = buckyos_get_unix_timestamp();
-        if now < expired_time - 30 {
-            debug!("session_token is not expired,skip refresh token");
-            return Ok(());
+
+        let mut need_refresh = false;
+        if real_session_token.iss.is_some() {
+            let iss = real_session_token.iss.unwrap();
+            if iss != "verify-hub" {
+                need_refresh = true;
+            }
         }
 
-        info!("session_token is close to expired,try to refresh token");
+        if !need_refresh {
+            let expired_time = real_session_token.exp.unwrap();
+            let now = buckyos_get_unix_timestamp();
+            if now < expired_time - 30 {
+                debug!("session_token is not expired,skip renew token");
+                return Ok(());
+            }
+        }
+
+        info!("session_token is close to expired,try to renew token");
         let verify_hub_client = self.get_verify_hub_client().await?;
         let login_result = verify_hub_client.login_by_jwt(session_token_str,None).await?;
         info!("verify_hub_client login by jwt success,login_result: {:?}",login_result);
@@ -432,8 +436,9 @@ impl BuckyOSRuntime {
     }
 
     async fn keep_alive() -> Result<()> {
+        //info!("buckyos-api-runtime::keep_alive start");
         let buckyos_api_runtime = get_buckyos_api_runtime().unwrap();
-        let refresh_result = buckyos_api_runtime.refresh_token_from_verify_hub().await;
+        let refresh_result = buckyos_api_runtime.renew_token_from_verify_hub().await;
         if refresh_result.is_err() {
             warn!("buckyos-api-runtime::keep_alive failed {:?}",refresh_result.err().unwrap());
         }
@@ -499,15 +504,9 @@ impl BuckyOSRuntime {
                     return Err(RPCErrors::ReasonError("Session token is not valid".to_string()));
                 }
                 //login by jwt
-                let verify_hub_client = self.get_verify_hub_client().await?;
-                let login_result = verify_hub_client.login_by_jwt(real_session_token.to_string(),None).await?;
-                info!("verify_hub_client login by jwt success,login_result: {:?}",login_result);
-                //save session nonce for refresh token
-                {
-                    let mut session_token = self.session_token.write().await;
-                    *session_token = login_result.token.unwrap();
-                }
-                
+                // let verify_hub_client = self.get_verify_hub_client().await?;
+                // let login_result = verify_hub_client.login_by_jwt(real_session_token.to_string(),None).await?;
+                // info!("verify_hub_client login by jwt success,login_result: {:?}",login_result);               
             }
         }
 
@@ -525,10 +524,11 @@ impl BuckyOSRuntime {
 
             //start keep-alive timer to
             tokio::task::spawn(async move {
-                let mut timer = tokio::time::interval(Duration::from_secs(5));
+                // 从当前时间+5秒开始，每5秒执行一次
+                let start = tokio::time::Instant::now() + Duration::from_secs(5);
+                let mut timer = tokio::time::interval_at(start, Duration::from_secs(5));
                 loop {
                     timer.tick().await;
-                    info!("buckyos-api-runtime::keep_alive ...");
                     let result = BuckyOSRuntime::keep_alive().await;
                     if result.is_err() {
                         warn!("buckyos-api-runtime::keep_alive failed {:?}",result.err().unwrap());
@@ -586,20 +586,19 @@ impl BuckyOSRuntime {
     }
 
     async fn refresh_trust_keys(&self) -> Result<()> {
-
-        //从当前device_config中获取trust_keys
-        // if self.deivce_config.is_some() {
-        //     let device_config = self.deivce_config.as_ref().unwrap();
-        //     let device_key = device_config.get_auth_key(None);
-        //     if device_key.is_some() {
-        //         let kid = device_config.get_id().to_string();
-        //         let key = device_key.as_ref().unwrap().0.clone();
-        //         self.set_trust_key(kid.as_str(),&key).await;
-
-        //         let kid = device_config.name.clone();
-        //         self.set_trust_key(kid.as_str(),&key).await;
-        //     }
-        // }
+        if self.deivce_config.is_some() {
+            let device_config = self.deivce_config.as_ref().unwrap();
+            let device_key = device_config.get_auth_key(None);
+            if device_key.is_some() {
+                let kid = device_config.get_id().to_string();
+                let key = device_key.as_ref().unwrap().0.clone();
+                self.set_trust_key(kid.as_str(),&key).await;
+                info!("set trust key - device_config.did: {}",kid);
+                let kid = device_config.name.clone();
+                self.set_trust_key(kid.as_str(),&key).await;
+                info!("set trust key - device_config.name: {}",kid);
+            }
+        }
 
         //zone_config 中包含trust_keys
         if self.zone_config.is_some() {
@@ -611,6 +610,7 @@ impl BuckyOSRuntime {
                 let key = DecodingKey::from_jwk(&verify_hub_info.public_key);
                 if key.is_ok() {
                     self.set_trust_key(kid.as_str(),&key.unwrap()).await;
+                    info!("set trust key - verify-hub");
                 }
             } else {
                 warn!("NO verfiy-hub publick key, system init with errors!");
@@ -626,6 +626,7 @@ impl BuckyOSRuntime {
                         RPCErrors::ReasonError(err.to_string())
                     })?;
                     self.set_trust_key("root",&owner_public_key).await;
+                    info!("set trust key - root");
                     self.set_trust_key(owner_did.to_string().as_str(),&owner_public_key).await;
                     self.set_trust_key(owner_did.id.clone().as_str(),&owner_public_key).await;
                     info!("update owner_public_key [{}],[{}] to trust keys",owner_did.to_string(),owner_did.id);

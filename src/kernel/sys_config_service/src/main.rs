@@ -1055,6 +1055,7 @@ mod test {
             token: None,
             iss: None,
             nonce: None,
+            session: None,
         };
         let jwt = token
             .generate_jwt(Some("{owner}".to_string()), &private_key)
