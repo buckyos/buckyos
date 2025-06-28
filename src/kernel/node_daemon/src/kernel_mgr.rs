@@ -76,7 +76,8 @@ impl RunItemControl for KernelServiceRunItem {
         let app_id = self.app_id.clone();
         let device_session_token = kRPC::RPCSessionToken {
             token_type: kRPC::RPCSessionTokenType::JWT,
-            nonce: None,
+            nonce: Some(timestamp),
+            session: None,
             userid: Some(self.device_doc.name.clone()),
             appid: Some(app_id),
             exp: Some(timestamp + 3600 * 24 * 7),

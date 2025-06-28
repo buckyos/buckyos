@@ -33,6 +33,8 @@ pub struct RPCSessionToken {
     pub iss: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session:Option<u64>,
     pub userid: Option<String>,
 }
 
@@ -46,6 +48,7 @@ impl RPCSessionToken {
             exp: Some(timestamp + 3600*24*7),
             iss: Some(user_id.to_string()),
             nonce: None,
+            session: None,
             userid: Some(user_id.to_string()),
         };
         let result_str = session_token.generate_jwt(kid,private_key)
@@ -61,6 +64,7 @@ impl RPCSessionToken {
             return Ok(RPCSessionToken {
                 token_type : RPCSessionTokenType::Normal,
                 nonce: None,
+                session: None,
                 appid: None,
                 userid: None,   
                 token: Some(token.to_string()),

@@ -104,6 +104,7 @@ impl ActiveServer {
             let rpc_token = ::kRPC::RPCSessionToken {
                 token_type : ::kRPC::RPCSessionTokenType::JWT,
                 nonce : None,
+                session : None,
                 userid : Some(user_name.to_string()),
                 appid:Some("active_service".to_string()),
                 exp:Some(buckyos_get_unix_timestamp() + 60),

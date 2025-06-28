@@ -14,7 +14,6 @@ use lazy_static::lazy_static;
 use serde_json::Value;
 use tokio::sync::Mutex;
 use warp::Filter;
-use std::path::{Component, Path, PathBuf};
 
 use ::kRPC::*;
 use buckyos_kit::*;
@@ -67,8 +66,11 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
     }
     let userid = session_token.userid.as_ref().unwrap();
 
+    let appid = session_token.appid.as_deref().unwrap_or("kernel");
+
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
-    let is_allowed = enforce(userid, None, full_res_path.as_str(), "read").await;
+    info!("full_res_path:{},real_key_path:{:?},appid:{},userid:{},session_token:{:?}",full_res_path,real_key_path,appid,userid,session_token);
+    let is_allowed = enforce(userid, Some(appid), full_res_path.as_str(), "read").await;
     if !is_allowed {
         warn!("No read permission");
         return Err(RPCErrors::NoPermission("No read permission".to_string()));
@@ -505,6 +507,8 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
                     .await
                     .insert("verify-hub".to_string(), verify_hub_public_key.clone());
                 info!("update verify_hub_public_key to trust keys");
+            } else {
+                error!("Missing verify_hub_info from zone_config");
             }
             if zone_config.owner.is_some() {
                 let owner_key = zone_config.get_default_key();
@@ -563,6 +567,31 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
         error!("Missing BUCKYOS_THIS_DEVICE");
     }
     
+    let rbac_model = store.get("system/rbac/model".to_string()).await;
+    let rbac_policy = store.get("system/rbac/policy".to_string()).await;
+    let mut set_rbac = false;
+    if rbac_model.is_ok() && rbac_policy.is_ok() {
+        let rbac_model = rbac_model.unwrap();
+        let rbac_policy = rbac_policy.unwrap();
+        if rbac_model.is_some() && rbac_policy.is_some() {
+            info!("model config: {}", rbac_model.clone().unwrap());
+            info!("policy config: {}", rbac_policy.clone().unwrap());
+            rbac::create_enforcer(
+                Some(rbac_model.unwrap().trim()),
+                Some(rbac_policy.unwrap().trim()),
+            )
+            .await
+            .unwrap();
+            set_rbac = true;
+            info!("load rbac model and policy from kv store successfully!");
+        }
+    }
+
+    if !set_rbac {
+        rbac::create_enforcer(None, None).await.unwrap();
+        info!("load rbac model and policy default setting successfully!");
+    }
+
     Ok(Value::Null)
 }
 
@@ -698,6 +727,7 @@ async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
             let kid_err = kid.err().unwrap();
             match kid_err {
                 RPCErrors::KeyNotExist(kid) => {
+                    info!("kid not exist: {},try to load device doc", kid);
                     //kid is device name, try load device doc
                     let device_doc = load_device_doc(kid.as_str()).await?;
                     if device_doc.device_type != "ood" && device_doc.device_type != "node" {
@@ -726,36 +756,10 @@ async fn verify_session_token(token: &mut RPCSessionToken) -> Result<()> {
 }
 
 async fn init_by_boot_config() -> Result<()> {
-    let store = SYS_STORE.lock().await;
-    let rbac_model = store.get("system/rbac/model".to_string()).await;
-    let rbac_policy = store.get("system/rbac/policy".to_string()).await;
-    let mut set_rbac = false;
-    if rbac_model.is_ok() && rbac_policy.is_ok() {
-        let rbac_model = rbac_model.unwrap();
-        let rbac_policy = rbac_policy.unwrap();
-        if rbac_model.is_some() && rbac_policy.is_some() {
-            info!("model config: {}", rbac_model.clone().unwrap());
-            info!("policy config: {}", rbac_policy.clone().unwrap());
-            rbac::create_enforcer(
-                Some(rbac_model.unwrap().trim()),
-                Some(rbac_policy.unwrap().trim()),
-            )
-            .await
-            .unwrap();
-            set_rbac = true;
-            info!("load rbac model and policy from kv store successfully!");
-        }
+    let r = handle_refresh_trust_keys().await;
+    if r.is_err() {
+        error!("Failed to refresh trust keys: {}", r.err().unwrap());
     }
-
-    if !set_rbac {
-        rbac::create_enforcer(None, None).await.unwrap();
-        info!("load rbac model and policy default setting successfully!");
-    }
-
-    //let zone_config_str = std::env::var("BUCKYOS_ZONE_CONFIG");
-    //if zone_config_str.is_ok() {
-    //    let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str.unwrap()).unwrap();
-    //}
 
     let device_doc_str = std::env::var("BUCKYOS_THIS_DEVICE");
     if device_doc_str.is_ok() {
@@ -791,36 +795,11 @@ async fn init_by_boot_config() -> Result<()> {
         error!("Missing BUCKYOS_THIS_DEVICE");
     }
 
-    let zone_owner_str = std::env::var("BUCKY_ZONE_OWNER");
-    if zone_owner_str.is_ok() {
-        let zone_owner_key_str = zone_owner_str.unwrap();
-        let zone_owner_key: jsonwebtoken::jwk::Jwk =
-            serde_json::from_str(&zone_owner_key_str).unwrap();
-        let zone_owner_key = DecodingKey::from_jwk(&zone_owner_key).unwrap();
-        TRUST_KEYS
-            .lock()
-            .await
-            .insert("root".to_string(), zone_owner_key.clone());
-        info!(
-            "Insert zone owner (root) key:[{}] to trust keys",
-            zone_owner_key_str
-        );
-        //TRUST_KEYS.lock().await.insert("{owner}".to_string(),zone_owner_key);
-    } else {
-        error!("Missing BUCKY_ZONE_OWNER");
-    }
-    drop(store);
-
-    // let r = handle_refresh_trust_keys().await;
-    // if r.is_err() {
-    //     error!("Failed to refresh trust keys: {}", r.err().unwrap());
-    // }
-
     Ok(())
 }
 
 async fn service_main() {
-    //init_log_config();
+    //std::env::set_var("BUCKY_LOG","debug");
     init_logging("system_config_service", true);
     info!("Starting system config service............................");
     init_by_boot_config().await.unwrap();
@@ -942,6 +921,7 @@ mod test {
             token: None,
             iss: None,
             nonce: None,
+            session: None,
         };
         let jwt = token
             .generate_jwt(Some("{owner}".to_string()), &private_key)

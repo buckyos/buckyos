@@ -97,6 +97,7 @@ impl AppRunItem {
         let app_service_session_token = kRPC::RPCSessionToken {
             token_type: kRPC::RPCSessionTokenType::JWT,
             nonce: None,
+            session: None,
             userid: Some(self.app_service_config.user_id.clone()),
             appid: Some(self.app_id.clone()),
             exp: Some(timestamp + 3600 * 24 * 7),

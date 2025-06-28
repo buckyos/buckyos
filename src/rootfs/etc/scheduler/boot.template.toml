@@ -470,6 +470,11 @@ g, {{user_name}},admin
   "exp": 0,
   "iat": 0,
   "owner": "did:bns:{{user_name}}",
+  "verify_hub_info": {
+    "public_key": {{verify_hub_public_key}},
+    "port": 3300,
+    "node_name": "ood1"
+  },
   "oods": [
   ]
 }

@@ -92,8 +92,9 @@ pub fn get_buckyos_service_local_data_dir(service_name: &str,disk_id: Option<&st
 }
 
 pub fn adjust_path(old_path: &str) -> std::io::Result<PathBuf> {
-    let new_path= old_path.replace("{BUCKYOS_ROOT}", &get_buckyos_root_dir().to_string_lossy().replace("\\", "/"));
-    std::path::absolute(new_path)?.canonicalize()
+    let new_path= old_path.replace("{BUCKYOS_ROOT}", &get_buckyos_root_dir().to_string_lossy());
+    let normalized_path = normalize_path(&new_path);
+    Ok(std::path::Path::new(&normalized_path).to_path_buf())
 }
 
 pub fn get_buckyos_named_data_dir(mgr_id: &str) -> PathBuf {

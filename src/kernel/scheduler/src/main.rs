@@ -108,7 +108,10 @@ async fn do_boot_scheduler() -> Result<()> {
         return Err(anyhow::anyhow!("boot/config not found in init list"));
     }
     let boot_config_str = boot_config_str.unwrap();
-    let mut zone_config: ZoneConfig = zone_boot_config.to_zone_config();
+    let mut zone_config: ZoneConfig = serde_json::from_str(boot_config_str.as_str()).map_err(|e| {
+        error!("serde_json::from_str failed: {:?}", e);
+        e
+    })?;
     zone_config.init_by_boot_config(&zone_boot_config);
     init_list.insert(
         "boot/config".to_string(),
@@ -478,9 +481,10 @@ async fn service_main(is_boot: bool) -> Result<i32> {
                     error!("init_buckyos_api_runtime failed: {:?}", e);
                     e
                 })?;
-        runtime.login().await.map_err(|e| {
-            error!("login failed: {:?}", e);
-            e
+                
+            runtime.login().await.map_err(|e| {
+                error!("buckyos-api-runtime::login failed: {:?}", e);
+                e
         })?;
         set_buckyos_api_runtime(runtime);
         schedule_loop(false).await.map_err(|e| {

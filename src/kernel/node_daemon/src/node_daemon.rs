@@ -757,6 +757,7 @@ async fn generate_device_session_token(device_doc: &DeviceConfig, device_private
     let device_session_token = kRPC::RPCSessionToken {
         token_type : kRPC::RPCSessionTokenType::JWT,
         nonce : None,
+        session : None,
         userid : Some(device_doc.name.clone()),
         appid:Some("kernel".to_string()),
         exp:Some(timestamp + 60*15),
