@@ -2,8 +2,8 @@ use crate::object::{build_named_object_by_json, ObjId};
 use crate::NdnResult;
 use crate::ObjectArrayOwnedIter;
 use crate::{
-    ChunkId, ChunkIdRef, HashMethod, OBJ_TYPE_CHUNK_LIST, OBJ_TYPE_CHUNK_LIST_FIX_SIZE,
-    OBJ_TYPE_CHUNK_LIST_SIMPLE, OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE, CollectionStorageMode,
+    ChunkId, ChunkIdRef, CollectionStorageMode, HashMethod, OBJ_TYPE_CHUNK_LIST,
+    OBJ_TYPE_CHUNK_LIST_FIX_SIZE, OBJ_TYPE_CHUNK_LIST_SIMPLE, OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE,
 };
 use crate::{ObjectArray, ObjectArrayBody};
 use core::hash;
@@ -56,6 +56,13 @@ pub struct ChunkListBody {
 }
 
 impl ChunkListBody {
+    pub fn meta(&self) -> ChunkListMeta {
+        ChunkListMeta {
+            total_size: self.total_size,
+            fix_size: self.fix_size,
+        }
+    }
+    
     pub fn is_simple_chunk_list(&self) -> bool {
         CollectionStorageMode::is_simple(self.total_count)
     }
@@ -97,7 +104,7 @@ impl ChunkListBody {
 }
 
 pub struct ChunkList {
-    meta: ChunkListMeta,
+    body: ChunkListBody,
     chunk_list_imp: ObjectArray,
     obj_id: ObjId,
 }
@@ -118,11 +125,7 @@ impl DerefMut for ChunkList {
 impl ChunkList {
     pub fn new(meta: ChunkListMeta, list: ObjectArray) -> NdnResult<Self> {
         let body = ChunkListBody {
-            object_array: list.get_body().ok_or_else(|| {
-                let msg = "Object array body is None".to_string();
-                error!("{}", msg);
-                crate::NdnError::InvalidData(msg)
-            })?,
+            object_array: list.body().clone(),
             total_count: list.len() as u64,
             total_size: meta.total_size,
             fix_size: meta.fix_size,
@@ -131,7 +134,7 @@ impl ChunkList {
         let (obj_id, _) = body.calc_obj_id();
 
         let ret = Self {
-            meta,
+            body,
             chunk_list_imp: list,
             obj_id,
         };
@@ -155,31 +158,38 @@ impl ChunkList {
             crate::NdnError::InvalidData(msg)
         })?;
 
-        let chunk_list_imp = ObjectArray::open(obj_array_body, true).await?;
-        let meta = ChunkListMeta {
-            total_size: body.total_size,
-            fix_size: body.fix_size,
-        };
+        let chunk_list_imp = ObjectArray::open(obj_array_body).await?;
 
         Ok(Self {
-            meta,
+            body,
             chunk_list_imp,
             obj_id,
         })
     }
 
-    pub fn clone(&self, read_only: bool) -> NdnResult<Self> {
+    pub fn clone(&self) -> NdnResult<Self> {
         let ret = Self {
-            meta: self.meta.clone(),
-            chunk_list_imp: self.chunk_list_imp.clone(read_only)?,
+            body: self.body.clone(),
+            chunk_list_imp: self.chunk_list_imp.clone()?,
             obj_id: self.obj_id.clone(),
         };
 
         Ok(ret)
     }
 
-    pub fn into_parts(self) -> (ChunkListMeta, ObjectArray) {
-        (self.meta, self.chunk_list_imp)
+    // Only use for builder
+    pub(crate) fn clone_for_modify(&self) -> NdnResult<Self> {
+        let ret = Self {
+            body: self.body.clone(),
+            chunk_list_imp: self.chunk_list_imp.clone_for_modify()?,
+            obj_id: self.obj_id.clone(),
+        };
+
+        Ok(ret)
+    }
+
+    pub fn into_parts(self) -> (ChunkListBody, ObjectArray) {
+        (self.body, self.chunk_list_imp)
     }
 
     // ChunkList always has an obj_id, so we can use get_obj_id() to get it.
@@ -189,38 +199,25 @@ impl ChunkList {
 
     // The obj_id should be flush and calculate when loaded or built.
     pub fn calc_obj_id(&self) -> (ObjId, String) {
-        let object_array = self.chunk_list_imp.get_body();
-        if object_array.is_none() {
-            unreachable!("Object array body should not be None");
-        }
-
-        let body = ChunkListBody {
-            object_array: object_array.unwrap(),
-            total_count: self.chunk_list_imp.len() as u64,
-            total_size: self.meta.total_size,
-            fix_size: self.meta.fix_size,
-        };
-
-        let (obj_id, s) = body.calc_obj_id();
-        (obj_id, s)
+        self.body.calc_obj_id()
     }
 
-    pub fn get_hash_method(&self) -> HashMethod {
+    pub fn hash_method(&self) -> HashMethod {
         self.chunk_list_imp.hash_method()
     }
 
-    pub fn get_meta(&self) -> &ChunkListMeta {
-        &self.meta
+    pub fn body(&self) -> &ChunkListBody {
+        &self.body
     }
 
     // Return the total number of chunks in the chunk list
-    pub fn get_len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.chunk_list_imp.len()
     }
 
     // Return the total size of the chunk list
-    pub fn get_total_size(&self) -> u64 {
-        self.meta.total_size
+    pub fn total_size(&self) -> u64 {
+        self.body.total_size
     }
 
     pub fn iter(&self) -> ChunkListIter<'_> {
@@ -241,7 +238,7 @@ impl ChunkList {
     }
 
     pub fn is_fixed_size_chunk_list(&self) -> bool {
-        if self.meta.fix_size.is_some() {
+        if self.body.fix_size.is_some() {
             true
         } else {
             false
@@ -261,7 +258,7 @@ impl ChunkList {
     pub fn get_chunk_index_by_offset(&self, offset: SeekFrom) -> NdnResult<(u64, u64)> {
         match offset {
             SeekFrom::Start(pos) => {
-                match self.meta.fix_size {
+                match self.body.fix_size {
                     Some(fix_size) => {
                         if fix_size == 0 {
                             let msg = format!("Fixed size cannot be zero");
@@ -333,7 +330,7 @@ impl ChunkList {
                 }
             }
             SeekFrom::End(offset) => {
-                match self.meta.fix_size {
+                match self.body.fix_size {
                     Some(fix_size) => {
                         if fix_size == 0 {
                             let msg = format!("Fixed size cannot be zero");
@@ -387,7 +384,7 @@ impl ChunkList {
                     }
                     None => {
                         // Variable size chunks, need to calculate based on the chunk list
-                        let total_size = self.meta.total_size;
+                        let total_size = self.body.total_size;
                         if total_size == 0 {
                             return Err(crate::NdnError::OffsetTooLarge(
                                 "Chunk list is empty".to_string(),
@@ -481,7 +478,7 @@ impl ChunkList {
             return Err(crate::NdnError::OffsetTooLarge(msg));
         }
 
-        match self.meta.fix_size {
+        match self.body.fix_size {
             Some(fix_size) => {
                 if fix_size == 0 {
                     let msg = format!("Fixed size cannot be zero");

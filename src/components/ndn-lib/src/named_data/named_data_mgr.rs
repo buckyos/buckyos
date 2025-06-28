@@ -627,7 +627,7 @@ impl NamedDataMgr {
         };
 
         let chunk_list = ChunkList::open(obj_data).await?;
-        let total_size = chunk_list.get_total_size();
+        let total_size = chunk_list.total_size();
 
         let reader = ChunkListReader::new(named_mgr, chunk_list, seek_from, auto_cache).await?;
 

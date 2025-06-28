@@ -1,30 +1,23 @@
 use super::chunk::ChunkId;
 use super::chunk_list::{ChunkList, ChunkListBody, ChunkListMeta};
-use crate::hash::HashMethod;
-use crate::object_array::{ObjectArray, ObjectArrayStorageType};
-use crate::NdnResult;
 use crate::coll::CollectionStorageMode;
-
+use crate::hash::HashMethod;
+use crate::object_array::{ObjectArray, ObjectArrayBuilder, ObjectArrayStorageType};
+use crate::{object, NdnResult};
 
 pub struct ChunkListBuilder {
     meta: ChunkListMeta,
-    list: ObjectArray,
+    array_builder: ObjectArrayBuilder,
 }
 
 impl ChunkListBuilder {
-    pub fn new(hash_method: HashMethod, count: Option<usize>) -> Self {
-        let mode = CollectionStorageMode::select_mode(count.map(|c| c as u64));
-        let storage_type = match mode {
-            CollectionStorageMode::Simple => crate::ObjectArrayStorageType::JSONFile,
-            CollectionStorageMode::Normal => crate::ObjectArrayStorageType::Arrow,
-        };
-
+    pub fn new(hash_method: HashMethod) -> Self {
         Self {
             meta: ChunkListMeta {
                 total_size: 0,
                 fix_size: None,
             },
-            list: ObjectArray::new(hash_method, Some(storage_type)),
+            array_builder: ObjectArrayBuilder::new(hash_method),
         }
     }
 
@@ -41,7 +34,7 @@ impl ChunkListBuilder {
             crate::NdnError::InvalidData(msg)
         })?;
 
-        let chunk_list_imp = ObjectArray::open(obj_array, false).await?;
+        let object_array_builder = ObjectArrayBuilder::open(obj_array).await?;
         let meta = ChunkListMeta {
             total_size: body.total_size,
             fix_size: body.fix_size,
@@ -49,33 +42,33 @@ impl ChunkListBuilder {
 
         let ret = ChunkListBuilder {
             meta,
-            list: chunk_list_imp,
+            array_builder: object_array_builder,
         };
 
         Ok(ret)
     }
 
     pub fn from_chunk_list(chunk_list: &ChunkList) -> NdnResult<Self> {
-        let chunk_list = chunk_list.clone(false)?; // Clone in read-write mode
-        let (meta, chunk_list) = chunk_list.into_parts();
+        let chunk_list = chunk_list.clone_for_modify()?; // Clone in read-write mode
+        let (body, object_array) = chunk_list.into_parts();
+        let objet_array_builder = ObjectArrayBuilder::from_object_array_owned(object_array);
 
         let ret = Self {
-            meta,
-            list: chunk_list,
+            meta: body.meta(),
+            array_builder: objet_array_builder,
         };
 
         Ok(ret)
     }
 
     pub fn from_chunk_list_owned(chunk_list: ChunkList) -> NdnResult<Self> {
-        let (meta, chunk_list) = chunk_list.into_parts();
-        let list = if chunk_list.is_readonly() {
-            chunk_list.clone(false)?
-        } else {
-            chunk_list
-        };
+        let (body, object_array) = chunk_list.into_parts();
+        let object_array_builder = ObjectArrayBuilder::from_object_array_owned(object_array);
 
-        let ret = Self { meta, list };
+        let ret = Self {
+            meta: body.meta(),
+            array_builder: object_array_builder,
+        };
 
         Ok(ret)
     }
@@ -98,7 +91,7 @@ impl ChunkListBuilder {
     // Just append the chunk id to the list, no need to increment total size.
     pub fn append(&mut self, chunk_id: ChunkId) -> NdnResult<()> {
         let obj_id = chunk_id.into();
-        self.list.append_object(&obj_id)?;
+        self.array_builder.append_object(&obj_id)?;
 
         Ok(())
     }
@@ -106,7 +99,7 @@ impl ChunkListBuilder {
     // Just insert the chunk id at the specified index, no need to increment total size.
     pub fn insert(&mut self, index: usize, chunk_id: ChunkId) -> NdnResult<()> {
         let obj_id = chunk_id.into();
-        self.list.insert_object(index, &obj_id)?;
+        self.array_builder.insert_object(index, &obj_id)?;
 
         Ok(())
     }
@@ -114,7 +107,7 @@ impl ChunkListBuilder {
     // Append a chunk with its size, and update the total size.
     pub fn append_with_size(&mut self, chunk_id: ChunkId, size: u64) -> NdnResult<()> {
         let obj_id = chunk_id.into();
-        self.list.append_object(&obj_id)?;
+        self.array_builder.append_object(&obj_id)?;
 
         // Update total size
         self.meta.total_size += size;
@@ -130,7 +123,7 @@ impl ChunkListBuilder {
         size: u64,
     ) -> NdnResult<()> {
         let obj_id = chunk_id.into();
-        self.list.insert_object(index, &obj_id)?;
+        self.array_builder.insert_object(index, &obj_id)?;
 
         // Update total size
         self.meta.total_size += size;
@@ -140,25 +133,9 @@ impl ChunkListBuilder {
 
     pub async fn build(mut self) -> NdnResult<ChunkList> {
         // First, flush the list to ensure the mtree is built and the object id is calculated.
-        self.list.flush_mtree().await?;
+        let object_array = self.array_builder.build().await?;
 
-        // Ensure the object mode is set correctly
-        let len = self.list.len();
-        match CollectionStorageMode::select_mode(Some(len as u64)) {
-            CollectionStorageMode::Simple => {
-                self.list
-                    .change_storage_type(crate::ObjectArrayStorageType::JSONFile);
-            }
-            CollectionStorageMode::Normal => {
-                self.list
-                    .change_storage_type(crate::ObjectArrayStorageType::Arrow);
-            }
-        }
-
-        // Save
-        self.list.save().await?;
-
-        let ret = ChunkList::new(self.meta, self.list)?;
+        let ret = ChunkList::new(self.meta, object_array)?;
 
         Ok(ret)
     }

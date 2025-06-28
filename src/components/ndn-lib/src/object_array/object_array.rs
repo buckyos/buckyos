@@ -9,21 +9,47 @@ use crate::mtree::{
     self, MerkleTreeObject, MerkleTreeObjectGenerator, MtreeReadSeek,
     MtreeReadWriteSeekWithSharedBuffer, MtreeWriteSeek, SharedBuffer,
 };
-use crate::{build_named_object_by_json, Base32Codec, HashMethod, ObjId, OBJ_TYPE_LIST};
-use crate::{NdnError, NdnResult, get_obj_hash};
+use crate::{
+    build_named_object_by_json, Base32Codec, CollectionStorageMode, HashMethod, ObjId,
+    OBJ_TYPE_LIST, OBJ_TYPE_LIST_SIMPLE,
+};
+use crate::{get_obj_hash, NdnError, NdnResult};
 use core::hash;
 use http_types::cache;
 use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 use std::io::SeekFrom;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-
+use tokio::sync::Mutex;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ObjectArrayBody {
     pub root_hash: String, // The root hash of the merkle tree, encoded as base32 string
     pub hash_method: HashMethod,
+    pub total_count: u64, // The number of objects in the array
+}
+
+impl ObjectArrayBody {
+    pub fn calc_obj_id(&self) -> (ObjId, String) {
+        let obj_type = match CollectionStorageMode::select_mode(Some(self.total_count)) {
+            CollectionStorageMode::Simple => OBJ_TYPE_LIST_SIMPLE,
+            CollectionStorageMode::Normal => OBJ_TYPE_LIST,
+        };
+
+        build_named_object_by_json(
+            obj_type,
+            &serde_json::to_value(self).expect("Failed to serialize ObjectArrayBody"),
+        )
+    }
+
+    pub fn get_storage_type(&self) -> ObjectArrayStorageType {
+        match CollectionStorageMode::select_mode(Some(self.total_count)) {
+            CollectionStorageMode::Simple => ObjectArrayStorageType::JSONFile,
+            CollectionStorageMode::Normal => ObjectArrayStorageType::Arrow,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -33,158 +59,83 @@ pub struct ObjectArrayItem {
 }
 
 pub struct ObjectArray {
-    hash_method: HashMethod,
-    storage_type: ObjectArrayStorageType,
+    obj_id: ObjId,
+    body: ObjectArrayBody,
     cache: Box<dyn ObjectArrayInnerCache>,
-    is_dirty: bool,
-    mtree: Option<MerkleTreeObject>,
-    obj_id: Option<ObjId>, // The object ID of the array, can be None if not calculated yet
+    mtree: Arc<Mutex<MerkleTreeObject>>,
 }
 
 impl ObjectArray {
-    pub fn new(hash_method: HashMethod, storage_type: Option<ObjectArrayStorageType>) -> Self {
-        let cache: Box<dyn ObjectArrayInnerCache> =
-            ObjectArrayCacheFactory::create_cache(ObjectArrayCacheType::Memory);
+    pub fn new(
+        obj_id: ObjId,
+        body: ObjectArrayBody,
+        cache: Box<dyn ObjectArrayInnerCache>,
+        mtree: MerkleTreeObject,
+    ) -> Self {
+        assert_eq!(
+            body.total_count,
+            cache.len() as u64,
+            "ObjectArrayBody total_count must match cache length"
+        );
 
         Self {
-            hash_method,
-            storage_type: storage_type.unwrap_or(ObjectArrayStorageType::default()),
+            obj_id,
+            body,
             cache,
-            obj_id: None, // The object ID is not calculated ye
-            is_dirty: false,
-            mtree: None,
+            mtree: Arc::new(Mutex::new(mtree)),
         }
     }
 
-    fn new_from_cache(
-        obj_id: ObjId,
-        hash_method: HashMethod,
-        cache: Box<dyn ObjectArrayInnerCache>,
-        storage_type: ObjectArrayStorageType,
-    ) -> NdnResult<Self> {
-        let obj_array = Self {
-            hash_method,
-            storage_type,
-            cache,
-            obj_id: Some(obj_id),
-            is_dirty: false,
-            mtree: None,
-        };
-
-        Ok(obj_array)
+    pub fn cache(&self) -> &Box<dyn ObjectArrayInnerCache> {
+        &self.cache
     }
 
-    pub fn is_readonly(&self) -> bool {
-        self.cache.is_readonly()
+    pub fn into_cache(self) -> Box<dyn ObjectArrayInnerCache> {
+        self.cache
     }
 
     pub fn hash_method(&self) -> HashMethod {
-        self.hash_method
+        self.body.hash_method
     }
 
     pub fn len(&self) -> usize {
-        self.cache.len()
+        self.body.total_count as usize
     }
 
     pub fn storage_type(&self) -> ObjectArrayStorageType {
-        self.storage_type
+        self.body.get_storage_type()
     }
 
     pub fn iter(&self) -> ObjectArrayIter<'_> {
         ObjectArrayIter::new(&*self.cache)
     }
 
-    pub fn clone(&self, read_only: bool) -> NdnResult<Self> {
-        let cache = self.cache.clone_cache(read_only)?;
+    pub fn clone(&self) -> NdnResult<Self> {
+        let cache = self.cache.clone_cache(true)?;
         let ret = Self {
-            hash_method: self.hash_method.clone(),
-            storage_type: self.storage_type.clone(),
-            cache,
             obj_id: self.obj_id.clone(),
-            is_dirty: self.is_dirty,
-            mtree: None, // FIXME: Should we clone the mtree result if exists?
+            body: self.body.clone(),
+            cache,
+            mtree: self.mtree.clone(),
         };
 
         Ok(ret)
     }
 
-    pub fn append_object(&mut self, obj_id: &ObjId) -> NdnResult<()> {
-        // Check if obj_id.obj_hash is valid
-        get_obj_hash(obj_id, self.hash_method)?;
-
-        self.cache.append(obj_id)?;
-        self.is_dirty = true;
-
-        Ok(())
-    }
-
-    pub fn insert_object(&mut self, index: usize, obj_id: &ObjId) -> NdnResult<()> {
-        // Check if obj_id.obj_hash is valid
-        get_obj_hash(obj_id, self.hash_method)?;
-
-        self.cache.insert(index, obj_id)?;
-        self.is_dirty = true;
-
-        Ok(())
-    }
-
-    pub fn remove_object(&mut self, index: usize) -> NdnResult<Option<ObjId>> {
-        let ret = self.cache.remove(index)?;
-
-        if ret.is_some() {
-            self.is_dirty = true;
-        }
+    pub(crate) fn clone_for_modify(&self) -> NdnResult<Self> {
+        let cache = self.cache.clone_cache(false)?;
+        let ret = Self {
+            obj_id: self.obj_id.clone(),
+            body: self.body.clone(),
+            cache,
+            mtree: self.mtree.clone(),
+        };
 
         Ok(ret)
-    }
-
-    pub fn pop_object(&mut self) -> NdnResult<Option<ObjId>> {
-        let ret = self.cache.pop()?;
-
-        if ret.is_some() {
-            self.is_dirty = true;
-        }
-
-        Ok(ret)
-    }
-
-    pub fn clear(&mut self) -> NdnResult<()> {
-        if self.cache.len() == 0 {
-            return Ok(());
-        }
-
-        self.cache.clear()?;
-        self.is_dirty = true;
-
-        Ok(())
     }
 
     pub fn get_object(&self, index: usize) -> NdnResult<Option<ObjId>> {
         self.cache.get(index)
-    }
-
-    // Change the storage type for the object array, this will not change the cache
-    // When the storage type is changed, you should call `save()` to persist the changes
-    // to the new storage type.
-    pub async fn change_storage_type(
-        &mut self,
-        storage_type: ObjectArrayStorageType,
-    ) -> NdnResult<()> {
-        if self.storage_type == storage_type {
-            return Ok(());
-        }
-
-        info!(
-            "Changing storage type from {:?} to {:?}, {:?}",
-            self.storage_type,
-            storage_type,
-            self.get_obj_id(),
-        );
-
-        // Change the storage type
-        self.storage_type = storage_type;
-
-        Ok(())
     }
 
     // Get the object ID and proof for the object at the given index, the mtree must be exists
@@ -192,26 +143,14 @@ impl ObjectArray {
         &mut self,
         index: usize,
     ) -> NdnResult<Option<ObjectArrayItem>> {
-        if self.mtree.is_none() {
-            let msg = "Mtree is not initialized".to_string();
-            error!("{}", msg);
-            return Err(NdnError::InvalidState(msg));
-        }
-
-        assert!(self.mtree.is_some(), "Mtree is not initialized");
-
         let obj_id = self.cache.get(index)?;
         if obj_id.is_none() {
             return Ok(None);
         }
         let obj_id = obj_id.unwrap();
 
-        let mtree_proof = self
-            .mtree
-            .as_mut()
-            .unwrap()
-            .get_proof_path_by_leaf_index(index as u64)
-            .await?;
+        let mut mtree = self.mtree.lock().await;
+        let mtree_proof = mtree.get_proof_path_by_leaf_index(index as u64).await?;
         let proof = ObjectArrayItemProof { proof: mtree_proof };
 
         Ok(Some(ObjectArrayItem { obj_id, proof }))
@@ -221,13 +160,8 @@ impl ObjectArray {
         &mut self,
         indices: &[usize],
     ) -> NdnResult<Vec<Option<ObjectArrayItem>>> {
-        if self.mtree.is_none() {
-            let msg = "Mtree is not initialized".to_string();
-            error!("{}", msg);
-            return Err(NdnError::InvalidState(msg));
-        }
-
         let mut ret = Vec::with_capacity(indices.len());
+        let mut mtree = self.mtree.lock().await;
         for index in indices {
             let obj_id = self.cache.get(*index)?;
             if obj_id.is_none() {
@@ -236,12 +170,7 @@ impl ObjectArray {
             }
             let obj_id = obj_id.unwrap();
 
-            let mtree_proof = self
-                .mtree
-                .as_mut()
-                .unwrap()
-                .get_proof_path_by_leaf_index(*index as u64)
-                .await?;
+            let mtree_proof = mtree.get_proof_path_by_leaf_index(*index as u64).await?;
             let proof = ObjectArrayItemProof { proof: mtree_proof };
 
             ret.push(Some(ObjectArrayItem { obj_id, proof }));
@@ -255,19 +184,13 @@ impl ObjectArray {
         start: usize,
         end: usize,
     ) -> NdnResult<Vec<Option<ObjectArrayItem>>> {
-        if self.mtree.is_none() {
-            let msg = "Mtree is not initialized".to_string();
-            error!("{}", msg);
-            return Err(NdnError::InvalidState(msg));
-        }
-
         let obj_list = self.cache.get_range(start, end)?;
         if obj_list.is_empty() {
             return Ok(vec![]);
         }
 
         let mut ret = Vec::with_capacity(end - start);
-        let mtree = self.mtree.as_mut().unwrap();
+        let mut mtree = self.mtree.lock().await;
         let mut i = 0;
         for index in start..end {
             if i >= obj_list.len() {
@@ -286,89 +209,78 @@ impl ObjectArray {
         Ok(ret)
     }
 
-    pub fn get_body(&self) -> Option<ObjectArrayBody> {
-        let root_hash = self.get_root_hash_str();
-        if root_hash.is_none() {
-            return None;
-        }
-
-        Some(ObjectArrayBody {
-            root_hash: root_hash.unwrap(),
-            hash_method: self.hash_method.clone(),
-        })
+    pub fn body(&self) -> &ObjectArrayBody {
+        &self.body
     }
 
     // Get the object ID for the array if mtree is not None, otherwise return None
     // WARNING: This method don't check if the mtree is dirty
-    pub fn get_obj_id(&self) -> Option<ObjId> {
-        self.obj_id.clone()
+    pub fn get_obj_id(&self) -> &ObjId {
+        &self.obj_id
     }
 
     // Calculate the object ID for the array
-    pub fn calc_obj_id(&self) -> Option<(ObjId, String)> {
-        if self.is_dirty {
-            let msg = "Object map is dirty, should call flush_mtree at first".to_string();
-            warn!("{}", msg);
-            return None;
-        }
-
-        let body = self.get_body();
-        if body.is_none() {
-            return None;
-        }
-
-        let body = body.unwrap();
-        let (obj_id, s) = build_named_object_by_json(
-            OBJ_TYPE_LIST,
-            &serde_json::to_value(&body).expect("Failed to serialize ObjectMapBody"),
-        );
-
-        Some((obj_id, s))
+    pub fn calc_obj_id(&self) -> (ObjId, String) {
+        self.body.calc_obj_id()
     }
 
-    pub fn get_root_hash(&self) -> Option<Vec<u8>> {
-        if self.mtree.is_none() {
-            return None;
-        }
+    // Get the storage file path for the object array
+    // This will return None if the object ID is not generated yet
+    // The target file must be created by the `save()` method
+    pub fn get_storage_file_path(&self) -> Option<PathBuf> {
+        let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
 
-        let root_hash = self.mtree.as_ref().unwrap().get_root_hash();
-        Some(root_hash)
+        let file_path = factory.get_file_path(&self.obj_id, self.storage_type());
+        Some(file_path)
     }
 
-    pub fn get_root_hash_str(&self) -> Option<String> {
-        self.get_root_hash()
-            .map(|hash| Base32Codec::to_base32(&hash))
+    pub async fn open(obj_data: serde_json::Value) -> NdnResult<Self> {
+        let body: ObjectArrayBody = serde_json::from_value(obj_data).map_err(|e| {
+            let msg = format!("Error decoding object array body: {}", e);
+            error!("{}", msg);
+            NdnError::InvalidData(msg)
+        })?;
+
+        let (obj_id, _) = body.calc_obj_id();
+
+        let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
+        let (cache, storage_type) = factory.open(&obj_id, true).await?;
+
+        let mtree = Self::regenerate_merkle_tree(&cache, body.hash_method).await?;
+
+        let obj_array = Self::new(obj_id, body, cache, mtree);
+
+        Ok(obj_array)
     }
 
     // Regenerate the merkle tree without checking the dirty flag
-    async fn regenerate_merkle_tree(&mut self) -> NdnResult<()> {
-        let count = self.cache.len() as u64;
-        let leaf_size = self.hash_method().hash_bytes() as u64;
+    pub(crate) async fn regenerate_merkle_tree(
+        cache: &Box<dyn ObjectArrayInnerCache>,
+        hash_method: HashMethod,
+    ) -> NdnResult<MerkleTreeObject> {
+        let count = cache.len() as u64;
+        let leaf_size = hash_method.hash_bytes() as u64;
         let data_size = count as u64 * leaf_size;
 
         // TODO now use the memory buffer to store the merkle tree, need to optimize for further usage
         let buf_size = MerkleTreeObjectGenerator::estimate_output_bytes(
             data_size,
             leaf_size,
-            Some(self.hash_method()),
+            Some(hash_method),
         );
         let buf = SharedBuffer::with_size(buf_size as usize);
         let stream = MtreeReadWriteSeekWithSharedBuffer::new(buf);
         let mtree_writer = Box::new(stream.clone()) as Box<dyn MtreeWriteSeek>;
 
-        let mut mtree_generator = MerkleTreeObjectGenerator::new(
-            data_size,
-            leaf_size,
-            Some(self.hash_method()),
-            mtree_writer,
-        )
-        .await?;
+        let mut mtree_generator =
+            MerkleTreeObjectGenerator::new(data_size, leaf_size, Some(hash_method), mtree_writer)
+                .await?;
 
-        for i in 0..self.cache.len() {
-            let obj_id = self.cache.get(i)?.unwrap();
+        for i in 0..cache.len() {
+            let obj_id = cache.get(i)?.unwrap();
 
             mtree_generator
-                .append_leaf_hashes(&vec![get_obj_hash(&obj_id, self.hash_method())?.to_vec()])
+                .append_leaf_hashes(&vec![get_obj_hash(&obj_id, hash_method)?.to_vec()])
                 .await
                 .map_err(|e| {
                     let msg = format!("Error appending leaf hashes: {}", e);
@@ -395,88 +307,7 @@ impl ObjectArray {
         let root_hash1 = object.get_root_hash();
         assert_eq!(root_hash, root_hash1);
 
-        // Save the mtree data to object for further usage
-        self.mtree = Some(object);
-
-        Ok(())
-    }
-
-    pub async fn flush_mtree(&mut self) -> NdnResult<()> {
-        if !self.is_dirty && self.mtree.is_some() {
-            return Ok(());
-        }
-
-        self.flush_mtree_impl().await
-    }
-
-    async fn flush_mtree_impl(&mut self) -> NdnResult<()> {
-        self.regenerate_merkle_tree().await?;
-        self.is_dirty = false;
-
-        let (obj_id, _) = self.calc_obj_id().ok_or_else(|| {
-            let msg = "Failed to calculate object ID".to_string();
-            error!("{}", msg);
-            NdnError::InvalidState(msg)
-        })?;
-
-        self.obj_id = Some(obj_id);
-
-        Ok(())
-    }
-
-    // Get the storage file path for the object array
-    // This will return None if the object ID is not generated yet
-    // The target file must be created by the `save()` method
-    pub fn get_storage_file_path(&self) -> Option<PathBuf> {
-        let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
-        let id = self.get_obj_id();
-        if id.is_none() {
-            return None;
-        }
-        let id = id.unwrap();
-
-        let file_path = factory.get_file_path(&id, self.storage_type.clone());
-        Some(file_path)
-    }
-
-    pub async fn save(&self) -> NdnResult<()> {
-        let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
-        let mut writer = factory
-            .open_writer(
-                &self.get_obj_id().unwrap(),
-                None,
-                Some(self.storage_type.clone()),
-            )
-            .await?;
-
-        // Write the object array to the storage
-        // TODO: use batch read and write to improve performance
-        for i in 0..self.cache.len() {
-            let obj_id = self.cache.get(i)?.unwrap();
-            writer.append(&obj_id).await?;
-        }
-
-        writer.flush().await?;
-
-        Ok(())
-    }
-
-    pub async fn open(obj_data: serde_json::Value, read_only: bool) -> NdnResult<Self> {
-        // First calc obj id with body
-        let (obj_id, _) = build_named_object_by_json(OBJ_TYPE_LIST, &obj_data);
-
-        let body: ObjectArrayBody = serde_json::from_value(obj_data).map_err(|e| {
-            let msg = format!("Error decoding object array body: {} {}", e, obj_id);
-            error!("{}", msg);
-            NdnError::InvalidData(msg)
-        })?;
-
-        let factory = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().unwrap();
-        let (cache, storage_type) = factory.open(&obj_id, read_only).await?;
-
-        let obj_array = Self::new_from_cache(obj_id, body.hash_method, cache, storage_type)?;
-
-        Ok(obj_array)
+        Ok(object)
     }
 }
 

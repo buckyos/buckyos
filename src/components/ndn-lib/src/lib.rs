@@ -100,7 +100,9 @@ pub const OBJ_TYPE_MTREE: &str = "cytree";
 pub const OBJ_TYPE_OBJMAP: &str = "cymap"; // object map
 pub const OBJ_TYPE_TRIE: &str = "cytrie"; // trie object map
 pub const OBJ_TYPE_PACK: &str = "cypack"; // object set
+
 pub const OBJ_TYPE_LIST: &str = "cylist"; // object list
+pub const OBJ_TYPE_LIST_SIMPLE: &str = "cylist-s"; // simple object list
 
 pub const OBJ_TYPE_CHUNK_LIST: &str = "cl"; // normal chunk list with variable size
 pub const OBJ_TYPE_CHUNK_LIST_SIMPLE: &str = "cl-s"; // simple chunk list with variable size
