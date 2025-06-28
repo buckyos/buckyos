@@ -98,8 +98,8 @@ impl ObjectArray {
         self.body.hash_method
     }
 
-    pub fn len(&self) -> usize {
-        self.body.total_count as usize
+    pub fn len(&self) -> u64 {
+        self.body.total_count
     }
 
     pub fn storage_type(&self) -> ObjectArrayStorageType {

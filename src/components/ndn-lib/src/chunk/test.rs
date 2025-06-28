@@ -50,7 +50,7 @@ async fn gen_fix_size_chunk_list_from_file(file_path: &Path, chunk_size: usize) 
     let mut file = tokio::fs::File::open(file_path).await.unwrap();
     let file_size = file.metadata().await.unwrap().len() as usize;
 
-    let mut builder = ChunkListBuilder::new(HashMethod::Sha256, None)
+    let mut builder = ChunkListBuilder::new(HashMethod::Sha256)
         .with_fixed_size(chunk_size as u64)
         .with_total_size(file_size as u64);
 
@@ -110,7 +110,7 @@ async fn test_read_chunk_list(target_file: &Path, chunk_list: &ChunkList, offset
     // Load the chunk reader for the specified chunk index and offset
     let mut reader = ChunkListReader::new(
         named_data_mgr.clone(),
-        chunk_list.clone(true).unwrap(),
+        chunk_list.clone().unwrap(),
         std::io::SeekFrom::Start(offset),
         false,
     )
@@ -118,7 +118,7 @@ async fn test_read_chunk_list(target_file: &Path, chunk_list: &ChunkList, offset
     .unwrap();
 
     // Read data from the chunk list and verify the content
-    let total_size = chunk_list.get_total_size();
+    let total_size = chunk_list.total_size();
     let mut file = tokio::fs::File::open(target_file).await.unwrap();
     let file_size = file.metadata().await.unwrap().len() as u64;
     assert_eq!(total_size, file_size, "Chunk list total size mismatch");
@@ -204,8 +204,8 @@ async fn test_chunk_list_main() {
     let chunk_list = gen_fix_size_chunk_list_from_file(&file_path, chunk_size).await;
 
     // Validate the generated chunk list
-    assert_eq!(chunk_list.get_total_size(), file_size as u64);
-    assert_eq!(chunk_list.get_len(), file_size / chunk_size + 1);
+    assert_eq!(chunk_list.total_size(), file_size as u64);
+    assert_eq!(chunk_list.len(), file_size / chunk_size + 1);
 
     println!(
         "Chunk list generated successfully with {} chunks",

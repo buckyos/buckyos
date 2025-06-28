@@ -62,7 +62,7 @@ impl ChunkListBody {
             fix_size: self.fix_size,
         }
     }
-    
+
     pub fn is_simple_chunk_list(&self) -> bool {
         CollectionStorageMode::is_simple(self.total_count)
     }
@@ -211,7 +211,7 @@ impl ChunkList {
     }
 
     // Return the total number of chunks in the chunk list
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> u64 {
         self.chunk_list_imp.len()
     }
 
@@ -429,7 +429,7 @@ impl ChunkList {
 
                             total_size += length;
                             if total_size >= offset {
-                                let chunk_index = total_chunks - index - 1; // Reverse index
+                                let chunk_index = total_chunks - index as u64 - 1; // Reverse index
                                 let chunk_offset = total_size - offset;
                                 if chunk_offset >= length {
                                     let msg = format!(

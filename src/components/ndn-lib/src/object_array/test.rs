@@ -27,16 +27,19 @@ fn gen_random_obj_id(seed: &str) -> ObjId {
 }
 
 async fn test_object_array() {
-    let mut ar = ObjectArray::new(HashMethod::Sha256, Some(ObjectArrayStorageType::JSONFile));
+    let mut builder = ObjectArrayBuilder::new(HashMethod::Sha256);
 
     for i in 0..100 {
         let obj_id = gen_random_obj_id(&format!("test-{}", i));
-        ar.append_object(&obj_id).unwrap();
+        builder.append_object(&obj_id).unwrap();
 
         // Test get
-        let ret = ar.get_object(i).unwrap();
+        let ret = builder.get_object(i).unwrap();
         assert_eq!(ret.as_ref(), Some(&obj_id), "Get object failed");
     }
+
+    // Generate object array and save to file
+    let ar = builder.build().await.unwrap();
 
     // Test Iterator
     {
@@ -59,30 +62,23 @@ async fn test_object_array() {
 
     // Flush object id, and will gen mtree inner
     let id = ar.get_obj_id();
-    assert!(id.is_none());
-
-    ar.flush_mtree().await.unwrap();
-    let (id, body) = ar.calc_obj_id().unwrap();
+    
+    let (id, body) = ar.calc_obj_id();
     println!("Object ID: {}", id.to_string());
-    assert_eq!(id, ar.get_obj_id().unwrap(), "Get object ID failed");
+    assert_eq!(id, *ar.get_obj_id(), "Get object ID failed");
 
     // Save to file
-    let data_dir = std::env::temp_dir().join("ndn-test-object-array");
-
-    ar.save().await.unwrap();
-    ar.flush_mtree().await.unwrap();
 
 
     // Test load from file, in read-only mode
-    let body = ar.get_body().unwrap();
+    let body = ar.body();
     let body = serde_json::to_value(&body).unwrap();
-    let mut reader = ObjectArray::open(body, true).await.unwrap();
+    let mut reader = ObjectArray::open(body).await.unwrap();
 
-    let id2 = reader.get_obj_id().unwrap();
-    assert_eq!(id, id2, "Load object ID unmatch");
+    let id2 = reader.get_obj_id();
+    assert_eq!(id, *id2, "Load object ID unmatch");
 
-    reader.flush_mtree().await.unwrap();
-    let (id2, _) = reader.calc_obj_id().unwrap();
+    let (id2, _) = reader.calc_obj_id();
     assert_eq!(id, id2, "Load object ID unmatch");
 
     // Test get object and verify the value with the original object array
@@ -95,7 +91,7 @@ async fn test_object_array() {
 
     // Test get with proof path
     let item = reader.get_object_with_proof(0).await.unwrap().unwrap();
-    let(_, reader_body) = reader.calc_obj_id().unwrap();
+    let(_, reader_body) = reader.calc_obj_id();
 
     let verifier = ObjectArrayProofVerifier::new(HashMethod::Sha256);
     let vret = verifier.verify_with_obj_data_str(
@@ -132,50 +128,43 @@ async fn test_object_array() {
 
 
     // Try modify, reader is in read-only mode, so we should clone it with read-write mode
-    let mut ar2 = reader.clone(false).unwrap();
-
-    let id2 = ar2.get_obj_id().unwrap();
-    assert_eq!(id, id2, "Load object ID unmatch");
-
-    ar2.flush_mtree().await.unwrap();
-    let (id2, _) = ar2.calc_obj_id().unwrap();
-    assert_eq!(id, id2, "Load object ID unmatch");
+    let mut ar2_builder = ObjectArrayBuilder::from_object_array(&reader).unwrap();
 
     // Remove first item
-    let item0 = ar2.remove_object(0).unwrap().unwrap();
+    let item0 = ar2_builder.remove_object(0).unwrap().unwrap();
     assert_eq!(item0, item.obj_id, "Remove object failed");
 
     // Pop last item
-    let item99 = ar2.pop_object().unwrap().unwrap();
+    let item99 = ar2_builder.pop_object().unwrap().unwrap();
 
-    // Recalculate object ID
-    ar2.flush_mtree().await.unwrap();
-    let (id3, _) = ar2.calc_obj_id().unwrap();
+    // Regenerate object array
+    let ar2 = ar2_builder.build().await.unwrap();
+    
+    let (id3, _) = ar2.calc_obj_id();
     assert_ne!(id, id3, "Object ID should be different after remove");
 
     info!("Object ID Updated: {} -> {}", id.to_string(), id3.to_string());
 
     // Insert item0 at index 0
-    ar2.insert_object(0, &item0).unwrap();
-    assert_eq!(item0, ar2.get_object(0).unwrap().unwrap(), "Insert object failed");
+    let mut ar3_builder = ObjectArrayBuilder::from_object_array_owned(ar2);
+    ar3_builder.insert_object(0, &item0).unwrap();
+    assert_eq!(item0, ar3_builder.get_object(0).unwrap().unwrap(), "Insert object failed");
 
     // Insert item99 at index 99
-    ar2.insert_object(99, &item99).unwrap();
-    assert_eq!(item99, ar2.get_object(99).unwrap().unwrap(), "Insert object failed");
+    ar3_builder.insert_object(99, &item99).unwrap();
+    assert_eq!(item99, ar3_builder.get_object(99).unwrap().unwrap(), "Insert object failed");
 
     // Test get object and verify the value with the original object array
     for i in 0..100 {
         let obj_id = gen_random_obj_id(&format!("test-{}", i));
-        let ret = ar2.get_object(i).unwrap();
+        let ret = ar3_builder.get_object(i).unwrap();
         assert_eq!(ret.as_ref(), Some(&obj_id), "Get object failed");
     }
 
-    // Recalculate object ID
-    assert!(ar2.calc_obj_id().is_none());
+    // Regenerate object array
+    let ar4 = ar3_builder.build().await.unwrap();
 
-    ar2.flush_mtree().await.unwrap();
-
-    let (id4, _) = ar2.calc_obj_id().unwrap();
+    let (id4, _) = ar4.calc_obj_id();
     assert_eq!(id, id4, "Object ID should be the same after insert");
     assert_ne!(id3, id4, "Object ID should be different after remove");
 }
