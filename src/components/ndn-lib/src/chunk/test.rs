@@ -1,10 +1,10 @@
 use crate::chunk::*;
 use crate::hash::HashMethod;
-use crate::NamedDataMgrRef;
-use crate::{NamedDataMgr, NamedDataMgrConfig};
 use crate::object_array::{
     ObjectArrayStorageFactory, ObjectArrayStorageType, GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY,
 };
+use crate::NamedDataMgrRef;
+use crate::{NamedDataMgr, NamedDataMgrConfig};
 use chrono::offset;
 use rand::Rng;
 use rand::SeedableRng;
@@ -205,7 +205,7 @@ async fn test_chunk_list_main() {
 
     // Validate the generated chunk list
     assert_eq!(chunk_list.total_size(), file_size as u64);
-    assert_eq!(chunk_list.len(), file_size / chunk_size + 1);
+    assert_eq!(chunk_list.len() as usize, file_size / chunk_size + 1);
 
     println!(
         "Chunk list generated successfully with {} chunks",

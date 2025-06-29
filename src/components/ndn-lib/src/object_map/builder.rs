@@ -82,6 +82,11 @@ impl ObjectMapBuilder {
         })
     }
 
+    // Get the storage type of current using storage, maybe changed after build
+    pub fn storage_type(&self) -> ObjectMapStorageType {
+        self.storage.get_type()
+    }
+
     pub async fn put_object(&mut self, key: &str, obj_id: &ObjId) -> NdnResult<()> {
         self.storage.put(&key, &obj_id).await
     }

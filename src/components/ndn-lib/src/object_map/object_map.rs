@@ -187,7 +187,7 @@ impl ObjectMap {
     }
 
     pub async fn get_object_proof_path(
-        &mut self,
+        &self,
         key: &str,
     ) -> NdnResult<Option<ObjectMapItemProof>> {
         // Get object and mtree index from storage

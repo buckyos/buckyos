@@ -1,7 +1,8 @@
+use super::builder::ObjectMapBuilder;
 use super::memory_storage::MemoryStorage;
 use super::*;
 use crate::hash::HashHelper;
-use crate::{HashMethod, ObjId, OBJ_TYPE_FILE};
+use crate::{CollectionStorageMode, HashMethod, ObjId, OBJ_TYPE_FILE};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tokio::test;
@@ -15,7 +16,10 @@ fn generate_random_buf(seed: &str, len: usize) -> Vec<u8> {
 }
 
 async fn test_object_map() {
-    let mut obj_map = ObjectMap::new(HashMethod::Sha256, None).await.unwrap();
+    let mut obj_map_builder =
+        ObjectMapBuilder::new(HashMethod::Sha256, Some(CollectionStorageMode::Normal))
+            .await
+            .unwrap();
 
     let count = 100;
     for i in 0..count {
@@ -23,29 +27,44 @@ async fn test_object_map() {
         let hash = generate_random_buf(&i.to_string(), HashMethod::Sha256.hash_bytes());
         let obj_id = ObjId::new_by_raw(OBJ_TYPE_FILE.to_owned(), hash);
 
-        obj_map.put_object(&key, &obj_id).await.unwrap();
+        obj_map_builder.put_object(&key, &obj_id).await.unwrap();
 
         // Test get object
-        let ret = obj_map.get_object(&key).await.unwrap().unwrap();
+        let ret = obj_map_builder.get_object(&key).await.unwrap().unwrap();
         assert_eq!(ret, obj_id);
 
         // Test exist
-        let ret = obj_map.is_object_exist(&key).await.unwrap();
+        let ret = obj_map_builder.is_object_exist(&key).await.unwrap();
         assert_eq!(ret, true);
 
         // Test remove
         if i % 2 == 0 {
-            let ret = obj_map.remove_object(&key).await.unwrap().unwrap();
+            let ret = obj_map_builder.remove_object(&key).await.unwrap().unwrap();
             assert_eq!(ret, obj_id);
         }
     }
 
-    obj_map.flush_mtree().await.unwrap();
+    let old_storage_type = obj_map_builder.storage_type();
+    assert_eq!(
+        old_storage_type,
+        ObjectMapStorageType::SQLite,
+        "Initial storage type should be Normal"
+    );
 
-    let (objid, obj_content) = obj_map.calc_obj_id().unwrap();
+    let obj_map = obj_map_builder.build().await.unwrap();
+    let new_storage_type = obj_map.storage_type();
+    assert_eq!(
+        new_storage_type,
+        ObjectMapStorageType::JSONFile,
+        "Storage type should be Normal after build"
+    );
+    assert_ne!(
+        old_storage_type, new_storage_type,
+        "Storage type should be changed after build"
+    );
+
+    let (objid, obj_content) = obj_map.calc_obj_id();
     println!("objid: {}", objid.to_string());
-
-    obj_map.save().await.unwrap();
 
     for i in 0..count {
         let key = format!("key{}", i);
@@ -69,52 +88,55 @@ async fn test_object_map() {
 
     // Test reopen object map for read
     let obj_content = serde_json::from_str(&obj_content).unwrap();
-    let mut obj_map2 = ObjectMap::open(obj_content, true).await.unwrap();
-    let objid2 = obj_map2.get_obj_id().unwrap();
-    assert_eq!(objid, objid2, "Object ID unmatch");
+    let obj_map2 = ObjectMap::open(obj_content).await.unwrap();
+    let objid2 = obj_map2.get_obj_id();
+    assert_eq!(objid, *objid2, "Object ID unmatch");
 
-    obj_map2.flush_mtree().await.unwrap();
-
-    let objid2 = obj_map2.get_obj_id().unwrap();
-    assert_eq!(objid, objid2, "Object ID unmatch");
-
-    // Test clone for modify
-    let mut obj_map3 = obj_map2.clone(false).await.unwrap();
+    // Test clone for read
+    let mut obj_map3 = obj_map2.clone().await;
+    let objid3 = obj_map3.get_obj_id();
+    assert_eq!(objid, *objid3, "Object ID unmatch");
 
     // Remove some objects
-    let obj_item1 = obj_map3.remove_object("key0").await.unwrap();
-    let obj_item2 = obj_map3.remove_object("key1").await.unwrap();
+    let mut obj_map_builder = ObjectMapBuilder::from_object_map(&obj_map3).await.unwrap();
+    let obj_item1 = obj_map_builder.remove_object("key0").await.unwrap();
+    let obj_item2 = obj_map_builder.remove_object("key1").await.unwrap();
 
     println!("obj_item1: {:?}", obj_item1);
     println!("obj_item2: {:?}", obj_item2);
     assert!(obj_item1.is_none(), "Remove object failed");
     assert!(obj_item2.is_some(), "Remove object failed");
+    assert_eq!(
+        obj_item2,
+        obj_map3.get_object("key1").await.unwrap(),
+        "Unexpected object after remove"
+    );
 
-    // Regenerate container ID
-    obj_map3.flush_mtree().await.unwrap();
-    let (objid3, _content) = obj_map3.calc_obj_id().unwrap();
-    assert_ne!(objid, objid3, "Object ID unmatch");
-
-    // Then save it to new file
-    obj_map3.save().await.unwrap();
+    // Regenerate object map
+    let obj_map4 = obj_map_builder.build().await.unwrap();
+    let (objid4, _content) = obj_map4.calc_obj_id();
+    assert_ne!(objid, objid4, "Object ID unmatch");
 
     // Clone for read-only
-    let obj_map_read = obj_map3.clone(true).await.unwrap();
-    let objid4 = obj_map_read.get_obj_id().unwrap();
-    assert_eq!(objid3, objid4, "Object ID unmatch");
+    let obj_map_read = obj_map4.clone().await;
+    let objid5 = obj_map_read.get_obj_id();
+    assert_eq!(objid4, *objid5, "Object ID unmatch");
 
     // Then reinsert key1
-    obj_map3
+    let mut obj_map_builder = ObjectMapBuilder::from_object_map(&obj_map_read)
+        .await
+        .unwrap();
+    obj_map_builder
         .put_object("key1", &obj_item2.unwrap())
         .await
         .unwrap();
 
-    obj_map3.flush_mtree().await.unwrap();
-    let objid4 = obj_map3.get_obj_id().unwrap();
-    assert_eq!(objid, objid4, "Object ID unmatch");
+    let obj_map6 = obj_map_builder.build().await.unwrap();
+    let (objid6, _content) = obj_map6.calc_obj_id();
+    assert_eq!(objid, objid6, "Object ID unmatch");
 
     // Test Iterator
-    let mut iter = obj_map3.iter();
+    let mut iter = obj_map6.iter();
     let mut count = 0;
     while let Some((key, obj_id, _)) = iter.next() {
         println!("key: {}, obj_id: {}", key, obj_id.to_string());
