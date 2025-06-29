@@ -80,8 +80,8 @@ pub struct ObjectMap {
 }
 
 impl ObjectMap {
-    // Create empty object map
-    pub fn new(
+    // Create object map from builder
+    pub(crate) fn new(
         obj_id: ObjId,
         body: ObjectMapBody,
         storage: Box<dyn ObjectMapInnerStorage>,

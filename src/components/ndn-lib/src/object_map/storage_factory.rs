@@ -4,6 +4,7 @@ use super::storage::{self, ObjectMapInnerStorage, ObjectMapStorageType};
 use crate::{NdnError, NdnResult, ObjId};
 use once_cell::sync::OnceCell;
 use serde_json::de;
+use std::clone;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -76,6 +77,17 @@ impl ObjectMapStorageFactory {
         }
     }
 
+    fn get_clone_file_name(&self, obj_id: &ObjId, storage_type: ObjectMapStorageType) -> String {
+        let index = self.temp_file_index.fetch_add(1, Ordering::SeqCst);
+        format!(
+            "clone_{}_{}_{}.{}",
+            obj_id.to_base32(),
+            index,
+            chrono::Utc::now().timestamp(),
+            Self::get_file_ext(storage_type),
+        )
+    }
+
     pub async fn open(
         &self,
         obj_id: Option<&ObjId>,
@@ -102,7 +114,7 @@ impl ObjectMapStorageFactory {
             return Err(NdnError::PermissionDenied(msg));
         }
 
-        let file = self.get_file_path_by_id(obj_id, storage_type);
+        let mut file = self.get_file_path_by_id(obj_id, storage_type);
         match mode {
             ObjectMapStorageOpenMode::CreateNew => {
                 if file.exists() {
@@ -122,6 +134,39 @@ impl ObjectMapStorageFactory {
                     );
                     error!("{}", msg);
                     return Err(NdnError::NotFound(msg));
+                }
+
+                if !read_only {
+                    // If we are not in read-only mode, we need to clone the file to a temporary file
+                    let clone_file_name =
+                        self.get_clone_file_name(obj_id.expect("obj_id is None"), storage_type);
+                    let clone_file_path = self.get_file_path(&clone_file_name, storage_type);
+
+                    if clone_file_path.exists() {
+                        let msg = format!(
+                            "Clone file {} already exists, cannot create new storage",
+                            clone_file_path.display()
+                        );
+                        error!("{}", msg);
+                        return Err(NdnError::AlreadyExists(msg));
+                    }
+
+                    // Clone the file to a temporary file
+                    tokio::fs::copy(&file, &clone_file_path)
+                        .await
+                        .map_err(|e| {
+                            let msg = format!(
+                                "Error copying file {} to {}: {}",
+                                file.display(),
+                                clone_file_path.display(),
+                                e
+                            );
+                            error!("{}", msg);
+                            NdnError::IoError(msg)
+                        })?;
+
+                    file = clone_file_path;
+                    info!("Cloned file to {} for modify {}", file.display(), obj_id.unwrap().to_base32());
                 }
             }
         }
@@ -160,14 +205,7 @@ impl ObjectMapStorageFactory {
         let file_name = if read_only {
             obj_id.to_base32()
         } else {
-            let index = self.temp_file_index.fetch_add(1, Ordering::SeqCst);
-            format!(
-                "clone_{}_{}_{}.{}",
-                obj_id.to_base32(),
-                index,
-                chrono::Utc::now().timestamp(),
-                Self::get_file_ext(storage.get_type()),
-            )
+            self.get_clone_file_name(obj_id, storage.get_type())
         };
 
         let file = self.get_file_path(&file_name, storage.get_type());
