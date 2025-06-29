@@ -160,10 +160,6 @@ impl ObjectMapSqliteStorage {
                 value TEXT NOT NULL,
                 mtree_index INTEGER
              );
-             CREATE TABLE IF NOT EXISTS object_meta (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                value BLOB
-             );
              CREATE TABLE IF NOT EXISTS mtree_meta (
                 id I
                 NTEGER PRIMARY KEY CHECK (id = 1),
@@ -242,7 +238,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         self.read_only
     }
 
-    async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
+    fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
         self.check_read_only()?;
 
         let mut lock = self.conn.lock().unwrap();
@@ -261,7 +257,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         Ok(())
     }
 
-    async fn put_with_index(
+    fn put_with_index(
         &mut self,
         key: &str,
         value: &ObjId,
@@ -292,7 +288,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         Ok(())
     }
 
-    async fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>> {
+    fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>> {
         let mut lock = self.conn.lock().unwrap();
         let conn = lock.as_ref().unwrap();
 
@@ -318,7 +314,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         }
     }
 
-    async fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
+    fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
         self.check_read_only()?;
 
         let mut lock = self.conn.lock().unwrap();
@@ -379,7 +375,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         Ok(obj_id)
     }
 
-    async fn is_exist(&self, key: &str) -> NdnResult<bool> {
+    fn is_exist(&self, key: &str) -> NdnResult<bool> {
         let mut lock = self.conn.lock().unwrap();
         let conn = lock.as_ref().unwrap();
 
@@ -398,7 +394,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         Ok(exists)
     }
 
-    async fn list(&self, page_index: usize, page_size: usize) -> NdnResult<Vec<String>> {
+    fn list(&self, page_index: usize, page_size: usize) -> NdnResult<Vec<String>> {
         let mut lock = self.conn.lock().unwrap();
         let conn = lock.as_ref().unwrap();
 
@@ -436,7 +432,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         Box::new(iter)
     }
 
-    async fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat> {
+    fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat> {
         let mut lock = self.conn.lock().unwrap();
         let conn = lock.as_ref().unwrap();
 
@@ -452,42 +448,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         })
     }
 
-    async fn put_meta(&mut self, value: &[u8]) -> NdnResult<()> {
-        self.check_read_only()?;
-
-        let mut lock = self.conn.lock().unwrap();
-        let conn = lock.as_ref().unwrap();
-
-        conn.execute(
-            "INSERT OR REPLACE INTO object_meta (id, value) VALUES (1, ?1)",
-            params![value],
-        )
-        .map_err(|e| {
-            let msg = format!("Failed to insert object_meta: {}", e);
-            error!("{}", msg);
-            NdnError::DbError(msg)
-        })?;
-
-        Ok(())
-    }
-
-    async fn get_meta(&self) -> NdnResult<Option<Vec<u8>>> {
-        let mut lock = self.conn.lock().unwrap();
-        let conn = lock.as_ref().unwrap();
-
-        let data: Option<Vec<u8>> = conn
-            .query_row("SELECT value FROM object_meta WHERE id=1", [], |r| r.get(0))
-            .optional()
-            .map_err(|e| {
-                let msg = format!("Failed to query object_meta: {}", e);
-                error!("{}", msg);
-                NdnError::DbError(msg)
-            })?;
-
-        Ok(data)
-    }
-
-    async fn update_mtree_index(&mut self, key: &str, index: u64) -> NdnResult<()> {
+    fn update_mtree_index(&mut self, key: &str, index: u64) -> NdnResult<()> {
         self.check_read_only()?;
 
         let mut lock = self.conn.lock().unwrap();
@@ -512,7 +473,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         Ok(())
     }
 
-    async fn get_mtree_index(&self, key: &str) -> NdnResult<Option<u64>> {
+    fn get_mtree_index(&self, key: &str) -> NdnResult<Option<u64>> {
         let mut lock = self.conn.lock().unwrap();
         let conn = lock.as_ref().unwrap();
 
@@ -530,7 +491,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         .map(|v| v.map(|i: i64| i as u64))
     }
 
-    async fn put_mtree_data(&mut self, value: &[u8]) -> NdnResult<()> {
+    fn put_mtree_data(&mut self, value: &[u8]) -> NdnResult<()> {
         self.check_read_only()?;
 
         let lock = self.conn.lock().unwrap();
@@ -549,7 +510,7 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
         Ok(())
     }
 
-    async fn load_mtree_data(&self) -> NdnResult<Option<Vec<u8>>> {
+    fn load_mtree_data(&self) -> NdnResult<Option<Vec<u8>>> {
         let mut lock = self.conn.lock().unwrap();
         let conn = lock.as_ref().unwrap();
 

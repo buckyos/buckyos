@@ -12,7 +12,6 @@ struct MemoryStorageItem {
 pub struct MemoryStorage {
     read_only: bool,
     storage: BTreeMap<String, MemoryStorageItem>,
-    meta: Option<Vec<u8>>,
     mtree_data: Option<Vec<u8>>,
 }
 
@@ -21,7 +20,6 @@ impl MemoryStorage {
         Self {
             read_only,
             storage: BTreeMap::new(),
-            meta: None,
             mtree_data: None,
         }
     }
@@ -46,7 +44,7 @@ impl ObjectMapInnerStorage for MemoryStorage {
         self.read_only
     }
 
-    async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
+    fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -61,7 +59,7 @@ impl ObjectMapInnerStorage for MemoryStorage {
         Ok(())
     }
 
-    async fn put_with_index(
+    fn put_with_index(
         &mut self,
         key: &str,
         value: &ObjId,
@@ -81,7 +79,7 @@ impl ObjectMapInnerStorage for MemoryStorage {
         Ok(())
     }
 
-    async fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>> {
+    fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>> {
         if let Some(item) = self.storage.get(key) {
             Ok(Some((item.value.clone(), item.mtree_index)))
         } else {
@@ -89,7 +87,7 @@ impl ObjectMapInnerStorage for MemoryStorage {
         }
     }
 
-    async fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
+    fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -100,11 +98,11 @@ impl ObjectMapInnerStorage for MemoryStorage {
         }
     }
 
-    async fn is_exist(&self, key: &str) -> NdnResult<bool> {
+    fn is_exist(&self, key: &str) -> NdnResult<bool> {
         Ok(self.storage.contains_key(key))
     }
 
-    async fn list(&self, page_index: usize, page_size: usize) -> NdnResult<Vec<String>> {
+    fn list(&self, page_index: usize, page_size: usize) -> NdnResult<Vec<String>> {
         let start = page_index * page_size;
         let end = start + page_size;
         let list = self
@@ -118,7 +116,7 @@ impl ObjectMapInnerStorage for MemoryStorage {
         Ok(list)
     }
 
-    async fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat> {
+    fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat> {
         Ok(ObjectMapInnerStorageStat {
             total_count: self.storage.len() as u64,
         })
@@ -132,19 +130,7 @@ impl ObjectMapInnerStorage for MemoryStorage {
         )
     }
 
-    async fn put_meta(&mut self, value: &[u8]) -> NdnResult<()> {
-        // Check if the storage is read-only
-        self.check_read_only()?;
-
-        self.meta = Some(value.to_vec());
-        Ok(())
-    }
-
-    async fn get_meta(&self) -> NdnResult<Option<Vec<u8>>> {
-        Ok(self.meta.clone())
-    }
-
-    async fn update_mtree_index(&mut self, key: &str, index: u64) -> NdnResult<()> {
+    fn update_mtree_index(&mut self, key: &str, index: u64) -> NdnResult<()> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -157,7 +143,7 @@ impl ObjectMapInnerStorage for MemoryStorage {
         Err(NdnError::NotFound(msg))
     }
 
-    async fn get_mtree_index(&self, key: &str) -> NdnResult<Option<u64>> {
+    fn get_mtree_index(&self, key: &str) -> NdnResult<Option<u64>> {
         if let Some(item) = self.storage.get(key) {
             Ok(item.mtree_index)
         } else {
@@ -165,7 +151,7 @@ impl ObjectMapInnerStorage for MemoryStorage {
         }
     }
 
-    async fn put_mtree_data(&mut self, value: &[u8]) -> NdnResult<()> {
+    fn put_mtree_data(&mut self, value: &[u8]) -> NdnResult<()> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -173,7 +159,7 @@ impl ObjectMapInnerStorage for MemoryStorage {
         Ok(())
     }
 
-    async fn load_mtree_data(&self) -> NdnResult<Option<Vec<u8>>> {
+    fn load_mtree_data(&self) -> NdnResult<Option<Vec<u8>>> {
         Ok(self.mtree_data.clone())
     }
 
@@ -187,7 +173,6 @@ impl ObjectMapInnerStorage for MemoryStorage {
 
         // Copy meta and mtree data
         new_storage.storage = self.storage.clone();
-        new_storage.meta = self.meta.clone();
         new_storage.mtree_data = self.mtree_data.clone();
 
         Ok(Box::new(new_storage))

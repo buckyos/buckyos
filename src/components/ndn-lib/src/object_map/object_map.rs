@@ -129,7 +129,7 @@ impl ObjectMap {
             })?;
 
         // Try load mtree data from storage
-        let ret = storage.load_mtree_data().await.map_err(|e| {
+        let ret = storage.load_mtree_data().map_err(|e| {
             let msg = format!("Error loading mtree data: {}", e);
             error!("{}", msg);
             e
@@ -177,8 +177,8 @@ impl ObjectMap {
         self.body.total_count
     }
 
-    pub async fn get_object(&self, key: &str) -> NdnResult<Option<ObjId>> {
-        let ret = self.storage.get(key).await?;
+    pub fn get_object(&self, key: &str) -> NdnResult<Option<ObjId>> {
+        let ret = self.storage.get(key)?;
         if ret.is_none() {
             return Ok(None);
         }
@@ -186,12 +186,9 @@ impl ObjectMap {
         Ok(Some(ret.unwrap().0))
     }
 
-    pub async fn get_object_proof_path(
-        &self,
-        key: &str,
-    ) -> NdnResult<Option<ObjectMapItemProof>> {
+    pub async fn get_object_proof_path(&self, key: &str) -> NdnResult<Option<ObjectMapItemProof>> {
         // Get object and mtree index from storage
-        let ret = self.storage.get(key).await?;
+        let ret = self.storage.get(key)?;
         if ret.is_none() {
             return Ok(None);
         }
@@ -223,8 +220,8 @@ impl ObjectMap {
         Ok(Some(proof))
     }
 
-    pub async fn is_object_exist(&self, key: &str) -> NdnResult<bool> {
-        self.storage.is_exist(&key).await
+    pub fn is_object_exist(&self, key: &str) -> NdnResult<bool> {
+        self.storage.is_exist(&key)
     }
 
     pub fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId, Option<u64>)> + 'a> {
@@ -239,7 +236,7 @@ impl ObjectMap {
         hash_method: HashMethod,
         read_only: bool,
     ) -> NdnResult<MerkleTreeObject> {
-        let count = storage.stat().await?.total_count;
+        let count = storage.stat()?.total_count;
         let leaf_size = 256u64;
         let data_size = count as u64 * leaf_size;
 
@@ -261,14 +258,14 @@ impl ObjectMap {
         let page_size = 128;
         let mut leaf_index = 0;
         loop {
-            let list = storage.list(page_index, page_size).await?;
+            let list = storage.list(page_index, page_size)?;
             if list.is_empty() {
                 break;
             }
             page_index += 1;
 
             for key in list {
-                let item = storage.get(&key).await?;
+                let item = storage.get(&key)?;
                 if item.is_none() {
                     let msg = format!("Error getting object map item: {}", key);
                     error!("{}", msg);
@@ -292,17 +289,12 @@ impl ObjectMap {
 
                 if !read_only {
                     // Update the mtree index in storage
-                    storage
-                        .update_mtree_index(&key, leaf_index)
-                        .await
-                        .map_err(|e| {
-                            let msg = format!(
-                                "Error updating mtree index: {}, {}, {}",
-                                key, leaf_index, e
-                            );
-                            error!("{}", msg);
-                            e
-                        })?;
+                    storage.update_mtree_index(&key, leaf_index).map_err(|e| {
+                        let msg =
+                            format!("Error updating mtree index: {}, {}, {}", key, leaf_index, e);
+                        error!("{}", msg);
+                        e
+                    })?;
                 }
 
                 leaf_index += 1;

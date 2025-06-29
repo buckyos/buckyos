@@ -87,12 +87,12 @@ impl ObjectMapBuilder {
         self.storage.get_type()
     }
 
-    pub async fn put_object(&mut self, key: &str, obj_id: &ObjId) -> NdnResult<()> {
-        self.storage.put(&key, &obj_id).await
+    pub fn put_object(&mut self, key: &str, obj_id: &ObjId) -> NdnResult<()> {
+        self.storage.put(&key, &obj_id)
     }
 
-    pub async fn get_object(&self, key: &str) -> NdnResult<Option<ObjId>> {
-        let ret = self.storage.get(key).await?;
+    pub fn get_object(&self, key: &str) -> NdnResult<Option<ObjId>> {
+        let ret = self.storage.get(key)?;
         if ret.is_none() {
             return Ok(None);
         }
@@ -101,12 +101,12 @@ impl ObjectMapBuilder {
     }
 
     // Try to remove the object from the map, return the object id
-    pub async fn remove_object(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
-        self.storage.remove(key).await
+    pub fn remove_object(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
+        self.storage.remove(key)
     }
 
-    pub async fn is_object_exist(&self, key: &str) -> NdnResult<bool> {
-        self.storage.is_exist(&key).await
+    pub fn is_object_exist(&self, key: &str) -> NdnResult<bool> {
+        self.storage.is_exist(&key)
     }
 
     pub fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId, Option<u64>)> + 'a> {
@@ -120,7 +120,7 @@ impl ObjectMapBuilder {
 
         let root_hash = mtree.get_root_hash();
         let root_hash_str = Base32Codec::to_base32(&root_hash);
-        let total_count = self.storage.stat().await?.total_count;
+        let total_count = self.storage.stat()?.total_count;
 
         let body = ObjectMapBody {
             hash_method: self.hash_method.clone(),

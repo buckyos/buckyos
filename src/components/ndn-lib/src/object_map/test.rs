@@ -27,19 +27,19 @@ async fn test_object_map() {
         let hash = generate_random_buf(&i.to_string(), HashMethod::Sha256.hash_bytes());
         let obj_id = ObjId::new_by_raw(OBJ_TYPE_FILE.to_owned(), hash);
 
-        obj_map_builder.put_object(&key, &obj_id).await.unwrap();
+        obj_map_builder.put_object(&key, &obj_id).unwrap();
 
         // Test get object
-        let ret = obj_map_builder.get_object(&key).await.unwrap().unwrap();
+        let ret = obj_map_builder.get_object(&key).unwrap().unwrap();
         assert_eq!(ret, obj_id);
 
         // Test exist
-        let ret = obj_map_builder.is_object_exist(&key).await.unwrap();
+        let ret = obj_map_builder.is_object_exist(&key).unwrap();
         assert_eq!(ret, true);
 
         // Test remove
         if i % 2 == 0 {
-            let ret = obj_map_builder.remove_object(&key).await.unwrap().unwrap();
+            let ret = obj_map_builder.remove_object(&key).unwrap().unwrap();
             assert_eq!(ret, obj_id);
         }
     }
@@ -69,10 +69,10 @@ async fn test_object_map() {
     for i in 0..count {
         let key = format!("key{}", i);
         if i % 2 == 0 {
-            let ret = obj_map.get_object(&key).await.unwrap();
+            let ret = obj_map.get_object(&key).unwrap();
             assert_eq!(ret.is_none(), true);
         } else {
-            let ret = obj_map.get_object(&key).await.unwrap().unwrap();
+            let ret = obj_map.get_object(&key).unwrap().unwrap();
 
             let proof = obj_map.get_object_proof_path(&key).await.unwrap();
             assert!(proof.is_some());
@@ -99,8 +99,8 @@ async fn test_object_map() {
 
     // Remove some objects
     let mut obj_map_builder = ObjectMapBuilder::from_object_map(&obj_map3).await.unwrap();
-    let obj_item1 = obj_map_builder.remove_object("key0").await.unwrap();
-    let obj_item2 = obj_map_builder.remove_object("key1").await.unwrap();
+    let obj_item1 = obj_map_builder.remove_object("key0").unwrap();
+    let obj_item2 = obj_map_builder.remove_object("key1").unwrap();
 
     println!("obj_item1: {:?}", obj_item1);
     println!("obj_item2: {:?}", obj_item2);
@@ -108,7 +108,7 @@ async fn test_object_map() {
     assert!(obj_item2.is_some(), "Remove object failed");
     assert_eq!(
         obj_item2,
-        obj_map3.get_object("key1").await.unwrap(),
+        obj_map3.get_object("key1").unwrap(),
         "Unexpected object after remove"
     );
 
@@ -128,7 +128,6 @@ async fn test_object_map() {
         .unwrap();
     obj_map_builder
         .put_object("key1", &obj_item2.unwrap())
-        .await
         .unwrap();
 
     let obj_map6 = obj_map_builder.build().await.unwrap();

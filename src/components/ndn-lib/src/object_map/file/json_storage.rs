@@ -100,9 +100,6 @@ struct JSONStorageData {
     content: BTreeMap<String, JSONStorageItem>,
 
     #[serde(with = "base64_serde")]
-    meta: Option<Vec<u8>>,
-
-    #[serde(with = "base64_serde")]
     mtree_data: Option<Vec<u8>>,
 }
 
@@ -110,7 +107,6 @@ impl JSONStorageData {
     fn new() -> Self {
         Self {
             content: BTreeMap::new(),
-            meta: None,
             mtree_data: None,
         }
     }
@@ -198,7 +194,7 @@ impl ObjectMapJSONStorage {
             Ok(Box::new(new_storage))
         } else {
             // If the storage is not dirty, just copy the file
-            std::fs::copy(&self.file, target).map_err(|e| {
+            tokio::fs::copy(&self.file, target).await.map_err(|e| {
                 let msg = format!("Failed to copy file: {:?}, {}", target, e);
                 error!("{}", msg);
                 NdnError::IoError(msg)
@@ -259,7 +255,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         self.read_only
     }
 
-    async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
+    fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -283,7 +279,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         Ok(())
     }
 
-    async fn put_with_index(&mut self, key: &str, value: &ObjId, index: Option<u64>) -> NdnResult<()> {
+    fn put_with_index(&mut self, key: &str, value: &ObjId, index: Option<u64>) -> NdnResult<()> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -306,8 +302,8 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
 
         Ok(())
     }
-    
-    async fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>> {
+
+    fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>> {
         if let Some(data) = &self.data {
             if let Some(item) = data.content.get(key) {
                 Ok(Some((item.value.clone(), item.mtree_index)))
@@ -319,7 +315,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         }
     }
 
-    async fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
+    fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -337,7 +333,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         }
     }
 
-    async fn is_exist(&self, key: &str) -> NdnResult<bool> {
+    fn is_exist(&self, key: &str) -> NdnResult<bool> {
         if let Some(data) = &self.data {
             Ok(data.content.contains_key(key))
         } else {
@@ -345,7 +341,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         }
     }
 
-    async fn list(&self, page_index: usize, page_size: usize) -> NdnResult<Vec<String>> {
+    fn list(&self, page_index: usize, page_size: usize) -> NdnResult<Vec<String>> {
         if let Some(data) = &self.data {
             let start = page_index * page_size;
             let end = start + page_size;
@@ -363,7 +359,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         }
     }
 
-    async fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat> {
+    fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat> {
         if let Some(data) = &self.data {
             Ok(ObjectMapInnerStorageStat {
                 total_count: data.content.len() as u64,
@@ -385,35 +381,8 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         }
     }
 
-    // Use to store meta data
-    async fn put_meta(&mut self, value: &[u8]) -> NdnResult<()> {
-        // Check if the storage is read-only
-        self.check_read_only()?;
-
-        // Modify the JSON node
-        if self.data.is_none() {
-            self.data = Some(JSONStorageData::new());
-        }
-
-        let data = self.data.as_mut().unwrap();
-        data.meta = Some(value.to_vec());
-
-        // Mark the storage as dirty
-        self.is_dirty = true;
-
-        Ok(())
-    }
-
-    async fn get_meta(&self) -> NdnResult<Option<Vec<u8>>> {
-        if let Some(data) = &self.data {
-            Ok(data.meta.clone())
-        } else {
-            Ok(None)
-        }
-    }
-
     // Use to store the index of the mtree node
-    async fn update_mtree_index(&mut self, key: &str, index: u64) -> NdnResult<()> {
+    fn update_mtree_index(&mut self, key: &str, index: u64) -> NdnResult<()> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -436,7 +405,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         Err(NdnError::NotFound(msg))
     }
 
-    async fn get_mtree_index(&self, key: &str) -> NdnResult<Option<u64>> {
+    fn get_mtree_index(&self, key: &str) -> NdnResult<Option<u64>> {
         if let Some(data) = &self.data {
             if let Some(item) = data.content.get(key) {
                 Ok(item.mtree_index)
@@ -447,7 +416,8 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
             Ok(None)
         }
     }
-    async fn put_mtree_data(&mut self, value: &[u8]) -> NdnResult<()> {
+
+    fn put_mtree_data(&mut self, value: &[u8]) -> NdnResult<()> {
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -465,7 +435,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         Ok(())
     }
 
-    async fn load_mtree_data(&self) -> NdnResult<Option<Vec<u8>>> {
+    fn load_mtree_data(&self) -> NdnResult<Option<Vec<u8>>> {
         if let Some(data) = &self.data {
             Ok(data.mtree_data.clone())
         } else {
@@ -518,7 +488,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
                     })?;
                 }
                 
-                std::fs::rename(&self.file, file).map_err(|e| {
+                tokio::fs::rename(&self.file, file).await.map_err(|e| {
                     let msg = format!(
                         "Failed to rename json file: {:?} -> {:?}, {}",
                         self.file, file, e

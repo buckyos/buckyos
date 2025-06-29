@@ -242,7 +242,7 @@ impl ObjectMapStorageFactory {
             .await?;
 
         for item in storage.iter() {
-            new_storage.put_with_index(&item.0, &item.1, item.2).await?;
+            new_storage.put_with_index(&item.0, &item.1, item.2)?;
         }
 
         // Save the new storage to the file
