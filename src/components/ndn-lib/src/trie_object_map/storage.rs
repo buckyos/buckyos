@@ -1,15 +1,16 @@
 use super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
 use super::layout::GenericLayout;
+use crate::coll::CollectionStorageMode;
 use crate::{HashMethod, NdnError, NdnResult, ObjId};
 use generic_array::{ArrayLength, GenericArray};
 use hash_db::{HashDB, HashDBRef, Hasher};
 use memory_db::{HashKey, MemoryDB};
+use serde::{Deserialize, Serialize};
+use std::borrow::Borrow;
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 use trie_db::proof::generate_proof;
 use trie_db::{NodeCodec, Trie, TrieLayout, TrieMut, Value};
-use std::borrow::Borrow;
-use std::path::Path;
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrieObjectMapStorageType {
@@ -24,6 +25,28 @@ impl Default for TrieObjectMapStorageType {
     }
 }
 
+impl TrieObjectMapStorageType {
+    pub fn is_memory(&self) -> bool {
+        matches!(self, Self::Memory)
+    }
+
+    pub fn is_sqlite(&self) -> bool {
+        matches!(self, Self::SQLite)
+    }
+
+    pub fn is_json_file(&self) -> bool {
+        matches!(self, Self::JSONFile)
+    }
+
+    pub fn select_storage_type(coll_mode: Option<CollectionStorageMode>) -> Self {
+        match coll_mode {
+            Some(CollectionStorageMode::Simple) => Self::JSONFile,
+            Some(CollectionStorageMode::Normal) => Self::SQLite,
+            None => Self::SQLite,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait HashDBWithFile<H: Hasher, T>: Send + Sync + HashDB<H, T> {
     fn get_type(&self) -> TrieObjectMapStorageType;
@@ -32,28 +55,32 @@ pub trait HashDBWithFile<H: Hasher, T>: Send + Sync + HashDB<H, T> {
 
     // Clone the storage to a new file.
     // If the target file exists, it will be failed.
-    async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn HashDBWithFile<H, T>>>;
+    async fn clone(
+        &self,
+        target: &Path,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn HashDBWithFile<H, T>>>;
 
     // If file is diff from the current one, it will be saved to the file.
     async fn save(&mut self, file: &Path) -> NdnResult<()>;
 }
 
 impl<'a, H: Hasher, T> HashDBRef<H, T> for &'a dyn HashDBWithFile<H, T> {
-	fn get(&self, key: &H::Out, prefix: hash_db::Prefix) -> Option<T> {
-		HashDB::get(*self, key, prefix)
-	}
-	fn contains(&self, key: &H::Out, prefix: hash_db::Prefix) -> bool {
-		HashDB::contains(*self, key, prefix)
-	}
+    fn get(&self, key: &H::Out, prefix: hash_db::Prefix) -> Option<T> {
+        HashDB::get(*self, key, prefix)
+    }
+    fn contains(&self, key: &H::Out, prefix: hash_db::Prefix) -> bool {
+        HashDB::contains(*self, key, prefix)
+    }
 }
 
 impl<'a, H: Hasher, T> HashDBRef<H, T> for Box<dyn HashDBWithFile<H, T>> {
-	fn get(&self, key: &H::Out, prefix: hash_db::Prefix) -> Option<T> {
-		HashDB::get(self.as_ref(), key, prefix)
-	}
-	fn contains(&self, key: &H::Out, prefix: hash_db::Prefix) -> bool {
-		HashDB::contains(self.as_ref(), key, prefix)
-	}
+    fn get(&self, key: &H::Out, prefix: hash_db::Prefix) -> Option<T> {
+        HashDB::get(self.as_ref(), key, prefix)
+    }
+    fn contains(&self, key: &H::Out, prefix: hash_db::Prefix) -> bool {
+        HashDB::contains(self.as_ref(), key, prefix)
+    }
 }
 
 #[async_trait::async_trait]
@@ -61,7 +88,7 @@ pub trait TrieObjectMapInnerStorage: Send + Sync {
     fn is_readonly(&self) -> bool;
     fn get_type(&self) -> TrieObjectMapStorageType;
 
-    fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()>;
+    fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<Option<ObjId>>;
     fn get(&self, key: &str) -> NdnResult<Option<ObjId>>;
     fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>>;
     fn is_exist(&self, key: &str) -> NdnResult<bool>;
@@ -75,15 +102,17 @@ pub trait TrieObjectMapInnerStorage: Send + Sync {
 
     // Clone the storage to a new file.
     // If the target file exists, it will be failed.
-    async fn clone(&self, target: &Path, read_only: bool) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>>;
+    async fn clone(
+        &self,
+        target: &Path,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>>;
 
     // If file is diff from the current one, it will be saved to the file.
     async fn save(&mut self, file: &Path) -> NdnResult<()>;
 }
 
 pub type TrieObjectMapInnerStorageRef = Arc<Box<dyn TrieObjectMapInnerStorage>>;
-
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum TrieObjectMapProofVerifyResult {

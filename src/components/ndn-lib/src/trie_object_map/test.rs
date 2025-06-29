@@ -232,7 +232,52 @@ async fn test_storage(key_pairs: &[(String, ObjId)]) {
     println!("Object map created");
 
     for (key, obj_id) in key_pairs.iter() {
-        obj_map.put_object(key, obj_id).unwrap();
+        let old_value = obj_map.put_object(key, obj_id).unwrap();
+        assert!(old_value.is_none(), "Object already exists for key: {}", key);
+
+        // Reinsert 
+        let old_value = obj_map.put_object(key, obj_id).unwrap();
+        assert!(old_value.is_some(), "Object should exist after reinsert for key: {}", key);
+        assert_eq!(old_value.unwrap(), *obj_id, "Object ID mismatch for key: {}", key);
+
+        // Remove
+        let ret = obj_map.remove_object(key).unwrap();
+        assert!(ret.is_some(), "Object should be removed for key: {}", key);
+
+        // get object after remove
+        let ret = obj_map.get_object(key).unwrap();
+        assert!(ret.is_none(), "Object should not be found after remove for key: {}", key);
+
+        // Reinsert key
+        let old_value = obj_map.put_object(key, obj_id).unwrap();
+        assert!(old_value.is_none(), "Object should not exist after remove for key: {}", key);
+        
+        // Insert sub-key
+        let sub_key = key.split('/').filter_map(|s| {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }).next();
+
+        if let Some(sub_key) = sub_key {
+            assert!(!sub_key.is_empty(), "Sub-key should not be empty");
+
+            let sub_obj_id = ObjId::new_by_raw(OBJ_TYPE_FILE.to_owned(), obj_id.obj_hash.clone());
+            let old_value = obj_map.put_object(sub_key, &sub_obj_id).unwrap();
+            assert!(old_value.is_none(), "Sub-object already exists for key: {}", sub_key);
+
+            // Reinsert sub-key
+            let old_value = obj_map.put_object(sub_key, &sub_obj_id).unwrap();
+            assert!(old_value.is_some(), "Sub-object should exist after reinsert for key: {}", sub_key);
+            assert_eq!(old_value.unwrap(), sub_obj_id, "Sub-object ID mismatch for key: {}", sub_key);
+
+            // Remove sub-key
+            let ret = obj_map.remove_object(sub_key).unwrap();
+            assert!(ret.is_some(), "Sub-object should be removed for key: {}", sub_key);
+            assert_eq!(ret.unwrap(), sub_obj_id, "Sub-object ID mismatch for key: {}", sub_key);
+        }
     }
 
     let (id, obj_content) = obj_map.calc_obj_id();

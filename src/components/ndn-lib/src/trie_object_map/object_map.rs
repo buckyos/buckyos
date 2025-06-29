@@ -162,7 +162,7 @@ impl TrieObjectMap {
         self.hash_method
     }
 
-    pub fn put_object(&mut self, key: &str, obj_id: &ObjId) -> NdnResult<()> {
+    pub fn put_object(&mut self, key: &str, obj_id: &ObjId) -> NdnResult<Option<ObjId>> {
         self.db.put(key, &obj_id)
     }
 

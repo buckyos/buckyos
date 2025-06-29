@@ -11,6 +11,7 @@ use ouroboros::self_referencing;
 use serde::de::value;
 use std::borrow::Borrow;
 use std::path::Path;
+use std::str::Bytes;
 use std::sync::Arc;
 use trie_db::proof::generate_proof;
 use trie_db::{NodeCodec, Trie, TrieDB, TrieLayout, TrieMut, Value};
@@ -105,9 +106,8 @@ impl<H: Hasher + 'static> TrieObjectMapInnerStorageWrapper<H> {
     where
         <H as hash_db::Hasher>::Out: AsRef<[u8]>,
     {
-        let root = root.unwrap_or_else(||
-            <GenericLayout<H> as TrieLayout>::Codec::hashed_null_node()
-        );
+        let root =
+            root.unwrap_or_else(|| <GenericLayout<H> as TrieLayout>::Codec::hashed_null_node());
         Self {
             storage_type,
             db,
@@ -141,7 +141,9 @@ where
         self.read_only
     }
 
-    fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
+    fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<Option<ObjId>> {
+        use trie_db::{Bytes, Value};
+
         // Check if the storage is read-only
         self.check_read_only()?;
 
@@ -154,16 +156,59 @@ where
         let mut trie =
             GenericTrieDBMutBuilder::from_existing(self.db.as_hash_db_mut(), &mut self.root)
                 .build();
-        trie.insert(key.as_bytes(), &value).map_err(|e| {
+        let ret = trie.insert(key.as_bytes(), &value).map_err(|e| {
             let msg = format!("Failed to insert key-value pair: {:?}", e);
             error!("{}", msg);
             NdnError::DbError(msg)
         })?;
 
+        let ret = match ret {
+            None => None,
+            Some(Value::Inline(bytes)) => Some(bytes),
+            Some(Value::NewNode(_, bytes)) => Some(bytes),
+            Some(Value::Node(hash)) => {
+                drop(trie); // Drop the mutable trie to avoid borrow issues
+
+                let value = self.db.get(&hash, (&[], None));
+                if value.is_none() {
+                    let msg = format!(
+                        "Value for key {:?} is None after insert, but should not be exist",
+                        key
+                    );
+                    error!("{}", msg);
+                    return Err(NdnError::InvalidData(msg));
+                }
+
+                let value = value.unwrap();
+                Some(Bytes::from(value))
+            }
+        };
+
+        match ret {
+            None => {
+                info!("Inserted key: {}, value: {:?}", key, value);
+                Ok(None)
+            }
+            Some(old_value) => {
+                let old_value: ObjId = bincode::deserialize(&*old_value).map_err(|e| {
+                    let msg = format!(
+                        "Failed to deserialize obj_id value: {:?}, {:?}",
+                        old_value, e
+                    );
+                    error!("{}", msg);
+                    NdnError::InvalidData(msg)
+                })?;
+
+                info!(
+                    "Updated key: {}, old value: {:?}, new value: {:?}",
+                    key, old_value, value
+                );
+                Ok(Some(old_value))
+            }
+        }
+
         // The trie will auto commit when it goes out of scope, but we can also call commit explicitly if needed.
         // trie.commit();
-
-        Ok(())
     }
 
     fn get(&self, key: &str) -> NdnResult<Option<ObjId>> {
@@ -347,8 +392,12 @@ where
         let root = self.root.clone();
 
         // Create a new storage wrapper with the cloned database
-        let new_storage =
-            TrieObjectMapInnerStorageWrapper::<H>::new(self.storage_type, cloned_db, Some(root), read_only);
+        let new_storage = TrieObjectMapInnerStorageWrapper::<H>::new(
+            self.storage_type,
+            cloned_db,
+            Some(root),
+            read_only,
+        );
 
         Ok(Box::new(new_storage))
     }
