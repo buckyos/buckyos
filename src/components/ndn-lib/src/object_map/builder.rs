@@ -125,19 +125,41 @@ impl ObjectMapBuilder {
 
         let obj_id = body.calc_obj_id().0;
 
-        // Save the object map to storage
-        GLOBAL_OBJECT_MAP_STORAGE_FACTORY
-            .get()
-            .unwrap()
-            .save(&obj_id, &mut *self.storage)
-            .await
-            .map_err(|e| {
-                let msg = format!("Error saving object map: {}", e);
-                error!("{}", msg);
-                e
-            })?;
+        // Check if the collection storage mode is matched
+        let storage_mode = CollectionStorageMode::select_mode(Some(total_count));
+        let storage_type = ObjectMapStorageType::select_storage_type(Some(storage_mode));
+        let storage = if self.storage.get_type() != storage_type {
+            GLOBAL_OBJECT_MAP_STORAGE_FACTORY
+                .get()
+                .unwrap()
+                .switch_storage(&obj_id, self.storage, storage_type)
+                .await?
+        } else {
+            // If the storage type is matched, we can continue to use the current storage
+            // Save the object map to storage
+            GLOBAL_OBJECT_MAP_STORAGE_FACTORY
+                .get()
+                .unwrap()
+                .save(&obj_id, &mut *self.storage)
+                .await
+                .map_err(|e| {
+                    let msg = format!("Error saving object map: {}", e);
+                    error!("{}", msg);
+                    e
+                })?;
 
-        let object_map = ObjectMap::new(obj_id, body, self.storage, mtree);
+            self.storage
+        };
+
+        assert_eq!(
+            storage.get_type(),
+            storage_type,
+            "Storage type mismatch after switching: {:?} != {:?}",
+            storage.get_type(),
+            storage_type
+        );
+
+        let object_map = ObjectMap::new(obj_id, body, storage, mtree);
         Ok(object_map)
     }
 }

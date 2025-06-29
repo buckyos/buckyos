@@ -49,18 +49,15 @@ impl ObjectMapSqliteStorageChunkIterator {
                 "SELECT key, value, mtree_index FROM object_map WHERE key > ?1 ORDER BY key LIMIT ?2"
             )
         } else {
-            "SELECT key, value, mtree_index FROM object_map ORDER BY key LIMIT ?1 OFFSET ?2".to_string()
+            "SELECT key, value, mtree_index FROM object_map ORDER BY key LIMIT ?1 OFFSET ?2"
+                .to_string()
         };
 
-        let mut stmt = conn
-            .prepare(
-                &query,
-            )
-            .map_err(|e| {
-                let msg = format!("Failed to prepare next statement: {}", e);
-                error!("{}", msg);
-                NdnError::DbError(msg)
-            })?;
+        let mut stmt = conn.prepare(&query).map_err(|e| {
+            let msg = format!("Failed to prepare next statement: {}", e);
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
 
         let params = if self.last_key.is_some() {
             params![self.last_key.as_ref(), self.chunk_size as u64]
@@ -256,6 +253,37 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
             params![key, value.to_base32()],
         )
         .map_err(|e| {
+            let msg = format!("Failed to insert into object_map: {}, {}", key, e);
+            error!("{}", msg);
+            NdnError::DbError(msg)
+        })?;
+
+        Ok(())
+    }
+
+    async fn put_with_index(
+        &mut self,
+        key: &str,
+        value: &ObjId,
+        index: Option<u64>,
+    ) -> NdnResult<()> {
+        self.check_read_only()?;
+
+        let mut lock = self.conn.lock().unwrap();
+        let mut conn = lock.as_mut().unwrap();
+
+        let ret = match index {
+            Some(i) => conn.execute(
+                "INSERT OR REPLACE INTO object_map (key, value, mtree_index) VALUES (?1, ?2, ?3)",
+                params![key, value.to_base32(), i],
+            ),
+            None => conn.execute(
+                "INSERT OR REPLACE INTO object_map (key, value, mtree_index) VALUES (?1, ?2, NULL)",
+                params![key, value.to_base32()],
+            ),
+        };
+
+        ret.map_err(|e| {
             let msg = format!("Failed to insert into object_map: {}, {}", key, e);
             error!("{}", msg);
             NdnError::DbError(msg)

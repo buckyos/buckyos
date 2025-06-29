@@ -61,6 +61,26 @@ impl ObjectMapInnerStorage for MemoryStorage {
         Ok(())
     }
 
+    async fn put_with_index(
+        &mut self,
+        key: &str,
+        value: &ObjId,
+        index: Option<u64>,
+    ) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
+        self.storage.insert(
+            key.to_string(),
+            MemoryStorageItem {
+                value: value.clone(),
+                mtree_index: index,
+            },
+        );
+
+        Ok(())
+    }
+
     async fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>> {
         if let Some(item) = self.storage.get(key) {
             Ok(Some((item.value.clone(), item.mtree_index)))

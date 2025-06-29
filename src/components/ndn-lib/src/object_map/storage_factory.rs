@@ -166,7 +166,11 @@ impl ObjectMapStorageFactory {
                         })?;
 
                     file = clone_file_path;
-                    info!("Cloned file to {} for modify {}", file.display(), obj_id.unwrap().to_base32());
+                    info!(
+                        "Cloned file to {} for modify {}",
+                        file.display(),
+                        obj_id.unwrap().to_base32()
+                    );
                 }
             }
         }
@@ -210,6 +214,61 @@ impl ObjectMapStorageFactory {
 
         let file = self.get_file_path(&file_name, storage.get_type());
         storage.clone(&file, read_only).await
+    }
+
+    pub async fn switch_storage(
+        &self,
+        obj_id: &ObjId,
+        storage: Box<dyn ObjectMapInnerStorage>,
+        new_storage_type: ObjectMapStorageType,
+    ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
+        let old_storage_type = storage.get_type();
+        assert_ne!(
+            old_storage_type, new_storage_type,
+            "Cannot switch to the same storage type"
+        );
+
+        let mut new_storage = self
+            .open(
+                Some(obj_id),
+                false,
+                Some(new_storage_type),
+                ObjectMapStorageOpenMode::CreateNew,
+            )
+            .await?;
+
+        for item in storage.iter() {
+            new_storage.put_with_index(&item.0, &item.1, item.2).await?;
+        }
+
+        // Save the new storage to the file
+        self.save(obj_id, &mut *new_storage).await?;
+
+        drop(storage);
+
+        // Remove the old storage file if it exists
+        let old_file = self.get_file_path_by_id(Some(obj_id), old_storage_type);
+        if old_file.exists() {
+            let ret = std::fs::remove_file(&old_file);
+            if let Err(e) = ret {
+                let msg = format!(
+                    "Error removing old storage file {}: {}",
+                    old_file.display(),
+                    e
+                );
+                warn!("{}", msg);
+                // FIXME: Should we return an error here? or we can remove the file later in GC?
+            }
+        }
+
+        info!(
+            "Switched object map storage for {} from {:?} to {:?}",
+            obj_id.to_base32(),
+            old_storage_type,
+            new_storage_type,
+        );
+
+        Ok(new_storage)
     }
 
     fn get_temp_file_name(&self, storage_type: ObjectMapStorageType) -> String {

@@ -51,6 +51,7 @@ pub trait ObjectMapInnerStorage: Send + Sync {
 
     // Use to store object data
     async fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()>;
+    async fn put_with_index(&mut self, key: &str, value: &ObjId, index: Option<u64>) -> NdnResult<()>;
     async fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>>;
     async fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>>;
     async fn is_exist(&self, key: &str) -> NdnResult<bool>;

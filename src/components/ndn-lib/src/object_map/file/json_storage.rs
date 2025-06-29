@@ -283,6 +283,30 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         Ok(())
     }
 
+    async fn put_with_index(&mut self, key: &str, value: &ObjId, index: Option<u64>) -> NdnResult<()> {
+        // Check if the storage is read-only
+        self.check_read_only()?;
+
+        // Modify the JSON node
+        if self.data.is_none() {
+            self.data = Some(JSONStorageData::new());
+        }
+
+        let data = self.data.as_mut().unwrap();
+        data.content.insert(
+            key.to_string(),
+            JSONStorageItem {
+                value: value.clone(),
+                mtree_index: index,
+            },
+        );
+
+        // Mark the storage as dirty
+        self.is_dirty = true;
+
+        Ok(())
+    }
+    
     async fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>> {
         if let Some(data) = &self.data {
             if let Some(item) = data.content.get(key) {
