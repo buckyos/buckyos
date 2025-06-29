@@ -1,6 +1,6 @@
 use crate::{HashMethod, NdnError, NdnResult, OBJ_TYPE_TRIE};
 use crate::{
-    OBJ_TYPE_DIR, OBJ_TYPE_FILE, OBJ_TYPE_LIST, OBJ_TYPE_MTREE, OBJ_TYPE_OBJMAP, OBJ_TYPE_PACK,
+    OBJ_TYPE_DIR, OBJ_TYPE_FILE, OBJ_TYPE_LIST, OBJ_TYPE_OBJMAP, OBJ_TYPE_PACK,
 };
 use jsonwebtoken::{encode, EncodingKey};
 use name_lib::EncodedDocument;
@@ -85,7 +85,6 @@ impl ObjId {
         }
 
         match self.obj_type.as_str() {
-            OBJ_TYPE_MTREE => false,
             OBJ_TYPE_OBJMAP => false,
             OBJ_TYPE_TRIE => false,
             OBJ_TYPE_PACK => false,
@@ -96,7 +95,6 @@ impl ObjId {
 
     pub fn is_big_container(&self) -> bool {
         match self.obj_type.as_str() {
-            OBJ_TYPE_MTREE => true,
             OBJ_TYPE_OBJMAP => true,
             _ => false,
         }

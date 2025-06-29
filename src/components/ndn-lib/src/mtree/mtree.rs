@@ -5,7 +5,7 @@ use super::meta::*;
 use super::stream::*;
 use crate::hash::{HashHelper, HashMethod};
 use crate::NdnError;
-use crate::{NdnResult, ObjId, OBJ_TYPE_MTREE};
+use crate::{NdnResult, ObjId};
 use core::{error, hash};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -103,10 +103,6 @@ impl MerkleTreeObject {
 
     pub fn get_data_size(&self) -> u64 {
         self.meta.data_size
-    }
-
-    pub fn get_obj_id(&self) -> ObjId {
-        return ObjId::new_by_raw(OBJ_TYPE_MTREE.to_string(), self.root_hash.clone());
     }
 }
 
