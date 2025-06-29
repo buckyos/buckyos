@@ -118,12 +118,16 @@ impl ObjectMapStorageFactory {
         match mode {
             ObjectMapStorageOpenMode::CreateNew => {
                 if file.exists() {
-                    let msg = format!(
-                        "File {} already exists, cannot create new storage",
+                    warn!(
+                        "File {} already exists, removing it before creating new storage",
                         file.display()
                     );
-                    error!("{}", msg);
-                    return Err(NdnError::AlreadyExists(msg));
+
+                    tokio::fs::remove_file(&file).await.map_err(|e| {
+                        let msg = format!("Error removing existing file {}: {}", file.display(), e);
+                        error!("{}", msg);
+                        NdnError::IoError(msg)
+                    })?;
                 }
             }
             ObjectMapStorageOpenMode::OpenExisting => {
