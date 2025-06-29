@@ -50,9 +50,6 @@ pub enum BuckyOSRuntimeType {
     KernelService,//R0 运行在Node上
 }
 
-
-
-
 #[derive(Clone)]
 pub struct BuckyOSRuntime {
     pub app_owner_id:Option<String>,
@@ -63,13 +60,14 @@ pub struct BuckyOSRuntime {
     pub user_config:Option<OwnerConfig>,
     pub user_private_key:Option<EncodingKey>,
 
-    pub deivce_config:Option<DeviceConfig>, 
+    pub device_config:Option<DeviceConfig>, 
     pub device_private_key:Option<EncodingKey>,
     pub device_info:Option<DeviceInfo>,
 
     pub zone_id:DID,
     pub zone_boot_config:Option<ZoneBootConfig>,
 
+    //pub is_token_iss_by_self:bool,
     pub zone_config:Option<ZoneConfig>,
     pub session_token:Arc<RwLock<String>>,
     trust_keys:Arc<RwLock<HashMap<String,DecodingKey>>>,
@@ -132,14 +130,14 @@ pub fn get_session_token_env_key(app_full_id: &str,is_app_service:bool) -> Strin
     }
 }
 
-pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,runtime_type:BuckyOSRuntimeType) -> Result<BuckyOSRuntime> {
+pub async fn init_buckyos_api_runtime(app_id:&str,app_owner_id:Option<String>,runtime_type:BuckyOSRuntimeType) -> Result<BuckyOSRuntime> {
     if CURRENT_BUCKYOS_RUNTIME.get().is_some() {
         return Err(RPCErrors::ReasonError("BuckyOSRuntime already initialized".to_string()));
     }
 
     match runtime_type {
         BuckyOSRuntimeType::AppService => {
-            if owner_user_id.is_none() {
+            if app_owner_id.is_none() {
                 return Err(RPCErrors::ReasonError("owner_user_id is required for AppClient or AppService".to_string()));
             }
         }
@@ -148,7 +146,7 @@ pub async fn init_buckyos_api_runtime(app_id:&str,owner_user_id:Option<String>,r
         }
     }
 
-    let mut runtime = BuckyOSRuntime::new(app_id,owner_user_id,runtime_type);
+    let mut runtime = BuckyOSRuntime::new(app_id,app_owner_id,runtime_type);
     runtime.fill_by_load_config().await?;
     runtime.fill_by_env_var().await?;
     //CURRENT_BUCKYOS_RUNTIME.set(runtime);
@@ -167,7 +165,7 @@ impl BuckyOSRuntime {
             session_token: Arc::new(RwLock::new("".to_string())),
             buckyos_root_dir: get_buckyos_root_dir(),
             zone_config: None,
-            deivce_config: None,
+            device_config: None,
             device_private_key: None,
             device_info: None,
             user_private_key: None,
@@ -236,7 +234,7 @@ impl BuckyOSRuntime {
                     return Err(RPCErrors::ReasonError("device_doc format error".to_string()));
                 }
                 let device_config:DeviceConfig = device_config.unwrap();
-                self.deivce_config = Some(device_config.clone());
+                self.device_config = Some(device_config.clone());
                 let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
                 if set_result.is_err() {
                     warn!("Failed to set CURRENT_DEVICE_CONFIG by env var");
@@ -263,6 +261,55 @@ impl BuckyOSRuntime {
             info!("load session_token from env var failed");
         }
 
+        Ok(())
+    }
+
+    pub async fn fill_policy_by_load_config(&mut self) -> Result<()> {
+        let mut config_root_dir = None;
+        if self.runtime_type == BuckyOSRuntimeType::AppClient {
+            let bucky_dev_user_home_dir = get_buckyos_dev_user_home();
+            if bucky_dev_user_home_dir.exists() {
+                info!("dev folder exists: {}",bucky_dev_user_home_dir.to_string_lossy());
+                config_root_dir = Some(bucky_dev_user_home_dir);
+            } else {
+                info!("dev folder {} not exists,try to use $BUCKYOS_ROOT/etc folder",bucky_dev_user_home_dir.to_string_lossy());
+            }
+        } 
+
+        if config_root_dir.is_none() {
+            let etc_dir = get_buckyos_system_etc_dir();
+            config_root_dir = Some(etc_dir);
+        }
+    
+        if config_root_dir.is_none() {
+            return Err(RPCErrors::ReasonError("config_root_dir is not set".to_string()));
+        }
+        let config_root_dir = config_root_dir.unwrap();
+        if !config_root_dir.exists() {
+            error!("config_root_dir not exists: {}, init buckyos runtime config would failed!",
+                config_root_dir.to_string_lossy());
+            return Err(RPCErrors::ReasonError("config_root_dir not exists".to_string()));
+        }
+        info!("will use config_root_dir: {} to load buckyos runtime config", 
+            config_root_dir.to_string_lossy());
+    
+        let machine_config_file = config_root_dir.join("machine.json");
+
+        let mut machine_config = BuckyOSMachineConfig::default();
+        if machine_config_file.exists() {
+            let machine_config_file = File::open(machine_config_file);
+            if machine_config_file.is_ok() {
+                let machine_config_json = serde_json::from_reader(machine_config_file.unwrap());
+                if machine_config_json.is_ok() {
+                    machine_config = machine_config_json.unwrap();
+                } else {
+                    error!("Failed to parse machine_config: {}", machine_config_json.err().unwrap());
+                    return Err(RPCErrors::ReasonError(format!("Failed to parse machine_config ")));
+                }
+            } 
+        }
+        self.web3_bridges = machine_config.web3_bridge;
+        self.force_https = machine_config.force_https;
 
         Ok(())
     }
@@ -284,7 +331,6 @@ impl BuckyOSRuntime {
             config_root_dir = Some(etc_dir);
         }
         
-
         // //使用当前当前执行文件的目录作为配置根目录主要是为了兼容cyfs-gateway,可以不支持？
         // let exe_path = std::env::current_exe()
         // .map_err(|e| {
@@ -313,7 +359,6 @@ impl BuckyOSRuntime {
     
         let node_identity_file = config_root_dir.join("node_identity.json");
         let device_private_key_file = config_root_dir.join("node_private_key.pem");
-        let machine_config_file = config_root_dir.join("machine.json");
 
         let node_identity_config =  NodeIdentityConfig::load_node_identity_config(&node_identity_file)
             .map_err(|e| {
@@ -335,7 +380,7 @@ impl BuckyOSRuntime {
                 return Err(RPCErrors::ReasonError(format!("Failed to parse device config from jwt: {}", node_identity_config.device_doc_jwt.as_str())));
             }
             let device_config = devcie_config.unwrap();
-            self.deivce_config = Some(device_config.clone());
+            self.device_config = Some(device_config.clone());
             self.user_id = Some(device_config.name.clone());
             let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
             if set_result.is_err() {
@@ -377,21 +422,7 @@ impl BuckyOSRuntime {
         let zone_did = node_identity_config.zone_did.clone();
         self.zone_id = zone_did.clone();
 
-        let mut machine_config = BuckyOSMachineConfig::default();
-        if machine_config_file.exists() {
-            let machine_config_file = File::open(machine_config_file);
-            if machine_config_file.is_ok() {
-                let machine_config_json = serde_json::from_reader(machine_config_file.unwrap());
-                if machine_config_json.is_ok() {
-                    machine_config = machine_config_json.unwrap();
-                } else {
-                    error!("Failed to parse machine_config: {}", machine_config_json.err().unwrap());
-                    return Err(RPCErrors::ReasonError(format!("Failed to parse machine_config ")));
-                }
-            } 
-        }
-        self.web3_bridges = machine_config.web3_bridge;
-        self.force_https = machine_config.force_https;
+
         Ok(())
     }
 
@@ -456,11 +487,10 @@ impl BuckyOSRuntime {
         }
 
         if self.runtime_type == BuckyOSRuntimeType::FrameService || self.runtime_type == BuckyOSRuntimeType::KernelService {
-            if self.deivce_config.is_none() {
+            if self.device_config.is_none() {
                 return Err(RPCErrors::ReasonError("Device config is not set!".to_string()));
             }
         }
-
         init_name_lib(&self.web3_bridges).await;
         {
             let mut session_token = self.session_token.write().await;
@@ -476,12 +506,12 @@ impl BuckyOSRuntime {
                             self.user_private_key.as_ref().unwrap()
                         )?;
                         *session_token = session_token_str;
-                    } else if self.device_private_key.is_some() && self.deivce_config.is_some() {
+                    } else if self.device_private_key.is_some() && self.device_config.is_some() {
                         info!("buckyos-api-runtime: session token is empty,runtime_type:{:?},try to create session token by device_private_key",self.runtime_type);
                         let (session_token_str,real_session_token) = RPCSessionToken::generate_jwt_token(
                             self.user_id.as_ref().unwrap(),
                             self.app_id.as_str(),
-                            Some(self.deivce_config.as_ref().unwrap().name.clone()),
+                            Some(self.device_config.as_ref().unwrap().name.clone()),
                             self.device_private_key.as_ref().unwrap()
                         )?;
                         *session_token = session_token_str;
@@ -586,8 +616,8 @@ impl BuckyOSRuntime {
     }
 
     async fn refresh_trust_keys(&self) -> Result<()> {
-        if self.deivce_config.is_some() {
-            let device_config = self.deivce_config.as_ref().unwrap();
+        if self.device_config.is_some() {
+            let device_config = self.device_config.as_ref().unwrap();
             let device_key = device_config.get_auth_key(None);
             if device_key.is_some() {
                 let kid = device_config.get_id().to_string();
@@ -920,6 +950,14 @@ impl BuckyOSRuntime {
             schema = "https";
         }
         format!("{}://{}/ndn/",schema,self.zone_id.to_host_name())
+    }
+
+    pub async fn get_zone_boot_info(&self) -> Result<ZoneBootInfo> {
+        unimplemented!()
+    }
+
+    pub async fn get_system_config_url_list(&self,boot_info: &ZoneBootInfo) -> Result<Vec<String>> {
+        unimplemented!()
     }
 
     //if http_only is false, return the url with tunnel protocol

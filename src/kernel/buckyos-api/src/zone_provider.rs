@@ -207,8 +207,8 @@ impl ZoneProvider {
             init_hash_map.insert(zone_config.id.to_string(),zone_config_str);
         }
 
-        if runtime.deivce_config.is_some() {
-            let device_config = runtime.deivce_config.as_ref().unwrap();
+        if runtime.device_config.is_some() {
+            let device_config = runtime.device_config.as_ref().unwrap();
             let device_config_str = serde_json::to_string_pretty(&device_config).unwrap();
             init_hash_map.insert(device_config.id.to_string(),device_config_str);
         }

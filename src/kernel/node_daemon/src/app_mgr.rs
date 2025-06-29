@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use tokio::sync::RwLock;
 use buckyos_kit::*;
+use buckyos_api::*;
 use package_lib::*;
 use crate::run_item::*;
 use crate::service_pkg::*;
@@ -27,24 +28,20 @@ pub struct AppRunItem {
     pub app_id: String,
     pub app_service_config: AppServiceInstanceConfig,
     pub app_loader: ServicePkg,
-    device_doc: DeviceConfig,
-    device_private_key: EncodingKey,
+
 }
 
 impl AppRunItem {
     pub fn new(
         app_id: &String,
         app_service_config: AppServiceInstanceConfig,
-        app_loader: ServicePkg,
-        device_doc: &DeviceConfig,
-        device_private_key: &EncodingKey,
+        app_loader: ServicePkg
     ) -> Self {
         AppRunItem {
             app_id: app_id.clone(),
             app_service_config: app_service_config,
             app_loader: app_loader,
-            device_doc: device_doc.clone(),
-            device_private_key: device_private_key.clone(),
+
         }
     }
 
@@ -94,19 +91,22 @@ impl AppRunItem {
         std::env::set_var("app_instance_config",app_config_str);
         
         let timestamp = buckyos_get_unix_timestamp();
+        let runtime = get_buckyos_api_runtime().unwrap();
+        let device_doc = runtime.device_config.as_ref().unwrap();
+        let device_private_key = runtime.device_private_key.as_ref().unwrap();
         let app_service_session_token = kRPC::RPCSessionToken {
             token_type: kRPC::RPCSessionTokenType::JWT,
             nonce: None,
             session: None,
             userid: Some(self.app_service_config.user_id.clone()),
             appid: Some(self.app_id.clone()),
-            exp: Some(timestamp + 3600 * 24 * 7),
-            iss: Some(self.device_doc.name.clone()),
+            exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME*2),
+            iss: Some(device_doc.name.clone()),
             token: None,
         };
 
         let app_service_session_token_jwt = app_service_session_token
-            .generate_jwt(Some(self.device_doc.name.clone()), &self.device_private_key)
+            .generate_jwt(Some(device_doc.name.clone()), device_private_key)
             .map_err(|err| {
                 error!("generate session token for {} failed! {}", self.app_id, err);
                 return ControlRuntItemErrors::ExecuteError(
@@ -173,7 +173,7 @@ impl RunItemControl for AppRunItem {
         }
     }
 
-    async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
+    async fn start(&self, params: Option<&Vec<String>>) -> Result<()> {
         //TODO
         if self.app_service_config.app_pkg_id.is_some() {
             self.set_env_var(true).await?;

@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use time::macros::format_description;
+use tokio::sync::RwLock;
 use std::{collections::HashMap, fs::File};
 use std::path::{Path, PathBuf};
 use lazy_static::lazy_static;
@@ -338,16 +339,6 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
     Ok(true)
 }
 
-
-async fn update_device_info_from_doc(device_doc: &DeviceConfig,syste_config_client: &SystemConfigClient) {
-    let mut device_info = DeviceInfo::from_device_doc(device_doc);
-    let fill_result = device_info.auto_fill_by_system_info().await;
-    if fill_result.is_err() {
-        error!("auto fill device info failed! {}", fill_result.err().unwrap());
-        return;
-    }
-    update_device_info(&device_info,syste_config_client).await;
-}
 async fn update_device_info(device_info: &DeviceInfo,syste_config_client: &SystemConfigClient) {
     let device_key = format!("devices/{}/info", device_info.name.as_str());
     let device_info_str = serde_json::to_string(&device_info).unwrap();
@@ -532,7 +523,7 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
 async fn node_main(node_host_name: &str,
                    is_ood: bool,
                    buckyos_api_client: &SystemConfigClient,
-                   device_doc:&DeviceConfig,device_private_key: &EncodingKey) -> Result<bool> {
+                   device_doc:&DeviceConfig) -> Result<bool> {
 
     //check and upgrade some system pkgs not in app_stream or kernel_stream
     let bin_env = PackageEnv::new(get_buckyos_system_bin_dir());
@@ -578,18 +569,14 @@ async fn node_main(node_host_name: &str,
     let kernel_stream = stream::iter(node_config.kernel);
     let kernel_task = kernel_stream.for_each_concurrent(4, |(kernel_service_name, kernel_cfg)| async move {
         let kernel_run_item = KernelServiceRunItem::new(
-            kernel_service_name.as_str(),
-            &kernel_cfg,
-            &device_doc,
-            &device_private_key
-        );
+            kernel_service_name.as_str(),&kernel_cfg);
 
         let target_state = RunItemTargetState::from_str(&kernel_cfg.target_state.as_str()).unwrap();
         
-        let _ = control_run_item_to_target_state(&kernel_run_item, target_state, device_private_key)
+        let _ = ensure_run_item_state(&kernel_run_item, target_state)
             .await
             .map_err(|_err| {
-                error!("control kernel service item {} to target state failed!",kernel_service_name.clone());
+                error!("ensure {} to target state failed!",kernel_service_name.clone());
                 return NodeDaemonErrors::SystemConfigError(kernel_service_name.clone());
             });
     });
@@ -613,14 +600,13 @@ async fn node_main(node_host_name: &str,
     let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
         let app_loader = ServicePkg::new("app_loader".to_string(),get_buckyos_system_bin_dir());
   
-        let app_run_item = AppRunItem::new(&app_cfg.app_id,app_cfg.clone(),
-            app_loader,device_doc,device_private_key);
+        let app_run_item = AppRunItem::new(&app_cfg.app_id,app_cfg.clone(),app_loader);
 
         let target_state = RunItemTargetState::from_str(&app_cfg.target_state).unwrap();
-        let _ = control_run_item_to_target_state(&app_run_item, target_state, device_private_key)
+        let _ = ensure_run_item_state(&app_run_item, target_state)
             .await
             .map_err(|_err| {
-                error!("control app service item {} to target state failed!",app_cfg.app_id.clone());
+                error!("ensure app {} to target state failed!",app_cfg.app_id.clone());
                 return NodeDaemonErrors::SystemConfigError(app_cfg.app_id.clone());
             });
     });
@@ -642,9 +628,6 @@ async fn get_system_config_client(is_ood:bool,session_token:String)->std::result
 async fn node_daemon_main_loop(
     node_id:&str,
     node_host_name:&str,
-    device_doc:&DeviceConfig,
-    device_private_key: &EncodingKey,
-    zone_config: &ZoneConfig,
     is_ood: bool
 ) -> Result<()> {
     let mut loop_step = 0;
@@ -653,30 +636,25 @@ async fn node_daemon_main_loop(
     let mut node_gateway_config = None;
 
     loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         loop_step += 1;
         info!("node daemon main loop step:{}", loop_step);
-        let device_session_token_jwt = generate_device_session_token(device_doc, device_private_key).await.map_err(|err| {
-            error!("generate device session token failed! {}", err);
-            return NodeDaemonErrors::SystemConfigError("generate device session token failed!".to_string());
-        });
-        if device_session_token_jwt.is_err() {
-            error!("generate device session token failed! {}", device_session_token_jwt.err().unwrap());
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            continue;
-        }
-        let device_session_token_jwt = device_session_token_jwt.unwrap();
 
-        let system_config_client = get_system_config_client(is_ood,device_session_token_jwt.clone()).await.map_err(|err| {
-            error!("get system_config_client failed! {}", err);
-            return NodeDaemonErrors::SystemConfigError("get system_config_client failed!".to_string());
-        });
+        let buckyos_runtime = get_buckyos_api_runtime();
+        if buckyos_runtime.is_err() {
+            error!("buckyos_runtime is none, will restart node_daemon...");
+            return Err(NodeDaemonErrors::SystemConfigError("buckyos_runtime is none, will restart node_daemon!".to_string()));
+        }
+        let buckyos_runtime = buckyos_runtime.unwrap();
+        let system_config_client = buckyos_runtime.get_system_config_client().await;
         if system_config_client.is_err() {
             error!("get system_config_client failed! {}", system_config_client.err().unwrap());
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             continue;
         }
         let system_config_client = system_config_client.unwrap();
-
+        let device_doc = buckyos_runtime.device_config.as_ref().unwrap();
+        let zone_config = buckyos_runtime.zone_config.as_ref().unwrap();
+        let device_private_key = buckyos_runtime.device_private_key.as_ref().unwrap();
         let now = buckyos_get_unix_timestamp();
         if now - last_register_time > 30 {
             let mut device_info = DeviceInfo::from_device_doc(device_doc);
@@ -690,9 +668,11 @@ async fn node_daemon_main_loop(
             std::env::set_var("BUCKYOS_THIS_DEVICE_INFO", device_info_str);
             update_device_info(&device_info, &system_config_client).await;
             //TODO：SN的上报频率不用那么快
-            report_ood_info_to_sn(&device_info, device_session_token_jwt.as_str(),&zone_config).await;
+            let device_session_token_jwt = buckyos_runtime.get_session_token().await;
+            report_ood_info_to_sn(&device_info, device_session_token_jwt.as_str(),zone_config).await;
             last_register_time = now;
         }
+
 
         if(is_ood) {
             keep_system_config_service(node_id,device_doc, device_private_key,false).await.map_err(|err| {
@@ -701,7 +681,7 @@ async fn node_daemon_main_loop(
             })?;
         }
 
-        let main_result = node_main(node_host_name,is_ood, &system_config_client, device_doc, device_private_key).await;
+        let main_result = node_main(node_host_name,is_ood, &system_config_client, device_doc).await;
         
         if main_result.is_err() {
             error!("node_main failed! {}", main_result.err().unwrap());
@@ -734,7 +714,8 @@ async fn node_daemon_main_loop(
                     std::fs::write(gateway_config_path, serde_json::to_string(&node_gateway_config).unwrap()).unwrap();
                 }
             
-                keep_cyfs_gateway_service(node_id,&device_doc, &device_private_key,zone_config.sn.clone(),
+                let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();
+                keep_cyfs_gateway_service(node_id,device_doc, device_private_key, sn,
                 need_restart).await.map_err(|err| {
                     error!("keep cyfs_gateway service failed! {}", err);
                 });
@@ -742,7 +723,6 @@ async fn node_daemon_main_loop(
             } else {
                 error!("load node gateway_cconfig from system_config failed!");
             }
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
     }
     Ok(())
@@ -759,7 +739,7 @@ async fn generate_device_session_token(device_doc: &DeviceConfig, device_private
         nonce : None,
         session : None,
         userid : Some(device_doc.name.clone()),
-        appid:Some("kernel".to_string()),
+        appid:Some("node-daemon".to_string()),
         exp:Some(timestamp + 60*15),
         iss:Some(device_doc.name.clone()),
         token:None,
@@ -870,6 +850,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     //verify node_name is this device's hostname
     let is_ood = zone_boot_config.oods.contains(&device_doc.name);
+    let device_name = device_doc.name.clone();
     //CURRENT_ZONE_CONFIG.set(zone_config).unwrap();
     if is_ood {
         info!("Booting OOD {} ...",device_doc.name.as_str());
@@ -908,8 +889,16 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         wait_sysmte_config_sync().await?;
         info!("system_config_service sync OK!,will connect to local system_config_service...");
 
+        //This is ood, so we MUST connect to localhost's system_config_service
         syc_cfg_client = SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()));
-        update_device_info_from_doc(&device_doc, &syc_cfg_client).await;
+        let mut device_info = DeviceInfo::from_device_doc(&device_doc);
+        let fill_result = device_info.auto_fill_by_system_info().await;
+        if fill_result.is_err() {
+            error!("auto fill device info failed! {}", fill_result.err().unwrap());
+            return Err(String::from("auto fill device info failed!"));
+        }
+        update_device_info(&device_info,&syc_cfg_client).await;
+
         while boot_config_result_str.is_empty() {
             let boot_config_result = syc_cfg_client.get("boot/config").await;
             match boot_config_result {
@@ -942,38 +931,56 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                 }
             }
         }
+
+        let zone_config:ZoneConfig = serde_json::from_str(boot_config_result_str.as_str()).map_err(|err| {
+            error!("parse zone config from boot/config failed! {}", err);
+            return String::from("parse zone config from boot/config failed!");
+        })?;
+        std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
+        info!("--------------------------------");
+
+        let mut runtime = BuckyOSRuntime::new("node_daemon", None, BuckyOSRuntimeType::KernelService);
+        runtime.fill_policy_by_load_config().await.map_err(|err| {
+            error!("fill policy by load config failed! {}", err);
+            return String::from("fill policy by load config failed!");
+        })?;
+
+        runtime.device_config = Some(device_doc);
+        runtime.device_private_key = Some(device_private_key);
+        runtime.device_info = Some(device_info);
+        runtime.zone_id = node_identity.zone_did.clone();
+        runtime.zone_boot_config = Some(zone_boot_config);
+        runtime.zone_config = Some(zone_config);
+        runtime.session_token = Arc::new(RwLock::new(device_session_token_jwt.clone()));
+        runtime.force_https = false;
+        set_buckyos_api_runtime(runtime);
     } else {
         //this node is not ood: try connect to system_config_service
-        let this_device = DeviceInfo::from_device_doc(&device_doc);
+        let mut runtime = init_buckyos_api_runtime("node-daemon", None, BuckyOSRuntimeType::KernelService)
+                .await
+                .map_err(|e| {
+                    error!("init_buckyos_api_runtime failed: {:?}", e);
+                    return String::from("init_buckyos_api_runtime failed!");
+                })?;
         loop {
             //TODO: add searching OOD(system_config_service) logic,search result can generate system_config_url
-            let runtime = get_buckyos_api_runtime().unwrap();
-            syc_cfg_client = runtime.get_system_config_client().await.unwrap();
-            //syc_cfg_client = SystemConfigClient::new(Some(system_config_url.as_str()), Some(device_session_token_jwt.as_str()));
-            let boot_config_result = syc_cfg_client.get("boot").await;
-            if boot_config_result.is_ok() {
-                info!("Connect to system_config_service and load boot config OK! boot config: {}", 
-                    boot_config_result.as_ref().unwrap().0.as_str());
-                boot_config_result_str = boot_config_result.as_ref().unwrap().0.clone();
-                break;
-            } else {
-                warn!("Connect to system_config_service failed! {}", boot_config_result.err().unwrap());
+            let login_result = runtime.login().await.map_err(|e| {
+                error!("buckyos-api-runtime::login failed: {:?}", e);
+                return String::from("buckyos-api-runtime::login failed!");
+            });
+
+            if login_result.is_ok() {
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            }
+                break;
         } 
     }
+        set_buckyos_api_runtime(runtime);
+    }
+    
 
-    let zone_config:ZoneConfig = serde_json::from_str(boot_config_result_str.as_str()).map_err(|err| {
-        error!("parse zone config from boot/config failed! {}", err);
-        return String::from("parse zone config from boot/config failed!");
-    })?;
 
-    std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
-
-    info!("--------------------------------");
-    info!("{}@{} boot OK, enter node daemon main loop.", device_doc.name, node_identity.zone_did.to_host_name());
-    node_daemon_main_loop(node_id,&device_doc.name.as_str(), 
-        &device_doc, &device_private_key, &zone_config, is_ood)
+    info!("{}@{} boot OK, enter node daemon main loop.", &device_name, node_identity.zone_did.to_host_name());
+    node_daemon_main_loop(node_id,&device_name, is_ood)
         .await
         .map_err(|err| {
             error!("node daemon main loop failed! {}", err);
