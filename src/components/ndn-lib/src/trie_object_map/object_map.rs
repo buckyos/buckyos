@@ -98,13 +98,13 @@ impl TrieObjectMap {
 
     // Load object map from storage in read-only mode
     pub async fn open(obj_data: serde_json::Value) -> NdnResult<Self> {
-        let (obj_id, s) = build_named_object_by_json(OBJ_TYPE_TRIE, &obj_data);
-
         let body: TrieObjectMapBody = serde_json::from_value(obj_data).map_err(|e| {
             let msg = format!("Error deserializing TrieObjectMapBody: {}", e);
             error!("{}", msg);
             NdnError::InvalidData(msg)
         })?;
+
+        let (obj_id, _) = body.calc_obj_id();
 
         let storage = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY
             .get()

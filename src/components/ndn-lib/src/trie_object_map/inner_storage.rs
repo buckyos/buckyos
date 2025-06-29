@@ -142,6 +142,7 @@ where
     }
 
     fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<Option<ObjId>> {
+        debug!("Putting key: {}, value: {:?}", key, value);
         use trie_db::{Bytes, Value};
 
         // Check if the storage is read-only
@@ -157,7 +158,7 @@ where
             GenericTrieDBMutBuilder::from_existing(self.db.as_hash_db_mut(), &mut self.root)
                 .build();
         let ret = trie.insert(key.as_bytes(), &value).map_err(|e| {
-            let msg = format!("Failed to insert key-value pair: {:?}", e);
+            let msg = format!("Failed to insert key-value pair: {} {:?}", key, e);
             error!("{}", msg);
             NdnError::DbError(msg)
         })?;
@@ -186,7 +187,7 @@ where
 
         match ret {
             None => {
-                info!("Inserted key: {}, value: {:?}", key, value);
+                debug!("Inserted key: {}, value: {:?}", key, value);
                 Ok(None)
             }
             Some(old_value) => {
@@ -199,7 +200,7 @@ where
                     NdnError::InvalidData(msg)
                 })?;
 
-                info!(
+                debug!(
                     "Updated key: {}, old value: {:?}, new value: {:?}",
                     key, old_value, value
                 );
@@ -266,7 +267,7 @@ where
             "Value should be present after remove"
         );
 
-        info!("Removed key: {}, value: {:?}", key, value);
+        debug!("Removed key: {}, value: {:?}", key, value);
 
         // The trie will auto commit when it goes out of scope, but we can also call commit explicitly if needed.
         // trie.commit();

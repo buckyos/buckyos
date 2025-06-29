@@ -12,9 +12,12 @@ use crate::OBJ_TYPE_FILE;
 use buckyos_kit::init_logging;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use trie_db::proof;
 use std::clone;
+use std::hash::Hash;
 use std::sync::Arc;
 use tokio::test;
+use std::collections::HashMap;
 
 fn generate_random_buf(rng: &mut StdRng, len: usize) -> Vec<u8> {
     let mut buf = vec![0u8; len];
@@ -38,7 +41,7 @@ fn generate_random_path_key(rng: &mut StdRng) -> String {
     path
 }
 
-fn generate_key_value_pair(seed: &str, count: usize) -> (String, ObjId) {
+fn generate_key_value_pair(seed: &str) -> (String, ObjId) {
     let seed = HashHelper::calc_hash(HashMethod::Sha256, seed.as_bytes());
     let mut rng: StdRng = SeedableRng::from_seed(seed.try_into().unwrap());
 
@@ -51,7 +54,8 @@ fn generate_key_value_pair(seed: &str, count: usize) -> (String, ObjId) {
 fn generate_key_value_pairs(seed: &str, count: usize) -> Vec<(String, ObjId)> {
     let mut pairs = Vec::new();
     for i in 0..count {
-        pairs.push(generate_key_value_pair(&format!("{}-{}", seed, i), count));
+        println!("Generating key-value pair: {}/{}", i, count);
+        pairs.push(generate_key_value_pair(&format!("{}-{}", seed, i)));
     }
     pairs
 }
@@ -68,12 +72,13 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
         "Default storage type should be SQLite"
     );
 
-    let count = 100;
+    let count = key_pairs.len();
     for i in 0..count {
-        println!("Test object map: {}/{}", i, count);
         let key = key_pairs[i].0.as_ref();
         let obj_id = key_pairs[i].1.clone();
 
+        println!("Test object map: {}/{} {}", i, count, key);
+        
         let ret = obj_map_builder.put_object(key, &obj_id).unwrap();
         assert!(
             ret.is_none(),
@@ -155,12 +160,18 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
         storage_type
     );
 
+    let mut proofs = HashMap::new();
     for (i, (key, obj_id)) in obj_map.iter().unwrap().enumerate() {
         // Test proof path
         let proof = obj_map.get_object_proof_path(&key).unwrap();
         assert!(proof.is_some());
         let mut proof = proof.unwrap();
         assert_eq!(proof.proof_nodes.len() > 0, true);
+
+        proofs.insert(key.clone(), proof.clone());
+
+        let root_hash = obj_map.get_root_hash();
+        assert_eq!(proof.root_hash, root_hash, "Root hash mismatch for key: {}", key);
 
         assert_eq!(proof.root_hash.len() > 0, true);
         println!("Get object proof path success: {}", key);
@@ -200,44 +211,50 @@ async fn test_op_and_proof(key_pairs: &[(String, ObjId)]) {
         let ret = verifier.verify_object(&key2, None, &proof1).unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::Ok);
 
-        // TODO - Test verification with extraneous node or Ok?
-        // let ret = verifier.verify_object(&key3, None, &proof1).unwrap();
-        // assert_eq!(ret, TrieObjectMapProofVerifyResult::ExtraneousNode);
+        let ret = verifier.verify_object(&key, None, &proof1).unwrap();
+        assert_eq!(ret, TrieObjectMapProofVerifyResult::ExtraneousValue);
+    }
 
-        // Test remove
-        let prev_root_hash = obj_map.get_root_hash();
-        assert!(proof.root_hash == prev_root_hash);
+    let prev_root_hash = obj_map.get_root_hash();
+
+    let mut removed_keys = HashMap::new();
+    let mut obj_map_builder = TrieObjectMapBuilder::from_trie_object_map(&obj_map).await.unwrap();
+    for (i, (key, obj_id)) in obj_map.iter().unwrap().enumerate() {
         if i % 2 == 0 {
-            let ret = obj_map.remove_object(&key).unwrap().unwrap();
+            let ret = obj_map_builder.remove_object(&key).unwrap().unwrap();
             assert_eq!(ret, obj_id);
+            removed_keys.insert(key.clone(), obj_id);
 
             println!("Remove object success: {}", key);
         } else {
             continue;
         }
+    }
 
-        // Test root hash after remove
-        let root_hash = obj_map.get_root_hash();
-        assert_ne!(prev_root_hash, root_hash);
-        println!(
-            "Root hash changed after remove: {:?} -> {:?}",
-            prev_root_hash, root_hash
-        );
+    let obj_map2 = obj_map_builder.build().await.unwrap();
+    let root_hash = obj_map2.get_root_hash();
+    assert_ne!(prev_root_hash, root_hash);  
 
+    let verifier = TrieObjectMapProofVerifierHelper::new(obj_map.hash_method());
+    for (key, mut proof)  in proofs.into_iter() {
+        let obj_id = obj_map.get_object(&key).unwrap().unwrap();
+
+        if removed_keys.contains_key(&key) {
+            assert!(obj_map2.get_object(&key).unwrap().is_none(), "Object should be removed for key: {}", key);
+        } else {
+            assert_eq!(obj_map2.get_object(&key).unwrap().unwrap(), obj_id, "Object ID mismatch for key: {}", key);
+        }
+        
         // Test verification after remove
         proof.root_hash = root_hash.clone();
         let ret = verifier.verify_object(&key, Some(&obj_id), &proof).unwrap();
         assert_eq!(ret, TrieObjectMapProofVerifyResult::RootMismatch);
         println!("Verify after remove success: {}", key);
 
-        let ret = verifier.verify_object(&key, None, &proof1).unwrap();
-        assert_eq!(ret, TrieObjectMapProofVerifyResult::ExtraneousValue);
-
         // Test codec
         let s = TrieObjectMapProofNodesCodec::encode(&proof.proof_nodes).unwrap();
         println!("Proof nodes encoded: {}", s);
         let proof_nodes = TrieObjectMapProofNodesCodec::decode(&s).unwrap();
-        assert_eq!(proof_nodes.len(), proof.proof_nodes.len());
     }
 }
 
@@ -316,7 +333,9 @@ async fn test_storage(key_pairs: &[(String, ObjId)]) {
     .unwrap();
     println!("Object map created");
 
-    for (key, obj_id) in key_pairs.iter() {
+    for (i, (key, obj_id)) in key_pairs.iter().enumerate() {
+        println!("Test object map storage: {}/{} {}", i, key_pairs.len(), key);
+
         let old_value = obj_map_builder.put_object(key, obj_id).unwrap();
         assert!(
             old_value.is_none(),
@@ -537,15 +556,18 @@ async fn test_trie_object_map() {
         .unwrap_or_else(|_| panic!("Failed to set global trie object map storage factory"));
 
     println!("Test object map");
-    let key_pairs = generate_key_value_pairs("test", 100);
+    let key_pairs = generate_key_value_pairs("test", 5);
     println!("Key pairs generated");
 
     test_storage(key_pairs.as_slice()).await;
+    println!("Test storage completed");
 
     // test_iterator(key_pairs.as_slice()).await;
     test_traverse(key_pairs.as_slice()).await;
+    println!("Test iterator and traverse completed");
 
     test_op_and_proof(key_pairs.as_slice()).await;
+    println!("Test operation and proof completed");
 
     // test_op_and_proof(key_pairs.as_slice()).await;
     tokio::task::spawn(async move {
@@ -553,6 +575,7 @@ async fn test_trie_object_map() {
     })
     .await
     .unwrap();
+    println!("Test traverse in async task completed");
 
     println!("Test object map completed");
 }

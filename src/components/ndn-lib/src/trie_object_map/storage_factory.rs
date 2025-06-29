@@ -46,14 +46,14 @@ impl TrieObjectMapStorageFactory {
                 if let Some(id) = obj_id {
                     id.to_base32()
                 } else {
-                    self.get_temp_file_name(storage_type)
+                    self.get_temp_file_name()
                 }
             }
             TrieObjectMapStorageType::JSONFile => {
                 if let Some(id) = obj_id {
                     id.to_base32()
                 } else {
-                    self.get_temp_file_name(storage_type)
+                    self.get_temp_file_name()
                 }
             }
         };
@@ -267,7 +267,7 @@ impl TrieObjectMapStorageFactory {
         // First create a new storage of the desired type.
         let mut new_storage = self
             .open_by_hash_method(
-                Some(obj_info),
+                None,
                 false,
                 Some(new_storage_type),
                 hash_method,
@@ -287,6 +287,10 @@ impl TrieObjectMapStorageFactory {
 
         let old_file = self.get_file_path_by_id(Some(&obj_info.0), old_storage_type);
         if old_file.exists() {
+            info!(
+                "Removing old storage file: {}",
+                old_file.display()
+            );
             let ret = tokio::fs::remove_file(&old_file).await;
             if let Err(e) = ret {
                 let msg = format!(
@@ -309,12 +313,11 @@ impl TrieObjectMapStorageFactory {
         Ok(new_storage)
     }
 
-    fn get_temp_file_name(&self, storage_type: TrieObjectMapStorageType) -> String {
+    fn get_temp_file_name(&self) -> String {
         // Use index and time tick to create a unique file name.
         let index = self.temp_file_index.fetch_add(1, Ordering::SeqCst);
 
-        let ext = Self::get_file_ext(storage_type);
-        format!("temp_{}_{}.{}", chrono::Utc::now().timestamp(), index, ext)
+        format!("temp_{}_{}", chrono::Utc::now().timestamp(), index)
     }
 
     fn get_file_ext(storage_type: TrieObjectMapStorageType) -> &'static str {

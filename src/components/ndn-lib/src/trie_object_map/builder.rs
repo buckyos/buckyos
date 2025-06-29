@@ -61,7 +61,7 @@ impl TrieObjectMapBuilder {
             .map_err(|e| {
                 let msg = format!(
                     "Error opening trie object map storage: {}, {}",
-                    body.root_hash, e
+                    obj_id.to_base32(), e
                 );
                 error!("{}", msg);
                 e
