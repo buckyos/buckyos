@@ -144,7 +144,8 @@ impl TrieObjectMapStorageFactory {
         let (obj_id, root) = if let Some((id, root_hash)) = obj_info {
             // Decode the root hash from string to the appropriate type.
             let root_hash = Base32Codec::from_base32(root_hash)?;
-            let root_hash: <H as Hasher>::Out = <H::Out as HashFromSlice>::from_slice(root_hash.as_slice())?;
+            let root_hash: <H as Hasher>::Out =
+                <H::Out as HashFromSlice>::from_slice(root_hash.as_slice())?;
             (Some(id), Some(root_hash))
         } else {
             (None, None)
@@ -247,6 +248,65 @@ impl TrieObjectMapStorageFactory {
 
         let file = self.get_file_path(&file_name, storage.get_type());
         storage.clone(&file, read_only).await
+    }
+
+    pub async fn switch_storage_type(
+        &self,
+        obj_info: (&ObjId, &str),
+        storage: Box<dyn TrieObjectMapInnerStorage>,
+        hash_method: HashMethod,
+        new_storage_type: TrieObjectMapStorageType,
+    ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>>
+    {
+        let old_storage_type = storage.get_type();
+        assert_ne!(
+            old_storage_type, new_storage_type,
+            "Cannot switch storage type with the same type",
+        );
+
+        // First create a new storage of the desired type.
+        let mut new_storage = self
+            .open_by_hash_method(
+                Some(obj_info),
+                false,
+                Some(new_storage_type),
+                hash_method,
+                TrieObjectMapStorageOpenMode::CreateNew,
+            )
+            .await?;
+
+        storage.traverse(&mut |key, obj_id| {
+            new_storage.put(&key, &obj_id)?;
+            Ok(())
+        })?;
+
+        self.save(&obj_info.0, new_storage.as_mut()).await?;
+
+        // Drop the old storage and try to remove the file
+        drop(storage);
+
+        let old_file = self.get_file_path_by_id(Some(&obj_info.0), old_storage_type);
+        if old_file.exists() {
+            let ret = tokio::fs::remove_file(&old_file).await;
+            if let Err(e) = ret {
+                let msg = format!(
+                    "Error removing old storage file {}: {}",
+                    old_file.display(),
+                    e
+                );
+                warn!("{}", msg);
+                // FIXME: Should we return an error here? or we can remove the file later in GC?
+            }
+        }
+
+        info!(
+            "Switched trie object map storage for {} from {:?} to {:?}",
+            obj_info.0.to_base32(),
+            old_storage_type,
+            new_storage_type,
+        );
+
+        Ok(new_storage)
     }
 
     fn get_temp_file_name(&self, storage_type: TrieObjectMapStorageType) -> String {

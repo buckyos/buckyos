@@ -1,3 +1,4 @@
+mod builder;
 mod file;
 mod hash;
 mod inner_storage;
@@ -7,6 +8,7 @@ mod object_map;
 mod storage;
 mod storage_factory;
 
+pub use builder::*;
 pub use hash::*;
 pub use object_map::*;
 pub use storage::*;
