@@ -6,9 +6,6 @@ use crate::{ObjId, NdnResult, NdnError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ObjectArrayJSONData {
-    // The meta data is optional, it can be used to store additional information about the object array.
-    meta: Option<String>,
-
     data: Vec<ObjId>,
 }
 
@@ -23,7 +20,6 @@ impl ObjectArrayJSONWriter {
         Self {
             file_path,
             data: ObjectArrayJSONData {
-                meta: None,
                 data: Vec::new(),
             },
         }
@@ -37,12 +33,6 @@ impl ObjectArrayStorageWriter for ObjectArrayJSONWriter {
         Ok(self.file_path.clone())
     }
 
-    // Use to store meta data
-    async fn put_meta(&mut self, value: Option<String>) -> NdnResult<()> {
-        self.data.meta = value;
-        Ok(())
-    }
-    
     async fn append(&mut self, value: &ObjId) -> NdnResult<()> {
         self.data.data.push(value.clone());
         Ok(())
@@ -103,7 +93,7 @@ impl ObjectArrayJSONReader {
             NdnError::IoError(msg)
         })?;
 
-        let cache = ObjectArrayMemoryCache::new_array(data.meta, data.data);
+        let cache = ObjectArrayMemoryCache::new_array(data.data);
         let ret = ObjectArrayJSONReader::new(Box::new(cache));
 
         Ok(ret)

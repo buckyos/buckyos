@@ -37,10 +37,6 @@ pub trait ObjectArrayInnerCache: Send + Sync {
 
     fn clone_cache(&self, read_only: bool) -> NdnResult<Box<dyn ObjectArrayInnerCache>>;
 
-    // Use to store meta data
-    fn put_meta(&mut self, value: Option<String>) -> NdnResult<()>;
-    fn get_meta(&self) -> NdnResult<Option<String>>;
-
     // Modify methods, can not be used in readonly mode
     fn append(&mut self, value: &ObjId) -> NdnResult<()>;
     fn insert(&mut self, index: usize, value: &ObjId) -> NdnResult<()>;
@@ -63,9 +59,6 @@ pub trait ObjectArrayStorageReader: Send + Sync {
 #[async_trait::async_trait]
 pub trait ObjectArrayStorageWriter: Send + Sync {
     async fn file_path(&self) -> NdnResult<PathBuf>;
-
-    // Use to store meta data
-    async fn put_meta(&mut self, value: Option<String>) -> NdnResult<()>;
 
     async fn append(&mut self, value: &ObjId) -> NdnResult<()>;
     async fn len(&self) -> NdnResult<usize>;
