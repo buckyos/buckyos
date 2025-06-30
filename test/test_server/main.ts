@@ -16,11 +16,7 @@ async function startServer() {
   app.use(authComponent(storage));
 
   // Define a simple route
-  router.get('/', (ctx) => {
-    ctx.body = 'Hello, World!';
-  });
-
-  router.post('/data', (ctx) => {
+  router.post('/version/auth', (ctx) => {
     ctx.body = {
         result: 1,
         request: ctx.request.body.content

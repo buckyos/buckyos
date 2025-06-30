@@ -106,12 +106,12 @@ async function setPublish() {
     await postData("/version/publish", content);
 }
 
-async function test() {
+async function test_auth() {
     let content = {
         msg: "this is a test message",
     }
 
-    await postData("/data", content)
+    await postData("/version/auth", content)
 }
 
 async function run() {
@@ -122,8 +122,8 @@ async function run() {
         await setTest();
     } else if (method === "setpublish") {
         await setPublish();
-    } else if (method == "test") {
-        await test();
+    } else if (method == "auth") {
+        await test_auth();
     } else {
         console.error("Usage: node client.js <seturl|settest|setpublish>");
         process.exit(1);
