@@ -586,6 +586,15 @@ impl ObjectMapInnerStorage for ObjectMapSqliteStorage {
 
         Ok(())
     }
+
+    async fn dump(&self) -> NdnResult<Option<serde_json::Value>> {
+        let msg = format!(
+            "Dumping SQLite storage is not supported: {}",
+            self.file.display()
+        );
+        error!("{}", msg);
+        Err(NdnError::Unsupported(msg))
+    }
 }
 
 #[cfg(test)]

@@ -6,118 +6,14 @@ use http_types::content;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use super::memory_storage::{ObjectMapMemoryStorage, JSONStorageData};
 
-mod serde_objid_as_base32_helper {
-    use super::ObjId;
-    use serde::{self, Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(value: &ObjId, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&value.to_base32())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<ObjId, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        ObjId::new(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-mod serde_u64_as_string_helper {
-    use serde::{self, Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(val: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match val {
-            Some(num) => serializer.serialize_some(&num.to_string()),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: Option<String> = Deserialize::deserialize(deserializer)?;
-        if let Some(value_str) = s {
-            value_str
-                .parse()
-                .map(Some)
-                .map_err(serde::de::Error::custom)
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-mod base64_serde {
-    use base64::{engine::general_purpose, Engine as _};
-    use serde::{self, Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(val: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match val {
-            Some(bytes) => serializer.serialize_some(&general_purpose::STANDARD.encode(bytes)),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: Option<String> = Deserialize::deserialize(deserializer)?;
-        if let Some(value_str) = s {
-            general_purpose::STANDARD
-                .decode(value_str)
-                .map_err(serde::de::Error::custom)
-                .map(|v| Some(v))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct JSONStorageItem {
-    #[serde(with = "serde_objid_as_base32_helper", rename = "v")]
-    value: ObjId,
-
-    #[serde(with = "serde_u64_as_string_helper", rename = "i")]
-    mtree_index: Option<u64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct JSONStorageData {
-    content: BTreeMap<String, JSONStorageItem>,
-
-    #[serde(with = "base64_serde")]
-    mtree_data: Option<Vec<u8>>,
-}
-
-impl JSONStorageData {
-    fn new() -> Self {
-        Self {
-            content: BTreeMap::new(),
-            mtree_data: None,
-        }
-    }
-}
 
 pub struct ObjectMapJSONStorage {
     read_only: bool,
     file: PathBuf,
 
-    data: Option<JSONStorageData>,
-    is_dirty: bool,
+    storage: ObjectMapMemoryStorage,
 }
 
 impl ObjectMapJSONStorage {
@@ -132,8 +28,7 @@ impl ObjectMapJSONStorage {
         Ok(Self {
             read_only,
             file,
-            data,
-            is_dirty: false,
+            storage: ObjectMapMemoryStorage::new_raw(data, read_only),
         })
     }
 
@@ -160,15 +55,6 @@ impl ObjectMapJSONStorage {
         Ok(data)
     }
 
-    fn check_read_only(&self) -> NdnResult<()> {
-        if self.read_only {
-            let msg = format!("Storage is read-only: {}", self.file.display());
-            error!("{}", msg);
-            return Err(NdnError::PermissionDenied(msg));
-        }
-        Ok(())
-    }
-
     async fn clone_for_modify(&self, target: &Path) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         // First check if target is same as current file
         if target == self.file {
@@ -177,18 +63,13 @@ impl ObjectMapJSONStorage {
             return Err(NdnError::AlreadyExists(msg));
         }
 
-        if self.is_dirty {
+        if self.storage.is_dirty() {
             // Clone the current storage to a new file
             let mut new_storage = Self {
                 read_only: false,
                 file: target.to_path_buf(),
-                data: None,
-                is_dirty: false,
+                storage: self.storage.clone_for_modify(),
             };
-
-            if let Some(data) = &self.data {
-                new_storage.data = Some(data.clone());
-            }
 
             new_storage.save(&target).await?;
             Ok(Box::new(new_storage))
@@ -204,45 +85,13 @@ impl ObjectMapJSONStorage {
             let new_storage = Self {
                 read_only: false,
                 file: target.to_path_buf(),
-                data: self.data.clone(),
-                is_dirty: false,
+                storage: self.storage.clone_for_modify(),
             };
 
             // Return the new storage
             Ok(Box::new(new_storage))
         }
     }
-
-    /*
-    fn get_node(&mut self, name: &str, auto_create: bool) -> Option<&mut serde_json::Value> {
-        let mut storage = if let Some(storage) = &mut self.storage {
-            storage
-        }  else {
-            if !auto_create {
-                return None;
-            }
-
-            // Initialize the storage if it's None
-            let node = serde_json::Map::new();
-            self.storage = Some(node);
-
-            self.storage.as_mut().unwrap()
-        };
-
-        if let Some(node) = storage.get_mut(name) {
-            Some(node)
-        } else {
-            if !auto_create {
-                return None;
-            }
-
-            // Create a new node if it doesn't exist
-            let node = serde_json::Value::Object(serde_json::Map::new());
-            storage.insert(name.to_string(), node);
-            Some(storage.get_mut(name).unwrap())
-        }
-    }
-    */
 }
 
 #[async_trait::async_trait]
@@ -256,191 +105,52 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
     }
 
     fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<()> {
-        // Check if the storage is read-only
-        self.check_read_only()?;
-
-        // Modify the JSON node
-        if self.data.is_none() {
-            self.data = Some(JSONStorageData::new());
-        }
-
-        let data = self.data.as_mut().unwrap();
-        data.content.insert(
-            key.to_string(),
-            JSONStorageItem {
-                value: value.clone(),
-                mtree_index: None,
-            },
-        );
-
-        // Mark the storage as dirty
-        self.is_dirty = true;
-
-        Ok(())
+        self.storage.put(key, value)
     }
 
     fn put_with_index(&mut self, key: &str, value: &ObjId, index: Option<u64>) -> NdnResult<()> {
-        // Check if the storage is read-only
-        self.check_read_only()?;
-
-        // Modify the JSON node
-        if self.data.is_none() {
-            self.data = Some(JSONStorageData::new());
-        }
-
-        let data = self.data.as_mut().unwrap();
-        data.content.insert(
-            key.to_string(),
-            JSONStorageItem {
-                value: value.clone(),
-                mtree_index: index,
-            },
-        );
-
-        // Mark the storage as dirty
-        self.is_dirty = true;
-
-        Ok(())
+        self.storage.put_with_index(key, value, index)
     }
 
     fn get(&self, key: &str) -> NdnResult<Option<(ObjId, Option<u64>)>> {
-        if let Some(data) = &self.data {
-            if let Some(item) = data.content.get(key) {
-                Ok(Some((item.value.clone(), item.mtree_index)))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
+        self.storage.get(key)
     }
 
     fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>> {
-        // Check if the storage is read-only
-        self.check_read_only()?;
-
-        if let Some(data) = &mut self.data {
-            if let Some(item) = data.content.remove(key) {
-                // Mark the storage as dirty
-                self.is_dirty = true;
-
-                Ok(Some(item.value))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
+        self.storage.remove(key)
     }
 
     fn is_exist(&self, key: &str) -> NdnResult<bool> {
-        if let Some(data) = &self.data {
-            Ok(data.content.contains_key(key))
-        } else {
-            Ok(false)
-        }
+        self.storage.is_exist(key)
     }
 
     fn list(&self, page_index: usize, page_size: usize) -> NdnResult<Vec<String>> {
-        if let Some(data) = &self.data {
-            let start = page_index * page_size;
-            let end = start + page_size;
-            let list = data
-                .content
-                .iter() // Get an iterator of (&String, &Vec<u8>)
-                .map(|(k, _)| k.clone()) // We only need the keys (paths)
-                .skip(start) // Skip the first 'start' paths
-                .take(page_size) // Take the next 'page_size' paths
-                .collect(); // Collect into a Vec<String>
-
-            Ok(list)
-        } else {
-            Ok(vec![])
-        }
+        self.storage.list(page_index, page_size)
     }
 
     fn stat(&self) -> NdnResult<ObjectMapInnerStorageStat> {
-        if let Some(data) = &self.data {
-            Ok(ObjectMapInnerStorageStat {
-                total_count: data.content.len() as u64,
-            })
-        } else {
-            Ok(ObjectMapInnerStorageStat { total_count: 0 })
-        }
+        self.storage.stat()
     }
 
     fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (String, ObjId, Option<u64>)> + 'a> {
-        if let Some(data) = &self.data {
-            Box::new(
-                data.content
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.value.clone(), v.mtree_index)),
-            )
-        } else {
-            Box::new(std::iter::empty())
-        }
+        self.storage.iter()
     }
 
     // Use to store the index of the mtree node
     fn update_mtree_index(&mut self, key: &str, index: u64) -> NdnResult<()> {
-        // Check if the storage is read-only
-        self.check_read_only()?;
-
-        // Modify the JSON node
-        if self.data.is_none() {
-            self.data = Some(JSONStorageData::new());
-        }
-
-        let data = self.data.as_mut().unwrap();
-        if let Some(item) = data.content.get_mut(key) {
-            item.mtree_index = Some(index);
-
-            // Mark the storage as dirty
-            self.is_dirty = true;
-
-            return Ok(());
-        }
-
-        let msg = format!("No such key: {}", key);
-        Err(NdnError::NotFound(msg))
+        self.storage.update_mtree_index(key, index)
     }
 
     fn get_mtree_index(&self, key: &str) -> NdnResult<Option<u64>> {
-        if let Some(data) = &self.data {
-            if let Some(item) = data.content.get(key) {
-                Ok(item.mtree_index)
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
+        self.storage.get_mtree_index(key)
     }
 
     fn put_mtree_data(&mut self, value: &[u8]) -> NdnResult<()> {
-        // Check if the storage is read-only
-        self.check_read_only()?;
-
-        // Modify the JSON node
-        if self.data.is_none() {
-            self.data = Some(JSONStorageData::new());
-        }
-
-        let data = self.data.as_mut().unwrap();
-        data.mtree_data = Some(value.to_vec());
-
-        // Mark the storage as dirty
-        self.is_dirty = true;
-
-        Ok(())
+        self.storage.put_mtree_data(value)
     }
 
     fn load_mtree_data(&self) -> NdnResult<Option<Vec<u8>>> {
-        if let Some(data) = &self.data {
-            Ok(data.mtree_data.clone())
-        } else {
-            Ok(None)
-        }
+        self.storage.load_mtree_data()
     }
 
     // Clone the storage to a new file.
@@ -454,8 +164,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
             let ret = Self {
                 read_only,
                 file: target.to_path_buf(),
-                data: self.data.clone(),
-                is_dirty: self.is_dirty,
+                storage: self.storage.clone_for_read(),
             };
 
             Ok(Box::new(ret))
@@ -467,7 +176,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
     // If file is diff from the current one, it will be saved to the file.
     async fn save(&mut self, file: &Path) -> NdnResult<()> {
         // Check if the storage is read-only
-        self.check_read_only()?;
+        self.storage.check_read_only()?;
 
         // Check if the file is the same as the current one
         if file != self.file {
@@ -498,7 +207,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
                 })?;
             } else {
                 // We hadn't save the file yet, so we can just create a new one
-                self.is_dirty = true;
+                self.storage.set_dirty(true);
             }
 
             // Update the file path
@@ -506,11 +215,11 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         } else {
             if !self.file.exists() {
                 // We hadn't save the file yet, so we can just create a new one
-                self.is_dirty = true;
+                self.storage.set_dirty(true);
             }
         }
 
-        if !self.is_dirty {
+        if !self.storage.is_dirty() {
             // No changes to save
             return Ok(());
         }
@@ -522,7 +231,7 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
             NdnError::IoError(msg)
         })?;
 
-        serde_json::to_writer(f, &self.data).map_err(|e| {
+        serde_json::to_writer(f, &self.storage.get_data()).map_err(|e| {
             let msg = format!("Failed to write data to file: {:?}, {}", file, e);
             error!("{}", msg);
             NdnError::IoError(msg)
@@ -531,8 +240,12 @@ impl ObjectMapInnerStorage for ObjectMapJSONStorage {
         info!("Saved JSON storage to file: {:?}", file);
 
         // Mark the storage as clean
-        self.is_dirty = false;
+        self.storage.set_dirty(false);
 
         Ok(())
+    }
+
+    async fn dump(&self) -> NdnResult<Option<serde_json::Value>> {
+        self.storage.dump().await
     }
 }

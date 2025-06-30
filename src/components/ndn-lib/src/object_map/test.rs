@@ -1,5 +1,4 @@
 use super::builder::ObjectMapBuilder;
-use super::memory_storage::MemoryStorage;
 use super::*;
 use crate::hash::HashHelper;
 use crate::{CollectionStorageMode, HashMethod, ObjId, OBJ_TYPE_FILE};
@@ -17,7 +16,7 @@ fn generate_random_buf(seed: &str, len: usize) -> Vec<u8> {
 
 async fn test_object_map() {
     let mut obj_map_builder =
-        ObjectMapBuilder::new(HashMethod::Sha256, Some(CollectionStorageMode::Normal))
+        ObjectMapBuilder::new(HashMethod::Sha256, Some(CollectionStorageMode::Normal), true)
             .await
             .unwrap();
 
@@ -55,8 +54,8 @@ async fn test_object_map() {
     let new_storage_type = obj_map.storage_type();
     assert_eq!(
         new_storage_type,
-        ObjectMapStorageType::JSONFile,
-        "Storage type should be Normal after build"
+        ObjectMapStorageType::Memory,
+        "Storage type should be Memory after build"
     );
     assert_ne!(
         old_storage_type, new_storage_type,
@@ -65,7 +64,9 @@ async fn test_object_map() {
 
     let (objid, obj_content) = obj_map.calc_obj_id();
     println!("objid: {}", objid.to_string());
+    println!("obj_content: {}", obj_content);
 
+    // Test get object ID
     for i in 0..count {
         let key = format!("key{}", i);
         if i % 2 == 0 {
@@ -86,9 +87,36 @@ async fn test_object_map() {
         }
     }
 
+    // Create new builder from body content
+    let obj_map_builder = ObjectMapBuilder::open(serde_json::from_str(&obj_content).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        obj_map_builder.storage_type(), 
+        ObjectMapStorageType::Memory,
+        "Storage type should be Memory after open"
+    );
+    let obj = obj_map_builder.build().await.unwrap();
+    assert_eq!(
+        obj.storage_type(),
+        ObjectMapStorageType::Memory,
+        "Storage type should be Memory after build"
+    );
+    let (obj_id2, obj_content2) = obj.calc_obj_id();
+    assert_eq!(objid, obj_id2, "Object ID unmatch after open");
+    assert_eq!(
+        obj_content, obj_content2,
+        "Object content unmatch after open"
+    );
+
     // Test reopen object map for read
     let obj_content = serde_json::from_str(&obj_content).unwrap();
     let obj_map2 = ObjectMap::open(obj_content).await.unwrap();
+    assert_eq!(
+        obj_map2.storage_type(),
+        ObjectMapStorageType::Memory,
+        "Storage type should be Memory after reopen"
+    );
     let objid2 = obj_map2.get_obj_id();
     assert_eq!(objid, *objid2, "Object ID unmatch");
 
@@ -99,6 +127,7 @@ async fn test_object_map() {
 
     // Remove some objects
     let mut obj_map_builder = ObjectMapBuilder::from_object_map(&obj_map3).await.unwrap();
+    let mut obj_map_builder = obj_map_builder.with_memory_mode(false);
     let obj_item1 = obj_map_builder.remove_object("key0").unwrap();
     let obj_item2 = obj_map_builder.remove_object("key1").unwrap();
 
@@ -114,6 +143,11 @@ async fn test_object_map() {
 
     // Regenerate object map
     let obj_map4 = obj_map_builder.build().await.unwrap();
+    assert_eq!(obj_map4.storage_type(), ObjectMapStorageType::JSONFile, "ObjectMap should be JSONFile after build");
+
+    let file = obj_map4.get_storage_file_path().unwrap();
+    assert!(file.exists(), "ObjectMap file does not exist: {}", file.display());
+
     let (objid4, _content) = obj_map4.calc_obj_id();
     assert_ne!(objid, objid4, "Object ID unmatch");
 
@@ -131,6 +165,10 @@ async fn test_object_map() {
         .unwrap();
 
     let obj_map6 = obj_map_builder.build().await.unwrap();
+    assert_eq!(obj_map6.storage_type(), ObjectMapStorageType::JSONFile, "ObjectMap should be JSONFile after build");
+    let file = obj_map4.get_storage_file_path().unwrap();
+    assert!(file.exists(), "ObjectMap file does not exist: {}", file.display());
+
     let (objid6, _content) = obj_map6.calc_obj_id();
     assert_eq!(objid, objid6, "Object ID unmatch");
 
@@ -141,6 +179,18 @@ async fn test_object_map() {
         println!("key: {}, obj_id: {}", key, obj_id.to_string());
         count += 1;
     }
+
+    let mut obj_builder = ObjectMapBuilder::from_object_map(&obj_map6)
+        .await
+        .unwrap();
+    let obj_builder = obj_builder.with_memory_mode(true);
+
+    let obj_map7 = obj_builder.build().await.unwrap();
+    assert_eq!(obj_map7.storage_type(), ObjectMapStorageType::Memory, "ObjectMap should be Memory after build");
+
+    let obj_id = obj_map7.get_obj_id();
+    println!("Object ID: {}", obj_id.to_string());
+    assert_eq!(objid6, *obj_id, "Object ID unmatch");
 }
 
 #[test]

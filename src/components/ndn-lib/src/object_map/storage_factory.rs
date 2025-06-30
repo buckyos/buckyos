@@ -1,5 +1,4 @@
-use super::file::{ObjectMapJSONStorage, ObjectMapSqliteStorage};
-use super::memory_storage::MemoryStorage;
+use super::file::{ObjectMapJSONStorage, ObjectMapMemoryStorage, ObjectMapSqliteStorage};
 use super::storage::{self, ObjectMapInnerStorage, ObjectMapStorageType};
 use crate::{NdnError, NdnResult, ObjId};
 use once_cell::sync::OnceCell;
@@ -31,30 +30,15 @@ impl ObjectMapStorageFactory {
         }
     }
 
-    // The storage type must not be Memory, as it does not have a file path.
     pub fn get_file_path_by_id(
         &self,
         obj_id: Option<&ObjId>,
         storage_type: ObjectMapStorageType,
     ) -> PathBuf {
-        let file_name = match storage_type {
-            ObjectMapStorageType::Memory => {
-                unreachable!("Memory storage does not have a file path");
-            }
-            ObjectMapStorageType::SQLite => {
-                if let Some(obj_id) = obj_id {
-                    obj_id.to_base32()
-                } else {
-                    self.get_temp_file_name(storage_type)
-                }
-            }
-            ObjectMapStorageType::JSONFile => {
-                if let Some(obj_id) = obj_id {
-                    obj_id.to_base32()
-                } else {
-                    self.get_temp_file_name(storage_type)
-                }
-            }
+        let file_name = if let Some(obj_id) = obj_id {
+            obj_id.to_base32()
+        } else {
+            self.get_temp_file_name(storage_type)
         };
 
         self.get_file_path(&file_name, storage_type)
@@ -63,7 +47,8 @@ impl ObjectMapStorageFactory {
     fn get_file_path(&self, file_name: &str, storage_type: ObjectMapStorageType) -> PathBuf {
         match storage_type {
             ObjectMapStorageType::Memory => {
-                unreachable!("Memory storage does not have a file path");
+                let file_name = format!("{}.memory", file_name);
+                self.data_dir.join(file_name)
             }
             ObjectMapStorageType::SQLite => {
                 let file_name = format!("{}.sqlite", file_name);
@@ -88,11 +73,24 @@ impl ObjectMapStorageFactory {
         )
     }
 
+    pub fn open_memory(
+        &self,
+        data: Option<serde_json::Value>,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
+        let storage = match data {
+            Some(data) => ObjectMapMemoryStorage::new(data, read_only)?,
+            None => ObjectMapMemoryStorage::new_empty(read_only),
+        };
+
+        Ok(Box::new(storage))
+    }
+
     pub async fn open(
         &self,
         obj_id: Option<&ObjId>,
         read_only: bool,
-        storage_type: Option<ObjectMapStorageType>,
+        storage_type: ObjectMapStorageType,
         mode: ObjectMapStorageOpenMode,
     ) -> NdnResult<Box<dyn ObjectMapInnerStorage>> {
         if !self.data_dir.exists() {
@@ -107,7 +105,6 @@ impl ObjectMapStorageFactory {
             })?;
         }
 
-        let storage_type = storage_type.unwrap_or(self.default_storage_type);
         if storage_type == ObjectMapStorageType::Memory {
             let msg = "Memory storage is not supported for open operation".to_string();
             error!("{}", msg);
@@ -232,36 +229,43 @@ impl ObjectMapStorageFactory {
             "Cannot switch to the same storage type"
         );
 
-        let mut new_storage = self
-            .open(
+        let mut new_storage = if new_storage_type.is_memory() {
+            self.open_memory(None, false)?
+        } else {
+            self.open(
                 Some(obj_id),
                 false,
-                Some(new_storage_type),
+                new_storage_type,
                 ObjectMapStorageOpenMode::CreateNew,
             )
-            .await?;
+            .await?
+        };
 
         for item in storage.iter() {
             new_storage.put_with_index(&item.0, &item.1, item.2)?;
         }
 
-        // Save the new storage to the file
-        self.save(obj_id, &mut *new_storage).await?;
+        if !new_storage_type.is_memory() {
+            // Save the new storage to the file
+            self.save(obj_id, &mut *new_storage).await?;
+        }
 
         drop(storage);
 
-        // Remove the old storage file if it exists
-        let old_file = self.get_file_path_by_id(Some(obj_id), old_storage_type);
-        if old_file.exists() {
-            let ret = std::fs::remove_file(&old_file);
-            if let Err(e) = ret {
-                let msg = format!(
-                    "Error removing old storage file {}: {}",
-                    old_file.display(),
-                    e
-                );
-                warn!("{}", msg);
-                // FIXME: Should we return an error here? or we can remove the file later in GC?
+        if !old_storage_type.is_memory() {
+            // Remove the old storage file if it exists
+            let old_file = self.get_file_path_by_id(Some(obj_id), old_storage_type);
+            if old_file.exists() {
+                let ret = std::fs::remove_file(&old_file);
+                if let Err(e) = ret {
+                    let msg = format!(
+                        "Error removing old storage file {}: {}",
+                        old_file.display(),
+                        e
+                    );
+                    warn!("{}", msg);
+                    // FIXME: Should we return an error here? or we can remove the file later in GC?
+                }
             }
         }
 
@@ -286,9 +290,7 @@ impl ObjectMapStorageFactory {
 
     fn get_file_ext(storage_type: ObjectMapStorageType) -> &'static str {
         match storage_type {
-            ObjectMapStorageType::Memory => {
-                unreachable!("Memory storage does not have a file extension")
-            }
+            ObjectMapStorageType::Memory => "memory",
             ObjectMapStorageType::SQLite => "sqlite",
             ObjectMapStorageType::JSONFile => "json",
         }

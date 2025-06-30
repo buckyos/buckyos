@@ -30,9 +30,15 @@ impl ObjectMapStorageType {
         matches!(self, ObjectMapStorageType::JSONFile)
     }
 
-    pub fn select_storage_type(coll_mode: Option<CollectionStorageMode>) -> Self {
+    pub fn select_storage_type(coll_mode: Option<CollectionStorageMode>, memory_mode: bool) -> Self {
         match coll_mode {
-            Some(CollectionStorageMode::Simple) => Self::JSONFile,
+            Some(CollectionStorageMode::Simple) => {
+                if memory_mode {
+                    Self::Memory
+                } else {
+                    Self::JSONFile
+                }
+            },
             Some(CollectionStorageMode::Normal) => Self::SQLite,
             None => Self::SQLite,
         }
@@ -77,4 +83,7 @@ pub trait ObjectMapInnerStorage: Send + Sync {
 
     // If file is diff from the current one, it will be saved to the file.
     async fn save(&mut self, file: &Path) -> NdnResult<()>;
+
+    // Dump the storage content to JSON format if valid.
+    async fn dump(&self) -> NdnResult<Option<serde_json::Value>>;
 }

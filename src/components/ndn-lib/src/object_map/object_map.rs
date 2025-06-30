@@ -53,6 +53,16 @@ pub struct ObjectMapBody {
     pub root_hash: String, // The root hash of the merkle tree, encode as base32
     pub hash_method: HashMethod,
     pub total_count: u64, // Total count of items in the object map
+
+    pub content: Option<serde_json::Value>, // Optional content, can be used to json content
+}
+
+// Use to calculate the object ID for the object map
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct ObjectMapBodyInner {
+    root_hash: String, // The root hash of the merkle tree, encode as base32
+    hash_method: HashMethod,
+    total_count: u64, // Total count of items in the object map
 }
 
 impl ObjectMapBody {
@@ -62,13 +72,28 @@ impl ObjectMapBody {
             CollectionStorageMode::Normal => OBJ_TYPE_OBJMAP,
         };
 
-        let body = serde_json::to_value(self).expect("Failed to serialize ObjectMapBody");
-        build_named_object_by_json(obj_type, &body)
+        let inner = ObjectMapBodyInner {
+            root_hash: self.root_hash.clone(),
+            hash_method: self.hash_method.clone(),
+            total_count: self.total_count,
+        };
+
+        let body = serde_json::to_value(inner).expect("Failed to serialize ObjectMapBody");
+        let (id, _) = build_named_object_by_json(obj_type, &body);
+        let content = serde_json::to_string(&self).expect("Failed to serialize ObjectMapBody full content");
+
+        (id, content)
+    }
+
+    pub fn get_memory_mode(&self) -> bool {
+        // If content is present, use memory mode, otherwise use storage mode based on total_count
+        self.content.is_some()
     }
 
     pub fn get_storage_type(&self) -> ObjectMapStorageType {
+        let memory_mode = self.get_memory_mode();
         let mode = CollectionStorageMode::select_mode(Some(self.total_count));
-        ObjectMapStorageType::select_storage_type(Some(mode))
+        ObjectMapStorageType::select_storage_type(Some(mode), memory_mode)
     }
 }
 
@@ -109,24 +134,24 @@ impl ObjectMap {
 
         let (obj_id, _) = body.calc_obj_id();
 
-        let mut storage = GLOBAL_OBJECT_MAP_STORAGE_FACTORY
-            .get()
-            .unwrap()
-            .open(
-                Some(&obj_id),
-                true, // Always open in read-only mode for object map
-                Some(body.get_storage_type()),
-                ObjectMapStorageOpenMode::OpenExisting,
-            )
-            .await
-            .map_err(|e| {
-                let msg = format!(
-                    "Error opening object map storage: {}, {}",
-                    body.root_hash, e
-                );
-                error!("{}", msg);
-                e
-            })?;
+        let storage_type = body.get_storage_type();
+        let mut storage = if storage_type.is_memory() {
+            GLOBAL_OBJECT_MAP_STORAGE_FACTORY
+                .get()
+                .unwrap()
+                .open_memory(body.content.clone(), true)?
+        } else {
+            GLOBAL_OBJECT_MAP_STORAGE_FACTORY
+                .get()
+                .unwrap()
+                .open(
+                    Some(&obj_id),
+                    true, // Always open in read-only mode for object map
+                    storage_type,
+                    ObjectMapStorageOpenMode::OpenExisting,
+                )
+                .await?
+        };
 
         // Try load mtree data from storage
         let ret = storage.load_mtree_data().map_err(|e| {
@@ -324,11 +349,12 @@ impl ObjectMap {
     // This will return None if the object ID is not generated yet
     // The target file must be created by the `save()` method
     pub fn get_storage_file_path(&self) -> Option<PathBuf> {
-        let obj_id = self.get_obj_id();
-
-        if self.storage_type() == ObjectMapStorageType::Memory {
-            return None; // Memory storage does not have a file path
+        if self.storage_type().is_memory() {
+            // Memory storage does not have a file path
+            return None;
         }
+        
+        let obj_id = self.get_obj_id();
 
         let factory = GLOBAL_OBJECT_MAP_STORAGE_FACTORY.get().unwrap();
         let file_path = factory.get_file_path_by_id(Some(&obj_id), self.storage_type());
