@@ -118,7 +118,7 @@ async function startServer() {
 
   app.use(router.routes()).use(router.allowedMethods());
 
-  app.listen(9800, () => {
+  app.listen(9800, "localhost", () => {
     console.log('Server is running on http://localhost:9800');
   });
 }
