@@ -76,9 +76,11 @@ def install(install_all=False):
 
         print(f'updating files in {bin_dir}')
         if os.path.exists(bin_dir):
+            print(f'removing {bin_dir}')
             shutil.rmtree(bin_dir)
         #just update bin
-        shutil.copytree(os.path.join(src_dir, "rootfs/bin"), bin_dir)
+        print(f'copying {os.path.join(src_dir, "rootfs","bin")} => {bin_dir}')
+        shutil.copytree(os.path.join(src_dir, "rootfs","bin"), bin_dir)
 
     # 在安装完成后设置数据目录权限
     set_data_dir_permissions()

@@ -178,6 +178,23 @@ impl DIDDocumentTrait for ZoneBootConfig {
     }
 }
 
+pub struct ZoneBootInfo {
+    pub zone_boot_config: ZoneBootConfig,
+    // oodid -> address 
+    pub ood_info: HashMap<String, String>,
+}
+
+
+impl ZoneBootInfo {
+    pub fn new_by_boot_config(boot_config: &ZoneBootConfig) -> Self {
+        ZoneBootInfo {
+            zone_boot_config: boot_config.clone(),
+            ood_info: HashMap::new(),
+        }
+    }
+}
+
+
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct VerifyHubInfo {
     pub port: u16,
@@ -905,6 +922,7 @@ pub struct NodeIdentityConfig {
 }
 
 impl NodeIdentityConfig {
+
     pub fn load_node_identity_config(file_path: &PathBuf) -> NSResult<(NodeIdentityConfig)> {
         let contents = std::fs::read_to_string(file_path.clone()).map_err(|err| {
             error!("read {} failed! {}", file_path.to_string_lossy(), err);

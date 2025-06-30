@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 #![allow(unused)]
 
-use anyhow::Result;
+use thiserror::Error;
 use hyper::header::HeaderValue;
 use hyper::{Body, Client, Request, Response, StatusCode};
 use log::*;
@@ -34,6 +34,53 @@ use crate::*;
 lazy_static!{
     static ref INNER_SERVICES_BUILDERS: Arc<Mutex< HashMap<String, Arc<dyn Fn () -> Box<dyn InnerServiceHandler + Send + Sync>+ Send + Sync>>>> = Arc::new(Mutex::new(HashMap::new()));
 }
+
+#[derive(Error, Debug)]
+pub enum RouterError {
+    #[error("400 Bad Request: {0}")]
+    BadRequest(String),
+    #[error("401 Unauthorized: {0}")]
+    Unauthorized(String),
+    #[error("403 Forbidden: {0}")]
+    Forbidden(String),
+    #[error("404 Not found: {0}")]
+    NotFound(String),
+    #[error("429 Too Many Requests: {0}")]
+    TooManyRequests(String),
+    #[error("500 Internal Error: {0}")]
+    Internal(String),
+    #[error("502 Bad Gateway: {0}")]
+    BadGateway(String),
+    #[error("503 Service Unavailable: {0}")]
+    ServiceUnavailable(String),
+    #[error("504 Gateway Timeout: {0}")]
+    GatewayTimeout(String),
+}
+
+impl RouterError {
+    pub fn build_response(&self)->Response<Body> {
+        Response::builder()
+            .status(self.status_code())
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    pub fn status_code(&self)->StatusCode {
+        match self {
+            RouterError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            RouterError::BadGateway(_) => StatusCode::BAD_GATEWAY,
+            RouterError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            RouterError::GatewayTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
+            RouterError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            RouterError::NotFound(_) => StatusCode::NOT_FOUND,
+            RouterError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            RouterError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            RouterError::Forbidden(_) => StatusCode::FORBIDDEN,
+        }
+    }
+}
+
+pub type RouterResult<T> = std::result::Result<T, RouterError>;
 
 pub async fn register_inner_service_builder<F>(inner_service_name: &str, constructor : F)
     where F: Fn () -> Box<dyn InnerServiceHandler + Send + Sync> + 'static + Send + Sync,
@@ -133,13 +180,13 @@ impl Router {
         &self,
         req: Request<Body>,
         client_ip:SocketAddr,
-    ) -> Result<Response<Body>> {
-        let mut host = req
-            .headers()
-            .get("host")
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
+    ) -> RouterResult<Response<Body>> { 
+        let mut host = req 
+            .headers() 
+            .get("host") 
+            .and_then(|h| h.to_str().ok()) 
+            .unwrap_or_default() 
+            .to_string(); 
 
         if host.len() > 1 {
             let result = host.split_once(':');
@@ -157,7 +204,7 @@ impl Router {
             warn!("Route Config not found: {}", host);
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
-                .body(Body::from("Route not found"))?);
+                .body(Body::from("Route not found")).unwrap());
         }
 
         let (route_path, route_config) = route_config.unwrap();
@@ -176,7 +223,7 @@ impl Router {
                     }
                 }
                 let body = response.body.clone().unwrap_or_default();
-                let resp = builder.body(Body::from(body))?;
+                let resp = builder.body(Body::from(body)).unwrap();
                 Ok(resp)
             }
             RouteConfig {
@@ -194,7 +241,7 @@ impl Router {
                 if route_config.enable_cors && req.method() == hyper::Method::OPTIONS {
                     Ok(Response::builder()
                         .status(StatusCode::OK)
-                        .body(Body::empty())?)
+                        .body(Body::empty()).unwrap())
                 } else {
                     self.handle_inner_service(inner_service.as_str(),req,client_ip).await
                 }
@@ -207,7 +254,7 @@ impl Router {
                 named_mgr: Some(named_mgr),
                 ..
             } => handle_ndn(named_mgr, req, &host,  client_ip,route_path.as_str()).await,
-            _ => Err(anyhow::anyhow!("Invalid route configuration")),
+            _ => Err(RouterError::BadGateway("Invalid route configuration".to_string())),
         }.map(|mut resp| {
             if route_config.enable_cors {
                 //info!("enable cors for route: {}",route_path);
@@ -223,6 +270,7 @@ impl Router {
         if real_resp.is_err() {
             let err_msg = real_resp.as_ref().unwrap_err().to_string();
             error!("{} <==| {}",client_ip.to_string(),err_msg);
+            
         } else {
             info!("{} <==| {}",client_ip.to_string(),real_resp.as_ref().unwrap().status());
         }
@@ -232,14 +280,14 @@ impl Router {
 
 
 
-    async fn handle_inner_service(&self, inner_service_name: &str, req: Request<Body>, client_ip:IpAddr) -> Result<Response<Body>> {
+    async fn handle_inner_service(&self, inner_service_name: &str, req: Request<Body>, client_ip:IpAddr) -> RouterResult<Response<Body>> {
         let inner_service = self.inner.inner_service.get();
         let true_service;
         if inner_service.is_none() {
             let inner_service_builder_map = INNER_SERVICES_BUILDERS.lock().await;
             let inner_service_builder = inner_service_builder_map.get(inner_service_name);
             if inner_service_builder.is_none() {
-                return Err(anyhow::anyhow!("Inner service not found: {}", inner_service_name));
+                return Err(RouterError::BadGateway(format!("Inner service not found: {}", inner_service_name)));
             }
 
             let inner_service_builder = inner_service_builder.unwrap();
@@ -255,40 +303,46 @@ impl Router {
         match *method {
             hyper::Method::POST => {
                 let body_bytes = hyper::body::to_bytes(req.into_body()).await.map_err(|e| {
-                    anyhow::anyhow!("Failed to read body: {}", e)
+                    RouterError::BadRequest(format!("Failed to read body: {}", e))
                 })?;
 
                 let body_str = String::from_utf8(body_bytes.to_vec()).map_err(|e| {
-                    anyhow::anyhow!("Failed to convert body to string: {}", e)
+                    RouterError::BadRequest(format!("Failed to convert body to string: {}", e))
                 })?;
 
                 info!("|==>recv kRPC req: {}",body_str);
 
                 //parse req to RPCRequest
                 let rpc_request: RPCRequest = serde_json::from_str(body_str.as_str()).map_err(|e| {
-                    anyhow::anyhow!("Failed to parse request body to RPCRequest: {}", e)
+                    RouterError::BadRequest(format!("Failed to parse request body to RPCRequest: {}", e))
                 })?;
 
-                let resp = true_service.handle_rpc_call(rpc_request,client_ip).await?;
+                let resp = true_service.handle_rpc_call(rpc_request,client_ip).await.map_err(|e| {
+                    RouterError::Internal(format!("Failed to handle rpc call: {}", e))
+                })?;
+
                 //parse resp to Response<Body>
-                Ok(Response::new(Body::from(serde_json::to_string(&resp)?)))
+                Ok(Response::new(Body::from(serde_json::to_string(&resp).map_err(|e| {
+                    RouterError::Internal(format!("Failed to convert response to string: {}", e))
+                })?)))
             }
             hyper::Method::GET => {
                 let resp = true_service.handle_http_get(req.uri().path(),client_ip).await;
+                //TODO: RPCError to RouterError
                 if resp.is_err() {
-                    return Err(anyhow::anyhow!("Failed to handle http get: {}", resp.as_ref().unwrap_err()));
+                    return Err(RouterError::Internal(format!("Failed to handle http get: {}", resp.as_ref().unwrap_err())));
                 }
                 let resp = resp.unwrap();
                 Ok(Response::new(Body::from(resp)))
             }
             _ => {
-                return Err(anyhow::anyhow!("Not supported request method: {}", req.method()));
+                return Err(RouterError::BadRequest(format!("Not supported request method: {}", req.method())));
             }
         }
         
     }
 
-    async fn handle_upstream_selector(&self, selector_id:&str,req: Request<Body>,host:&str, client_ip:IpAddr) -> Result<Response<Body>> {
+    async fn handle_upstream_selector(&self, selector_id:&str,req: Request<Body>,host:&str, client_ip:IpAddr) -> RouterResult<Response<Body>> {
         //in early stage, only support sn server id
         let sn_server = get_sn_server_by_id(selector_id).await;
         if sn_server.is_some() {
@@ -304,16 +358,16 @@ impl Router {
             warn!("No sn server found for selector: {}",selector_id);
         }
 
-        return Err(anyhow::anyhow!("No tunnel selected"));
+        return Err(RouterError::BadGateway("No tunnel selected".to_string()));
     }
 
-    async fn handle_upstream(&self, req: Request<Body>, upstream: &UpstreamRouteConfig) -> Result<Response<Body>> {
+    async fn handle_upstream(&self, req: Request<Body>, upstream: &UpstreamRouteConfig) -> RouterResult<Response<Body>> {
         let org_url = req.uri().to_string();
         let url = format!("{}{}", upstream.target, org_url);
         info!("handle_upstream url: {}", url);
         let upstream_url = Url::parse(upstream.target.as_str());
         if upstream_url.is_err() {
-            return Err(anyhow::anyhow!("Failed to parse upstream url: {}", upstream_url.err().unwrap()));
+            return Err(RouterError::BadGateway(format!("Failed to parse upstream url: {}", upstream_url.err().unwrap())));
         }
         //TODO:support url rewrite
         let upstream_url = upstream_url.unwrap();
@@ -327,25 +381,29 @@ impl Router {
                         let mut upstream_req = Request::builder()
                         .method(req.method())
                         .uri(&url)
-                        .body(req.into_body())?;
+                        .body(req.into_body()).map_err(|e| {
+                            RouterError::Internal(format!("Failed to build request: {}", e))
+                        })?;
 
                         *upstream_req.headers_mut() = header;
                     
-                        let resp = client.request(upstream_req).await?;
+                        let resp = client.request(upstream_req).await.map_err(|e| {
+                            RouterError::Internal(format!("Failed to request upstream: {}", e))
+                        })?;
                         return Ok(resp)
                     }, 
                     RedirectType::Permanent => {
                         let resp = Response::builder()
                             .status(StatusCode::PERMANENT_REDIRECT)
                             .header(hyper::header::LOCATION, url)
-                            .body(Body::empty())?;
+                            .body(Body::empty()).unwrap();
                         return Ok(resp);
                     },
                     RedirectType::Temporary => {
                         let resp = Response::builder()
                         .status(StatusCode::TEMPORARY_REDIRECT)
                         .header(hyper::header::LOCATION, url)
-                        .body(Body::empty())?;
+                        .body(Body::empty()).unwrap();
                         return Ok(resp);
                     }
                 }
@@ -368,17 +426,21 @@ impl Router {
                 let mut upstream_req = Request::builder()
                     .method(req.method())
                     .uri(fake_url)
-                    .body(req.into_body())?;
+                    .body(req.into_body()).map_err(|e| {
+                        RouterError::BadGateway(format!("Failed to build upstream_req: {}", e))
+                    })?;
 
                 *upstream_req.headers_mut() = header;
-                let resp = client.request(upstream_req).await?;
+                let resp = client.request(upstream_req).await.map_err(|e| {
+                    RouterError::Internal(format!("Failed to request upstream: {}", e))
+                })?;
                 return Ok(resp)
             }
         }
 
     }
 
-    async fn handle_local_dir(&self, req: Request<Body>, local_dir: &str, route_path: &str) -> Result<Response<Body>> {
+    async fn handle_local_dir(&self, req: Request<Body>, local_dir: &str, route_path: &str) -> RouterResult<Response<Body>> {
         let path = req.uri().path();
         let sub_path = buckyos_kit::get_relative_path(route_path, path);
         let file_path = if sub_path.starts_with("/") {
@@ -390,16 +452,14 @@ impl Router {
         let path = file_path.as_path();
 
         if path.is_file() {
-            let file = match tokio::fs::File::open(&path).await {
-                Ok(file) => file,
-                Err(_) => return Ok(Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(Body::from("File not found"))?),
-            };
+            let file = tokio::fs::File::open(&path).await.map_err(|e| {
+                warn!("Failed to open file: {}", e);
+                RouterError::Internal(format!("Failed to open file: {}", e))
+            })?;
 
             let file_meta = file.metadata().await.map_err(|e| {
                 warn!("Failed to get file metadata: {}", e);
-                anyhow::anyhow!("Failed to get file metadata: {}", e)
+                RouterError::Internal(format!("Failed to get file metadata: {}", e))
             })?;
             let file_size = file_meta.len();
             let mime_type = mime_guess::from_path(&file_path).first_or_octet_stream();
@@ -410,7 +470,9 @@ impl Router {
                     if let Ok((start, end)) = parse_range(range_str, file_size) {
                         let mut file = tokio::io::BufReader::new(file);
                         // 设置读取位置
-                        tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(start)).await?;
+                        tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(start)).await.map_err(|e| {
+                            RouterError::Internal(format!("Failed to seek file: {}", e))
+                        })?;
 
                         let content_length = end - start + 1;
                         let stream = tokio_util::io::ReaderStream::with_capacity(
@@ -424,7 +486,9 @@ impl Router {
                             .header("Content-Length", content_length)
                             .header("Content-Range", format!("bytes {}-{}/{}", start, end, file_size))
                             .header("Accept-Ranges", "bytes")
-                            .body(Body::wrap_stream(stream))?);
+                            .body(Body::wrap_stream(stream)).map_err(|e| {
+                                RouterError::Internal(format!("Failed to build response: {}", e))
+                            })?);
                     }
                 }
             }
@@ -437,11 +501,11 @@ impl Router {
                 .header("Content-Type", mime_type.as_ref())
                 .header("Content-Length", file_size)
                 .header("Accept-Ranges", "bytes")
-                .body(Body::wrap_stream(stream))?)
+                .body(Body::wrap_stream(stream)).map_err(|e| {
+                    RouterError::Internal(format!("Failed to build response: {}", e))
+                })?)
         } else {
-            Ok(Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Body::from("File not found"))?)
+            return Err(RouterError::NotFound(format!("File not found: {}", file_path.to_string_lossy().to_string())));
         }
     }
 }

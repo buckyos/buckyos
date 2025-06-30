@@ -20,6 +20,8 @@ thiserror = "*"
 jsonwebtoken = "*"
 base64 = "*"
 sha2 = "*"
+rand = "*"
+rand_core = "*"
 # rocksdb = "*"
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }

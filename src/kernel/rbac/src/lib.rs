@@ -256,7 +256,8 @@ p, su_bob,kv://users/bob/*,read|write,allow
         create_enforcer(None,Some(&policy_str)).await.unwrap();
         let res = enforce("ood", Some("node-daemon"), "kv://boot/config", "read").await;
         assert_eq!(res, true);
-         assert_eq!(enforce("ood1", Some("node-daemon"), "kv://boot/config", "write").await, false);
+        assert_eq!(enforce("ood1", Some("node-daemon"), "kv://boot/config", "write").await, false);
+        assert_eq!(enforce("ood1", Some("verify-hub"), "kv://system/verify-hub/key", "read").await, true);
         assert_eq!(enforce("root", Some("node-daemon"), "kv://boot/config", "write").await, true);
       
         assert_eq!(enforce("ood1", Some("scheduler"), "kv://users/alice/apps/app2/config", "write").await, true);

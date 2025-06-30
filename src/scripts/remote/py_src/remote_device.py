@@ -1,14 +1,17 @@
 import json
 import os
 import subprocess
+import sys
 
-# 当前目录下的id_rsa
-id_rsa_path = os.path.join(os.path.dirname(__file__), "dev_configs/ssh/id_rsa")
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
+import util
 
-# 配置文件路径
-CONFIG_BASE = os.path.join(os.path.dirname(__file__), "dev_configs")
-ENV_CONFIG = os.path.join(CONFIG_BASE, "dev_vm_config.json")
-VM_DEVICE_CONFIG = os.path.join(CONFIG_BASE, "device_info.json")
+id_rsa_path = util.id_rsa_path
+ENV_CONFIG = util.ENV_CONFIG
+VM_DEVICE_CONFIG = util.VM_DEVICE_CONFIG
+
+
         
 class remote_device:
     def __init__(self, device_id: str):

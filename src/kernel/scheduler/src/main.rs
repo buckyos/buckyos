@@ -41,7 +41,10 @@ async fn create_init_list_by_template() -> Result<HashMap<String, String>> {
     let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
     start_params["verify_hub_key"] = json!(private_key_pem);
     start_params["verify_hub_public_key"] = json!(public_key_jwk.to_string());
-    start_params["BUCKYOS_ROOT"] = json!(get_buckyos_root_dir().to_string_lossy().to_string());
+    
+    // 将Windows路径中的反斜杠转换为正斜杠，避免TOML转义问题
+    let buckyos_root = get_buckyos_root_dir().to_string_lossy().to_string().replace('\\', "/");
+    start_params["BUCKYOS_ROOT"] = json!(buckyos_root);
 
     let mut engine = upon::Engine::new();
     engine.add_template("config", &template_str)?;
@@ -105,7 +108,10 @@ async fn do_boot_scheduler() -> Result<()> {
         return Err(anyhow::anyhow!("boot/config not found in init list"));
     }
     let boot_config_str = boot_config_str.unwrap();
-    let mut zone_config: ZoneConfig = zone_boot_config.to_zone_config();
+    let mut zone_config: ZoneConfig = serde_json::from_str(boot_config_str.as_str()).map_err(|e| {
+        error!("serde_json::from_str failed: {:?}", e);
+        e
+    })?;
     zone_config.init_by_boot_config(&zone_boot_config);
     init_list.insert(
         "boot/config".to_string(),
@@ -123,7 +129,9 @@ async fn do_boot_scheduler() -> Result<()> {
         error!("schedule_loop failed: {:?}", boot_result.err().unwrap());
         return Err(anyhow::anyhow!("schedule_loop failed"));
     }
-
+    system_config_client.refresh_trust_keys().await?;
+    info!("system_config_service refresh trust keys success");
+    
     info!("boot scheduler success");
     return Ok(());
 }
@@ -380,13 +388,11 @@ async fn schedule_loop(is_boot: bool) -> Result<()> {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         loop_step += 1;
         info!("schedule loop step:{}.", loop_step);
-        let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
-        if rpc_session_token_str.is_err() {
-            return Err(anyhow::anyhow!("SCHEDULER_SESSION_TOKEN is not set"));
-        }
-
-        let rpc_session_token = rpc_session_token_str.unwrap();
-        let system_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
+        let buckyos_api_runtime = get_buckyos_api_runtime().unwrap();
+        let system_config_client = buckyos_api_runtime.get_system_config_client().await.map_err(|e| {
+            error!("get_system_config_client failed: {:?}", e);
+            e
+        })?;
         let input_config = system_config_client.dump_configs_for_scheduler().await;
         if input_config.is_err() {
             error!(
@@ -473,9 +479,10 @@ async fn service_main(is_boot: bool) -> Result<i32> {
                     error!("init_buckyos_api_runtime failed: {:?}", e);
                     e
                 })?;
-        runtime.login().await.map_err(|e| {
-            error!("login failed: {:?}", e);
-            e
+                
+            runtime.login().await.map_err(|e| {
+                error!("buckyos-api-runtime::login failed: {:?}", e);
+                e
         })?;
         set_buckyos_api_runtime(runtime);
         schedule_loop(false).await.map_err(|e| {

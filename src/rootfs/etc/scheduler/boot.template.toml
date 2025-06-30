@@ -108,7 +108,7 @@
 """
 
 # devices,set & update by register_device_doc@node_daemon
-"devices/ood1/doc" = "eyJhbGciOiJFZERTQSJ9.eyJkaWQiOiJkaWQ6ZGV2Omd1YlZJc3p3LXVfZDVQVlRoLW9jOENLQWhNOUMtbmU1R195VUs1QkRhWGMiLCJuYW1lIjoib29kMSIsImRldmljZV90eXBlIjoib29kIiwiYXV0aF9rZXkiOnsia3R5IjoiT0tQIiwiY3J2IjoiRWQyNTUxOSIsIngiOiJndWJWSXN6dy11X2Q1UFZUaC1vYzhDS0FoTTlDLW5lNUdfeVVLNUJEYVhjIn0sImlzcyI6Imx6YyIsImV4cCI6MjA1MjE5MjM2NSwiaWF0IjoxNzM2ODMyMzY1fQ.yOUIeaG9uHsj_36Dsb8waehmFpeRpe3MRUab9wKPivg_fvqr4MLW36T49p8Iq14QebVIRRegfvBs__eJqqOKBA"
+"devices/ood1/doc" = "{{ood_jwt}}"
 # devices,set & update by update_device_info@node_daemon
 #"devices/ood1/info" = "{}"
 
@@ -124,7 +124,7 @@
 # frames & services
 "services/verify-hub/config" = """
 {
-    "name":"verify_hub",
+    "name":"verify-hub",
     "description":"verify hub is SSO service of buckyos",
     "vendor_did":"did:bns:buckyos",
     "pkg_id":"verify_hub",
@@ -444,7 +444,7 @@ g, {{user_name}},admin
 """
 
 # boot config will merge with zone_boot_config
-# todo:
+# if boot/config is modified, whole zone will be restarted
 "boot/config" = """
 {
   "@context": "https://www.w3.org/ns/did/v1",
@@ -470,6 +470,11 @@ g, {{user_name}},admin
   "exp": 0,
   "iat": 0,
   "owner": "did:bns:{{user_name}}",
+  "verify_hub_info": {
+    "public_key": {{verify_hub_public_key}},
+    "port": 3300,
+    "node_name": "ood1"
+  },
   "oods": [
   ]
 }

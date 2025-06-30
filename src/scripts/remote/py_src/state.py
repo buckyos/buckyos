@@ -1,6 +1,11 @@
 import get_device_info
 import subprocess
 
+def check_sn_gateway():
+    # multipass exec sn -- bash -c "ps -ef | grep -v bash | grep -v grep | grep web3_gateway"
+    result = subprocess.run(["multipass", "exec", "sn", "--", "bash", "-c", "ps -ef | grep -v bash | grep -v grep | grep web3_gateway"], capture_output=True, text=True)
+    # print( result.check_returncode,result.stdout)
+    return result.returncode == 0 and result.stdout.strip()
 
 
 
@@ -8,7 +13,7 @@ import subprocess
 def info_device():
     # multipass exec sn -- bash -c "ps -ef | grep -v bash | grep -v grep | grep web3_gateway"
     result = subprocess.run(["multipass", "exec", "sn", "--", "bash", "-c", "ps -ef | grep -v bash | grep -v grep | grep web3_gateway"], capture_output=True, text=True)
-    if not result.stdout.strip():
+    if not check_sn_gateway():
         print("sn gateway no running")
 
     # 检查 nodeB1 

@@ -172,7 +172,7 @@ impl NamedDataMgrDB {
         let mut conn = self.conn.lock().unwrap();
         let obj_id = obj_id.to_string();
         let tx = conn.transaction().map_err(|e| {
-            warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: tx.transaction error, create path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         
@@ -180,13 +180,14 @@ impl NamedDataMgrDB {
             "INSERT INTO paths (path, obj_id, app_id, user_id) VALUES (?1, ?2, ?3, ?4)",
             [&path, obj_id.as_str(), app_id, user_id],
         ).map_err(|e| {
-            warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB: tx.execute error, create path failed! {:?}", &e);
+ 
             NdnError::DbError(e.to_string())
         })?;
 
 
         tx.commit().map_err(|e| {
-            warn!("NamedDataMgrDB: create path failed! {}", e.to_string());
+            warn!("NamedDataMgrDB:tx.commit error, create path failed! {}", e.to_string());
             NdnError::DbError(e.to_string())
         })?;
         Ok(())
@@ -368,6 +369,7 @@ impl NamedDataMgr {
 
         let named_data_mgr = named_data_mgr_map.get(&named_mgr_key);
         if named_data_mgr.is_some() {
+            debug!("NamedDataMgr: get named data mgr by id:{}", named_mgr_key);
             return Some(named_data_mgr.unwrap().clone());
         }
 

@@ -199,6 +199,13 @@ impl SystemConfigClient {
         Ok(result)
     }
 
+    pub async fn refresh_trust_keys(&self) -> SytemConfigResult<()> {
+        let client = self.get_krpc_client()?;
+        client.call("sys_refresh_trust_keys", json!({})).await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+        Ok(())
+    }
+
   
 
 }

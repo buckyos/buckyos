@@ -1,10 +1,7 @@
 use std::ops::Deref;
 //system control panel client
 use std::sync::Arc;
-use name_lib::DeviceConfig;
-use name_lib::DeviceInfo;
-use name_lib::ZoneConfig;
-use name_lib::OwnerConfig;
+use name_lib::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use serde_json::Value;
@@ -275,6 +272,7 @@ impl ControlPanelClient {
     pub fn new(system_config_client: SystemConfigClient) -> Self {
         Self { system_config_client }
     }
+
     //return (rbac_model,rbac_policy)
     pub async fn load_rbac_config(&self) -> Result<(String,String)> {
         let rbac_model_path = "system/rbac/model";
@@ -323,10 +321,14 @@ impl ControlPanelClient {
         if get_result.is_err() {
             return Err(RPCErrors::ReasonError("Trust key  not found".to_string()));
         }
-        let (device_config,_version) = get_result.unwrap();
-        let device_config:DeviceConfig= serde_json::from_str(&device_config)
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        Ok(device_config)
+        
+        let (device_doc_str,_version) = get_result.unwrap();
+        let device_doc: EncodedDocument = EncodedDocument::from_str(device_doc_str.clone())
+            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        let device_doc: DeviceConfig = DeviceConfig::decode(&device_doc, None)
+            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+
+        Ok(device_doc)
     }
 
     pub async fn add_user(&self, user_config:&OwnerConfig,is_admin:bool) -> Result<u64> {

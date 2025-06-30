@@ -68,12 +68,12 @@ function write_resp(client_stream,resp,req) {
 ```xml
 <process_chain id="main_http_server.filter">
     <block type="probe">
+        policy accept
         http-sni-probe
-        match REQ_HEADER.host "*.local" && DROP
-        set_lable_by_host_db REQ_HEADER.host || DROP
-        have_lable REQ_HEADER.labes "direct" && DROP
+        match REQ_HEADER.host "*.local" && return
+        define lables map_get $host_lable_map REQ_HEADER.host
+        set REQ_HEADER.lables lables
     </block>
-
 </process_chain id="main_http_server">
     <block type="process">
         match REQ_HEADER.url "appa.*/*" && EXEC usera_appa 
@@ -106,6 +106,9 @@ process_chain 中默认至少有一个block，block分两种：
      
 ## Control Flow Statements
 
+
+    
+
 从伪代码可以看到，native 代码主动调用了3个process_chain,我们这种直接由native code 启动的process_chain称作root process_chain. root process_chain互相之间是独立的，不存在可以从一个root process_chain跳转到另一个process_chain的过程。CONTEXT的继承是由natvie code控制的。
 
 在root process_chain的block中，可以通过内置命令实现流控制。有限的支持流控制语句是我们的一个关键设计，在配置模式下，我们不是图灵完备的，这样不会产生死循环，并且可以对有限的流程组合进行充分的测试。
@@ -117,9 +120,70 @@ process_chain 中默认至少有一个block，block分两种：
 
 ## CMD的设计思考
 
+内置命令用大写
+扩展命令，其它用小写？
+内置变量用大写
+用户扩展的变量用小写？
+
+- 控制命令：
+    policy drop/accept/return 本process_chain执行到最后一步的结果
+    exec 调用sub processchain并返回
+    goto 跳转到另一个processchain(不返回)
+    drop 终止结束,req被丢弃，不返回任何resp
+    accept 处理终止,用当前req进入下一步
+    return 当前处理结束，返回到上一级chain继续处理(可以返回一个变量)
+    
+- 匹配命令
+    变量相等匹配
+    文本匹配
+    标签匹配 (文本集合操作?)
+    IP匹配命令
+    IP数据库管理（IP段）
+
+- 集合管理命令
+    基本类型:set/map
+    基本集合匹配操作:
+        if_include / if_exclude
+    基本集合操作:
+        set_add,set_remove 
+        map_add,map_remove,map_get
+
+    内置集合：IP数据库
+    内置集合：域名标签库
+    条件集合： 定义一个匹配集合，{“条件”=>"processchain_id"}(所有的条件都是同类型的条件)
+        条件集合能让有大量分支的匹配效率更高
+
+- 写入命令
+    文本赋值写入
+    IP写入
+    规则替换(rewrite), 这个需要与nginx的rewrite语法尽量兼容
+
+
+
+- 环境变量管理
+    - 定义局部变量
+    - 
+
+- 投递到执行体（返回resp)
+  upstream (cluster)
+  inner service
+  block（构造resp的block)
+
+- 配额管理（限流） 和统计
+    
+- 构造简单resp
+
+- 脚本扩展
+    脚本扩展blcok
+    脚本扩展process_chain
+    脚本扩展执行体(inner_service)
+
+
+================================================
+
 - 区分对req的真实写入(rewrite) 和虚拟写入 req.header.xxx = xxx
 
-- 管理状态
+- 管理状态（注意区分只读block和可读写block)
     block和process chain都可以定义只读的配置环境变量
     block和process chain都可以定义可读写的环境变量
     
@@ -129,12 +193,18 @@ process_chain 中默认至少有一个block，block分两种：
     对来源进行判断
     构造配额：计数并根据计数器丢弃请求
 
-- 支持load balance    
+- 支持load balance    (upstream cluster)
     提取头，根据头进行处理链选择
 
 - 支持全内核模式运行
 
     可以极大的提高运行性能
+
+- 脚本是一个特殊的block / process_chain?
+
+## process_chain到执行体
+
+```
 
 
 ## 其它类似项目：

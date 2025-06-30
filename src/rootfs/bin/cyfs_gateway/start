@@ -12,10 +12,9 @@ print("try to kill cyfs_gateway")
 util.kill_process("cyfs_gateway")
 
 parser = argparse.ArgumentParser(description="cyfs_gateway startup script")
-parser.add_argument("--node_id", type=str,required=True, help="node id")
 parser.add_argument("--keep_tunnel", type=str,required=False, help="keep tunnel")
 args = parser.parse_args()
-node_id = args.node_id
+
 keep_tunnel = args.keep_tunnel
 buckyos_root = util.get_buckyos_root()
 
