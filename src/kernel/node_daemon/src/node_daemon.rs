@@ -728,17 +728,21 @@ async fn node_daemon_main_loop(
     Ok(())
 }
 
-async fn generate_device_session_token(device_doc: &DeviceConfig, device_private_key: &EncodingKey) -> std::result::Result<String,String> {
+async fn generate_device_session_token(device_doc: &DeviceConfig, device_private_key: &EncodingKey,is_boot:bool) -> std::result::Result<String,String> {
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH)
         .expect("Time went backwards");
     let timestamp = since_the_epoch.as_secs();
+    let mut userid = "kernel".to_string();
+    if !is_boot {
+        userid = device_doc.name.clone();
+    }
 
     let device_session_token = kRPC::RPCSessionToken {
         token_type : kRPC::RPCSessionTokenType::JWT,
         nonce : None,
         session : None,
-        userid : Some(device_doc.name.clone()),
+        userid : Some(userid),
         appid:Some("node-daemon".to_string()),
         exp:Some(timestamp + 60*15),
         iss:Some(device_doc.name.clone()),
@@ -870,7 +874,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             return String::from("init cyfs_gateway service failed!");
     })?;
 
-    let device_session_token_jwt = generate_device_session_token(&device_doc, &device_private_key).await.map_err(|err| {
+    let device_session_token_jwt = generate_device_session_token(&device_doc, &device_private_key,true).await.map_err(|err| {
         error!("generate device session token failed! {}", err);
         return String::from("generate device session token failed!");
     })?;
