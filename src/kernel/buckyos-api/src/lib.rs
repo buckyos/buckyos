@@ -906,11 +906,47 @@ impl BuckyOSRuntime {
         }
     }
 
+    pub fn is_ood(&self) -> bool {
+        if self.device_config.is_some() {
+            let device_config = self.device_config.as_ref().unwrap();
+            if device_config.device_type == "ood" {
+               return true;
+            } 
+        } 
+
+        return false;
+    }
+
+    //pub async fn scan_to_build_zoen_boot_info(&self) -> Result<()> {
+    //    unimplemented!()
+    //}
+
     pub async fn get_system_config_client(&self) -> Result<SystemConfigClient> {
-        let url = self.get_zone_service_url("system_config",self.force_https)?;
+        let mut url = "http://127.0.0.1:3200/kapi/system_config".to_string();
+        let mut schema = "http";
+        if self.force_https {
+            schema = "https";
+        }
+        let zone_host = self.zone_id.to_host_name();
+        if !self.is_ood() {
+            
+            match self.runtime_type {
+                BuckyOSRuntimeType::AppClient => {
+                    url = format!("{}://{}/kapi/system_config",schema,zone_host);
+                },
+                BuckyOSRuntimeType::AppService => {
+                    url = "http://127.0.0.1/kapi/system_config".to_string();
+                }
+                _ => {
+                    //do nothing
+                }
+            }
+        }
+
+        //let url = self.get_zone_service_url("system_config",self.force_https)?;
         let session_token = self.session_token.read().await;
         let client = SystemConfigClient::new(Some(url.as_str()),Some(session_token.as_str()));
-        info!("get system config client OK,url:{}",url);
+        debug!("get system config client OK,url:{}",url);
         Ok(client)
     }
 
@@ -973,10 +1009,12 @@ impl BuckyOSRuntime {
                 return Ok(format!("{}://{}/kapi/{}",schema,host_name,service_name));
             }
             BuckyOSRuntimeType::AppService => {
+                //考虑到应用集成SDK的版本问题，为了乡下兼容，总是通过本地的cyfs-gateway去访问其它的service
+                //由cyfs-gateway来执行service selector的逻辑
                 return Ok(format!("http://127.0.0.1/kapi/{}",service_name));
             }
             BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
-                //TODO:根据system config上的信息，得到更合适的host
+                //执行service discover逻辑
 
                 let service_port = match service_name {
                     "system_config" => 3200,

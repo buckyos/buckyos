@@ -962,8 +962,12 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                     error!("init_buckyos_api_runtime failed: {:?}", e);
                     return String::from("init_buckyos_api_runtime failed!");
                 })?;
+
         loop {
             //TODO: add searching OOD(system_config_service) logic,search result can generate system_config_url
+            // 只有node daemon的这一步需要搜索。搜索完成后会得到一个优先级列表，通过该优先级列表后续的服务都可以直接复用搜索结果
+            // 问题： 局域网内的ood重启后，ip发生变化（需要重新搜索）
+            
             let login_result = runtime.login().await.map_err(|e| {
                 error!("buckyos-api-runtime::login failed: {:?}", e);
                 return String::from("buckyos-api-runtime::login failed!");
@@ -972,8 +976,8 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             if login_result.is_ok() {
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 break;
-        } 
-    }
+            } 
+        }
         set_buckyos_api_runtime(runtime);
     }
     

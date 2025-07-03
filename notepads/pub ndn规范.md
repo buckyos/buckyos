@@ -73,3 +73,50 @@ download_chunk_by_path:
 - 允许 Zone外Get File(通过区分default named_mgr和pub named_mgr来隔离)
 - 一般 SetFile / PutObject 都是应用逻辑，无通用接口
 
+
+
+## 发布文件夹(Zip模式)
+###zone内发布
+1. client将构造DirObject，构造的过程中，会反复打开File并计算其hash：
+    减少总IO次数：在计算Hash的给过程中，可以边算边上传(push chunk)给OOD
+    提升体验：通过一些数据接口设计，可以缓存DirObject构造的中间结构，支持中断后继续
+    加快上传速度：push chunk接口由机会提前中断（当chunk在OOD上已经存在的时候）
+    加快计算速度：当对已经完成构造的Dir再次构造DirObject时，能精确的只计算“改变”的部分？
+
+2，所有的FileObject都构造好以后，开始构造DirObjectId,这里有一个根据Key排序，并构造树的过程（由map对象的内部实现）是一个TireMTree。此时元数据应打包成chunk
+    DirObject的打包文件格式和其索引格式是不同的
+
+
+3. 调用backup-service的backup接口，传递DirObjectId和已经打包文件的chunkid
+4. backup-service检查该DirObjectId的存在状态，返回 [不存在/ChunkId存在一部分/已存在] 3种情况
+4.1 client根据DirObjectId的存在状态，调用push chunk接口，直到bakcup-serivce确认chunkid已经存在
+4.2 backup-service ‘解压并校验' chunk,完成后再ood的namedobject中，该dirobject存在
+5. client调用backup-service的 Check接口，传入DirObjectId
+6. backup-service 遍历DirObject 的Path->ObjId对，确认ObjId是否存在
+    返回3种情况： 1.所有的都不存在 2.返回不存在的objid set 3.返回存在的`objid set`
+    返回set时，可以选择将set打包成一个chunk（patch格式）并放到特定路径，client根据该路径可以得到patch
+    返回不存在的ObjId Set (注意有翻页机制，允许client控制单次获取的大小）
+7. client根据上述结果，构造`objset`（objset是一个文件），先调用push chunk,再调用backup-service的put_dir_item接口传入chunkid,
+8. backup-service在put-dir-item的实现中，会是用标准的函数将objset包解压，并把所有其包含的obj保存到named mgr
+9. 重复7，8两步，完成后client再次调用check接口，直到check返回所有item都存在
+10. DirObject备份完成
+
+优化：6,7,8 步基于websocket实现object sync协议，client和OOD之间建立 Object Sync Channel，可以更高效的完成objset的同步？
+
+几个个核心的传输优化：
+    1. 传输Map<ObjId>,打包成chunk
+    2. 传输Set<ObjId>,打包成Chunk
+    3. 传递Set<Obj> 打包成chunk
+
+2. 跨zone发布
+将DirObjId传递给ZoneB
+ZoneB的backup-service检查该DirObjectId的存在状态，返回 [不存在/ChunkId存在一部分/已存在] 3种情况
+    优化：ZoneB可以根据业务逻辑，返回其持有某几个旧版本的DirObjectId  
+ZoneA根据ZoneB的返回，构造Map<ObjId>或 DiffMap<ObjId>
+
+
+## 发布文件(Git模式)
+Git模式里，每个TreeObject都不会太大（可以用单个Json保存)
+Client构造TreeObject->Call Backup.PutTreeObject-> 返回该Tree中不存在的Item
+    Client PutFileObject / PutTreeObject
+最后检查Root TreeObject是否存在，如果存在则发布完成
