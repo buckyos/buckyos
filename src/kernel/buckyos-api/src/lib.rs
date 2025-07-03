@@ -147,6 +147,7 @@ pub async fn init_buckyos_api_runtime(app_id:&str,app_owner_id:Option<String>,ru
     }
 
     let mut runtime = BuckyOSRuntime::new(app_id,app_owner_id,runtime_type);
+    runtime.fill_policy_by_load_config().await?;
     runtime.fill_by_load_config().await?;
     runtime.fill_by_env_var().await?;
     //CURRENT_BUCKYOS_RUNTIME.set(runtime);
