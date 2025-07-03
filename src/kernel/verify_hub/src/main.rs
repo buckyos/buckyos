@@ -2,8 +2,8 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use lazy_static::lazy_static;
 use log::*;
-use rand::rngs::OsRng;
-use rand::Rng;
+use rand::prelude::*;
+
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -41,12 +41,12 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         Arc::new(RwLock::new(private_key))
     };
     static ref TOKEN_CACHE: Arc<Mutex<HashMap<String, RPCSessionToken>>> =
-        { Arc::new(Mutex::new(HashMap::new())) };
+        Arc::new(Mutex::new(HashMap::new()));
     static ref TRUSTKEY_CACHE: Arc<Mutex<HashMap<String, DecodingKey>>> =
-        { Arc::new(Mutex::new(HashMap::new())) };
+        Arc::new(Mutex::new(HashMap::new()));
     static ref VERIFY_SERVICE_CONFIG: Arc<Mutex<Option<VerifyServiceConfig>>> =
-        { Arc::new(Mutex::new(None)) };
-    static ref MY_RPC_TOKEN: Arc<Mutex<Option<RPCSessionToken>>> = { Arc::new(Mutex::new(None)) };
+        Arc::new(Mutex::new(None));
+    static ref MY_RPC_TOKEN: Arc<Mutex<Option<RPCSessionToken>>> =  Arc::new(Mutex::new(None)) ;
 }
 
 async fn generate_session_token(
@@ -310,9 +310,13 @@ async fn handle_login_by_jwt(params: Value, _login_nonce: u64) -> Result<RPCSess
             .as_u64()
             .ok_or(RPCErrors::ReasonError("Invalid login_nonce".to_string()))?;
     }
+    let next_nonce;
+    {
+        let mut rng = rand::rng();
+        next_nonce = rng.random::<u64>();
+        drop(rng)
+    }
 
-    let mut rng = OsRng;
-    let next_nonce = rng.gen::<u64>();
     match iss_kid.as_str() {
         "verify-hub" => {
             //verify-hub's jwt
@@ -477,8 +481,12 @@ async fn handle_login_by_password(params: Value, login_nonce: u64) -> Result<Val
         "login success, generate session token for user:{}",
         username
     );
-    let mut rng = OsRng;
-    let session_id = rng.gen::<u64>();
+    let session_id;
+    {
+        let mut rng = rand::rng();
+        session_id = rng.random::<u64>();
+    }
+
     let session_token =
         generate_session_token(appid, username, login_nonce, session_id, 3600 * 24 * 7).await;
     let result_account_info = json!({
@@ -806,8 +814,9 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         // });
         // let token = encode(&header, &login_params, &private_key).unwrap();
 
-        let mut rng = OsRng;
-        let session_id = rng.gen::<u64>();
+        let mut rng = rand::rng();
+        let session_id = rng.random::<u64>();
+
         let test_login_token = RPCSessionToken {
             token_type: RPCSessionTokenType::JWT,
             nonce: Some(buckyos_get_unix_timestamp() * 1_000_000),
@@ -838,8 +847,8 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         print!("verify result:{}", verify_result);
 
         //test expired token
-        let mut rng = OsRng;
-        let session_id = rng.gen::<u64>();
+
+        let session_id = rng.random::<u64>();
         let test_login_token = RPCSessionToken {
             token_type: RPCSessionTokenType::JWT,
             nonce: Some((buckyos_get_unix_timestamp() - 10000) * 1_000_000),

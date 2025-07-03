@@ -22,7 +22,7 @@ cmd1 parm1 $(cmd2 parm2) // cmd2 param2的返回值为cmd1的第二个参数
 使用案例
 域名匹配  
 - *.web3.buckyos.ai
-- home.**
+- home.*.buckyos.ai
 
 IP地址匹配
 - 192.168.0.*
@@ -100,11 +100,16 @@ replace $REQ.host io ai
 ```
 match_include REQ_target_ip
 ```
+### set_craete setid
+创建set,如果setid已经存在，则返回失败
 
-### set_add set_id 变量1
+### map_create mapid
+创建map,如果mapid已经存在，则返回失败
+### set_add setid 变量1
+将变量1添加到setid代表的set中，如果该变量在Set中不存在，则返回成功
 
-### map_add
-
+### map_add mapid key value
+将(key-value) 增加到mapid
 ### set_remove
 
 ### map_remove
@@ -121,16 +126,20 @@ match_include REQ_target_ip
 echo "xxxx" debug
 
 ## 一些典型的标准环境变量
-标准环境变量都是大写的
+标准环境变量都是大写的,我们希望找到一个格式，可以更优雅一些的解决bash不能用类似REQ.url的方式来表达一个变量的问题
+
 $PROTOCOL
 
-$REQ_schema
+${REQ_schema}
 $REQ_host
 $REQ_url
 $REQ_from_ip
-$REQ_from-port
-$REQ_target-ip
-$REQ_target-port
+$REQ_from_port
+$REQ_target_ip
+$REQ_target_port
 $REQ_seq
 
-$REQ_Content-Length
+$REQ_Content_Length
+
+$IP_DB IP数据库,可以根据IP返回一组tags
+$HOST_DB 域名数据库，可以根据域名返回一组tags

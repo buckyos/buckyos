@@ -109,12 +109,14 @@ impl RTcpTunnel {
                 let _ = RTcpTunnelPackage::send_package(write_stream, pong_package).await?;
                 return Ok(());
             }
-            RTcpTunnelPackage::ROpen(ropen_package) => self.on_ropen(ropen_package).await,
+            RTcpTunnelPackage::ROpen(ropen_package) => 
+                self.on_ropen(ropen_package).await,
             RTcpTunnelPackage::ROpenResp(_ropen_resp_package) => {
                 //check result
                 Ok(())
             }
-            RTcpTunnelPackage::Open(open_package) => self.on_open(open_package).await,
+            RTcpTunnelPackage::Open(open_package) => 
+                self.on_open(open_package).await,
             RTcpTunnelPackage::OpenResp(open_resp_package) => {
                 // Notify the open_stream waiter with the seq
                 let notify = self
@@ -134,8 +136,8 @@ impl RTcpTunnel {
                 Ok(())
             }
             RTcpTunnelPackage::Pong(_pong_package) => Ok(()),
-            t @ _ => {
-                error!("Unsupport tunnel package type: {:?}", t);
+            pkg_type @ _ => {
+                error!("Unsupport tunnel package type: {:?}", pkg_type);
                 Ok(())
             }
         }

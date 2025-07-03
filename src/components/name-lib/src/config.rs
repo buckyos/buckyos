@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::net::SocketAddr;
-use std::os::unix::raw::time_t;
 use std::path::PathBuf;
 
 use crate::get_x_from_jwk;
