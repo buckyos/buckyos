@@ -347,7 +347,7 @@ impl RTcpTunnel {
             self.this_device.to_string(),
             open_package.body.stream_id
         );
-        self.build_helper.wait_ropen_stream(&real_key).await?;
+        self.build_helper.new_wait_stream(&real_key).await;
 
         // 2. send open_resp with success
         {
