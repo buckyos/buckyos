@@ -600,7 +600,7 @@ async fn dump_configs_for_scheduler(
     session_token: &RPCSessionToken,
 ) -> Result<Value> {
     let appid = session_token.appid.as_deref().unwrap();
-    if appid != "scheduler" && appid != "kernel" {
+    if appid != "scheduler" && appid != "node-daemon" {
         return Err(RPCErrors::NoPermission("No permission".to_string()));
     }
 

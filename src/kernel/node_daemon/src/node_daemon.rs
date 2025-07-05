@@ -728,17 +728,21 @@ async fn node_daemon_main_loop(
     Ok(())
 }
 
-async fn generate_device_session_token(device_doc: &DeviceConfig, device_private_key: &EncodingKey) -> std::result::Result<String,String> {
+async fn generate_device_session_token(device_doc: &DeviceConfig, device_private_key: &EncodingKey,is_boot:bool) -> std::result::Result<String,String> {
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH)
         .expect("Time went backwards");
     let timestamp = since_the_epoch.as_secs();
+    let mut userid = "kernel".to_string();
+    if !is_boot {
+        userid = device_doc.name.clone();
+    }
 
     let device_session_token = kRPC::RPCSessionToken {
         token_type : kRPC::RPCSessionTokenType::JWT,
         nonce : None,
         session : None,
-        userid : Some(device_doc.name.clone()),
+        userid : Some(userid),
         appid:Some("node-daemon".to_string()),
         exp:Some(timestamp + 60*15),
         iss:Some(device_doc.name.clone()),
@@ -870,7 +874,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             return String::from("init cyfs_gateway service failed!");
     })?;
 
-    let device_session_token_jwt = generate_device_session_token(&device_doc, &device_private_key).await.map_err(|err| {
+    let device_session_token_jwt = generate_device_session_token(&device_doc, &device_private_key,true).await.map_err(|err| {
         error!("generate device session token failed! {}", err);
         return String::from("generate device session token failed!");
     })?;
@@ -962,8 +966,12 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                     error!("init_buckyos_api_runtime failed: {:?}", e);
                     return String::from("init_buckyos_api_runtime failed!");
                 })?;
+
         loop {
             //TODO: add searching OOD(system_config_service) logic,search result can generate system_config_url
+            // 只有node daemon的这一步需要搜索。搜索完成后会得到一个优先级列表，通过该优先级列表后续的服务都可以直接复用搜索结果
+            // 问题： 局域网内的ood重启后，ip发生变化（需要重新搜索）
+            
             let login_result = runtime.login().await.map_err(|e| {
                 error!("buckyos-api-runtime::login failed: {:?}", e);
                 return String::from("buckyos-api-runtime::login failed!");
@@ -972,8 +980,8 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             if login_result.is_ok() {
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 break;
-        } 
-    }
+            } 
+        }
         set_buckyos_api_runtime(runtime);
     }
     

@@ -178,17 +178,41 @@ impl DIDDocumentTrait for ZoneBootConfig {
     }
 }
 
+/*
+How to use OODInfo & ZoneBootInfo
+
+Before Node Boot(first time connected to system_config_service),ZoneBootInfo will help Node connect to system_config_service
+按下面的顺序搜索，搜索到第一个返回
+orders: 
+- looking for same LAN ood by udp broadcast
+- looking for same LAN ood by tcp-scan (ipv4,C类地址，最多尝试254个地址)
+
+连接上后，通过读取system_config来获得完整的ZoneBootInfo信息（通过整合OOD 的 DeviceInfo得到）
+Node Daemon会定期刷新ZoneBootInfo 当长时间没有办法连接上任何ood后，会重新回到搜索流程
+
+为什么除了node_dameon 其它人都不用搜索得到zone-boot-info?
+    根本上是为了控制性能
+    node_daemon在启动的时候，通过环境变量把其拥有的最新版本的zone-boot-info传递给各个service
+    各个服务会定期的，与system_config保持通信，刷新最新版本的zone-boot-info
+    如果service长期无法连接system_config,应该主动结束进程，让node_daemon再次拉起
+
+*/
+
+pub struct OODInfo {
+    pub address:Option<IpAddr>,
+    pub net_id:Option<String>,
+    pub last_connected_time:Option<u64> //linux time stamp
+}
 pub struct ZoneBootInfo {
-    pub zone_boot_config: ZoneBootConfig,
+    //pub zone_boot_config: ZoneBootConfig,
     // oodid -> address 
-    pub ood_info: HashMap<String, String>,
+    pub ood_info: HashMap<String, OODInfo>,
 }
 
 
 impl ZoneBootInfo {
     pub fn new_by_boot_config(boot_config: &ZoneBootConfig) -> Self {
         ZoneBootInfo {
-            zone_boot_config: boot_config.clone(),
             ood_info: HashMap::new(),
         }
     }

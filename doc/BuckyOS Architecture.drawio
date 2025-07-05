@@ -1,4 +1,4 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/27.0.9 Chrome/134.0.6998.205 Electron/35.4.0 Safari/537.36" version="27.0.9" pages="11">
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/26.0.16 Chrome/132.0.6834.196 Electron/34.2.0 Safari/537.36" version="26.0.16" pages="11">
   <diagram id="oIMGCOtcYAl4cptAXmcz" name="Architecture">
     <mxGraphModel dx="2908" dy="1198" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
@@ -280,22 +280,22 @@
     </mxGraphModel>
   </diagram>
   <diagram id="iOcJLOFx5TQZdEkecl_a" name="kernel loop">
-    <mxGraphModel dx="2074" dy="717" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="1888" dy="717" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-48" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-48" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;" parent="1" vertex="1">
           <mxGeometry x="-695" y="2181" width="170" height="358.05" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-34" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-34" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;" parent="1" vertex="1">
           <mxGeometry x="-10" y="1495.63" width="430" height="496.25" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-36" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-21" target="fsqWt6HOSnuXdC4bvL9f-3">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-36" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="lypH9cc-xeRXDXk-d7uY-21" target="fsqWt6HOSnuXdC4bvL9f-3" edge="1">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="-585" y="1970" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-21" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-21" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;" parent="1" vertex="1">
           <mxGeometry x="-730" y="1610" width="290" height="320" as="geometry" />
         </mxCell>
         <mxCell id="w76EHTxTQfi9PKH68CeN-29" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="w76EHTxTQfi9PKH68CeN-25" target="w76EHTxTQfi9PKH68CeN-26" edge="1">
@@ -332,7 +332,7 @@
         <mxCell id="w76EHTxTQfi9PKH68CeN-51" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="w76EHTxTQfi9PKH68CeN-47" target="w76EHTxTQfi9PKH68CeN-25" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-49" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="w76EHTxTQfi9PKH68CeN-47" target="fsqWt6HOSnuXdC4bvL9f-46">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-49" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="w76EHTxTQfi9PKH68CeN-47" target="fsqWt6HOSnuXdC4bvL9f-46" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="w76EHTxTQfi9PKH68CeN-47" value="apply cyfs-gateway config from node_config" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" parent="1" vertex="1">
@@ -419,7 +419,7 @@
         <mxCell id="w76EHTxTQfi9PKH68CeN-91" value="start&lt;br&gt;wait events" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="209.95" y="2281.95" width="120" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-43" value="Update node_config" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;dashed=1;dashPattern=12 12;" edge="1" parent="1" source="w76EHTxTQfi9PKH68CeN-97" target="w76EHTxTQfi9PKH68CeN-33">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-43" value="Update node_config" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;dashed=1;dashPattern=12 12;" parent="1" source="w76EHTxTQfi9PKH68CeN-97" target="w76EHTxTQfi9PKH68CeN-33" edge="1">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="-50" y="3117" />
@@ -433,15 +433,15 @@
         <mxCell id="w76EHTxTQfi9PKH68CeN-102" value="scheduling loop @scheduler service:" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;fontSize=14;" parent="1" vertex="1">
           <mxGeometry x="-29.05000000000001" y="2244.95" width="270" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-1" value="node loop @node_daemon:" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-1" value="node loop @node_daemon:" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;fontSize=14;" parent="1" vertex="1">
           <mxGeometry x="-470" y="1090" width="230" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-2" value="Y" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-4" target="lypH9cc-xeRXDXk-d7uY-5">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-2" value="Y" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="lypH9cc-xeRXDXk-d7uY-4" target="lypH9cc-xeRXDXk-d7uY-5" edge="1">
           <mxGeometry relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-3" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-4" target="lypH9cc-xeRXDXk-d7uY-8">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-3" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="lypH9cc-xeRXDXk-d7uY-4" target="lypH9cc-xeRXDXk-d7uY-8" edge="1">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="-440" y="1254.25" />
@@ -449,231 +449,240 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-4" value="load node_identity?" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-4" value="load node_identity?" style="rhombus;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-420" y="1210.75" width="150" height="87.5" as="geometry" />
         </mxCell>
-        <mxCell id="O63FZA-lGS3qpQbuYNQ6-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-5" target="O63FZA-lGS3qpQbuYNQ6-1">
+        <mxCell id="O63FZA-lGS3qpQbuYNQ6-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="lypH9cc-xeRXDXk-d7uY-5" target="O63FZA-lGS3qpQbuYNQ6-1" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-5" value="load zone_boot_config&lt;div&gt;from NameService&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-5" value="load zone_boot_config&lt;div&gt;from NameService&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="-405" y="1327.75" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-7" target="lypH9cc-xeRXDXk-d7uY-4">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="lypH9cc-xeRXDXk-d7uY-7" target="lypH9cc-xeRXDXk-d7uY-4" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-7" value="start" style="strokeWidth=1;html=1;shape=mxgraph.flowchart.start_1;whiteSpace=wrap;fontStyle=0" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-7" value="start" style="strokeWidth=1;html=1;shape=mxgraph.flowchart.start_1;whiteSpace=wrap;fontStyle=0" parent="1" vertex="1">
           <mxGeometry x="-395" y="1114.25" width="100" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-8" value="node would enter wait active state" style="strokeWidth=1;html=1;shape=mxgraph.flowchart.terminator;whiteSpace=wrap;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-8" value="node would enter wait active state" style="strokeWidth=1;html=1;shape=mxgraph.flowchart.terminator;whiteSpace=wrap;" parent="1" vertex="1">
           <mxGeometry x="-580" y="1224.5" width="100" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-19" value="No! Looking for any OOD&lt;div&gt;(Cache enable)&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-10" target="lypH9cc-xeRXDXk-d7uY-21">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-19" value="No! Looking for any OOD&lt;div&gt;(Cache enable)&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="lypH9cc-xeRXDXk-d7uY-10" target="lypH9cc-xeRXDXk-d7uY-21" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-33" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-10" target="lypH9cc-xeRXDXk-d7uY-27">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-33" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="lypH9cc-xeRXDXk-d7uY-10" target="lypH9cc-xeRXDXk-d7uY-27" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-10" value="Am I OOD?&lt;div&gt;Is Node in ooldlist&lt;/div&gt;" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-10" value="Am I OOD?&lt;div&gt;Is Node in ooldlist&lt;/div&gt;" style="rhombus;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-420" y="1510" width="150" height="87.5" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-13" value="OOD is not portable. LAN changes require rebuilding the device_config which need user&#39;s signature." style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-13" value="OOD is not portable. LAN changes require rebuilding the device_config which need user&#39;s signature." style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
           <mxGeometry x="-650" y="1410" width="200" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-15" value="looking for Same-LAN OOD by UDP broadcast&amp;nbsp;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-15" value="looking for Same-LAN OOD by UDP broadcast&amp;nbsp;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-720" y="1620" width="270" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-16" value="looking for OOD by local-DNS ($oodname.local)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
-          <mxGeometry x="-720" y="1700" width="270" height="60" as="geometry" />
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-16" value="looking for OOD by local-DNS ($oodname.local)" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="-720" y="1695" width="270" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-17" value="looking for OOD by TCP scan" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
-          <mxGeometry x="-720" y="1780" width="270" height="60" as="geometry" />
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-17" value="looking for OOD by TCP scan" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="-720" y="1767.5" width="270" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-18" value="&lt;div&gt;looking for OOD by Zone-Gateway&lt;/div&gt;rtcp://$zonegateway/$oodname:22080&lt;div&gt;rtcp://$sn/$oodname:22080&lt;br&gt;&lt;div&gt;resolve $zoneid support bns&lt;/div&gt;&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
-          <mxGeometry x="-720" y="1860" width="270" height="60" as="geometry" />
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-18" value="&lt;div&gt;looking for OOD by Zone-Gateway&lt;/div&gt;rtcp://$zoneid&lt;div&gt;/$oodname:22080&lt;div&gt;rtcp://$sn/$oodname:22080&lt;br&gt;&lt;div&gt;resolve $zoneid support bns&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="-720" y="1840" width="270" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-48" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-27" target="lypH9cc-xeRXDXk-d7uY-28">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-48" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="lypH9cc-xeRXDXk-d7uY-27" target="lypH9cc-xeRXDXk-d7uY-28" edge="1">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="-152.5" y="1690" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-27" value="start system_config_service" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-27" value="start system_config_service" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-225" y="1640" width="145" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-39" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-28" target="lypH9cc-xeRXDXk-d7uY-29">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-39" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="lypH9cc-xeRXDXk-d7uY-28" target="lypH9cc-xeRXDXk-d7uY-29" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-28" value="sync N+1 system_config service ready" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-28" value="sync N+1 system_config service ready" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-225" y="1750" width="145" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-32" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-29" target="lypH9cc-xeRXDXk-d7uY-31">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-32" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="lypH9cc-xeRXDXk-d7uY-29" target="lypH9cc-xeRXDXk-d7uY-31" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-38" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-29" target="lypH9cc-xeRXDXk-d7uY-37">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-38" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="lypH9cc-xeRXDXk-d7uY-29" target="lypH9cc-xeRXDXk-d7uY-37" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-29" value="First Boot?&lt;div&gt;(check kv://boot/config)&lt;/div&gt;" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-29" value="First Boot?&lt;div&gt;(check kv://boot/config)&lt;/div&gt;" style="rhombus;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-241.25" y="1840" width="167.5" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-30" value="Automatic do sytem_config_service recovery?" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-30" value="Automatic do sytem_config_service recovery?" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
           <mxGeometry x="-366.25" y="1637.5" width="130" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-40" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-31" target="lypH9cc-xeRXDXk-d7uY-37">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-40" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="lypH9cc-xeRXDXk-d7uY-31" target="lypH9cc-xeRXDXk-d7uY-37" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-31" value="do boot scheuler&lt;div&gt;create kv://boot/config&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-31" value="do boot scheuler&lt;div&gt;create kv://boot/config&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-420" y="1860" width="145" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-37" value="Connect to local system_config_service and load ZoneConfig" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-37" value="Connect to local system_config_service and load ZoneConfig" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-230" y="2000" width="145" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-42" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-41" target="w76EHTxTQfi9PKH68CeN-33">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-42" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="lypH9cc-xeRXDXk-d7uY-41" target="w76EHTxTQfi9PKH68CeN-33" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-41" value="Node&lt;div&gt;Boot OK&lt;/div&gt;" style="strokeWidth=1;html=1;shape=mxgraph.flowchart.start_1;whiteSpace=wrap;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-41" value="Node&lt;div&gt;Boot OK&lt;/div&gt;" style="strokeWidth=1;html=1;shape=mxgraph.flowchart.start_1;whiteSpace=wrap;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="-395" y="2100" width="100" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-42" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="fsqWt6HOSnuXdC4bvL9f-3" target="lypH9cc-xeRXDXk-d7uY-41">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-42" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="fsqWt6HOSnuXdC4bvL9f-3" target="lypH9cc-xeRXDXk-d7uY-41" edge="1">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="-585" y="2040" as="sourcePoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-43" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-37" target="lypH9cc-xeRXDXk-d7uY-41">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-43" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="lypH9cc-xeRXDXk-d7uY-37" target="lypH9cc-xeRXDXk-d7uY-41" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="lypH9cc-xeRXDXk-d7uY-45" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.25;exitDx=0;exitDy=0;entryX=0.998;entryY=0.357;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="lypH9cc-xeRXDXk-d7uY-28" target="lypH9cc-xeRXDXk-d7uY-21">
+        <mxCell id="lypH9cc-xeRXDXk-d7uY-45" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.25;exitDx=0;exitDy=0;entryX=0.998;entryY=0.357;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="lypH9cc-xeRXDXk-d7uY-28" target="lypH9cc-xeRXDXk-d7uY-21" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-3" value="Connect to system_config_service and load ZoneConfig" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-3" value="Connect to system_config_service and load ZoneConfig" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-645" y="2020" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-27" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="fsqWt6HOSnuXdC4bvL9f-5" target="fsqWt6HOSnuXdC4bvL9f-6">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-27" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="fsqWt6HOSnuXdC4bvL9f-5" target="fsqWt6HOSnuXdC4bvL9f-6" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-33" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="fsqWt6HOSnuXdC4bvL9f-5" target="fsqWt6HOSnuXdC4bvL9f-32">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-33" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="fsqWt6HOSnuXdC4bvL9f-5" target="fsqWt6HOSnuXdC4bvL9f-32" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-5" value="Is WLAN OOD?" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-5" value="Is WLAN OOD?" style="rhombus;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="85" y="1550" width="150" height="87.5" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-30" value="Y" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="fsqWt6HOSnuXdC4bvL9f-6" target="fsqWt6HOSnuXdC4bvL9f-25">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-30" value="Y" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="fsqWt6HOSnuXdC4bvL9f-6" target="fsqWt6HOSnuXdC4bvL9f-25" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-31" value="N" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="fsqWt6HOSnuXdC4bvL9f-6" target="fsqWt6HOSnuXdC4bvL9f-28">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-31" value="N" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="fsqWt6HOSnuXdC4bvL9f-6" target="fsqWt6HOSnuXdC4bvL9f-28" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-6" value="Need SN?" style="rhombus;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-6" value="Need SN?" style="rhombus;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="85" y="1700" width="150" height="87.5" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-7" value="boot阶段的cyfs-gateway作用：支持连接到system_config_service&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1. 非WLAN节点，让etcd有机会联通别的NAT后面的OOD&lt;/div&gt;&lt;div&gt;2. WLAN节点，特殊的zone-gateway,支持其它的OOD通过本节点，联通其它NAT后面的OOD&lt;/div&gt;&lt;div&gt;3. SN节点是外部的一个rtcp协议栈，不是zone内的OOD&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-7" value="boot阶段的cyfs-gateway作用：支持连接到system_config_service&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1. 非WLAN节点，让etcd有机会联通别的NAT后面的OOD&lt;/div&gt;&lt;div&gt;2. WLAN节点，特殊的zone-gateway,支持其它的OOD通过本节点，联通其它NAT后面的OOD&lt;/div&gt;&lt;div&gt;3. SN节点是外部的一个rtcp协议栈，不是zone内的OOD&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="-5" y="1110" width="430" height="89" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-8" value="OOD3@WLAN" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-8" value="OOD3@WLAN" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="570" y="1164" width="120" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-10" value="OOD1@LAN1" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-10" value="OOD1@LAN1" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="450" y="1272" width="120" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-11" value="OOD5@LAN2" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-11" value="OOD5@LAN2" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="699" y="1272" width="120" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-12" value="OOD2@LAN1" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-12" value="OOD2@LAN1" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="450" y="1381" width="120" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-13" value="OOD4@LAN1" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-13" value="OOD4@LAN1" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="450" y="1481" width="120" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-14" value="N+1=3&lt;div&gt;每个OOD要连接至少2个OOD才能Boot成功&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-14" value="N+1=3&lt;div&gt;每个OOD要连接至少2个OOD才能Boot成功&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="450" y="1211" width="111" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-16" value="OOD1: keep-tunnel with OOD3&lt;div&gt;Direct To OOD3,OOD2,OOD4&lt;/div&gt;&lt;div&gt;rtcp to OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD2: keep-tunnel with OOD3&lt;div&gt;Direct To OOD3,OOD2,OOD4&lt;/div&gt;&lt;div&gt;rtcp to OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;div&gt;OOD4: keep-tunnel with OOD3&lt;div&gt;Direct To OOD3,OOD2,OOD4&lt;/div&gt;&lt;div&gt;rtcp to OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD3:&lt;/div&gt;&lt;div&gt;rtcp to OOD1,OOD2,OOD4,OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD5:keep tunel with OOD3&lt;/div&gt;&lt;div&gt;Direct To OOD3&lt;/div&gt;&lt;div&gt;rtcp to OOD1,OOD2,OOD5&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-16" value="OOD1: keep-tunnel with OOD3&lt;div&gt;Direct To OOD3,OOD2,OOD4&lt;/div&gt;&lt;div&gt;rtcp to OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD2: keep-tunnel with OOD3&lt;div&gt;Direct To OOD3,OOD2,OOD4&lt;/div&gt;&lt;div&gt;rtcp to OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;div&gt;OOD4: keep-tunnel with OOD3&lt;div&gt;Direct To OOD3,OOD2,OOD4&lt;/div&gt;&lt;div&gt;rtcp to OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD3:&lt;/div&gt;&lt;div&gt;rtcp to OOD1,OOD2,OOD4,OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD5:keep tunel with OOD3&lt;/div&gt;&lt;div&gt;Direct To OOD3&lt;/div&gt;&lt;div&gt;rtcp to OOD1,OOD2,OOD5&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="638.5" y="1381" width="221" height="290" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-17" value="SN@WLAN" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-17" value="SN@WLAN" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="590" y="1710" width="120" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-18" value="OOD1@LAN1" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-18" value="OOD1@LAN1" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="450" y="1811" width="120" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-19" value="OOD3@LAN2" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-19" value="OOD3@LAN2" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="699" y="1811" width="120" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-20" value="OOD2@LAN1" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-20" value="OOD2@LAN1" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="450" y="1920" width="120" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-22" value="N+1=2&lt;div&gt;每个OOD要连接至少2个OOD才能Boot成功&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-22" value="N+1=2&lt;div&gt;每个OOD要连接至少2个OOD才能Boot成功&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="450" y="1750" width="111" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-23" value="OOD1: keep-tunnel with SN&lt;div&gt;Direct To OOD2&lt;/div&gt;&lt;div&gt;rtcp to OOD3&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD2: keep-tunnel with SN&lt;div&gt;Direct To OOD3,OOD2,OOD4&lt;/div&gt;&lt;div&gt;rtcp to OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;div&gt;OOD4: keep-tunnel with OOD3&lt;div&gt;Direct To OOD3,OOD2,OOD4&lt;/div&gt;&lt;div&gt;rtcp to OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD3:&lt;/div&gt;&lt;div&gt;rtcp to OOD1,OOD2,OOD4,OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD5:keep tunel with OOD3&lt;/div&gt;&lt;div&gt;Direct To OOD3&lt;/div&gt;&lt;div&gt;rtcp to OOD1,OOD2,OOD5&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-23" value="OOD1: keep-tunnel with SN&lt;div&gt;Direct To OOD2&lt;/div&gt;&lt;div&gt;rtcp to OOD3&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD2: keep-tunnel with SN&lt;div&gt;Direct To OOD3,OOD2,OOD4&lt;/div&gt;&lt;div&gt;rtcp to OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;div&gt;OOD4: keep-tunnel with OOD3&lt;div&gt;Direct To OOD3,OOD2,OOD4&lt;/div&gt;&lt;div&gt;rtcp to OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD3:&lt;/div&gt;&lt;div&gt;rtcp to OOD1,OOD2,OOD4,OOD5&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;OOD5:keep tunel with OOD3&lt;/div&gt;&lt;div&gt;Direct To OOD3&lt;/div&gt;&lt;div&gt;rtcp to OOD1,OOD2,OOD5&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="620" y="1920" width="221" height="290" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-24" value="create dispatch config:&lt;div&gt;local port -&amp;gt; rtcp://$sn/$oodid:20080&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-24" value="create dispatch config:&lt;div&gt;local port -&amp;gt; rtcp://$sn/$oodid:20080&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry y="1910" width="130" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="O63FZA-lGS3qpQbuYNQ6-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="fsqWt6HOSnuXdC4bvL9f-25" target="fsqWt6HOSnuXdC4bvL9f-24">
+        <mxCell id="O63FZA-lGS3qpQbuYNQ6-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="fsqWt6HOSnuXdC4bvL9f-25" target="fsqWt6HOSnuXdC4bvL9f-24" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-25" value="keep tunnel to SN" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-25" value="keep tunnel to SN" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry y="1820" width="130" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="O63FZA-lGS3qpQbuYNQ6-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="fsqWt6HOSnuXdC4bvL9f-28" target="fsqWt6HOSnuXdC4bvL9f-29">
+        <mxCell id="O63FZA-lGS3qpQbuYNQ6-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="fsqWt6HOSnuXdC4bvL9f-28" target="fsqWt6HOSnuXdC4bvL9f-29" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-28" value="keep tunnel to WLAN OOD（zone-gateway)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-28" value="keep tunnel to WLAN OOD（zone-gateway)" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="214" y="1822.5" width="130" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-29" value="create dispatch config:&lt;div&gt;local port -&amp;gt; rtcp://$zonegateway/$oodid:20080&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-29" value="create dispatch config:&lt;div&gt;local port -&amp;gt; rtcp://$zonegateway/$oodid:20080&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="214" y="1910" width="130" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-32" value="create dispatch config:&lt;div&gt;local port -&amp;gt; rtcp:///$oodid:20080&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-32" value="create dispatch config:&lt;div&gt;local port -&amp;gt; rtcp:///$oodid:20080&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="285" y="1563.75" width="130" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="FtUDA4jLs7bKUEtVHcqN-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="fsqWt6HOSnuXdC4bvL9f-36" target="fsqWt6HOSnuXdC4bvL9f-34">
+        <mxCell id="FtUDA4jLs7bKUEtVHcqN-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="fsqWt6HOSnuXdC4bvL9f-36" target="fsqWt6HOSnuXdC4bvL9f-34" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-36" value="cyfs-gateway Loop" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;verticalAlign=top;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-36" value="cyfs-gateway Loop" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;verticalAlign=top;" parent="1" vertex="1">
           <mxGeometry x="85" y="1211" width="170" height="253.5" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-37" value="if this is ood&lt;br&gt;keep tunnel to SN/WLAN OOD" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-37" value="if this is ood&lt;br&gt;keep tunnel to SN/WLAN OOD" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" parent="1" vertex="1">
           <mxGeometry x="115" y="1316.75" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-38" value="create tcp-&amp;gt;rtcp for kernel service" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-38" value="create tcp-&amp;gt;rtcp for kernel service" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" parent="1" vertex="1">
           <mxGeometry x="115" y="1387.75" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-39" value="if zone.sn exists,try register OOD to SN" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-39" value="if zone.sn exists,try register OOD to SN" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=0" parent="1" vertex="1">
           <mxGeometry x="115" y="1247.75" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-44" value="boot_gateway_config" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-44" value="boot_gateway_config" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-675" y="2288.05" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-45" value="user_gateway_config" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-45" value="user_gateway_config" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-675" y="2209.05" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-46" value="node_gateway_config" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-46" value="node_gateway_config" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
           <mxGeometry x="-675" y="2369.05" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-47" value="post_gateway_config" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-47" value="post_gateway_config" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-675" y="2458.05" width="120" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="fsqWt6HOSnuXdC4bvL9f-50" value="cyfs-gateway config rules" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="fsqWt6HOSnuXdC4bvL9f-50" value="cyfs-gateway config rules" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="-695" y="2187.05" width="155" height="15" as="geometry" />
         </mxCell>
-        <mxCell id="O63FZA-lGS3qpQbuYNQ6-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="O63FZA-lGS3qpQbuYNQ6-1" target="lypH9cc-xeRXDXk-d7uY-10">
+        <mxCell id="O63FZA-lGS3qpQbuYNQ6-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="O63FZA-lGS3qpQbuYNQ6-1" target="lypH9cc-xeRXDXk-d7uY-10" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="O63FZA-lGS3qpQbuYNQ6-4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="O63FZA-lGS3qpQbuYNQ6-1" target="fsqWt6HOSnuXdC4bvL9f-36">
+        <mxCell id="O63FZA-lGS3qpQbuYNQ6-4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="O63FZA-lGS3qpQbuYNQ6-1" target="fsqWt6HOSnuXdC4bvL9f-36" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="O63FZA-lGS3qpQbuYNQ6-1" value="start cyfs-gateway at boot-model (support system_config can be found)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="O63FZA-lGS3qpQbuYNQ6-1" value="start cyfs-gateway at boot-model (support system_config can be found)" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="-417.5" y="1420" width="145" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="yaLFH_EoCBhOSX-8fva--1" value="boot阶段用ood string初始化rtcp tunnel的身份问题？" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+        <mxCell id="yaLFH_EoCBhOSX-8fva--1" value="boot阶段用ood string初始化rtcp tunnel的身份问题？" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
           <mxGeometry x="-110" y="1238.25" width="130" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="lQr_6oz8xkaGaNCxREZ9-1" value="Get Zone Config From Zone-Gateway to optimize this progress" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="-810" y="1519.63" width="190" height="68.25" as="geometry" />
+        </mxCell>
+        <mxCell id="lQr_6oz8xkaGaNCxREZ9-2" value="&lt;div&gt;&lt;b style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;站在非OOD的视角：&lt;/b&gt;&lt;/div&gt;system config的http url:&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;先通过http://zonehost/ 得到详细的，包含有所有ood ip的zone-info&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;http://OOD_IP:3200/kapi/system-config&lt;/span&gt;&lt;/div&gt;&lt;div&gt;运行在非OOD上的服务，通过得到OOD的IP，来稳定的访问某个OOD上的system config&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://127.0.0.1/kapi/system-config&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;运行在非OOD上的服务，&lt;/span&gt;使用本地cyfs-gateway提供的服务发现机制，来连接无法直接连接（在另一个NAT后面）的system config. 这个访问总是能成功的&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://zonehost/kapi/system-config&lt;/div&gt;&lt;div&gt;运行在非OOD上的服务，使用zone-gateway提供的服务发现机制，来连接system config.这个请求总是能成功的（给页面使用），为了保护zone-gateway的性能，有条件的runtime总是在最后才使用这个url&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;其它service的url (服务发现）&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;先通过system-config得到service-info,了解有多少个instance. 在多ood系统里，访问system-config没有单点故障&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;然后选择最佳的instance进行连接&lt;/div&gt;&lt;div&gt;instance信息里有地址信息，是service启动后创建的，包含真实的端口信息&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;如果选择的是instance在NAT后，则必须访问本地cyfsgateway的URL，（cyfs-gateway本身会创建映射过去）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://127.0.0.1:service_port/kapi/service-name&lt;/div&gt;&lt;div&gt;如果可以，优先选择在相同node的服务&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://node_ip:service_port/kapi/service-name&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://127.0.0.1/kapi/service-name&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://zonehost/kapiservice-name&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;zonehost里可以包含端口&lt;/div&gt;&lt;div&gt;zone boot配置里是否需要rtcp stack port?&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;非OOD是否要与公网OOD keep tunnel?&lt;/div&gt;&lt;div&gt;要的&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="990" y="1147.75" width="315" height="772.25" as="geometry" />
+        </mxCell>
+        <mxCell id="lQr_6oz8xkaGaNCxREZ9-4" value="&lt;b&gt;站在OOD的视角&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;便写好正确的boot_gateway配置，让cyfs-gateway提供正确的端口，以实现etcd 之间的互相sync&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;etcd成功连接后，node_daemon 还是连接本机的system-config&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;ood keep-tunnel with other-ood的方法&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;与SN Keep tunnel(只有一个）&lt;/div&gt;&lt;div&gt;与标识为WLAN的OODkeep tunnel(必定有IP）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1. get wan-ip from boot-config&lt;/div&gt;&lt;div&gt;2. open rtcp tunnel to rtcp://wan-ip:rtcp port&lt;br&gt;&amp;nbsp; &amp;nbsp; 握手过程可以传递私钥？&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;boot zonfig中的信息&lt;/div&gt;&lt;div&gt;a. owner pub key&lt;/div&gt;&lt;div&gt;b. gateway-pub key (可能是SN，也可能是OOD），握手后可知道信息&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="1350" y="1161.5" width="315" height="436" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
   <diagram id="1u5XhRc6Ss8xfa0_lFwo" name="Service &amp; kRPC">
-    <mxGraphModel dx="1470" dy="856" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="1194" dy="824" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -682,7 +691,7 @@
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-15" value="http&lt;div&gt;4.1&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="TtpUKM4LW4xhPhtb8Lpu-19">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-15" value="http&lt;div&gt;4.1&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="TtpUKM4LW4xhPhtb8Lpu-19" vertex="1" connectable="0">
           <mxGeometry x="-0.3476" y="-3" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
@@ -696,15 +705,15 @@
         <mxCell id="TtpUKM4LW4xhPhtb8Lpu-5" value="4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="TtpUKM4LW4xhPhtb8Lpu-1" target="1VOikts_Fu2gLfuLLnL2-2" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-14" value="http" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="TtpUKM4LW4xhPhtb8Lpu-5">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-14" value="http" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="TtpUKM4LW4xhPhtb8Lpu-5" vertex="1" connectable="0">
           <mxGeometry x="-0.3653" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-9" value="5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="TtpUKM4LW4xhPhtb8Lpu-1" target="-N7vmcvN1w1kGffq8Vgl-1">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-9" value="5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0;entryDx=0;entryDy=0;" parent="1" source="TtpUKM4LW4xhPhtb8Lpu-1" target="-N7vmcvN1w1kGffq8Vgl-1" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-16" value="http 5" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="-N7vmcvN1w1kGffq8Vgl-9">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-16" value="http 5" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="-N7vmcvN1w1kGffq8Vgl-9" vertex="1" connectable="0">
           <mxGeometry x="-0.0472" y="1" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
@@ -724,61 +733,61 @@
         <mxCell id="TtpUKM4LW4xhPhtb8Lpu-18" value="Kernel Service2" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="140" y="930" width="120" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="bFMGxiHM1td_q0ntUE2M-1" value="&lt;b&gt;kRPC的权限管理&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1. 服务开发者总是要对session token进行校验&lt;/div&gt;&lt;div&gt;2. 基本原则：zone内可以直连，zone外需要通过zone-gateway连接&lt;/div&gt;&lt;div style=&quot;&quot;&gt;3. 公网OOD的app服务通常是绑定127.0.0.1的，这样可以利用cyfs-gateway做防火墙，防止直接暴露. 非公网OOD的服务也只有内网有机会访问&lt;/div&gt;&lt;div&gt;4. 应用服务总是运行在逻辑容器中，这样即使出现漏洞，其能泄露的数据也可以控制在App范围内。&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="bFMGxiHM1td_q0ntUE2M-1" value="&lt;b&gt;kRPC的权限管理&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1. 服务开发者总是要对session token进行校验&lt;/div&gt;&lt;div&gt;2. 基本原则：zone内可以直连，zone外需要通过zone-gateway连接&lt;/div&gt;&lt;div style=&quot;&quot;&gt;3. 公网OOD的app服务通常是绑定127.0.0.1的，这样可以利用cyfs-gateway做防火墙，防止直接暴露. 非公网OOD的服务也只有内网有机会访问&lt;/div&gt;&lt;div&gt;4. 应用服务总是运行在逻辑容器中，这样即使出现漏洞，其能泄露的数据也可以控制在App范围内。&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="590" y="10" width="310" height="170" as="geometry" />
         </mxCell>
-        <mxCell id="jygwpOhVrun2l0I2vdN9-1" value="1.服务发现&lt;div&gt;2. 服务的公网URL&lt;/div&gt;&lt;div&gt;3.服务的基本安全机制&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;服务发现&lt;/b&gt;是指系统提供的一种标准机制，能根据系统的当前配置，将请求路由到正确的node上的app/frame service中。标准的服务发现依赖可用的system_config服务，并根据当前的系统状况，跳过失效的node,并根据node实时负载情况，调整无状态服务的请求的投递权重。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;Zone内访问服务的方法&lt;/b&gt;&lt;/div&gt;&lt;div&gt;1. 使用标准的服务client访问，系统有机会让该调用变成一个进程内的function call&lt;/div&gt;&lt;div&gt;2. 基于 http://127.0.0.1:$service_port/ 建立krcp client，并发起访问，绝对没有跨node的网络流量。该请求直接到service&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3. 兼容性最好：基于 http://127.0.0.1/kapi/$servicename 建立krpc client, cyfs-gateway会在内部实现服务发现，并自动基于rtcp://实现跨nat的服务访问 .该请求可能会进过2-3次转发到达service&lt;/div&gt;&lt;div&gt;（优先实现）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;4. 基于buckyos-sdk的服务发现api建立krpclient （cyfs-gateway内部也使用这个api)&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;5. 使用公网的 https://zonegateway/kapi/$servicename 建立krpc client&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;Zone外访问服务的方法&lt;/b&gt;&lt;/div&gt;&lt;div&gt;https://$appid.$zoneid/&lt;/div&gt;&lt;div&gt;&lt;div&gt;https://$zoneid/kapi/$servicename (需要支持跨域？）&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;https://$appid.$zoneid/kapi/$servicename (不需要跨域，但app需要声明自己的app page需要访问的服务）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="jygwpOhVrun2l0I2vdN9-1" value="1.服务发现&lt;div&gt;2. 服务的公网URL&lt;/div&gt;&lt;div&gt;3.服务的基本安全机制&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;服务发现&lt;/b&gt;是指系统提供的一种标准机制，能根据系统的当前配置，将请求路由到正确的node上的app/frame service中。标准的服务发现依赖可用的system_config服务，并根据当前的系统状况，跳过失效的node,并根据node实时负载情况，调整无状态服务的请求的投递权重。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;Zone内访问服务的方法&lt;/b&gt;&lt;/div&gt;&lt;div&gt;1. 使用标准的服务client访问，系统有机会让该调用变成一个进程内的function call&lt;/div&gt;&lt;div&gt;2. 基于 http://127.0.0.1:$service_port/ 建立krcp client，并发起访问，绝对没有跨node的网络流量。该请求直接到service&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3. 兼容性最好：基于 http://127.0.0.1/kapi/$servicename 建立krpc client, cyfs-gateway会在内部实现服务发现，并自动基于rtcp://实现跨nat的服务访问 .该请求可能会进过2-3次转发到达service&lt;/div&gt;&lt;div&gt;（优先实现）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;4. 基于buckyos-sdk的服务发现api建立krpclient （cyfs-gateway内部也使用这个api)&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;5. 使用公网的 https://zonegateway/kapi/$servicename 建立krpc client&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;Zone外访问服务的方法&lt;/b&gt;&lt;/div&gt;&lt;div&gt;https://$appid.$zoneid/&lt;/div&gt;&lt;div&gt;&lt;div&gt;https://$zoneid/kapi/$servicename (需要支持跨域？）&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;https://$appid.$zoneid/kapi/$servicename (不需要跨域，但app需要声明自己的app page需要访问的服务）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="118" y="22" width="367" height="482" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-10" value="6 rtcp" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="-N7vmcvN1w1kGffq8Vgl-1" target="-N7vmcvN1w1kGffq8Vgl-3">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-10" value="6 rtcp" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="-N7vmcvN1w1kGffq8Vgl-1" target="-N7vmcvN1w1kGffq8Vgl-3" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-1" value="OOD1 cyfs-gateway" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-1" value="OOD1 cyfs-gateway" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="350" y="790" width="120" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-2" value="Kernel Service" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-2" value="Kernel Service" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="870" y="790" width="120" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-7" value="2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="-N7vmcvN1w1kGffq8Vgl-3" target="-N7vmcvN1w1kGffq8Vgl-1">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-7" value="2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;" parent="1" source="-N7vmcvN1w1kGffq8Vgl-3" target="-N7vmcvN1w1kGffq8Vgl-1" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-12" value="rtcp" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="-N7vmcvN1w1kGffq8Vgl-7">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-12" value="rtcp" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="-N7vmcvN1w1kGffq8Vgl-7" vertex="1" connectable="0">
           <mxGeometry x="-0.5023" y="1" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-18" value="7 rtcp" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="-N7vmcvN1w1kGffq8Vgl-3" target="-N7vmcvN1w1kGffq8Vgl-17">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-18" value="7 rtcp" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="-N7vmcvN1w1kGffq8Vgl-3" target="-N7vmcvN1w1kGffq8Vgl-17" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-3" value="zone-gateway" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-3" value="zone-gateway" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="460" y="630" width="120" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-5" value="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="-N7vmcvN1w1kGffq8Vgl-4" target="-N7vmcvN1w1kGffq8Vgl-3">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-5" value="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="-N7vmcvN1w1kGffq8Vgl-4" target="-N7vmcvN1w1kGffq8Vgl-3" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-11" value="http" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="-N7vmcvN1w1kGffq8Vgl-5">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-11" value="http" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="-N7vmcvN1w1kGffq8Vgl-5" vertex="1" connectable="0">
           <mxGeometry x="0.3333" y="-2" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-4" value="浏览器" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-4" value="浏览器" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="670" y="630" width="120" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-8" value="3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=1.006;entryY=0.539;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="-N7vmcvN1w1kGffq8Vgl-1" target="TtpUKM4LW4xhPhtb8Lpu-1">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-8" value="3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=1.006;entryY=0.539;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="-N7vmcvN1w1kGffq8Vgl-1" target="TtpUKM4LW4xhPhtb8Lpu-1" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-13" value="http" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="-N7vmcvN1w1kGffq8Vgl-8">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-13" value="http" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="-N7vmcvN1w1kGffq8Vgl-8" vertex="1" connectable="0">
           <mxGeometry x="-0.3571" relative="1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-19" value="http" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="-N7vmcvN1w1kGffq8Vgl-17" target="-N7vmcvN1w1kGffq8Vgl-2">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-19" value="http" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="-N7vmcvN1w1kGffq8Vgl-17" target="-N7vmcvN1w1kGffq8Vgl-2" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-17" value="OOD2 cyfs-gateway" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-17" value="OOD2 cyfs-gateway" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="670" y="790" width="120" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="-N7vmcvN1w1kGffq8Vgl-20" value="浏览器发起一个请求，达到App处理，处理过程中访问了2个系统服务" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="-N7vmcvN1w1kGffq8Vgl-20" value="浏览器发起一个请求，达到App处理，处理过程中访问了2个系统服务" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="340" y="910" width="250" height="30" as="geometry" />
         </mxCell>
       </root>
