@@ -1,16 +1,40 @@
 use std::ops::Deref;
 //system control panel client
-use std::sync::Arc;
+
 use name_lib::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde_json::Value;
 use serde_json::json;
 use log::*;
 use ::kRPC::*;
 use crate::system_config::*;
 use package_lib::PackageMeta;
 use crate::KVAction;
+
+
+pub const SERVICE_INSTANCE_INFO_UPDATE_INTERVAL: u64 = 30;
+
+#[derive(Serialize, Deserialize)]
+pub struct ServiceInstanceInfo {
+    pub state: String,
+    pub port: u16,
+    pub last_update_time: u64,
+    pub start_time: u64,
+    pub pid: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ServiceNodeInfo {
+    pub weight: u32,
+    pub state: String,
+    pub port: u16,
+    pub node_did:String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ServiceInfo {
+    pub node_list: HashMap<String, ServiceNodeInfo>,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct InstallConfig {
@@ -244,7 +268,7 @@ pub struct FrameServiceInstanceConfig {
 }
 
 impl FrameServiceInstanceConfig {
-    pub fn new(pkg_id:String)->Self {
+    pub fn new(_pkg_id:String)->Self {
         unimplemented!()
     }
 }
@@ -445,20 +469,38 @@ impl ControlPanelClient {
         Ok(result_app_list)
     }
 
-    pub async fn get_services_list(&self) -> Result<Vec<KernelServiceConfig>> {
-        Ok(vec![])
+    pub async fn update_service_instance_info(&self,
+        service_name:&str,node_name:&str,
+        instance_info:&ServiceInstanceInfo) -> Result<u64> {
+        let service_info_path = format!("services/{}/instances/{}",service_name,node_name);
+        let service_info_str = serde_json::to_string(instance_info).unwrap();
+        self.system_config_client.set(service_info_path.as_str(),service_info_str.as_str()).await
+            .map_err(|e| RPCErrors::ReasonError(format!("update service instance info {}@{} failed, err:{}", service_name,node_name, e)))?;
+        Ok(0)
     }
 
-    pub async fn get_valid_app_index(&self,user_id:&str) -> Result<u64> {
+    pub async fn get_services_info(&self,service_name:&str) -> Result<ServiceInfo> {
+        let service_info_path = format!("services/{}/info",service_name);
+        let service_info = self.system_config_client.get(service_info_path.as_str()).await;
+        if service_info.is_err() {
+            return Err(RPCErrors::ServiceNotValid("service info not found".to_string()));
+        }
+        let (service_info_str,_version) = service_info.unwrap();
+        let service_info:ServiceInfo = serde_json::from_str(&service_info_str)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        Ok(service_info)
+    }
+
+    pub async fn get_valid_app_index(&self,_user_id:&str) -> Result<u64> {
         unimplemented!();
     }
 
-    pub async fn remove_app(&self,appid:&str) -> Result<u64> {
+    pub async fn remove_app(&self,_appid:&str) -> Result<u64> {
         unimplemented!();
     }
 
 
-    pub async fn disable_app(&self,appid:&str) -> Result<u64> {
+    pub async fn disable_app(&self,_appid:&str) -> Result<u64> {
         unimplemented!();
     }
 }

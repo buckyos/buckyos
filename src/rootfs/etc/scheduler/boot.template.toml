@@ -132,7 +132,8 @@
     "node_list":["ood1"],
     "service_type":"kernel",
     "state":"New",
-    "instance":1
+    "instance":1,
+    "instance_selector":"random"
 }
 """
 "services/verify-hub/settings" = """
@@ -140,6 +141,29 @@
     "trust_keys" : []
 }
 """
+
+"services/verify-hub/info" = """
+{
+    "node_list" : {
+        "ood1" : {
+            "weight" : 100,
+            "state" : "running",
+            "port" : 3300
+        }
+    }
+}
+"""
+
+"services/verify-hub/instances/ood1" = """
+{
+    "pid":0,
+    "start_time":0,
+    "last_update_time":0,
+    "state" : "running",
+    "port" : 3300
+}
+"""
+
 "services/scheduler/config" = """
 {
     "name":"scheduler",
@@ -279,12 +303,18 @@
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
                         },
-                        "/kapi/verify_hub":{
-                            "upstream":"http://127.0.0.1:3300"
+                        "/kapi/verify-hub":{
+                            "cluster":{
+                                "type":"random",
+                                "upstream":{
+                                    "http://127.0.0.1:3300":100,
+                                    "rtcp://web3.buckyos.io/node1:3300":100
+                                }
+                            }
                         }
                     }
                 },
-                "sys_test.*": {
+                "sys-test.*": {
                     "enable_cors":true,
                     "routes": {
                         "/":{
@@ -351,6 +381,7 @@ p, root, ndn://*, read|write,allow
 p, ood,kv://*,read,allow
 p, ood,kv://users/*/apps/*,read|write,allow
 p, ood,kv://nodes/{device}/*,read|write,allow
+p, ood,kv://services/*,read|write,allow
 
 p, client,kv://devices/{device}/*,read,allow
 p, client,kv://devices/{device}/info,read|write,allow
@@ -401,7 +432,7 @@ p, root, ndn://*, read|write,allow
 p, ood,kv://*,read,allow
 p, ood,kv://users/*/apps/*,read|write,allow
 p, ood,kv://nodes/{device}/*,read|write,allow
-
+p, ood,kv://services/*,read|write,allow
 p, client,kv://devices/{device}/*,read,allow
 p, client,kv://devices/{device}/info,read|write,allow
 
