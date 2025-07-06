@@ -63,6 +63,7 @@ pub struct BuckyOSRuntime {
     pub app_owner_id:Option<String>,
     pub app_id:String,
     pub runtime_type:BuckyOSRuntimeType,
+    pub main_service_port:RwLock<u16>,
 
     pub user_id:Option<String>,
     pub user_config:Option<OwnerConfig>,
@@ -92,6 +93,7 @@ impl BuckyOSRuntime {
         let runtime = BuckyOSRuntime {
             app_id: app_id.to_string(),
             app_owner_id: app_owner_user_id,
+            main_service_port: RwLock::new(0),
             user_id: None,
             runtime_type,
             session_token: Arc::new(RwLock::new("".to_string())),
@@ -111,6 +113,11 @@ impl BuckyOSRuntime {
             
         };
         runtime
+    }
+
+    pub async fn set_main_service_port(&self,port:u16) {
+        let mut main_service_port = self.main_service_port.write().await;
+        *main_service_port = port;
     }
 
     pub async fn fill_by_env_var(&mut self) -> Result<()> {
