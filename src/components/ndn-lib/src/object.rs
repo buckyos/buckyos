@@ -123,6 +123,11 @@ impl ObjId {
         let hex_str = hex::encode(self.obj_hash.clone());
         format!("{}:{}", self.obj_type, hex_str)
     }
+   
+    pub fn to_filename(&self)->String {
+        let hex_str = hex::encode(self.obj_hash.clone());
+        format!("{}.{}",hex_str,self.obj_type)
+    }
 
     pub fn to_base32(&self) -> String {
         let mut vec_result: Vec<u8> = Vec::new();
