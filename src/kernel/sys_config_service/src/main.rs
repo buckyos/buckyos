@@ -638,6 +638,7 @@ async fn dump_configs_for_scheduler(
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     config_map.extend(node_config);
 
+
     let config_map = serde_json::to_value(&config_map).unwrap();
     return Ok(config_map);
 }

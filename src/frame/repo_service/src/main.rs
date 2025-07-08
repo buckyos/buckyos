@@ -21,6 +21,8 @@ use cyfs_warp::*;
 
 use anyhow::Result;
 
+const REPO_SERVICE_MAIN_PORT: u16 = 4000;
+
 async fn service_main() -> Result<()> {
     init_logging("repo_service",true);
     let mut runtime = init_buckyos_api_runtime("repo-service",None,BuckyOSRuntimeType::KernelService).await?;
@@ -29,6 +31,7 @@ async fn service_main() -> Result<()> {
         error!("repo service login to system failed! err:{:?}", login_result);
         return Err(anyhow::anyhow!("repo service login to system failed! err:{:?}", login_result));
     }
+    runtime.set_main_service_port(REPO_SERVICE_MAIN_PORT).await;
     set_buckyos_api_runtime(runtime);
     let runtime = get_buckyos_api_runtime()?;
 
@@ -64,7 +67,7 @@ async fn service_main() -> Result<()> {
     register_inner_service_builder("repo_server", move || Box::new(repo_server.clone())).await;
     //let repo_server_dir = get_buckyos_system_bin_dir().join("repo");
     let repo_server_config = json!({
-      "http_port":4000,//TODO：服务的端口分配和管理
+      "http_port":REPO_SERVICE_MAIN_PORT,//TODO：服务的端口分配和管理
       "tls_port":0,
       "hosts": {
         "*": {

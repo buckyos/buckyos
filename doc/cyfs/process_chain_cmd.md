@@ -37,6 +37,9 @@ IP地址匹配
 判断变量是否处于区间范围内
 
 ## 流程控制
+### policy key value
+设置本block的运行配置,比如当命令出错的标准处理（默认是跳过）
+
 ### exec $sub_id
 执行一个sub并得到返回值
 exec 下面一行的命令会继续执行
@@ -105,22 +108,27 @@ match_include REQ_target_ip
 
 ### map_create mapid
 创建map,如果mapid已经存在，则返回失败
+
 ### set_add setid 变量1
 将变量1添加到setid代表的set中，如果该变量在Set中不存在，则返回成功
 
 ### map_add mapid key value
 将(key-value) 增加到mapid
-### set_remove
 
-### map_remove
+### set_remove setid value
+从指定set中删除一个item
 
-
+### map_remove mapid key
+从指定map中删除一个item
 
 
 ## 变量管理
 
 ## export 变量=值
+要求将变量设置为指定值
 
+## delete 变量
+要求删除变量
 
 ## 调试支持
 echo "xxxx" debug

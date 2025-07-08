@@ -1,11 +1,7 @@
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+
 use ::kRPC::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::str::FromStr;
-use std::sync::Arc;
-use log::{debug, error, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TaskStatus {
@@ -154,7 +150,7 @@ impl TaskManagerClient {
 
         //let req = RPCRequest::new("update_task_status", params);
         match self.rpc_client.call("update_task_status", params).await {
-            Ok(resp) => {
+            Ok(_resp) => {
                 Ok(())
             },
             Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),
@@ -177,7 +173,7 @@ impl TaskManagerClient {
 
         //let req = RPCRequest::new("update_task_progress", params);
         match self.rpc_client.call("update_task_progress", params).await {
-            Ok(resp) => {
+            Ok(_resp) => {
                 Ok(())
             },
             Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),
@@ -192,7 +188,7 @@ impl TaskManagerClient {
 
         //let req = RPCRequest::new("update_task_error", params);
         match self.rpc_client.call("update_task_error", params).await {
-            Ok(resp) => {
+            Ok(_resp) => {
                 Ok(())
             },
             Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),
@@ -207,7 +203,7 @@ impl TaskManagerClient {
 
         //let req = RPCRequest::new("update_task_data", params);
         match self.rpc_client.call("update_task_data", params).await {
-            Ok(resp) => {
+            Ok(_resp) => {
                 Ok(())
             },
             Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),
@@ -221,7 +217,7 @@ impl TaskManagerClient {
 
         //let req = RPCRequest::new("delete_task", params);
         match self.rpc_client.call("delete_task", params).await {
-            Ok(resp) => {
+            Ok(_resp) => {
                 Ok(())
             },
             Err(e) => Err(RPCErrors::ReasonError(format!("RPC error: {:?}", e))),

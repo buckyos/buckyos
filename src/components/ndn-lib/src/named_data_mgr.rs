@@ -535,9 +535,12 @@ impl NamedDataMgr {
                 let obj_filed = get_by_json_path(&obj_body, &obj_path);
                 if obj_filed.is_some() {
                     return Ok(obj_filed.unwrap());
+                } else {
+                    return Ok(serde_json::Value::Null);
                 }
+            } else {
+                return Ok(obj_body);
             }
-            return Ok(obj_body);
         }
 
         Err(NdnError::NotFound(obj_id.to_string()))

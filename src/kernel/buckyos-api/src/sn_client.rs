@@ -1,6 +1,6 @@
 use name_lib::DeviceInfo;
 use ::kRPC::{RPCErrors,kRPC};
-use serde_json::{Value, json};
+use serde_json::json;
 use log::*;
 
 pub async fn sn_update_device_info(sn_url: &str, session_token: Option<String>, 

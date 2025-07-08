@@ -1,4 +1,4 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/26.0.16 Chrome/132.0.6834.196 Electron/34.2.0 Safari/537.36" version="26.0.16" pages="11">
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/27.0.9 Chrome/134.0.6998.205 Electron/35.4.0 Safari/537.36" version="27.0.9" pages="11">
   <diagram id="oIMGCOtcYAl4cptAXmcz" name="Architecture">
     <mxGraphModel dx="2908" dy="1198" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
@@ -280,7 +280,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="iOcJLOFx5TQZdEkecl_a" name="kernel loop">
-    <mxGraphModel dx="1888" dy="717" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2010" dy="658" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -669,20 +669,59 @@
         <mxCell id="yaLFH_EoCBhOSX-8fva--1" value="boot阶段用ood string初始化rtcp tunnel的身份问题？" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
           <mxGeometry x="-110" y="1238.25" width="130" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="lQr_6oz8xkaGaNCxREZ9-1" value="Get Zone Config From Zone-Gateway to optimize this progress" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="lQr_6oz8xkaGaNCxREZ9-1" value="Get Zone Config From Zone-Gateway to optimize this progress" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="-810" y="1519.63" width="190" height="68.25" as="geometry" />
         </mxCell>
-        <mxCell id="lQr_6oz8xkaGaNCxREZ9-2" value="&lt;div&gt;&lt;b style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;站在非OOD的视角：&lt;/b&gt;&lt;/div&gt;system config的http url:&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;先通过http://zonehost/ 得到详细的，包含有所有ood ip的zone-info&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;http://OOD_IP:3200/kapi/system-config&lt;/span&gt;&lt;/div&gt;&lt;div&gt;运行在非OOD上的服务，通过得到OOD的IP，来稳定的访问某个OOD上的system config&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://127.0.0.1/kapi/system-config&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;运行在非OOD上的服务，&lt;/span&gt;使用本地cyfs-gateway提供的服务发现机制，来连接无法直接连接（在另一个NAT后面）的system config. 这个访问总是能成功的&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://zonehost/kapi/system-config&lt;/div&gt;&lt;div&gt;运行在非OOD上的服务，使用zone-gateway提供的服务发现机制，来连接system config.这个请求总是能成功的（给页面使用），为了保护zone-gateway的性能，有条件的runtime总是在最后才使用这个url&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;其它service的url (服务发现）&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;先通过system-config得到service-info,了解有多少个instance. 在多ood系统里，访问system-config没有单点故障&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;然后选择最佳的instance进行连接&lt;/div&gt;&lt;div&gt;instance信息里有地址信息，是service启动后创建的，包含真实的端口信息&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;如果选择的是instance在NAT后，则必须访问本地cyfsgateway的URL，（cyfs-gateway本身会创建映射过去）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://127.0.0.1:service_port/kapi/service-name&lt;/div&gt;&lt;div&gt;如果可以，优先选择在相同node的服务&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://node_ip:service_port/kapi/service-name&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://127.0.0.1/kapi/service-name&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://zonehost/kapiservice-name&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;zonehost里可以包含端口&lt;/div&gt;&lt;div&gt;zone boot配置里是否需要rtcp stack port?&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;非OOD是否要与公网OOD keep tunnel?&lt;/div&gt;&lt;div&gt;要的&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="lQr_6oz8xkaGaNCxREZ9-2" value="&lt;div&gt;&lt;b style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;站在非OOD的视角：&lt;/b&gt;&lt;/div&gt;system config的http url:&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;先通过http://zonehost/ 得到详细的，包含有所有ood ip的zone-info&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;http://OOD_IP:3200/kapi/system-config&lt;/span&gt;&lt;/div&gt;&lt;div&gt;运行在非OOD上的服务，通过得到OOD的IP，来稳定的访问某个OOD上的system config&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://127.0.0.1/kapi/system-config&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;运行在非OOD上的服务，&lt;/span&gt;使用本地cyfs-gateway提供的服务发现机制，来连接无法直接连接（在另一个NAT后面）的system config. 这个访问总是能成功的&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://zonehost/kapi/system-config&lt;/div&gt;&lt;div&gt;运行在非OOD上的服务，使用zone-gateway提供的服务发现机制，来连接system config.这个请求总是能成功的（给页面使用），为了保护zone-gateway的性能，有条件的runtime总是在最后才使用这个url&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;其它service的url (服务发现）&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;先通过system-config得到service-info,了解有多少个instance. 在多ood系统里，访问system-config没有单点故障&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;然后选择最佳的instance进行连接&lt;/div&gt;&lt;div&gt;instance信息里有地址信息，是service启动后创建的，包含真实的端口信息&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;如果选择的是instance在NAT后，则必须访问本地cyfsgateway的URL，（cyfs-gateway本身会创建映射过去）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://127.0.0.1:service_port/kapi/service-name&lt;/div&gt;&lt;div&gt;如果可以，优先选择在相同node的服务&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://node_ip:service_port/kapi/service-name&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://127.0.0.1/kapi/service-name&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;http://zonehost/kapiservice-name&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;zonehost里可以包含端口&lt;/div&gt;&lt;div&gt;zone boot配置里是否需要rtcp stack port?&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;非OOD是否要与公网OOD keep tunnel?&lt;/div&gt;&lt;div&gt;要的&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="990" y="1147.75" width="315" height="772.25" as="geometry" />
         </mxCell>
-        <mxCell id="lQr_6oz8xkaGaNCxREZ9-4" value="&lt;b&gt;站在OOD的视角&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;便写好正确的boot_gateway配置，让cyfs-gateway提供正确的端口，以实现etcd 之间的互相sync&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;etcd成功连接后，node_daemon 还是连接本机的system-config&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;ood keep-tunnel with other-ood的方法&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;与SN Keep tunnel(只有一个）&lt;/div&gt;&lt;div&gt;与标识为WLAN的OODkeep tunnel(必定有IP）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1. get wan-ip from boot-config&lt;/div&gt;&lt;div&gt;2. open rtcp tunnel to rtcp://wan-ip:rtcp port&lt;br&gt;&amp;nbsp; &amp;nbsp; 握手过程可以传递私钥？&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;boot zonfig中的信息&lt;/div&gt;&lt;div&gt;a. owner pub key&lt;/div&gt;&lt;div&gt;b. gateway-pub key (可能是SN，也可能是OOD），握手后可知道信息&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+        <mxCell id="lQr_6oz8xkaGaNCxREZ9-4" value="&lt;b&gt;站在OOD的视角&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;便写好正确的boot_gateway配置，让cyfs-gateway提供正确的端口，以实现etcd 之间的互相sync&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;etcd成功连接后，node_daemon 还是连接本机的system-config&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;ood keep-tunnel with other-ood的方法&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;与SN Keep tunnel(只有一个）&lt;/div&gt;&lt;div&gt;与标识为WLAN的OODkeep tunnel(必定有IP）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1. get wan-ip from boot-config&lt;/div&gt;&lt;div&gt;2. open rtcp tunnel to rtcp://wan-ip:rtcp port&lt;br&gt;&amp;nbsp; &amp;nbsp; 握手过程可以传递私钥？&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;boot zonfig中的信息&lt;/div&gt;&lt;div&gt;a. owner pub key&lt;/div&gt;&lt;div&gt;b. gateway-pub key (可能是SN，也可能是OOD），握手后可知道信息&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="1350" y="1161.5" width="315" height="436" as="geometry" />
+        </mxCell>
+        <mxCell id="cgIGTQRAsnV8DeNC6tyR-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="cgIGTQRAsnV8DeNC6tyR-1" target="cgIGTQRAsnV8DeNC6tyR-2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cgIGTQRAsnV8DeNC6tyR-1" value="ZoneBootConfig" style="rounded=0;whiteSpace=wrap;html=1;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=12;fontColor=default;fillColor=default;" vertex="1" parent="1">
+          <mxGeometry x="1170" y="2040" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="cgIGTQRAsnV8DeNC6tyR-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="cgIGTQRAsnV8DeNC6tyR-2" target="cgIGTQRAsnV8DeNC6tyR-4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cgIGTQRAsnV8DeNC6tyR-2" value="Scan/Load Cache&lt;div&gt;to get OODInfo&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=12;fontColor=default;fillColor=default;" vertex="1" parent="1">
+          <mxGeometry x="1170" y="2160" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="cgIGTQRAsnV8DeNC6tyR-10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="cgIGTQRAsnV8DeNC6tyR-3" target="cgIGTQRAsnV8DeNC6tyR-5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cgIGTQRAsnV8DeNC6tyR-3" value="ZoneBootInfo&lt;div&gt;（write cache）&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=12;fontColor=default;fillColor=default;" vertex="1" parent="1">
+          <mxGeometry x="1170" y="2400" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="cgIGTQRAsnV8DeNC6tyR-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="cgIGTQRAsnV8DeNC6tyR-4" target="cgIGTQRAsnV8DeNC6tyR-3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cgIGTQRAsnV8DeNC6tyR-4" value="Boot&lt;div&gt;(Connect to sys_config_servcie)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;strokeColor=default;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=12;fontColor=default;fillColor=default;" vertex="1" parent="1">
+          <mxGeometry x="1170" y="2281.9500000000003" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="cgIGTQRAsnV8DeNC6tyR-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="cgIGTQRAsnV8DeNC6tyR-5" target="cgIGTQRAsnV8DeNC6tyR-3">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1230" y="2600" />
+              <mxPoint x="1120" y="2600" />
+              <mxPoint x="1120" y="2430" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="cgIGTQRAsnV8DeNC6tyR-5" value="keep alive&lt;div&gt;(refresh zone boot info from sys_config_service)&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1170" y="2510" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="cgIGTQRAsnV8DeNC6tyR-18" value="Get System-Config-client" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="1155" y="1991.88" width="150" height="30" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
   <diagram id="1u5XhRc6Ss8xfa0_lFwo" name="Service &amp; kRPC">
-    <mxGraphModel dx="1194" dy="824" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="1392" dy="790" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -789,6 +828,56 @@
         </mxCell>
         <mxCell id="-N7vmcvN1w1kGffq8Vgl-20" value="浏览器发起一个请求，达到App处理，处理过程中访问了2个系统服务" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="340" y="910" width="250" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="tMAMpGZ27Te3taqgNYTz-2" target="tMAMpGZ27Te3taqgNYTz-4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-2" value="get system_config_client" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1085" y="67" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="tMAMpGZ27Te3taqgNYTz-4" target="tMAMpGZ27Te3taqgNYTz-6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-4" value="Get Service Info&lt;div&gt;(auto cache by system_config_client)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1085" y="181.05000000000018" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="tMAMpGZ27Te3taqgNYTz-6" target="tMAMpGZ27Te3taqgNYTz-7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-6" value="Select Service Instance" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1085" y="301.0499999999997" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-7" value="Get Service Client" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1085" y="412" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-8" value="Get Other Service client" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="22" width="150" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="tMAMpGZ27Te3taqgNYTz-9" target="tMAMpGZ27Te3taqgNYTz-12">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-9" value="Update Service InstanceA Info" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1360" y="65" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-10" value="Update Service InstanceB Info" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1520" y="65" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="tMAMpGZ27Te3taqgNYTz-11" target="tMAMpGZ27Te3taqgNYTz-4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-11" value="Update Service Info" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1440" y="290" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-17" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="tMAMpGZ27Te3taqgNYTz-12" target="tMAMpGZ27Te3taqgNYTz-11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-12" value="调度算法" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="1440" y="190" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="tMAMpGZ27Te3taqgNYTz-16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.676;entryY=0.062;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="tMAMpGZ27Te3taqgNYTz-10" target="tMAMpGZ27Te3taqgNYTz-12">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1531" y="190" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>
