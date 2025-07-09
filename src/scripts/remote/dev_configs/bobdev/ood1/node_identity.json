@@ -1,0 +1,11 @@
+{
+  "zone_did": "did:bns:bob",
+  "owner_public_key": {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "x": "y-kuJcQ0doFpdNXf4HI8E814lK8MB3-t4XjDRcR_QCU"
+  },
+  "owner_did": "did:bns:bobdev",
+  "device_doc_jwt": "eyJhbGciOiJFZERTQSJ9.eyJAY29udGV4dCI6Imh0dHBzOi8vd3d3LnczLm9yZy9ucy9kaWQvdjEiLCJpZCI6ImRpZDpkZXY6aVNNS2FrRkVHekdBeExUbGFCNVRrcVo2ZDR3dXJPYnItQnBhUWxlb0UyTSIsInZlcmlmaWNhdGlvbk1ldGhvZCI6W3sidHlwZSI6IkVkMjU1MTlWZXJpZmljYXRpb25LZXkyMDIwIiwiaWQiOiIjbWFpbl9rZXkiLCJjb250cm9sbGVyIjoiZGlkOmRldjppU01LYWtGRUd6R0F4TFRsYUI1VGtxWjZkNHd1ck9ici1CcGFRbGVvRTJNIiwicHVibGljS2V5SndrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoiaVNNS2FrRkVHekdBeExUbGFCNVRrcVo2ZDR3dXJPYnItQnBhUWxlb0UyTSJ9fV0sImF1dGhlbnRpY2F0aW9uIjpbIiNtYWluX2tleSJdLCJhc3NlcnRpb25fbWV0aG9kIjpbIiNtYWluX2tleSJdLCJleHAiOjIwNjI2Mzg0NzEsImlhdCI6MTc0NzI3ODQ3MSwiZGV2aWNlX3R5cGUiOiJub2RlIiwibmFtZSI6Im9vZDEiLCJpc3MiOiJkaWQ6Ym5zOmJvYmRldiJ9.QEPdHPhc1PpWtkEh4120HXNLM-oZ0ioyhXUz6xrZczrEmRyEZ6chCJYJPz4KNjjVb0ECAH6bBOtQpwwWEkNOCQ",
+  "zone_iat": 1743478939
+}

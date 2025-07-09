@@ -53,7 +53,8 @@ mod tests {
         let mut name_info =
             NameInfo::from_address("dev02", IpAddr::V4("127.0.0.1".parse().unwrap()));
         name_info.did_document = Some(EncodedDocument::Jwt(pk_str.clone()));
-        add_nameinfo_cache("dev02", name_info).await.unwrap();
+        //add_nameinfo_cache("dev02", name_info).await.unwrap();
+
 
         //add_did_cache("dev01", EncodedDocument::Jwt(pk_str.clone())).await.unwrap();
         //add_did_cache("dev02", EncodedDocument::Jwt(pk_str.clone())).await.unwrap();
@@ -62,11 +63,13 @@ mod tests {
         local_stack.start().await.unwrap();
 
         let did2 = DID::new("dev","dev02");
+        let dev02_hostname = did2.to_string();
+        add_nameinfo_cache(&dev02_hostname, name_info).await.unwrap();
         let mut remote_stack = RTcpStack::new(did2, 9000, Some(sk_pkcs.clone()));
         remote_stack.start().await.unwrap();
 
-        let remote_stack_id = "dev02.devices.web3.buckyos.io:9000";
-        let tunnel = local_stack.create_tunnel(Some(remote_stack_id)).await.unwrap();
+        let remote_stack_id = format!("{}:9000", dev02_hostname);
+        let tunnel = local_stack.create_tunnel(Some(remote_stack_id.as_str())).await.unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
         let stream = tunnel.open_stream(":8888").await.unwrap();
         info!("stream1 ok ");

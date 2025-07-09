@@ -1,20 +1,28 @@
 #[allow(unused_mut, dead_code, unused_variables)]
 mod package_cmd;
 mod sys_config;
+mod did;
 
 use std::path::Path;
 use buckyos_api::*;
 use clap::{Arg, Command};
 use package_cmd::*;
 
-
 fn is_local_cmd(cmd_name: &str) -> bool {
-    cmd_name == "version" || cmd_name == "install_pkg" || cmd_name == "pack_pkg" || cmd_name == "load_pkg" || cmd_name == "set_pkg_meta"
+    const LOCAL_COMMANDS: &[&str] = &[
+        "version",
+        "install_pkg", 
+        "pack_pkg",
+        "load_pkg",
+        "set_pkg_meta",
+        "did"
+    ];
+    LOCAL_COMMANDS.contains(&cmd_name)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    buckyos_kit::init_logging("buckycli",false);
+    buckyos_kit::init_logging("buckycli", false);
 
     let matches = Command::new("buckyos control tool")
         .author("buckyos")
@@ -152,7 +160,7 @@ async fn main() -> Result<(), String> {
                     Arg::new("get")
                        .long("get")
                        .value_name("key")
-                       .help("get system config, buckycli sys_config --get_config $key")
+                       .help("get system config, buckycli sys_config --get $key")
                 )
                 .arg(
                     Arg::new("set")
@@ -163,12 +171,77 @@ async fn main() -> Result<(), String> {
     buckycli sys_config --set $key $value")
                 )
                 .arg(
+                    Arg::new("list")
+                      .long("list")
+                      .value_name("key")
+                        .help("get system config, buckycli sys_config --list [$key]")
+                )
+                .arg(
                     Arg::new("set_file")
                         .long("set_file")
                         .value_names(&["key", "$filename"])  // 定义两个占位符名称
                         .num_args(2)
                         .help("set system config with file content. filename = file path.
     buckycli sys_config --set_file $key $filename")
+                )
+                .arg(
+                    Arg::new("append")
+                        .long("append")
+                        .value_names(&["key", "value"])  // 定义两个占位符名称
+                        .num_args(2)
+                        .help("append system config,
+    buckycli sys_config --append $key $value")
+                )
+        )
+        .subcommand(
+            Command::new("did")
+                .about("did manager")
+                .subcommand(Command::new("genkey").about("generate a  pair of did key"))
+                .arg(
+                    Arg::new("open")
+                      .long("open")
+                      .value_name("filepath")
+                      .help("Open config file and display")
+                )
+                .arg(
+                    Arg::new("create_user")
+                      .long("create_user")
+                      .value_names(&["name", "owner_jwk"])  // 定义两个占位符名称
+                      .num_args(2)
+                      .help("Create the user_config.json file in current dir
+owner_jwk look like this '{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\"14pk3c3XO9_xro5S6vSr_Tvq5eTXbFY8Mop-Vj1D0z8\"}'")
+                )
+                .arg(
+                    Arg::new("create_device")
+                      .long("create_device")
+                      .value_names(&["user_name", "zone_name", "owner_jwk", "user_private_key"]) 
+                      .num_args(4)
+                      .help("create a device (deviceconfig).
+The arg `user_private_key` is a file path")
+                )
+                .arg(
+                    Arg::new("create_zoneboot")
+                      .long("create_zoneboot")
+                      .value_names(&["oods", "sn_host"])
+                      .num_args(2)
+                      .help("create a zone_boot_config.
+oods look like this 'ood1,ood2'.")
+                )
+                .arg(
+                    Arg::new("create_zone")
+                      .long("create_zone")
+                      .help("create zone config")
+                )
+        )
+        .subcommand(
+            Command::new("sign")
+                .about("sign any data")
+                .arg(
+                    Arg::new("json")
+                    .long("json")
+                    .value_name("data")
+                    .help("sign any given json data and return the JWT content")
+                    .required(true)
                 )
         )
         .get_matches();
@@ -353,7 +426,7 @@ async fn main() -> Result<(), String> {
         }
         Some(("sys_config", matches)) => {
             if let Some(key) = matches.get_one::<String>("get") {
-                println!("Get system config, key[{}]", key);
+                // println!("Get system config, key[{}]", key);
                 sys_config::get_config(key).await;
                 return Ok(());
             }
@@ -367,6 +440,22 @@ async fn main() -> Result<(), String> {
                 let value = config_values[1];
                 println!("Set system config, key[{}]: {}", key, value);
                 sys_config::set_config(key, value).await;
+                return Ok(());
+            }
+            if let Some(key) = matches.get_one::<String>("list") {
+                // println!("List system config, key[{}]", key);
+                sys_config::list_config(key).await;
+                return Ok(());
+            }
+            if let Some(_key) = matches.get_one::<String>("append") {
+                let config_values: Vec<&String> = matches
+                    .get_many::<String>("append")
+                    .expect("必须提供 key 和 value 参数")
+                    .collect();
+                let key = config_values[0];
+                let value = config_values[1];
+                println!("Append system config, key[{}]: {}", key, value);
+                sys_config::append_config(key, value).await;
                 return Ok(());
             }
             if let Some(_key) = matches.get_one::<String>("set_file") {
@@ -384,6 +473,12 @@ async fn main() -> Result<(), String> {
         }
         Some(("connect", _matches)) => {
             sys_config::connect_into().await;
+        }
+        Some(("sign", matches)) => {
+            did::sign_json_data(matches, private_key).await;
+        }
+        Some(("did", sub_matches)) => {
+            did::did_matches(sub_matches);
         }
         _ => {
             println!("unknown command!");

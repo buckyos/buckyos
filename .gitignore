@@ -4,6 +4,8 @@
 *.bkp
 *.exe
 package-lock.json
+pyvenv.cfg
+__pycache__
 src/kernel/node_active/dist/
 src/kernel/buckyos_sdk/dist/
 src/kernel/task_manager/tasks.db
@@ -23,12 +25,21 @@ src/rootfs/tmp
 src/apps/control_panel/src/dist/
 src/apps/sys_test/dist/
 
-/src/scripts/__pycache__/
-/src/scripts/**/__pycache__/
+src/web3_bridge/web3_gateway
+
 /src/scripts/remote/device_info.json
+/src/scripts/remote/dev_configs/device_info.json
+/src/scripts/remote/lib*
+/src/scripts/remote/bin*
+/src/scripts/remote/include
+/src/scripts/remote/network-cache
+/src/scripts/remote/dev_configs/sn_server/web3_gateway.json
+/src/scripts/remote/clog
+
 target/
 cargo.lock
 pnpm-lock.yaml
 
 src/Cargo.lock
 **/node_modules
+.pnpm-store

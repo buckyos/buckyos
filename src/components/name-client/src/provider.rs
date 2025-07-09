@@ -90,6 +90,20 @@ pub struct NameInfo {
 
 
 impl NameInfo {
+    pub fn new(domain:&str) -> Self {
+        return NameInfo {
+            name : domain.to_string(),
+            address : Vec::new(),
+            cname:None,
+            txt:None,
+            did_document:None,
+            pk_x_list:None,
+            proof_type : NameProof::None,
+            create_time:0,
+            ttl:None
+        }
+    }
+
     pub fn from_address(name:&str,address:IpAddr) -> Self {
         let ttl = 5*60;
         Self {name:name.to_string(),address:vec![address],cname:None,txt:None,

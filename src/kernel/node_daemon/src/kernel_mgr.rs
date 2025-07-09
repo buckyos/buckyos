@@ -23,16 +23,12 @@ pub struct KernelServiceRunItem {
     pub target_state: RunItemTargetState,
     pub pkg_id: String,
     service_pkg: ServicePkg,
-    device_doc: DeviceConfig,
-    device_private_key: EncodingKey,
 }
 
 impl KernelServiceRunItem {
     pub fn new(
         app_id: &str,
-        kernel_config: &KernelServiceInstanceConfig,
-        device_doc: &DeviceConfig,
-        device_private_key: &EncodingKey,
+        kernel_config: &KernelServiceInstanceConfig
     ) -> Self {
         let service_pkg = ServicePkg::new(kernel_config.pkg_id.clone(), 
         get_buckyos_system_bin_dir());
@@ -41,8 +37,6 @@ impl KernelServiceRunItem {
             target_state: RunItemTargetState::from_str(&kernel_config.target_state.as_str()).unwrap(),
             pkg_id: kernel_config.pkg_id.clone(),
             service_pkg: service_pkg,
-            device_doc: device_doc.clone(),
-            device_private_key: device_private_key.clone(),
         }
     }
 
@@ -71,21 +65,25 @@ impl RunItemControl for KernelServiceRunItem {
         
     }
 
-    async fn start(&self, control_key: &EncodingKey, params: Option<&Vec<String>>) -> Result<()> {
+    async fn start(&self, params: Option<&Vec<String>>) -> Result<()> {
         let timestamp = buckyos_get_unix_timestamp();
         let app_id = self.app_id.clone();
+        let runtime = get_buckyos_api_runtime().unwrap();
+        let device_doc = runtime.device_config.as_ref().unwrap();
+        let device_private_key = runtime.device_private_key.as_ref().unwrap();
         let device_session_token = kRPC::RPCSessionToken {
             token_type: kRPC::RPCSessionTokenType::JWT,
-            nonce: None,
-            userid: Some(self.device_doc.name.clone()),
+            nonce: Some(timestamp),
+            session: None,
+            userid: Some(device_doc.name.clone()),
             appid: Some(app_id),
-            exp: Some(timestamp + 3600 * 24 * 7),
-            iss: Some(self.device_doc.name.clone()),
+            exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME*2),
+            iss: Some(device_doc.name.clone()),
             token: None,
         };
 
         let device_session_token_jwt = device_session_token
-            .generate_jwt(Some(self.device_doc.name.clone()), &self.device_private_key)
+            .generate_jwt(Some(device_doc.name.clone()), device_private_key)
             .map_err(|err| {
                 error!("generate session token for {} failed! {}", self.pkg_id, err);
                 return ControlRuntItemErrors::ExecuteError(
@@ -94,7 +92,7 @@ impl RunItemControl for KernelServiceRunItem {
                 );
             })?;
 
-        let env_key = get_session_token_env_key(&self.app_id,false);;
+        let env_key = get_session_token_env_key(&self.app_id,false);
         std::env::set_var(env_key.as_str(), device_session_token_jwt);
 
         let result = self.service_pkg

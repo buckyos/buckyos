@@ -140,51 +140,51 @@ async fn resolve_ood_ip_by_info(ood_info: &DeviceInfo,zone_config:&ZoneConfig) -
 
 
 //TODO: 需要更系统性的思考如何得到 各种service的URL
-pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_config:&ZoneConfig,is_gateway:bool) -> NSResult<String> {
-    if this_device.is_none() {
-        return Ok(String::from("http://127.0.0.1:3200/kapi/system_config"));
-    }
+// pub async fn get_system_config_service_url(this_device:Option<&DeviceInfo>,zone_config:&ZoneConfig,is_gateway:bool) -> NSResult<String> {
+//     if this_device.is_none() {
+//         return Ok(String::from("http://127.0.0.1:3200/kapi/system_config"));
+//     }
 
-    let this_device = this_device.unwrap();
-    let ood_string = zone_config.get_ood_desc_string(this_device.name.as_str());
-    if ood_string.is_some() {
-        return Ok(String::from("http://127.0.0.1:3200/kapi/system_config"));
-    }
+//     let this_device = this_device.unwrap();
+//     let ood_string = zone_config.get_ood_desc_string(this_device.name.as_str());
+//     if ood_string.is_some() {
+//         return Ok(String::from("http://127.0.0.1:3200/kapi/system_config"));
+//     }
 
-    //this device is not ood, looking best ood for system config service
-    let ood_info_str = zone_config.select_same_subnet_ood(this_device);
-    if ood_info_str.is_some() {
-        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),this_device.id.clone());
-        info!("try connect to same subnet ood: {}",ood_info.name);
-        let ood_ip = resolve_ood_ip_by_info(&ood_info,zone_config).await;
-        if ood_ip.is_ok() {
-            let ood_ip = ood_ip.unwrap();
-            let server_url = format!("http://{}:3200/kapi/system_config",ood_ip);
-            return Ok(server_url);
-        }
-    } 
+//     //this device is not ood, looking best ood for system config service
+//     let ood_info_str = zone_config.select_same_subnet_ood(this_device);
+//     if ood_info_str.is_some() {
+//         let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),this_device.id.clone());
+//         info!("try connect to same subnet ood: {}",ood_info.name);
+//         let ood_ip = resolve_ood_ip_by_info(&ood_info,zone_config).await;
+//         if ood_ip.is_ok() {
+//             let ood_ip = ood_ip.unwrap();
+//             let server_url = format!("http://{}:3200/kapi/system_config",ood_ip);
+//             return Ok(server_url);
+//         }
+//     } 
 
-    let ood_info_str = zone_config.select_wan_ood();
-    if ood_info_str.is_some() {
-        //try connect to wan ood
-        let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),this_device.id.clone());
-        info!("try connect to wan ood: {}",ood_info.name);
-        let ood_ip = resolve_ood_ip_by_info(&ood_info,zone_config).await;
-        if ood_ip.is_ok() {
-            let ood_ip = ood_ip.unwrap();
-            let server_url = format!("http://{}:3200/kapi/system_config",ood_ip);
-            return Ok(server_url);
-        }
-    }
+//     let ood_info_str = zone_config.select_wan_ood();
+//     if ood_info_str.is_some() {
+//         //try connect to wan ood
+//         let ood_info = DeviceInfo::new(ood_info_str.unwrap().as_str(),this_device.id.clone());
+//         info!("try connect to wan ood: {}",ood_info.name);
+//         let ood_ip = resolve_ood_ip_by_info(&ood_info,zone_config).await;
+//         if ood_ip.is_ok() {
+//             let ood_ip = ood_ip.unwrap();
+//             let server_url = format!("http://{}:3200/kapi/system_config",ood_ip);
+//             return Ok(server_url);
+//         }
+//     }
 
-    if !is_gateway {
-        //connect to local cyfs_gateway,local cyfs-gateway will use tunnel connect to ood
-        warn!("cann't connect to ood directly, try connect to system config service by local cyfs_gateway");
-        return Ok(String::from("http://127.0.0.1:3180/kapi/system_config"));
-    }
+//     if !is_gateway {
+//         //connect to local cyfs_gateway,local cyfs-gateway will use tunnel connect to ood
+//         warn!("cann't connect to ood directly, try connect to system config service by local cyfs_gateway");
+//         return Ok(String::from("http://127.0.0.1:3180/kapi/system_config"));
+//     }
 
-    Err(NSError::NotFound("cann't find system config service url".to_string()))
-}
+//     Err(NSError::NotFound("cann't find system config service url".to_string()))
+// }
 
 lazy_static! {
     pub static ref ZONE_PROVIDER: ZoneProvider = ZoneProvider::new();
@@ -207,8 +207,8 @@ impl ZoneProvider {
             init_hash_map.insert(zone_config.id.to_string(),zone_config_str);
         }
 
-        if runtime.deivce_config.is_some() {
-            let device_config = runtime.deivce_config.as_ref().unwrap();
+        if runtime.device_config.is_some() {
+            let device_config = runtime.device_config.as_ref().unwrap();
             let device_config_str = serde_json::to_string_pretty(&device_config).unwrap();
             init_hash_map.insert(device_config.id.to_string(),device_config_str);
         }

@@ -2,14 +2,14 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf, Result, SeekFrom};
 
-pub trait MtreeReadSeek: AsyncRead + AsyncSeek + Unpin {}
+pub trait MtreeReadSeek: AsyncRead + AsyncSeek + Send + Sync + Unpin {}
 
 // Blanket implementation for any type that implements both traits
-impl<T: AsyncRead + AsyncSeek + Unpin> MtreeReadSeek for T {}
+impl<T: AsyncRead + AsyncSeek + Send + Sync + Unpin> MtreeReadSeek for T {}
 
-pub trait MtreeWriteSeek: AsyncWrite + AsyncSeek + Unpin {}
+pub trait MtreeWriteSeek: AsyncWrite + AsyncSeek + Send + Sync + Unpin {}
 // Blanket implementation for any type that implements both traits
-impl<T: AsyncWrite + AsyncSeek + Unpin> MtreeWriteSeek for T {}
+impl<T: AsyncWrite + AsyncSeek + Send + Sync + Unpin> MtreeWriteSeek for T {}
 
 // Use this struct to wrap a MtreeReadSeek and add an offset to the read position
 pub struct MtreeReadSeekWithOffset<T: MtreeReadSeek> {

@@ -20,7 +20,7 @@ service本身没有sudo模式。
 ## buckyos的基本用户组（权限由高到底）
 
 owner(zone_owner,系统管理员)：拥有一切权限，不建议日常使用。是特定用户的sudo模式。对小型系统通常只有一个系统管理员，该账号能进行大量危险操作应避免日常使用。
-kernel_service(system_service)：运行在内核态的服务，一般是node_daqemo相关，这些服务可以访问保存在device本地路径的秘钥、
+kernel_service(system_service)：运行在内核态的服务，一般是node_daemon相关，这些服务可以访问保存在device本地路径的秘钥、
 frame_service:框架服务，本身拥有较高的权限，frame_service互相之间的维护性操作是可以互相许可的
 sudo user:常规的管理员权限，该权限可以管理用户的所有数据，但不能修改系统数据
 user:普通用户，能访问自己的所有数据，但无法进行敏感操作
