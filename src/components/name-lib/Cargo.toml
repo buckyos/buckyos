@@ -30,5 +30,8 @@ nvml-wrapper = { version = "*" }
 toml = "*"
 buckyos-kit = { path = "../buckyos-kit" }
 
+[dev-dependencies]
+cyfs-sn = { path = "../../cyfs_gateway/cyfs-sn" }
+
 
 

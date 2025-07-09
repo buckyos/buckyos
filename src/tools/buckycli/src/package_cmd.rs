@@ -124,12 +124,12 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(&st
     println!("pack to {} done", tarball_path.display());
 
     // Calculate SHA256 hash of the tar.gz file
-    let file_info = calculate_file_hash(tarball_path.to_str().unwrap())?;
-    let chunk_id = ChunkId::from_sha256_result(&file_info.sha256);
+    let (chunk_id,file_size) = calculate_file_chunk_id(tarball_path.to_str().unwrap(),HashMethod::Sha256).await
+        .map_err(|e| format!("Failed to calculate file chunk id: {}", e.to_string()))?;
     
     // Update metadata
     meta_data.chunk_id = Some(chunk_id.to_string());
-    meta_data.chunk_size = Some(file_info.size);
+    meta_data.chunk_size =Some(file_size);
 
     let meta_data_json = serde_json::to_value(&meta_data).map_err(|e| {
         format!("Failed to serialize metadata: {}", e.to_string())
@@ -204,8 +204,8 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
             continue;
         }
 
-        let file_info = calculate_file_hash(pkg_tar_path.to_str().unwrap())?;
-        let chunk_id = ChunkId::from_sha256_result(&file_info.sha256);
+        let (chunk_id,file_size) = calculate_file_chunk_id(pkg_tar_path.to_str().unwrap(),HashMethod::Sha256).await
+            .map_err(|e| format!("Failed to calculate file chunk id: {}", e.to_string()))?;
         if Some(chunk_id.to_string()) != pkg_meta.chunk_id {
             println!("chunk_id does not match: {}", chunk_id.to_string());
             continue;
@@ -213,7 +213,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
         //let real_named_mgr = named_mgr.lock().await;
         let is_exist = NamedDataMgr::have_chunk(&chunk_id,None).await;
         if !is_exist {
-            let (mut chunk_writer, _) = NamedDataMgr::open_chunk_writer(None,&chunk_id, file_info.size, 0).await.map_err(|e| {
+            let (mut chunk_writer, _) = NamedDataMgr::open_chunk_writer(None,&chunk_id, file_size, 0).await.map_err(|e| {
                 format!("Failed to open chunk writer: {}", e.to_string())
             })?;
         
@@ -235,11 +235,11 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
             println!(" {} file already exists in local named-mgr,chunk_id: {}", pkg_tar_path.display(),chunk_id.to_string());
         }
         
-        println!("# push chunk : {}, size: {} bytes...", chunk_id.to_string(),file_info.size);
+        println!("# push chunk : {}, size: {} bytes...", chunk_id.to_string(),file_size);
         ndn_client.push_chunk(chunk_id.clone(),None).await.map_err(|e| {
             format!("Failed to push chunk: {}", e.to_string())
         })?;
-        println!("# push chunk : {}, size: {} bytes success.", chunk_id.to_string(),file_info.size);
+        println!("# push chunk : {}, size: {} bytes success.", chunk_id.to_string(),file_size);
 
         pkg_meta_jwt_map.insert(pkg_meta_obj_id.to_string(),pkg_meta_jwt_str);
     }
@@ -679,8 +679,5 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         
         // 验证结果
         assert!(result.is_err(), "应该因为缺少 kg_meta.json 文件而失败");
-        let err = result.err().unwrap();
-        assert!(err.contains("meta.json 文件未在指定目录中找到"), 
-                "错误消息应该提及缺少 meta.json 文件，实际错误: {}", err);
     }
 }

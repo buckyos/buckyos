@@ -108,7 +108,7 @@
 """
 
 # devices,set & update by register_device_doc@node_daemon
-"devices/ood1/doc" = "eyJhbGciOiJFZERTQSJ9.eyJkaWQiOiJkaWQ6ZGV2Omd1YlZJc3p3LXVfZDVQVlRoLW9jOENLQWhNOUMtbmU1R195VUs1QkRhWGMiLCJuYW1lIjoib29kMSIsImRldmljZV90eXBlIjoib29kIiwiYXV0aF9rZXkiOnsia3R5IjoiT0tQIiwiY3J2IjoiRWQyNTUxOSIsIngiOiJndWJWSXN6dy11X2Q1UFZUaC1vYzhDS0FoTTlDLW5lNUdfeVVLNUJEYVhjIn0sImlzcyI6Imx6YyIsImV4cCI6MjA1MjE5MjM2NSwiaWF0IjoxNzM2ODMyMzY1fQ.yOUIeaG9uHsj_36Dsb8waehmFpeRpe3MRUab9wKPivg_fvqr4MLW36T49p8Iq14QebVIRRegfvBs__eJqqOKBA"
+"devices/ood1/doc" = "{{ood_jwt}}"
 # devices,set & update by update_device_info@node_daemon
 #"devices/ood1/info" = "{}"
 
@@ -124,7 +124,7 @@
 # frames & services
 "services/verify-hub/config" = """
 {
-    "name":"verify_hub",
+    "name":"verify-hub",
     "description":"verify hub is SSO service of buckyos",
     "vendor_did":"did:bns:buckyos",
     "pkg_id":"verify_hub",
@@ -132,13 +132,38 @@
     "node_list":["ood1"],
     "service_type":"kernel",
     "state":"New",
-    "instance":1
+    "instance":1,
+    "instance_selector":"random"
 }
 """
 "services/verify-hub/settings" = """
+{
     "trust_keys" : []
 }
 """
+
+"services/verify-hub/info" = """
+{
+    "node_list" : {
+        "ood1" : {
+            "weight" : 100,
+            "state" : "running",
+            "port" : 3300
+        }
+    }
+}
+"""
+
+"services/verify-hub/instances/ood1" = """
+{
+    "pid":0,
+    "start_time":0,
+    "last_update_time":0,
+    "state" : "running",
+    "port" : 3300
+}
+"""
+
 "services/scheduler/config" = """
 {
     "name":"scheduler",
@@ -222,7 +247,7 @@
 # node config
 "nodes/ood1/config" = """ 
 {
-    "state:":"Ready",
+    "state":"Ready",
     "is_running":true,
     "revision" : 0,
     "kernel":{
@@ -278,12 +303,18 @@
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
                         },
-                        "/kapi/verify_hub":{
-                            "upstream":"http://127.0.0.1:3300"
+                        "/kapi/verify-hub":{
+                            "cluster":{
+                                "type":"random",
+                                "upstream":{
+                                    "http://127.0.0.1:3300":100,
+                                    "rtcp://web3.buckyos.io/node1:3300":100
+                                }
+                            }
                         }
                     }
                 },
-                "sys_test.*": {
+                "sys-test.*": {
                     "enable_cors":true,
                     "routes": {
                         "/":{
@@ -348,7 +379,9 @@ p, root, dfs://*, read|write,allow
 p, root, ndn://*, read|write,allow
 
 p, ood,kv://*,read,allow
+p, ood,kv://users/*/apps/*,read|write,allow
 p, ood,kv://nodes/{device}/*,read|write,allow
+p, ood,kv://services/*,read|write,allow
 
 p, client,kv://devices/{device}/*,read,allow
 p, client,kv://devices/{device}/info,read|write,allow
@@ -365,7 +398,7 @@ p, app, dfs://users/*/appdata/{app}/*, read|write,allow
 p, app, dfs://users/*/cache/{app}/*, read|write,allow
 
 
-p, admin,kv://users/{user}/*,read,allow
+p, admin,kv://users/{user}/*,read|write,allow
 p, admin,dfs://users/{user}/*,read|write,allow
 p, admin,kv://services/*,read|write,allow
 p, admin,dfs://library/*,read|write,allow
@@ -397,8 +430,9 @@ p, root, dfs://*, read|write,allow
 p, root, ndn://*, read|write,allow
 
 p, ood,kv://*,read,allow
+p, ood,kv://users/*/apps/*,read|write,allow
 p, ood,kv://nodes/{device}/*,read|write,allow
-
+p, ood,kv://services/*,read|write,allow
 p, client,kv://devices/{device}/*,read,allow
 p, client,kv://devices/{device}/info,read|write,allow
 
@@ -413,7 +447,7 @@ p, app, kv://users/*/apps/{app}/info,read,allow
 p, app, dfs://users/*/appdata/{app}/*, read|write,allow
 p, app, dfs://users/*/cache/{app}/*, read|write,allow
 
-p, admin,kv://users/{user}/*,read,allow
+p, admin,kv://users/{user}/*,read|write,allow
 p, admin,dfs://users/{user}/*,read|write,allow
 p, admin,kv://services/*,read|write,allow
 p, admin,dfs://library/*,read|write,allow
@@ -441,7 +475,7 @@ g, {{user_name}},admin
 """
 
 # boot config will merge with zone_boot_config
-# todo:
+# if boot/config is modified, whole zone will be restarted
 "boot/config" = """
 {
   "@context": "https://www.w3.org/ns/did/v1",
@@ -467,6 +501,11 @@ g, {{user_name}},admin
   "exp": 0,
   "iat": 0,
   "owner": "did:bns:{{user_name}}",
+  "verify_hub_info": {
+    "public_key": {{verify_hub_public_key}},
+    "port": 3300,
+    "node_name": "ood1"
+  },
   "oods": [
   ]
 }

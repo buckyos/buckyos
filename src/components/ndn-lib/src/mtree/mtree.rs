@@ -5,7 +5,7 @@ use super::meta::*;
 use super::stream::*;
 use crate::hash::{HashHelper, HashMethod};
 use crate::NdnError;
-use crate::{NdnResult, ObjId, OBJ_TYPE_MTREE};
+use crate::{NdnResult, ObjId};
 use core::{error, hash};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -104,10 +104,6 @@ impl MerkleTreeObject {
     pub fn get_data_size(&self) -> u64 {
         self.meta.data_size
     }
-
-    pub fn get_obj_id(&self) -> ObjId {
-        return ObjId::new_by_raw(OBJ_TYPE_MTREE.to_string(), self.root_hash.clone());
-    }
 }
 
 pub struct MerkleTreeProofPathVerifier {
@@ -130,8 +126,18 @@ impl MerkleTreeProofPathVerifier {
         }
 
         let mut current = None;
+        let mut current_leaf_index = 0;
         for (i, item) in proof_path.iter().enumerate() {
             if i == proof_path.len() - 1 {
+                if current_leaf_index != 0 {
+                    let msg = format!(
+                        "Invalid proof path: current_leaf_index should be 0, but got {}",
+                        current_leaf_index
+                    );
+                    warn!("{}", msg);
+                    return Ok(false);
+                }
+
                 // We reach the root node hash, so check if it is the same as the calculated root hash
                 return Ok(current.as_ref() == Some(&item.1));
             }
@@ -140,17 +146,31 @@ impl MerkleTreeProofPathVerifier {
             match current {
                 Some(hash) => {
                     // println!("calc parent hash: {:?} {:?}", hash, sibling_hash);
+                    let mut silbing_index = 0;
                     let ret = if index % 2 == 0 {
+                        silbing_index = index + 1;
                         self.calc_parent_hash(sibling_hash, &hash)
                     } else {
+                        silbing_index = index - 1;
                         self.calc_parent_hash(&hash, sibling_hash)
                     };
 
+                    if silbing_index != current_leaf_index {
+                        let msg = format!(
+                            "Sibling index mismatch: {} vs {}",
+                            silbing_index, current_leaf_index
+                        );
+                        warn!("{}", msg);
+                        return Ok(false);
+                    }
+
                     current = Some(ret);
+                    current_leaf_index = current_leaf_index / 2;
                 }
                 None => {
                     // The first one is the leaf node hash
                     current = Some(sibling_hash.clone());
+                    current_leaf_index = *index;
                 }
             }
         }

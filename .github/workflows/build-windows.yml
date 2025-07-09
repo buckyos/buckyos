@@ -46,7 +46,7 @@ jobs:
       run: python3 scripts/build_web_apps.py
     - name: build bin
       working-directory: ./src
-      run: python3 scripts/build.py --no-build-web-apps --no-install --target=${{inputs.arch}}-pc-windows-msvc
+      run: python3 scripts/build.py --no-build-web-apps --no-install --tray-controller --target=${{inputs.arch}}-pc-windows-msvc
     - name: Prepare tools
       run: |
         mkdir tools

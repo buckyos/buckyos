@@ -4,6 +4,7 @@ mod provider;
 mod name_client;
 mod name_query;
 mod dns_provider;
+mod config_provider;
 mod utility;
 
 use jsonwebtoken::DecodingKey;
@@ -12,6 +13,7 @@ pub use name_client::*;
 pub use name_query::*;
 pub use dns_provider::*;
 pub use utility::*;
+pub use config_provider::*;
 
 use cfg_if::cfg_if;
 cfg_if! {
@@ -33,6 +35,7 @@ extern crate log;
 //TODO 首次初始化的BOOT NAME CLIENT 可以为系统的名字解析提供一个保底
 pub static GLOBAL_BOOT_NAME_CLIENT: OnceCell<NameClient> = OnceCell::new();
 pub static GLOBAL_NAME_CLIENT: OnceCell<NameClient> = OnceCell::new();
+pub static IS_NAME_LIB_INITED: OnceCell<bool> = OnceCell::new();
 
 
 pub fn get_default_web3_bridge_config() -> HashMap<String, String> {
@@ -44,8 +47,10 @@ pub fn get_default_web3_bridge_config() -> HashMap<String, String> {
 //name lib 是系统最基础的库，应尽量在进程启动时完成初始化
 pub async fn init_name_lib(web3_bridge_config:&HashMap<String, String>) -> NSResult<()> {
     //init web3 bridge config
-
-
+    if IS_NAME_LIB_INITED.get().is_some() {
+        return Ok(());
+    }
+    
     let set_result = KNOWN_WEB3_BRIDGE_CONFIG.set(web3_bridge_config.clone());
     if set_result.is_err() {
         return Err(NSError::Failed("Failed to set KNOWN_WEB3_BRIDGE_CONFIG".to_string()));
@@ -57,7 +62,10 @@ pub async fn init_name_lib(web3_bridge_config:&HashMap<String, String>) -> NSRes
     if set_result.is_err() {
         return Err(NSError::Failed("Failed to set GLOBAL_BOOT_NAME_CLIENT".to_string()));
     }
-    
+    let set_result = IS_NAME_LIB_INITED.set(true);
+    if set_result.is_err() {
+        panic!("Failed to set IS_NAME_LIB_INITED");
+    }
     Ok(())
 }
 

@@ -147,15 +147,11 @@ impl GatewayConfig {
         if let Some(Some(inner_services)) = json_value.get("inner_services").map(|v| v.as_object())
         {
             for (server_id, server_config) in inner_services.iter() {
-                let server_type = server_config.get("type");
-                if server_type.is_none() {
-                    return Err("Server type not found".to_string());
-                }
-                let server_type = server_type.unwrap().as_str();
-                if server_type.is_none() {
-                    return Err("Server type not string".to_string());
-                }
-                let server_type = server_type.unwrap();
+                let server_type = server_config.get("type")
+                    .ok_or("server_config type column not found".to_string())?
+                    .as_str()
+                    .ok_or("Server type not string".to_string())?;
+
                 match server_type {
                     "cyfs-sn" => {
                         let sn_config =
@@ -219,7 +215,7 @@ impl GatewayConfig {
                                     let new_path =
                                         adjust_path(route_config.local_dir.as_ref().unwrap())
                                             .map_err(|e| format!("adjust path failed! {}", e))?;
-                                    info!(
+                                    debug!(
                                         "adjust host {}.{} local path {} to {}",
                                         host,
                                         route,

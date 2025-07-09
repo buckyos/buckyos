@@ -1,17 +1,40 @@
 use std::ops::Deref;
 //system control panel client
-use std::sync::Arc;
-use name_lib::DeviceConfig;
-use name_lib::DeviceInfo;
-use name_lib::ZoneConfig;
+
+use name_lib::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde_json::Value;
 use serde_json::json;
 use log::*;
 use ::kRPC::*;
 use crate::system_config::*;
 use package_lib::PackageMeta;
+use crate::KVAction;
+
+
+pub const SERVICE_INSTANCE_INFO_UPDATE_INTERVAL: u64 = 30;
+
+#[derive(Serialize, Deserialize)]
+pub struct ServiceInstanceInfo {
+    pub state: String,
+    pub port: u16,
+    pub last_update_time: u64,
+    pub start_time: u64,
+    pub pid: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ServiceNodeInfo {
+    pub weight: u32,
+    pub state: String,
+    pub port: u16,
+    pub node_did:String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ServiceInfo {
+    pub node_list: HashMap<String, ServiceNodeInfo>,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct InstallConfig {
@@ -245,7 +268,7 @@ pub struct FrameServiceInstanceConfig {
 }
 
 impl FrameServiceInstanceConfig {
-    pub fn new(pkg_id:String)->Self {
+    pub fn new(_pkg_id:String)->Self {
         unimplemented!()
     }
 }
@@ -273,6 +296,7 @@ impl ControlPanelClient {
     pub fn new(system_config_client: SystemConfigClient) -> Self {
         Self { system_config_client }
     }
+
     //return (rbac_model,rbac_policy)
     pub async fn load_rbac_config(&self) -> Result<(String,String)> {
         let rbac_model_path = "system/rbac/model";
@@ -321,10 +345,61 @@ impl ControlPanelClient {
         if get_result.is_err() {
             return Err(RPCErrors::ReasonError("Trust key  not found".to_string()));
         }
-        let (device_config,_version) = get_result.unwrap();
-        let device_config:DeviceConfig= serde_json::from_str(&device_config)
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        Ok(device_config)
+        
+        let (device_doc_str,_version) = get_result.unwrap();
+        let device_doc: EncodedDocument = EncodedDocument::from_str(device_doc_str.clone())
+            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        let device_doc: DeviceConfig = DeviceConfig::decode(&device_doc, None)
+            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+
+        Ok(device_doc)
+    }
+
+    pub async fn add_user(&self, user_config:&OwnerConfig,is_admin:bool) -> Result<u64> {
+        //0. check user_config.name is valid
+        //1. create users/{user_id}/doc
+        //2. create users/{user_id}/settings
+        //3. add user to rbac group
+        let user_id = user_config.name.clone();
+        let user_doc_path = format!("users/{}/doc", user_id);
+        let user_settings_path = format!("users/{}/settings", user_id);
+        
+        // 将用户配置序列化为 JSON 字符串
+        let user_doc_str = serde_json::to_string(user_config)
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to serialize user config: {}", e)))?;
+            
+        // 创建默认用户设置
+        let default_settings = json!({
+            "theme": "light",
+            "language": "en",
+            "notifications": true
+        });
+        let settings_str = serde_json::to_string(&default_settings)
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to serialize settings: {}", e)))?;
+
+        // 准备事务操作
+        let mut tx_actions = HashMap::new();
+        
+        // 1. 创建用户文档
+        tx_actions.insert(user_doc_path, KVAction::Create(user_doc_str));
+        
+        // 2. 创建用户设置
+        tx_actions.insert(user_settings_path, KVAction::Create(settings_str));
+        
+        // 3. 添加用户到 RBAC 组
+        let rbac_policy = if is_admin {
+            format!("\ng, {}, admin", user_id)
+        } else {
+            format!("\ng, {}, user", user_id)
+        };
+        tx_actions.insert("system/rbac/policy".to_string(), KVAction::Append(rbac_policy));
+        
+        // 执行事务
+        self.system_config_client.exec_tx(tx_actions, None).await
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to execute user creation transaction: {}", e)))?;
+
+        info!("Successfully added user {} with admin={}", user_id, is_admin);
+        Ok(0)
     }
 
     //TODO: help app installer dev easy to generate right app-index
@@ -394,20 +469,38 @@ impl ControlPanelClient {
         Ok(result_app_list)
     }
 
-    pub async fn get_services_list(&self) -> Result<Vec<KernelServiceConfig>> {
-        Ok(vec![])
+    pub async fn update_service_instance_info(&self,
+        service_name:&str,node_name:&str,
+        instance_info:&ServiceInstanceInfo) -> Result<u64> {
+        let service_info_path = format!("services/{}/instances/{}",service_name,node_name);
+        let service_info_str = serde_json::to_string(instance_info).unwrap();
+        self.system_config_client.set(service_info_path.as_str(),service_info_str.as_str()).await
+            .map_err(|e| RPCErrors::ReasonError(format!("update service instance info {}@{} failed, err:{}", service_name,node_name, e)))?;
+        Ok(0)
     }
 
-    pub async fn get_valid_app_index(&self,user_id:&str) -> Result<u64> {
+    pub async fn get_services_info(&self,service_name:&str) -> Result<ServiceInfo> {
+        let service_info_path = format!("services/{}/info",service_name);
+        let service_info = self.system_config_client.get(service_info_path.as_str()).await;
+        if service_info.is_err() {
+            return Err(RPCErrors::ServiceNotValid("service info not found".to_string()));
+        }
+        let (service_info_str,_version) = service_info.unwrap();
+        let service_info:ServiceInfo = serde_json::from_str(&service_info_str)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        Ok(service_info)
+    }
+
+    pub async fn get_valid_app_index(&self,_user_id:&str) -> Result<u64> {
         unimplemented!();
     }
 
-    pub async fn remove_app(&self,appid:&str) -> Result<u64> {
+    pub async fn remove_app(&self,_appid:&str) -> Result<u64> {
         unimplemented!();
     }
 
 
-    pub async fn disable_app(&self,appid:&str) -> Result<u64> {
+    pub async fn disable_app(&self,_appid:&str) -> Result<u64> {
         unimplemented!();
     }
 }
@@ -429,6 +522,7 @@ mod tests {
             "description" : "Home Station",
             "author" : "did:bns:buckyos",
             "pub_time":1715760000,
+
             "pkg_list" : {
                 "amd64_docker_image" : {
                     "pkg_id":"home-station-x86-img",
@@ -451,7 +545,15 @@ mod tests {
                 "amd64_linux_app" :{
                     "pkg_id" : "home-station-linux-app"
                 }
+            },
+            "install_config":{
+                "data_mount_point":["/data"],
+                "cache_mount_point":["/cache"],
+                "local_cache_mount_point":["/local_cache"],
+                "tcp_ports":{"www":80},
+                "udp_ports":{"dns":53}
             }
+
         });
         let app_doc:AppDoc = serde_json::from_value(app_doc).unwrap();
         println!("{}#{}", app_doc.pkg_name, app_doc.version);

@@ -21,6 +21,19 @@ impl DnsProvider {
         }
     }
 
+    pub fn new_with_config(config: serde_json::Value) -> NSResult<Self> {
+        let dns_server = config.get("dns_server");
+        if dns_server.is_some() {
+            let dns_server = dns_server.unwrap().as_str();
+            return Ok( Self {
+                dns_server : dns_server.map(|s| s.to_string())
+            }) 
+        }
+        Ok(Self {
+            dns_server: None,
+        })
+    }
+
     // fn parse_dns_response(resp: DnsResponse) -> NSResult<NameInfo> {
     //     let mut txt_list = Vec::new();
     //     for record in resp.answers() {
@@ -47,6 +60,7 @@ impl DnsProvider {
     // }
    
 }
+
 #[async_trait::async_trait]
 impl NsProvider for DnsProvider {
     fn get_id(&self) -> String {
@@ -55,10 +69,13 @@ impl NsProvider for DnsProvider {
 
     async fn query(&self, name: &str, record_type: Option<RecordType>, from_ip: Option<IpAddr>) -> NSResult<NameInfo> {
         let mut server_config = ResolverConfig::default();
+        let resolver;
         if self.dns_server.is_some() {
             let dns_server = self.dns_server.clone().unwrap();
+            let dns_ip_addr = IpAddr::from_str(&dns_server)
+                .map_err(|e| NSError::ReadLocalFileError(format!("Invalid dns server: {}", e)))?;
             let name_server_configs = vec![NameServerConfig::new(
-                SocketAddr::new(IpAddr::from_str(&dns_server).unwrap(), 53),
+                SocketAddr::new(dns_ip_addr, 53),
                 Protocol::Udp,
             )];
             server_config = ResolverConfig::from_parts(
@@ -66,10 +83,11 @@ impl NsProvider for DnsProvider {
                 vec![], 
                 name_server_configs,
             );
+            resolver = TokioAsyncResolver::tokio(server_config, ResolverOpts::default());
+        } else {
+            resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap();
         }
         info!("dns query: {}",name);
-        //let resolver2 = Resolver::new();
-        let resolver = TokioAsyncResolver::tokio(server_config, ResolverOpts::default());
         //resolver.lookup(name, record_type)
         //for dns proivder,default record type is A.
         let record_type_str = record_type

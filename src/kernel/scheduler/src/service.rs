@@ -54,6 +54,34 @@ pub fn update_service_instance(instance:&PodInstance)->Result<HashMap<String,KVA
     unimplemented!();
 }
 
+pub fn update_service_info(pod_id: &str, pod_info: &PodInfo) -> Result<HashMap<String, KVAction>> {
+    //update service info
+    let mut result = HashMap::new();
+
+    let key = format!("services/{}/info",pod_id);
+    let mut info_map:HashMap<String, ServiceNodeInfo> = HashMap::new();
+    match pod_info {
+        PodInfo::RandomCluster(cluster) => {
+            for (node_id, (weight,instance)) in cluster.iter() {
+                info_map.insert(node_id.clone(), ServiceNodeInfo {
+                    weight: weight.clone(),
+                    state: "Running".to_string(), 
+                    port: instance.service_port,
+                    node_did: instance.node_id.clone(),
+                });
+            }
+        }
+    }
+    let service_info = ServiceInfo {
+        node_list: info_map,
+    };
+
+    result.insert(key,KVAction::Update(serde_json::to_string(&service_info)?));
+
+    //TODO: update pod_item's cyfs_gateway upstream cluster info here?
+    Ok(result)
+}
+
 pub fn set_service_state(pod_id:&str,state:&PodItemState)->Result<HashMap<String,KVAction>> {
     let key = format!("services/{}/config",pod_id);
     let mut set_paths = HashMap::new();

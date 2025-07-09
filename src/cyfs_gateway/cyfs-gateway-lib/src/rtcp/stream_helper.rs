@@ -62,31 +62,42 @@ impl RTcpStreamBuildHelper {
     }
 
     pub async fn wait_ropen_stream(&self, key: &str) -> Result<TcpStream, std::io::Error> {
+        let timeout_duration = Duration::from_secs(30);
+        let start_time = std::time::Instant::now();
+        
         loop {
-            let mut map = self.wait_ropen_stream_map.lock().await;
-            let wait_stream = map.remove(key);
-
-            if wait_stream.is_some() {
-                match wait_stream.unwrap() {
-                    WaitStream::OK(stream) => {
-                        return Ok(stream);
-                    }
-                    WaitStream::Waiting => {
-                        // do nothing
-                        map.insert(key.to_owned(), WaitStream::Waiting);
-                    }
-                }
-            }
-            drop(map);
-
-            if let Err(_) =
-                timeout(Duration::from_secs(30), self.notify_ropen_stream.notified()).await
-            {
+            // 检查是否超时
+            if start_time.elapsed() >= timeout_duration {
                 warn!(
                     "Timeout: ropen stream {} was not found within the time limit.",
                     key
                 );
                 return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Timeout"));
+            }
+            
+            // 检查 map 中是否有对应的 stream
+            {
+                let mut map = self.wait_ropen_stream_map.lock().await;
+                if let Some(wait_stream) = map.remove(key) {
+                    match wait_stream {
+                        WaitStream::OK(stream) => {
+                            return Ok(stream);
+                        }
+                        WaitStream::Waiting => {
+                            // 重新插入等待状态，继续等待
+                            map.insert(key.to_owned(), WaitStream::Waiting);
+                        }
+                    }
+                }
+            }
+            
+            // 等待一小段时间后再次检查，避免过度占用 CPU
+            let remaining_time = timeout_duration - start_time.elapsed();
+            let check_interval = std::cmp::min(Duration::from_millis(100), remaining_time);
+            
+            if let Err(_) = timeout(check_interval, self.notify_ropen_stream.notified()).await {
+                // 超时继续循环检查
+                continue;
             }
         }
     }

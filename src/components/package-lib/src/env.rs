@@ -220,6 +220,7 @@ pub struct MediaInfo {
 pub struct PackageEnv {
     pub work_dir: PathBuf,
     pub config: PackageEnvConfig,
+    is_dev_mode: bool,
     lock_db: Arc<TokioMutex<Option<HashMap<String, (String,PackageMeta)>>>>,
 }
 
@@ -229,6 +230,7 @@ impl PackageEnv {
     pub fn new(work_dir: PathBuf) -> Self {
         let config_path = work_dir.join("pkg.cfg.json");
         let mut env_config = PackageEnvConfig::default();
+        let mut is_dev_mode = true;
         if config_path.exists() {
             let config = std::fs::read_to_string(config_path);
             if config.is_ok() {
@@ -236,6 +238,7 @@ impl PackageEnv {
                 let config_result = serde_json::from_str(&config);
                 if  config_result.is_ok() {
                     env_config = config_result.unwrap();
+                    is_dev_mode = false;
                     info!("env load pkg.cfg.json OK.");
                 } else {
                     info!("env load pkg.cfg.json failed. {}",config_result.err().unwrap());
@@ -246,8 +249,13 @@ impl PackageEnv {
         Self {
             work_dir,
             config: env_config,
+            is_dev_mode: is_dev_mode,
             lock_db: Arc::new(TokioMutex::new(None))
         }
+    }
+
+    pub fn is_dev_mode(&self) -> bool {
+        self.is_dev_mode
     }
 
     pub fn is_strict(&self) -> bool {
@@ -314,8 +322,6 @@ impl PackageEnv {
         match self.load_strictly(pkg_id_str).await {
             Ok(media_info) => Ok(media_info),
             Err(error) => {
-                info!("load strict pkg {} failed:{}", pkg_id_str,error.to_string());
-
                 if self.is_strict() {
                     if let Some(parent_path) = &self.config.parent {
                         let parent_env = PackageEnv::new(parent_path.clone());
@@ -325,8 +331,9 @@ impl PackageEnv {
                             return Ok(media_info);
                         }
                     }
+                    warn!("load strict pkg {} failed:{}", pkg_id_str,error.to_string());
                 } else {
-                    info!("dev mode env {} : try load pkg: {}", self.work_dir.display(), pkg_id_str);
+                    debug!("dev mode env {} : try load pkg: {}", self.work_dir.display(), pkg_id_str);
                     let media_info = self.dev_try_load(pkg_id_str).await;
                     if media_info.is_ok() {
                         return Ok(media_info.unwrap());
@@ -338,6 +345,7 @@ impl PackageEnv {
                             return Ok(media_info);
                         }
                     }
+                    warn!("load dev mode pkg {} failed:{}", pkg_id_str,error.to_string());
                 }
                 
                 Err(PkgError::LoadError(
@@ -521,10 +529,14 @@ impl PackageEnv {
         //建立符号链接 ./pkg_nameA#version -> pkgs/pkg_nameA/$meta_obj_id
         //如果是最新版本，建立符号链接 ./pkg_nameA -> pkgs/pkg_nameA/$meta_obj_id
         info!("extract pkg {} from chunk",pkg_meta.pkg_name.as_str());
+        let meta_real_obj_id : ObjId = ObjId::new(meta_obj_id)
+            .map_err(|e| PkgError::ParseError(meta_obj_id.to_string(),e.to_string()))?;
+
         let buf_reader = BufReader::new(chunk_reader);
         let gz_decoder = GzipDecoder::new(buf_reader);
         let mut archive = Archive::new(gz_decoder);
-        let synlink_target = format!("./pkgs/{}/{}", pkg_meta.pkg_name, meta_obj_id);
+        
+        let synlink_target = format!("./pkgs/{}/{}", pkg_meta.pkg_name, meta_real_obj_id.to_filename());
         let target_dir = self.work_dir.join(synlink_target.clone());
         //如果target_dir存在？则根据是否强制安装决定是否删除后继续
         if force_install {
@@ -609,7 +621,7 @@ impl PackageEnv {
         let (meta_obj_id,pkg_meta) = self.get_pkg_meta(&real_pkg_id).await?;
         
         // 使用元数据中的信息构建准确的物理路径
-        let pkg_strict_dir = self.get_pkg_strict_dir(&meta_obj_id,&pkg_meta);
+        let pkg_strict_dir = self.get_pkg_strict_dir(&meta_obj_id,&pkg_meta)?;
         
         if tokio_fs::metadata(&pkg_strict_dir).await.is_ok() {
             let metadata = tokio_fs::metadata(&pkg_strict_dir).await?;
@@ -668,10 +680,12 @@ impl PackageEnv {
     }
 
 
-    fn get_pkg_strict_dir(&self, meta_obj_id: &str,pkg_meta: &PackageMeta) -> PathBuf {
+    fn get_pkg_strict_dir(&self, meta_obj_id: &str,pkg_meta: &PackageMeta) -> PkgResult<PathBuf> {
         let pkg_name = pkg_meta.pkg_name.clone();
+        let real_obj_id = ObjId::new(meta_obj_id)
+            .map_err(|e| PkgError::ParseError(meta_obj_id.to_string(),e.to_string()))?;
         //pkgs/pkg_nameA/$meta_obj_id
-        self.get_install_dir().join(pkg_name).join(meta_obj_id)
+        Ok(self.get_install_dir().join(pkg_name).join(real_obj_id.to_filename()))
     }
 
     fn get_pkg_dir(&self, pkg_id: &str) -> PkgResult<Vec<PathBuf>> {

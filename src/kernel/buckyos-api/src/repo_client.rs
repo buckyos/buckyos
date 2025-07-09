@@ -1,10 +1,9 @@
-use async_trait::async_trait;
 
+
+use serde_json::json;
+use std::collections::HashMap;
 use ::kRPC::*;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::{collections::HashMap, str::FromStr};
-use log::*;
+
 
 pub struct RepoClient {
     krpc_client: kRPC,

@@ -113,7 +113,7 @@ impl SerializeHashCalculator {
         let hash_bytes = self.hash_method.hash_bytes();
 
         let mut ret = Vec::with_capacity(indexes.len());
-        for (_depth, index) in indexes {
+        for (_depth, index, leaf_index) in indexes {
             let pos = hash_bytes as u64 * index;
             reader.seek(SeekFrom::Start(pos)).await.map_err(|e| {
                 let msg = format!("Error seeking to position {}: {}", index, e);
@@ -128,7 +128,7 @@ impl SerializeHashCalculator {
                 NdnError::IoError(msg)
             })?;
 
-            ret.push((index, hash));
+            ret.push((leaf_index, hash));
         }
 
         Ok(ret)

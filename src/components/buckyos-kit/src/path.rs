@@ -1,4 +1,33 @@
-use std::{env, path::{Path, PathBuf}};
+use std::{env, path::{Path, PathBuf, Component}};
+
+pub fn normalize_path(path_str: &str) -> String {
+    let mut components = Path::new(path_str).components().peekable();
+    let mut normalized = PathBuf::new();
+
+    while let Some(comp) = components.next() {
+        match comp {
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push("..");
+                }
+            }
+            Component::CurDir => {
+                // 忽略当前目录
+            }
+            Component::Normal(c) => {
+                normalized.push(c);
+            }
+            Component::RootDir => {
+                normalized.push(comp);
+            }
+            Component::Prefix(p) => {
+                normalized.push(p.as_os_str()); // Windows 前缀（例如 C:\）
+            }
+        }
+    }
+
+    normalized.to_string_lossy().to_string().replace("\\", "/")
+}
 
 pub fn get_buckyos_root_dir() -> PathBuf {
     if env::var("BUCKYOS_ROOT").is_ok() {
@@ -64,9 +93,8 @@ pub fn get_buckyos_service_local_data_dir(service_name: &str,disk_id: Option<&st
 
 pub fn adjust_path(old_path: &str) -> std::io::Result<PathBuf> {
     let new_path= old_path.replace("{BUCKYOS_ROOT}", &get_buckyos_root_dir().to_string_lossy());
-    // can adjust other Placeholders
-
-    std::path::absolute(new_path)?.canonicalize()
+    let normalized_path = normalize_path(&new_path);
+    Ok(std::path::Path::new(&normalized_path).to_path_buf())
 }
 
 pub fn get_buckyos_named_data_dir(mgr_id: &str) -> PathBuf {
@@ -109,5 +137,27 @@ mod tests {
         let relative_path = get_relative_path(base_path, full_path);
         assert_eq!(relative_path, "/1234567890/asdf?a=1&b=2");
 
+    }
+    #[test]
+    fn test_normalize_path() {
+        let path = "C:\\Users\\buckyos\\AppData\\Local\\Temp\\buckyos\\logs\\buckyos.log";
+        let normalized = normalize_path(path);
+        assert_eq!(normalized.as_str(), "C:/Users/buckyos/AppData/Local/Temp/buckyos/logs/buckyos.log");
+
+        let path = "C:\\Users\\buckyos\\AppData\\Local\\Temp\\buckyos\\.\\logs\\buckyos.log";
+        let normalized = normalize_path(path);
+        assert_eq!(normalized.as_str(), "C:/Users/buckyos/AppData/Local/Temp/buckyos/logs/buckyos.log");
+
+        let path = "C:\\Users\\buckyos\\AppData\\Local\\Temp\\buckyos\\..\\logs\\buckyos.log";
+        let normalized = normalize_path(path);
+        assert_eq!(normalized.as_str(), "C:/Users/buckyos/AppData/Local/Temp/logs/buckyos.log");
+
+        let path = "C:\\Users\\buckyos\\AppData\\Local\\Temp\\buckyos\\..\\logs\\buckyos.log";
+        let normalized = normalize_path(path);
+        assert_eq!(normalized.as_str(), "C:/Users/buckyos/AppData/Local/Temp/logs/buckyos.log");
+
+        let path = "/opt/buckyos/data/chunk/../1234567890";
+        let normalized = normalize_path(path);
+        assert_eq!(normalized.as_str(), "/opt/buckyos/data/1234567890");
     }
 }

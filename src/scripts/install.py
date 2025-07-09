@@ -45,11 +45,13 @@ def install(install_all=False):
         return
     # if /opt/buckyos not exist, copy rootfs to /opt/buckyos
     print(f"installing to {install_root_dir}")
-    if not os.path.exists(install_root_dir):
+    etc_dir = os.path.join(install_root_dir, "etc")
+    if not os.path.exists(etc_dir):
         install_all = True
     
     if install_all:
         print(f'copying rootfs to {install_root_dir}')
+        
         if os.path.exists(install_root_dir):
             # 删除目标目录下的所有子项
             for item in os.listdir(install_root_dir):
@@ -74,9 +76,11 @@ def install(install_all=False):
 
         print(f'updating files in {bin_dir}')
         if os.path.exists(bin_dir):
+            print(f'removing {bin_dir}')
             shutil.rmtree(bin_dir)
         #just update bin
-        shutil.copytree(os.path.join(src_dir, "rootfs/bin"), bin_dir)
+        print(f'copying {os.path.join(src_dir, "rootfs","bin")} => {bin_dir}')
+        shutil.copytree(os.path.join(src_dir, "rootfs","bin"), bin_dir)
 
     # 在安装完成后设置数据目录权限
     set_data_dir_permissions()

@@ -165,7 +165,7 @@ async fn test_generator() {
         println!("Root hash: {:?}", root_hash1);
         assert_eq!(root_hash, root_hash1);
     }
-    
+
     {
         // Create mtree object and load from buf previously
         let mut stream = stream.clone();
@@ -179,20 +179,22 @@ async fn test_generator() {
         println!("Root hash: {:?}", root_hash1);
         assert_eq!(root_hash, root_hash1);
 
-        // Verify the proof path for the leaf node
-        let proof_verify = MerkleTreeProofPathVerifier::new(HashMethod::Sha256);
-        let mut proof = obj.get_proof_path_by_leaf_index(0).await.unwrap();
+        for leaf_index in 0..obj.get_leaf_count() {
+            // Verify the proof path for the leaf node
+            let proof_verify = MerkleTreeProofPathVerifier::new(HashMethod::Sha256);
+            let mut proof = obj.get_proof_path_by_leaf_index(leaf_index).await.unwrap();
 
-        // Proof last node must be the root node hash
-        assert_eq!(proof[proof.len() - 1].1, root_hash);
+            // Proof last node must be the root node hash
+            assert_eq!(proof[proof.len() - 1].1, root_hash);
 
-        assert_eq!(proof_verify.verify(&proof).unwrap(), true);
+            assert_eq!(proof_verify.verify(&proof).unwrap(), true);
 
-        // Replace leaf node hash with error hash, then verify will failed!
-        println!("Proof leaf node: {:?}", proof[0]);
-        proof[0].1[0] = !proof[0].1[0];
-        println!("Error proof leaf node: {:?}", proof[0]);
-        assert_eq!(proof_verify.verify(&proof).unwrap(), false);
+            // Replace leaf node hash with error hash, then verify will failed!
+            println!("Proof leaf node: {:?}", proof[0]);
+            proof[0].1[0] = !proof[0].1[0];
+            println!("Error proof leaf node: {:?}", proof[0]);
+            assert_eq!(proof_verify.verify(&proof).unwrap(), false);
+        }
     }
 }
 

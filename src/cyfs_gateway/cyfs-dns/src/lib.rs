@@ -29,7 +29,7 @@ mod test {
         let dns_config:DNSServerConfig = serde_json::from_str(config_str).unwrap();
         
         let start_result = start_cyfs_dns_server(dns_config).await;
-        println!("result: {:?}", start_result);
+        //println!("result: {:?}", start_result);
         assert!(start_result.is_ok());
     }
 }

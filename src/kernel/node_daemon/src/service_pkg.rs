@@ -57,7 +57,7 @@ impl ServicePkg {
             let pkg_env = PackageEnv::new(self.pkg_env_path.clone()); 
             let new_media_info = pkg_env.load(&self.pkg_id).await;
             if new_media_info.is_ok() {
-                info!("load pkg {} success", self.pkg_id);
+                debug!("load service pkg {} success", self.pkg_id);
                 let new_media_info = new_media_info.unwrap();
                 *media_info = Some(new_media_info);
                 return true;
@@ -103,14 +103,23 @@ impl ServicePkg {
             })?;
 
         let params_str = params.map(|p| p.join(" ")).unwrap_or_default();
-
-        info!(
-            "# {} {} => {} \n\t {}",
-            op_file.display(),
-            params_str,
-            result,
-            String::from_utf8_lossy(&output)
-        );
+        if result == 0 {
+            debug!(
+                "# run {} {} => {} \n\t {}",
+                op_file.display(),
+                params_str,
+                result,
+                String::from_utf8_lossy(&output)
+            );
+        } else {
+            info!(
+                "# run {} {} => {} \n\t {}",
+                op_file.display(),
+                params_str,
+                result,
+                String::from_utf8_lossy(&output)
+            ); 
+        }
         Ok(result)
     }
 
