@@ -40,7 +40,7 @@ p, root, ndn://*, read|write,allow
 p, ood,kv://*,read,allow
 p, ood,kv://users/*/apps/*,read|write,allow
 p, ood,kv://nodes/{device}/*,read|write,allow
-
+p, ood,kv://services/*,read|write,allow
 p, client,kv://devices/{device}/*,read,allow
 p, client,kv://devices/{device}/info,read|write,allow
 
@@ -55,8 +55,7 @@ p, app, kv://users/*/apps/{app}/info,read,allow
 p, app, dfs://users/*/appdata/{app}/*, read|write,allow
 p, app, dfs://users/*/cache/{app}/*, read|write,allow
 
-
-p, admin,kv://users/{user}/*,read,allow
+p, admin,kv://users/{user}/*,read|write,allow
 p, admin,dfs://users/{user}/*,read|write,allow
 p, admin,kv://services/*,read|write,allow
 p, admin,dfs://library/*,read|write,allow
@@ -73,10 +72,13 @@ g, system-config, kernel
 g, verify-hub, kernel
 g, control-panel, kernel
 g, repo-service, kernel
+g, buckycli,kernel
 g, samba-service,services
+
 
 g, sys-test, app
 g, buckyos-filebrowser, app
+g, ood1, ood
 "#;
 
 
@@ -250,14 +252,18 @@ g, ood1, ood
 g, app1, app
 g, lzc-laptop,client
 g, alice,admin
+g, smb-service,service
 g, bob,user
 p, su_bob,kv://users/bob/*,read|write,allow
         "#;
         create_enforcer(None,Some(&policy_str)).await.unwrap();
         let res = enforce("ood", Some("node-daemon"), "kv://boot/config", "read").await;
         assert_eq!(res, true);
-         assert_eq!(enforce("ood1", Some("node-daemon"), "kv://boot/config", "write").await, false);
+        assert_eq!(enforce("ood1", Some("node-daemon"), "kv://boot/config", "write").await, false);
+        assert_eq!(enforce("ood1", Some("verify-hub"), "kv://system/verify-hub/key", "read").await, true);
         assert_eq!(enforce("root", Some("node-daemon"), "kv://boot/config", "write").await, true);
+        assert_eq!(enforce("ood1", Some("repo-service"), "kv://services/repo-service/instance/ood1", "write").await, true);
+        assert_eq!(enforce("ood1", Some("smb-service"), "kv://services/smb-service/latest_smb_items", "read").await, true);
       
         assert_eq!(enforce("ood1", Some("scheduler"), "kv://users/alice/apps/app2/config", "write").await, true);
         assert_eq!(enforce("bob", Some("node-daemon"), "kv://users/alice/apps/app2", "read").await, false);

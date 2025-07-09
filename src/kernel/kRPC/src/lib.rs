@@ -34,8 +34,8 @@ pub enum RPCErrors {
     InvalidPassword,
     #[error("User Not Found:{0}")]
     UserNotFound(String),
-    #[error("Key not exist")]
-    KeyNotExist,
+    #[error("Key not exist: {0}")]
+    KeyNotExist(String),
     #[error("Service not valid: {0}")]
     ServiceNotValid(String),
 }
@@ -72,6 +72,11 @@ impl kRPC {
             session_token:RwLock::new(token.clone()),
             init_token:token.clone(),
         }
+    }
+
+    pub async fn reset_session_token(&self) {
+        let mut session_token = self.session_token.write().await;
+        *session_token = None;
     }
 
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {

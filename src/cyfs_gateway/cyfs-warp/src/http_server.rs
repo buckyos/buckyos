@@ -1,6 +1,6 @@
 
 use crate::router::*;
-use anyhow::Result;
+use anyhow::Result;//TODO need build a new Result type for cyfs-warp
 use cyfs_gateway_lib::*;
 use futures::stream::StreamExt;
 use hyper::server::accept::from_stream;
@@ -133,6 +133,7 @@ impl CyfsWarpServer {
                 Err(e) => {
                     // FIXME: should we return error here or just log it?
                     error!("Failed to start HTTP server: {}", e);
+                    return Err(e);
                 }
             }
             if self.config.tls_port > 0 {

@@ -21,8 +21,7 @@ async function doLogin(username:string, password:string,appId:string,source_url:
     console.log("password_hash: ", password_hash);
 
     try {
-        let verify_hub_url = buckyos.get_verify_rpc_url();
-        let rpc_client = new buckyos.kRPCClient(verify_hub_url,null,login_nonce);
+        let rpc_client = buckyos.getServiceRpcClient(BS_SERVICE_VERIFY_HUB);
         let result = await rpc_client.call("login", {
             type: "password",
             username: username,

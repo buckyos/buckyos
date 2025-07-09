@@ -53,15 +53,14 @@ pub trait RunItemControl: Send + Sync {
     //return new version
     //async fn update(&self, params: &Option<RunItemParams>) -> Result<String>;
 
-    async fn start(&self, control_key:&EncodingKey,params:Option<&Vec<String>>) -> Result<()>;
+    async fn start(&self,params:Option<&Vec<String>>) -> Result<()>;
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()>;
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState>;
 }
 
-pub async fn control_run_item_to_target_state(
+pub async fn ensure_run_item_state(
     item: &dyn RunItemControl,
-    target_state: RunItemTargetState,
-    device_private_key: &EncodingKey
+    target_state: RunItemTargetState
 ) -> Result<()> {
     let item_name = item.get_item_name()?;
     match target_state {
@@ -74,12 +73,12 @@ pub async fn control_run_item_to_target_state(
                 warn!("{} not exist,deploy and start it!", item_name);
                 item.deploy(None).await?;
                 warn!("{} deploy success,start it!", item_name);
-                item.start(device_private_key,None).await?;
+                item.start(None).await?;
                 Ok(())
             }
             ServiceState::Stopped => {
                 warn!("{} stopped,start it!", item_name);
-                item.start(device_private_key,None).await?;
+                item.start(None).await?;
                 Ok(())
             }
             ServiceState::Deploying => {

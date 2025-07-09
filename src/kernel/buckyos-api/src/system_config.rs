@@ -1,17 +1,23 @@
 // use etcd_client::*;
 
+use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
-use rand::random;
-use serde::{Serialize,Deserialize};
 use serde_json::{Value, json, Map};
 use ::kRPC::kRPC;
 use thiserror::Error;
 
 use std::sync::Arc;
 use std::collections::HashMap;
-use tokio::sync::OnceCell;
+use std::sync::LazyLock;
+use tokio::sync::{OnceCell, RwLock};
 
 use crate::KVAction;
+
+const CONFIG_CACHE_TIME:u64 = 30; //30s
+
+//key -> (value,version)
+static CONFIG_CACHE: LazyLock<RwLock<HashMap<String,(String,u64)>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
+
 #[derive(Error, Debug)]
 pub enum SystemConfigError {
     #[error("Failed due to reason: {0}")]
@@ -28,10 +34,66 @@ pub type SytemConfigResult<T> = std::result::Result<T, SystemConfigError>;
 pub struct SystemConfigClient {
     client: OnceCell<Arc<kRPC>>,
     session_token: Option<String>,
+    cache_key_control:OnceCell<Vec<String>>,
+    current_version:RwLock<u64>,
 }
 
 
 impl SystemConfigClient {
+
+    fn need_cache(&self,key:&str) -> bool {
+        let cache_key_control = self.cache_key_control.get();
+        if cache_key_control.is_none() {
+            return false;
+        }
+        for k in cache_key_control.unwrap().iter() {
+            if key.starts_with(k) {
+                return true;
+            }
+        }
+        false
+    }
+
+    async fn get_config_cache(&self,key:&str) -> Option<String> {
+        let config_cache = &CONFIG_CACHE;
+        let current_version = self.current_version.read().await;
+        let real_current_version = *current_version;
+        drop(current_version);
+
+        let cache_guard = config_cache.read().await;
+        let v = cache_guard.get(key);
+        if v.is_none() {
+            return None;
+        }
+        let (value,version) = v.unwrap();
+        if version + CONFIG_CACHE_TIME < real_current_version {
+            // 缓存过期，删除缓存项
+            drop(cache_guard); // 释放读锁
+            let mut cache_guard = config_cache.write().await;
+            cache_guard.remove(key);
+            return None;
+        }
+        debug!("get system_config from CONFIG_CACHE {}=>{}",&key,&value);
+        Some(value.clone())
+    }
+
+    async fn set_config_cache(&self,key:&str,value:&str,version:u64) {
+        if !self.need_cache(key) {
+            return;
+        }
+
+        let mut current_version = self.current_version.write().await;
+        if *current_version < version {
+            *current_version = version;
+        }
+        drop(current_version);
+
+        let config_cache = &CONFIG_CACHE;
+        let mut cache_guard = config_cache.write().await;
+        cache_guard.insert(key.to_string(), (value.to_string(), version));
+
+    }
+
     pub fn new(service_url:Option<&str>,session_token:Option<&str>) -> Self {
         let real_session_token : Option<String>;
         if session_token.is_some() {
@@ -43,10 +105,16 @@ impl SystemConfigClient {
         let client = kRPC::new(service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"), real_session_token.clone());
         let client = Arc::new(client);
         info!("system config client is created,service_url:{},session_token:{}",service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"),real_session_token.clone().unwrap_or("None".to_string()));
+        let key_control = vec![
+            "services/".to_string(),
+        ];
+        let cache_key_control = OnceCell::new_with(Some(key_control));
 
         SystemConfigClient {
             client:OnceCell::new_with(Some(client)),
             session_token: real_session_token,
+            cache_key_control: cache_key_control,
+            current_version: RwLock::new(0),
         }
     }
 
@@ -63,6 +131,12 @@ impl SystemConfigClient {
     }
 
     pub async fn get(&self, key: &str) -> SytemConfigResult<(String,u64)> {
+        // 首先尝试从缓存获取
+        if let Some(cached_value) = self.get_config_cache(key).await {
+            return Ok((cached_value, 0));
+        }
+
+        // 缓存中没有，从服务器获取
         let client = self.get_krpc_client()?;
         let result = client.call("sys_config_get", json!({"key": key}))
             .await
@@ -72,7 +146,11 @@ impl SystemConfigClient {
             return Err(SystemConfigError::KeyNotFound(key.to_string()));
         }
         let value = result.as_str().unwrap_or("");
-        let revision = 0;
+        let revision = buckyos_get_unix_timestamp();
+        
+        // 将结果存入缓存
+        self.set_config_cache(key, &value, revision).await;
+        
         Ok((value.to_string(),revision))
     }
 
@@ -86,7 +164,7 @@ impl SystemConfigClient {
         }
 
         let client = self.get_krpc_client()?;
-        let result = client.call("sys_config_set", json!({"key": key, "value": value}))
+        let _result = client.call("sys_config_set", json!({"key": key, "value": value}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
@@ -102,7 +180,7 @@ impl SystemConfigClient {
 
     pub async fn create(&self,key:&str,value:&str) -> SytemConfigResult<u64> {
         let client = self.get_krpc_client()?;
-        let result = client.call("sys_config_create", json!({"key": key, "value": value}))
+        let _result = client.call("sys_config_create", json!({"key": key, "value": value}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
@@ -111,7 +189,7 @@ impl SystemConfigClient {
 
     pub async fn delete(&self,key:&str) -> SytemConfigResult<u64> {
         let client = self.get_krpc_client()?;
-        let result = client.call("sys_config_delete", json!({"key": key}))
+        let _result = client.call("sys_config_delete", json!({"key": key}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
         Ok(0)
@@ -197,6 +275,13 @@ impl SystemConfigClient {
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
         Ok(result)
+    }
+
+    pub async fn refresh_trust_keys(&self) -> SytemConfigResult<()> {
+        let client = self.get_krpc_client()?;
+        client.call("sys_refresh_trust_keys", json!({})).await
+            .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+        Ok(())
     }
 
   

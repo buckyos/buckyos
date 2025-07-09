@@ -3,6 +3,9 @@ mod app;
 mod scheduler;
 mod service;
 
+#[cfg(test)]
+mod scheduler_test;
+
 use log::*;
 use serde_json::json;
 use serde_json::Value;
@@ -108,7 +111,10 @@ async fn do_boot_scheduler() -> Result<()> {
         return Err(anyhow::anyhow!("boot/config not found in init list"));
     }
     let boot_config_str = boot_config_str.unwrap();
-    let mut zone_config: ZoneConfig = zone_boot_config.to_zone_config();
+    let mut zone_config: ZoneConfig = serde_json::from_str(boot_config_str.as_str()).map_err(|e| {
+        error!("serde_json::from_str failed: {:?}", e);
+        e
+    })?;
     zone_config.init_by_boot_config(&zone_boot_config);
     init_list.insert(
         "boot/config".to_string(),
@@ -126,7 +132,9 @@ async fn do_boot_scheduler() -> Result<()> {
         error!("schedule_loop failed: {:?}", boot_result.err().unwrap());
         return Err(anyhow::anyhow!("schedule_loop failed"));
     }
-
+    system_config_client.refresh_trust_keys().await?;
+    info!("system_config_service refresh trust keys success");
+    
     info!("boot scheduler success");
     return Ok(());
 }
@@ -169,6 +177,7 @@ fn create_pod_item_by_app_config(app_id: &str, app_config: &AppConfig) -> PodIte
     PodItem {
         id: app_id.to_string(),
         pod_type: PodItemType::App,
+        default_service_port: 0, 
         state: pod_state,
         need_container: need_container,
         best_instance_count: app_config.instance,
@@ -181,6 +190,7 @@ fn create_pod_item_by_app_config(app_id: &str, app_config: &AppConfig) -> PodIte
     }
 }
 
+
 fn create_pod_item_by_service_config(
     service_name: &str,
     service_config: &KernelServiceConfig,
@@ -190,6 +200,7 @@ fn create_pod_item_by_service_config(
         id: service_name.to_string(),
         pod_type: PodItemType::Service,
         state: pod_state,
+        default_service_port: service_config.port,
         need_container: false,
         best_instance_count: service_config.instance,
         required_cpu_mhz: 300,
@@ -251,10 +262,29 @@ fn create_scheduler_by_input_config(
             pod_scheduler.add_pod(pod_item);
         }
 
-        //add pod_instance
-        //if key.starts_with("nodes/") && key.ends_with("/config") {
-        //    let node_id = key.split('/').nth(1).unwrap();
-        //}
+        //add pod_instance 
+        // services/$server_name/instances/$node_id
+        let key_parts = key.split('/').collect::<Vec<&str>>();
+        if key_parts.len() > 3 && key_parts[0] == "services" && key_parts[2] == "instances" {
+            //debug!("add pod_instance:{}",key);
+            let service_name = key_parts[1];
+            let instance_node_id = key_parts[3];
+            let instance_info: ServiceInstanceInfo = serde_json::from_str(value.as_str())
+                .map_err(|e| {
+                    error!("ServiceInstanceInfo serde_json::from_str failed: {:?}", e);
+                    e
+                })?;
+            let pod_instance = PodInstance {
+                pod_id: service_name.to_string(),
+                node_id: instance_node_id.to_string(),
+                res_limits: HashMap::new(),
+                instance_id: format!("{}-{}", service_name, instance_node_id),
+                last_update_time: instance_info.last_update_time,
+                state: PodInstanceState::from(instance_info.state),
+                service_port: instance_info.port,
+            };
+            pod_scheduler.add_pod_instance(pod_instance);
+        }
     }
 
     Ok((pod_scheduler, device_list))
@@ -368,6 +398,10 @@ fn schedule_action_to_tx_actions(
                 }
             }
         }
+        SchedulerAction::UpdatePodServiceInfo(pod_id, pod_info) => {
+            let update_action = update_service_info(pod_id.as_str(), &pod_info)?;
+            result.extend(update_action);
+        }
     }
     Ok(result)
 }
@@ -383,13 +417,11 @@ async fn schedule_loop(is_boot: bool) -> Result<()> {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         loop_step += 1;
         info!("schedule loop step:{}.", loop_step);
-        let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
-        if rpc_session_token_str.is_err() {
-            return Err(anyhow::anyhow!("SCHEDULER_SESSION_TOKEN is not set"));
-        }
-
-        let rpc_session_token = rpc_session_token_str.unwrap();
-        let system_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
+        let buckyos_api_runtime = get_buckyos_api_runtime().unwrap();
+        let system_config_client = buckyos_api_runtime.get_system_config_client().await.map_err(|e| {
+            error!("get_system_config_client failed: {:?}", e);
+            e
+        })?;
         let input_config = system_config_client.dump_configs_for_scheduler().await;
         if input_config.is_err() {
             error!(
@@ -476,9 +508,10 @@ async fn service_main(is_boot: bool) -> Result<i32> {
                     error!("init_buckyos_api_runtime failed: {:?}", e);
                     e
                 })?;
-        runtime.login().await.map_err(|e| {
-            error!("login failed: {:?}", e);
-            e
+                
+            runtime.login().await.map_err(|e| {
+                error!("buckyos-api-runtime::login failed: {:?}", e);
+                e
         })?;
         set_buckyos_api_runtime(runtime);
         schedule_loop(false).await.map_err(|e| {
@@ -511,10 +544,6 @@ async fn main() {
 mod test {
     use super::*;
     use tokio::test;
-    #[tokio::test]
-    async fn test_schedule_loop() {
-        service_main(true).await;
-    }
 
     #[tokio::test]
     async fn test_template() {

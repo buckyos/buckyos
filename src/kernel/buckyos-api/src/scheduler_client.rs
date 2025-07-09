@@ -1,4 +1,4 @@
-use std::sync::Arc;
+
 use ::kRPC::*;
 
 pub struct SchedulerClient {

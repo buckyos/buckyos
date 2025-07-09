@@ -10,8 +10,7 @@ pub fn init_logging(app_name: &str, is_service: bool) {
     let pid = std::process::id();
     let log_file;
     if is_service {
-        log_file =
-            get_buckyos_log_dir(app_name, is_service).join(format!("{}_{}.log", app_name, pid));
+        log_file = get_buckyos_log_dir(app_name, is_service).join(format!("{}_{}.log", app_name, pid));
     } else {
         log_file = get_buckyos_log_dir(app_name, is_service).join(format!("{}.log", app_name));
     }

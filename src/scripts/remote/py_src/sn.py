@@ -3,13 +3,11 @@ import sys
 import os
 import yaml  # 新增导入 yaml 模块
 import json
-
+import util
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(current_dir)
-import util
-
+# sys.path.append(current_dir)
 
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
@@ -19,7 +17,8 @@ import start
 
 
 
-def active_sn(base_dir):
+def active_sn():
+    base_dir = util.CONFIG_BASE
     temp_config =os.path.join(base_dir, "sn_server/web3_gateway.json.temp")
     sn_ip =  util.get_multipass_ip("sn")
     print(f"sn vm ip: {sn_ip}")

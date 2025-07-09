@@ -32,6 +32,15 @@ SN: sn.buckyos.io / web3.buckyos.io
      |---- NAT2 ---- VM_NODE_B1 (10.0.2.2)
 
 
+# 关于NODE_A1
+NODE_A1属于当前宿主机环境，需要配置/etc/resolv.conf, 把sn的ip地址添加到里面
+
+
+
+# 可以根据需要（脚本和部分步骤多次执行）按step顺序执行，也可以一个命令全部执行
+`main.py all_in_one`
+# 
+
 ## step
 1.  安装multipass
 
