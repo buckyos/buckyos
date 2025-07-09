@@ -4,7 +4,6 @@ use buckyos_kit::*;
 use cyfs_gateway_lib::*;
 use cyfs_warp::*;
 use hex::ToHex;
-use jsonwebtoken::EncodingKey;
 use log::*;
 use ndn_lib::*;
 use rand::{Rng, RngCore};
@@ -23,7 +22,7 @@ fn generate_random_bytes(size: u64) -> Vec<u8> {
 
 fn generate_random_chunk(size: u64) -> (ChunkId, Vec<u8>) {
     let chunk_data = generate_random_bytes(size);
-    let mut hasher = ChunkHasher::new(None).expect("hash failed.");
+    let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&chunk_data);
     let chunk_id = ChunkId::from_sha256_result(&hash);
     info!("chunk_id: {}", chunk_id.to_string());
@@ -198,7 +197,7 @@ async fn ndn_local_chunk_verify_failed() {
 
     assert_eq!(buffer, fake_chunk_data, "chunk-content check failed");
 
-    let mut hasher = ChunkHasher::new(None).expect("hash failed.");
+    let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&buffer);
     let fake_chunk_id = ChunkId::from_sha256_result(&hash);
     assert_ne!(fake_chunk_id, chunk_id, "chunk-id should mismatch");
