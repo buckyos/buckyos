@@ -145,7 +145,7 @@ pub trait HashFromSlice: Sized {
 
 impl<N> HashFromSlice for GenericArray<u8, N>
 where
-    N: ArrayLength<u8>,
+    N: ArrayLength,
 {
     fn from_slice(data: &[u8]) -> NdnResult<Self> {
         if data.len() != N::to_usize() {
@@ -160,7 +160,7 @@ where
         }
 
         let mut array = GenericArray::<u8, N>::default();
-        array.clone_from_slice(data);
+        array.copy_from_slice(data);
         Ok(array)
     }
 }
