@@ -252,6 +252,7 @@ g, ood1, ood
 g, app1, app
 g, lzc-laptop,client
 g, alice,admin
+g, smb-service,service
 g, bob,user
 p, su_bob,kv://users/bob/*,read|write,allow
         "#;
@@ -262,6 +263,7 @@ p, su_bob,kv://users/bob/*,read|write,allow
         assert_eq!(enforce("ood1", Some("verify-hub"), "kv://system/verify-hub/key", "read").await, true);
         assert_eq!(enforce("root", Some("node-daemon"), "kv://boot/config", "write").await, true);
         assert_eq!(enforce("ood1", Some("repo-service"), "kv://services/repo-service/instance/ood1", "write").await, true);
+        assert_eq!(enforce("ood1", Some("smb-service"), "kv://services/smb-service/latest_smb_items", "read").await, true);
       
         assert_eq!(enforce("ood1", Some("scheduler"), "kv://users/alice/apps/app2/config", "write").await, true);
         assert_eq!(enforce("bob", Some("node-daemon"), "kv://users/alice/apps/app2", "read").await, false);

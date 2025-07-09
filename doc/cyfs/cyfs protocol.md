@@ -166,10 +166,41 @@ chunk_reader = open_chunk_by_url("http://$zone_id/readme.md/content")
 
 在引入inner_path后，我们依旧可以通过cyfs_header对返回的结果进行验证。
 
+### inner-path规范
 
+1. 使用inner-path在named-obj中进行寻址，逻辑与json-path一致
+2. 如果inner-path指向的是objid,则默认返回objid指向的object，否则返回字段的值
 
 ## 使用Named Object Container
 
+目的：obj,proof = GET(container_id,key)
+当container的元素总量小于（1024）时，将container当成一个标准的named object处理即可，
+```
+container_json = get_named_obj(container_id)
+obj_id = container_json[key]
+obj = get_named_obj(obj_id)
+```
+当conatiner的元素很多时，获取container_json的代价可能会远超过obj本身，此时切换到`容器的部分可验证获取模式`
+```
+obj_id,path_proof = mtree_get(container_id,key) 
+obj = get_named_obj(obj_id)
+```
+从网络通信和mtree本身的特性来看，还有一个进阶版本
+```
+//用mtree保存字典
+obj_id_list,path_proof = mtree_get(container_id,vec<key>)
+//用mtree保存数组
+obj_id_list,path_proof = mtree_get_range(container_id,start_index,end_index)
+```
+
+为了满足上述需求，cyfs用mtree做底层，实现3大容器:array(list,vector), set, map(dictionary,directory)
+针对chunk实现的chunklist,与erc7585兼容，并提供了进一步的辅助设施。
+    - 用最小内存完成计算（用于校验）
+    - 允许缓存部分mtree信息，提高基于chunklist进行range请求/验证的性能
+    - cyfs为chunlist的传输提供进一步的优化：在一个连接上可以连续传输chunk
+        不带range,则默认目标是下载整个chunklist,此时会在http header里返回整个chunklist
+        带range,则只返回range相关的chunklist和proof信息
+        可以用 http://$zoneid/ndn/$chunklistid/2 的标准方法，来请求chunklist中的第3个chunk
 
 核心设计在于：可以通过mtree的理论，在信任container objectid的情况，相信
 container[key] = target_obj_id
@@ -185,21 +216,58 @@ cyfs-path-proof:$proof-data
 <body: target obj data>
 
 ```
+客户端首先验证target_obj_id 与 target_obj_data是否匹配
+然后验证:$container_id 是否与 $proof-data + $target_obj_id匹配
+
+
+
 
 ## 扩展Hash算法数据进行分块
 
-（对大Chunk的分块下载）
+该扩展是在chunk层面做还是fileobj层面做？这涉及到默认的chunk hash算法选择
+
+对任何文件只计算一次Hash虽然简单，但也有很多弊端
+- 客户端无法对Range请求进行验证。
+- 验证粒度太大，如果一个文件有2G大，那么一旦下载验证失败，所有的2G数据都要丢弃重新下载
+- 因为上述验证的问题，也不好支持多源下载。一旦出错无法确定是哪个源的问题
+- 不分块对断点续传没影响，现在的框架设计要求Hasher必须有能力保存hash状态的
+
+
+在fileobj层面做会提升fileobj的复杂度:content可以指向chunkid或chunklist
+或则fileobj可以同时有多个等价的chunklist+content(这符合http协议的扩展思路，但会让完美实现非常复杂)
+chunklist的构造一定是非均质的，可以参考git的命令模式
 
 ## 对历史版本进行追踪
+
+结论：选择一个合适的chunklist,然后指望可以复用上一个版本的chunk。这样不用面对两个chunk之间计算diff的困难问题
+
+
+- 有趣的事实是,git并没有包含任何diff算法，而是有一个有效的tree (dir) hash计算方法
+- 如果使用相同的分块Hash算法，那么当新版本文件只是 Append时，自然就有Diff效果
+- 如果追求最高的压缩比，那么选择哪个文件的那个一个版本做上一个版本都不是一个简单的事情
+- 确定父版本后，一般使用滚动hash技术来寻找差异部分。随后可以得到一个补丁文件。此时可以用 (parent_chunk_id, patch_chunk_id) 来取代 chunk_id
+
+## cyfs://对chunk的特殊支持
+注意cyfs:// chunk的设计不适用于RTC领域，构造chunk的过程与RTC的低延迟的需求以及RTC数据可降级或丢失的假设是有更本矛盾的。
+
+### 对断点续传的（错误回复）的一致性支持
+
+### zone内鼓励push, 跨zone则应使用get
 
 
 ## 使用cyfs://来建立知识图谱
 
 
+## 垃圾回收的问题
+尽管cyfs:// 协议只约定了数据的交互方法，但根据我们的经验，什么数据应该永久保存，什么数据应该缓存，并不是一个简单的问题。尤其是当空间不足时，哪些数据是可删除的？
+
+- 最简单的方法，就是不删除数据，这个对于企业级大型系统有利：增加存储空间的开销远比删除数据低
+- 一个简单的规则：任何被保存的数据都应该有一个Path指向他 ，这和知识图谱的网络关系结合，意味着只有一种关系是用来确立所有权的
+- 没有被Path指向的数据不会立刻被删除，而是应该根据最后访问时间（LRU策略）来进行Cache的淘汰。
 
 
 
 
 
 
-
+ 

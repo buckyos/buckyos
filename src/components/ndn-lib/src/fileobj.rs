@@ -11,7 +11,7 @@ use serde_json::Value;
 pub struct FileObject {
     pub name:String,
     pub size:u64,
-    pub content:String,//chunkid
+    pub content:String,//chunkid or chunklistid
     #[serde(default)]
     #[serde(skip_serializing_if = "is_default")]
     pub exp:u64,
@@ -23,8 +23,20 @@ pub struct FileObject {
     pub owner:Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub create_time:Option<u64>,
+    /*
+    chunklist是附加的chunklist列表，可以用嵌入或引用的方法保存多个
+    chunk_list:
+    {
+        "default":[
+            "chunk_id1",
+            "chunk_id2",
+            "chunk_id3"
+        ],
+        "fixsha512":"chunklistid2"
+    }
+     */
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub chunk_list:Option<HashMap<String,Vec<String>>>,
+    pub chunk_list:Option<HashMap<String,Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub links:Option<Vec<LinkData>>,
     #[serde(flatten)]
@@ -32,6 +44,7 @@ pub struct FileObject {
 }
 
 impl FileObject {
+    //content can be chunkid or chunklistid
     pub fn new(name:String,size:u64,content:String)->Self {
         Self {name,size,content,meta:None,mime:None,owner:None,exp:0,
             create_time:None,chunk_list:None,links:None,extra_info:HashMap::new()}

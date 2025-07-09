@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use futures::Future;
 use rand::RngCore;
 
-use crate::{build_named_object_by_json, build_obj_id, copy_chunk, cyfs_get_obj_id_from_url, get_cyfs_resp_headers, verify_named_object, CYFSHttpRespHeaders, ChunkState, FileObject, PathObject};
+use crate::{build_named_object_by_json, build_obj_id, copy_chunk, cyfs_get_obj_id_from_url, get_cyfs_resp_headers, verify_named_object, CYFSHttpRespHeaders, ChunkState, FileObject, HashMethod, PathObject};
 
 
 pub enum ChunkWorkState {
@@ -31,7 +31,7 @@ pub struct NdnGetChunkResult {
     pub reader : ChunkReader,
 }
 
-use crate::{chunk, named_data_mgr, ChunkReader, ObjId, MAX_CHUNK_SIZE};
+use crate::{chunk, ChunkReader, ObjId, MAX_CHUNK_SIZE};
 use crate::{ChunkId,NdnResult,NamedDataMgr,NdnError,ChunkReadSeek,ChunkHasher};
 pub struct NdnClient {
     default_ndn_mgr_id:Option<String>,
@@ -82,7 +82,7 @@ impl NdnClient {
             result = format!("{}/{}",real_base_url,chunk_id.to_base32());
         }
         //去掉多余的/
-        let result = result.replace("//", "/");
+        //let result = result.replace("//", "/");
         result
     }
 
@@ -97,9 +97,47 @@ impl NdnClient {
     }
 
     fn verify_inner_path_to_obj(resp_headers:&CYFSHttpRespHeaders,inner_path:&str)->NdnResult<()> {
-        //let root_hash = calc_mtree_root_hash(resp_headers.obj_id.unwrap(), inner_path, resp_headers.mtree_path);
-        //return root_hash == resp_headers.root_obj_id.unwrap()
-        Ok(())
+        // //use crate::::{PathObjectMapItemProof, PathObjectMapProofVerifier, PathObjectMapProofVerifyResult};
+        // use crate::hash::HashMethod;
+
+        // // First get root_obj_id and obj_id from resp_headers, if any one is None, then we can not verify?
+        // if resp_headers.root_obj_id.is_none() {
+        //     let msg = format!("no root obj id in resp_headers, inner_path: {}", inner_path);
+        //     warn!("{}",msg);
+        //     return Err(NdnError::InvalidId(msg));
+        // }
+
+        // if resp_headers.obj_id.is_none() {
+        //     let msg = format!("no obj id in resp_headers, inner_path: {}", inner_path);
+        //     warn!("{}",msg);
+        //     return Err(NdnError::InvalidId(msg));
+        // }
+
+        // let proof= PathObjectMapItemProof::decode_nodes(
+        //     &resp_headers.mtree_path, 
+        //     resp_headers.root_obj_id.as_ref().unwrap()
+        // )?;
+        
+        // // FIXME: Should we allow multiple hash methods? or just use the default one?
+        // let verifier = PathObjectMapProofVerifier::new(HashMethod::Keccak256);
+        // let ret = verifier.verify_object(
+        //     inner_path, 
+        //     resp_headers.obj_id.as_ref().unwrap(),
+        //     None, 
+        //     &proof,
+        // )?;
+        
+        // match ret {
+        //     PathObjectMapProofVerifyResult::Ok => {
+        //         return Ok(());
+        //     },
+        //     _ => {
+        //         let msg = format!("verify inner path failed, url: {}, ret: {:?}", inner_path, ret);
+        //         warn!("{}",msg);
+        //         return Err(NdnError::VerifyError(msg));
+        //     }
+        // }
+        unimplemented!()
     }
 
     pub async fn query_chunk_state(&self,chunk_id:ChunkId,target_url:Option<String>)->NdnResult<ChunkState> {
@@ -573,9 +611,10 @@ impl NdnClient {
 
         let mut hasher = ChunkHasher::new(None)
             .map_err(|e| NdnError::Internal(format!("Failed to create chunk hasher: {}", e)))?;
+        let chunk_type = hasher.hash_type.clone();
         let (hash_result,_) = hasher.calc_from_reader(&mut file).await
             .map_err(|e| NdnError::Internal(format!("Failed to calculate hash: {}", e)))?;
-        let file_chunk_id = ChunkId::from_sha256_result(&hash_result);
+        let file_chunk_id = ChunkId::mix_from_hash_result(file_size, &hash_result, chunk_type);
  
         Ok(file_chunk_id == content_chunk_id)
     }
@@ -627,7 +666,7 @@ impl NdnClient {
                         } else {
                             
                             let hash_state = hash_state.unwrap();
-                            download_pos = hash_state.pos;
+                            download_pos = hash_state.get_pos();
                             real_hash_state  = Some(hash_state);
                             info!("pull_chunk load progress sucess!,pos:{}",download_pos);
                         }
@@ -660,7 +699,12 @@ impl NdnClient {
                 let mut json_progress_str = String::new();
                 if let Some(hasher) = hasher {
                     let state = hasher.save_state();
-                    json_progress_str = serde_json::to_string(&state).unwrap(); 
+                    if state.is_err() {
+                        warn!("pull_chunk: save state failed:{}",state.err().unwrap().to_string());                  
+                    } else {
+                        let state = state.unwrap();
+                        json_progress_str = serde_json::to_string(&state).unwrap(); 
+                    }
                 }
                 let counter = counter.clone();
                 let named_mgr2 = named_mgr2.clone();
@@ -700,7 +744,7 @@ mod tests {
     use serde_json::json;
     use cyfs_gateway_lib::*;
     use cyfs_warp::*;
-    use rand::{thread_rng, RngCore};
+    use rand::{rng, RngCore};
 
     fn generate_random_bytes(size: u64) -> Vec<u8> {
         let mut rng = rand::rng();
@@ -749,16 +793,12 @@ mod tests {
             mmap_cache_dir: None,
         };
         
-        let named_mgr = NamedDataMgr::from_config(
-            Some("test".to_string()),
-            temp_dir.path().to_path_buf(),
-            config
-        ).await.unwrap();
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some("test")).await.unwrap();
+        let mut named_mgr = named_mgr.lock().await;
         let chunk_a_size:u64 = 1024*1024 + 321;
         let chunk_a = generate_random_bytes(chunk_a_size);
         let mut hasher = ChunkHasher::new(None).unwrap();
-        let hash_a = hasher.calc_from_bytes(&chunk_a);
-        let chunk_id_a = ChunkId::from_sha256_result(&hash_a);
+        let chunk_id_a = hasher.calc_mix_chunk_id_from_bytes(&chunk_a);
         info!("chunk_id_a:{}",chunk_id_a.to_string());
         let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_a, chunk_a_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_a).await.unwrap();
@@ -768,8 +808,7 @@ mod tests {
         let chunk_b_size:u64 = 1024*1024*3 + 321*71;
         let chunk_b = generate_random_bytes(chunk_b_size);
         let mut hasher = ChunkHasher::new(None).unwrap();
-        let hash_b = hasher.calc_from_bytes(&chunk_b);
-        let chunk_id_b = ChunkId::from_sha256_result(&hash_b);
+        let chunk_id_b = hasher.calc_mix_chunk_id_from_bytes(&chunk_b);
         info!("chunk_id_b:{}",chunk_id_b.to_string());
         let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_b, chunk_b_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_b).await.unwrap();
@@ -778,17 +817,16 @@ mod tests {
         let chunk_c_size:u64 = 1024*1024*3 + 321*71;
         let chunk_c = generate_random_bytes(chunk_c_size);
         let mut hasher = ChunkHasher::new(None).unwrap();
-        let hash_c = hasher.calc_from_bytes(&chunk_c);
-        let chunk_id_c = ChunkId::from_sha256_result(&hash_c);
+        let chunk_id_c = hasher.calc_mix_chunk_id_from_bytes(&chunk_c);
         info!("chunk_id_c:{}",chunk_id_c.to_string());
         let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer_impl(&chunk_id_c, chunk_c_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_c).await.unwrap();
         drop(chunk_writer);
         named_mgr.complete_chunk_writer_impl(&chunk_id_c).await.unwrap();
+        drop(named_mgr);
         
-        
-        info!("named_mgr [test] init OK!");
-        NamedDataMgr::set_mgr_by_id(Some("test"),named_mgr).await.unwrap();
+        //info!("named_mgr [test] init OK!");
+        //NamedDataMgr::set_mgr_by_id(Some("test"),named_mgr).await.unwrap();
 
         let temp_dir = tempfile::tempdir().unwrap();
         let config = NamedDataMgrConfig {

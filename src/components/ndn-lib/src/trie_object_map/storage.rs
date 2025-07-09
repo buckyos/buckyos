@@ -1,0 +1,231 @@
+use super::hash::{Blake2s256Hasher, Keccak256Hasher, Sha256Hasher, Sha512Hasher};
+use super::layout::GenericLayout;
+use crate::coll::CollectionStorageMode;
+use crate::{HashMethod, NdnError, NdnResult, ObjId};
+use generic_array::{ArrayLength, GenericArray};
+use hash_db::{HashDB, HashDBRef, Hasher};
+use memory_db::{HashKey, MemoryDB};
+use serde::{Deserialize, Serialize};
+use std::borrow::Borrow;
+use std::path::Path;
+use std::sync::{Arc, RwLock};
+use trie_db::proof::generate_proof;
+use trie_db::{NodeCodec, Trie, TrieLayout, TrieMut, Value};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrieObjectMapStorageType {
+    Memory,
+    SQLite,
+    JSONFile,
+}
+
+impl Default for TrieObjectMapStorageType {
+    fn default() -> Self {
+        Self::SQLite
+    }
+}
+
+impl TrieObjectMapStorageType {
+    pub fn is_memory(&self) -> bool {
+        matches!(self, Self::Memory)
+    }
+
+    pub fn is_sqlite(&self) -> bool {
+        matches!(self, Self::SQLite)
+    }
+
+    pub fn is_json_file(&self) -> bool {
+        matches!(self, Self::JSONFile)
+    }
+
+    pub fn select_storage_type(coll_mode: Option<CollectionStorageMode>) -> Self {
+        match coll_mode {
+            Some(CollectionStorageMode::Simple) => Self::JSONFile,
+            Some(CollectionStorageMode::Normal) => Self::SQLite,
+            None => Self::SQLite,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+pub trait HashDBWithFile<H: Hasher, T>: Send + Sync + HashDB<H, T> {
+    fn get_type(&self) -> TrieObjectMapStorageType;
+
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (Vec<u8>, T)> + 'a>;
+
+    // Clone the storage to a new file.
+    // If the target file exists, it will be failed.
+    async fn clone(
+        &self,
+        target: &Path,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn HashDBWithFile<H, T>>>;
+
+    // If file is diff from the current one, it will be saved to the file.
+    async fn save(&mut self, file: &Path) -> NdnResult<()>;
+}
+
+impl<'a, H: Hasher, T> HashDBRef<H, T> for &'a dyn HashDBWithFile<H, T> {
+    fn get(&self, key: &H::Out, prefix: hash_db::Prefix) -> Option<T> {
+        HashDB::get(*self, key, prefix)
+    }
+    fn contains(&self, key: &H::Out, prefix: hash_db::Prefix) -> bool {
+        HashDB::contains(*self, key, prefix)
+    }
+}
+
+impl<'a, H: Hasher, T> HashDBRef<H, T> for Box<dyn HashDBWithFile<H, T>> {
+    fn get(&self, key: &H::Out, prefix: hash_db::Prefix) -> Option<T> {
+        HashDB::get(self.as_ref(), key, prefix)
+    }
+    fn contains(&self, key: &H::Out, prefix: hash_db::Prefix) -> bool {
+        HashDB::contains(self.as_ref(), key, prefix)
+    }
+}
+
+#[async_trait::async_trait]
+pub trait TrieObjectMapInnerStorage: Send + Sync {
+    fn is_readonly(&self) -> bool;
+    fn get_type(&self) -> TrieObjectMapStorageType;
+
+    fn put(&mut self, key: &str, value: &ObjId) -> NdnResult<Option<ObjId>>;
+    fn get(&self, key: &str) -> NdnResult<Option<ObjId>>;
+    fn remove(&mut self, key: &str) -> NdnResult<Option<ObjId>>;
+    fn is_exist(&self, key: &str) -> NdnResult<bool>;
+    fn commit(&mut self) -> NdnResult<()>;
+    fn root(&self) -> Vec<u8>;
+
+    fn iter<'a>(&'a self) -> NdnResult<Box<dyn Iterator<Item = (String, ObjId)> + 'a>>;
+    fn traverse(&self, callback: &mut dyn FnMut(String, ObjId) -> NdnResult<()>) -> NdnResult<()>;
+
+    fn generate_proof(&self, key: &str) -> NdnResult<Vec<Vec<u8>>>;
+
+    // Clone the storage to a new file.
+    // If the target file exists, it will be failed.
+    async fn clone(
+        &self,
+        target: &Path,
+        read_only: bool,
+    ) -> NdnResult<Box<dyn TrieObjectMapInnerStorage>>;
+
+    // If file is diff from the current one, it will be saved to the file.
+    async fn save(&mut self, file: &Path) -> NdnResult<()>;
+}
+
+pub type TrieObjectMapInnerStorageRef = Arc<Box<dyn TrieObjectMapInnerStorage>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub enum TrieObjectMapProofVerifyResult {
+    Ok,
+    ExtraneousNode,
+    ExtraneousValue,
+    ExtraneousHashReference,
+    InvalidChildReference,
+    ValueMismatch,
+    IncompleteProof,
+    RootMismatch,
+    Other,
+}
+
+pub trait TrieObjectMapProofVerifier: Send + Sync {
+    fn verify(
+        &self,
+        proof_nodes: &Vec<Vec<u8>>,
+        root_hash: &[u8],
+        key: &[u8],
+        value: Option<&[u8]>,
+    ) -> NdnResult<TrieObjectMapProofVerifyResult>;
+}
+
+pub type TrieObjectMapProofVerifierRef = Arc<Box<dyn TrieObjectMapProofVerifier>>;
+
+pub trait HashFromSlice: Sized {
+    fn from_slice(bytes: &[u8]) -> NdnResult<Self>;
+}
+
+impl<N> HashFromSlice for GenericArray<u8, N>
+where
+    N: ArrayLength<u8>,
+{
+    fn from_slice(data: &[u8]) -> NdnResult<Self> {
+        if data.len() != N::to_usize() {
+            let msg = format!(
+                "Invalid length for GenericArray<u8, {}>: expected {}, got {}",
+                std::any::type_name::<N>(),
+                N::to_usize(),
+                data.len()
+            );
+            error!("{}", msg);
+            return Err(NdnError::InvalidData(msg));
+        }
+
+        let mut array = GenericArray::<u8, N>::default();
+        array.clone_from_slice(data);
+        Ok(array)
+    }
+}
+
+pub struct GenericTrieObjectMapProofVerifier<H: Hasher> {
+    _marker: std::marker::PhantomData<H>,
+}
+
+impl<H> GenericTrieObjectMapProofVerifier<H>
+where
+    H: Hasher + Send + Sync + 'static,
+    H::Out: HashFromSlice,
+{
+    pub fn new() -> Self {
+        Self {
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<H> TrieObjectMapProofVerifier for GenericTrieObjectMapProofVerifier<H>
+where
+    H: Hasher + Send + Sync + 'static,
+    H::Out: HashFromSlice,
+{
+    fn verify(
+        &self,
+        proof_nodes: &Vec<Vec<u8>>,
+        root_hash: &[u8],
+        key: &[u8],
+        value: Option<&[u8]>,
+    ) -> NdnResult<TrieObjectMapProofVerifyResult> {
+        use trie_db::proof::{verify_proof, VerifyError};
+
+        let root_hash: H::Out = H::Out::from_slice(root_hash)?;
+
+        let ret = verify_proof::<GenericLayout<H>, _, _, &[u8]>(
+            &root_hash,
+            proof_nodes,
+            &vec![(key, value)], // The data to be verified, if the data is None, it means to check the existence of the key
+        );
+
+        // println!("Verify proof: key = {:?}, root = {:?}, ret = {:?}", key, root_hash, ret);
+        let ret = match ret {
+            Ok(_) => TrieObjectMapProofVerifyResult::Ok,
+            Err(e) => match &e {
+                VerifyError::ExtraneousNode => TrieObjectMapProofVerifyResult::ExtraneousNode,
+                VerifyError::ExtraneousValue(_) => TrieObjectMapProofVerifyResult::ExtraneousValue,
+                VerifyError::ExtraneousHashReference(_) => {
+                    TrieObjectMapProofVerifyResult::ExtraneousHashReference
+                }
+                VerifyError::ValueMismatch(_) => TrieObjectMapProofVerifyResult::ValueMismatch,
+                VerifyError::RootMismatch(_) => TrieObjectMapProofVerifyResult::RootMismatch,
+                VerifyError::InvalidChildReference(_) => {
+                    TrieObjectMapProofVerifyResult::InvalidChildReference
+                }
+                VerifyError::IncompleteProof => TrieObjectMapProofVerifyResult::IncompleteProof,
+                _ => {
+                    let msg = format!("Verification error: {:?}, {:?}", key, e);
+                    info!("{}", msg);
+                    TrieObjectMapProofVerifyResult::Other
+                }
+            },
+        };
+
+        Ok(ret)
+    }
+}
