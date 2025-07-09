@@ -453,6 +453,7 @@ async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<V
     }
     let userid = session_token.userid.as_ref().unwrap();
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
+    info!("full_res_path: {},userid: {},appid: {}", full_res_path,userid,session_token.appid.as_deref().unwrap());
     if !enforce(
         userid,
         session_token.appid.as_deref(),

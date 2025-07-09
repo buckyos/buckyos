@@ -675,6 +675,7 @@ async fn select_node() -> Result<Option<NodeInfomationObj>, String> {
         let device_session_token = kRPC::RPCSessionToken {
             token_type: kRPC::RPCSessionTokenType::JWT,
             nonce: None,
+            session:None,
             userid: Some(device_doc.name.clone()),
             appid: Some("kernel".to_string()),
             exp: Some(timestamp + 3600 * 24 * 7),
