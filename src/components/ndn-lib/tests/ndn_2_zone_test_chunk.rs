@@ -156,6 +156,7 @@ async fn init_ndn_client(ndn_mgr_id: &str, private_key: &str, target_ndn_host: &
         iss: None,
         nonce: None,
         userid: None,
+        session: None,
     };
 
     let private_key = EncodingKey::from_ed_pem(private_key.as_bytes()).unwrap();
@@ -230,7 +231,7 @@ async fn ndn_2_zone_chunk_not_found() {
     let target_ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (_local_ndn_target_client, _) = init_local_ndn_server(target_ndn_mgr_id.as_str()).await;
 
-    let zone_b_client = init_ndn_client(
+    let _zone_b_client = init_ndn_client(
         target_ndn_mgr_id.as_str(),
         NODE_B_PRIVATE_KEY,
         "test.buckyos.io",
@@ -273,7 +274,7 @@ async fn ndn_2_zone_chunk_not_found() {
                 info!("Chunk not found as expected");
             }
             _ => {
-                assert!(false, "Unexpected error type");
+                assert!(false, "Unexpected error type, {:?}", err);
             }
         },
     }

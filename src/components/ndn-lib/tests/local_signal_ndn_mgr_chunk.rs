@@ -155,7 +155,7 @@ async fn ndn_local_chunk_not_found() {
     let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
 
     let chunk_size: u64 = 1024 + 154;
-    let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
+    let (chunk_id, _chunk_data) = generate_random_chunk(chunk_size);
 
     // Pull the chunk using the NdnClient
     let ret = NamedDataMgr::open_chunk_reader(
