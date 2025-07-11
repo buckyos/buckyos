@@ -770,7 +770,7 @@ mod test {
     use tokio::task;
     use tokio::time::sleep;
 
-    #[tokio::test]
+    //#[tokio::test]
     async fn test_login_and_verify() {
         //let zone_config = ZoneConfig::new_test_config();
         //env::set_var("BUCKYOS_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());

@@ -441,7 +441,7 @@ mod tests {
         (db, temp_dir)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_connect_and_init() {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test.db");
@@ -455,7 +455,7 @@ mod tests {
         assert!(db_path.exists());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_create_and_get_task() {
         let (db, _temp_dir) = setup_test_db().await;
         
@@ -477,7 +477,7 @@ mod tests {
         assert_eq!(retrieved_task.status, TaskStatus::Pending);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_list_tasks() {
         let (db, _temp_dir) = setup_test_db().await;
         
@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(tasks.len(), 3);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_list_tasks_by_app() {
         let (db, _temp_dir) = setup_test_db().await;
         
@@ -518,7 +518,7 @@ mod tests {
         assert_eq!(app2_tasks[0].name, "task2");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_list_tasks_by_type() {
         let (db, _temp_dir) = setup_test_db().await;
         
@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(type2_tasks[0].name, "task2");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_list_tasks_by_status() {
         let (db, _temp_dir) = setup_test_db().await;
         
@@ -564,7 +564,7 @@ mod tests {
         assert_eq!(completed_tasks[0].name, "task2");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_status() {
         let (db, _temp_dir) = setup_test_db().await;
         
@@ -579,7 +579,7 @@ mod tests {
         assert_eq!(updated_task.status, TaskStatus::Running);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_progress() {
         let (db, _temp_dir) = setup_test_db().await;
         
@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(updated_task.total_items, 10);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_error() {
         let (db, _temp_dir) = setup_test_db().await;
         
@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(updated_task.error_message, Some("Test error message".to_string()));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_data() {
         let (db, _temp_dir) = setup_test_db().await;
         
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(updated_task.data, Some(new_data.to_string()));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_delete_task() {
         let (db, _temp_dir) = setup_test_db().await;
         
