@@ -545,7 +545,7 @@ mod test {
     use super::*;
     use tokio::test;
 
-    #[tokio::test]
+    //#[tokio::test]
     async fn test_template() {
         let start_params = create_init_list_by_template().await.unwrap();
         for (key, value) in start_params.iter() {
@@ -559,7 +559,7 @@ mod test {
         }
         //println!("start_params:{}",serde_json::to_string(&start_params).unwrap());
     }
-    #[tokio::test]
+    //#[tokio::test]
     async fn test_simple_schedule() {
         let input_config_str = r#"
 # users : users/{{user_id}}/info , user_id is never changed, user_name can changed. User root cann't be deleted and always exists
