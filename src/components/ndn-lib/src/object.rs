@@ -1,4 +1,4 @@
-use crate::{HashMethod, NdnError, NdnResult, OBJ_TYPE_TRIE};
+use crate::{ChunkType, HashMethod, NdnError, NdnResult, OBJ_TYPE_TRIE};
 use crate::{
     OBJ_TYPE_CHUNK_LIST, OBJ_TYPE_CHUNK_LIST_FIX_SIZE, OBJ_TYPE_CHUNK_LIST_SIMPLE,
     OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE, OBJ_TYPE_DIR, OBJ_TYPE_FILE, OBJ_TYPE_LIST,
@@ -72,14 +72,7 @@ impl ObjId {
     }
 
     pub fn is_chunk(&self) -> bool {
-        if self.obj_type.starts_with("mix") {
-            return true;
-        }
-
-        match HashMethod::from_str(&self.obj_type) {
-            Ok(_hash_method) => true,
-            Err(_) => false,
-        }
+        ChunkType::is_chunk_type(&self.obj_type)
     }
 
     pub fn is_json(&self) -> bool {

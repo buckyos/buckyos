@@ -46,17 +46,7 @@ impl HashMethod {
         }
     }
 
-    pub fn as_mix_str(&self) -> &str {
-        match self {
-            Self::Sha256 => "mix256",
-            Self::Sha512 => "mix512",
-            Self::QCID => "mixqcid",
-            Self::Blake2s256 => "mixblake2s256",
-            Self::Keccak256 => "mixkeccak256",
-        }
-    }
-
-    pub fn hash_bytes(&self) -> usize {
+    pub fn hash_result_size(&self) -> usize {
         match self {
             Self::Sha256 => 32,
             Self::Sha512 => 64,

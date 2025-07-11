@@ -20,7 +20,7 @@ fn gen_random_obj_id(seed: &str) -> ObjId {
     let seed = HashHelper::calc_hash(HashMethod::Sha256, seed.as_bytes());
     let mut rng: StdRng = SeedableRng::from_seed(seed.try_into().unwrap());
 
-    let hash = generate_random_buf(&mut rng, HashMethod::Sha256.hash_bytes());
+    let hash = generate_random_buf(&mut rng, HashMethod::Sha256.hash_result_size());
     let obj_id = ObjId::new_by_raw(OBJ_TYPE_FILE.to_owned(), hash);
 
     obj_id

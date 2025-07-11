@@ -12,7 +12,7 @@ impl Hasher for Sha256Hasher {
 
     fn hash(data: &[u8]) -> Self::Out {
         let value = HashHelper::calc_hash(HashMethod::Sha256, data);
-        GenericArray::clone_from_slice(&value)
+        GenericArray::from_slice(&value).clone()
     }
 }
 
@@ -25,7 +25,7 @@ impl Hasher for Sha512Hasher {
 
     fn hash(data: &[u8]) -> Self::Out {
         let value = HashHelper::calc_hash(HashMethod::Sha512, data);
-        GenericArray::clone_from_slice(&value)
+        GenericArray::from_slice(&value).clone()
     }
 }
 
@@ -39,7 +39,7 @@ impl Hasher for Blake2s256Hasher {
 
     fn hash(data: &[u8]) -> Self::Out {
         let value = HashHelper::calc_hash(HashMethod::Blake2s256, data);
-        GenericArray::clone_from_slice(&value)
+        GenericArray::from_slice(&value).clone()
     }
 }
 
@@ -53,7 +53,7 @@ impl Hasher for Keccak256Hasher {
 
     fn hash(data: &[u8]) -> Self::Out {
         let value = HashHelper::calc_hash(HashMethod::Keccak256, data);
-        GenericArray::clone_from_slice(&value)
+        GenericArray::from_slice(&value).clone()
     }
 }
 
@@ -67,6 +67,6 @@ impl Hasher for QCIDHasher {
 
     fn hash(data: &[u8]) -> Self::Out {
         let value = HashHelper::calc_hash(HashMethod::QCID, data);
-        GenericArray::clone_from_slice(&value)
+        GenericArray::from_slice(&value).clone()
     }
 }

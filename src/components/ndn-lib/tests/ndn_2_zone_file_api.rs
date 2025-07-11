@@ -38,7 +38,7 @@ fn generate_random_chunk(size: u64) -> (ChunkId, Vec<u8>) {
     let chunk_data = generate_random_bytes(size);
     let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_hash_result(&hash, HashMethod::Sha256);
+    let chunk_id = ChunkId::from_hash_result(&hash, ChunkType::Sha256);
     info!("chunk_id: {}", chunk_id.to_string());
     (chunk_id, chunk_data)
 }
@@ -1766,11 +1766,11 @@ async fn ndn_2_zone_r_link_innerpath_file_ok() {
         // 1. get chunk of file
         // 2. get name of file
         let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
-        let mix_chunk_id = ChunkId::mix_from_hash_result(
+        let mix_chunk_id = ChunkId::from_mix_hash_result_by_hash_method(
             chunk_data.len() as u64,
             chunk_id.hash_result.as_slice(),
             HashMethod::Sha256,
-        );
+        ).unwrap();
 
         // write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 

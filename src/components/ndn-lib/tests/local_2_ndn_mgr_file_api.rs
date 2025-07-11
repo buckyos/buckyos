@@ -1642,11 +1642,11 @@ async fn ndn_local_2_mgr_r_link_innerpath_file_ok() {
         let (file_id, _file_obj_str) = file_obj.gen_obj_id();
         // assert_eq!(file_id, cal_file_id, "file-id mismatch");
 
-        let mix_chunk_id = ChunkId::mix_from_hash_result(
+        let mix_chunk_id = ChunkId::from_mix_hash_result_by_hash_method(
             chunk_data.len() as u64,
             chunk_id.hash_result.as_slice(),
             HashMethod::Sha256,
-        );
+        ).unwrap();
         assert!(
             file_obj.content == chunk_id.to_string()
                 || file_obj.content == mix_chunk_id.to_string(),

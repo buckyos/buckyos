@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use tar::Builder;
 use package_lib::*;
 use buckyos_api::*;
+use log::*;
 
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -124,11 +125,13 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(&st
     println!("pack to {} done", tarball_path.display());
 
     // Calculate SHA256 hash of the tar.gz file
-    let (chunk_id,file_size) = calculate_file_chunk_id(tarball_path.to_str().unwrap(),HashMethod::Sha256).await
+    let chunk_type = ChunkId::default_chunk_type();
+    let (chunk_id,file_size) = calculate_file_chunk_id(tarball_path.to_str().unwrap(),chunk_type).await
         .map_err(|e| format!("Failed to calculate file chunk id: {}", e.to_string()))?;
     
     // Update metadata
     meta_data.chunk_id = Some(chunk_id.to_string());
+    println!("meta_data chunk_id: {}", chunk_id.to_string());
     meta_data.chunk_size =Some(file_size);
 
     let meta_data_json = serde_json::to_value(&meta_data).map_err(|e| {
@@ -204,7 +207,9 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
             continue;
         }
 
-        let (chunk_id,file_size) = calculate_file_chunk_id(pkg_tar_path.to_str().unwrap(),HashMethod::Sha256).await
+        let chunk_type = ChunkId::default_chunk_type();
+
+        let (chunk_id,file_size) = calculate_file_chunk_id(pkg_tar_path.to_str().unwrap(),chunk_type).await
             .map_err(|e| format!("Failed to calculate file chunk id: {}", e.to_string()))?;
         if Some(chunk_id.to_string()) != pkg_meta.chunk_id {
             println!("chunk_id does not match: {}", chunk_id.to_string());
@@ -554,7 +559,7 @@ mod tests {
         //获取文件的sha256和大小
         let file_info = calculate_file_hash(expected_tarball_path.to_str().unwrap()).unwrap();
         //println!("tar: {} : {:?}", expected_tarball_path.display(), &file_info);
-        let chunk_id = ChunkId::from_sha256_result(&file_info.sha256);
+        let chunk_id = ChunkId::from_mix256_result(file_info.size, &file_info.sha256);
         println!("pkg chunk_id: {}", chunk_id.to_string());
         // 验证元数据文件是否存在
         let expected_meta_path = Path::new(&dest_path)
@@ -569,8 +574,8 @@ mod tests {
         assert_eq!(meta_data.pkg_name, pkg_name);
         assert_eq!(meta_data.version, version);
         assert_eq!(meta_data.author, author);
-        assert!(meta_data.chunk_id.unwrap() == chunk_id.to_string(), "chunk_id OK");
-        assert!(meta_data.chunk_size.unwrap() == file_info.size, "chunk_size OK");
+        assert_eq!(meta_data.chunk_id.unwrap(), chunk_id.to_string(), "chunk_id OK");
+        assert_eq!(meta_data.chunk_size.unwrap(), file_info.size, "chunk_size OK");
     }
     
     #[tokio::test]
