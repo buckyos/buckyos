@@ -288,9 +288,10 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
 
     let range_str = req.headers().get(hyper::header::RANGE);
     let mut start = 0;
+    let mut end = u64::MAX;
     if range_str.is_some() {
         let range_str = range_str.unwrap().to_str().unwrap();
-        (start,_) = parse_range(range_str,u64::MAX)
+        (start,end) = parse_range(range_str,u64::MAX)
             .map_err(|e| {
                 warn!("parse range failed: {}", e);
                 RouterError::BadRequest(format!("parse range failed: {}", e))
@@ -329,8 +330,6 @@ pub async fn handle_ndn_get(mgr_config: &NamedDataMgrRouteConfig, req: Request<B
             }
         }
     } 
-
-
 
     if obj_id.is_none() && mgr_config.enable_mgr_file_path {
         let sub_path = buckyos_kit::get_relative_path(route_path, req_path);

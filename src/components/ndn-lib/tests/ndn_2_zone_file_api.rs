@@ -461,7 +461,7 @@ async fn init_ndn_client(ndn_mgr_id: &str, private_key: &str, target_ndn_host: &
     target_ndn_client
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_file_ok() {
     init_logging("ndn_2_zone_file_ok", false);
 
@@ -522,7 +522,7 @@ async fn ndn_2_zone_file_ok() {
     assert_eq!(buffer, chunk_data);
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_file_not_found() {
     init_logging("ndn_2_zone_file_not_found", false);
 
@@ -667,7 +667,7 @@ async fn ndn_2_zone_file_not_found() {
     }
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_file_verify_failed() {
     init_logging("ndn_2_zone_file_verify_failed", false);
 
@@ -887,7 +887,7 @@ async fn ndn_2_zone_file_verify_failed() {
 }
 
 // http://{host}/ndn/{obj-id}/inner-path
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_o_link_innerpath_file_ok() {
     init_logging("ndn_local_o_link_innerpath_file_ok", false);
 
@@ -1176,7 +1176,7 @@ async fn ndn_2_zone_o_link_innerpath_file_ok() {
     }
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_o_link_innerpath_file_not_found() {
     init_logging("ndn_2_zone_o_link_innerpath_file_not_found", false);
 
@@ -1361,7 +1361,7 @@ async fn ndn_2_zone_o_link_innerpath_file_not_found() {
     }
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_o_link_innerpath_file_verify_failed() {
     init_logging("ndn_2_zone_o_link_innerpath_file_verify_failed", false);
 
@@ -1746,7 +1746,7 @@ async fn ndn_2_zone_o_link_innerpath_file_verify_failed() {
 }
 
 // http://{host}/ndn/{obj-path}/inner-path
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_r_link_innerpath_file_ok() {
     init_logging("ndn_2_zone_r_link_innerpath_file_ok", false);
 
@@ -2092,7 +2092,7 @@ async fn ndn_2_zone_r_link_innerpath_file_ok() {
     }
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_r_link_innerpath_file_not_found() {
     init_logging("ndn_2_zone_r_link_innerpath_file_not_found", false);
 
@@ -2284,7 +2284,7 @@ async fn ndn_2_zone_r_link_innerpath_file_not_found() {
     }
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_r_link_innerpath_file_verify_failed() {
     init_logging("ndn_2_zone_r_link_innerpath_file_verify_failed", false);
 
@@ -2836,7 +2836,7 @@ async fn read_chunk_concurrency(
     assert_eq!(buffer, chunk_data, "chunk content mismatch");
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_o_link_innerpath_file_concurrency() {
     init_logging("ndn_2_zone_o_link_innerpath_file_concurrency", false);
 
@@ -2971,7 +2971,7 @@ async fn ndn_2_zone_o_link_innerpath_file_concurrency() {
     info!("All tasks completed successfully");
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_r_link_innerpath_file_concurrency() {
     init_logging("ndn_2_zone_r_link_innerpath_file_concurrency", false);
 

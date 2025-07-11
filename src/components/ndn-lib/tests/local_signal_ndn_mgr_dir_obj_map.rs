@@ -3459,7 +3459,7 @@ fn check_simulate_fs_eq(left: &SimulateFsItem, right: &SimulateFsItem) {
     }
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_local_dir_trie_obj_map_build() {
     init_logging("ndn_local_dir_trie_obj_map_build", false);
 

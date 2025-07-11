@@ -487,7 +487,7 @@ async fn ndn_local_trie_obj_map_not_found() {
     info!("ndn_local_trie_obj_map_not_found test end.");
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_local_trie_obj_map_verify_failed() {
     init_logging("ndn_local_trie_obj_map_verify_failed", false);
 

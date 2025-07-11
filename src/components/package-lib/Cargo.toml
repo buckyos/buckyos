@@ -38,3 +38,4 @@ name-lib = { path = "../name-lib" }
 
 [dev-dependencies]
 tempfile = "*"
+buckyos-kit = { path = "../buckyos-kit" }
