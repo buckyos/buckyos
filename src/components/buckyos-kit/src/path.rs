@@ -28,7 +28,7 @@ pub fn normalize_path(path_str: &str) -> String {
         }
     }
 
-    normalized.to_string_lossy().to_string()
+    normalized.to_string_lossy().to_string().replace("\\", "/")
 }
 
 pub fn get_buckyos_root_dir() -> PathBuf {
