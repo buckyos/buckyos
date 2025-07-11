@@ -2,7 +2,7 @@ use crate::object::{build_named_object_by_json, ObjId};
 use crate::NdnResult;
 use crate::ObjectArrayOwnedIter;
 use crate::{
-    ChunkId, ChunkIdRef, CollectionStorageMode, HashMethod, OBJ_TYPE_CHUNK_LIST,
+    ChunkId, CollectionStorageMode, HashMethod, OBJ_TYPE_CHUNK_LIST,
     OBJ_TYPE_CHUNK_LIST_FIX_SIZE, OBJ_TYPE_CHUNK_LIST_SIMPLE, OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE,
 };
 use crate::{ObjectArray, ObjectArrayBody};
@@ -304,7 +304,7 @@ impl ChunkList {
                                 return Ok((index as u64, 0));
                             }
 
-                            let chunk_id = ChunkIdRef::from_obj_id(&obj_id);
+                            let chunk_id = ChunkId::from_obj_id(&obj_id);
                             let length = chunk_id.get_length().ok_or_else(|| {
                                 let msg = format!("Failed to get length for chunk id: {}", obj_id);
                                 error!("{}", msg);
@@ -420,7 +420,7 @@ impl ChunkList {
 
                         let mut total_size = 0;
                         for (index, obj_id) in self.chunk_list_imp.iter().rev().enumerate() {
-                            let chunk_id = ChunkIdRef::from_obj_id(&obj_id);
+                            let chunk_id = ChunkId::from_obj_id(&obj_id);
                             let length = chunk_id.get_length().ok_or_else(|| {
                                 let msg = format!("Failed to get length for chunk id: {}", obj_id);
                                 error!("{}", msg);
@@ -505,7 +505,7 @@ impl ChunkList {
                         return Ok(total_size);
                     }
 
-                    let chunk_id = ChunkIdRef::from_obj_id(&obj_id);
+                    let chunk_id = ChunkId::from_obj_id(&obj_id);
                     let length = chunk_id.get_length().ok_or_else(|| {
                         let msg = format!("Failed to get length for chunk id: {}", obj_id);
                         error!("{}", msg);

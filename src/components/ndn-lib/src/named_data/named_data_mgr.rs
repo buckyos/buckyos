@@ -821,7 +821,7 @@ impl NamedDataMgr {
         })?;
         debug!("open local_file_path success");
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();
-        let chunk_type = chunk_hasher.hash_type.clone();
+        let chunk_type = chunk_hasher.hash_method.clone();
 
         file_reader.seek(SeekFrom::Start(0)).await;
         let (chunk_raw_id, chunk_size) = chunk_hasher
@@ -829,7 +829,7 @@ impl NamedDataMgr {
             .await
             .unwrap();
 
-        let chunk_id = ChunkId::mix_from_hash_result(chunk_size, &chunk_raw_id, chunk_type);
+        let chunk_id = ChunkId::from_mix_hash_result_by_hash_method(chunk_size, &chunk_raw_id, chunk_type)?;
         info!(
             "pub_local_file_as_fileobj:calc chunk_id success,chunk_id:{},chunk_size:{}",
             chunk_id.to_string(),

@@ -100,6 +100,7 @@ fn test_create_pod_instance() {
         required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
+        default_service_port: 80,
     };
 
     scheduler.add_pod(pod);
@@ -162,6 +163,7 @@ fn test_pod_state_change() {
         required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
+        default_service_port: 80,
     };
     let pod2 = PodItem {
         id: "pod2".to_string(),
@@ -175,6 +177,7 @@ fn test_pod_state_change() {
         required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
+        default_service_port: 80,
     };
 
     scheduler.add_pod(pod1);
@@ -252,6 +255,7 @@ fn test_create_pod_instance_no_suitable_node() {
         required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
+        default_service_port: 80,
     };
 
     scheduler.add_pod(pod);
@@ -290,6 +294,7 @@ fn test_node_and_network_affinity() {
         required_gpu_mem: 0,
         node_affinity: Some("gpu".to_string()),
         network_affinity: Some("zone3".to_string()),
+        default_service_port: 80,
     };
 
     scheduler.add_pod(pod);

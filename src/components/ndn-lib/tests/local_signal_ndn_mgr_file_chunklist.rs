@@ -24,7 +24,7 @@ fn generate_random_chunk_mix(size: u64) -> (ChunkId, Vec<u8>) {
     let chunk_data = generate_random_bytes(size);
     let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::mix_from_hash_result(size, &hash, HashMethod::Sha256);
+    let chunk_id = ChunkId::from_mix_hash_result_by_hash_method(size, &hash, HashMethod::Sha256).unwrap();
     info!("chunk_id: {}", chunk_id.to_string());
     (chunk_id, chunk_data)
 }
@@ -33,7 +33,7 @@ fn _generate_random_chunk(size: u64) -> (ChunkId, Vec<u8>) {
     let chunk_data = generate_random_bytes(size);
     let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_hash_result(&hash, HashMethod::Sha256);
+    let chunk_id = ChunkId::from_hash_result(&hash, ChunkType::Sha256);
     info!("chunk_id: {}", chunk_id.to_string());
     (chunk_id, chunk_data)
 }
@@ -300,7 +300,7 @@ async fn ndn_local_file_chunklist_rechunk_split() {
             let hash = hasher.calc_from_bytes(
                 &chunk0_data.as_slice()[*start_pos as usize..(*start_pos + *len) as usize],
             );
-            let chunk_id = ChunkId::mix_from_hash_result(*len, &hash, HashMethod::Sha256);
+            let chunk_id = ChunkId::from_mix_hash_result_by_hash_method(*len, &hash, HashMethod::Sha256).unwrap();
             info!("chunk_id: {}", chunk_id.to_string());
             chunk_id
         })
@@ -579,7 +579,7 @@ async fn ndn_local_file_chunklist_rechunk_combine() {
     let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(combine_chunk_data.as_slice());
     let combine_chunk_id =
-        ChunkId::mix_from_hash_result(combine_chunk_data.len() as u64, &hash, HashMethod::Sha256);
+        ChunkId::from_mix_hash_result_by_hash_method(combine_chunk_data.len() as u64, &hash, HashMethod::Sha256).unwrap();
     info!("combine_chunk_id: {}", combine_chunk_id.to_string());
 
     // File(chunk0 + chunk1 + ... + chunk9) -> file0
@@ -760,7 +760,7 @@ async fn ndn_local_file_chunklist_delta() {
     let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(combine_chunks_3_6.as_slice());
     let combine_chunk_3_6_id =
-        ChunkId::mix_from_hash_result(combine_chunks_3_6.len() as u64, &hash, HashMethod::Sha256);
+        ChunkId::from_mix_hash_result_by_hash_method(combine_chunks_3_6.len() as u64, &hash, HashMethod::Sha256).unwrap();
 
     write_chunk(
         ndn_mgr_id.as_str(),

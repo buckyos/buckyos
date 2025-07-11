@@ -45,7 +45,7 @@ fn generate_key_value_pair(seed: &str) -> (String, ObjId) {
     let seed = HashHelper::calc_hash(HashMethod::Sha256, seed.as_bytes());
     let mut rng: StdRng = SeedableRng::from_seed(seed.try_into().unwrap());
 
-    let hash = generate_random_buf(&mut rng, HashMethod::Keccak256.hash_bytes());
+    let hash = generate_random_buf(&mut rng, HashMethod::Keccak256.hash_result_size());
     let obj_id = ObjId::new_by_raw(OBJ_TYPE_FILE.to_owned(), hash);
 
     (generate_random_path_key(&mut rng), obj_id)

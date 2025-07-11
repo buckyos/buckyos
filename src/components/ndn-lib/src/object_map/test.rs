@@ -23,7 +23,7 @@ async fn test_object_map() {
     let count = 100;
     for i in 0..count {
         let key = format!("key{}", i);
-        let hash = generate_random_buf(&i.to_string(), HashMethod::Sha256.hash_bytes());
+        let hash = generate_random_buf(&i.to_string(), HashMethod::Sha256.hash_result_size());
         let obj_id = ObjId::new_by_raw(OBJ_TYPE_FILE.to_owned(), hash);
 
         obj_map_builder.put_object(&key, &obj_id).unwrap();

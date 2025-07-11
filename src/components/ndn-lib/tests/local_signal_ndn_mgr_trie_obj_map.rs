@@ -26,7 +26,7 @@ fn generate_random_chunk_mix(size: u64) -> (ChunkId, Vec<u8>) {
     let chunk_data = generate_random_bytes(size);
     let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::mix_from_hash_result(size, &hash, HashMethod::Sha256);
+    let chunk_id = ChunkId::from_mix_hash_result_by_hash_method(size, &hash, HashMethod::Sha256).unwrap();
     info!("chunk_id: {}", chunk_id.to_string());
     (chunk_id, chunk_data)
 }
@@ -35,7 +35,7 @@ fn generate_random_chunk(size: u64) -> (ChunkId, Vec<u8>) {
     let chunk_data = generate_random_bytes(size);
     let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_hash_result(&hash, HashMethod::Sha256);
+    let chunk_id = ChunkId::from_hash_result(&hash, ChunkType::Sha256);
     info!("chunk_id: {}", chunk_id.to_string());
     (chunk_id, chunk_data)
 }

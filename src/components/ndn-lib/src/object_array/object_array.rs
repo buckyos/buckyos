@@ -259,7 +259,7 @@ impl ObjectArray {
         hash_method: HashMethod,
     ) -> NdnResult<MerkleTreeObject> {
         let count = cache.len() as u64;
-        let leaf_size = hash_method.hash_bytes() as u64;
+        let leaf_size = hash_method.hash_result_size() as u64;
         let data_size = count as u64 * leaf_size;
 
         // TODO now use the memory buffer to store the merkle tree, need to optimize for further usage

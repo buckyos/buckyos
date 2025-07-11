@@ -1444,11 +1444,11 @@ async fn ndn_local_r_link_innerpath_file_ok() {
         // 1. get chunk of file
         // 2. get name of file
         let (file_id, file_obj, chunk_id, chunk_data) = generate_random_file_obj();
-        let mix_chunk_id = ChunkId::mix_from_hash_result(
+        let mix_chunk_id = ChunkId::from_mix_hash_result_by_hash_method(
             chunk_data.len() as u64,
             chunk_id.hash_result.as_slice(),
             HashMethod::Sha256,
-        );
+        ).unwrap();
 
         // write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 

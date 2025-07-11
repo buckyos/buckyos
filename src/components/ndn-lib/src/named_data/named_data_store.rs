@@ -69,7 +69,7 @@ impl NamedDataStore {
 
         format!(
             "{}/{}/{}/{}.{}",
-            self.base_dir, dir1, dir2, file_name, chunk_id.hash_type
+            self.base_dir, dir1, dir2, file_name, chunk_id.chunk_type.to_string()
         )
     }
 
@@ -546,7 +546,8 @@ impl NamedDataStore {
         need_verify: bool,
     ) -> NdnResult<()> {
         if need_verify {
-            let mut chunk_hasher = ChunkHasher::new(Some(chunk_id.hash_type.as_str()))?;
+            let hash_method = chunk_id.chunk_type.to_hash_method()?;
+            let mut chunk_hasher = ChunkHasher::new_with_hash_method(hash_method)?;
             let hash_bytes = chunk_hasher.calc_from_bytes(&chunk_data);
             if !chunk_id.equal(&hash_bytes) {
                 warn!(

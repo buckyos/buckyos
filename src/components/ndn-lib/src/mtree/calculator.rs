@@ -53,7 +53,7 @@ impl SerializeHashCalculator {
     }
 
     pub fn estimate_output_bytes(leaf_count: u64, hash_method: HashMethod) -> u64 {
-        HashNodeLocator::calc_total_count(leaf_count) * HashMethod::Sha256.hash_bytes() as u64
+        HashNodeLocator::calc_total_count(leaf_count) * HashMethod::Sha256.hash_result_size() as u64
     }
 
     pub fn get_leaf_count(&self) -> u64 {
@@ -82,7 +82,7 @@ impl SerializeHashCalculator {
 
         // The root hash is the last hash in the reader
         let reader = self.reader.as_mut().unwrap();
-        let hash_bytes = self.hash_method.hash_bytes();
+        let hash_bytes = self.hash_method.hash_result_size();
         let pos = (self.locator.total_count() - 1) * hash_bytes as u64;
         reader.seek(SeekFrom::Start(pos)).await.map_err(|e| {
             let msg = format!("Error seeking to position {}: {}", pos, e);
@@ -110,7 +110,7 @@ impl SerializeHashCalculator {
         let indexes = self.locator.get_proof_path_by_leaf_index(leaf_index)?;
 
         let reader = self.reader.as_mut().unwrap();
-        let hash_bytes = self.hash_method.hash_bytes();
+        let hash_bytes = self.hash_method.hash_result_size();
 
         let mut ret = Vec::with_capacity(indexes.len());
         for (_depth, index, leaf_index) in indexes {
@@ -139,7 +139,7 @@ impl SerializeHashCalculator {
         assert!(self.reader.is_some());
 
         // Load leaf node hash from the reader, start from index 0
-        let hash_bytes = self.hash_method.hash_bytes();
+        let hash_bytes = self.hash_method.hash_result_size();
         for i in 0..self.leaf_count {
             // Must seek to the right position before read, because the reader may be used for verify on append leaf nodes!
             let pos = hash_bytes as u64 * i;
@@ -182,14 +182,14 @@ impl SerializeHashCalculator {
 
         // println!("Write hash to index: {}, {:?}", index, hash);
         let reader = self.reader.as_mut().unwrap();
-        let pos = (index * self.hash_method.hash_bytes()) as u64;
+        let pos = (index * self.hash_method.hash_result_size()) as u64;
         reader.seek(SeekFrom::Start(pos)).await.map_err(|e| {
             let msg = format!("Error seeking to position {}: {}", pos, e);
             error!("{}", msg);
             NdnError::IoError(msg)
         })?;
 
-        let mut read_hash = vec![0u8; self.hash_method.hash_bytes()];
+        let mut read_hash = vec![0u8; self.hash_method.hash_result_size()];
         reader.read_exact(&mut read_hash).await.map_err(|e| {
             let msg = format!("Error reading hash: {}", e);
             error!("{}", msg);
@@ -207,7 +207,7 @@ impl SerializeHashCalculator {
 
     async fn write_hash(&mut self, index: usize, hash: &Vec<u8>) -> NdnResult<()> {
         assert!(self.writer.is_some());
-        assert!(hash.len() == self.hash_method.hash_bytes());
+        assert!(hash.len() == self.hash_method.hash_result_size());
 
         // println!("Write hash to index: {}, {:?}", index, hash);
         #[cfg(debug_assertions)]
@@ -218,7 +218,7 @@ impl SerializeHashCalculator {
 
         // println!("Write hash to index: {}, {:?}", index, hash);
         let writer = self.writer.as_mut().unwrap();
-        let pos = (index * self.hash_method.hash_bytes()) as u64;
+        let pos = (index * self.hash_method.hash_result_size()) as u64;
         writer.seek(SeekFrom::Start(pos)).await.map_err(|e| {
             let msg = format!("Error seeking to position {}: {}", pos, e);
             error!("{}", msg);
@@ -262,7 +262,7 @@ impl SerializeHashCalculator {
         }
 
         for hash in leaf_hashes {
-            assert!(hash.len() == self.hash_method.hash_bytes());
+            assert!(hash.len() == self.hash_method.hash_result_size());
 
             let node = HashNode {
                 hash: hash.clone(),
