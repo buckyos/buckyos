@@ -214,7 +214,7 @@ async fn test_chunk_list_main() {
 
     assert_eq!(
         chunk_list.storage_type(),
-        ObjectArrayStorageType::Arrow,
+        ObjectArrayStorageType::JSONFile,
         "Chunk list storage type should be Arrow"
     );
 

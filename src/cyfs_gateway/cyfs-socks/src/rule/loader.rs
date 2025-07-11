@@ -351,7 +351,7 @@ mod tests {
         let item = &items[1];
         match item {
             RuleConfigItem::Include { file } => {
-                assert_eq!(file, "./default.json");
+                assert_eq!(file, "default.json");
             }
             _ => {
                 panic!("Invalid item: {:?}", item);

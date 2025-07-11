@@ -18,9 +18,12 @@ pub fn extract_root_domain(name: &str, known_domains: &[String]) -> NSResult<Str
     let parts: Vec<&str> = name.rsplitn(3, '.').collect();
     if parts.len() >= 2 {
         let mut domain = format!("{}.{}", parts[1], parts[0]);
+        //println!("domain: {}", domain);
         
         if parts.len() == 3 && SPECIAL_TLDS.contains(&format!("{}.{}", parts[1], parts[0]).as_str()) {
+            let parts = name.rsplit(".").collect::<Vec<&str>>();
             domain = format!("{}.{}.{}", parts[2], parts[1], parts[0]);
+
         }
         
         Ok(domain)

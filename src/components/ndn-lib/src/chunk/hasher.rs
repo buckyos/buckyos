@@ -330,6 +330,8 @@ mod tests {
 
         let mut chunk_hasher = ChunkHasher::new(None).unwrap();
         let hash_result = chunk_hasher.calc_from_bytes(&buffer);
+        let chunk_id2 = ChunkId::from_mix_hash_result(2048, &hash_result, ChunkType::Mix256);
+        println!("chunk_id2: {}", chunk_id2.to_string());
 
         let hash_result_restored = {
             let mut chunk_hasher = ChunkHasher::new(None).unwrap();
@@ -341,7 +343,7 @@ mod tests {
             chunk_hasher_restored.update_from_bytes(&buffer[1024..]);
             // let hash = chunk_hasher_restored.finalize();
 
-            let chunk_id = chunk_hasher_restored.finalize_chunk_id();
+            let chunk_id = chunk_hasher_restored.finalize_mix_chunk_id().unwrap();
             let length = chunk_id.get_length().unwrap_or(0);
             println!("chunk_id: {}, length: {}", chunk_id.to_string(), length);
             assert_eq!(length, 2048);
@@ -349,6 +351,6 @@ mod tests {
             chunk_id.hash_result.clone()
         };
 
-        assert_eq!(hash_result, hash_result_restored);
+        assert_eq!(chunk_id2.hash_result, hash_result_restored);
     }
 }

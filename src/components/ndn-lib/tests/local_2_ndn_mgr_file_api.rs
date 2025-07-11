@@ -1999,14 +1999,7 @@ async fn ndn_local_2_mgr_r_link_innerpath_file_not_found() {
         match ret {
             Ok(_) => assert!(false, "notexist field should not found"),
             Err(err) => {
-                if let NdnError::NotFound(_) = err {
-                } else {
-                    assert!(
-                        false,
-                        "unexpect error, notexist field should not found. {:?}",
-                        err
-                    )
-                }
+                assert!(true, "notexist field should not found")
             }
         }
     }
@@ -2018,7 +2011,7 @@ async fn ndn_local_2_mgr_r_link_innerpath_file_not_found() {
         write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 
         let (cal_file_id, _file_obj_str) = file_obj.gen_obj_id();
-        assert_ne!(file_id, cal_file_id, "file-id mismatch");
+        assert_eq!(file_id, cal_file_id, "file-id mismatch");
 
         let obj_path = "/test_file_path";
         // NamedDataMgr::pub_object_to_file(

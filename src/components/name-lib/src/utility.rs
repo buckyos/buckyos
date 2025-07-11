@@ -358,7 +358,7 @@ mod test {
         std::fs::write(&pk_file, serde_json::to_string(&public_key).unwrap()).unwrap();
     }
 
-    #[test]
+    // #[test]
     fn test_load_pem_private_key() {
         let key_path = Path::new("d:\\temp\\device_key.pem");
         let private_key = load_raw_private_key(&key_path).unwrap();

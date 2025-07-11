@@ -158,14 +158,17 @@ async fn test_base_operations() -> NdnResult<()> {
 #[tokio::test]
 async fn test_get_chunk_mgr_by_id() -> NdnResult<()> {
     // Get ChunkMgr by id
-    let chunk_mgr_id = None;
-    let chunk_mgr = NamedDataMgr::get_named_data_mgr_by_id(chunk_mgr_id).await;
+    let random_mgr_id = rand::random::<u64>();
+    //println!("random_mgr_id: {}", random_mgr_id);
+    let chunk_mgr_id = format!("test_{}", random_mgr_id);
+    let mgr_id = Some(chunk_mgr_id.as_str());
+    let chunk_mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id).await;
     assert!(chunk_mgr.is_some());
     let chunk_mgr = chunk_mgr.unwrap();
 
     // Create test data
     let test_data = b"Hello, ChunkMgr Test!";
-    let chunk_id = ChunkId::new("sha256:abcdef1234567890").unwrap();
+    let chunk_id = ChunkId::new("sha256:abcdef1234567890AB").unwrap();
 
     // Write chunk
     {
@@ -383,7 +386,7 @@ async fn test_concurrent_path_access() -> NdnResult<()> {
     ));
 
     let test_data = b"Test data for concurrent access";
-    let chunk_id = ChunkId::new("sha256:concurrent").unwrap();
+    let chunk_id = ChunkId::new("sha256:1234").unwrap();
     let test_path = "/test/concurrent/path.txt";
 
     let (mut writer, _) = named_mgr

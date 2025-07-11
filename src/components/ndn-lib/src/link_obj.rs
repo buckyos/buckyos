@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_link_data() {
-        let link_data = LinkData::SameAs(ObjId::new("test:123").unwrap());
+        let link_data = LinkData::SameAs(ObjId::new("test:1234").unwrap());
         let link_str = link_data.to_string();
         println!("link_str {}",link_str);
         let link_data2 = LinkData::from_string(&link_str).unwrap();

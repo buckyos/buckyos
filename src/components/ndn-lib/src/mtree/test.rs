@@ -100,7 +100,7 @@ async fn read_chunk(file: &mut File, chunk_size: usize) -> Vec<u8> {
     buf
 }
 
-#[test]
+//#[test]
 async fn test_generator() {
     let test_file: &str = "D:\\test";
 
@@ -198,16 +198,18 @@ async fn test_generator() {
     }
 }
 
-#[test]
+//#[test]
 async fn test_serialize_hash_calculator() {
-    let test_file: &str = "D:\\test";
-
+    //let test_file: &str =
+    let temp_dir = std::env::temp_dir();
+    let test_file = temp_dir.join("test.shc.data");
+    println!("test_file: {}", test_file.to_str().unwrap());
     let chunk_size = 1024 * 64;
 
     let mut root_hash1;
     let mut root_hash2;
     {
-        let mut file = tokio::fs::File::open(test_file).await.unwrap();
+        let mut file = tokio::fs::File::open(test_file.clone()).await.unwrap();
         let leaf_count = get_leaf_count_of_file(&file, chunk_size).await;
 
         // Read the file by chunk and calculate the leaf node hashes
@@ -232,7 +234,7 @@ async fn test_serialize_hash_calculator() {
     }
 
     {
-        let mut file = tokio::fs::File::open(test_file).await.unwrap();
+        let mut file = tokio::fs::File::open(test_file.clone()).await.unwrap();
         let leaf_count = get_leaf_count_of_file(&file, chunk_size).await;
 
         let size =

@@ -1,7 +1,8 @@
 use std::{env, path::{Path, PathBuf, Component}};
 
 pub fn normalize_path(path_str: &str) -> String {
-    let mut components = Path::new(path_str).components().peekable();
+    let path_str = path_str.replace("\\", "/");
+    let mut components = Path::new(&path_str).components().peekable();
     let mut normalized = PathBuf::new();
 
     while let Some(comp) = components.next() {
@@ -15,6 +16,7 @@ pub fn normalize_path(path_str: &str) -> String {
                 // 忽略当前目录
             }
             Component::Normal(c) => {
+                //println!("normal {:?}", c);
                 normalized.push(c);
             }
             Component::RootDir => {
@@ -26,7 +28,7 @@ pub fn normalize_path(path_str: &str) -> String {
         }
     }
 
-    normalized.to_string_lossy().to_string().replace("\\", "/")
+    normalized.to_string_lossy().to_string()
 }
 
 pub fn get_buckyos_root_dir() -> PathBuf {

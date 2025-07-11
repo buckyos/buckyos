@@ -274,7 +274,7 @@ mod tests {
 
         let mut web3_bridge_config = HashMap::new();
         web3_bridge_config.insert("bns".to_string(), "web3.buckyos.io".to_string());
-        KNOWN_WEB3_BRIDGE_CONFIG.set(web3_bridge_config).unwrap();
+        let _ = KNOWN_WEB3_BRIDGE_CONFIG.set(web3_bridge_config);
 
         let did = DID::from_host_name("waterflier.web3.buckyos.io").unwrap();
         assert_eq!(did.method, "bns");
