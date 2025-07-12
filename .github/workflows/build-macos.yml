@@ -49,8 +49,9 @@ jobs:
     - name: Tar Rootfs
       run: sudo tar -cvf rootfs.tar ./src/rootfs
     - name: Prepare tools
-      run: sudo mkdir -p tools
-      run: sudo cp ./src/rootfs/bin/buckycli/buckycli ./tools/
+      run: 
+        sudo mkdir -p tools
+        sudo cp ./src/rootfs/bin/buckycli/buckycli ./tools/
     - name: Upload tools
       uses: actions/upload-artifact@v4
       with:
