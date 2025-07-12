@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use futures::Future;
 use rand::RngCore;
 
-use crate::{build_named_object_by_json, build_obj_id, copy_chunk, cyfs_get_obj_id_from_url, get_cyfs_resp_headers, verify_named_object, CYFSHttpRespHeaders, ChunkState, FileObject, HashMethod, PathObject};
+use crate::{build_named_object_by_json, build_obj_id, copy_chunk, cyfs_get_obj_id_from_url, get_cyfs_resp_headers, verify_named_object, CYFSHttpRespHeaders, ChunkState, FileObject, HashMethod, PathObject, ProgressCallback};
 
 
 pub enum ChunkWorkState {
@@ -529,7 +529,8 @@ impl NdnClient {
             .map_err(|e| NdnError::Internal(format!("Failed to get chunk reader: {}", e)))?;    
         // 复制数据到本地文件（TODO：要验证 chunkid)
         drop(real_named_mgr);
-        tokio::io::copy(&mut chunk_reader, &mut file)
+        let hasher = ChunkHasher::new_with_hash_method(chunk_id.chunk_type.to_hash_method()?)?;
+        copy_chunk(chunk_id.clone(), chunk_reader, &mut file, Some(hasher), None)
             .await
             .map_err(|e| NdnError::IoError(format!("Failed to copy data to file: {}", e)))?;
         
@@ -695,7 +696,7 @@ impl NdnClient {
         let named_mgr2 = named_mgr.clone();
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
         let progress_callback = {
-            Some(move |chunk_id: ChunkId, pos: u64, hasher: &Option<ChunkHasher>| {
+            Some(Box::new(move |chunk_id: ChunkId, pos: u64, hasher: &Option<ChunkHasher>| {
                 let this_chunk_id = chunk_id.clone();
                 let mut json_progress_str = String::new();
                 if let Some(hasher) = hasher {
@@ -720,7 +721,7 @@ impl NdnClient {
                     }
                     Ok(())
                 }) as Pin<Box<dyn Future<Output = NdnResult<()>> + Send>>
-            })
+            }) as Box<dyn FnMut(ChunkId, u64, &Option<ChunkHasher>) -> Pin<Box<dyn Future<Output = NdnResult<()>> + Send + 'static>> + Send>)
         };
 
         let reader = reader.unwrap();

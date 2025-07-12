@@ -6,6 +6,9 @@ use std::str::FromStr;
 use std::{future::Future, io::SeekFrom, ops::Range, path::PathBuf, pin::Pin};
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite};
 
+// 添加类型别名来简化 copy_chunk 的签名
+pub type ProgressCallback = Option<Box<dyn FnMut(ChunkId, u64, &Option<ChunkHasher>) -> Pin<Box<dyn Future<Output = NdnResult<()>> + Send + 'static>> + Send>>;
+
 pub struct ChunkHasher {
     pub hash_method: HashMethod,
     pub hash_length: u64,
@@ -255,21 +258,16 @@ pub async fn calculate_file_chunk_id(
     }
 }
 
-pub async fn copy_chunk<R, W, F>(
+pub async fn copy_chunk<R, W>(
     chunk_id: ChunkId,
     mut chunk_reader: R,
     mut chunk_writer: W,
     mut hasher: Option<ChunkHasher>,
-    mut progress_callback: Option<F>,
+    mut progress_callback: ProgressCallback,
 ) -> NdnResult<u64>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
-    F: FnMut(
-        ChunkId,
-        u64,
-        &Option<ChunkHasher>,
-    ) -> Pin<Box<dyn Future<Output = NdnResult<()>> + Send + 'static>>,
 {
     let mut total_copied: u64 = 0;
     let mut buffer = vec![0u8; COPY_CHUNK_BUFFER_SIZE];
@@ -305,7 +303,13 @@ where
     }
 
     if let Some(hasher) = hasher {
-        let result_chunk_id = ChunkHasher::finalize_chunk_id(hasher);
+        let result_chunk_id;
+        if chunk_id.chunk_type.is_mix() {
+            result_chunk_id = hasher.finalize_mix_chunk_id()?;
+        } else {
+            result_chunk_id = hasher.finalize_chunk_id();
+        }
+        
         if result_chunk_id != chunk_id {
             return Err(NdnError::VerifyError(format!(
                 "copy chunk hash mismatch:{}",

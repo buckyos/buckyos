@@ -193,14 +193,12 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
     
     // 创建一个内存读取器
     let chunk_reader = std::io::Cursor::new(body_bytes);
-    
-    // 使用 copy_chunk 函数
     let write_result = ndn_lib::copy_chunk(
         chunk_id.clone(), 
         chunk_reader, 
         chunk_writer, 
         None, 
-        None::<fn(ChunkId, u64, &Option<ChunkHasher>) -> _>
+        None
     ).await
         .map_err(|e| {
             warn!("Failed to copy chunk: {}", e);
