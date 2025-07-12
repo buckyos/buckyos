@@ -42,7 +42,7 @@ jobs:
       run: python3 scripts/build_web_apps.py
     - name: cargo test
       working-directory: ./src
-      run: cargo test -- --test-threads=1
+      run: sudo cargo test -- --test-threads=1
     - name: build bin
       working-directory: ./src
       run: python3 scripts/build.py --no-build-web-apps --no-install --target=${{inputs.arch}}-apple-darwin
