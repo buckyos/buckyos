@@ -27,12 +27,15 @@ def kill_process(name):
     else:
         print(f"{name} killed")
 
-kill_process("node_daemon")
-kill_process("scheduler")
-kill_process("verify_hub")
-kill_process("system_config")
-kill_process("cyfs_gateway")
-kill_process("filebrowser")
-stop_app_container("filebrowser")
-kill_process("smb_service")
-kill_process("repo_service")
+def kill_all():
+    kill_process("node_daemon")
+    kill_process("scheduler")
+    kill_process("verify_hub")
+    kill_process("system_config")
+    kill_process("cyfs_gateway")
+    kill_process("filebrowser")
+    stop_app_container("filebrowser")
+    kill_process("smb_service")
+    kill_process("repo_service")
+
+kill_all()
