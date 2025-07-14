@@ -24,6 +24,8 @@ num_cpus = "*"
 url = "*"
 time = { version = "^0.3", features = ["formatting"] }
 sysinfo = "*"
+chrono = { version = "*", features = ["serde"] }
+get_if_addrs = "*"
 cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
 cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
 buckyos-kit = { path = "../../components/buckyos-kit" }
@@ -34,6 +36,7 @@ ndn-lib = { path = "../../components/ndn-lib" }
 #package-installer = { path = "../../components/package-installer" }
 kRPC = { path = "../kRPC" }
 buckyos-api = { path = "../buckyos-api" }
+anyhow = "*"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"

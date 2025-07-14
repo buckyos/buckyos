@@ -1,4 +1,4 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/27.0.9 Chrome/134.0.6998.205 Electron/35.4.0 Safari/537.36" version="27.0.9" pages="11">
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/27.0.9 Chrome/134.0.6998.205 Electron/35.4.0 Safari/537.36" version="27.0.9" pages="12">
   <diagram id="oIMGCOtcYAl4cptAXmcz" name="Architecture">
     <mxGraphModel dx="2908" dy="1198" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
@@ -1231,6 +1231,122 @@
         </mxCell>
         <mxCell id="oT2j73PS3qKXkgTkekL7-11" value="返回session token和nonce" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
           <mxGeometry x="-520" y="1545" width="120" height="60" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="coYEm0tzWbkYcY7zp0FH" name="name-lib">
+    <mxGraphModel dx="1425" dy="828" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-3" value="DID本身就包含了Public Key" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-1" target="1P2sjvWsDKO3EoMZSOwn-2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-1" target="1P2sjvWsDKO3EoMZSOwn-4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-1" value="DID" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="30" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-9" value="验证必须依赖" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-2" target="1P2sjvWsDKO3EoMZSOwn-7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-2" value="DID Public Key&lt;div&gt;(用于验证 DID的签名)&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="110" y="150" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-4" target="1P2sjvWsDKO3EoMZSOwn-2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-4" target="1P2sjvWsDKO3EoMZSOwn-7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-4" target="1P2sjvWsDKO3EoMZSOwn-22">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-4" value="Global Resovle" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="150" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-7" target="1P2sjvWsDKO3EoMZSOwn-13">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-7" value="DID Document&lt;div&gt;因为有签名，所以是不可变信息&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="260" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-13" target="1P2sjvWsDKO3EoMZSOwn-14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-13" value="Owner Zone&lt;div&gt;(Zone DID)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="350" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-19" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-14" target="1P2sjvWsDKO3EoMZSOwn-17">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-20" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-14" target="1P2sjvWsDKO3EoMZSOwn-18">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-14" value="&lt;p&gt;Zone Resovle&lt;/p&gt;&lt;p&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;http://$zone_host/1.0/identifiers/$did&lt;br&gt;&lt;/span&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;rtcp://$zone_gateway_did&lt;/span&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;/:80/identifiers/$did&lt;/span&gt;&lt;/p&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="257.5" y="455" width="245" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-17" value="DID Document&lt;div&gt;因为有签名，所以是不可变信息&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="220" y="555" width="120" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-18" value="&lt;div&gt;DID Info&lt;/div&gt;&lt;div&gt;可变信息&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="555" width="120" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-21" value="更新Global Resovle(DNS,BNS）中的信息，通常是缓慢且高成本的" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="440" y="110" width="210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-22" value="ZoneGateway&lt;div&gt;Device DID&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="150" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-24" value="Build rtcp&lt;div&gt;使用rtcp通信可以让大量的应用不用处理身份验证&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;dashed=1;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-22">
+          <mxGeometry x="-0.2953" y="14" relative="1" as="geometry">
+            <mxPoint x="459" y="450" as="targetPoint" />
+            <mxPoint x="10" y="-4" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-25" value="尽量用Zone Resolve,少用Global Resolve" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="530" y="472.5" width="160" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-28" value="" style="endArrow=none;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="65" y="740" as="sourcePoint" />
+            <mxPoint x="695" y="740" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-34" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-29" target="1P2sjvWsDKO3EoMZSOwn-30">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-29" value="&lt;b&gt;与一个agent通信&lt;/b&gt;&lt;br&gt;did:agent:$agent_name:$zone_did" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="240" y="760" width="260" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-39" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-30" target="1P2sjvWsDKO3EoMZSOwn-31">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-30" value="Global Resovle&lt;div&gt;$zone_did&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="240" y="860" width="260" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-40" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-31" target="1P2sjvWsDKO3EoMZSOwn-32">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-31" value="Zone Resovle&lt;div&gt;http://$zone_host/1.0/identifiers/did:agent:$agent_name&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="205" y="960" width="330" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-37" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="1P2sjvWsDKO3EoMZSOwn-32" target="1P2sjvWsDKO3EoMZSOwn-33">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-32" value="Agent Document" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="310" y="1060" width="120" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-33" value="Post Agent Message to Agent Endpoint" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="310" y="1250" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="1P2sjvWsDKO3EoMZSOwn-41" value="" style="endArrow=none;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="65" y="1350" as="sourcePoint" />
+            <mxPoint x="695" y="1350" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>
