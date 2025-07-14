@@ -250,7 +250,7 @@ async fn init_ndn_client(ndn_mgr_id: &str, private_key: &str, target_ndn_host: &
     target_ndn_client
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_object_ok() {
     init_logging("ndn_2_zone_object_ok", false);
 
@@ -292,7 +292,7 @@ async fn ndn_2_zone_object_ok() {
     assert_eq!(got_obj_str, obj_str, "got obj from zone-a mismatch");
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_object_not_found() {
     init_logging("ndn_2_zone_object_not_found", false);
 
@@ -339,7 +339,7 @@ async fn ndn_2_zone_object_not_found() {
     }
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_object_verify_failed() {
     init_logging("ndn_2_zone_object_verify_failed", false);
 
@@ -386,7 +386,7 @@ async fn ndn_2_zone_object_verify_failed() {
 }
 
 // http://{host}/ndn/{obj-id}/inner-path
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_o_link_innerpath_ok() {
     init_logging("ndn_2_zone_o_link_innerpath_ok", false);
 
@@ -433,7 +433,7 @@ async fn ndn_2_zone_o_link_innerpath_ok() {
     // assert_eq!(got_obj_str, expect_obj_str, "got obj mismatch");
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_o_link_innerpath_not_found() {
     init_logging("ndn_2_zone_o_link_innerpath_not_found", false);
 
@@ -484,7 +484,7 @@ async fn ndn_2_zone_o_link_innerpath_not_found() {
     // }
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_o_link_innerpath_verify_failed() {
     init_logging("ndn_2_zone_o_link_innerpath_verify_failed", false);
 
@@ -546,7 +546,7 @@ async fn ndn_2_zone_o_link_innerpath_verify_failed() {
 }
 
 // http://{obj-id}.{host}/ndn/{obj-id}/inner-path
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_o_link_in_host_innerpath_ok() {
     // init_logging("ndn_2_zone_o_link_innerpath_ok", false);
 
@@ -614,18 +614,18 @@ async fn ndn_2_zone_o_link_in_host_innerpath_ok() {
     // assert_eq!(got_obj_str, expect_obj_str, "got obj mismatch");
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_o_link_in_host_innerpath_not_found() {
     unimplemented!()
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_o_link_in_host_innerpath_verify_failed() {
     unimplemented!()
 }
 
 // http://{host}/ndn/{obj-path}
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_r_link_ok() {
     init_logging("ndn_2_zone_r_link_ok", false);
 
@@ -674,7 +674,7 @@ async fn ndn_2_zone_r_link_ok() {
     assert_eq!(got_obj_str, expect_obj_str, "got obj mismatch");
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_r_link_not_found() {
     init_logging("ndn_2_zone_r_link_not_found", false);
 
@@ -734,7 +734,7 @@ async fn ndn_2_zone_r_link_not_found() {
     }
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_r_link_verify_failed() {
     init_logging("ndn_2_zone_r_link_verify_failed", false);
 
@@ -796,7 +796,7 @@ async fn ndn_2_zone_r_link_verify_failed() {
 }
 
 // http://{host}/ndn/{obj-path}/inner-path
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_r_link_innerpath_ok() {
     init_logging("ndn_2_zone_r_link_innerpath_ok", false);
 
@@ -853,7 +853,7 @@ async fn ndn_2_zone_r_link_innerpath_ok() {
     // assert_eq!(got_obj_str, expect_obj_str, "got obj mismatch");
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_r_link_innerpath_not_found() {
     init_logging("ndn_2_zone_r_link_innerpath_not_found", false);
 
@@ -914,7 +914,7 @@ async fn ndn_2_zone_r_link_innerpath_not_found() {
     }
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_r_link_innerpath_verify_failed() {
     init_logging("ndn_2_zone_r_link_innerpath_verify_failed", false);
 

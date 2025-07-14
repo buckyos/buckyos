@@ -197,13 +197,16 @@ mod tests {
     
     #[tokio::test]
     async fn test_main() -> Result<()> {
-        let base_dir = PathBuf::from("/opt/web3_bridge/");
+        //let tmp_dir = std::env::temp_dir();
+        let base_dir = std::env::temp_dir();
         let db_path = base_dir.join("sn_db.sqlite3");
+        let _ = std::fs::remove_file(db_path.clone());
         println!("db_path: {}",db_path.to_str().unwrap());
         //remove db file
-        let _ = std::fs::remove_file(db_path);
+        let db_path_str = db_path.to_str().unwrap();
 
-        let db = SnDB::new()?;
+
+        let db = SnDB::new_by_path(db_path_str)?;
         db.initialize_database()?;
         let codes = db.generate_activation_codes(100)?;
         println!("codes: {:?}", codes);

@@ -3,29 +3,24 @@ import sys
 import tempfile
 import shutil
 import subprocess
-from datetime import datetime
-import perpare_installer
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 publish_dir = os.path.join(src_dir, "publish", "deb_template")
 
 def adjust_control_file(dest_dir, new_version, architecture):
-    deb_arch = architecture
-    if deb_arch == "x86_64":
-        deb_arch = "amd64"
     control_file = os.path.join(dest_dir, "DEBIAN/control")
     f = open(control_file, "r")
     content = f.read()
     f.close()
     content = content.replace("{{package version here}}", new_version)
-    content = content.replace("{{architecture}}", deb_arch)
+    content = content.replace("{{architecture}}", architecture)
     f = open(control_file, "w")
     f.write(content)
     f.close()
 
 temp_dir = tempfile.gettempdir()
 
-def make_deb(architecture, version, builddate):
+def make_deb(architecture, version):
     print(f"make deb with architecture: {architecture}, version: {version}")
     deb_root_dir = os.path.join(temp_dir, "deb_build")
     print(f"deb_root_dir: {deb_root_dir}")
@@ -35,36 +30,31 @@ def make_deb(architecture, version, builddate):
     shutil.copytree(publish_dir, deb_dir)
 
     adjust_control_file(deb_dir, version, architecture)
+    rootfs_dir = os.path.join(src_dir, "rootfs")
     dest_dir = os.path.join(deb_dir, "opt", "buckyos")
-
-    perpare_installer.prepare_installer(dest_dir, "nightly", "linux", architecture, version, builddate)
+    shutil.copytree(rootfs_dir, dest_dir, dirs_exist_ok=True)
+    print(f"copy rootfs to {dest_dir}")
 
     print(f"run: chmod -R 755 {deb_dir}")
     subprocess.run(["chmod", "-R", "755", deb_dir], check=True)
 
+    clean_dir = os.path.join(dest_dir, "etc")
+    print(f"clean all .pem and .toml files in {clean_dir}")
+    subprocess.run("rm -f *.pem *.toml", shell=True, check=True, cwd=clean_dir)
     subprocess.run([f"dpkg-deb --build {architecture}"], shell=True, check=True, cwd=deb_root_dir)
     print(f"build deb success at {deb_dir}")
-
-    dst_deb_path = os.path.join(src_dir, f"buckyos-{architecture}-{version}.deb")
-    shutil.copy(f"{deb_root_dir}/{architecture}.deb", dst_deb_path)
-    print(f"copy deb to {dst_deb_path}")
+    shutil.copy(f"{deb_root_dir}/{architecture}.deb", os.path.join(src_dir, f"buckyos_{architecture}.deb"))
+    print(f"copy deb to {src_dir}")
 
 if __name__ == "__main__":
     print("make sure YOU already run build.py!!!")
-    architecture = "x86_64"
-    #architecture = "aarch64"
-    version = "0.4.0"
-    builddate = datetime.now().strftime("%Y%m%d")
+    architecture = "amd64"
+    version = "0.5.0"
 
     if len(sys.argv) > 1:
         architecture = sys.argv[1]
 
     if len(sys.argv) > 2:
         version = sys.argv[2]
-
-    if len(sys.argv) > 3:
-        builddate = sys.argv[3]
-
-    if architecture == "amd64":
-        architecture = "x86_64"
-    make_deb(architecture, version, builddate)
+        
+    make_deb(architecture, version)

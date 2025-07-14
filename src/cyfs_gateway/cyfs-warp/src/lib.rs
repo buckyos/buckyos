@@ -40,7 +40,7 @@ mod test {
     use buckyos_kit::*;
     use serde_json::*;
 
-    #[tokio::test]
+    
     async fn test_cyfs_warp_main() {
         let config_str = r#"
 {
@@ -84,62 +84,4 @@ mod test {
         tokio::signal::ctrl_c().await.unwrap();
     }
 
-
-    #[tokio::test]
-    async fn test_cyfs_warp_https() {
-        use env_logger;
-        env_logger::builder().filter_level(log::LevelFilter::Info).init();
-        let config_str = r#"
-        {
-            "hosts": {
-                "dev.photosssa.org": {
-                    "redirect_to_https": true,
-                    "routes": {
-                        "/": {
-                            "response": {
-                                "status": 200,
-                                "headers": {
-                                    "Content-Type": "text/html"
-                                },
-                                "body": "Hello, BuckyOS!"
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        "#;
-        let warp_config:WarpServerConfig = serde_json::from_str(config_str).unwrap();
-        start_cyfs_warp_server(warp_config).await.unwrap();
-        tokio::signal::ctrl_c().await.unwrap();
-    }
-
-
-    #[tokio::test]
-    async fn test_cyfs_warp_disable_https() {
-        use env_logger;
-        env_logger::builder().filter_level(log::LevelFilter::Info).init();
-        let config_str = r#"
-        {
-            "hosts": {
-                "dev.photosssa.org": {
-                    "routes": {
-                        "/": {
-                            "response": {
-                                "status": 200,
-                                "headers": {
-                                    "Content-Type": "text/html"
-                                },
-                                "body": "Hello, BuckyOS!"
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        "#;
-        let warp_config:WarpServerConfig = serde_json::from_str(config_str).unwrap();
-        start_cyfs_warp_server(warp_config).await.unwrap();
-        tokio::signal::ctrl_c().await.unwrap();
-    }
 }

@@ -1,5 +1,5 @@
 import os
-
+# test script, push build result to remote server
 remote_server = "root@192.168.64.5"
 
 app_loader = {}

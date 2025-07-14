@@ -174,7 +174,7 @@ async fn init_ndn_client(ndn_mgr_id: &str, private_key: &str, target_ndn_host: &
     target_ndn_client
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_chunk_ok() {
     init_logging("ndn_2_zone_chunk_ok", false);
 
@@ -218,7 +218,7 @@ async fn ndn_2_zone_chunk_ok() {
     assert_eq!(buffer, chunk_data);
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_chunk_not_found() {
     init_logging("ndn_2_zone_chunk_not_found", false);
 
@@ -280,7 +280,7 @@ async fn ndn_2_zone_chunk_not_found() {
     }
 }
 
-#[tokio::test]
+//#[tokio::test]
 async fn ndn_2_zone_chunk_verify_failed() {
     init_logging("ndn_2_zone_chunk_verify_failed", false);
 

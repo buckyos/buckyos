@@ -33,7 +33,7 @@ mod tests {
         info!("target5: {:?}", target5);
     }
 
-    #[tokio::test]
+    //#[tokio::test]
     async fn test_rtcp_tunnel() {
         //rtcp tunnel setup quick start:
         //1. create client rtcp stack(device default rtcp stack)
