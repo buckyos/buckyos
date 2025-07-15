@@ -31,7 +31,10 @@ members = [
     "./frame/repo_service",
     "./frame/smb_service",
 
-    "./tools/buckycli", "test/test_rbac", 
+    "./tools/buckycli",
+    "test/test_rbac",
+    "test/test_service",
+    "test/test_create_service",
 ]
 
 exclude = [

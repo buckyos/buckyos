@@ -46,6 +46,7 @@ def copy_files(rust_target_dir):
     strip_and_copy_rust_file(rust_target_dir, "smb_service", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "repo_service", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "buckycli", root_bin_dir, True)
+    strip_and_copy_rust_file(rust_target_dir, "test_service", root_bin_dir, True)
 
     strip_and_copy_rust_file(rust_target_dir, "cyfs_gateway", os.path.join(src_dir, "./web3_bridge"))
 

@@ -1,0 +1,2 @@
+service_name = "test_service"
+service_type = "kernel"

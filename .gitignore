@@ -17,6 +17,7 @@ src/rootfs/bin/verify_hub/verify_hub
 src/rootfs/bin/node_daemon/node_daemon
 src/rootfs/bin/repo_service/repo_service
 src/rootfs/bin/smb_service/smb_service
+src/rootfs/bin/test_service/test_service
 src/rootfs/bin/buckycli/buckycli
 /src/rootfs/bin/control_panel/
 /src/rootfs/bin/sys_test/
