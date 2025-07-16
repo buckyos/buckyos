@@ -8,6 +8,7 @@ use log::*;
 use ndn_lib::*;
 use rand::{Rng, RngCore};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -144,7 +145,11 @@ async fn ndn_local_chunk_ok() {
 
     let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
 
-    //assert_eq!(buffer, chunk_data, "chunk-content check failed");
+    assert_eq!(
+        Sha256::digest(buffer.as_slice()),
+        Sha256::digest(chunk_data.as_slice()),
+        "chunk-content check failed"
+    );
 }
 
 #[tokio::test]
@@ -195,7 +200,11 @@ async fn ndn_local_chunk_verify_failed() {
 
     let buffer = read_chunk(ndn_mgr_id.as_str(), &chunk_id).await;
 
-    //assert_eq!(buffer, fake_chunk_data, "chunk-content check failed");
+    assert_eq!(
+        Sha256::digest(buffer.as_slice()),
+        Sha256::digest(fake_chunk_data.as_slice()),
+        "chunk-content check failed"
+    );
 
     let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&buffer);

@@ -1026,7 +1026,12 @@ async fn ndn_2_zone_o_link_innerpath_file_ok() {
         loop {
             let read_len = {
                 let mut rng = rand::rng();
-                rng.random_range(1u64..chunk_data.len() as u64 - read_pos)
+                let max_len = chunk_data.len() as u64 - read_pos;
+                if max_len > 1 {
+                    rng.random_range(1u64..max_len)
+                } else {
+                    1u64
+                }
             };
             let end_pos = read_pos + read_len;
 
@@ -1770,7 +1775,8 @@ async fn ndn_2_zone_r_link_innerpath_file_ok() {
             chunk_data.len() as u64,
             chunk_id.hash_result.as_slice(),
             HashMethod::Sha256,
-        ).unwrap();
+        )
+        .unwrap();
 
         // write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 
@@ -1941,7 +1947,12 @@ async fn ndn_2_zone_r_link_innerpath_file_ok() {
         loop {
             let read_len = {
                 let mut rng = rand::rng();
-                rng.random_range(1u64..chunk_data.len() as u64 - read_pos)
+                let max_len = chunk_data.len() as u64 - read_pos;
+                if max_len > 1 as u64 {
+                    rng.random_range(1u64..max_len)
+                } else {
+                    1u64
+                }
             };
             let end_pos = read_pos + read_len;
 

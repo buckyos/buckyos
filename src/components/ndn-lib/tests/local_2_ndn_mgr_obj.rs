@@ -497,7 +497,7 @@ async fn ndn_local_2_mgr_o_link_innerpath_not_found() {
     match ret {
         Ok(_) => assert!(false, "should obj id verify failed"),
         Err(err) => {
-            assert!(true, "notexist field should not found")
+            assert!(true, "notexist field should not found, {:?}", err)
         }
     }
 }
@@ -813,7 +813,7 @@ async fn ndn_local_2_mgr_r_link_innerpath_not_found() {
     match ret {
         Ok(_) => assert!(false, "sub obj id should not found"),
         Err(err) => {
-            assert!(true, "notexist field should not found")
+            assert!(true, "notexist field should not found, {:?}", err)
         }
     }
 }

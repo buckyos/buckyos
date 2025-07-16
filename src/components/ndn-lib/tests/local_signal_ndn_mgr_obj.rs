@@ -602,7 +602,7 @@ async fn ndn_local_o_link_innerpath_not_found() {
 
     match ret {
         Ok(_) => assert!(false, "sub obj id should not found"),
-        Err(err) => assert!(true, "sub obj id should not found"),
+        Err(err) => assert!(true, "sub obj id should not found: {:?}", err),
     }
 }
 
