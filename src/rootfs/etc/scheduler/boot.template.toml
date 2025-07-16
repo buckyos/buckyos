@@ -241,11 +241,25 @@
     "nightly-apple-aarch64.buckycli":"no",
 
     "buckyos-filebrowser":"no"
-}    
+}
+"""
+
+"services/smb-service/config" = """
+{
+    "name":"smb-service",
+    "description":"smb-service is the samba service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"smb_service",
+    "port":4100,
+    "node_list":["ood1"],
+    "service_type":"frame",
+    "state":"New",
+    "instance":1
+}
 """
 
 # node config
-"nodes/ood1/config" = """ 
+"nodes/ood1/config" = """
 {
     "state":"Ready",
     "is_running":true,
@@ -259,7 +273,7 @@
     }
 }
 """
-# apps config's key is instance_id ? 
+# apps config's key is instance_id ?
 
 "nodes/ood1/gateway_config" = """
 {
@@ -285,7 +299,7 @@
                                 "is_chunk_id_in_path":true,
                                 "enable_mgr_file_path":true
                             }
-                        }, 
+                        },
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
                         },
@@ -388,6 +402,7 @@ p, client,kv://devices/{device}/info,read|write,allow
 
 p, service,kv://services/{service}/*,read|write,allow
 p, service,kv://system/*,read,allow
+p, service,kv://users*,read,allow
 p, service,dfs://system/data/{service}/*,read|write,allow
 p, service,dfs://system/cache/{service}/*,read|write,allow
 
@@ -416,7 +431,7 @@ g, verify-hub, kernel
 g, control-panel, kernel
 g, repo-service, kernel
 g, buckycli,kernel
-g, samba-service,services
+g, smb-service,service
 """
 
 "system/rbac/policy" = """
@@ -438,6 +453,8 @@ p, client,kv://devices/{device}/info,read|write,allow
 
 p, service,kv://services/{service}/*,read|write,allow
 p, service,kv://system/*,read,allow
+p, service,kv://users*,read,allow
+p, service,kv://users/*/*,read,allow
 p, service,dfs://system/data/{service}/*,read|write,allow
 p, service,dfs://system/cache/{service}/*,read|write,allow
 
@@ -465,7 +482,7 @@ g, verify-hub, kernel
 g, control-panel, kernel
 g, repo-service, kernel
 g, buckycli,kernel
-g, samba-service,services
+g, smb-service,service
 
 
 g, sys-test, app

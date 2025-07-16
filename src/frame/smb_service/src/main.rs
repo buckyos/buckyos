@@ -124,7 +124,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
 
     let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
 
-    let mut latest_smb_items = match system_config_client.get("services/samba/latest_smb_items").await {
+    let mut latest_smb_items = match system_config_client.get("services/smb-service/latest_smb_items").await {
         Ok((latest_smb_items_str, _)) => {
             serde_json::from_str(latest_smb_items_str.as_str())
                 .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_smb_items failed"))?
@@ -137,7 +137,7 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
             }
         }
     };
-    let mut latest_users = match system_config_client.get("services/samba/latest_users").await {
+    let mut latest_users = match system_config_client.get("services/smb-service/latest_users").await {
         Ok((latest_users_str, _)) => {
             serde_json::from_str(latest_users_str.as_str())
                 .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_users failed"))?
@@ -254,9 +254,9 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
 
     latest_smb_items = smb_items;
     latest_users = smb_users;
-    system_config_client.set("services/samba/latest_users", serde_json::to_string(&latest_users).unwrap().as_str()).await
+    system_config_client.set("services/smb-service/latest_users", serde_json::to_string(&latest_users).unwrap().as_str()).await
         .map_err(into_smb_err!(SmbErrorCode::Failed, "set latest_users failed"))?;
-    system_config_client.set("services/samba/latest_smb_items", serde_json::to_string(&latest_smb_items).unwrap().as_str()).await
+    system_config_client.set("services/smb-service/latest_smb_items", serde_json::to_string(&latest_smb_items).unwrap().as_str()).await
         .map_err(into_smb_err!(SmbErrorCode::Failed, "set latest_smb_items failed"))?;
 
     Ok(())
