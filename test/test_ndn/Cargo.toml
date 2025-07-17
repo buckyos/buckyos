@@ -1,0 +1,29 @@
+[package]
+name = "test_ndn"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hex = "*"
+url = "*"
+log = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*" 
+tokio = { version = "*", features = ["full"] }
+tokio-util = "*"
+futures = "*"  
+futures-util = "*"
+lazy_static = "*"
+base32 = "*"
+sha2 = { version = ">=0.11.0-pre.4" }
+sha3 = { version = "*" }
+jsonwebtoken = "*"
+buckyos-kit = { path = "../../src/components/buckyos-kit" }
+name-lib = { path = "../../src/components/name-lib" }
+name-client = { path = "../../src/components/name-client" }
+tempfile = "*"
+rand = "*"
+cyfs-gateway-lib = { path = "../../src/cyfs_gateway/cyfs-gateway-lib" }
+cyfs-warp = { path = "../../src/cyfs_gateway/cyfs-warp" }
+kRPC = { path = "../../src/kernel/kRPC" }
+ndn-lib = {path = "../../src/components/ndn-lib"}
