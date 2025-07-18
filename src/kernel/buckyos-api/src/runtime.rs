@@ -736,7 +736,37 @@ impl BuckyOSRuntime {
 
     pub async fn get_session_token(&self) -> String {
         let session_token = self.session_token.read().await;
-        session_token.clone()
+        let session_token_str = session_token.clone();
+        drop(session_token);
+
+        let session_token = RPCSessionToken::from_string(&session_token_str).unwrap();
+        if session_token.exp.is_some() {
+            let exp = session_token.exp.unwrap();
+            let now = buckyos_get_unix_timestamp();
+            if now < exp - 10 {
+                return session_token_str
+            } else {
+                if self.device_private_key.is_some() {
+                    let device_private_key = self.device_private_key.as_ref().unwrap();
+                    let device_uid = self.device_config.as_ref().unwrap().name.clone();
+                    let jwt_result = RPCSessionToken::generate_jwt_token(
+                        device_uid.as_str(),
+                        self.app_id.as_str(),
+                        Some(device_uid.clone()),
+                        device_private_key
+                    ).map_err(|e| {
+                        error!("generate session token failed! {}", e);  
+                    });
+                    if jwt_result.is_ok() {
+                        let (new_session_token_str,_new_session_token) = jwt_result.unwrap();
+                        let mut session_token_guard = self.session_token.write().await;
+                        *session_token_guard = new_session_token_str.clone();
+                        return new_session_token_str;
+                    }
+                } 
+            } 
+        }
+        return session_token_str;
     }
 
     pub fn get_data_folder(&self) -> PathBuf {
@@ -891,10 +921,6 @@ impl BuckyOSRuntime {
         return false;
     }
 
-    //pub async fn scan_to_build_zoen_boot_info(&self) -> Result<()> {
-    //    unimplemented!()
-    //}
-
     pub async fn get_system_config_client(&self) -> Result<SystemConfigClient> {
         let mut url = "http://127.0.0.1:3200/kapi/system_config".to_string();
         let mut schema = "http";
@@ -918,7 +944,7 @@ impl BuckyOSRuntime {
         }
 
         //let url = self.get_zone_service_url("system_config",self.force_https)?;
-        let session_token = self.session_token.read().await;
+        let session_token = self.get_session_token().await;
         let client = SystemConfigClient::new(Some(url.as_str()),Some(session_token.as_str()));
         debug!("get system config client OK,url:{}",url);
         Ok(client)

@@ -397,6 +397,33 @@ impl SNServer {
         }
     }
 
+    async fn get_user_sn_ips(&self, owner_id: &str) ->Vec<IpAddr> {
+        let db = GLOBAL_SN_DB.lock().await;
+        let sn_ips = db.get_user_sn_ips_as_vec(owner_id);
+        if sn_ips.is_err() {
+            warn!("failed to get user sn ips for {}: {:?}", owner_id, sn_ips.err().unwrap());
+            return vec![];
+        }
+        let sn_ips = sn_ips.unwrap();
+        if sn_ips.is_none() {
+            return vec![];
+        }
+        let sn_ips = sn_ips.unwrap();
+        if sn_ips.is_empty() {
+            return vec![];
+        }
+        let mut sn_ip_add:Vec<IpAddr> = Vec::new();
+        for ip_str in sn_ips {
+            let ip = IpAddr::from_str(ip_str.as_str());
+            if ip.is_ok() {
+                sn_ip_add.push(ip.unwrap());
+            } else {
+                warn!("failed to parse ip {} {}",ip_str,ip.err().unwrap());
+            }
+        }
+        return sn_ip_add;
+    }
+
     async fn get_device_info(
         &self,
         owner_id: &str,
@@ -439,21 +466,26 @@ impl SNServer {
     }
 
     //return (owner_public_key,zone_config_jwt)
-    async fn get_user_zone_config(&self, username: &str) -> Option<(String, String)> {
+    async fn get_user_zone_config(&self, username: &str) -> Option<(String, String, Option<String>)> {
         let mut user_zone_config_map = self.all_user_zone_config.lock().await;
-        let zone_config_reuslt = user_zone_config_map.get(username);
+        let zone_config_reuslt = user_zone_config_map.get(username).cloned();
         if zone_config_reuslt.is_none() {
             let db = GLOBAL_SN_DB.lock().await;
             let user_info = db.get_user_info(username).unwrap();
             if user_info.is_some() {
                 let user_info = user_info.unwrap();
-                user_zone_config_map.insert(username.to_string(), user_info.clone());
+                // 只存储前两个字段 (public_key, zone_config)，忽略 sn_ips
+                let (public_key, zone_config, sn_ips) = user_info.clone();
+                let stored_info = (public_key.clone(), zone_config.clone());
+                user_zone_config_map.insert(username.to_string(), stored_info);
                 return Some(user_info);
             }
             warn!("zone config not found for [{}]", username);
             return None;
         } else {
-            return zone_config_reuslt.cloned();
+            // 从缓存中获取的数据只有两个字段，需要添加 None 作为 sn_ips
+            let (public_key, zone_config) = zone_config_reuslt.unwrap();
+            return Some((public_key, zone_config, None));
         }
     }
 
@@ -468,6 +500,7 @@ impl SNServer {
 
     async fn get_user_zonegate_address(&self, username: &str) -> Option<Vec<IpAddr>> {
         let device_info = self.get_device_info(username, "ood1").await;
+        
         if device_info.is_some() {
             let (device_info, device_ip) = device_info.unwrap();
             let mut address_vec: Vec<IpAddr> = Vec::new();
@@ -502,13 +535,13 @@ impl SNServer {
                     address_vec.push(device_ip);
                 }
             } else {
-                if device_report_ip.is_some() {
-                    let device_report_ip = device_report_ip.unwrap();
-                    info!("device {} is lan device and query from some lan, return self la_ip {} and sn_ip ",username,device_report_ip);
+                let sn_ips = self.get_user_sn_ips(username).await;
+                if sn_ips.is_empty() {
                     address_vec.push(self.server_ip);
-                    address_vec.push(device_report_ip);
                 } else {
-                    address_vec.push(self.server_ip);
+                    for ip in sn_ips {
+                        address_vec.push(ip);
+                    }
                 }
             }
             return Some(address_vec);
@@ -659,7 +692,7 @@ impl NsProvider for SNServer {
             if user_info.is_none() {
                 return Err(NSError::NotFound(name.to_string()));
             }
-            let (username, public_key, zone_config) = user_info.unwrap();
+            let (username, public_key, zone_config, _) = user_info.unwrap();
             match record_type {
                 RecordType::TXT => {
                     let pkx = get_x_from_jwk_string(public_key.as_str())?;
@@ -785,7 +818,7 @@ impl TunnelSelector for SNServer {
             if user_info.is_none() {
                 return None;
             }
-            let (username, public_key, zone_config) = user_info.unwrap();
+            let (username, public_key, zone_config, _) = user_info.unwrap();
             let device_info = self.get_device_info(username.as_str(), "ood1").await;
             if device_info.is_some() {
                 //info!("ood1 device info found for {} in sn server",username);
