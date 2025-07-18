@@ -350,3 +350,23 @@ pub async fn check_file_obj(
         }
     }
 }
+
+pub async fn pub_object_to_file_with_str(
+    ndn_mgr_id: &str,
+    obj_path: &str,
+    obj_id: &ObjId,
+    obj_str: &str,
+) {
+    NamedDataMgr::put_object(Some(ndn_mgr_id), obj_id, obj_str)
+        .await
+        .expect("put object in local failed");
+    NamedDataMgr::create_file(
+        Some(ndn_mgr_id),
+        obj_path,
+        obj_id,
+        "test_non_file_obj_app_id",
+        "test_non_file_obj_user_id",
+    )
+    .await
+    .expect("create file failed");
+}
