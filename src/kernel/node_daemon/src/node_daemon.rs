@@ -450,6 +450,37 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
     Ok(())
 }
 
+
+async fn get_real_sn_host_name(sn: &str,device_id: &str) -> std::result::Result<String,String> {
+    // 尝试通过 HTTP GET 请求获取 https://$sn/config?device_id=$device_id
+    let url = format!("https://{}/config?device_id={}", sn, device_id);
+    let response = match reqwest::get(&url).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            info!("get sn host name from {} failed! {},use sn as host name", url, e);
+            return Ok(sn.to_string());
+        }
+    };
+
+
+    let body = match response.text().await {
+        Ok(text) => text,
+        Err(e) => {
+            error!("get sn host name failed! {}", e);
+            return Err(String::from("get sn host name failed!"));
+        }
+    };
+
+    let json: Value = serde_json::from_str(&body).map_err(|e| {
+        error!("get sn host name failed! {}", e);
+        return String::from("parser sn config name failed!");
+    })?;
+    let host_name = json["host"].as_str().unwrap();
+    info!("get sn real host from {} success! => {}", url,host_name);
+    Ok(host_name.to_string())
+
+}
+
 async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node_private_key: &EncodingKey,sn: Option<String>,is_restart:bool) -> std::result::Result<(),String> {
     //TODO: 需要区分boot模式和正常模式
     let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs_gateway".to_string(),get_buckyos_system_bin_dir());
@@ -501,7 +532,8 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
         }
 
         if need_keep_tunnel_to_sn {
-            let sn_host_name = sn.unwrap();
+            let device_did = device_doc.id.to_string();
+            let sn_host_name = get_real_sn_host_name(sn.as_ref().unwrap(),device_did.as_str()).await?;
             params = vec!["--keep_tunnel".to_string(),sn_host_name.clone()];
         } else {
             params = Vec::new();
@@ -943,7 +975,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
         info!("--------------------------------");
 
-        let mut runtime = BuckyOSRuntime::new("node_daemon", None, BuckyOSRuntimeType::KernelService);
+        let mut runtime = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::KernelService);
         runtime.fill_policy_by_load_config().await.map_err(|err| {
             error!("fill policy by load config failed! {}", err);
             return String::from("fill policy by load config failed!");

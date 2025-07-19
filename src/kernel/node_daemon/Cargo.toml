@@ -21,6 +21,7 @@ futures = "*"
 lazy_static = "*"
 jsonwebtoken = "*"  
 num_cpus = "*"
+reqwest = "*"
 url = "*"
 time = { version = "^0.3", features = ["formatting"] }
 sysinfo = "*"
