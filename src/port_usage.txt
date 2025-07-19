@@ -1,5 +1,6 @@
 2980 是rtcp stack的默认端口
-3180,3143 是默认的cyfs-gateway http,https端口
+
+3180,3143 是默认的cyfs-gateway(node-gateway) http,https端口
 80,443是zonegate的http,https端口
 
 

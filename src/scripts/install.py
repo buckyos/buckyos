@@ -39,6 +39,19 @@ def set_data_dir_permissions():
             # 设置目录权限为 755 (rwxr-xr-x)
             os.chmod(data_dir, 0o755)
 
+def copy_configs(config_group_name):
+    etc_dir = os.path.join(install_root_dir, "etc")
+    configs_dir = os.path.join(src_dir, "scripts","configs_group",config_group_name)
+    print(f"copy configs in {configs_dir} to {etc_dir}")
+    for config_file in os.listdir(configs_dir):
+        config_path = os.path.join(configs_dir, config_file)
+        if os.path.isfile(config_path):
+            shutil.copy(config_path, etc_dir)
+            print(f"copy file {config_path} to {etc_dir}")
+        #elif os.path.isdir(config_path):
+        #    shutil.copytree(config_path, os.path.join(etc_dir, config_file))
+        #    print(f"copy dir {config_path} to {etc_dir}")
+
 def install(install_all=False):
     if install_root_dir == "":
         print("Unknown platform, not support install, skip.")

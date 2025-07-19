@@ -4,6 +4,7 @@
 
 "users/root/settings" = '{"type":"root","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
 "users/{{user_name}}/settings" = '{"type":"admin","username":"{{user_name}}","password":"{{admin_password_hash}}"}'
+# config user_doc by start_config.json?,it could be a self-signed jwt?
 "users/{{user_name}}/doc" = """
 {
   "@context": "https://www.w3.org/ns/did/v1",
@@ -488,7 +489,7 @@ g, {{user_name}},admin
       "publicKeyJwk": {
         "crv": "Ed25519",
         "kty": "OKP",
-        "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
+        "x": "{{public_key.x}}"
       }
     }
   ],
