@@ -44,7 +44,7 @@
 - [x] 在resolve_did的环境里，增加通过https协议resolve的设计  : 待测试,有BUG，gateway环境的初始化顺序问题
   - [x] 定义通过https获得zone公开的did_doc的标准 https://$zone_hostname/resolve/$did，$name
   - [x] 支持特定的Name: this_zone, this_device (gateway所在的设备)
-- [ ] 修改keep_tunnel的流程，能先通过https查询得到必要的doc,再建立链接
+- [x] 修改keep_tunnel的流程，能先通过https查询得到必要的doc,再建立链接
 - [ ] 结合CYFS Gateway，实现标准的，带有权重的，基于规则的重定向（基于process_chain在下个版本做）
 
 ## 用户/公开设备 如何基于现有设施发布DID-DOC
@@ -54,8 +54,8 @@
 
 ## 将SN，可信发行商，默认源切换到buckyos.ai
 
-- [ ] 修改配置，默认使用.ai域名
-- [ ] 打出安装包，可正常完整安装和激活
+- [x] 修改配置，默认使用.ai域名
+- [x] 打出安装包，可正常完整安装和激活
 - [ ] 正常安装的包，能触发自动更新
 
 ## Review App的流程
@@ -65,5 +65,4 @@
 ## BUGS
 
 - [ ] 打包的时候分离默认应用和系统组件的打包
-
 - [ ] SystemConfig首次启动无法识别verify-hub身份的问题-->通用的认证库（可信密钥初始化）

@@ -273,10 +273,10 @@ impl ZoneProvider {
                         })?;
                         
                     let obj_path = format!("devices/{}/doc",did_str);
-                    let obj_config_str = system_config_client.get(obj_path.as_str()).await;
-                    if obj_config_str.is_ok() {
-
-                        let obj_config_str = obj_config_str.unwrap().0;
+                    let get_result = system_config_client.get(obj_path.as_str()).await;
+                    if get_result.is_ok() {
+                        let get_result = get_result.unwrap();
+                        let obj_config_str = get_result.value;
                         let encoded_doc = EncodedDocument::from_str(obj_config_str.clone()).map_err(|e|{
                             warn!("ZoneProvider parse device config failed: {}",e);
                             NSError::Failed(format!("parse device config failed: {}",e))
@@ -293,10 +293,11 @@ impl ZoneProvider {
                     }
 
                     let obj_path = format!("users/{}/doc",did_str);
-                    let obj_config_str = system_config_client.get(obj_path.as_str()).await;
-                    if obj_config_str.is_ok() {
-                        let obj_config_str = obj_config_str.unwrap();
-                        let encoded_doc = EncodedDocument::from_str(obj_config_str.0.clone()).map_err(|e|{
+                    let get_result = system_config_client.get(obj_path.as_str()).await;
+                    if get_result.is_ok() {
+                        let get_result = get_result.unwrap();
+                        let obj_config_str = get_result.value;
+                        let encoded_doc = EncodedDocument::from_str(obj_config_str.clone()).map_err(|e|{
                             warn!("ZoneProvider parse owner config failed: {}",e);
                             NSError::Failed(format!("parse owner config failed: {}",e))
                         })?;
@@ -306,10 +307,10 @@ impl ZoneProvider {
                         })?;
 
                         let mut cache = self.did_cache.write().await;
-                        cache.insert(owner_config.id.to_string(),obj_config_str.0.clone());
+                        cache.insert(owner_config.id.to_string(),obj_config_str.clone());
                         drop(cache);
-                        info!("zone_provider resolve name {} => {}",did_str,obj_config_str.0.as_str());
-                        return Ok(obj_config_str.0);
+                        info!("zone_provider resolve name {} => {}",did_str,obj_config_str.as_str());
+                        return Ok(obj_config_str);
                     }
                     
                     warn!("ZoneProvider resolve name {} failed",did_str);

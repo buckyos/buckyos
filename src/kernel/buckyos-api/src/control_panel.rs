@@ -15,6 +15,15 @@ use crate::KVAction;
 pub const SERVICE_INSTANCE_INFO_UPDATE_INTERVAL: u64 = 30;
 
 #[derive(Serialize, Deserialize)]
+pub struct UserSettings {
+    //rename to type
+    #[serde(rename = "type")]
+    pub user_type:String,
+    pub username:String,
+    pub password:String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct ServiceInstanceInfo {
     pub state: String,
     pub port: u16,
@@ -312,7 +321,7 @@ impl ControlPanelClient {
             return Err(RPCErrors::ReasonError("rbac policy not found".to_string()));
         }
         let rbac_policy_result = rbac_policy_result.unwrap();
-        return Ok((rbac_model_result.0,rbac_policy_result.0));   
+        return Ok((rbac_model_result.value,rbac_policy_result.value));   
     }
 
     pub async fn load_zone_config(&self) -> Result<ZoneConfig> {
@@ -321,8 +330,8 @@ impl ControlPanelClient {
         if zone_config_result.is_err() {
             return Err(RPCErrors::ReasonError(format!("get boot config(Zone config) failed:{}",zone_config_result.err().unwrap())));
         }
-        let (zone_config_str,_version) = zone_config_result.unwrap();
-        let zone_config:ZoneConfig = serde_json::from_str(&zone_config_str)
+        let zone_config_result = zone_config_result.unwrap();
+        let zone_config:ZoneConfig = serde_json::from_str(&zone_config_result.value)
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(zone_config)
     }
@@ -333,8 +342,9 @@ impl ControlPanelClient {
         if get_result.is_err() {
             return Err(RPCErrors::ReasonError("Device info not found".to_string()));
         }
-        let (device_info,_version) = get_result.unwrap();
-        let device_info:DeviceInfo= serde_json::from_str(&device_info)
+
+        let get_result = get_result.unwrap();
+        let device_info:DeviceInfo= serde_json::from_str(&get_result.value)
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(device_info)
     }
@@ -345,9 +355,9 @@ impl ControlPanelClient {
         if get_result.is_err() {
             return Err(RPCErrors::ReasonError("Trust key  not found".to_string()));
         }
-        
-        let (device_doc_str,_version) = get_result.unwrap();
-        let device_doc: EncodedDocument = EncodedDocument::from_str(device_doc_str.clone())
+
+        let get_result = get_result.unwrap();    
+        let device_doc: EncodedDocument = EncodedDocument::from_str(get_result.value.clone())
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         let device_doc: DeviceConfig = DeviceConfig::decode(&device_doc, None)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
@@ -386,13 +396,13 @@ impl ControlPanelClient {
         // 2. 创建用户设置
         tx_actions.insert(user_settings_path, KVAction::Create(settings_str));
         
-        // 3. 添加用户到 RBAC 组
-        let rbac_policy = if is_admin {
-            format!("\ng, {}, admin", user_id)
-        } else {
-            format!("\ng, {}, user", user_id)
-        };
-        tx_actions.insert("system/rbac/policy".to_string(), KVAction::Append(rbac_policy));
+        // // 3. 添加用户到 RBAC 组 => move to scheduler
+        // let rbac_policy = if is_admin {
+        //     format!("\ng, {}, admin", user_id)
+        // } else {
+        //     format!("\ng, {}, user", user_id)
+        // };
+        // tx_actions.insert("system/rbac/policy".to_string(), KVAction::Append(rbac_policy));
         
         // 执行事务
         self.system_config_client.exec_tx(tx_actions, None).await
@@ -460,8 +470,8 @@ impl ControlPanelClient {
                 if app_config.is_err() {
                     return Err(RPCErrors::ReasonError("app config not found".to_string()));
                 }
-                let (app_config_str,_version) = app_config.unwrap();
-                let app_config:AppConfig = serde_json::from_str(&app_config_str)
+                let app_config = app_config.unwrap();
+                let app_config:AppConfig = serde_json::from_str(&app_config.value)
                     .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
                 result_app_list.push(app_config);
             }
@@ -485,24 +495,29 @@ impl ControlPanelClient {
         if service_info.is_err() {
             return Err(RPCErrors::ServiceNotValid("service info not found".to_string()));
         }
-        let (service_info_str,_version) = service_info.unwrap();
-        let service_info:ServiceInfo = serde_json::from_str(&service_info_str)
+        let service_info = service_info.unwrap();
+        let service_info:ServiceInfo = serde_json::from_str(&service_info.value)
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(service_info)
     }
-
-    pub async fn get_valid_app_index(&self,_user_id:&str) -> Result<u64> {
-        unimplemented!();
-    }
+    // TODO: move to scheduler_service
+    // pub async fn get_valid_app_index(&self,_user_id:&str) -> Result<u64> {
+    //     unimplemented!();
+    // }
 
     pub async fn remove_app(&self,_appid:&str) -> Result<u64> {
         unimplemented!();
     }
 
-
-    pub async fn disable_app(&self,_appid:&str) -> Result<u64> {
+    //disable means stop app service
+    pub async fn stop_app(&self,_appid:&str) -> Result<u64> {
         unimplemented!();
     }
+
+    pub async fn start_app(&self,_appid:&str) -> Result<u64> {
+        unimplemented!();
+    }
+
 }
 
 

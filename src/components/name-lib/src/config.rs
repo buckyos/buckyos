@@ -551,7 +551,7 @@ pub struct DeviceConfig {
     pub extra_info: HashMap<String, serde_json::Value>,
 
     //--------------------------------
-    pub device_type: String, //[ood,node,sensor
+    pub device_type: String, //[ood,server,sensor
     pub name: String,        //short name,like ood1
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -588,7 +588,7 @@ impl DeviceConfig {
             context: default_context(),
             id: DID::from_str(&did).unwrap(),
             name: name.to_string(),
-            device_type: "node".to_string(),
+            device_type: "ood".to_string(),
             ip: None,
             net_id: None,
             ddns_sn_url: None,

@@ -85,7 +85,8 @@ async fn service_main() -> Result<()> {
     //start!
     info!("Start Repo Service...");
     start_cyfs_warp_server(repo_server_config).await;
-
+    info!("Repo Service started.");
+    
     let _ = tokio::signal::ctrl_c().await;
     Ok(())
 }

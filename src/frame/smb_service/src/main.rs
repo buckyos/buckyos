@@ -125,8 +125,8 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
     let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
 
     let mut latest_smb_items = match system_config_client.get("services/samba/latest_smb_items").await {
-        Ok((latest_smb_items_str, _)) => {
-            serde_json::from_str(latest_smb_items_str.as_str())
+        Ok(get_result) => {
+            serde_json::from_str(get_result.value.as_str())
                 .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_smb_items failed"))?
         },
         Err(e) => {
@@ -138,8 +138,8 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
         }
     };
     let mut latest_users = match system_config_client.get("services/samba/latest_users").await {
-        Ok((latest_users_str, _)) => {
-            serde_json::from_str(latest_users_str.as_str())
+        Ok(get_result) => {
+            serde_json::from_str(get_result.value.as_str())
                 .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_users failed"))?
         },
         Err(e) => {
@@ -158,8 +158,8 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
     let mut root_users = Vec::new();
     for user in list {
         let buckyos_user_settings = match system_config_client.get(format!("users/{}/settings", user).as_str()).await {
-            Ok((info_str, _)) => {
-                let info: UserInfo = serde_json::from_str(info_str.as_str())
+            Ok(get_result) => {
+                let info: UserInfo = serde_json::from_str(get_result.value.as_str())
                     .map_err(into_smb_err!(SmbErrorCode::Failed, "parse user info failed"))?;
                 info
             }
@@ -174,8 +174,8 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
         };
 
         let user_info = match system_config_client.get(format!("users/{}/samba/settings", user).as_str()).await {
-            Ok((samba_info_str, _)) => {
-                let samba_info: UserSambaInfo = serde_json::from_str(samba_info_str.as_str())
+            Ok(get_result) => {
+                let samba_info: UserSambaInfo = serde_json::from_str(get_result.value.as_str())
                     .map_err(into_smb_err!(SmbErrorCode::Failed, "parse samba_info failed"))?;
                 samba_info
             },

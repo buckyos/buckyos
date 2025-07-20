@@ -33,6 +33,7 @@ p, *, kv://boot/*, read,allow
 p, kernel, kv://*, read|write,allow
 p, kernel, dfs://*, read|write,allow
 p, kernel, ndn://*, read|write,allow
+
 p, root, kv://*, read|write,allow
 p, root, dfs://*, read|write,allow
 p, root, ndn://*, read|write,allow
@@ -41,6 +42,8 @@ p, ood,kv://*,read,allow
 p, ood,kv://users/*/apps/*,read|write,allow
 p, ood,kv://nodes/{device}/*,read|write,allow
 p, ood,kv://services/*,read|write,allow
+p, ood,kv://system/rbac/policy,read|write,allow
+
 p, client,kv://devices/{device}/*,read,allow
 p, client,kv://devices/{device}/info,read|write,allow
 
@@ -70,15 +73,8 @@ g, node-daemon, kernel
 g, scheduler, kernel
 g, system-config, kernel
 g, verify-hub, kernel
-g, control-panel, kernel
 g, repo-service, kernel
-g, buckycli,kernel
-g, samba-service,services
-
-
-g, sys-test, app
-g, buckyos-filebrowser, app
-g, ood1, ood
+g, control-panel, kernel
 "#;
 
 
@@ -110,9 +106,13 @@ pub async fn create_enforcer(model_str:Option<&str>,policy_str:Option<&str>) -> 
     Ok(())
 }
 
+pub async fn update_enforcer(policy_str:Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let policy_str = policy_str.unwrap_or(DEFAULT_POLICY);
+    let model_str = DEFAULT_MODEL;
+    return create_enforcer(Some(model_str),Some(policy_str)).await
+}
 //use default RBAC config to enforce the access control
 //default acl config is stored in the memory,so it is not async function
-//TODO :use system_config event to reload the config.
 pub async fn enforce(userid:&str, appid:Option<&str>,res_path:&str,op_name:&str) -> bool {
 
     let enforcer = SYS_ENFORCE.lock().await;
@@ -248,6 +248,17 @@ m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)
         buckyos_kit::init_logging("test_rbac",false);
         let mut policy_str = DEFAULT_POLICY.to_string();
         policy_str = policy_str + r#"
+g, node-daemon, kernel
+g, scheduler, kernel
+g, system-config, kernel
+g, verify-hub, kernel
+g, control-panel, kernel
+g, repo-service, kernel
+g, buckycli,kernel
+g, samba-service,services
+
+g, sys-test, app
+g, buckyos-filebrowser, app
 g, ood1, ood
 g, app1, app
 g, lzc-laptop,client
