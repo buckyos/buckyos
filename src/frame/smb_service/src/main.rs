@@ -6,7 +6,7 @@ use std::fs::File;
 use std::sync::OnceLock;
 use fs2::FileExt;
 use buckyos_kit::{get_buckyos_root_dir};
-use buckyos_api::{SystemConfigClient, SystemConfigError};
+use buckyos_api::{get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType, SystemConfigClient, SystemConfigError};
 use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
 #[cfg(target_os = "linux")]
 use crate::linux_smb::{update_samba_conf, stop_smb_service, check_samba_status};
@@ -83,6 +83,13 @@ async fn async_main() {
                 .set_log_level("info")
                 .start().unwrap();
 
+            std::panic::set_hook(Box::new(|panic_info| {
+                sfo_log::error!("panic: {:?}", panic_info);
+            }));
+            let mut runtime = init_buckyos_api_runtime("smb-service", None, BuckyOSRuntimeType::KernelService).await.unwrap();
+            runtime.login().await.unwrap();
+            set_buckyos_api_runtime(runtime);
+            
             enter_update_smb_loop().await;
         },
         Some(("stop", _)) => {
@@ -119,10 +126,8 @@ async fn enter_update_smb_loop() {
 }
 
 async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
-    let rpc_session_token = std::env::var("SMB_SERVICE_SESSION_TOKEN")
-        .map_err(into_smb_err!(SmbErrorCode::SessionTokenNotFound, "SMB_SERVICE_SESSION_TOKEN is not set"))?;
-
-    let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
+    let system_config_client = get_buckyos_api_runtime().unwrap().get_system_config_client().await
+        .map_err(into_smb_err!(SmbErrorCode::Failed, "get system config client failed"))?;
 
     let mut latest_smb_items = match system_config_client.get("services/smb-service/latest_smb_items").await {
         Ok((latest_smb_items_str, _)) => {
@@ -179,6 +184,10 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
                     .map_err(into_smb_err!(SmbErrorCode::Failed, "parse samba_info failed"))?;
                 samba_info
             },
+
+
+
+
             Err(e) => {
                 if let SystemConfigError::KeyNotFound(_path) = e {
                     log::debug!("user {} samba_info not found", user);
