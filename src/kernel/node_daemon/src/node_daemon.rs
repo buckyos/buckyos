@@ -33,7 +33,7 @@ use crate::app_mgr::*;
 use crate::kernel_mgr::*;
 use crate::active_server::*;
 use crate::service_pkg::*;
-
+use buckyos_api::*;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -157,14 +157,14 @@ async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<
 
 async fn load_app_info(app_id: &str,username: &str,buckyos_api_client: &SystemConfigClient) -> Result<AppDoc> {
     let app_key = format!("users/{}/apps/{}/config", username,app_id);
-    let (app_cfg_result,rversion) = buckyos_api_client.get(app_key.as_str()).await
+    let get_result = buckyos_api_client.get(app_key.as_str()).await
         .map_err(|error| {
             let err_str = format!("get app config failed from system_config! {}", error);
             warn!("{}",err_str.as_str());
             return NodeDaemonErrors::SystemConfigError(err_str);
         })?;
 
-    let app_info = serde_json::from_str(&app_cfg_result);
+    let app_info = serde_json::from_str(&get_result.value);
     if app_info.is_ok() {
         return Ok(app_info.unwrap());
     }
@@ -188,13 +188,13 @@ async fn load_node_gateway_config(node_host_name: &str,buckyos_api_client: &Syst
     }
 
     let node_key = format!("nodes/{}/gateway_config", node_host_name);
-    let (node_cfg_result,rversion) = buckyos_api_client.get(node_key.as_str()).await
+    let get_result = buckyos_api_client.get(node_key.as_str()).await
         .map_err(|error| {
             error!("get node gateway_config failed from system_config_service! {}", error);
             return NodeDaemonErrors::SystemConfigError("get node gateway_config failed from system_config_service!".to_string());
         })?;
 
-    let gateway_config = serde_json::from_str(&node_cfg_result).map_err(|err| {
+    let gateway_config = serde_json::from_str(&get_result.value).map_err(|err| {
         error!("parse node gateway_config failed! {}", err);
         return NodeDaemonErrors::SystemConfigError("parse gateway_config failed!".to_string());
     })?;
@@ -217,13 +217,13 @@ async fn load_node_config(node_host_name: &str,buckyos_api_client: &SystemConfig
     }
 
     let node_key = format!("nodes/{}/config", node_host_name);
-    let (node_cfg_result,rversion) = buckyos_api_client.get(node_key.as_str()).await
+    let get_result = buckyos_api_client.get(node_key.as_str()).await
         .map_err(|error| {
             error!("get node config failed from etcd! {}", error);
             return NodeDaemonErrors::SystemConfigError("get node config failed from system_config_service!".to_string());
         })?;
 
-    let node_config = serde_json::from_str(&node_cfg_result).map_err(|err| {
+    let node_config = serde_json::from_str(&get_result.value).map_err(|err| {
         error!("parse node config failed! {}", err);
         return NodeDaemonErrors::SystemConfigError("parse node config failed!".to_string());
     })?;
@@ -450,6 +450,7 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
     Ok(())
 }
 
+
 async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node_private_key: &EncodingKey,sn: Option<String>,is_restart:bool) -> std::result::Result<(),String> {
     //TODO: 需要区分boot模式和正常模式
     let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs_gateway".to_string(),get_buckyos_system_bin_dir());
@@ -501,7 +502,12 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
         }
 
         if need_keep_tunnel_to_sn {
-            let sn_host_name = sn.unwrap();
+            let device_did = device_doc.id.to_string();
+            let sn_host_name = get_real_sn_host_name(sn.as_ref().unwrap(),device_did.as_str()).await
+                .map_err(|err| {
+                    error!("get sn host name failed! {}", err);
+                    return String::from("get sn host name failed!");
+                })?;
             params = vec!["--keep_tunnel".to_string(),sn_host_name.clone()];
         } else {
             params = Vec::new();
@@ -904,8 +910,8 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         update_device_info(&device_info,&syc_cfg_client).await;
 
         while boot_config_result_str.is_empty() {
-            let boot_config_result = syc_cfg_client.get("boot/config").await;
-            match boot_config_result {
+            let get_result = syc_cfg_client.get("boot/config").await;
+            match get_result {
                 buckyos_api::SytemConfigResult::Err(SystemConfigError::KeyNotFound(_)) => {
                     warn!("BuckyOS is started for the first time, enter the BOOT_INIT process...");
                     warn!("Check and upgrade BuckyOS to latest version...");
@@ -926,11 +932,11 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                     }
                 },
                 buckyos_api::SytemConfigResult::Ok(r) => {
-                    boot_config_result_str = r.0.clone();
+                    boot_config_result_str = r.value.clone();
                     info!("Load boot config OK, {}", boot_config_result_str.as_str());
                 },
                 _ => {
-                    error!("get boot config failed! {},wait 5 sec to retry...", boot_config_result.err().unwrap());
+                    error!("get boot config failed! {},wait 5 sec to retry...", get_result.err().unwrap());
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
@@ -943,7 +949,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
         info!("--------------------------------");
 
-        let mut runtime = BuckyOSRuntime::new("node_daemon", None, BuckyOSRuntimeType::KernelService);
+        let mut runtime = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::KernelService);
         runtime.fill_policy_by_load_config().await.map_err(|err| {
             error!("fill policy by load config failed! {}", err);
             return String::from("fill policy by load config failed!");

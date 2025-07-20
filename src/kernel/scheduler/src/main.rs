@@ -2,11 +2,13 @@
 mod app;
 mod scheduler;
 mod service;
+mod scheduler_server;
 
 #[cfg(test)]
 mod scheduler_test;
 
 use log::*;
+use rbac::DEFAULT_POLICY;
 use serde_json::json;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -20,8 +22,10 @@ use buckyos_kit::*;
 use name_client::*;
 use name_lib::*;
 use scheduler::*;
+use scheduler_server::*;
 use service::*;
-
+use cyfs_warp::*;
+use cyfs_gateway_lib::WarpServerConfig;
 use anyhow::Result;
 
 async fn create_init_list_by_template() -> Result<HashMap<String, String>> {
@@ -66,7 +70,13 @@ async fn create_init_list_by_template() -> Result<HashMap<String, String>> {
     //let result_file_path = get_buckyos_system_etc_dir().join("scheduler_boot.toml");
     //tokio::fs::write(result_file_path, result.clone()).await?;
 
-    let config: HashMap<String, String> = toml::from_str(&result)?;
+    let mut config: HashMap<String, String> = toml::from_str(&result)?;
+    if !config.contains_key("system/rbac/base_policy") {
+        config.insert("system/rbac/base_policy".to_string(), rbac::DEFAULT_POLICY.to_string());
+    }
+    if !config.contains_key("system/rbac/model") {
+        config.insert("system/rbac/model".to_string(), rbac::DEFAULT_MODEL.to_string());
+    }
 
     Ok(config)
 }
@@ -144,6 +154,7 @@ fn craete_node_item_by_device_info(device_name: &str, device_info: &DeviceInfo) 
     let net_id = device_info.net_id.clone().unwrap_or("".to_string());
     NodeItem {
         id: device_name.to_string(),
+        node_type: NodeType::from(device_info.device_doc.device_type.clone()),
         labels: vec![],
         network_zone: net_id,
         state: node_state,
@@ -162,7 +173,7 @@ fn craete_node_item_by_device_info(device_name: &str, device_info: &DeviceInfo) 
     }
 }
 
-fn create_pod_item_by_app_config(app_id: &str, app_config: &AppConfig) -> PodItem {
+fn create_pod_item_by_app_config(full_app_id: &str, owner_user_id: &str, app_config: &AppConfig) -> PodItem {
     let pod_state = PodItemState::from(app_config.state.clone());
     let mut need_container = true;
     if app_config.app_doc.pkg_list.iter().any(|(_, pkg)| pkg.docker_image_name.is_none()) &&
@@ -175,7 +186,9 @@ fn create_pod_item_by_app_config(app_id: &str, app_config: &AppConfig) -> PodIte
     }
 
     PodItem {
-        id: app_id.to_string(),
+        id: full_app_id.to_string(),
+        app_id: app_config.app_id.clone(),
+        owner_id: owner_user_id.to_string(),
         pod_type: PodItemType::App,
         default_service_port: 0, 
         state: pod_state,
@@ -196,9 +209,12 @@ fn create_pod_item_by_service_config(
     service_config: &KernelServiceConfig,
 ) -> PodItem {
     let pod_state = PodItemState::from(service_config.state.clone());
+    let pod_type = PodItemType::from(service_config.service_type.clone());
     PodItem {
         id: service_name.to_string(),
-        pod_type: PodItemType::Service,
+        app_id: service_name.to_string(),
+        owner_id: "root".to_string(),
+        pod_type: pod_type,
         state: pod_state,
         default_service_port: service_config.port,
         need_container: false,
@@ -231,22 +247,39 @@ fn create_scheduler_by_input_config(
         }
 
         //add app pod
-        if key.starts_with("users/") && key.ends_with("/config") {
-            let parts: Vec<&str> = key.split('/').collect();
-            if parts.len() >= 4 && parts[2] == "apps" {
-                let user_id = parts[1];
-                let app_id = parts[3];
-                let full_appid = format!("{}@{}", app_id, user_id);
-                let app_config: AppConfig = serde_json::from_str(value.as_str()).map_err(|e| {
-                    error!(
-                        "AppConfig serde_json::from_str failed: {:?} {}",
-                        e,
-                        value.as_str()
-                    );
-                    e
-                })?;
-                let pod_item = create_pod_item_by_app_config(full_appid.as_str(), &app_config);
-                pod_scheduler.add_pod(pod_item);
+        if key.starts_with("users/") {
+            if key.ends_with("/config") {
+                let parts: Vec<&str> = key.split('/').collect();
+                if parts.len() >= 4 && parts[2] == "apps" {
+                    let user_id = parts[1];
+                    let app_id = parts[3];
+                    let full_appid = format!("{}@{}", app_id, user_id);
+                    let app_config: AppConfig = serde_json::from_str(value.as_str()).map_err(|e| {
+                        error!(
+                            "AppConfig serde_json::from_str failed: {:?} {}",
+                            e,
+                            value.as_str()
+                        );
+                        e
+                    })?;
+                    let pod_item = create_pod_item_by_app_config(full_appid.as_str(), user_id, &app_config);
+                    pod_scheduler.add_pod(pod_item);
+                }
+            }
+            else if key.ends_with("/settings") {
+                let parts: Vec<&str> = key.split('/').collect();
+                if parts.len() >= 3 {
+                    let user_id = parts[1];
+                    let user_settings: UserSettings = serde_json::from_str(value.as_str()).map_err(|e| {
+                        error!("UserSettings serde_json::from_str failed: {:?}", e);
+                        e
+                    })?;
+                    let user_item = UserItem {
+                        userid: user_id.to_string(),
+                        user_type: UserType::from(user_settings.user_type.clone()),
+                    };
+                    pod_scheduler.add_user(user_item);
+                }
             }
         }
 
@@ -316,7 +349,7 @@ fn schedule_action_to_tx_actions(
                     let set_state_action = set_app_service_state(pod_id.as_str(), pod_status)?;
                     result.extend(set_state_action);
                 }
-                PodItemType::Service => {
+                PodItemType::Service|PodItemType::Kernel => {
                     let set_state_action = set_service_state(pod_id.as_str(), pod_status)?;
                     result.extend(set_state_action);
                 }
@@ -339,7 +372,7 @@ fn schedule_action_to_tx_actions(
                         instance_app_service(new_instance, &device_list, &input_config)?;
                     result.extend(instance_action);
                 }
-                PodItemType::Service => {
+                PodItemType::Service|PodItemType::Kernel => {
                     let service_config = input_config
                         .get(format!("services/{}/config", pod_item.id.as_str()).as_str());
                     if service_config.is_none() {
@@ -373,7 +406,7 @@ fn schedule_action_to_tx_actions(
                     let uninstance_action = uninstance_app_service(&pod_instance)?;
                     result.extend(uninstance_action);
                 }
-                PodItemType::Service => {
+                PodItemType::Service|PodItemType::Kernel => {
                     let uninstance_action = uninstance_service(&pod_instance)?;
                     result.extend(uninstance_action);
                 }
@@ -392,7 +425,7 @@ fn schedule_action_to_tx_actions(
                     let update_action = update_app_service_instance(&pod_instance)?;
                     result.extend(update_action);
                 }
-                PodItemType::Service => {
+                PodItemType::Service|PodItemType::Kernel => {
                     let update_action = update_service_instance(&pod_instance)?;
                     result.extend(update_action);
                 }
@@ -406,13 +439,91 @@ fn schedule_action_to_tx_actions(
     Ok(result)
 }
 
+async fn update_rbac(input_config: &HashMap<String, String>, pod_scheduler: &PodScheduler) -> Result<HashMap<String, KVAction>> {   
+    let basic_rbac_policy = input_config.get("system/rbac/basic_policy");
+    let current_rbac_policy = input_config.get("system/rbac/policy");
+    let mut rbac_policy = String::new();
+    if basic_rbac_policy.is_none() {
+        rbac_policy = DEFAULT_POLICY.to_string();
+    } else {
+        rbac_policy = basic_rbac_policy.unwrap().clone();
+    }
+
+    for (user_id, user_item) in pod_scheduler.users.iter() {
+        if user_id == "root" {
+            continue;
+        }
+        match user_item.user_type {
+            UserType::Admin => {
+                rbac_policy.push_str(&format!("\ng, {}, admin", user_id));
+            }
+            UserType::User => {
+                rbac_policy.push_str(&format!("\ng, {}, user", user_id));
+            }
+            _ => {
+                continue;
+            }
+        }
+    }
+
+    for (node_id, node_item) in pod_scheduler.nodes.iter() {
+        match node_item.node_type {
+            NodeType::OOD => {
+                rbac_policy.push_str(&format!("\ng, {}, ood", node_id));
+            }
+            NodeType::Server => {
+                rbac_policy.push_str(&format!("\ng, {}, server", node_id));
+            }
+            _=> {
+                continue;
+            }
+        }
+    }
+    
+    for (pod_id, pod_item) in pod_scheduler.pods.iter() {
+        match pod_item.pod_type {
+            PodItemType::App => {
+                rbac_policy.push_str(&format!("\ng, {}, app", pod_item.app_id));
+            }
+            PodItemType::Service => {
+                rbac_policy.push_str(&format!("\ng, {}, service", pod_id));
+            }
+            // PodItemType::Kernel => {
+            //     kernel service already set in basic_policy
+            //     rbac_policy.push_str(&format!("\ng, {}, kernel", pod_id));
+            // }
+            _=> {
+                continue;
+            }
+        }
+    }
+
+    let mut result = HashMap::new();
+    if current_rbac_policy.is_some() {
+        let current_rbac_policy = current_rbac_policy.unwrap();
+        if *current_rbac_policy == rbac_policy {
+            return Ok(HashMap::new());
+        }
+    }
+    
+    info!("will update system/rbac/policy => {}", &rbac_policy);
+    result.insert("system/rbac/policy".to_string(), KVAction::Update(rbac_policy));
+
+    Ok(result)
+}
+
 async fn schedule_loop(is_boot: bool) -> Result<()> {
     let mut loop_step = 0;
     let is_running = true;
+    let mut need_update_rbac = false;
     //info!("schedule loop start...");
     loop {
         if !is_running {
             break;
+        }
+        need_update_rbac = false;
+        if is_boot || loop_step % 10 == 0 {
+            need_update_rbac = true;
         }
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         loop_step += 1;
@@ -466,7 +577,12 @@ async fn schedule_loop(is_boot: bool) -> Result<()> {
             )?;
             extend_kv_action_map(&mut tx_actions, &new_tx_actions);
         }
-        //TODO 记录"上一次调度成功的信息"
+
+
+        if need_update_rbac {
+            let rbac_actions = update_rbac(&input_config,&pod_scheduler).await?;
+            extend_kv_action_map(&mut tx_actions, &rbac_actions);
+        }
 
         //执行调度动作
         let ret = system_config_client.exec_tx(tx_actions, None).await;
@@ -514,6 +630,30 @@ async fn service_main(is_boot: bool) -> Result<i32> {
                 e
         })?;
         set_buckyos_api_runtime(runtime);
+
+        let scheduler_server = SchedulerServer::new();
+        register_inner_service_builder("scheduler_server", move || Box::new(scheduler_server.clone())).await;
+        //let repo_server_dir = get_buckyos_system_bin_dir().join("repo");
+        let scheduler_server_config = json!({
+          "http_port":SCHEDULER_SERVICE_MAIN_PORT,//TODO：服务的端口分配和管理
+          "tls_port":0,
+          "hosts": {
+            "*": {
+              "enable_cors":true,
+              "routes": {
+                "/kapi/scheduler" : {
+                    "inner_service":"scheduler_server"
+                }
+              }
+            }
+          }
+        });
+    
+        let scheduler_server_config: WarpServerConfig = serde_json::from_value(scheduler_server_config).unwrap();
+        //start!
+        info!("Start Scheduler Server...");
+        start_cyfs_warp_server(scheduler_server_config).await;
+
         schedule_loop(false).await.map_err(|e| {
             error!("schedule_loop failed: {:?}", e);
             e

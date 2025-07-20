@@ -324,8 +324,8 @@ impl RepoServer {
         let mut current_pkg_list: HashMap<String, String> = HashMap::new();
         let current_pkg_list_str = sys_config_client.get(&sys_config_path).await;
         if current_pkg_list_str.is_ok() {
-            let (current_pkg_list_str, _version) = current_pkg_list_str.unwrap();
-            current_pkg_list = serde_json::from_str(&current_pkg_list_str).map_err(|e| {
+            let get_result = current_pkg_list_str.unwrap();
+            current_pkg_list = serde_json::from_str(&get_result.value).map_err(|e| {
                 error!("Failed to parse current pkg list, err: {}", e);
                 RPCErrors::ReasonError(format!("Failed to parse current pkg list, err: {}", e))
             })?;
@@ -385,8 +385,8 @@ impl RepoServer {
                 "get pin pkg list failed".to_string(),
             ));
         }
-        let (current_pkg_list_str, _version) = current_pkg_list_str.unwrap();
-        let current_pkg_list = serde_json::from_str(&current_pkg_list_str).map_err(|e| {
+        let get_result = current_pkg_list_str.unwrap();
+        let current_pkg_list = serde_json::from_str(&get_result.value).map_err(|e| {
             error!("Failed to parse current pkg list, err: {}", e);
             RPCErrors::ReasonError(format!("Failed to parse current pkg list, err: {}", e))
         })?;

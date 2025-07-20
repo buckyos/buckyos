@@ -448,7 +448,7 @@ async fn handle_login_by_password(params: Value, login_nonce: u64) -> Result<Val
         );
         return Err(RPCErrors::UserNotFound(username.to_string()));
     }
-    let (user_info, _version) = user_info_result.unwrap();
+    let user_info = user_info_result.unwrap().value;
     let user_info: serde_json::Value = serde_json::from_str(&user_info)
         .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
     let store_password = user_info.get("password").ok_or(RPCErrors::ReasonError(
@@ -632,7 +632,7 @@ async fn load_service_config() -> Result<()> {
     //load verify-hub private key from system config service
     let private_key_str = system_config_client.get("system/verify-hub/key").await;
     if private_key_str.is_ok() {
-        let (private_key, _) = private_key_str.unwrap();
+        let private_key = private_key_str.unwrap().value;
         let private_key = EncodingKey::from_ed_pem(private_key.as_bytes());
         if private_key.is_ok() {
             let private_key = private_key.unwrap();

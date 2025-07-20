@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use tar::Builder;
 use package_lib::*;
 use buckyos_api::*;
-use log::*;
+//use log::*;
 
 
 #[derive(Serialize, Deserialize, Debug)]

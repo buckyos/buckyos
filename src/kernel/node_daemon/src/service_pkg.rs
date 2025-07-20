@@ -104,7 +104,7 @@ impl ServicePkg {
 
         let params_str = params.map(|p| p.join(" ")).unwrap_or_default();
         if result == 0 {
-            debug!(
+            info!(
                 "# run {} {} => {} \n\t {}",
                 op_file.display(),
                 params_str,

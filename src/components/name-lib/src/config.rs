@@ -551,7 +551,7 @@ pub struct DeviceConfig {
     pub extra_info: HashMap<String, serde_json::Value>,
 
     //--------------------------------
-    pub device_type: String, //[ood,node,sensor
+    pub device_type: String, //[ood,server,sensor
     pub name: String,        //short name,like ood1
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -588,7 +588,7 @@ impl DeviceConfig {
             context: default_context(),
             id: DID::from_str(&did).unwrap(),
             name: name.to_string(),
-            device_type: "node".to_string(),
+            device_type: "ood".to_string(),
             ip: None,
             net_id: None,
             ddns_sn_url: None,
@@ -1054,11 +1054,11 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         let ood1_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(ood1_jwk.clone()).unwrap();
         let mut ood1_device_config = DeviceConfig::new_by_jwk("ood1", ood1_jwk.clone());
 
-        ood1_device_config.support_container = false;
-        #[cfg(all(target_os = "linux"))]
-        {
-            ood1_device_config.support_container = true;
-        }
+        ood1_device_config.support_container = true;
+        // #[cfg(all(target_os = "linux"))]
+        // {
+        //     ood1_device_config.support_container = true;
+        // }
 
         ood1_device_config.iss = "did:bns:devtest".to_string();
         let ood1_device_config_json_str =

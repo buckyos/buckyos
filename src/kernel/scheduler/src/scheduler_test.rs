@@ -14,6 +14,7 @@ fn create_test_node(
 ) -> NodeItem {
     NodeItem {
         id: id.to_string(),
+        node_type: NodeType::OOD,
         total_cpu_mhz: cpu,
         available_cpu_mhz: cpu,
         total_memory: memory,
@@ -90,6 +91,8 @@ fn test_create_pod_instance() {
 
     let pod = PodItem {
         id: "pod1".to_string(),
+        app_id: "pod1".to_string(),
+        owner_id: "root".to_string(),
         pod_type: PodItemType::Service,
         state: PodItemState::New,
         best_instance_count: 2,
@@ -153,6 +156,8 @@ fn test_pod_state_change() {
 
     let pod1 = PodItem {
         id: "pod1".to_string(),
+        app_id: "pod1".to_string(),
+        owner_id: "root".to_string(),
         pod_type: PodItemType::Service,
         state: PodItemState::New,
         best_instance_count: 1,
@@ -167,6 +172,8 @@ fn test_pod_state_change() {
     };
     let pod2 = PodItem {
         id: "pod2".to_string(),
+        app_id: "pod2".to_string(),
+        owner_id: "user1".to_string(),
         pod_type: PodItemType::App,
         state: PodItemState::Removing,
         best_instance_count: 1,
@@ -205,17 +212,17 @@ fn test_pod_state_change() {
                 //add pod instance
                 scheduler.add_pod_instance(instance.clone());
             }
-                            SchedulerAction::ChangePodStatus(pod_id, new_state) => {
-                    if pod_id == "pod1" {
-                        assert_eq!(new_state, &PodItemState::Deployed);
-                    } else if pod_id == "pod2" {
-                        assert_eq!(new_state, &PodItemState::Deleted);
-                        // remove pod item
-                        scheduler.remove_pod(pod_id);
-                    } else {
-                        panic!("Unexpected pod id: {}", pod_id);
-                    }
+            SchedulerAction::ChangePodStatus(pod_id, new_state) => {
+                if pod_id == "pod1" {
+                    assert_eq!(new_state, &PodItemState::Deployed);
+                } else if pod_id == "pod2" {
+                    assert_eq!(new_state, &PodItemState::Deleted);
+                    // remove pod item
+                    scheduler.remove_pod(pod_id);
+                } else {
+                    panic!("Unexpected pod id: {}", pod_id);
                 }
+            }
             _ => panic!("Unexpected action"),
         }
     }
@@ -245,6 +252,8 @@ fn test_create_pod_instance_no_suitable_node() {
 
     let pod = PodItem {
         id: "pod1".to_string(),
+        app_id: "pod1".to_string(),
+        owner_id: "root".to_string(),
         pod_type: PodItemType::Service,
         state: PodItemState::New,
         best_instance_count: 1,
@@ -284,6 +293,8 @@ fn test_node_and_network_affinity() {
 
     let pod = PodItem {
         id: "pod1".to_string(),
+        app_id: "pod1".to_string(),
+        owner_id: "root".to_string(),
         pod_type: PodItemType::Service,
         state: PodItemState::New,
         best_instance_count: 1,

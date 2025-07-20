@@ -329,6 +329,30 @@ def env.try_update_index_db(new_index_db):
     delete_file(index_db.append(".old"))
 
 
+## pkg系统默认前缀
+```
+//得到操作系统类型
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+let os_type = "nightly-linux-x86_64";
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+let os_type = "nightly-linux-aarch64";
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+let os_type = "nightly-windows-x86_64";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+let os_type = "nightly-apple-x86_64";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+let os_type = "nightly-apple-aarch64";
+
+async fn load_strictly(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
+    let pkg_id = PackageId::parse(pkg_id_str)?;
+    let mut real_pkg_id = pkg_id_str.to_string();
+    if pkg_id.name.find(".").is_none() {
+        if let Some(prefix) = &self.config.prefix {
+            real_pkg_id = format!("{}.{}", prefix, pkg_id_str);
+        }
+    }
+```
+
 
 
 

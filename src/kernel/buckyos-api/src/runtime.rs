@@ -88,7 +88,6 @@ pub struct BuckyOSRuntime {
 }
 
 impl BuckyOSRuntime {
-
     pub fn new(app_id: &str,app_owner_user_id: Option<String>,runtime_type: BuckyOSRuntimeType) -> Self {
         let runtime = BuckyOSRuntime {
             app_id: app_id.to_string(),
@@ -686,6 +685,16 @@ impl BuckyOSRuntime {
         let userid = userid.as_str().ok_or(RPCErrors::InvalidToken("Invalid userid".to_string()))?;
         let appid = decoded_json.get("appid").map(|appid| appid.as_str().unwrap_or("kernel"));
         let appid = appid.unwrap_or("kernel");
+
+        let system_config_client = self.get_system_config_client().await?;
+        let rbac_policy = system_config_client.get("system/rbac/policy").await;
+        if rbac_policy.is_ok() {
+            let rbac_policy = rbac_policy.unwrap();
+            if rbac_policy.is_changed {
+                rbac::update_enforcer(Some(rbac_policy.value.as_str())).await;
+            }
+        }
+
         let result = rbac::enforce(userid, Some(appid),resource_path,action).await;
         if !result {
             return Err(RPCErrors::NoPermission(format!("enforce failed,userid:{},appid:{},resource:{},action:{}",userid,appid,resource_path,action)));
@@ -852,12 +861,12 @@ impl BuckyOSRuntime {
     pub async fn get_my_settings(&self) -> Result<serde_json::Value> {
         let system_config_client = self.get_system_config_client().await?;
         let settiing_path = self.get_my_settings_path();
-        let (settings_str,_version) = system_config_client.get(settiing_path.as_str()).await
+        let result_value = system_config_client.get(settiing_path.as_str()).await
             .map_err(|e| {
                 error!("get settings failed! err:{}", e);
                 RPCErrors::ReasonError(format!("get settings failed! err:{}", e))
             })?;
-        let settings : serde_json::Value = serde_json::from_str(settings_str.as_str()).map_err(|e| {
+        let settings : serde_json::Value = serde_json::from_str(result_value.value.as_str()).map_err(|e| {
             error!("parse settings failed! err:{}", e);
             RPCErrors::ReasonError(format!("parse settings failed! err:{}", e))
         })?;
