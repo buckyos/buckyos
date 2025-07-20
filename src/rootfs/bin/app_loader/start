@@ -3,6 +3,7 @@
 import os
 import sys
 import json
+import platform
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts import util
@@ -48,6 +49,11 @@ def start_app_without_docker():
         print(f"No start script found for appid: {appid}")
         exit(1)
     os.system(f"python3 {start_script} {appid} {username}")
+
+def ensure_directory_accessible(directory_path):
+    if not os.path.exists(directory_path):
+        os.makedirs(directory_path, exist_ok=True)
+    os.system(f"chmod 777 -R {directory_path}")
 
 def start_app_with_docker():
     # 如果镜像已经在运行，则先停止再启动
@@ -96,26 +102,27 @@ def start_app_with_docker():
                 exit(1)
 
     volume_mapping = ""
-    data_mount_point = app_instance_config.get("data_mount_point",[])
+    data_mount_point = app_instance_config.get("data_mount_point",{})
     if data_mount_point:
-        base_data_dir = util.get_app_data_dir(appid,username)
-        os.makedirs(base_data_dir, exist_ok=True)
-        for mount_point in data_mount_point:
-            volume_mapping += f"-v {base_data_dir}/{mount_point}:{mount_point} "
+        base_dir = util.get_user_data_dir(username)
+        for (folder_in_docker,real_folder_in_host) in data_mount_point.items():
+            real_folder_in_host = os.path.join(base_dir,real_folder_in_host)
+            ensure_directory_accessible(real_folder_in_host)
+            volume_mapping += f" -v {real_folder_in_host}:{folder_in_docker}"
 
     cache_mount_point = app_instance_config.get("cache_mount_point", [])
     if cache_mount_point:
         base_cache_dir = util.get_app_cache_dir(appid,username)
-        os.makedirs(base_cache_dir, exist_ok=True)
+        base_cache_dir = ensure_directory_accessible(base_cache_dir)
         for mount_point in cache_mount_point:
-            volume_mapping += f"-v {base_cache_dir}/{mount_point}:{mount_point} "
+            volume_mapping += f" -v {base_cache_dir}/{mount_point}:{mount_point}"
 
     local_cache_mount_point = app_instance_config.get("local_cache_mount_point", [])
     if local_cache_mount_point:
         base_cache_dir = util.get_app_local_cache_dir(appid,username)
-        os.makedirs(base_cache_dir, exist_ok=True)
+        base_cache_dir = ensure_directory_accessible(base_cache_dir)
         for mount_point in local_cache_mount_point:
-            volume_mapping += f"-v {base_cache_dir}/{mount_point}:{mount_point} "
+            volume_mapping += f" -v {base_cache_dir}/{mount_point}:{mount_point}"
 
 
     #network_settings = config.get("network_settings", "")
@@ -143,7 +150,7 @@ def start_app_with_docker():
     #    docker_command += f"--cpu-quota={cpu_quota} "
 
     if memory_quota:
-        docker_command += f"--memory={memory_quota} "
+        docker_command += f" --memory={memory_quota} "
 
     docker_command += f" {image_name}"
 

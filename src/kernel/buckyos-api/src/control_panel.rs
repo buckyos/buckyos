@@ -146,7 +146,8 @@ pub struct AppConfig {
     pub instance: u32,//期望的instance数量
     pub state: String,
     //mount pint
-    pub data_mount_point: Vec<String>,
+    // folder in docker -> real folder in host
+    pub data_mount_point: HashMap<String,String>,
     pub cache_mount_point: Vec<String>,
     pub local_cache_mount_point: Vec<String>,
     //extra mount pint, real_path:docker_inner_path
@@ -179,7 +180,8 @@ pub struct AppServiceInstanceConfig {
     pub docker_image_hash: Option<String>,
     pub service_pkg_id: Option<String>,    
 
-    pub data_mount_point: Vec<String>,
+    // folder in docker -> real folder in host
+    pub data_mount_point: HashMap<String,String>,
     pub cache_mount_point: Vec<String>,
     pub local_cache_mount_point: Vec<String>,
     

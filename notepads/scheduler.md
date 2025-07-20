@@ -21,6 +21,14 @@
   - 根据系统里的用户/设备/应用 的情况，构造最终的rbac policy表
   - 根据instance的运行情况，构造service_info和selector
 
+## Instance化
+实例化是调度器最重要的行为，运行中的buckyos根本上一个instance的集合
+调度器只关心Instance的构造，并将Instance加入到node_config中，随后node_main_loop会根据instance的配置运行执行代码
+站在调度器的角度，实例化的主要工作有
+- 构造instance(PodInstance)
+- 将instance加入到node_config中
+- 将instance加入到node_gateway_config中，以让其可以被访问
+
 ## service port分配
 
 一个Node上的端口是一种典型的需要分配的资源。对于大部分服务来说，都可以通过
@@ -123,6 +131,7 @@ loop:
 - 如何判断系统的状态未发生变化(instance如果包含资源使用情况，那么未发生变化非常难)
 - 如何判断调度结果未发生变化（减少一次无效写入）
 
+
 ## 调度服务的接口
 
 ### 强制调度
@@ -131,7 +140,75 @@ loop:
 
 ### control_panel的后端
 
-对系统进行修改有2种方法
+对system_config进行业务级修改有2种方法
 
-- 在client使用system_config_client的事务，结合业务逻辑修改一组config
+- 在client使用system_config_client的事务，结合业务逻辑修改一组config（封装通常在control_panel里）
 - 由scheduler实现control_panel的后端来提供更强一致性的系统状态改变（通常涉及到某种计算）。
+
+### control_panel接口一览
+
+首先要对各种userid/deviceid/appid 的命名合法性进行限制，去掉非法字符，不允许是保留id, 去重的时候是无视大小写的
+
+#### 应用管理
+
+- 添加应用 
+
+- 删除应用
+
+- 启动应用
+
+- 停止应用
+
+- 修改应用settings
+
+settings的内容由应用服务读取
+
+- 修改应用的install_config
+
+install_config由系统读取，应用无法感知自己的install_config
+
+
+#### 用户管理
+
+- 添加用户
+
+- 删除用户
+
+- disable用户
+
+- enable用户
+
+- 导出用户数据
+
+- 导入用户数据
+
+#### 设备管理
+
+- 添加设备
+
+- 删除设备
+
+- 停用设备
+
+- 启用设备
+
+- 修改设备的能力配置 (DeviceConfig)
+
+- 调整设备的Settings (影响调度器对设备的使用)
+
+#### 系统设置
+
+
+#### 系统服务管理
+系统服务通常无法手工安装和删除
+部分系统服务允许手工启用/停用
+
+
+- 修改服务配置
+
+- 重启服务
+
+- 启用服务
+
+- 停用服务
+

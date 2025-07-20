@@ -14,6 +14,9 @@ def get_system_encoding():
         return locale.getpreferredencoding()
     except:
         return 'utf-8'
+    
+def get_user_data_dir(user_id: str) -> str:
+    return os.path.join(get_buckyos_root(),"data", user_id)
 
 def get_app_data_dir(app_id: str,owner_user_id: str) -> str:
     return os.path.join(get_buckyos_root(),"data", owner_user_id, app_id)

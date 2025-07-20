@@ -94,7 +94,11 @@
     "enable" : true,
     "state":"New",
     "instance" : 1,
-    "data_mount_point" : ["/srv/","/database/","/config/"],
+    "data_mount_point" : {
+        "/srv/" :  "home/",
+        "/database/" : "buckyos-filebrowser/database/",
+        "/config/" : "buckyos-filebrowser/config/"
+    },
     "cache_mount_point" :[],
     "local_cache_mount_point" : [],
     "max_cpu_num" : 2,
