@@ -49,7 +49,7 @@ impl QAProcess {
                             let current = String::from_utf8_lossy(&error_buf[..error_offset]).to_string();
                             // log::info!("current err:{}", current);
                             if current.ends_with(question) {
-                                let stdin = self.stdin.as_mut().ok_or(smb_err!(SmbErrorCode::Failed, "Failed to get stdin"))?;
+                                let stdin = self.stdin.as_mut().ok_or_else(|| smb_err!(SmbErrorCode::Failed, "Failed to get stdin"))?;
                                 // log::info!("write:{}", answer);
                                 stdin.write_all(answer.as_bytes()).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
                                 stdin.write_all("\n".as_bytes()).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
@@ -72,7 +72,7 @@ impl QAProcess {
                             let current = String::from_utf8_lossy(&buf[..offset]).to_string();
                             // log::info!("current:{}", current);
                             if current.ends_with(question) {
-                                let stdin = self.stdin.as_mut().ok_or(smb_err!(SmbErrorCode::Failed, "Failed to get stdin"))?;
+                                let stdin = self.stdin.as_mut().ok_or_else(|| smb_err!(SmbErrorCode::Failed, "Failed to get stdin"))?;
                                 // log::info!("write:{}", answer);
                                 stdin.write_all(answer.as_bytes()).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
                                 stdin.write_all("\n".as_bytes()).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
@@ -99,7 +99,7 @@ impl QAProcess {
         if status.success() {
             Ok(())
         } else {
-            let stderr = self.stderr.as_mut().ok_or(smb_err!(SmbErrorCode::Failed, "Failed to get stderr"))?;
+            let stderr = self.stderr.as_mut().ok_or_else(||smb_err!(SmbErrorCode::Failed, "Failed to get stderr"))?;
             let mut error = Vec::new();
             stderr.read_to_end(&mut error).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
 

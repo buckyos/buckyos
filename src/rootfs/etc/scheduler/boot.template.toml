@@ -246,11 +246,25 @@
     "nightly-apple-aarch64.buckycli":"no",
 
     "buckyos-filebrowser":"no"
-}    
+}
+"""
+
+"services/smb-service/config" = """
+{
+    "name":"smb-service",
+    "description":"smb-service is the samba service of buckyos",
+    "vendor_did":"did:bns:buckyos",
+    "pkg_id":"smb_service",
+    "port":4100,
+    "node_list":["ood1"],
+    "service_type":"frame",
+    "state":"New",
+    "instance":1
+}
 """
 
 # node config
-"nodes/ood1/config" = """ 
+"nodes/ood1/config" = """
 {
     "state":"Ready",
     "is_running":true,
@@ -264,7 +278,7 @@
     }
 }
 """
-# apps config's key is instance_id ? 
+# apps config's key is instance_id ?
 
 "nodes/ood1/gateway_config" = """
 {
@@ -290,7 +304,7 @@
                                 "is_chunk_id_in_path":true,
                                 "enable_mgr_file_path":true
                             }
-                        }, 
+                        },
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
                         },

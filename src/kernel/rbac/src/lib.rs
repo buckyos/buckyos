@@ -48,6 +48,8 @@ p, client,kv://devices/{device}/*,read,allow
 p, client,kv://devices/{device}/info,read|write,allow
 p, service, kv://boot/*, read,allow
 p, service,kv://services/{service}/*,read|write,allow
+p, service,kv://users*,read,allow
+p, service,kv://users/*/*,read,allow
 p, service,kv://system/*,read,allow
 p, service,dfs://system/data/{service}/*,read|write,allow
 p, service,dfs://system/cache/{service}/*,read|write,allow
