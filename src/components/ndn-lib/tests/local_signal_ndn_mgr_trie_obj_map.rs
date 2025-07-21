@@ -26,7 +26,8 @@ fn generate_random_chunk_mix(size: u64) -> (ChunkId, Vec<u8>) {
     let chunk_data = generate_random_bytes(size);
     let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_mix_hash_result_by_hash_method(size, &hash, HashMethod::Sha256).unwrap();
+    let chunk_id =
+        ChunkId::from_mix_hash_result_by_hash_method(size, &hash, HashMethod::Sha256).unwrap();
     info!("chunk_id: {}", chunk_id.to_string());
     (chunk_id, chunk_data)
 }
@@ -311,7 +312,7 @@ async fn ndn_local_trie_obj_map_basic() {
     );
 
     let mut fake_root_proof = proof.clone();
-    fake_root_proof.root_hash.as_mut_slice()[0] += 1;
+    fake_root_proof.root_hash.as_mut_slice()[0] ^= 1;
     let verify_ret = verifier
         .verify_object(
             "chunk1",
