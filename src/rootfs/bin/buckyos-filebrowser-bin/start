@@ -73,9 +73,22 @@ def start_app(instance_cfg):
         print(f"No tcp_ports found for appid: {full_appid}")
         exit(1)
     
+    base_dir = util.get_user_data_dir(owner_userid)
+    data_mount_point = instance_cfg.get("data_mount_point",{})
     data_dir = os.path.join(util.get_app_data_dir(appid,owner_userid),"srv")
-    config_dir = os.path.join(util.get_app_data_dir(appid,owner_userid),"config")
+    if data_mount_point.get("/srv/"):
+        data_dir = os.path.join(base_dir,data_mount_point.get("/srv/"))
+    util.ensure_directory_accessible(data_dir)
+
+    if data_mount_point.get("/config/"):
+        config_dir = os.path.join(base_dir,data_mount_point.get("/config/"))
+    util.ensure_directory_accessible(config_dir)
+
     db_dir = os.path.join(util.get_app_data_dir(appid,owner_userid),"database")
+    if data_mount_point.get("/database/"):
+        db_dir = os.path.join(base_dir,data_mount_point.get("/database/"))
+    util.ensure_directory_accessible(db_dir)
+
     bin_path = get_app_bin_path("filebrowser")
     params = f"-r {data_dir} -c {config_dir}/config.json -d {db_dir}/filebrowser.db -p {will_use_port} -a 127.0.0.1"
     cmd = f"{bin_path} {params}"

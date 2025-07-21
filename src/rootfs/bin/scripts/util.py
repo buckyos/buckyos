@@ -8,6 +8,11 @@ ext = ""
 if system == "Windows":
     ext = ".exe"
 
+def ensure_directory_accessible(directory_path):
+    if not os.path.exists(directory_path):
+        os.makedirs(directory_path, exist_ok=True)
+    os.system(f"chmod 777 -R {directory_path}")
+    
 # 获取系统默认编码
 def get_system_encoding():
     try:

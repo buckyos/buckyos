@@ -1,0 +1,11 @@
+{
+  "zone_did": "did:web:test.buckyos.io",
+  "owner_public_key": {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
+  },
+  "owner_did": "did:bns:devtest",
+  "device_doc_jwt": "eyJhbGciOiJFZERTQSJ9.eyJAY29udGV4dCI6Imh0dHBzOi8vd3d3LnczLm9yZy9ucy9kaWQvdjEiLCJpZCI6ImRpZDpkZXY6Z3ViVklzenctdV9kNVBWVGgtb2M4Q0tBaE05Qy1uZTVHX3lVSzVCRGFYYyIsInZlcmlmaWNhdGlvbk1ldGhvZCI6W3sidHlwZSI6IkVkMjU1MTlWZXJpZmljYXRpb25LZXkyMDIwIiwiaWQiOiIjbWFpbl9rZXkiLCJjb250cm9sbGVyIjoiZGlkOmRldjpndWJWSXN6dy11X2Q1UFZUaC1vYzhDS0FoTTlDLW5lNUdfeVVLNUJEYVhjIiwicHVibGljS2V5SndrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoiZ3ViVklzenctdV9kNVBWVGgtb2M4Q0tBaE05Qy1uZTVHX3lVSzVCRGFYYyJ9fV0sImF1dGhlbnRpY2F0aW9uIjpbIiNtYWluX2tleSJdLCJhc3NlcnRpb25fbWV0aG9kIjpbIiNtYWluX2tleSJdLCJleHAiOjIwNjgzODMzMTQsImlhdCI6MTc1MzAyMzMxNCwiZGV2aWNlX3R5cGUiOiJvb2QiLCJuYW1lIjoib29kMSIsInN1cHBvcnRfY29udGFpbmVyIjpmYWxzZSwiaXNzIjoiZGlkOmJuczpkZXZ0ZXN0In0.gCHnyYZO84dzkNNhpE_T7owxMZiT8liVFhF8KZXDE0KppKd78lcCjahvBszXyNcgAfiremKepH4QnfxX2EzRAA",
+  "zone_iat": 1743478939
+}
