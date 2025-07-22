@@ -1,11 +1,10 @@
-use std::{io::SeekFrom, sync::Arc};
+use std::sync::Arc;
 
 use crate::{common::*, named_data_mgr_test::NamedDataMgrTest, ndn_client_test::NdnClientTest};
 use hex::ToHex;
 use log::*;
 use ndn_lib::*;
 use rand::Rng;
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn write_chunk_may_concurrency(
