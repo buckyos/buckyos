@@ -17,6 +17,7 @@ lazy_static = "*"
 base32 = "*"
 sha2 = { version = ">=0.11.0-pre.4" }
 sha3 = { version = "*" }
+async-trait = "*"
 jsonwebtoken = "*"
 buckyos-kit = { path = "../../src/components/buckyos-kit" }
 name-lib = { path = "../../src/components/name-lib" }
@@ -27,3 +28,9 @@ cyfs-gateway-lib = { path = "../../src/cyfs_gateway/cyfs-gateway-lib" }
 cyfs-warp = { path = "../../src/cyfs_gateway/cyfs-warp" }
 kRPC = { path = "../../src/kernel/kRPC" }
 ndn-lib = {path = "../../src/components/ndn-lib"}
+
+[profile.dev]
+panic = "unwind"  # 展开堆栈而非立即终止
+
+[profile.release]
+panic = "unwind"  # 避免 release 模式下禁用堆栈捕获

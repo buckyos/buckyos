@@ -2,230 +2,7 @@ use hex::ToHex;
 use log::*;
 use ndn_lib::*;
 
-use crate::common::*;
-
-// const LOCAL_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
-// MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
-// -----END PRIVATE KEY-----
-// "#;
-
-// const NODE_B_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
-// MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
-// -----END PRIVATE KEY-----
-// "#;
-
-// fn generate_random_bytes(size: u64) -> Vec<u8> {
-//     let mut rng = rand::rng();
-//     let mut buffer = vec![0u8; size as usize];
-//     rng.fill_bytes(&mut buffer);
-//     buffer
-// }
-
-// async fn _check_obj_inner_path(
-//     ndn_client: &NdnClient,
-//     url: &str,
-//     obj_id: &ObjId,
-//     obj_type: &str,
-//     inner_path: Option<&str>,
-//     expect_value: Option<Option<&serde_json::Value>>,
-//     unexpect_value: Option<Option<&serde_json::Value>>,
-//     expect_obj_id: Option<&ObjId>,
-// ) {
-//     let got_ret = ndn_client
-//         .get_obj_by_url(url, expect_obj_id.map(|id| id.clone()))
-//         .await;
-
-//     if let Some(expect_value) = &expect_value {
-//         match expect_value {
-//             Some(expect_value) => match &got_ret {
-//                 Ok((_got_obj_id, got_obj)) => {
-//                     let (_expect_obj_id, expect_obj_str) =
-//                         build_named_object_by_json(obj_type, *expect_value);
-//                     let (got_obj_id, got_obj_str) = build_named_object_by_json(obj_type, got_obj);
-
-//                     if inner_path.is_none() {
-//                         assert_eq!(
-//                             &got_obj_id,
-//                             expect_obj_id.unwrap_or(obj_id),
-//                             "object-id mismatch"
-//                         );
-//                     }
-
-//                     // log::info!(
-//                     //     "ndn_local_object_ok test inner-path {:?} check object, expect: {}, got: {}.",
-//                     //     inner_path, expect_obj_str, got_obj_str
-//                     // );
-
-//                     assert_eq!(
-//                         got_obj_str, expect_obj_str,
-//                         "obj['{:?}'] check failed",
-//                         inner_path
-//                     );
-//                 }
-//                 Err(err) => assert!(
-//                     false,
-//                     "get object {:?} with innser-path {:?} failed, error: {:?}",
-//                     obj_id, inner_path, err
-//                 ),
-//             },
-//             None => match &got_ret {
-//                 Ok((_, got_obj)) => {
-//                     assert!(got_obj.is_null(), "should no object found")
-//                 }
-//                 Err(err) => match err {
-//                     NdnError::NotFound(_) => {
-//                         info!("Chunk not found as expected");
-//                     }
-//                     _ => {
-//                         assert!(false, "Unexpected error type, {:?}", err);
-//                     }
-//                 },
-//             },
-//         }
-//     }
-
-//     if let Some(unexpect_value) = &unexpect_value {
-//         match unexpect_value {
-//             Some(unexpect_value) => match &got_ret {
-//                 Ok((got_obj_id, got_obj)) => {
-//                     let (_unexpect_obj_id, unexpect_obj_str) =
-//                         build_named_object_by_json(obj_type, *unexpect_value);
-//                     let (got_obj_id_cal, got_obj_str) =
-//                         build_named_object_by_json(obj_type, got_obj);
-//                     assert_eq!(got_obj_id, &got_obj_id_cal, "got obj-id mismatch");
-//                     if inner_path.is_none() {
-//                         assert_eq!(
-//                             got_obj_id,
-//                             expect_obj_id.unwrap_or(obj_id),
-//                             "object-id mismatch"
-//                         );
-//                     }
-//                     assert_ne!(
-//                         got_obj_str, unexpect_obj_str,
-//                         "obj['{:?}'] check failed",
-//                         inner_path
-//                     );
-//                 }
-//                 Err(err) => assert!(
-//                     false,
-//                     "get object {:?} with innser-path {:?} failed, error: {:?}",
-//                     obj_id, inner_path, err
-//                 ),
-//             },
-//             None => assert!(
-//                 got_ret.is_ok(),
-//                 "get object {:?} with innser-path {:?} failed",
-//                 obj_id,
-//                 inner_path
-//             ),
-//         }
-//     }
-// }
-
-// type NdnServerHost = String;
-
-// async fn init_local_ndn_server(ndn_mgr_id: &str) -> (NdnClient, NdnServerHost) {
-//     let mut rng = rand::rng();
-//     let tls_port = rng.random_range(10000u16..20000u16);
-//     let http_port = rng.random_range(10000u16..20000u16);
-//     let test_server_config = json!({
-//         "tls_port": tls_port,
-//         "http_port": http_port,
-//         "hosts": {
-//             "*": {
-//                 "enable_cors": true,
-//                 "routes": {
-//                     "/ndn/": {
-//                         "named_mgr": {
-//                             "named_data_mgr_id": ndn_mgr_id,
-//                             "read_only": false,
-//                             "guest_access": true,
-//                             "is_chunk_id_in_path": true,
-//                             "enable_mgr_file_path": true
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//     });
-
-//     let test_server_config: WarpServerConfig = serde_json::from_value(test_server_config).unwrap();
-
-//     tokio::spawn(async move {
-//         info!("start test ndn server(powered by cyfs-warp)...");
-//         start_cyfs_warp_server(test_server_config)
-//             .await
-//             .expect("start cyfs warp server failed.");
-//     });
-//     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-//     let temp_dir = tempfile::tempdir()
-//         .unwrap()
-//         .path()
-//         .join("ndn-test")
-//         .join(ndn_mgr_id);
-
-//     fs::create_dir_all(temp_dir.as_path())
-//         .await
-//         .expect("create temp dir failed.");
-
-//     let config = NamedDataMgrConfig {
-//         local_stores: vec![temp_dir.to_str().unwrap().to_string()],
-//         local_cache: None,
-//         mmap_cache_dir: None,
-//     };
-
-//     let named_mgr =
-//         NamedDataMgr::from_config(Some(ndn_mgr_id.to_string()), temp_dir.to_path_buf(), config)
-//             .await
-//             .expect("init NamedDataMgr failed.");
-
-//     NamedDataMgr::set_mgr_by_id(Some(ndn_mgr_id), named_mgr)
-//         .await
-//         .expect("set named data manager by id failed.");
-
-//     let host = format!("localhost:{}", http_port);
-//     let client = NdnClient::new(
-//         format!("http://{}/ndn/", host),
-//         None,
-//         Some(ndn_mgr_id.to_string()),
-//     );
-
-//     (client, host)
-// }
-
-// async fn init_ndn_client(ndn_mgr_id: &str, private_key: &str, target_ndn_host: &str) -> NdnClient {
-//     let session_token = kRPC::RPCSessionToken {
-//         token_type: kRPC::RPCSessionTokenType::JWT,
-//         token: None,
-//         appid: Some("ndn".to_string()),
-//         exp: Some(
-//             std::time::SystemTime::now()
-//                 .duration_since(std::time::UNIX_EPOCH)
-//                 .unwrap()
-//                 .as_secs()
-//                 + 3600 * 24 * 7,
-//         ),
-//         iss: None,
-//         nonce: None,
-//         userid: None,
-//         session: None,
-//     };
-
-//     let private_key = EncodingKey::from_ed_pem(private_key.as_bytes()).unwrap();
-
-//     let target_ndn_client = NdnClient::new(
-//         format!("http://{}/ndn/", target_ndn_host),
-//         Some(
-//             session_token
-//                 .generate_jwt(None, &private_key)
-//                 .expect("generate jwt failed."),
-//         ),
-//         Some(ndn_mgr_id.to_string()),
-//     );
-
-//     target_ndn_client
-// }
+use crate::{common::*, ndn_client_test::NdnClientTest};
 
 //#[tokio::test]
 pub async fn ndn_2_zone_object_ok() {
@@ -255,18 +32,14 @@ pub async fn ndn_2_zone_object_ok() {
 
     // 2. Pull the object using the NdnClient from zone_a with private key of zone_b
     // get object using the NdnClient
-    let (got_obj_id, got_obj) = zone_b_client
-        .get_obj_by_url(
+    let (_got_obj_id, _got_obj) = zone_b_client
+        .get_obj_by_url_with_check(
             format!("http://test.buckyos.io/ndn/{}", obj_id.to_base32()).as_str(),
-            Some(obj_id.clone()),
+            Some(&obj_id),
+            Some(&obj),
+            Some((obj_str.as_str(), "non-test-obj")),
         )
-        .await
-        .expect("get obj from zone-a failed");
-
-    assert_eq!(got_obj_id, obj_id, "got obj-id from zone-a mismatch");
-
-    let (_, got_obj_str) = build_named_object_by_json("non-test-obj", &got_obj);
-    assert_eq!(got_obj_str, obj_str, "got obj from zone-a mismatch");
+        .await;
 }
 
 //#[tokio::test]
@@ -298,22 +71,11 @@ pub async fn ndn_2_zone_object_not_found() {
 
     // 2. Pull the object using the NdnClient from zone_a with private key of zone_b
     // get object using the NdnClient
-    let ret = zone_b_client
-        .get_obj_by_url(
+    zone_b_client
+        .get_obj_by_url_not_found(
             format!("http://test.buckyos.io/ndn/{}", obj_id.to_base32()).as_str(),
-            Some(obj_id.clone()),
         )
         .await;
-
-    match ret {
-        Ok(_) => assert!(false, "should obj id verify failed"),
-        Err(err) => {
-            if let NdnError::NotFound(_) = err {
-            } else {
-                assert!(false, "unexpect error, should obj id verify failed.")
-            }
-        }
-    }
 }
 
 //#[tokio::test]
@@ -344,22 +106,12 @@ pub async fn ndn_2_zone_object_verify_failed() {
         .expect("put object in local failed");
 
     // 2. push the object using the NdnClient to zone_b
-    let ret = zone_b_client
-        .get_obj_by_url(
+    zone_b_client
+        .get_obj_by_url_invalid_id(
             format!("http://{}/ndn/{}", "test.buckyos.io", obj_id.to_base32()).as_str(),
-            Some(obj_id.clone()),
+            Some(&obj_id),
         )
         .await;
-
-    match ret {
-        Ok(_) => assert!(false, "should obj id verify failed"),
-        Err(err) => {
-            if let NdnError::InvalidId(_) = err {
-            } else {
-                assert!(false, "unexpect error, should obj id verify failed.")
-            }
-        }
-    }
 }
 
 // http://{host}/ndn/{obj-id}/inner-path
@@ -641,14 +393,15 @@ pub async fn ndn_2_zone_r_link_ok() {
     // 3. Pull the object using the NdnClient from zone_a with private key of zone_b
     // get object using the NdnClient
     let r_link = format!("http://test.buckyos.io/ndn{}", obj_path);
-    let (_got_obj_id, got_obj) = zone_b_client
-        .get_obj_by_url(r_link.as_str(), Some(obj_id.clone()))
-        .await
-        .expect("get obj from zone-a failed");
-
-    let (_, got_obj_str) = build_named_object_by_json("non-test-obj", &got_obj);
     let (_, expect_obj_str) = build_named_object_by_json("non-test-obj", &obj);
-    assert_eq!(got_obj_str, expect_obj_str, "got obj mismatch");
+    let (_got_obj_id, _got_obj) = zone_b_client
+        .get_obj_by_url_with_check(
+            r_link.as_str(),
+            Some(&obj_id),
+            Some(&obj),
+            Some((expect_obj_str.as_str(), "non-test-obj")),
+        )
+        .await;
 }
 
 //#[tokio::test]
@@ -692,23 +445,9 @@ pub async fn ndn_2_zone_r_link_not_found() {
     // 3. Pull the object using the NdnClient from zone_a with private key of zone_b
     // get object using the NdnClient
     let r_link = format!("http://test.buckyos.io/ndn{}", obj_path);
-    let ret = zone_b_client
-        .get_obj_by_url(r_link.as_str(), Some(obj_id.clone()))
+    zone_b_client
+        .get_obj_by_url_not_found(r_link.as_str())
         .await;
-
-    match ret {
-        Ok(_) => assert!(false, "sub obj id should not found"),
-        Err(err) => {
-            if let NdnError::NotFound(_) = err {
-            } else {
-                assert!(
-                    false,
-                    "unexpect error, sub obj id should not found. {:?}",
-                    err
-                )
-            }
-        }
-    }
 }
 
 //#[tokio::test]
@@ -757,19 +496,9 @@ pub async fn ndn_2_zone_r_link_verify_failed() {
     // get object using the NdnClient
     let r_link = format!("http://{}/ndn{}", "test.buckyos.io", obj_path);
 
-    let ret = zone_b_client
-        .get_obj_by_url(r_link.as_str(), Some(obj_id.clone()))
+    zone_b_client
+        .get_obj_by_url_invalid_id(r_link.as_str(), Some(&obj_id))
         .await;
-
-    match ret {
-        Ok(_) => assert!(false, "should obj id verify failed"),
-        Err(err) => {
-            if let NdnError::InvalidId(_) = err {
-            } else {
-                assert!(false, "unexpect error, should obj id verify failed.")
-            }
-        }
-    }
 }
 
 // http://{host}/ndn/{obj-path}/inner-path
@@ -872,19 +601,9 @@ pub async fn ndn_2_zone_r_link_innerpath_not_found() {
         "http://{}/ndn{}/{}",
         "test.buckyos.io", obj_path, inner_path
     );
-    let ret = zone_b_client
-        .get_obj_by_url(r_link_inner_path.as_str(), None)
+    let _ret = zone_b_client
+        .get_obj_by_url_err(r_link_inner_path.as_str(), None)
         .await;
-
-    match ret {
-        Ok(_) => assert!(false, "sub obj id should not found"),
-        Err(err) => {
-            info!(
-                "get object with inner-path should not found, error: {:?}",
-                err
-            );
-        }
-    }
 }
 
 //#[tokio::test]

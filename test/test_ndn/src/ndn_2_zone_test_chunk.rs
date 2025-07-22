@@ -1,6 +1,4 @@
-use std::io::SeekFrom;
-
-use crate::common::*;
+use crate::{common::*, named_data_mgr_test::NamedDataMgrTest};
 use hex::ToHex;
 use log::*;
 use ndn_lib::*;
@@ -28,7 +26,7 @@ pub async fn ndn_2_zone_chunk_ok() {
     // 1. write the chunk to local ndn-mgr
     let chunk_size: u64 = 1024 * 1024 + 515;
     let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
-    write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+    NamedDataMgrTest::write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 
     // 2. push the chunk using the NdnClient to zone_a
     local_ndn_client
@@ -45,8 +43,12 @@ pub async fn ndn_2_zone_chunk_ok() {
         .await
         .expect("pull chunk from ndn-mgr failed");
 
-    let buffer = read_chunk(target_ndn_mgr_id.as_str(), &chunk_id).await;
-    assert_eq!(buffer, chunk_data);
+    NamedDataMgrTest::read_chunk_with_check(
+        target_ndn_mgr_id.as_str(),
+        &chunk_id,
+        chunk_data.as_slice(),
+    )
+    .await;
 }
 
 //#[tokio::test]
@@ -73,7 +75,7 @@ pub async fn ndn_2_zone_chunk_not_found() {
     let (chunk_id, chunk_data) = generate_random_chunk(chunk_size);
 
     // 1. write the chunk to local ndn-mgr
-    write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
+    NamedDataMgrTest::write_chunk(ndn_mgr_id.as_str(), &chunk_id, chunk_data.as_slice()).await;
 
     // 2. push the chunk using the NdnClient to zone_a
     local_ndn_client
@@ -90,25 +92,7 @@ pub async fn ndn_2_zone_chunk_not_found() {
     //     .await
     //     .expect("pull chunk from ndn-mgr failed");
 
-    let ret = NamedDataMgr::open_chunk_reader(
-        Some(target_ndn_mgr_id.as_str()),
-        &chunk_id,
-        SeekFrom::Start(0),
-        false,
-    )
-    .await;
-
-    match ret {
-        Ok(_) => assert!(false, "should no chunk found"),
-        Err(err) => match err {
-            NdnError::NotFound(_) => {
-                info!("Chunk not found as expected");
-            }
-            _ => {
-                assert!(false, "Unexpected error type, {:?}", err);
-            }
-        },
-    }
+    NamedDataMgrTest::open_chunk_reader_not_found(target_ndn_mgr_id.as_str(), &chunk_id).await;
 }
 
 //#[tokio::test]
@@ -137,7 +121,7 @@ pub async fn ndn_2_zone_chunk_verify_failed() {
     let mut fake_chunk_data = chunk_data.clone();
     fake_chunk_data.splice(0..10, 0..10);
 
-    write_chunk(ndn_mgr_id.as_str(), &chunk_id, fake_chunk_data.as_slice()).await;
+    NamedDataMgrTest::write_chunk(ndn_mgr_id.as_str(), &chunk_id, fake_chunk_data.as_slice()).await;
 
     // 2. push the chunk using the NdnClient to zone_a
     local_ndn_client
@@ -154,9 +138,12 @@ pub async fn ndn_2_zone_chunk_verify_failed() {
         .await
         .expect("pull chunk from ndn-mgr failed");
 
-    let buffer = read_chunk(target_ndn_mgr_id.as_str(), &chunk_id).await;
-
-    assert_eq!(buffer, fake_chunk_data, "chunk-content check failed");
+    let buffer = NamedDataMgrTest::read_chunk_with_check(
+        target_ndn_mgr_id.as_str(),
+        &chunk_id,
+        fake_chunk_data.as_slice(),
+    )
+    .await;
 
     let hasher = ChunkHasher::new(None).expect("hash failed.");
     let hash = hasher.calc_from_bytes(&buffer);

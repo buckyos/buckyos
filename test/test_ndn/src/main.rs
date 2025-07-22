@@ -1,7 +1,9 @@
 mod common;
+mod named_data_mgr_test;
 mod ndn_2_zone_file_api;
 mod ndn_2_zone_test_chunk;
 mod ndn_2_zone_test_obj;
+mod ndn_client_test;
 
 use buckyos_kit::init_logging;
 use ndn_2_zone_file_api::*;
@@ -10,6 +12,10 @@ use ndn_2_zone_test_obj::*;
 
 #[tokio::main]
 async fn main() {
+    unsafe {
+        std::env::set_var("RUST_BACKTRACE", "full");
+    }
+
     init_logging("test-ndn", false);
 
     ndn_2_zone_chunk_ok().await;

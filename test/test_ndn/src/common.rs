@@ -42,35 +42,6 @@ pub fn generate_random_chunk(size: u64) -> (ChunkId, Vec<u8>) {
     (chunk_id, chunk_data)
 }
 
-pub async fn write_chunk(ndn_mgr_id: &str, chunk_id: &ChunkId, chunk_data: &[u8]) {
-    let (mut chunk_writer, _progress_info) =
-        NamedDataMgr::open_chunk_writer(Some(ndn_mgr_id), chunk_id, chunk_data.len() as u64, 0)
-            .await
-            .expect("open chunk writer failed");
-    chunk_writer
-        .write_all(chunk_data)
-        .await
-        .expect("write chunk to ndn-mgr failed");
-    NamedDataMgr::complete_chunk_writer(Some(ndn_mgr_id), chunk_id)
-        .await
-        .expect("wait chunk writer complete failed.");
-}
-
-pub async fn read_chunk(ndn_mgr_id: &str, chunk_id: &ChunkId) -> Vec<u8> {
-    let (mut chunk_reader, len) =
-        NamedDataMgr::open_chunk_reader(Some(ndn_mgr_id), chunk_id, SeekFrom::Start(0), false)
-            .await
-            .expect("open reader from ndn-mgr failed.");
-
-    let mut buffer = vec![0u8; len as usize];
-    chunk_reader
-        .read_exact(&mut buffer)
-        .await
-        .expect("read chunk from ndn-mgr failed");
-
-    buffer
-}
-
 pub type NdnServerHost = String;
 
 pub async fn init_local_ndn_server(ndn_mgr_id: &str) -> (NdnClient, NdnServerHost) {
