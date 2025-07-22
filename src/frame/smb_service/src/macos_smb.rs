@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use sfo_io::error::SfoIOErrorCode;
@@ -200,7 +202,7 @@ async fn is_buckyos_user(user_name: &str) -> SmbResult<bool> {
 }
 
 async fn add_share(share_name: &str, record_name: &str, path: &str, allow_users: Vec<String>) -> SmbResult<()> {
-    execute(format!(r#"sudo sharing -a "{}" -S {} -n "{}" -s 001 -g 000"#, path, share_name, record_name).as_str()).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
+    execute(format!(r#"sudo sharing -a "{}" -S "{}" -n "{}" -s 001 -g 000"#, path, share_name, record_name).as_str()).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
     for user in allow_users {
         execute(format!(r#"sudo chmod -R +a '{} allow list,add_file,search,add_subdirectory,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit' {}"#, user, path).as_str()).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
     }
