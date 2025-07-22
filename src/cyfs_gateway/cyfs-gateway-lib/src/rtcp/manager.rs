@@ -49,6 +49,8 @@ impl RTcpStackManager {
 
         rtcp_stack_map.insert(self.device.config.id.clone(), result_rtcp_stack.clone());
 
+        info!("RTCP stack init success");
+
         return Ok(result_rtcp_stack);
     }
 }

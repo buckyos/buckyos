@@ -61,8 +61,8 @@ pub async fn get_real_sn_host_name(sn: &str,device_id: &str) -> std::result::Res
     let response = match reqwest::get(&url).await {
         Ok(resp) => resp,
         Err(e) => {
-            info!("get sn host name from {} failed! {},use sn as host name", url, e);
-            return Err(RPCErrors::ReasonError(e.to_string()));
+            warn!("get sn host name from {} failed! {},use sn as host name", url, e);
+            return Ok(sn.to_string());
         }
     };
 
@@ -70,17 +70,21 @@ pub async fn get_real_sn_host_name(sn: &str,device_id: &str) -> std::result::Res
     let body = match response.text().await {
         Ok(text) => text,
         Err(e) => {
-            error!("get sn host name failed! {}", e);
-            return Err(RPCErrors::ReasonError(e.to_string()));
+            warn!("get sn host name failed! {}", e);
+            return Ok(sn.to_string());
         }
     };
 
-    let json: Value = serde_json::from_str(&body).map_err(|e| {
-        error!("get sn host name failed! {}", e);
-        RPCErrors::ParserResponseError(e.to_string())
-    })?;
-    let host_name = json["host"].as_str().unwrap();
-    info!("get sn real host from {} success! => {}", url,host_name);
+    let sn_config = serde_json::from_str(&body);
+    if sn_config.is_err() {
+        warn!("get sn host name failed! {}", sn_config.err().unwrap());
+        return Ok(sn.to_string());
+    }
+
+    let sn_config:Value = sn_config.unwrap();
+
+    let host_name = sn_config["host"].as_str().unwrap();
+    warn!("get sn real host from {} success! => {}", url,host_name);
     Ok(host_name.to_string())
 
 }
