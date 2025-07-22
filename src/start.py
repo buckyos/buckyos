@@ -108,6 +108,7 @@ def main():
     print("=== BuckyOS Development Environment Startup Script ===")
     
     # Parse command line arguments
+    config_group_name = None
     install_all = "--all" in sys.argv or "--reinstall" in sys.argv
     if install_all:
         config_group_name = "dev"
