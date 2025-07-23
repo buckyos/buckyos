@@ -85,7 +85,11 @@ impl NsProvider for DnsProvider {
             );
             resolver = TokioAsyncResolver::tokio(server_config, ResolverOpts::default());
         } else {
-            resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap();
+            let system_resolver = TokioAsyncResolver::tokio_from_system_conf();
+            if system_resolver.is_err() {
+                return Err(NSError::Failed(format!("create system resolver failed! {}",system_resolver.err().unwrap())));
+            }
+            resolver = system_resolver.unwrap();
         }
         info!("dns query: {}",name);
         //resolver.lookup(name, record_type)
