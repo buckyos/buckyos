@@ -755,7 +755,7 @@ async fn ndn_local_2_mgr_file_verify_failed() {
 // http://{host}/ndn/{obj-id}/inner-path
 #[tokio::test]
 async fn ndn_local_2_mgr_o_link_innerpath_file_ok() {
-    init_logging("ndn_local_o_link_innerpath_file_ok", false);
+    init_logging("ndn_local_2_mgr_o_link_innerpath_file_ok", false);
 
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
     let (ndn_client, ndn_host) = init_ndn_server(ndn_mgr_id.as_str()).await;
