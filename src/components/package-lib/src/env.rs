@@ -165,7 +165,11 @@ pub struct PackageEnvConfig {
 
 impl PackageEnvConfig {
     pub fn get_default_prefix() -> String {
-        /*
+        let env_str = env!("PACKAGE_DEFAULT_PERFIX").to_string();
+        if env_str.len() > 1 {
+            return env_str;
+        }
+
         //得到操作系统类型
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let os_type = "nightly-linux-amd64";
@@ -181,8 +185,7 @@ impl PackageEnvConfig {
         let os_type = "nightly-apple-aarch64";
 
         os_type.to_string()
-        */
-        env!("PACKAGE_DEFAULT_PERFIX").to_string()
+   
     }
 }
 

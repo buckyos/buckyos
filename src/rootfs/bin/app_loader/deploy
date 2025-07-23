@@ -34,9 +34,10 @@ def load_zone_config():
 if __name__ == "__main__":
     appid = sys.argv[1]
     username = sys.argv[2]
+    full_appid = util.get_full_appid(appid, username)
     app_instance_config_str = os.getenv("app_instance_config")
     if app_instance_config_str is None:
-        print(f"No configuration found for appid: {full_appid}")
+        print(f"No configuration found for appid: {appid} username: {username}")
         exit(1)
     app_instance_config = json.loads(app_instance_config_str)
 
