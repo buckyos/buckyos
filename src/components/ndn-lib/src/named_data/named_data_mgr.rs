@@ -50,6 +50,10 @@ impl NamedDataMgr {
         &self.db
     }
 
+    pub fn get_mgr_id(&self) -> Option<String> {
+        self.mgr_id.clone()
+    }
+
     pub async fn set_mgr_by_id(
         named_data_mgr_id: Option<&str>,
         mgr: NamedDataMgr,

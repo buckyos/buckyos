@@ -75,6 +75,10 @@ impl ObjId {
         ChunkType::is_chunk_type(&self.obj_type)
     }
 
+    pub fn is_chunk_list(&self) -> bool {
+        self.obj_type == OBJ_TYPE_CHUNK_LIST || self.obj_type == OBJ_TYPE_CHUNK_LIST_SIMPLE || self.obj_type == OBJ_TYPE_CHUNK_LIST_FIX_SIZE || self.obj_type == OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE
+    }
+
     pub fn is_json(&self) -> bool {
         if self.is_chunk() || self.is_container() {
             return false;

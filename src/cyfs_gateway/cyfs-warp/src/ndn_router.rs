@@ -53,6 +53,7 @@ impl LoadedObj {
 
 async fn load_obj(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset:u64)->RouterResult<LoadedObj> {
     let real_mgr = mgr.lock().await;
+    let mgr_id = real_mgr.get_mgr_id();
     if obj_id.is_chunk() {
         let chunk_id = ChunkId::from_obj_id(&obj_id);
         let seek_from = SeekFrom::Start(offset);
@@ -62,13 +63,32 @@ async fn load_obj(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset
                 match e {
                     NdnError::NotFound(e2) => RouterError::NotFound(e2),
                     _ => RouterError::Internal(format!("get chunk reader by objid failed: {}", e))
-                }
+                }   
             })?;
 
         debug!("ndn route -> chunk: {}, chunk_size: {}, offset: {}", obj_id.to_base32(), chunk_size, offset);
         return Ok(LoadedObj::new_chunk_result(obj_id.clone(),chunk_reader,chunk_size));
-    } else  {
-        //TODO: Add chunklist support
+    } 
+    else if obj_id.is_chunk_list() {
+        //let chunk_list_id = ChunkListId::from_obj_id(&obj_id);
+        drop(real_mgr);
+        let (chunk_list_reader,chunk_list_size) = NamedDataMgr::open_chunklist_reader(
+            mgr_id.as_deref(),
+            &obj_id,
+            SeekFrom::Start(offset),
+            true
+        ).await
+            .map_err(|e| {
+                warn!("get chunk list reader by objid failed: {}", e);
+                match e {
+                    NdnError::NotFound(e2) => RouterError::NotFound(e2),
+                    _ => RouterError::Internal(format!("get chunk list reader by objid failed: {}", e))
+                }
+            })?;
+
+        debug!("ndn route -> chunk list: {}, chunk list size: {}, offset: {}", obj_id.to_base32(), chunk_list_size, offset);
+        return Ok(LoadedObj::new_chunk_result(obj_id.clone(),chunk_list_reader,chunk_list_size));
+    } else {
         let obj_body = real_mgr.get_object_impl(&obj_id,None).await.map_err(|e| {
             warn!("get object by objid failed: {}", e);
             match e {
