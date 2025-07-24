@@ -1,10 +1,9 @@
-use std::{collections::HashMap, io::SeekFrom};
+use std::collections::HashMap;
 
 use buckyos_kit::*;
 use hex::ToHex;
 use log::*;
 use ndn_lib::*;
-use tokio::io::AsyncReadExt;
 
 use test_ndn::*;
 
@@ -309,7 +308,7 @@ async fn ndn_local_trie_obj_map_not_found() {
     info!("ndn_local_trie_obj_map_not_found test end.");
 }
 
-//#[tokio::test]
+#[tokio::test]
 async fn ndn_local_trie_obj_map_verify_failed() {
     init_logging("ndn_local_trie_obj_map_verify_failed", false);
 
