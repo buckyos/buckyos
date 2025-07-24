@@ -249,6 +249,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
         pkg_meta_jwt_map.insert(pkg_meta_obj_id.to_string(),pkg_meta_jwt_str);
     }
     // 2) Then call repo_server.pub_pkg
+    // TODO: 分离upload和pub_pkg
     let pkg_lens = pkg_meta_jwt_map.len();
     let runtime = get_buckyos_api_runtime().unwrap();
     let repo_client = runtime.get_repo_client().await.unwrap();
@@ -545,11 +546,8 @@ mod tests {
             None,
         ).await;
         
-    
         // 验证结果
         assert!(result.is_ok(), "打包失败: {:?}", result.err());
-        
-    
         
         // 验证文件是否存在
         let expected_tarball_path = Path::new(&dest_path)
