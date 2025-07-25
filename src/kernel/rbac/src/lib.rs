@@ -76,6 +76,7 @@ g, scheduler, kernel
 g, system-config, kernel
 g, verify-hub, kernel
 g, control-panel, kernel
+g, buckycli, kernel
 "#;
 
 
