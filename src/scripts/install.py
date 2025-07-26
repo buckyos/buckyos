@@ -128,6 +128,8 @@ def install_apps():
     # unzip to dest dir
     os_name = platform.system().lower()
     arch = platform.machine().lower()
+    if arch == "x86_64":
+        arch = "amd64"
 
     if not os.path.exists(download_dir):
         os.makedirs(download_dir)
@@ -136,17 +138,18 @@ def install_apps():
     img_prefix = f"nightly-linux-{arch}"
     print(f"app prefix is {preifx}")
     for app in pre_install_apps:
-        app_full_id = f"{preifx}.{app['app_id']}-bin.zip"
-        download_url = f"{app['base_url']}{version}/{app_full_id}"
-        download_path = os.path.join(download_dir, f"{app['app_id']}-bin.zip")
-        if download_file(download_url, download_path):
-            print(f"download {app_full_id} OK")
-            unzip_dir = os.path.join(install_root_dir, "bin", f"{app['app_id']}-bin")
-            unzip_to_dir(download_path, unzip_dir)
-            print(f"unzip {app_full_id} OK")
-        else:
-            print(f"download {app_full_id} FAILED")
-
+        if os_name == "windows" or os_name == "darwin":
+            app_full_id = f"{preifx}.{app['app_id']}-bin.zip"
+            download_url = f"{app['base_url']}{version}/{app_full_id}"
+            download_path = os.path.join(download_dir, f"{app['app_id']}-bin.zip")
+            if download_file(download_url, download_path):
+                print(f"download {app_full_id} OK")
+                unzip_dir = os.path.join(install_root_dir, "bin", f"{app['app_id']}-bin")
+                unzip_to_dir(download_path, unzip_dir)
+                print(f"unzip {app_full_id} OK")
+            else:
+                print(f"download {app_full_id} FAILED")
+        #https://github.com/buckyos/filebrowser/releases/download/0.4.0/nightly-linux-amd64.buckyos-filebrowser-img.zip
         app_img_full_id = f"{img_prefix}.{app['app_id']}-img.zip"
         download_url = f"{app['base_url']}{version}/{app_img_full_id}"
         download_path = os.path.join(download_dir, f"{app['app_id']}-img.zip")

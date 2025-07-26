@@ -146,8 +146,8 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(&st
     fs::write(&meta_json_path, &pkg_meta_json_str.as_bytes()).map_err(|e| {
         format!("Failed to write pkg.meta.json: {}", e.to_string())
     })?;
-    let meta_json_path = dest_dir_path.join(pkg_meta_obj_id.to_base32());
-    fs::write(&meta_json_path, &pkg_meta_json_str.as_bytes()).map_err(|e| {
+    let meta_json_path = dest_dir_path.join("meta_obj_id");
+    fs::write(&meta_json_path, &pkg_meta_obj_id.to_filename().as_bytes()).map_err(|e| {
         format!("Failed to write objid: {}", e.to_string())
     })?;
     // If private key is provided, sign the metadata

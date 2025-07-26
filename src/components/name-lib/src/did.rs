@@ -301,6 +301,12 @@ mod tests {
         let did_str = did.to_string();
         assert_eq!(did_str, "did:web:buckyos.ai");
 
+        let did = DID::from_str("did:web:buckyos.ai").unwrap();
+        let host_name = did.to_host_name();
+        assert_eq!(host_name, "buckyos.ai");
+        let did_str = did.to_string();
+        assert_eq!(did_str, "did:web:buckyos.ai");
+
 
         let did = DID::from_str("abcdef.dev.did").unwrap();
         assert_eq!(did.method, "dev");
