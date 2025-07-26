@@ -21,7 +21,12 @@ jobs:
     - uses: Kaven-Universe/github-action-current-date-time@v1
       id: date
       with:
-            format: 'YYMMDD'
+            format: 'YYYYMMDD'
+    - name: short time
+      id: short_time
+      run: |
+        val="${{ steps.date.outputs.time }}"
+        echo "last6=${val: -6}" >> $GITHUB_OUTPUT
     - name: Checkout
       uses: actions/checkout@v4
     - name: Setup pnpm
@@ -60,14 +65,14 @@ jobs:
     - name: Upload tools
       uses: actions/upload-artifact@v4
       with:
-        name: buckyos-tools-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        name: buckyos-tools-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}-${{ steps.short_time.outputs.last6 }}
         path: tools
         if-no-files-found: error
     - name: Upload
       uses: actions/upload-artifact@v4
       id: upload
       with:
-        name: buckyos-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        name: buckyos-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}-${{ steps.short_time.outputs.last6 }}
         path: rootfs.tar
         if-no-files-found: error
     outputs:
