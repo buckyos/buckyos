@@ -53,7 +53,7 @@ def make_deb(architecture, version):
 if __name__ == "__main__":
     architecture = "x86_64"
     #architecture = "aarch64"
-    version = "0.4.0-20250724"
+    version = "0.4.0-250724"
 
     if len(sys.argv) > 1:
         architecture = sys.argv[1]

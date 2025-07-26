@@ -124,6 +124,7 @@ def pack_rootfs_pkgs(rootfs_version: str):
             if sys_name == "windows" and machine_name == "aarch64":
                 print(f"skip {sys_name}-{machine_name}")
                 continue
+            print(f"pack {sys_name}-{machine_name}")
 
             rootfs_id = f"buckyos-{sys_name}-{machine_name}"
             rootfs_dir = os.path.join(rootfs_base_dir, rootfs_version,rootfs_id)

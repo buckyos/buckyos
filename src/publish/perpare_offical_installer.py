@@ -49,6 +49,7 @@ def install_pkg(pkg_name, target_dir, prefix, version):
 
 def prepare_bin_package(src_pkg_dir, prefix, version, target_dir):
     pack_pkg_items = glob.glob(os.path.join(src_pkg_dir,f"{prefix}*"))
+    print(f"# prepare_bin_package: {src_pkg_dir} ({prefix}*)")
     for pack_pkg_item in pack_pkg_items:
         if os.path.isdir(pack_pkg_item):
             #nightly-windows-amd64.app_loader ,app_loader is pkg_name
@@ -132,9 +133,15 @@ def prepare_rootfs_for_installer(target_dir, os_name, arch, version):
     for file in glob.glob(os.path.join(clean_dir, "*.pem")):
         os.remove(file)
 
-    os.remove(os.path.join(clean_dir, "start_config.json"))
-    os.remove(os.path.join(clean_dir, "node_identity.json"))
-    os.remove(os.path.join(clean_dir, "machine.json"))
+    start_config_file = os.path.join(clean_dir, "start_config.json")
+    if os.path.exists(start_config_file):
+        os.remove(start_config_file)
+    node_identity_file = os.path.join(clean_dir, "node_identity.json")
+    if os.path.exists(node_identity_file):
+        os.remove(node_identity_file)
+    machine_file = os.path.join(clean_dir, "machine.json")
+    if os.path.exists(machine_file):
+        os.remove(machine_file)
 
 # for test
 if __name__ == "__main__":

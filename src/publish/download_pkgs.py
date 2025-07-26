@@ -66,8 +66,8 @@ def download_rootfs(version):
     pass
 
 if __name__ == "__main__":
-    version = "0.4.0-20250724"
-    # version = sys.argv[1]
+    #version = "0.4.0-250724"
+    version = sys.argv[1]
     download_rootfs(version)
     print("download_rootfs done")
 
