@@ -21,7 +21,7 @@ jobs:
       uses: Kaven-Universe/github-action-current-date-time@v1
       id: date
       with:
-        format: 'YYYYMMDD'
+        format: 'YYMMDD'
     - name: Checkout
       uses: actions/checkout@v4
     - name: Setup pnpm
@@ -47,21 +47,23 @@ jobs:
       working-directory: ./src
       run: sudo python3 scripts/build.py --no-build-web-apps --no-install --target=${{inputs.arch}}-apple-darwin
     - name: Tar Rootfs
-      run: sudo tar -cvf rootfs.tar ./src/rootfs
+      run: 
+        cd ./src/rootfs
+        tar -cvf ../../rootfs.tar .
     - name: Prepare tools
       run: 
         sudo mkdir -p tools && sudo chmod 777 tools && sudo cp ./src/rootfs/bin/buckycli/buckycli ./tools/ 
     - name: Upload tools
       uses: actions/upload-artifact@v4
       with:
-        name: buckyos-tools-macos-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        name: buckyos-tools-apple-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
         path: tools
         if-no-files-found: error
     - name: Upload
       id: upload
       uses: actions/upload-artifact@v4
       with:
-        name: buckyos-macos-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        name: buckyos-apple-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
         path: rootfs.tar
         if-no-files-found: error
     outputs:

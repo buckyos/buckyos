@@ -21,7 +21,7 @@ jobs:
     - uses: Kaven-Universe/github-action-current-date-time@v1
       id: date
       with:
-            format: 'YYYYMMDD'
+            format: 'YYMMDD'
     - name: Checkout
       uses: actions/checkout@v4
     - name: Setup pnpm
