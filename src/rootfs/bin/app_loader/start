@@ -5,8 +5,11 @@ import sys
 import json
 import platform
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts import util
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+import util
 
 appid = None
 full_appid = None
