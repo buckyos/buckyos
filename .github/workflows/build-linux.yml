@@ -52,8 +52,7 @@ jobs:
       run: python3 scripts/build.py --no-build-web-apps --no-install --target=${{inputs.arch}}-unknown-linux-${{inputs.arch == 'aarch64' && 'gnu' || 'musl'}}
     - name: Tar Rootfs
       run:
-        cd ./src/rootfs
-        tar -cvf ../../rootfs.tar .
+        cd ./src/rootfs && tar -cvf ../../rootfs.tar .
     - name: Prepare tools
       run: |
         mkdir -p tools

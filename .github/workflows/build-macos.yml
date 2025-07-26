@@ -48,8 +48,7 @@ jobs:
       run: sudo python3 scripts/build.py --no-build-web-apps --no-install --target=${{inputs.arch}}-apple-darwin
     - name: Tar Rootfs
       run: 
-        cd ./src/rootfs
-        tar -cvf ../../rootfs.tar .
+        cd ./src/rootfs && tar -cvf ../../rootfs.tar .
     - name: Prepare tools
       run: 
         sudo mkdir -p tools && sudo chmod 777 tools && sudo cp ./src/rootfs/bin/buckycli/buckycli ./tools/ 
