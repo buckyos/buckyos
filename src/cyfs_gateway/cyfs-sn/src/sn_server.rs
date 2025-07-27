@@ -101,10 +101,17 @@ impl SNServer {
         }
         let username = username.unwrap().as_str();
         let username = username.unwrap();
+        let username = username.to_lowercase();
+
+        // 检测用户名是否包含特殊字符
+        if Self::contains_special_chars(username.as_str()) {
+            return Err(RPCErrors::ParseRequestError(
+                "Username contains special characters".to_string(),
+            ));
+        }
 
         let db = GLOBAL_SN_DB.lock().await;
-        let ret = db.is_user_exist(username);
-        let ret = db.is_user_exist(username).map_err(|e| {
+        let ret = db.is_user_exist(username.as_str()).map_err(|e| {
             error!("Failed to check username: {:?}", e);
             RPCErrors::ReasonError(e.to_string())
         })?;
@@ -115,6 +122,13 @@ impl SNServer {
             req.id,
         );
         return Ok(resp);
+    }
+
+    // 辅助函数：检测字符串是否包含特殊字符
+    fn contains_special_chars(s: &str) -> bool {
+        s.chars().any(|c| {
+            !c.is_alphanumeric() && !c.is_whitespace() && c != '_' && c != '-' && c != '.'
+        })
     }
 
     pub async fn check_active_code(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -497,6 +511,38 @@ impl SNServer {
         return None;
     }
 
+
+    //return (subhost,username)
+    pub fn get_user_subhost_from_host(host: &str,server_host: &str) -> Option<(String,String)> {
+        let end_string = format!(".{}", server_host);
+        if host.ends_with(&end_string) {
+            let sub_name = host[0..host.len() - end_string.len()].to_string();
+            if sub_name.contains(".") {
+                let sub_name2 = sub_name.clone();
+                let subs: Vec<&str> = sub_name.split(".").collect();
+                let username = subs.last();
+                if username.is_some() {
+                    return Some((sub_name2, username.unwrap().to_string()));
+                } else {
+                    return None;
+                }
+            } else {
+                if sub_name.contains("-") {
+                    let sub_name2 = sub_name.clone();
+                    let subs: Vec<&str> = sub_name.split("-").collect();
+                    let username = subs.last();
+                    if username.is_some() {
+                        return Some((sub_name2, username.unwrap().to_string()));
+                    } else {
+                        return None;
+                    }
+                } 
+                return Some((sub_name.clone(), sub_name));
+            }
+        }
+        return None;
+    }
+
     async fn get_user_zonegate_address(&self, username: &str) -> Option<Vec<IpAddr>> {
         let device_info = self.get_device_info(username, "ood1").await;
         
@@ -780,6 +826,8 @@ impl InnerServiceHandler for SNServer {
     }
 }
 
+
+
 #[async_trait]
 impl TunnelSelector for SNServer {
     async fn select_tunnel_for_http_upstream(
@@ -787,19 +835,11 @@ impl TunnelSelector for SNServer {
         req_host: &str,
         req_path: &str,
     ) -> Option<String> {
-        let end_string = format!(".{}", self.server_host.as_str());
-        if req_host.ends_with(&end_string) {
-            let sub_name = req_host[0..req_host.len() - end_string.len()].to_string();
-            //split sub_name by "."
-            let subs: Vec<&str> = sub_name.split(".").collect();
-            let username = subs.last();
-            if username.is_none() {
-                warn!("invalid username for sn tunnel selector {}", req_host);
-                return None;
-            }
-            let username = username.unwrap();
 
-            let device_info = self.get_device_info(username, "ood1").await;
+        let get_result = SNServer::get_user_subhost_from_host(req_host, &self.server_host);
+        if get_result.is_some() {
+            let (sub_host,username) = get_result.unwrap();
+            let device_info = self.get_device_info(username.as_str(), "ood1").await;
             if device_info.is_some() {
                 //info!("ood1 device info found for {} in sn server",username);
                 //let device_did = device_info.unwrap().0.did;
@@ -873,5 +913,24 @@ mod tests {
             assert_eq!(username, "lzc".to_string());
             println!("username: {}", username);
         }
+    }
+
+    #[test]
+    fn test_get_user_subhost_from_host() {
+        let server_host = "web3.buckyos.io".to_string();
+        let req_host = "home.lzc.web3.buckyos.io".to_string();
+        let (sub_host,username) = SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
+        assert_eq!(sub_host, "home.lzc".to_string());
+        assert_eq!(username, "lzc".to_string());
+
+        let req_host = "www-lzc.web3.buckyos.io".to_string();
+        let (sub_host,username) = SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
+        assert_eq!(sub_host, "www-lzc".to_string());
+        assert_eq!(username, "lzc".to_string());
+
+        let req_host = "buckyos-filebrowser-lzc.web3.buckyos.io".to_string();
+        let (sub_host,username) = SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
+        assert_eq!(sub_host, "buckyos-filebrowser-lzc".to_string());
+        assert_eq!(username, "lzc".to_string());
     }
 }

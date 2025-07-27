@@ -200,10 +200,6 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
                     .map_err(into_smb_err!(SmbErrorCode::Failed, "parse samba_info failed"))?;
                 samba_info
             },
-
-
-
-
             Err(e) => {
                 if let SystemConfigError::KeyNotFound(_path) = e {
                     log::debug!("user {} samba_info not found", user);

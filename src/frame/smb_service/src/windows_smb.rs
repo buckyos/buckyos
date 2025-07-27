@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 
 use std::ffi::{c_void, OsString};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -58,7 +59,7 @@ fn delete_if_buckyos_user(user_name: &str) -> SmbResult<()> {
     unsafe {
         let ret = NetUserGetInfo(PWSTR::null(), PWSTR::from_raw(name.as_mut_ptr()), 1, &mut buf);
         if ret == NERR_Success {
-            let mut p = buf as *const USER_INFO_1;
+            let p = buf as *const USER_INFO_1;
             let user = p.read();
             let comment = OsString::from_wide(user.usri1_comment.as_wide()).to_string_lossy().to_string();
             if comment == "buckyos user" {
@@ -214,7 +215,7 @@ fn set_share_allow_users(share_name: &str, allow_users: Vec<String>) -> SmbResul
         if ret != 0 {
             return Err(smb_err!(SmbErrorCode::Failed, "NetShareGetInfo failed: {}", ret));
         }
-        let mut p = buf as *const SHARE_INFO_502;
+        let p = buf as *const SHARE_INFO_502;
         let share = p.read();
 
         let mut acl_list = Vec::new();
@@ -319,7 +320,7 @@ fn delete_all_buckyos_share() -> SmbResult<()> {
                 let mut p = buf as *const SHARE_INFO_502;
                 for _ in 0..tr {
                     let share = p.read();
-                    let shi502_netname = OsString::from_wide(share.shi502_netname.as_wide()).to_string_lossy().to_string();
+                    let _shi502_netname = OsString::from_wide(share.shi502_netname.as_wide()).to_string_lossy().to_string();
                     let shi502_remark = OsString::from_wide(share.shi502_remark.as_wide()).to_string_lossy().to_string();
                     if shi502_remark == "buckyos share" {
                         let ret = NetShareDel(PWSTR::null(), share.shi502_netname, 0);
