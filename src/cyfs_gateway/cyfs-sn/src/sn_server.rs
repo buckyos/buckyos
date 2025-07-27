@@ -2,7 +2,6 @@
 use crate::sn_db::{self, *};
 use ::kRPC::*;
 use async_trait::async_trait;
-use buckyos_api::CURRENT_DEVICE_CONFIG;
 use cyfs_gateway_lib::TunnelSelector;
 use jsonwebtoken::DecodingKey;
 use lazy_static::lazy_static;

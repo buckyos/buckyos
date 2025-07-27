@@ -24,12 +24,14 @@ jsonwebtoken = "*"
 base64="*"
 once_cell="*"
 lazy_static="*"
+cfg-if = "1.0"
+reqwest = { version = "0.12", features = ["json"], optional = true }
+
 name-lib = { path = "../name-lib" }
 buckyos-kit = { path = "../buckyos-kit" }
 kRPC = { path = "../../kernel/kRPC" }
-#buckyos-api = { path = "../../kernel/buckyos-api" }
-cfg-if = "1.0"
-reqwest = { version = "0.12", features = ["json"], optional = true }
+
+
 
 [dev-dependencies]
 tempfile = "*"
