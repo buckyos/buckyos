@@ -17,7 +17,7 @@ use std::{
 };
 
 //objid link to a did::EncodedDocument
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, Hash)]
 pub struct ObjId {
     pub obj_type: String,
     pub obj_hash: Vec<u8>, //hash result

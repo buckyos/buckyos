@@ -1,184 +1,20 @@
-use std::{collections::HashMap, io::SeekFrom, path::PathBuf};
+use std::collections::HashMap;
 
 use buckyos_kit::*;
-use cyfs_gateway_lib::*;
-use cyfs_warp::*;
 use hex::ToHex;
 use log::*;
 use ndn_lib::*;
-use rand::{Rng, RngCore};
-use serde_json::json;
-use tokio::{
-    fs,
-    io::{AsyncReadExt, AsyncWriteExt},
-};
+
+use test_ndn::*;
 
 const IS_IGNORE: bool = true;
-
-fn generate_random_bytes(size: u64) -> Vec<u8> {
-    let mut rng = rand::rng();
-    let mut buffer = vec![0u8; size as usize];
-    rng.fill_bytes(&mut buffer);
-    buffer
-}
-
-fn generate_random_chunk_mix(size: u64) -> (ChunkId, Vec<u8>) {
-    let chunk_data = generate_random_bytes(size);
-    let hasher = ChunkHasher::new(None).expect("hash failed.");
-    let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_mix_hash_result_by_hash_method(size, &hash, HashMethod::Sha256).unwrap();
-    info!("chunk_id: {}", chunk_id.to_string());
-    (chunk_id, chunk_data)
-}
-
-fn generate_random_chunk(size: u64) -> (ChunkId, Vec<u8>) {
-    let chunk_data = generate_random_bytes(size);
-    let hasher = ChunkHasher::new(None).expect("hash failed.");
-    let hash = hasher.calc_from_bytes(&chunk_data);
-    let chunk_id = ChunkId::from_hash_result(&hash, ChunkType::Sha256);
-    info!("chunk_id: {}", chunk_id.to_string());
-    (chunk_id, chunk_data)
-}
-
-fn generate_random_chunk_list(count: usize, fix_size: Option<u64>) -> Vec<(ChunkId, Vec<u8>)> {
-    let mut chunk_list = Vec::with_capacity(count);
-    for _ in 0..count {
-        let (chunk_id, chunk_data) = if let Some(size) = fix_size {
-            generate_random_chunk_mix(size)
-        } else {
-            generate_random_chunk(rand::rng().random_range(1024u64..1024 * 1024 * 10))
-        };
-        chunk_list.push((chunk_id, chunk_data));
-    }
-    chunk_list
-}
-
-async fn write_chunk(ndn_mgr_id: &str, chunk_id: &ChunkId, chunk_data: &[u8]) {
-    let (mut chunk_writer, _progress_info) =
-        NamedDataMgr::open_chunk_writer(Some(ndn_mgr_id), chunk_id, chunk_data.len() as u64, 0)
-            .await
-            .expect("open chunk writer failed");
-    chunk_writer
-        .write_all(chunk_data)
-        .await
-        .expect("write chunk to ndn-mgr failed");
-    NamedDataMgr::complete_chunk_writer(Some(ndn_mgr_id), chunk_id)
-        .await
-        .expect("wait chunk writer complete failed.");
-}
-
-async fn _read_chunk(ndn_mgr_id: &str, chunk_id: &ChunkId) -> Vec<u8> {
-    let (mut chunk_reader, len) =
-        NamedDataMgr::open_chunk_reader(Some(ndn_mgr_id), chunk_id, SeekFrom::Start(0), false)
-            .await
-            .expect("open reader from ndn-mgr failed.");
-
-    let mut buffer = vec![0u8; len as usize];
-    chunk_reader
-        .read_exact(&mut buffer)
-        .await
-        .expect("read chunk from ndn-mgr failed");
-
-    buffer
-}
-
-type NdnServerHost = String;
-
-async fn init_ndn_server(ndn_mgr_id: &str) -> (NdnClient, NdnServerHost) {
-    let mut rng = rand::rng();
-    let tls_port = rng.random_range(10000u16..20000u16);
-    let http_port = rng.random_range(10000u16..20000u16);
-    let test_server_config = json!({
-        "tls_port": tls_port,
-        "http_port": http_port,
-        "hosts": {
-            "*": {
-                "enable_cors": true,
-                "routes": {
-                    "/ndn/": {
-                        "named_mgr": {
-                            "named_data_mgr_id": ndn_mgr_id,
-                            "read_only": false,
-                            "guest_access": true,
-                            "is_chunk_id_in_path": true,
-                            "enable_mgr_file_path": true
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    let test_server_config: WarpServerConfig = serde_json::from_value(test_server_config).unwrap();
-
-    tokio::spawn(async move {
-        info!("start test ndn server(powered by cyfs-warp)...");
-        start_cyfs_warp_server(test_server_config)
-            .await
-            .expect("start cyfs warp server failed.");
-    });
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-    let temp_dir = tempfile::tempdir()
-        .unwrap()
-        .path()
-        .join("ndn-test")
-        .join(ndn_mgr_id);
-
-    fs::create_dir_all(temp_dir.as_path())
-        .await
-        .expect("create temp dir failed.");
-
-    let config = NamedDataMgrConfig {
-        local_stores: vec![temp_dir.to_str().unwrap().to_string()],
-        local_cache: None,
-        mmap_cache_dir: None,
-    };
-
-    let named_mgr =
-        NamedDataMgr::from_config(Some(ndn_mgr_id.to_string()), temp_dir.to_path_buf(), config)
-            .await
-            .expect("init NamedDataMgr failed.");
-
-    NamedDataMgr::set_mgr_by_id(Some(ndn_mgr_id), named_mgr)
-        .await
-        .expect("set named data manager by id failed.");
-
-    let host = format!("localhost:{}", http_port);
-    let client = NdnClient::new(
-        format!("http://{}/ndn/", host),
-        None,
-        Some(ndn_mgr_id.to_string()),
-    );
-
-    (client, host)
-}
-
-async fn init_obj_map_storage_factory() -> PathBuf {
-    let data_path = std::env::temp_dir().join("test_ndn_trie_obj_map_data");
-    if GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY.get().is_some() {
-        info!("Object map storage factory already initialized");
-        return data_path;
-    }
-    if !data_path.exists() {
-        fs::create_dir_all(&data_path)
-            .await
-            .expect("create data path failed");
-    }
-
-    let _ = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY.set(TrieObjectMapStorageFactory::new(
-        data_path.clone(),
-        Some(TrieObjectMapStorageType::JSONFile),
-    ));
-    data_path
-}
 
 #[tokio::test]
 async fn ndn_local_trie_obj_map_basic() {
     init_logging("ndn_local_trie_obj_map_basic", false);
 
     info!("ndn_local_trie_obj_map_basic test start...");
-    init_obj_map_storage_factory().await;
+    init_trie_obj_map_storage_factory().await;
 
     let _rng = rand::rng();
     let chunk_fix_size: u64 = 1024 * 1024 + 513; // 1MB + x bytes
@@ -311,7 +147,7 @@ async fn ndn_local_trie_obj_map_basic() {
     );
 
     let mut fake_root_proof = proof.clone();
-    fake_root_proof.root_hash.as_mut_slice()[0] += 1;
+    fake_root_proof.root_hash.as_mut_slice()[0] ^= 1;
     let verify_ret = verifier
         .verify_object(
             "chunk1",
@@ -333,9 +169,9 @@ async fn ndn_local_trie_obj_map_ok() {
     init_logging("ndn_local_trie_obj_map_ok", false);
 
     info!("ndn_local_trie_obj_map_ok test start...");
-    init_obj_map_storage_factory().await;
+    init_trie_obj_map_storage_factory().await;
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let _ndn_client = init_local_ndn_server(ndn_mgr_id.as_str()).await;
 
     let chunks = generate_random_chunk_list(5, None);
     let _total_size: u64 = chunks.iter().map(|c| c.1.len() as u64).sum();
@@ -345,7 +181,7 @@ async fn ndn_local_trie_obj_map_ok() {
         .expect("create ObjectMap failed");
 
     for (chunk_id, chunk_data) in chunks.iter() {
-        write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
+        NamedDataMgrTest::write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
         obj_map_builder
             .put_object(chunk_id.to_string().as_str(), &chunk_id.to_obj_id())
             .expect("put chunk to trie-obj-map failed");
@@ -397,31 +233,16 @@ async fn ndn_local_trie_obj_map_ok() {
 
         assert_eq!(obj_id, expect_obj_id, "item {} object check failed", key);
 
-        let (mut chunk_reader, chunk_size) = NamedDataMgr::open_chunk_reader(
-            Some(ndn_mgr_id.as_str()),
-            &ChunkId::from_obj_id(&obj_id),
-            SeekFrom::Start(0),
-            false,
-        )
-        .await
-        .expect("open chunk list reader from ndn-mgr failed.");
-
-        let (_chunk_id, chunk_data) = chunks
+        let (chunk_id, chunk_data) = chunks
             .iter()
             .find(|(id, _)| id.to_obj_id() == obj_id)
             .expect("should find chunk in chunks");
-        assert_eq!(
-            chunk_size,
-            chunk_data.len() as u64,
-            "chunk size check failed"
-        );
-
-        let mut buffer = vec![0u8; chunk_size as usize];
-        chunk_reader
-            .read_exact(&mut buffer)
-            .await
-            .expect("read chunk list from ndn-mgr failed");
-        //assert_eq!(&buffer, chunk_data, "chunk_data content check failed");
+        let _got_chunk = NamedDataMgrTest::read_chunk_with_check(
+            ndn_mgr_id.as_str(),
+            &chunk_id,
+            chunk_data.as_slice(),
+        )
+        .await;
     }
 
     info!("ndn_local_trie_obj_map_ok test end.");
@@ -432,9 +253,9 @@ async fn ndn_local_trie_obj_map_not_found() {
     init_logging("ndn_local_trie_obj_map_not_found", false);
 
     info!("ndn_local_trie_obj_map_not_found test start...");
-    let _storage_dir = init_obj_map_storage_factory().await;
+    let _storage_dir = init_trie_obj_map_storage_factory().await;
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let _ndn_client = init_local_ndn_server(ndn_mgr_id.as_str()).await;
 
     let chunks = generate_random_chunk_list(5, None);
     let _total_size: u64 = chunks.iter().map(|c| c.1.len() as u64).sum();
@@ -444,7 +265,7 @@ async fn ndn_local_trie_obj_map_not_found() {
         .expect("create ObjectMap failed");
 
     for (chunk_id, chunk_data) in chunks.iter() {
-        write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
+        NamedDataMgrTest::write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
         obj_map_builder
             .put_object(chunk_id.to_string().as_str(), &chunk_id.to_obj_id())
             .expect("put chunk to trie-obj-map failed");
@@ -487,14 +308,14 @@ async fn ndn_local_trie_obj_map_not_found() {
     info!("ndn_local_trie_obj_map_not_found test end.");
 }
 
-//#[tokio::test]
+#[tokio::test]
 async fn ndn_local_trie_obj_map_verify_failed() {
     init_logging("ndn_local_trie_obj_map_verify_failed", false);
 
     info!("ndn_local_trie_obj_map_verify_failed test start...");
-    let _storage_dir = init_obj_map_storage_factory().await;
+    let _storage_dir = init_trie_obj_map_storage_factory().await;
     let ndn_mgr_id: String = generate_random_bytes(16).encode_hex();
-    let _ndn_client = init_ndn_server(ndn_mgr_id.as_str()).await;
+    let _ndn_client = init_local_ndn_server(ndn_mgr_id.as_str()).await;
 
     let verifier = TrieObjectMapProofVerifierHelper::new(HashMethod::Sha256);
 
@@ -506,7 +327,7 @@ async fn ndn_local_trie_obj_map_verify_failed() {
         .expect("create ObjectMap failed");
 
     for (chunk_id, chunk_data) in chunks.iter() {
-        write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
+        NamedDataMgrTest::write_chunk(ndn_mgr_id.as_str(), chunk_id, chunk_data.as_slice()).await;
         obj_map_builder
             .put_object(chunk_id.to_string().as_str(), &chunk_id.to_obj_id())
             .expect("put chunk to trie-obj-map failed");
