@@ -4,7 +4,7 @@ version = "0.4.0"
 edition = "2021"
 
 [dependencies]
-buckyos-kit = { path = "../../components/buckyos-kit" }
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 rust-ini = "0.21.1"
 tokio = { version = "1.42.0", features = ["full"] }

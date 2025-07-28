@@ -32,11 +32,11 @@ async-trait = "*"
 thiserror = "*"
 
 
-ndn-lib = { path = "../../components/ndn-lib" }
+ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib" }
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 cyfs-sn = { path = "../cyfs-sn" }
-buckyos-kit = { path = "../../components/buckyos-kit" }
-kRPC = { path = "../../kernel/kRPC" }
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
+kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC" }
 
 
 [dev-dependencies]

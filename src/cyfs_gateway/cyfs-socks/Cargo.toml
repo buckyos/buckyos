@@ -24,4 +24,4 @@ fast-socks5 = "*"
 once_cell = "*"
 chrono = "*"
 
-buckyos-kit = { path = "../../components/buckyos-kit" }
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
