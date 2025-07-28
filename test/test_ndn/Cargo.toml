@@ -23,7 +23,7 @@ buckyos-kit = { path = "../../src/components/buckyos-kit" }
 name-lib = { path = "../../src/components/name-lib" }
 name-client = { path = "../../src/components/name-client" }
 tempfile = "*"
-rand = "*"
+rand = "0.9.1"
 cyfs-gateway-lib = { path = "../../src/cyfs_gateway/cyfs-gateway-lib" }
 cyfs-warp = { path = "../../src/cyfs_gateway/cyfs-warp" }
 kRPC = { path = "../../src/kernel/kRPC" }

@@ -1,11 +1,7 @@
-use std::{ops::Range, path::PathBuf};
-
 use log::*;
 use ndn_lib::{
-    CYFSHttpRespHeaders, ChunkId, ChunkReader, NdnClient, NdnError, ObjId,
-    build_named_object_by_json,
+    CYFSHttpRespHeaders, ChunkId, NdnClient, NdnError, ObjId, build_named_object_by_json,
 };
-use rand::Rng;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
@@ -86,6 +82,14 @@ pub trait NdnClientTest {
         chunk_id: &ChunkId,
         no_verify: bool,
     );
+    async fn pull_chunk_with_check(
+        &self,
+        chunk_id: &ChunkId,
+        target_ndn_mgr_id: &str,
+        expect: &[u8],
+    ) -> Vec<u8>;
+    async fn pull_chunk_err(&self, chunk_id: &ChunkId, target_ndn_mgr_id: &str) -> NdnError;
+    async fn pull_chunk_not_found(&self, chunk_id: &ChunkId, target_ndn_mgr_id: &str);
 }
 
 #[async_trait::async_trait]
@@ -438,11 +442,10 @@ impl NdnClientTest for NdnClient {
             .download_chunk_to_local(chunk_url, chunk_id.clone(), &download_path, Some(no_verify))
             .await
             .expect_err("download chunk to local should failed");
-        // TODO: invalid file reserved
-        // assert!(
-        //     !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
-        //     "chunk should removed for verify failed"
-        // );
+        assert!(
+            !std::fs::exists(download_path.as_path()).expect("unknown error for filesystem"),
+            "chunk should removed for verify failed"
+        );
         err
     }
 
@@ -474,6 +477,39 @@ impl NdnClientTest for NdnClient {
         if let NdnError::VerifyError(_) = err {
         } else {
             assert!(false, "unexpect error, should verify failed. {:?}", err)
+        }
+    }
+
+    async fn pull_chunk_with_check(
+        &self,
+        chunk_id: &ChunkId,
+        target_ndn_mgr_id: &str,
+        expect: &[u8],
+    ) -> Vec<u8> {
+        let got_chunk_len = self
+            .pull_chunk(chunk_id.clone(), Some(target_ndn_mgr_id))
+            .await
+            .expect("pull chunk from ndn-mgr failed");
+
+        let buffer = NamedDataMgrTest::read_chunk(target_ndn_mgr_id, &chunk_id).await;
+        assert_eq!(Sha256::digest(buffer.as_slice()), Sha256::digest(expect));
+        assert_eq!(got_chunk_len, expect.len() as u64, "got chunk len mismatch");
+        buffer
+    }
+
+    async fn pull_chunk_err(&self, chunk_id: &ChunkId, target_ndn_mgr_id: &str) -> NdnError {
+        self.pull_chunk(chunk_id.clone(), Some(target_ndn_mgr_id))
+            .await
+            .expect_err("pull chunk from ndn-mgr should failed")
+    }
+
+    async fn pull_chunk_not_found(&self, chunk_id: &ChunkId, target_ndn_mgr_id: &str) {
+        let err = self.pull_chunk_err(chunk_id, target_ndn_mgr_id).await;
+
+        if let NdnError::NotFound(_) = err {
+            info!("Chunk not found as expected");
+        } else {
+            assert!(false, "Unexpected error type {:?}", err);
         }
     }
 }

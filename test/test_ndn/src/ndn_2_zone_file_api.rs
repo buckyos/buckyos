@@ -362,7 +362,7 @@ pub async fn ndn_2_zone_file_verify_failed() {
 // http://{host}/ndn/{obj-id}/inner-path
 //#[tokio::test]
 pub async fn ndn_2_zone_o_link_innerpath_file_ok() {
-    info!("ndn_local_o_link_innerpath_file_ok");
+    info!("ndn_2_zone_o_link_innerpath_file_ok");
 
     let ndn_mgr_id: String = "default".to_string();
 

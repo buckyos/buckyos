@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use cyfs_gateway_lib::WarpServerConfig;
 use cyfs_warp::start_cyfs_warp_server;
 use hex::ToHex;
@@ -35,6 +37,83 @@ pub fn generate_random_chunk(size: u64) -> (ChunkId, Vec<u8>) {
     let chunk_id = ChunkId::from_sha256_result(&hash);
     info!("chunk_id: {}", chunk_id.to_string());
     (chunk_id, chunk_data)
+}
+
+pub fn generate_random_chunk_mix(size: u64) -> (ChunkId, Vec<u8>) {
+    let chunk_data = generate_random_bytes(size);
+    let hasher = ChunkHasher::new(None).expect("hash failed.");
+    let hash = hasher.calc_from_bytes(&chunk_data);
+    let chunk_id =
+        ChunkId::from_mix_hash_result_by_hash_method(size, &hash, HashMethod::Sha256).unwrap();
+    info!("chunk_id: {}", chunk_id.to_string());
+    (chunk_id, chunk_data)
+}
+
+pub fn generate_random_chunk_list(count: usize, fix_size: Option<u64>) -> Vec<(ChunkId, Vec<u8>)> {
+    let mut chunk_list = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (chunk_id, chunk_data) = if let Some(size) = fix_size {
+            generate_random_chunk_mix(size)
+        } else {
+            generate_random_chunk_mix(rand::rng().random_range(1024u64..1024 * 1024 * 10))
+        };
+        chunk_list.push((chunk_id, chunk_data));
+    }
+    chunk_list
+}
+
+pub async fn init_obj_array_storage_factory() -> PathBuf {
+    let data_path = std::env::temp_dir().join("test_ndn_chunklist_data");
+    if GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.get().is_some() {
+        info!("Object array storage factory already initialized");
+        return data_path;
+    }
+    if !data_path.exists() {
+        fs::create_dir_all(&data_path)
+            .await
+            .expect("create data path failed");
+    }
+
+    let _ = GLOBAL_OBJECT_ARRAY_STORAGE_FACTORY.set(ObjectArrayStorageFactory::new(&data_path));
+    data_path
+}
+
+pub async fn init_obj_map_storage_factory() -> PathBuf {
+    let data_path = std::env::temp_dir().join("test_ndn_obj_map_data");
+    if GLOBAL_OBJECT_MAP_STORAGE_FACTORY.get().is_some() {
+        info!("Object map storage factory already initialized");
+        return data_path;
+    }
+    if !data_path.exists() {
+        fs::create_dir_all(&data_path)
+            .await
+            .expect("create data path failed");
+    }
+
+    let _ = GLOBAL_OBJECT_MAP_STORAGE_FACTORY.set(ObjectMapStorageFactory::new(
+        &data_path,
+        Some(ObjectMapStorageType::JSONFile),
+    ));
+    data_path
+}
+
+pub async fn init_trie_obj_map_storage_factory() -> PathBuf {
+    let data_path = std::env::temp_dir().join("test_ndn_trie_obj_map_data");
+    if GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY.get().is_some() {
+        info!("Object map storage factory already initialized");
+        return data_path;
+    }
+    if !data_path.exists() {
+        fs::create_dir_all(&data_path)
+            .await
+            .expect("create data path failed");
+    }
+
+    let _ = GLOBAL_TRIE_OBJECT_MAP_STORAGE_FACTORY.set(TrieObjectMapStorageFactory::new(
+        data_path.clone(),
+        Some(TrieObjectMapStorageType::JSONFile),
+    ));
+    data_path
 }
 
 pub type NdnServerHost = String;
@@ -313,6 +392,109 @@ pub async fn check_file_obj(
                 Err(err) => assert!(false, "get file-object {:?}, {:?}", file_obj_id, err),
             },
             None => assert!(got_ret.is_ok(), "get object {:?} failed", file_obj_id,),
+        }
+    }
+}
+
+pub async fn check_obj_inner_path(
+    ndn_mgr_id: &str,
+    obj_id: &ObjId,
+    obj_type: &str,
+    inner_path: Option<&str>,
+    expect_value: Option<Option<&serde_json::Value>>,
+    unexpect_value: Option<Option<&serde_json::Value>>,
+    expect_obj_id: Option<&ObjId>,
+) {
+    let got_ret =
+        NamedDataMgr::get_object(Some(ndn_mgr_id), obj_id, inner_path.map(|p| p.to_string())).await;
+
+    if let Some(expect_value) = &expect_value {
+        match expect_value {
+            Some(expect_value) => match &got_ret {
+                Ok(got_obj) => {
+                    let (_expect_obj_id, expect_obj_str) =
+                        build_named_object_by_json(obj_type, *expect_value);
+                    let (got_obj_id, got_obj_str) = build_named_object_by_json(obj_type, got_obj);
+
+                    if inner_path.is_none() {
+                        assert_eq!(
+                            &got_obj_id,
+                            expect_obj_id.unwrap_or(obj_id),
+                            "object-id mismatch"
+                        );
+                    }
+
+                    // log::info!(
+                    //     "ndn_local_object_ok test inner-path {:?} check object, expect: {}, got: {}.",
+                    //     inner_path, expect_obj_str, got_obj_str
+                    // );
+
+                    assert_eq!(
+                        got_obj_str, expect_obj_str,
+                        "obj['{:?}'] check failed",
+                        inner_path
+                    );
+                }
+                Err(err) => assert!(
+                    false,
+                    "get object {:?} with innser-path {:?} failed, error: {:?}",
+                    obj_id, inner_path, err
+                ),
+            },
+            None => match &got_ret {
+                Ok(got_obj) => {
+                    assert!(
+                        got_obj.is_null(),
+                        "should no object found: {}, inner-path: {:?}",
+                        got_obj.to_string(),
+                        inner_path
+                    )
+                }
+                Err(err) => match err {
+                    NdnError::NotFound(_) => {
+                        info!("Chunk not found as expected");
+                    }
+                    _ => {
+                        assert!(false, "Unexpected error type: {:?}", err);
+                    }
+                },
+            },
+        }
+    }
+
+    if let Some(unexpect_value) = &unexpect_value {
+        match unexpect_value {
+            Some(unexpect_value) => match &got_ret {
+                Ok(got_obj) => {
+                    let (_unexpect_obj_id, unexpect_obj_str) =
+                        build_named_object_by_json(obj_type, *unexpect_value);
+                    let (got_obj_id, got_obj_str) = build_named_object_by_json(obj_type, got_obj);
+
+                    if inner_path.is_none() {
+                        assert_eq!(
+                            &got_obj_id,
+                            expect_obj_id.unwrap_or(obj_id),
+                            "object-id mismatch"
+                        );
+                    }
+                    assert_ne!(
+                        got_obj_str, unexpect_obj_str,
+                        "obj['{:?}'] check failed",
+                        inner_path
+                    );
+                }
+                Err(err) => assert!(
+                    false,
+                    "get object {:?} with innser-path {:?} failed, error: {:?}",
+                    obj_id, inner_path, err
+                ),
+            },
+            None => assert!(
+                got_ret.is_ok(),
+                "get object {:?} with innser-path {:?} failed",
+                obj_id,
+                inner_path
+            ),
         }
     }
 }
