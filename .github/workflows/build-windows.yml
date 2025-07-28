@@ -25,8 +25,9 @@ jobs:
     - name: short time
       id: short_time
       run: |
-        val="${{ steps.date.outputs.time }}"
-        echo "last6=${val: -6}" >> $GITHUB_OUTPUT
+        val = "${{ steps.date.outputs.time }}"
+        last6 = val.Substring(val.Length - 6)
+        "last6=$last6" >> $env:GITHUB_OUTPUT
     - name: Checkout
       uses: actions/checkout@v4
     - name: Setup pnpm
