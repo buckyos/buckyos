@@ -52,6 +52,7 @@ pub struct InstallConfig {
     pub local_cache_mount_point: Vec<String>,
     pub tcp_ports: HashMap<String,u16>,
     pub udp_ports: HashMap<String,u16>,
+    pub container_param:Option<String>,
 } 
 
 impl Default for InstallConfig {
@@ -62,6 +63,7 @@ impl Default for InstallConfig {
             local_cache_mount_point: vec![],
             tcp_ports: HashMap::new(),
             udp_ports: HashMap::new(),
+            container_param: None,
         }
     }
 }
@@ -162,7 +164,9 @@ pub struct AppConfig {
     
     //network resource, name:docker_inner_port
     pub tcp_ports: HashMap<String,u16>,
-    pub udp_ports: HashMap<String,u16>
+    pub udp_ports: HashMap<String,u16>,
+
+    pub container_param:Option<String>,
 }
 
 
@@ -197,6 +201,8 @@ pub struct AppServiceInstanceConfig {
     pub tcp_ports: HashMap<u16,u16>,
     pub udp_ports: HashMap<u16,u16>,
     //pub service_image_name : String, // support mutil platform image name (arm/x86...)
+
+    pub container_param:Option<String>,
 }
 
 
@@ -220,6 +226,7 @@ impl AppServiceInstanceConfig {
             memory_quota: app_config.memory_quota.clone(),
             tcp_ports: HashMap::new(),//TODO
             udp_ports: HashMap::new(),
+            container_param: app_config.container_param.clone(),
         }
     }
 

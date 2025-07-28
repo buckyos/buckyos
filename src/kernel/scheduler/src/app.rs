@@ -22,7 +22,7 @@ fn build_app_service_config(user_id:&str,app_config:&AppConfig,node_info:&Device
         result_config.docker_image_pkg_id = Some(docker_pkg_info.pkg_id.clone());
         result_config.docker_image_name = docker_pkg_info.docker_image_name.clone();
         result_config.docker_image_hash = docker_pkg_info.docker_image_hash.clone();
-        
+        result_config.container_param = app_config.container_param.clone();
     } else {
         // 解析是否有<arch>_<os_type>_app字段
         let app_pkg_name = format!("{}_{}_app", node_info.arch.as_str(),node_info.os.as_str());

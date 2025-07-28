@@ -157,6 +157,9 @@ def start_app_with_docker():
 
     docker_command += f" {image_name}"
 
+    container_param = app_instance_config.get("container_param")
+    if container_param:
+        docker_command += f" {container_param}"
 
     print(f"docker craete container command: {docker_command}")
     os.system(docker_command)
