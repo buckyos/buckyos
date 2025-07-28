@@ -165,7 +165,11 @@ pub struct PackageEnvConfig {
 
 impl PackageEnvConfig {
     pub fn get_default_prefix() -> String {
-        /*
+        let env_str = env!("PACKAGE_DEFAULT_PERFIX").to_string();
+        if env_str.len() > 1 {
+            return env_str;
+        }
+
         //得到操作系统类型
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let os_type = "nightly-linux-amd64";
@@ -181,8 +185,7 @@ impl PackageEnvConfig {
         let os_type = "nightly-apple-aarch64";
 
         os_type.to_string()
-        */
-        env!("PACKAGE_DEFAULT_PERFIX").to_string()
+   
     }
 }
 
@@ -590,16 +593,7 @@ impl PackageEnv {
                 #[cfg(target_family = "windows")]
                 std::os::windows::fs::symlink_dir(&synlink_target, &latest_symlink_path)?;
                 info!("create latest symlink: {} -> {}", latest_symlink_path.display(), synlink_target.as_str());
-            } else {
-                let latest_folder_path = format!("./{}", link_pkg_name);
-                let latest_folder_path = self.work_dir.join(latest_folder_path);
-                if tokio::fs::metadata(&latest_folder_path).await.is_ok() {
-                    tokio::fs::remove_dir(&latest_folder_path).await?;
-                }
-                tokio::fs::create_dir(&latest_folder_path).await?;
-                tokio::fs::copy(&synlink_target, &latest_folder_path).await?;
-                info!("create latest folder: {} && copy files.", latest_folder_path.display());
-            }
+            } 
         }
 
         Ok(())

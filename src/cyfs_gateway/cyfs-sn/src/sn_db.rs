@@ -8,6 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension, Result};
 use rand::Rng;
 use std::{path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
 use log::*;
+use serde_json;
 
 use tokio::sync::Mutex;
 use std::sync::Arc;
@@ -90,11 +91,15 @@ impl SnDB {
     }
 
     pub fn register_user(&self, active_code: &str, username: &str, public_key: &str, zone_config: &str, user_domain: Option<String>) -> Result<bool> {
+        self.register_user_with_sn_ips(active_code, username, public_key, zone_config, user_domain, None)
+    }
+    
+    pub fn register_user_with_sn_ips(&self, active_code: &str, username: &str, public_key: &str, zone_config: &str, user_domain: Option<String>, sn_ips: Option<String>) -> Result<bool> {
         let mut stmt = self.conn.prepare("SELECT used FROM activation_codes WHERE code =?1")?;
         let used: Option<i32> = stmt.query_row(params![active_code], |row| row.get(0))?;
         if let Some(0) = used {
-            let mut stmt = self.conn.prepare("INSERT INTO users (username, public_key, activation_code, zone_config, user_domain) VALUES (?1,?2,?3,?4,?5)")?;   
-            stmt.execute(params![username, public_key, active_code, zone_config, user_domain])?;    
+            let mut stmt = self.conn.prepare("INSERT INTO users (username, public_key, activation_code, zone_config, user_domain, sn_ips) VALUES (?1,?2,?3,?4,?5,?6)")?;   
+            stmt.execute(params![username, public_key, active_code, zone_config, user_domain, sn_ips])?;    
             let mut stmt = self.conn.prepare("UPDATE activation_codes SET used = 1 WHERE code =?1")?;   
             stmt.execute(params![active_code])?;
             Ok(true)
@@ -112,10 +117,63 @@ impl SnDB {
         stmt.execute(params![zone_config, username])?;
         Ok(())
     }
-    pub fn get_user_info(&self, username: &str) -> Result<Option<(String, String)>> {
-        let mut stmt = self.conn.prepare("SELECT public_key, zone_config FROM users WHERE username =?1")?;
+    
+    pub fn update_user_sn_ips(&self, username: &str, sn_ips: &str) -> Result<()> {
+        let mut stmt = self.conn.prepare("UPDATE users SET sn_ips =?1 WHERE username =?2")?;
+        stmt.execute(params![sn_ips, username])?;
+        Ok(())
+    }
+    
+    pub fn get_user_sn_ips(&self, username: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare("SELECT sn_ips FROM users WHERE username =?1")?;
+        let sn_ips = stmt.query_row(params![username], |row| row.get(0)).optional()?;
+        Ok(sn_ips)
+    }
+    
+    pub fn get_user_sn_ips_as_vec(&self, username: &str) -> Result<Option<Vec<String>>> {
+        if let Some(sn_ips_str) = self.get_user_sn_ips(username)? {
+            if sn_ips_str.is_empty() {
+                return Ok(Some(Vec::new()));
+            }
+            match serde_json::from_str::<Vec<String>>(&sn_ips_str) {
+                Ok(ips) => Ok(Some(ips)),
+                Err(_) => {
+                    // 如果 JSON 解析失败，尝试作为逗号分隔的字符串解析
+                    let ips: Vec<String> = sn_ips_str.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    Ok(Some(ips))
+                }
+            }
+        } else {
+            Ok(None)
+        }
+    }
+    
+    pub fn set_user_sn_ips_from_vec(&self, username: &str, ips: &[String]) -> Result<()> {
+        let sn_ips_json = serde_json::to_string(ips).map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        self.update_user_sn_ips(username, &sn_ips_json)
+    }
+    
+    pub fn add_user_sn_ip(&self, username: &str, ip: &str) -> Result<()> {
+        let mut current_ips = self.get_user_sn_ips_as_vec(username)?.unwrap_or_default();
+        if !current_ips.contains(&ip.to_string()) {
+            current_ips.push(ip.to_string());
+            self.set_user_sn_ips_from_vec(username, &current_ips)?;
+        }
+        Ok(())
+    }
+    
+    pub fn remove_user_sn_ip(&self, username: &str, ip: &str) -> Result<()> {
+        let mut current_ips = self.get_user_sn_ips_as_vec(username)?.unwrap_or_default();
+        current_ips.retain(|x| x != ip);
+        self.set_user_sn_ips_from_vec(username, &current_ips)
+    }
+    pub fn get_user_info(&self, username: &str) -> Result<Option<(String, String, Option<String>)>> {
+        let mut stmt = self.conn.prepare("SELECT public_key, zone_config, sn_ips FROM users WHERE username =?1")?;
         let user_info = stmt.query_row(params![username], |row| {
-            Ok((row.get(0)?, row.get(1)?))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         }) 
         .optional()?;
         Ok(user_info)
@@ -158,16 +216,16 @@ impl SnDB {
     pub fn initialize_database(&self) -> Result<()> {
         let mut stmt = self.conn.prepare("CREATE TABLE IF NOT EXISTS activation_codes (code TEXT PRIMARY KEY, used INTEGER)")?;
         stmt.execute([])?;
-        let mut stmt = self.conn.prepare("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, public_key TEXT, activation_code TEXT, zone_config TEXT, user_domain TEXT)")?;   
+        let mut stmt = self.conn.prepare("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, public_key TEXT, activation_code TEXT, zone_config TEXT, user_domain TEXT, sn_ips TEXT)")?;   
         stmt.execute([])?; 
         let mut stmt = self.conn.prepare("CREATE TABLE IF NOT EXISTS devices (owner TEXT, device_name TEXT, did TEXT PRIMARY KEY, ip TEXT, description TEXT, created_at INTEGER, updated_at INTEGER)")?;
         stmt.execute([])?;
         Ok(())
     }
-    pub fn get_user_info_by_domain(&self, domain: &str) -> Result<Option<(String, String, String)>> {
-        let mut stmt = self.conn.prepare("SELECT username, public_key, zone_config FROM users WHERE ? = user_domain OR ? LIKE '%.' || user_domain")?;
+    pub fn get_user_info_by_domain(&self, domain: &str) -> Result<Option<(String, String, String, Option<String>)>> {
+        let mut stmt = self.conn.prepare("SELECT username, public_key, zone_config, sn_ips FROM users WHERE ? = user_domain OR ? LIKE '%.' || user_domain")?;
         let user_info = stmt.query_row(params![domain, domain], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         }).optional()?;
         Ok(user_info)
     }
@@ -220,8 +278,37 @@ mod tests {
             "eyJhbGciOiJFZERTQSJ9.eyJkaWQiOiJkaWQ6ZW5zOmx6YyIsIm9vZHMiOlsib29kMSJdLCJzbiI6IndlYjMuYnVja3lvcy5pbyIsImV4cCI6MjA0NDgyMzMzNn0.Xqd-4FsDbqZt1YZOIfduzsJik5UZmuylknMiAxLToB2jBBzHHccn1KQptLhhyEL5_Y-89YihO9BX6wO7RoqABw", Some("www.zhicong.me".to_string()))?;
         if registration_success {
             println!("User registered successfully.");
+            
+            // 设置初始的 sn_ips
+            db.set_user_sn_ips_from_vec("lzc", &vec!["70.221.32.12".to_string()])?;
+            println!("Set initial sn_ips for user");
         } else {
             println!("Registration failed.");
+        }
+        
+        // 测试 sn_ips 功能
+        if let Some(sn_ips) = db.get_user_sn_ips("lzc")? {
+            println!("User sn_ips: {}", sn_ips);
+        }
+        
+        if let Some(ips_vec) = db.get_user_sn_ips_as_vec("lzc")? {
+            println!("User sn_ips as vec: {:?}", ips_vec);
+        }
+        
+        // 添加新的 IP
+        db.add_user_sn_ip("lzc", "192.168.1.100")?;
+        println!("Added new IP to user");
+        
+        if let Some(ips_vec) = db.get_user_sn_ips_as_vec("lzc")? {
+            println!("User sn_ips after adding: {:?}", ips_vec);
+        }
+        
+        // 移除 IP
+        db.remove_user_sn_ip("lzc", "70.221.32.12")?;
+        println!("Removed IP from user");
+        
+        if let Some(ips_vec) = db.get_user_sn_ips_as_vec("lzc")? {
+            println!("User sn_ips after removing: {:?}", ips_vec);
         }
         let device_info_str =r#"{"hostname":"ood1","device_type":"ood","did":"did:dev:gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc","ip":"192.168.1.86","sys_hostname":"LZC-USWORK","base_os_info":"Ubuntu 22.04 5.15.153.1-microsoft-standard-WSL2","cpu_info":"AMD Ryzen 7 5800X 8-Core Processor @ 3800 MHz","cpu_usage":0.0,"total_mem":67392299008,"mem_usage":5.7286677}"#;
         println!("device_info_str: {}",device_info_str);

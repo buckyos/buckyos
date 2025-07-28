@@ -118,6 +118,9 @@ impl DID {
             let web3_bridge_config = web3_bridge_config.unwrap();
             for (method,bridge_base_hostname) in web3_bridge_config.iter() {
                 if host_name.ends_with(bridge_base_hostname) {
+                    if host_name == bridge_base_hostname {
+                        break;
+                    }
                     let id = host_name[..host_name.len()-bridge_base_hostname.len()-1].to_string();
                     return Some(DID::new(method, &id));
                 }
@@ -276,6 +279,10 @@ mod tests {
         web3_bridge_config.insert("bns".to_string(), "web3.buckyos.io".to_string());
         let _ = KNOWN_WEB3_BRIDGE_CONFIG.set(web3_bridge_config);
 
+        let did = DID::from_str("web3.buckyos.io").unwrap();
+        assert_eq!(did.method, "web");
+        assert_eq!(did.id, "web3.buckyos.io");
+
         let did = DID::from_host_name("waterflier.web3.buckyos.io").unwrap();
         assert_eq!(did.method, "bns");
         assert_eq!(did.id, "waterflier");
@@ -289,6 +296,12 @@ mod tests {
         let did = DID::from_str("buckyos.ai").unwrap();
         assert_eq!(did.method, "web");
         assert_eq!(did.id, "buckyos.ai");
+        let host_name = did.to_host_name();
+        assert_eq!(host_name, "buckyos.ai");
+        let did_str = did.to_string();
+        assert_eq!(did_str, "did:web:buckyos.ai");
+
+        let did = DID::from_str("did:web:buckyos.ai").unwrap();
         let host_name = did.to_host_name();
         assert_eq!(host_name, "buckyos.ai");
         let did_str = did.to_string();

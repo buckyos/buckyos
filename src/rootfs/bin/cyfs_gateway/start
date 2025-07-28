@@ -2,11 +2,12 @@
 import sys
 import os
 import argparse
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts import util
-
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+import util
 
 print("try to kill cyfs_gateway")
 util.kill_process("cyfs_gateway")

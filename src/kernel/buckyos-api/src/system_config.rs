@@ -1,4 +1,6 @@
-// use etcd_client::*;
+
+//TODO:
+//  add WATCH,and load cached value automatically when the value is changed.
 
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
@@ -13,7 +15,7 @@ use tokio::sync::{OnceCell, RwLock};
 
 use crate::KVAction;
 
-const CONFIG_CACHE_TIME:u64 = 30; //30s
+const CONFIG_CACHE_TIME:u64 = 10; //10s
 
 //key -> (value,version)
 static CONFIG_CACHE: LazyLock<RwLock<HashMap<String,(String,u64)>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
@@ -36,6 +38,18 @@ pub struct SystemConfigClient {
     session_token: Option<String>,
     cache_key_control:OnceCell<Vec<String>>,
     current_version:RwLock<u64>,
+}
+
+pub struct SystemConfigValue {
+    pub value:String,
+    pub version:u64,
+    pub is_changed:bool,
+}
+
+impl SystemConfigValue {
+    pub fn new(value:String,version:u64,is_changed:bool) -> Self {
+        Self { value, version, is_changed }
+    }
 }
 
 
@@ -76,10 +90,10 @@ impl SystemConfigClient {
         debug!("get system_config from CONFIG_CACHE {}=>{}",&key,&value);
         Some(value.clone())
     }
-
-    async fn set_config_cache(&self,key:&str,value:&str,version:u64) {
+    
+    async fn set_config_cache(&self,key:&str,value:&str,version:u64) -> bool {
         if !self.need_cache(key) {
-            return;
+            return true;
         }
 
         let mut current_version = self.current_version.write().await;
@@ -90,8 +104,21 @@ impl SystemConfigClient {
 
         let config_cache = &CONFIG_CACHE;
         let mut cache_guard = config_cache.write().await;
-        cache_guard.insert(key.to_string(), (value.to_string(), version));
+        let old_value = cache_guard.insert(key.to_string(), (value.to_string(), version));
+        if old_value.is_none() {
+            return true;
+        }
+        let old_value = old_value.unwrap();
+        if old_value.0 == value {
+            return false;
+        }
+        true
+    }
 
+    async fn remove_config_cache(&self,key:&str) {
+        let config_cache = &CONFIG_CACHE;
+        let mut cache_guard = config_cache.write().await;
+        cache_guard.remove(key);
     }
 
     pub fn new(service_url:Option<&str>,session_token:Option<&str>) -> Self {
@@ -107,6 +134,7 @@ impl SystemConfigClient {
         info!("system config client is created,service_url:{},session_token:{}",service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"),real_session_token.clone().unwrap_or("None".to_string()));
         let key_control = vec![
             "services/".to_string(),
+            "system/rbac/".to_string(),
         ];
         let cache_key_control = OnceCell::new_with(Some(key_control));
 
@@ -130,10 +158,11 @@ impl SystemConfigClient {
         Ok(client.unwrap().clone())
     }
 
-    pub async fn get(&self, key: &str) -> SytemConfigResult<(String,u64)> {
+    //return (value,version,is_changed)
+    pub async fn get(&self, key: &str) -> SytemConfigResult<SystemConfigValue> {
         // 首先尝试从缓存获取
         if let Some(cached_value) = self.get_config_cache(key).await {
-            return Ok((cached_value, 0));
+            return Ok(SystemConfigValue::new(cached_value, 0, false));
         }
 
         // 缓存中没有，从服务器获取
@@ -149,9 +178,9 @@ impl SystemConfigClient {
         let revision = buckyos_get_unix_timestamp();
         
         // 将结果存入缓存
-        self.set_config_cache(key, &value, revision).await;
+        let is_changed = self.set_config_cache(key, &value, revision).await;
         
-        Ok((value.to_string(),revision))
+        Ok(SystemConfigValue::new(value.to_string(),revision,is_changed))
     }
 
     pub async fn set(&self, key: &str, value: &str) -> SytemConfigResult<u64> {
@@ -168,6 +197,9 @@ impl SystemConfigClient {
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
 
+        let revision = buckyos_get_unix_timestamp();
+        let _is_changed = self.set_config_cache(key, value, revision).await;
+        
         Ok(0)
     }
 
@@ -175,6 +207,10 @@ impl SystemConfigClient {
         let client = self.get_krpc_client()?;
         client.call("sys_config_set_by_json_path", json!({"key": key, "json_path": json_path, "value": value})).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+
+        let revision = buckyos_get_unix_timestamp();
+        let _is_changed = self.set_config_cache(key, value, revision).await;
+
         Ok(0)
     }
 
@@ -192,6 +228,7 @@ impl SystemConfigClient {
         let _result = client.call("sys_config_delete", json!({"key": key}))
             .await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+        self.remove_config_cache(key).await;
         Ok(0)
     }
 
@@ -199,6 +236,10 @@ impl SystemConfigClient {
         let client = self.get_krpc_client()?;
         client.call("sys_config_append", json!({"key": key, "append_value": value})).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+
+        let revision = buckyos_get_unix_timestamp();
+        let _is_changed = self.set_config_cache(key, value, revision).await;
+
         Ok(0)
     }
 
@@ -266,6 +307,10 @@ impl SystemConfigClient {
         let client = self.get_krpc_client()?;
         client.call("sys_config_exec_tx", Value::Object(req_params)).await
             .map_err(|error| SystemConfigError::ReasonError(error.to_string()))?;
+
+        for (key, _action) in tx_actions.iter() {
+            self.remove_config_cache(key).await;
+        }
         Ok(0)
     }
 

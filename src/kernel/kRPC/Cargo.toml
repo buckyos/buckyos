@@ -15,6 +15,7 @@ thiserror = "*"
 openssl = { version = "*", features = ["vendored"] }
 reqwest = {version = "*", features = ["json", "rustls-tls"]}
 jsonwebtoken = "*"
+
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
 rbac = { path = "../rbac" }

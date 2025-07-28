@@ -1,6 +1,6 @@
 use name_lib::DeviceInfo;
 use ::kRPC::{RPCErrors,kRPC};
-use serde_json::json;
+use serde_json::{json,Value};
 use log::*;
 
 pub async fn sn_update_device_info(sn_url: &str, session_token: Option<String>, 
@@ -53,4 +53,38 @@ pub async fn sn_register_device(sn_url: &str, session_token: Option<String>,
         })).await?;
         
         Ok(())
+}
+
+pub async fn get_real_sn_host_name(sn: &str,device_id: &str) -> std::result::Result<String,RPCErrors> {
+    // 尝试通过 HTTP GET 请求获取 https://$sn/config?device_id=$device_id
+    let url = format!("https://{}/config?device_id={}", sn, device_id);
+    let response = match reqwest::get(&url).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            warn!("get sn host name from {} failed! {},use sn as host name", url, e);
+            return Ok(sn.to_string());
+        }
+    };
+
+
+    let body = match response.text().await {
+        Ok(text) => text,
+        Err(e) => {
+            warn!("get sn host name failed! {}", e);
+            return Ok(sn.to_string());
+        }
+    };
+
+    let sn_config = serde_json::from_str(&body);
+    if sn_config.is_err() {
+        warn!("get sn host name failed! {}", sn_config.err().unwrap());
+        return Ok(sn.to_string());
+    }
+
+    let sn_config:Value = sn_config.unwrap();
+
+    let host_name = sn_config["host"].as_str().unwrap();
+    warn!("get sn real host from {} success! => {}", url,host_name);
+    Ok(host_name.to_string())
+
 }

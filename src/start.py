@@ -29,7 +29,7 @@ def kill_all_processes():
         print(f"Warning: Some processes may not have been stopped: {e}")
         # Continue execution even if some processes fail to stop
 
-def update_files(install_all=False):
+def update_files(install_all=False,config_group_name=None):
     """Update files to installation directory"""
     print("Updating files...")
     
@@ -38,6 +38,8 @@ def update_files(install_all=False):
     try:
         import install
         install.install(install_all)
+        if config_group_name:
+            install.copy_configs(config_group_name)
         print("Files updated successfully")
     except ImportError as e:
         print(f"Failed to import install module: {e}")
@@ -48,6 +50,9 @@ def update_files(install_all=False):
     finally:
         # Remove the added path
         sys.path.pop(0)
+
+
+    
 
 def start_system():
     """Start BuckyOS system"""
@@ -82,11 +87,11 @@ def start_system():
         env['BUCKYOS_ROOT'] = buckyos_root
         
         if platform.system() == "Windows":
-            subprocess.Popen([node_daemon_path], 
+            subprocess.Popen([node_daemon_path,"--enable_active"], 
                            env=env,
                            creationflags=subprocess.CREATE_NEW_CONSOLE)
         else:
-            subprocess.Popen([node_daemon_path], 
+            subprocess.Popen([node_daemon_path,"--enable_active"], 
                            env=env,
                            stdout=subprocess.DEVNULL, 
                            stderr=subprocess.DEVNULL)
@@ -103,13 +108,21 @@ def main():
     print("=== BuckyOS Development Environment Startup Script ===")
     
     # Parse command line arguments
-    install_all = "--all" in sys.argv
+    config_group_name = None
+    install_all = "--all" in sys.argv or "--reinstall" in sys.argv
+    if install_all:
+        config_group_name = "dev"
+    if "--reinstall" in sys.argv:
+        config_group_name = None
+        group_name_index = sys.argv.index("--reinstall") + 1
+        if group_name_index < len(sys.argv):
+            config_group_name = sys.argv[group_name_index]
     
     # Step 1: Kill all processes
     kill_all_processes()
     
     # Step 2: Update files
-    update_files(install_all)
+    update_files(install_all,config_group_name)
     
     # Step 3: Start system
     start_system()

@@ -9,7 +9,7 @@ pub async fn get_config(key: &str) {
     match result {
         Ok(value) => {
             // println!("value:");
-            println!("{}", value.0);
+            println!("{}", value.value);
             // println!("version:");
             // println!("{}", value.1);
         }
@@ -85,7 +85,7 @@ pub async fn connect_into() {
                         match result {
                             Ok(value) => {
                                 // println!("value:");
-                                println!("{}", value.0);
+                                println!("{}", value.value);
                                 // println!("version:");
                                 // println!("{}", value.1);
                             }

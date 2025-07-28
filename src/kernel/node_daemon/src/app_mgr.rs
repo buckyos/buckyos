@@ -159,7 +159,7 @@ impl RunItemControl for AppRunItem {
             });
             if result.is_ok() {
                 if result.unwrap() == 0 {
-                    info!("deploy app {} by app_loader success",self.app_id);
+                    info!("deploy app (not system) {} by app_loader success",self.app_id);
                     return Ok(());
                 }
             }
@@ -246,7 +246,7 @@ impl RunItemControl for AppRunItem {
         
         self.set_env_var(is_system_app).await?;
         let real_param = vec![self.app_id.clone(), self.app_service_config.user_id.clone()];
-        let result = self.app_loader.status(Some(&real_param)).await.map_err(|err| {
+        let result: ServiceState = self.app_loader.status(Some(&real_param)).await.map_err(|err| {
             return ControlRuntItemErrors::ExecuteError(
                 "get_state".to_string(),
                 err.to_string(),

@@ -28,11 +28,12 @@ m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.su
 "#;
 
 pub const DEFAULT_POLICY: &str = r#"
-p, *, kv://boot/*, read,allow
 
 p, kernel, kv://*, read|write,allow
 p, kernel, dfs://*, read|write,allow
 p, kernel, ndn://*, read|write,allow
+
+
 p, root, kv://*, read|write,allow
 p, root, dfs://*, read|write,allow
 p, root, ndn://*, read|write,allow
@@ -41,25 +42,29 @@ p, ood,kv://*,read,allow
 p, ood,kv://users/*/apps/*,read|write,allow
 p, ood,kv://nodes/{device}/*,read|write,allow
 p, ood,kv://services/*,read|write,allow
+p, ood,kv://system/rbac/policy,read|write,allow
+p, client, kv://boot/*, read,allow
 p, client,kv://devices/{device}/*,read,allow
 p, client,kv://devices/{device}/info,read|write,allow
-
+p, service, kv://boot/*, read,allow
 p, service,kv://services/{service}/*,read|write,allow
+p, service,kv://users*,read,allow
+p, service,kv://users/*/*,read,allow
 p, service,kv://system/*,read,allow
 p, service,dfs://system/data/{service}/*,read|write,allow
 p, service,dfs://system/cache/{service}/*,read|write,allow
-
+p, app, kv://boot/*, read,allow
 p, app, kv://users/*/apps/{app}/settings,read|write,allow
 p, app, kv://users/*/apps/{app}/config,read,allow
 p, app, kv://users/*/apps/{app}/info,read,allow
 p, app, dfs://users/*/appdata/{app}/*, read|write,allow
 p, app, dfs://users/*/cache/{app}/*, read|write,allow
-
+p, admin, kv://boot/*, read,allow
 p, admin,kv://users/{user}/*,read|write,allow
 p, admin,dfs://users/{user}/*,read|write,allow
 p, admin,kv://services/*,read|write,allow
 p, admin,dfs://library/*,read|write,allow
-
+p, user, kv://boot/*, read,allow
 p, user,kv://users/{user}/*,read,allow
 p, user,kv://users/{user}/apps/*/*,read|write,allow
 p, user,dfs://users/{user}/*,read|write,allow
@@ -71,14 +76,7 @@ g, scheduler, kernel
 g, system-config, kernel
 g, verify-hub, kernel
 g, control-panel, kernel
-g, repo-service, kernel
-g, buckycli,kernel
-g, samba-service,services
-
-
-g, sys-test, app
-g, buckyos-filebrowser, app
-g, ood1, ood
+g, buckycli, kernel
 "#;
 
 
@@ -110,9 +108,13 @@ pub async fn create_enforcer(model_str:Option<&str>,policy_str:Option<&str>) -> 
     Ok(())
 }
 
+pub async fn update_enforcer(policy_str:Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let policy_str = policy_str.unwrap_or(DEFAULT_POLICY);
+    let model_str = DEFAULT_MODEL;
+    return create_enforcer(Some(model_str),Some(policy_str)).await
+}
 //use default RBAC config to enforce the access control
 //default acl config is stored in the memory,so it is not async function
-//TODO :use system_config event to reload the config.
 pub async fn enforce(userid:&str, appid:Option<&str>,res_path:&str,op_name:&str) -> bool {
 
     let enforcer = SYS_ENFORCE.lock().await;
@@ -248,11 +250,14 @@ m = g(r.sub, p.sub) && keyMatch(r.obj, p.obj) && regexMatch(r.act, p.act)
         buckyos_kit::init_logging("test_rbac",false);
         let mut policy_str = DEFAULT_POLICY.to_string();
         policy_str = policy_str + r#"
+g, sys-test, app
+g, buckyos-filebrowser, app
 g, ood1, ood
 g, app1, app
 g, lzc-laptop,client
 g, alice,admin
 g, smb-service,service
+g, repo-service,service
 g, bob,user
 p, su_bob,kv://users/bob/*,read|write,allow
         "#;
@@ -264,7 +269,7 @@ p, su_bob,kv://users/bob/*,read|write,allow
         assert_eq!(enforce("root", Some("node-daemon"), "kv://boot/config", "write").await, true);
         assert_eq!(enforce("ood1", Some("repo-service"), "kv://services/repo-service/instance/ood1", "write").await, true);
         assert_eq!(enforce("ood1", Some("smb-service"), "kv://services/smb-service/latest_smb_items", "read").await, true);
-      
+        assert_eq!(enforce("ood1", Some("smb-service"), "kv://boot/config", "read").await, true);
         assert_eq!(enforce("ood1", Some("scheduler"), "kv://users/alice/apps/app2/config", "write").await, true);
         assert_eq!(enforce("bob", Some("node-daemon"), "kv://users/alice/apps/app2", "read").await, false);
         assert_eq!(enforce("bob", Some("app1"), "kv://users/bob/apps/app1/settings", "read").await, true);

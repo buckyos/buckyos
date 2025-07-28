@@ -801,7 +801,7 @@ async fn init_by_boot_config() -> Result<()> {
 }
 
 async fn service_main() {
-    //std::env::set_var("BUCKY_LOG","debug");
+    std::env::set_var("BUCKY_LOG","debug");
     init_logging("system_config_service", true);
     info!("Starting system config service............................");
     init_by_boot_config().await.unwrap();

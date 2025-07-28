@@ -3,8 +3,11 @@ import sys
 import platform
 import os
 import json
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts import util
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+import util
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -18,11 +21,9 @@ def is_container_running(container_name,docker_image_name,docker_image_hash):
                 cmd = f"docker images --no-trunc -q '{docker_image_name}'"
                 output = os.popen(cmd).read().strip()
                 if output:
-                    if docker_image_hash.startswith(output):
-                        return True
+                    if not docker_image_hash.startswith(output):
+                        print(f"Container '{container_name}' is running but with wrong image hash.")
                     
-                print(f"Container '{container_name}' is running but with wrong image hash.")
-                return False
             return True
         
         return False

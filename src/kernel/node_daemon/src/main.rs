@@ -9,7 +9,7 @@ mod app_mgr; // support manager app service (run in docker,run for one user)
 mod active_server;
 mod service_pkg;
 mod node_daemon;
-
+mod finder;
 
 #[cfg(target_os = "windows")]
 mod win_srv;

@@ -10,7 +10,6 @@ use tokio::sync::RwLock;
 use buckyos_kit::*;
 use ::kRPC::*;
 use std::env;
-use once_cell::sync::OnceCell;
 use log::*;
 use jsonwebtoken::{decode,Validation, EncodingKey, DecodingKey};
 
@@ -27,27 +26,6 @@ use crate::verify_hub_client::*;
 
 use crate::{get_buckyos_api_runtime,get_full_appid,get_session_token_env_key};
 
-pub static CURRENT_DEVICE_CONFIG: OnceCell<DeviceConfig> = OnceCell::new();
-pub fn try_load_current_device_config_from_env() -> NSResult<()> {
-    let device_doc = env::var("BUCKYOS_THIS_DEVICE");
-    if device_doc.is_err() {
-        return Err(NSError::NotFound("BUCKY_DEVICE_DOC not set".to_string()));
-    }
-    let device_doc = device_doc.unwrap();
-
-    let device_config= serde_json::from_str(device_doc.as_str());
-    if device_config.is_err() {
-        warn!("parse device_doc format error");
-        return Err(NSError::Failed("device_doc format error".to_string()));
-    }
-    let device_config:DeviceConfig = device_config.unwrap();
-    let set_result = CURRENT_DEVICE_CONFIG.set(device_config);
-    if set_result.is_err() {
-        warn!("Failed to set CURRENT_DEVICE_CONFIG");
-        return Err(NSError::Failed("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
-    }
-    Ok(())
-}
 
 
 #[derive(Debug, Clone,PartialEq,Eq)]
@@ -88,7 +66,6 @@ pub struct BuckyOSRuntime {
 }
 
 impl BuckyOSRuntime {
-
     pub fn new(app_id: &str,app_owner_user_id: Option<String>,runtime_type: BuckyOSRuntimeType) -> Self {
         let runtime = BuckyOSRuntime {
             app_id: app_id.to_string(),
@@ -686,6 +663,16 @@ impl BuckyOSRuntime {
         let userid = userid.as_str().ok_or(RPCErrors::InvalidToken("Invalid userid".to_string()))?;
         let appid = decoded_json.get("appid").map(|appid| appid.as_str().unwrap_or("kernel"));
         let appid = appid.unwrap_or("kernel");
+
+        let system_config_client = self.get_system_config_client().await?;
+        let rbac_policy = system_config_client.get("system/rbac/policy").await;
+        if rbac_policy.is_ok() {
+            let rbac_policy = rbac_policy.unwrap();
+            if rbac_policy.is_changed {
+                rbac::update_enforcer(Some(rbac_policy.value.as_str())).await;
+            }
+        }
+
         let result = rbac::enforce(userid, Some(appid),resource_path,action).await;
         if !result {
             return Err(RPCErrors::NoPermission(format!("enforce failed,userid:{},appid:{},resource:{},action:{}",userid,appid,resource_path,action)));
@@ -736,7 +723,37 @@ impl BuckyOSRuntime {
 
     pub async fn get_session_token(&self) -> String {
         let session_token = self.session_token.read().await;
-        session_token.clone()
+        let session_token_str = session_token.clone();
+        drop(session_token);
+
+        let session_token = RPCSessionToken::from_string(&session_token_str).unwrap();
+        if session_token.exp.is_some() {
+            let exp = session_token.exp.unwrap();
+            let now = buckyos_get_unix_timestamp();
+            if now < exp - 10 {
+                return session_token_str
+            } else {
+                if self.device_private_key.is_some() {
+                    let device_private_key = self.device_private_key.as_ref().unwrap();
+                    let device_uid = self.device_config.as_ref().unwrap().name.clone();
+                    let jwt_result = RPCSessionToken::generate_jwt_token(
+                        device_uid.as_str(),
+                        self.app_id.as_str(),
+                        Some(device_uid.clone()),
+                        device_private_key
+                    ).map_err(|e| {
+                        error!("generate session token failed! {}", e);  
+                    });
+                    if jwt_result.is_ok() {
+                        let (new_session_token_str,_new_session_token) = jwt_result.unwrap();
+                        let mut session_token_guard = self.session_token.write().await;
+                        *session_token_guard = new_session_token_str.clone();
+                        return new_session_token_str;
+                    }
+                } 
+            } 
+        }
+        return session_token_str;
     }
 
     pub fn get_data_folder(&self) -> PathBuf {
@@ -822,12 +839,12 @@ impl BuckyOSRuntime {
     pub async fn get_my_settings(&self) -> Result<serde_json::Value> {
         let system_config_client = self.get_system_config_client().await?;
         let settiing_path = self.get_my_settings_path();
-        let (settings_str,_version) = system_config_client.get(settiing_path.as_str()).await
+        let result_value = system_config_client.get(settiing_path.as_str()).await
             .map_err(|e| {
                 error!("get settings failed! err:{}", e);
                 RPCErrors::ReasonError(format!("get settings failed! err:{}", e))
             })?;
-        let settings : serde_json::Value = serde_json::from_str(settings_str.as_str()).map_err(|e| {
+        let settings : serde_json::Value = serde_json::from_str(result_value.value.as_str()).map_err(|e| {
             error!("parse settings failed! err:{}", e);
             RPCErrors::ReasonError(format!("parse settings failed! err:{}", e))
         })?;
@@ -891,10 +908,6 @@ impl BuckyOSRuntime {
         return false;
     }
 
-    //pub async fn scan_to_build_zoen_boot_info(&self) -> Result<()> {
-    //    unimplemented!()
-    //}
-
     pub async fn get_system_config_client(&self) -> Result<SystemConfigClient> {
         let mut url = "http://127.0.0.1:3200/kapi/system_config".to_string();
         let mut schema = "http";
@@ -918,7 +931,7 @@ impl BuckyOSRuntime {
         }
 
         //let url = self.get_zone_service_url("system_config",self.force_https)?;
-        let session_token = self.session_token.read().await;
+        let session_token = self.get_session_token().await;
         let client = SystemConfigClient::new(Some(url.as_str()),Some(session_token.as_str()));
         debug!("get system config client OK,url:{}",url);
         Ok(client)

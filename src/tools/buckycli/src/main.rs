@@ -2,6 +2,7 @@
 mod package_cmd;
 mod sys_config;
 mod did;
+mod app;
 
 use std::path::Path;
 use buckyos_api::*;
@@ -244,9 +245,17 @@ oods look like this 'ood1,ood2'.")
                     .required(true)
                 )
         )
+        .subcommand(
+            Command::new("app")
+                .about("App controller")
+                .arg(
+                        Arg::new("create")
+                        .long("create")
+                        .value_name("mata_file")
+                        .help("Quickly create an app, buckycli app --create $meta_file")
+                )
+        )
         .get_matches();
-    
-    
 
     let mut private_key = None;
     let subcommand = matches.subcommand();
@@ -479,6 +488,12 @@ oods look like this 'ood1,ood2'.")
         }
         Some(("did", sub_matches)) => {
             did::did_matches(sub_matches);
+        }
+        Some(("app", matches)) => {
+            if let Some(meta_file) = matches.get_one::<String>("create") {
+                app::create_app(meta_file).await;
+                return Ok(());
+            }
         }
         _ => {
             println!("unknown command!");

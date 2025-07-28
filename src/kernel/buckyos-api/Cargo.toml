@@ -18,6 +18,7 @@ once_cell = "*"
 toml = "*"
 tokio = { version = "*", features = ["full"] }
 jsonwebtoken = "*"
+reqwest = "*"
 
 buckyos-kit = { path = "../../components/buckyos-kit" }
 package-lib = { path = "../../components/package-lib" }

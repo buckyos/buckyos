@@ -22,6 +22,11 @@ jobs:
       id: date
       with:
         format: 'YYYYMMDD'
+    - name: short time
+      id: short_time
+      run: |
+        val="${{ steps.date.outputs.time }}"
+        echo "last6=${val: -6}" >> $GITHUB_OUTPUT
     - name: Checkout
       uses: actions/checkout@v4
     - name: Setup pnpm
@@ -47,21 +52,22 @@ jobs:
       working-directory: ./src
       run: sudo python3 scripts/build.py --no-build-web-apps --no-install --target=${{inputs.arch}}-apple-darwin
     - name: Tar Rootfs
-      run: sudo tar -cvf rootfs.tar ./src/rootfs
+      run: 
+        cd ./src/rootfs && tar -cvf ../../rootfs.tar .
     - name: Prepare tools
       run: 
         sudo mkdir -p tools && sudo chmod 777 tools && sudo cp ./src/rootfs/bin/buckycli/buckycli ./tools/ 
     - name: Upload tools
       uses: actions/upload-artifact@v4
       with:
-        name: buckyos-tools-macos-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        name: buckyos-tools-apple-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}-${{ steps.short_time.outputs.last6 }}
         path: tools
         if-no-files-found: error
     - name: Upload
       id: upload
       uses: actions/upload-artifact@v4
       with:
-        name: buckyos-macos-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        name: buckyos-apple-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}-${{ steps.short_time.outputs.last6 }}
         path: rootfs.tar
         if-no-files-found: error
     outputs:

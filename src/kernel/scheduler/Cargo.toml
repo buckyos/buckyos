@@ -29,3 +29,5 @@ name-client = { path = "../../components/name-client" }
 rbac = { path = "../rbac" }
 kRPC ={ path = "../kRPC" }
 buckyos-api = { path = "../buckyos-api" }
+cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
+cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }

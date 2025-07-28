@@ -28,9 +28,23 @@ const POD_INSTANCE_ALIVE_TIME: u64 = 90;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum PodItemType {
+    Kernel, //kernel service
     Service, //无状态的系统服务
     App,     // 无状态的app服务
 }
+
+impl From<String> for PodItemType {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "kernel" => PodItemType::Kernel,
+            "service" => PodItemType::Service,
+            "frame" => PodItemType::Service,
+            "app" => PodItemType::App,
+            _ => PodItemType::App,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum PodItemState {
     New,
@@ -102,8 +116,33 @@ impl From<String> for PodItemState {
 }
 
 #[derive(Clone, PartialEq, Debug)]
+pub enum UserType {
+    Admin,
+    User,
+    Limited,
+}
+
+impl From<String> for UserType {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "admin" => UserType::Admin,
+            "user" => UserType::User,
+            "limited" => UserType::Limited,
+            _ => UserType::User,
+        }
+    }
+}
+
+pub struct UserItem {
+    pub userid: String,
+    pub user_type: UserType,
+}
+
+#[derive(Clone, PartialEq, Debug)]
 pub struct PodItem {
     pub id: String,
+    pub app_id:String,
+    pub owner_id:String,
     pub pod_type: PodItemType,
     pub state: PodItemState,
     pub best_instance_count: u32,
@@ -147,9 +186,35 @@ pub struct NodeResource {
     pub used_capacity: u64,
 }
 
+#[derive(Clone, Debug,PartialEq)]
+pub enum NodeType {
+    OOD,
+    Server,
+    Desktop,//PC + lattop
+    Mobile,//phone + tablet
+    Sensor,//sensor,
+    IoTController,//iot controller
+    UnknownClient(String),
+}
+
+impl From<String> for NodeType {    
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "ood" => NodeType::OOD,
+            "server" => NodeType::Server,
+            "desktop" => NodeType::Desktop,
+            "mobile" => NodeType::Mobile,
+            "sensor" => NodeType::Sensor,
+            "controller" => NodeType::IoTController,
+            _ => NodeType::UnknownClient(s),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeItem {
     pub id: String,
+    pub node_type: NodeType,
     //pub name: String,
     // 节点标签，用于亲和性匹配
     pub labels: Vec<String>,
@@ -263,8 +328,9 @@ pub fn parse_app_pod_id(pod_id: &str) -> Result<(String, String)> {
 pub struct PodScheduler {
     schedule_step_id: u64,
     last_schedule_time: u64,
-    nodes: HashMap<String, NodeItem>,
-    pods: HashMap<String, PodItem>,
+    pub users: HashMap<String, UserItem>,
+    pub nodes: HashMap<String, NodeItem>,
+    pub pods: HashMap<String, PodItem>,
     // 系统里所有的PodInstance,key是instance_id (podid@nodeid)
     pod_instances: HashMap<String, PodInstance>,
     pod_infos: HashMap<String, PodInfo>,//current pod_infos
@@ -277,6 +343,7 @@ impl PodScheduler {
         Self {
             schedule_step_id: step_id,
             last_schedule_time,
+            users: HashMap::new(),
             nodes: HashMap::new(),
             pods: HashMap::new(),
             pod_instances: HashMap::new(),
@@ -288,6 +355,7 @@ impl PodScheduler {
     pub fn new(
         step_id: u64,
         last_schedule_time: u64,
+        users: HashMap<String, UserItem>,
         nodes: HashMap<String, NodeItem>,
         pods: HashMap<String, PodItem>,
         pod_instances: HashMap<String, PodInstance>,
@@ -297,12 +365,17 @@ impl PodScheduler {
         Self {
             schedule_step_id: step_id,
             last_schedule_time,
+            users,
             nodes,
             pods,
             pod_instances,
             pod_infos,
             last_pods,
         }
+    }
+
+    pub fn add_user(&mut self, user: UserItem) {
+        self.users.insert(user.userid.clone(), user);
     }
 
     pub fn add_node(&mut self, node: NodeItem) {
@@ -605,6 +678,10 @@ impl PodScheduler {
     fn filter_node_for_pod_instance(&self, node: &NodeItem, pod: &PodItem) -> bool {
         // 1. 检查节点状态
         if node.state != NodeState::Ready {
+            return false;
+        }
+
+        if node.node_type != NodeType::OOD && node.node_type != NodeType::Server {
             return false;
         }
 

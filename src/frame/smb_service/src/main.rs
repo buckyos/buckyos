@@ -6,14 +6,14 @@ use std::fs::File;
 use std::sync::OnceLock;
 use fs2::FileExt;
 use buckyos_kit::{get_buckyos_root_dir};
-use buckyos_api::{SystemConfigClient, SystemConfigError};
+use buckyos_api::{get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType, SystemConfigError};
 use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
 #[cfg(target_os = "linux")]
 use crate::linux_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 #[cfg(target_os = "windows")]
 use crate::windows_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 #[cfg(target_os = "macos")]
-use crate::linux_smb::{update_samba_conf, stop_smb_service, check_samba_status};
+use crate::macos_smb::{update_samba_conf, stop_smb_service, check_samba_status};
 use crate::samba::{SmbItem, SmbUserItem};
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -29,7 +29,7 @@ mod linux_smb;
 mod windows_smb;
 
 #[cfg(target_os = "macos")]
-mod linux_smb;
+mod macos_smb;
 
 mod samba;
 mod error;
@@ -83,6 +83,29 @@ async fn async_main() {
                 .set_log_level("info")
                 .start().unwrap();
 
+            std::panic::set_hook(Box::new(|panic_info| {
+                if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+                    sfo_log::error!("panic occurred: {s}");
+                } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+                    sfo_log::error!("panic occurred: {s}");
+                } else {
+                    sfo_log::error!("panic occurred");
+                }
+                // sfo_log::error!("panic: {:?}", panic_info);
+            }));
+            let mut runtime = match init_buckyos_api_runtime("smb-service", None, BuckyOSRuntimeType::KernelService).await {
+                Ok(runtime) => runtime,
+                Err(e) => {
+                    log::error!("init_buckyos_api_runtime failed: {}", e);
+                    return;
+                }
+            };
+            if let Err(e) = runtime.login().await {
+                log::error!("login failed: {}", e);
+                return;
+            }
+            set_buckyos_api_runtime(runtime);
+
             enter_update_smb_loop().await;
         },
         Some(("stop", _)) => {
@@ -119,14 +142,12 @@ async fn enter_update_smb_loop() {
 }
 
 async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
-    let rpc_session_token = std::env::var("SMB_SERVICE_SESSION_TOKEN")
-        .map_err(into_smb_err!(SmbErrorCode::SessionTokenNotFound, "SMB_SERVICE_SESSION_TOKEN is not set"))?;
+    let system_config_client = get_buckyos_api_runtime().unwrap().get_system_config_client().await
+        .map_err(into_smb_err!(SmbErrorCode::Failed, "get system config client failed"))?;
 
-    let system_config_client = SystemConfigClient::new(None,Some(rpc_session_token.as_str()));
-
-    let mut latest_smb_items = match system_config_client.get("services/samba/latest_smb_items").await {
-        Ok((latest_smb_items_str, _)) => {
-            serde_json::from_str(latest_smb_items_str.as_str())
+    let mut latest_smb_items = match system_config_client.get("services/smb-service/latest_smb_items").await {
+        Ok(latest_smb_items_str) => {
+            serde_json::from_str(latest_smb_items_str.value.as_str())
                 .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_smb_items failed"))?
         },
         Err(e) => {
@@ -137,9 +158,9 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
             }
         }
     };
-    let mut latest_users = match system_config_client.get("services/samba/latest_users").await {
-        Ok((latest_users_str, _)) => {
-            serde_json::from_str(latest_users_str.as_str())
+    let mut latest_users = match system_config_client.get("services/smb-service/latest_users").await {
+        Ok(latest_users_str) => {
+            serde_json::from_str(latest_users_str.value.as_str())
                 .map_err(into_smb_err!(SmbErrorCode::Failed, "parse latest_users failed"))?
         },
         Err(e) => {
@@ -158,8 +179,8 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
     let mut root_users = Vec::new();
     for user in list {
         let buckyos_user_settings = match system_config_client.get(format!("users/{}/settings", user).as_str()).await {
-            Ok((info_str, _)) => {
-                let info: UserInfo = serde_json::from_str(info_str.as_str())
+            Ok(get_result) => {
+                let info: UserInfo = serde_json::from_str(get_result.value.as_str())
                     .map_err(into_smb_err!(SmbErrorCode::Failed, "parse user info failed"))?;
                 info
             }
@@ -174,8 +195,8 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
         };
 
         let user_info = match system_config_client.get(format!("users/{}/samba/settings", user).as_str()).await {
-            Ok((samba_info_str, _)) => {
-                let samba_info: UserSambaInfo = serde_json::from_str(samba_info_str.as_str())
+            Ok(get_result) => {
+                let samba_info: UserSambaInfo = serde_json::from_str(get_result.value.as_str())
                     .map_err(into_smb_err!(SmbErrorCode::Failed, "parse samba_info failed"))?;
                 samba_info
             },
@@ -254,9 +275,9 @@ async fn check_and_update_smb_service(is_first: bool) -> SmbResult<()> {
 
     latest_smb_items = smb_items;
     latest_users = smb_users;
-    system_config_client.set("services/samba/latest_users", serde_json::to_string(&latest_users).unwrap().as_str()).await
+    system_config_client.set("services/smb-service/latest_users", serde_json::to_string(&latest_users).unwrap().as_str()).await
         .map_err(into_smb_err!(SmbErrorCode::Failed, "set latest_users failed"))?;
-    system_config_client.set("services/samba/latest_smb_items", serde_json::to_string(&latest_smb_items).unwrap().as_str()).await
+    system_config_client.set("services/smb-service/latest_smb_items", serde_json::to_string(&latest_smb_items).unwrap().as_str()).await
         .map_err(into_smb_err!(SmbErrorCode::Failed, "set latest_smb_items failed"))?;
 
     Ok(())

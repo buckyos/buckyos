@@ -7,6 +7,8 @@ use crate::{Result,RPCErrors};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use name_lib::decode_jwt_claim_without_verify;
 
+const DEFAULT_SESSION_TOKEN_EXPIRE_TIME:u64 = 60*15;
+
 #[derive(Clone, Debug, Serialize, Deserialize,PartialEq)]
 pub enum RPCSessionTokenType {
     Normal,
@@ -45,7 +47,7 @@ impl RPCSessionToken {
             token_type : RPCSessionTokenType::JWT,
             token: None,
             appid: Some(app_id.to_string()),
-            exp: Some(timestamp + 3600*24*7),
+            exp: Some(timestamp + DEFAULT_SESSION_TOKEN_EXPIRE_TIME),
             iss: Some(user_id.to_string()),
             nonce: None,
             session: None,

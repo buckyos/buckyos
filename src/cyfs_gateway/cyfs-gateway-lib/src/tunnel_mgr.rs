@@ -92,8 +92,15 @@ impl TunnelManager {
     ) -> TunnelResult<Box<dyn TunnelBox>> {
         let builder = self
             .get_tunnel_builder_by_protocol(target_url.scheme())
-            .await?;
-        let tunnel = builder.create_tunnel(target_url.host_str()).await?;
+            .await.map_err(|e| {
+                error!("Get tunnel builder by protocol failed: {:?}", e);
+                e
+            })?;
+        let tunnel = builder.create_tunnel(target_url.host_str())
+            .await.map_err(|e| {
+                error!("create_tunnel to {} failed: {:?}", target_url, e);
+                e
+            })?;
 
         info!("Get tunnel for {} success", target_url);
         return Ok(tunnel);

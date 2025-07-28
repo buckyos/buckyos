@@ -23,6 +23,7 @@ jsonwebtoken = "*"
 buckyos-kit = { path = "../../components/buckyos-kit" }
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 kRPC = { path = "../../kernel/kRPC" }
-buckyos-api = { path = "../../kernel/buckyos-api" }
+
 name-lib = { path = "../../components/name-lib" }
 name-client = { path = "../../components/name-client" }
+#buckyos-api = { path = "../../kernel/buckyos-api" }
