@@ -79,6 +79,7 @@ jobs:
       run: |
         npm i
         npm run build
+        echo "username:" $USERNAME
         node client.js seturl ${{inputs.version}}-${{ steps.short_time.outputs.last6 }} linux ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}}
       working-directory: ./test/test_server
       env:
