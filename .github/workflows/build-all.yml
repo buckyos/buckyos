@@ -26,6 +26,7 @@ jobs:
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
+    secrets: inherit
   build-linux:
     strategy:
       matrix:
@@ -34,6 +35,7 @@ jobs:
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
+    secrets: inherit
   build-macos:
     strategy:
       matrix:
@@ -42,3 +44,4 @@ jobs:
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
+    secrets: inherit

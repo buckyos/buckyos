@@ -11,15 +11,6 @@ on:
         outputs:
             build_time:
                 value: ${{jobs.build.outputs.build_time}}
-    workflow_dispatch:
-        inputs:
-            version:
-                required: true
-                type: string
-            arch:
-                required: true
-                type: string
-
 
 jobs:
   build:
@@ -87,7 +78,6 @@ jobs:
       run: |
         npm i
         npm run build
-        echo "username:" $USERNAME
         node client.js seturl ${{inputs.version}}-${{ steps.short_time.outputs.last6 }} linux ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}}
       working-directory: ./test/test_server
       env:
