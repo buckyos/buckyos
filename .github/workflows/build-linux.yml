@@ -11,6 +11,14 @@ on:
         outputs:
             build_time:
                 value: ${{jobs.build.outputs.build_time}}
+    workflow_dispatch:
+        inputs:
+            version:
+                required: true
+                type: string
+            arch:
+                required: true
+                type: string
 
 
 jobs:
