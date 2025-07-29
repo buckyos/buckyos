@@ -73,7 +73,17 @@ def copy_rootfs(src_dir:str, target_dir:str):
     #复制src_dir目录下除bin目录外的所有item到target_dir
     for item in os.listdir(src_dir):
         if item == "bin":
+            os.makedirs(os.path.join(target_dir, item))
+            for sub_item in os.listdir(os.path.join(src_dir, item)):
+                src_sub_item_path = os.path.join(src_dir, item, sub_item)
+                target_sub_item_path = os.path.join(target_dir, item, sub_item)
+                
+                if not os.path.isdir(src_sub_item_path):
+                    print(f"copy file {src_sub_item_path} => {target_sub_item_path}")
+                    shutil.copy(src_sub_item_path, target_sub_item_path)
+            
             continue
+
         src_item_path = os.path.join(src_dir, item)
         target_item_path = os.path.join(target_dir, item)
         if os.path.isdir(src_item_path):

@@ -34,7 +34,7 @@ def install_pkg(pkg_name, target_dir, prefix, version):
         print(f"# meta_obj_id_file not found in {pkg_dir}")
         return
     meta_obj_id = open(meta_obj_id_file).read().strip()
-    target_pkg_dir = os.path.join(target_dir, "pkgs", pkg_name, meta_obj_id)
+    target_pkg_dir = os.path.join(target_dir, pkg_name)
 
 
     pkg_file = os.path.join(pkg_dir, f"{pkg_full_name}#{version}.tar.gz")
@@ -50,15 +50,24 @@ def install_pkg(pkg_name, target_dir, prefix, version):
 def prepare_bin_package(src_pkg_dir, prefix, version, target_dir):
     pack_pkg_items = glob.glob(os.path.join(src_pkg_dir,f"{prefix}*"))
     print(f"# prepare_bin_package: {src_pkg_dir} ({prefix}*)")
+    install_pkg("node_daemon",target_dir,prefix,version)
+    install_pkg("buckycli",target_dir,prefix,version)
+    # for pack_pkg_item in pack_pkg_items:
+    #     if os.path.isdir(pack_pkg_item):
+    #         #nightly-windows-amd64.app_loader ,app_loader is pkg_name
+    #         pkg_name = pack_pkg_item.split(".")[-1]
+    #         install_pkg(pkg_name, target_dir, prefix, version)
+
+
+def prepare_named_mgr_data(rootfs_dir,src_pkg_dir,prefix):
+    pack_pkg_items = glob.glob(os.path.join(src_pkg_dir,f"{prefix}*"))
+    named_data_dir = os.path.join(rootfs_dir, "data", "ndn")
     for pack_pkg_item in pack_pkg_items:
         if os.path.isdir(pack_pkg_item):
             #nightly-windows-amd64.app_loader ,app_loader is pkg_name
-            pkg_name = pack_pkg_item.split(".")[-1]
-            install_pkg(pkg_name, target_dir, prefix, version)
-
-
-def prepare_named_mgr_data(rootfs_dir):
-    pass
+            chunk_files = glob.glob(os.path.join(pack_pkg_item,"*.tar.gz"))
+            for chunk_file in chunk_files:
+                subprocess.run([buckycli_path,"create_chunk",chunk_file,named_data_dir], check=True)
 
 def prepare_meta_db(rootfs_dir,packed_pkgs_dir):
     bin_dir = os.path.join(rootfs_dir,"bin")
@@ -101,19 +110,17 @@ def prepare_rootfs_for_installer(target_dir, os_name, arch, version):
     rootfs_dir = os.path.join(rootfs_base_dir, version, rootfs_id)
     if not os.path.exists(target_dir):
         os.makedirs(target_dir)
+    print(f"# copy rootfs: {rootfs_dir} => {target_dir}")    
     shutil.copytree(rootfs_dir, target_dir, dirs_exist_ok=True)
-    print(f"# copy rootfs: {rootfs_dir} => {target_dir}")
+    
 
     # install pkg to rootfs/bin
     bin_dir = os.path.join(target_dir, "bin")
-    if os.path.exists(bin_dir):
-        shutil.rmtree(bin_dir)
-    os.makedirs(bin_dir, exist_ok=True)
+
     # write pkg.cfg.json to bin_dir
     pkg_cfg_path = os.path.join(publish_dir,  "buckyos_pkgs","pkg.cfg.json")
     pkg_cfg = json.load(open(pkg_cfg_path))
     pkg_cfg["prefix"] = f"nightly-{os_name}-{arch}"
-    pkg_cfg["parent"] = None
     json.dump(pkg_cfg, open(os.path.join(bin_dir, "pkg.cfg.json"), "w"))
     print(f"# write pkg.cfg.json to {bin_dir} OK ")
 
@@ -125,7 +132,7 @@ def prepare_rootfs_for_installer(target_dir, os_name, arch, version):
     #     pkg_cfg["parent"] = "/opt/buckyos/local/node_daemon/root_pkg_env"
     # json.dump(pkg_cfg, open(os.path.join(bin_dir, "pkg.cfg.json"), "w"))
     prepare_meta_db(target_dir,packed_pkgs_dir)
-    prepare_named_mgr_data(target_dir)
+    prepare_named_mgr_data(target_dir,packed_pkgs_dir,f"nightly-{os_name}-{arch}")
     
     # clean up etc dir
     clean_dir = os.path.join(target_dir, "etc")
@@ -148,7 +155,7 @@ if __name__ == "__main__":
     target_dir = "/tmp/buckyos-installer"
     os_name = "linux"
     arch = "amd64"
-    version = "0.4.0-20250724"
+    version = "0.4.0-250724"
     if os.path.exists(target_dir):
         shutil.rmtree(target_dir)
     os.makedirs(target_dir)

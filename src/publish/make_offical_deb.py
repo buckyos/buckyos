@@ -46,7 +46,7 @@ def make_deb(architecture, version):
     subprocess.run([f"dpkg-deb --build {architecture}"], shell=True, check=True, cwd=deb_root_dir)
     print(f"build deb success at {deb_dir}")
 
-    dst_deb_path = os.path.join(src_dir, f"buckyos-{architecture}-{version}.deb")
+    dst_deb_path = os.path.join(publish_dir, f"buckyos-{architecture}-{version}.deb")
     shutil.copy(f"{deb_root_dir}/{architecture}.deb", dst_deb_path)
     print(f"copy deb to {dst_deb_path}")
 

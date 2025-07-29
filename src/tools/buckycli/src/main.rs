@@ -19,7 +19,7 @@ fn is_local_cmd(cmd_name: &str) -> bool {
         "load_pkg",
         "set_pkg_meta",
         "did",
-        "ndn"
+        "create_chunk"
     ];
     LOCAL_COMMANDS.contains(&cmd_name)
 }
@@ -259,7 +259,7 @@ oods look like this 'ood1,ood2'.")
                 )
         )
         .subcommand(
-            Command::new("ndn")
+            Command::new("create_chunk")
                 .about("ndn operator")
                 .arg(
                     Arg::new("create")
@@ -512,7 +512,7 @@ oods look like this 'ood1,ood2'.")
                 return Ok(());
             }
         }
-        Some(("ndn", matches)) => {
+        Some(("create_chunk", matches)) => {
             if let Some(filepath) = matches.get_one::<String>("create") {
                 if let Some(target) = matches.get_one::<String>("target") {
                     ndn::create_ndn_chunk(filepath,target).await;
