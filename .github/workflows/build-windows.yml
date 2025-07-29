@@ -73,5 +73,15 @@ jobs:
         name: buckyos-windows-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}-${{ steps.short_time.outputs.last6 }}
         path: src/rootfs
         if-no-files-found: error
+    - name: Report Upload Urls
+      run: |
+        npm i
+        npm run build
+        node client.js seturl ${{inputs.version}}-${{ steps.short_time.outputs.last6 }} windows ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}}
+      working-directory: ./test/test_server
+      env:
+        USERNAME: ${{ secrets.TEST_SERVER_USERNAME }}
+        PRIVATE_KEY: ${{ secrets.TEST_SERVER_PRIVATE_KEY }}
+        ENDPOINT: "https://buckyos.ai"
     outputs:
       build_time: ${{ steps.date.outputs.time }}
