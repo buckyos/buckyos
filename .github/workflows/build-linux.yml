@@ -64,21 +64,21 @@ jobs:
     - name: Upload tools
       uses: actions/upload-artifact@v4
       with:
-        name: buckyos-tools-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}-${{ steps.short_time.outputs.last6 }}
+        name: buckyos-tools-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}+build${{ steps.short_time.outputs.last6 }}
         path: tools
         if-no-files-found: error
     - name: Upload
       uses: actions/upload-artifact@v4
       id: upload
       with:
-        name: buckyos-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}-${{ steps.short_time.outputs.last6 }}
+        name: buckyos-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}+build${{ steps.short_time.outputs.last6 }}
         path: rootfs.tar
         if-no-files-found: error
     - name: Report Upload Urls
       run: |
         npm i
         npm run build
-        node client.js seturl ${{inputs.version}}-${{ steps.short_time.outputs.last6 }} linux ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}}
+        node client.js seturl ${{inputs.version}}+build${{ steps.short_time.outputs.last6 }} linux ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}}
       working-directory: ./test/test_server
       env:
         USERNAME: ${{ secrets.TEST_SERVER_USERNAME }}
