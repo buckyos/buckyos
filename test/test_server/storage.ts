@@ -66,12 +66,17 @@ export class Storage {
         );
     }
 
-    public async getVersions(pageNum: number, pageSize: number, os: string[] | undefined, arch: string[] | undefined, notest: boolean, nopub: boolean) {
+    public async getVersions(pageNum: number, pageSize: number, version: string| undefined, os: string[] | undefined, arch: string[] | undefined, notest: boolean, nopub: boolean) {
         if (!this.db) {
             throw new Error("Database not initialized");
         }
         let query = `SELECT * FROM versions WHERE 1=1`;
         const params: any[] = [];
+
+        if (version) {
+            query += ` AND version = ?`;
+            params.push(version);
+        }
 
         if (os && os.length > 0) {
             query += ` AND os IN (${os.map(() => '?').join(', ')})`;

@@ -97,7 +97,7 @@ async function startServer() {
     let notest = query.notest === 'true' ? true : false;
     let nopub = query.nopub === 'true' ? true : false;
 
-    let versions = await storage.getVersions(pageNum, pageSize, os, arch, notest, nopub);
+    let versions = await storage.getVersions(pageNum, pageSize, query.version as string, os, arch, notest, nopub);
 
     ctx.body = {
       items: versions,
