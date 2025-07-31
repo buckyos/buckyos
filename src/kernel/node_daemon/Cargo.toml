@@ -26,7 +26,7 @@ url = "*"
 time = { version = "^0.3", features = ["formatting"] }
 sysinfo = "*"
 chrono = { version = "*", features = ["serde"] }
-get_if_addrs = "*"
+if-addrs = "*"
 cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
 cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
 buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
