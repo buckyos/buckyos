@@ -21,11 +21,12 @@ jobs:
   build-windows:
     strategy:
       matrix:
-        arch: ["x86_64"]
+        arch: ["x86_64", "aarch64"]
     uses: ./.github/workflows/build-windows.yml
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
+    secrets: inherit
   build-linux:
     strategy:
       matrix:
@@ -34,6 +35,7 @@ jobs:
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
+    secrets: inherit
   build-macos:
     strategy:
       matrix:
@@ -42,3 +44,4 @@ jobs:
     with:
       version: ${{ inputs.version }}
       arch: ${{ matrix.arch }}
+    secrets: inherit

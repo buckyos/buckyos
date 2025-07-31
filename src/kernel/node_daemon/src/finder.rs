@@ -203,7 +203,7 @@ impl NodeFinderClient {
     }
 
     async fn get_ipv4_broadcast_addr() -> Result<Vec<(Ipv4Addr,Ipv4Addr)>> {
-        let interfaces = get_if_addrs::get_if_addrs().unwrap();
+        let interfaces = if_addrs::get_if_addrs().unwrap();
         let mut broadcast_addrs = Vec::new();
         for interface in interfaces {
             if interface.is_loopback() {
@@ -211,7 +211,7 @@ impl NodeFinderClient {
             }
 
             match interface.addr {
-                get_if_addrs::IfAddr::V4(ifv4addr) => {
+                if_addrs::IfAddr::V4(ifv4addr) => {
                     let ip = ifv4addr.ip;
                     let netmask = ifv4addr.netmask;
                     let broadcast = ifv4addr.broadcast;
@@ -236,7 +236,7 @@ impl NodeFinderClient {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
-    use get_if_addrs;
+    use if_addrs;
     #[tokio::test]
     async fn test_get_all_local_ipv4_addresses() {
         let ips = NodeFinderClient::get_ipv4_broadcast_addr().await.unwrap();

@@ -87,7 +87,8 @@
             "tcp_ports": {
                 "www": 80
             },
-            "udp_ports": {}
+            "udp_ports": {},
+            "container_param": "--privileged"
         }
     },
     "app_index" : 1,
@@ -108,7 +109,8 @@
         "www":80
     },
     "udp_ports" : {
-    }
+    },
+    "container_param": "--privileged"
 }
 """
 
@@ -282,11 +284,6 @@
 
 "nodes/ood1/gateway_config" = """
 {
-    "inner_services": {
-        "zone_provider": {
-            "type": "zone-provider"
-        }
-    },
     "servers":{
         "main_http_server":{
             "type":"cyfs-warp",
@@ -307,13 +304,10 @@
                         },
                         "/kapi/system_config":{
                             "upstream":"http://127.0.0.1:3200"
-                        },
-                        "/resolve": {
-                            "inner_service": "zone_provider"
                         }
                     }
                 },
-                "sys.*": {
+                "sys*": {
                     "enable_cors":true,
                     "routes": {
                         "/":{
@@ -333,7 +327,7 @@
                         }
                     }
                 },
-                "sys-test.*": {
+                "sys-test*": {
                     "enable_cors":true,
                     "routes": {
                         "/":{

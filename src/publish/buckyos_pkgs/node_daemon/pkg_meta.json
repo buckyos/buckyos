@@ -1,7 +1,7 @@
 {
     "pkg_name": "node_daemon",
     "version": "0.4.0",
-    "author": "buckyos.io",
+    "author": "buckyos.ai",
     "description": {
         "detail": "node daemon"
     },

@@ -17,9 +17,11 @@ log = "*"
 trust-dns-resolver = "*"
 futures-util = "*"
 regex = "*"
-buckyos-kit = { path = "../../components/buckyos-kit" }
+
 serde_json = "*"
 serde = "*"
 fast-socks5 = "*"
 once_cell = "*"
 chrono = "*"
+
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }

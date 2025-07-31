@@ -12,6 +12,7 @@ log = "*"
 lazy_static = "*"
 tokio = { version = "*", features = ["full"] }
 tokio-util = { version = "*", features = ["io"] }
+tokio-stream = { version = "*", features = ["full"] }
 hyper = { version = "0.14", features = ["full"] }
 rustls = "0.21"
 rustls-pemfile = "1"
@@ -30,12 +31,12 @@ rand = "*"
 async-trait = "*"
 thiserror = "*"
 
-tokio-stream = { version = "*", features = ["full"] }
-ndn-lib = { path = "../../components/ndn-lib" }
+
+ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib" }
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 cyfs-sn = { path = "../cyfs-sn" }
-buckyos-kit = { path = "../../components/buckyos-kit" }
-kRPC = { path = "../../kernel/kRPC" }
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
+kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC" }
 
 
 [dev-dependencies]

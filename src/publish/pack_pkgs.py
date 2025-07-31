@@ -15,8 +15,8 @@ import time
 publish_root_dir = os.path.dirname(os.path.abspath(__file__))
 system_list = ["windows", "linux", "apple"]
 machine_list = ["amd64", "aarch64"]
-rootfs_base_dir = "/opt/buckyos_build_result"
-target_base_dir = "/opt/buckyos_pack_pkgs"
+rootfs_base_dir = "/opt/buckyosci/rootfs"
+target_base_dir = "/opt/buckyosci/pack_pkgs"
 
 
 buckycli_path = os.getenv("BUCKYCLI_PATH", "/opt/buckyos/bin/buckycli/buckycli")
@@ -67,13 +67,29 @@ def pack_packages(pkg_dir, target_dir):
 
 
 def copy_rootfs(src_dir:str, target_dir:str):
+    if os.path.exists(target_dir):
+        shutil.rmtree(target_dir)
+    os.makedirs(target_dir)
     #复制src_dir目录下除bin目录外的所有item到target_dir
     for item in os.listdir(src_dir):
         if item == "bin":
+            os.makedirs(os.path.join(target_dir, item))
+            for sub_item in os.listdir(os.path.join(src_dir, item)):
+                src_sub_item_path = os.path.join(src_dir, item, sub_item)
+                target_sub_item_path = os.path.join(target_dir, item, sub_item)
+                
+                if not os.path.isdir(src_sub_item_path):
+                    print(f"copy file {src_sub_item_path} => {target_sub_item_path}")
+                    shutil.copy(src_sub_item_path, target_sub_item_path)
+            
             continue
+
         src_item_path = os.path.join(src_dir, item)
         target_item_path = os.path.join(target_dir, item)
-        shutil.copy(src_item_path, target_item_path)
+        if os.path.isdir(src_item_path):
+            shutil.copytree(src_item_path, target_item_path)
+        else:
+            shutil.copy(src_item_path, target_item_path)
     print(f"copy {src_dir} => {target_dir}")
     
 
@@ -115,6 +131,11 @@ def pack_rootfs_pkgs(rootfs_version: str):
 
     for sys_name in system_list:
         for machine_name in machine_list:
+            if sys_name == "windows" and machine_name == "aarch64":
+                print(f"skip {sys_name}-{machine_name}")
+                continue
+            print(f"pack {sys_name}-{machine_name}")
+
             rootfs_id = f"buckyos-{sys_name}-{machine_name}"
             rootfs_dir = os.path.join(rootfs_base_dir, rootfs_version,rootfs_id)
             rootfs_bin_dir = os.path.join(rootfs_dir,"bin")
@@ -123,8 +144,9 @@ def pack_rootfs_pkgs(rootfs_version: str):
             prefix = f"{channel_name}-{sys_name}-{machine_name}"
             pkg_dirs = glob.glob(os.path.join(rootfs_bin_dir,"*"))
             for pkg_dir in pkg_dirs:
+                print(f"pkg_dir: {pkg_dir} ...")
                 prepare_package(pkg_dir, prefix, rootfs_version)
-
+            
             print(f"pack pkgs in {rootfs_bin_dir}")
             pack_packages(rootfs_bin_dir, target_dir)
             target_rootfs_dir = os.path.join(target_dir, rootfs_id)

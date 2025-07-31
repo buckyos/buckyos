@@ -32,16 +32,17 @@ ctr = "0.9.2"
 cipher = "0.4.4"
 futures = "*"
 base64 = "*"
-hyper = "0.14"
+hyper = { version = "0.14", features = ["full"] }
 openssl = "0.10"
 rustls = "0.21"
 rustls-pemfile = "1.0"
 ring = "0.17"
-
-name-lib = { path = "../../components/name-lib" }
-name-client = { path = "../../components/name-client" }
-buckyos-kit = { path = "../../components/buckyos-kit" }
-ndn-lib = { path = "../../components/ndn-lib" }
-cyfs-socks = { path = "../cyfs-socks" }
 tokio-socks = "*"
 libsocks_client = "*"
+
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
+name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client" }
+name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib" }
+ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib" }
+cyfs-socks = { path = "../cyfs-socks" }
+#buckyos-api = { path = "../../kernel/buckyos-api" }

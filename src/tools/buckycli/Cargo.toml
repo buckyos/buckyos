@@ -15,12 +15,12 @@ serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
 tar = "0.4"
 toml = "0.5"
-kRPC = { path = "../../kernel/kRPC"}
-buckyos-kit = { path = "../../components/buckyos-kit"}
-name-lib = { path = "../../components/name-lib"}
-ndn-lib = { path = "../../components/ndn-lib"}
+kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC"}
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit"}
+name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib"}
+ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib"}
 buckyos-api = { path = "../../kernel/buckyos-api"}
-package-lib = { path = "../../components/package-lib"}
+package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib"}
 jsonwebtoken = "9.3.0"
 ed25519-dalek = { version = "*", features = ["pkcs8", "pem"] } 
 base64 = "*"

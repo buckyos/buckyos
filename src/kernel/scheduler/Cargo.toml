@@ -23,11 +23,11 @@ upon = "*"
 anyhow = "*"
 uuid = { version = "*", features = ["v4"] }
 # rocksdb = "*"
-buckyos-kit = { path = "../../components/buckyos-kit" }
-name-lib = { path = "../../components/name-lib" }
-name-client = { path = "../../components/name-client" }
-rbac = { path = "../rbac" }
-kRPC ={ path = "../kRPC" }
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
+name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib" }
+name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client" }
+rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac" }
+kRPC ={ git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC" }
 buckyos-api = { path = "../buckyos-api" }
 cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
 cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }

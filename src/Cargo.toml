@@ -2,16 +2,6 @@
 resolver = "2"
 
 members = [
-    #"./components/backup-lib",
-    #"./components/gateway-lib",
-
-    "./components/name-lib",
-    "./components/name-client",
-    "./components/package-lib",
-    "./components/buckyos-kit",
-    "./components/ndn-lib",
-    "./components/debug-lib",
-    "./components/state-waiter",
 
     "./cyfs_gateway/cyfs-gateway-lib",
     "./cyfs_gateway/cyfs_gateway",
@@ -20,18 +10,18 @@ members = [
     "./cyfs_gateway/cyfs-sn",
     "./cyfs_gateway/cyfs-socks",
 
-    "./kernel/kRPC",
-    "./kernel/rbac",
     "./kernel/buckyos-api",
     "./kernel/sys_config_service",
     "./kernel/verify_hub",
     "./kernel/node_daemon",
     "./kernel/scheduler",
-    "./kernel/task_manager",                      
+    "./kernel/task_manager",    
+
     "./frame/repo_service",
     "./frame/smb_service",
 
-    "./tools/buckycli", "test/test_rbac", 
+    "./tools/buckycli", 
+    "test/test_rbac", 
 ]
 
 exclude = [

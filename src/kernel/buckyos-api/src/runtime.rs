@@ -10,7 +10,6 @@ use tokio::sync::RwLock;
 use buckyos_kit::*;
 use ::kRPC::*;
 use std::env;
-use once_cell::sync::OnceCell;
 use log::*;
 use jsonwebtoken::{decode,Validation, EncodingKey, DecodingKey};
 
@@ -27,27 +26,6 @@ use crate::verify_hub_client::*;
 
 use crate::{get_buckyos_api_runtime,get_full_appid,get_session_token_env_key};
 
-pub static CURRENT_DEVICE_CONFIG: OnceCell<DeviceConfig> = OnceCell::new();
-pub fn try_load_current_device_config_from_env() -> NSResult<()> {
-    let device_doc = env::var("BUCKYOS_THIS_DEVICE");
-    if device_doc.is_err() {
-        return Err(NSError::NotFound("BUCKY_DEVICE_DOC not set".to_string()));
-    }
-    let device_doc = device_doc.unwrap();
-
-    let device_config= serde_json::from_str(device_doc.as_str());
-    if device_config.is_err() {
-        warn!("parse device_doc format error");
-        return Err(NSError::Failed("device_doc format error".to_string()));
-    }
-    let device_config:DeviceConfig = device_config.unwrap();
-    let set_result = CURRENT_DEVICE_CONFIG.set(device_config);
-    if set_result.is_err() {
-        warn!("Failed to set CURRENT_DEVICE_CONFIG");
-        return Err(NSError::Failed("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
-    }
-    Ok(())
-}
 
 
 #[derive(Debug, Clone,PartialEq,Eq)]

@@ -3,11 +3,13 @@ mod package_cmd;
 mod sys_config;
 mod did;
 mod app;
+mod ndn;
 
 use std::path::Path;
 use buckyos_api::*;
 use clap::{Arg, Command};
 use package_cmd::*;
+use ndn::*;
 
 fn is_local_cmd(cmd_name: &str) -> bool {
     const LOCAL_COMMANDS: &[&str] = &[
@@ -16,7 +18,8 @@ fn is_local_cmd(cmd_name: &str) -> bool {
         "pack_pkg",
         "load_pkg",
         "set_pkg_meta",
-        "did"
+        "did",
+        "create_chunk"
     ];
     LOCAL_COMMANDS.contains(&cmd_name)
 }
@@ -253,6 +256,20 @@ oods look like this 'ood1,ood2'.")
                         .long("create")
                         .value_name("mata_file")
                         .help("Quickly create an app, buckycli app --create $meta_file")
+                )
+        )
+        .subcommand(
+            Command::new("create_chunk")
+                .about("ndn operator")
+                .arg(
+                    Arg::new("create")
+                    .value_name("filepath")
+                    .help("crate ndn chunk by filepath")
+                )
+                .arg(
+                    Arg::new("target")
+                    .value_name("target ndn data dir")
+                    .help("chunk will store at target ndn data dir")
                 )
         )
         .get_matches();
@@ -494,6 +511,15 @@ oods look like this 'ood1,ood2'.")
                 app::create_app(meta_file).await;
                 return Ok(());
             }
+        }
+        Some(("create_chunk", matches)) => {
+            if let Some(filepath) = matches.get_one::<String>("create") {
+                if let Some(target) = matches.get_one::<String>("target") {
+                    ndn::create_ndn_chunk(filepath,target).await;
+                    return Ok(());
+                }
+            }
+
         }
         _ => {
             println!("unknown command!");

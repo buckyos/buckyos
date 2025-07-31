@@ -12,32 +12,75 @@ import subprocess
 import time
 import glob
 import platform
-import prepare_packages
+
 from urllib.request import urlretrieve
 
-src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-rootfs_dir = os.path.join(src_dir, "rootfs")
+publish_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
+buckyosci_base = "/opt/buckyosci"
+packed_pkg_base_dir = os.path.join(buckyosci_base, "pack_pkgs")
+rootfs_base_dir = packed_pkg_base_dir
 base_meta_db_url = "https://buckyos.ai/ndn/repo/meta_index.db/content"
 
 # 如果有定义BUCKYCLI_PATH环境变量，就使用这个变量作为CLI的执行文件
-def default_buckycli_path():
-    buckycli_path = os.path.join(src_dir, "rootfs/bin/buckycli", "buckycli")
-    if platform.system() == "Windows":
-        buckycli_path += ".exe"
-    return buckycli_path
-buckycli_path = os.getenv("BUCKYCLI_PATH", default_buckycli_path())
-print(f'use buckycli at {buckycli_path}')
+buckycli_path = os.getenv("BUCKYCLI_PATH", "/opt/buckyos/bin/buckycli/buckycli")
 
-def prepare_meta_db(rootfs_dir):
-    # 1 download base meta db
-    print(f"# download base meta db from {base_meta_db_url}")
+def install_pkg(pkg_name, target_dir, prefix, version):
+    pkg_full_name = f"{prefix}.{pkg_name}"
+    pkg_dir = os.path.join(packed_pkg_base_dir,version,pkg_full_name)
+    print(f"# install pkg {pkg_dir} to {target_dir}...")
+
+    meta_obj_id_file = os.path.join(pkg_dir, "meta_obj_id")
+    if not os.path.exists(meta_obj_id_file):
+        print(f"# meta_obj_id_file not found in {pkg_dir}")
+        return
+    meta_obj_id = open(meta_obj_id_file).read().strip()
+    target_pkg_dir = os.path.join(target_dir, pkg_name)
+
+
+    pkg_file = os.path.join(pkg_dir, f"{pkg_full_name}#{version}.tar.gz")
+    if not os.path.exists(pkg_file):
+        print(f"# pkg_file not found in {pkg_dir}")
+        return
+    os.makedirs(target_pkg_dir, exist_ok=True)
+    #解压到 bin/pkgs/pkg_name/$meta_obj_id 目录下
+    subprocess.run(["tar", "-xzf", pkg_file, "-C", target_pkg_dir], check=True)
+    print(f"# install pkg {pkg_file} to {target_pkg_dir} done")
+
+
+def prepare_bin_package(src_pkg_dir, prefix, version, target_dir):
+    pack_pkg_items = glob.glob(os.path.join(src_pkg_dir,f"{prefix}*"))
+    print(f"# prepare_bin_package: {src_pkg_dir} ({prefix}*)")
+    install_pkg("node_daemon",target_dir,prefix,version)
+    install_pkg("buckycli",target_dir,prefix,version)
+    # for pack_pkg_item in pack_pkg_items:
+    #     if os.path.isdir(pack_pkg_item):
+    #         #nightly-windows-amd64.app_loader ,app_loader is pkg_name
+    #         pkg_name = pack_pkg_item.split(".")[-1]
+    #         install_pkg(pkg_name, target_dir, prefix, version)
+
+
+def prepare_named_mgr_data(rootfs_dir,src_pkg_dir,prefix):
+    pack_pkg_items = glob.glob(os.path.join(src_pkg_dir,f"{prefix}*"))
+    named_data_dir = os.path.join(rootfs_dir, "data", "ndn")
+    for pack_pkg_item in pack_pkg_items:
+        if os.path.isdir(pack_pkg_item):
+            #nightly-windows-amd64.app_loader ,app_loader is pkg_name
+            chunk_files = glob.glob(os.path.join(pack_pkg_item,"*.tar.gz"))
+            for chunk_file in chunk_files:
+                subprocess.run([buckycli_path,"create_chunk",chunk_file,named_data_dir], check=True)
+
+def prepare_meta_db(rootfs_dir,packed_pkgs_dir):
+    bin_dir = os.path.join(rootfs_dir,"bin")
+    # 1 download base meta db (already in pack_pkgs dir)
+    root_env_dir = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env")
+
     os.makedirs(os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs"), exist_ok=True)
     root_env_db_path = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs","meta_index.db")
     urlretrieve(base_meta_db_url, root_env_db_path)
     # subprocess.run(["wget",base_meta_db_url,"-O",root_env_db_path], check=True)
-    print(f"# download base meta db to {root_env_db_path}")
+    print(f"# download {base_meta_db_url} => {root_env_db_path}")
+
     # 2 scan packed pkgs dir, add pkg_meta_info to meta db
-    packed_pkgs_dir = os.path.join(rootfs_dir, "bin")
     print(f"# packed_pkgs_dir: {packed_pkgs_dir}")
     pkg_items = glob.glob(os.path.join(packed_pkgs_dir, "*"))
     for pkg_item in pkg_items:
@@ -47,70 +90,73 @@ def prepare_meta_db(rootfs_dir):
             if os.path.exists(pkg_item):
                 subprocess.run([buckycli_path,"set_pkg_meta",pkg_item,root_env_db_path], check=True)
                 print(f"# add pkg_meta_info to meta db from {pkg_item}")
-        else:
-            # 为什么会有这样的场景存在？
-            if pkg_item.endswith(".json") and not pkg_item.endswith("pkg.cfg.json"):
-                subprocess.run([buckycli_path,"set_pkg_meta",pkg_item,root_env_db_path], check=True)
-                print(f"# add pkg_meta_info to meta db from {pkg_item}")
 
+    meta_db_path = os.path.join(rootfs_dir, "data", "repo-service", "default_meta_index.db")
+    shutil.copy(root_env_db_path, meta_db_path)
+    print(f"# save meta db to {meta_db_path}")
+    
     fileobj_path = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs", "meta_index.db.fileobj")
     fileobj = json.load(open(fileobj_path))
-    
     current_time = int(time.time())
     fileobj["create_time"] = current_time
     json.dump(fileobj, open(fileobj_path, "w"))
     fileobj_path = os.path.join(rootfs_dir, "data", "repo-service", "default_meta_index.db.fileobj")
     json.dump(fileobj, open(fileobj_path, "w"))
     print(f"# update fileobj create_time to {current_time} for {fileobj_path}")
-    os.makedirs(os.path.join(rootfs_dir, "bin", "pkgs"), exist_ok=True)
-    shutil.copy(root_env_db_path, os.path.join(rootfs_dir, "bin", "pkgs", "meta_index.db"))
-    shutil.copy(root_env_db_path, os.path.join(rootfs_dir, "data", "repo-service", "default_meta_index.db"))
-    print(f"# save meta db to {os.path.join(rootfs_dir, 'bin', 'pkgs', 'meta_index.db')}")
 
-def prepare_installer(target_dir, channel, os_name, arch, version, builddate):
+
+def prepare_rootfs_for_installer(target_dir, os_name, arch, version):
+    rootfs_id = f"buckyos-{os_name}-{arch}"
+    rootfs_dir = os.path.join(rootfs_base_dir, version, rootfs_id)
     if not os.path.exists(target_dir):
         os.makedirs(target_dir)
+    print(f"# copy rootfs: {rootfs_dir} => {target_dir}")    
     shutil.copytree(rootfs_dir, target_dir, dirs_exist_ok=True)
-    print(f"# copy rootfs to {target_dir}")
+    
 
+    # install pkg to rootfs/bin
     bin_dir = os.path.join(target_dir, "bin")
+
     # write pkg.cfg.json to bin_dir
-    pkg_cfg_path = os.path.join(src_dir, "publish", "buckyos_pkgs","pkg.cfg.json")
+    pkg_cfg_path = os.path.join(publish_dir,  "buckyos_pkgs","pkg.cfg.json")
     pkg_cfg = json.load(open(pkg_cfg_path))
-    pkg_cfg["prefix"] = f"${channel}-{os_name}-{arch}"
-    pkg_cfg["parent"] = None
+    pkg_cfg["prefix"] = f"nightly-{os_name}-{arch}"
     json.dump(pkg_cfg, open(os.path.join(bin_dir, "pkg.cfg.json"), "w"))
     print(f"# write pkg.cfg.json to {bin_dir} OK ")
 
-    # perpare packages
-    prepare_packages.perpare_all(channel, os_name, arch, version, builddate, target_dir=bin_dir, no_copy_app=True)
-
-    prepare_meta_db(target_dir)
-    print(f"# prepare meta db to {target_dir}")
+    packed_pkgs_dir = os.path.join(packed_pkg_base_dir, version)
+    prepare_bin_package(packed_pkgs_dir,f"nightly-{os_name}-{arch}", version, bin_dir)
+    # if os_name == "windows":
+    #     pkg_cfg["parent"] = "c:\\buckyos\\local\\node_daemon\\root_pkg_env"
+    # else:
+    #     pkg_cfg["parent"] = "/opt/buckyos/local/node_daemon/root_pkg_env"
+    # json.dump(pkg_cfg, open(os.path.join(bin_dir, "pkg.cfg.json"), "w"))
+    prepare_meta_db(target_dir,packed_pkgs_dir)
+    prepare_named_mgr_data(target_dir,packed_pkgs_dir,f"nightly-{os_name}-{arch}")
     
-
-    # perpare parent path:
-    # windows: c:\buckyos\local\node_daemon\root_pkg_env
-    # non-windows: /opt/buckyos/local/node_daemon/root_pkg_env
-    if os_name == "windows":
-        pkg_cfg["parent"] = "c:\\buckyos\\local\\node_daemon\\root_pkg_env"
-    else:
-        pkg_cfg["parent"] = "/opt/buckyos/local/node_daemon/root_pkg_env"
-    json.dump(pkg_cfg, open(os.path.join(bin_dir, "pkg.cfg.json"), "w"))
-
-    os.remove(os.path.join(bin_dir, "pkgs", "meta_index.db"))
-    print(f"# remove meta_index.db from {bin_dir}")
-
+    # clean up etc dir
     clean_dir = os.path.join(target_dir, "etc")
     print(f"clean all .pem and .toml files and start_config.json in {clean_dir}")
     for file in glob.glob(os.path.join(clean_dir, "*.pem")):
         os.remove(file)
-    for file in glob.glob(os.path.join(clean_dir, "*.toml")):
-        os.remove(file)
-    os.remove(os.path.join(clean_dir, "start_config.json"))
-    os.remove(os.path.join(clean_dir, "node_identity.json"))
-    for file in glob.glob(os.path.join(clean_dir, "*.zone.json")):
-        os.remove(file)
-    os.remove(os.path.join(clean_dir, "scheduler", "boot.template.toml"))
-    shutil.move(os.path.join(clean_dir, "scheduler", "nightly.template.toml"), os.path.join(clean_dir, "scheduler", "boot.template.toml"))
-    shutil.move(os.path.join(clean_dir, "machine.json"), os.path.join(clean_dir, "machine_config.json"))
+
+    start_config_file = os.path.join(clean_dir, "start_config.json")
+    if os.path.exists(start_config_file):
+        os.remove(start_config_file)
+    node_identity_file = os.path.join(clean_dir, "node_identity.json")
+    if os.path.exists(node_identity_file):
+        os.remove(node_identity_file)
+    machine_file = os.path.join(clean_dir, "machine.json")
+    if os.path.exists(machine_file):
+        os.remove(machine_file)
+
+# for test
+if __name__ == "__main__":
+    target_dir = "/tmp/buckyos-installer"
+    os_name = "linux"
+    arch = "amd64"
+    version = "0.4.0-250724"
+    if os.path.exists(target_dir):
+        shutil.rmtree(target_dir)
+    os.makedirs(target_dir)
+    prepare_rootfs_for_installer(target_dir, os_name, arch, version)

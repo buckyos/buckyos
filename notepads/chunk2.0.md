@@ -230,3 +230,98 @@ AI 时代的核心是为文件系统找到新需求（或则buckyos本质上需
 此时必然会产生一个新版本的dirobject，构建新版本的dirobject一般会很大程度上复用旧版本的dirobjecty已经存在的元数据
 
 ### 站在DataGraph的角度来理解DirObject和FileObject
+
+
+### 新设计
+
+```rust
+struct Collection {
+
+}
+
+
+impl Collection {
+    fn get_item(self,key:T,depth:u32) -> Option<ObjId> {
+        if self.have_children() {
+            let prefix = get_prefix(key,depth)
+            let sub_set = self.get_item_imp(prefix)
+            if sub_set {
+                return sub_set.get_item(key,depth+1)
+            } else {
+                return None
+            }
+        } else {
+            return sef.get_item_imp(key)
+        }
+    }
+
+    fn get_item_imp(key) {
+        let ret = self.json_data.get(key)
+        if ret.is_none() {
+            return ret;
+        }
+        let objid = ret.unwarp()
+        if objid.is_collection() {
+            let json_data = ndn_mgr.get(objid)
+            return collection::new(json_data)
+        }
+        return objid
+    }
+
+    fn set_item(self,key:T,depth:u32) {
+
+    }
+}
+
+
+impl ndn_client {
+    //下载整个collection
+    async fn get_collection(self,collection_id) -> Result<Collection> {
+        let json_data = name_mgr.get(collection_id)
+        if json_data.is_none() {
+            json_data = self.get_obj_by_http(collection_id)
+            name_mgr.set(collection_id,json_data)
+        }
+
+        let collection = Collection::new(json_data)
+        if collection.have_children() {
+            for (k,v) in collection {
+                self.get_collection(v)
+            }
+        } else {
+            for (k,v) in collection {
+                obj = self.get_obj_by_http(v)
+            }
+        }
+        
+        return collection
+    }
+
+    async fn get_collection_item(self,collection_id,key) {
+        let json_data = name_mgr.get(collection_id)
+        if json_data.is_none() {
+            json_data = self.get_obj_by_http(collection_id)
+            name_mgr.set(collection_id,json_data)
+        }  
+        let collection = Collection::new(json_data)
+         if collection.have_children() {
+            let prefix = get_prefix(key,depth)
+            let sub_set = collection.get_item_impl(prefix)
+            return self.get_collection_item(sub_set,key)
+        } else {
+            return collection.get_item(key)
+        }
+    }
+}
+
+```
+
+核心逻辑： 通过一种稳定的分页算法，可以让一个colleciton在逐步加入item后，`有亲缘的item`能稳定的分到到一个sub-set中
+从超大型 collection的构造角度，应该一口气放入了所有的item后(设置item reader)再进行命名化（不着急计算每一个collection的objid）
+
+
+- 针对一个已经构建的Collection,花费最小的IO 可靠的读取其中的 一部分元素 （对数组来说，连续性读取的性能会有优化）
+- 针对一个已经构建的Collection,进行修改得到新的Collection。其IO量基本与修改的量有关，而与Collection的大小无关。该增量部分也可以易于被计算出来。如果该Collection是Array,如果修改是连续的，那么通常会被看成是一次修改
+- 传输Collection时更像一个流？流里的每一行都有独立意义
+  - 上面的流与Collection的本地存储结构应该类似
+  - named_mgr提供的objid->json_data 是一种对象存储结构，可以基于这种对象存储结构高速且低消耗的构造对象流

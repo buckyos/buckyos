@@ -6,7 +6,7 @@ import sys
 import platform
 
 build_dir = os.path.dirname(os.path.abspath(__file__))
-
+sys.path.insert(0, os.path.join(build_dir, "scripts"))
 # after run build.py ,use this script to restart the dev buckyos system
 # 1) killall process
 # 2) update files to /opt/buckyos (--all to update all files to /opt/buckyos)
@@ -34,7 +34,7 @@ def update_files(install_all=False,config_group_name=None):
     print("Updating files...")
     
     # Import and call install.py functions directly
-    sys.path.insert(0, os.path.join(build_dir, "scripts"))
+
     try:
         import install
         install.install(install_all)

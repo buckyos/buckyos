@@ -22,6 +22,12 @@ jobs:
       id: date
       with:
         format: 'YYYYMMDD'
+    - name: short time
+      id: short_time
+      run: |
+        $val = "${{ steps.date.outputs.time }}"
+        $last6 = $val.Substring($val.Length - 6)
+        echo "last6=$last6" >> $env:GITHUB_OUTPUT
     - name: Checkout
       uses: actions/checkout@v4
     - name: Setup pnpm
@@ -57,15 +63,25 @@ jobs:
     - name: Upload tools
       uses: actions/upload-artifact@v4
       with:
-        name: buckyos-tools-windows-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        name: buckyos-tools-windows-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}+build${{ steps.short_time.outputs.last6 }}
         path: tools
         if-no-files-found: error
     - name: Upload
       id: upload
       uses: actions/upload-artifact@v4
       with:
-        name: buckyos-windows-${{inputs.arch}}-${{inputs.version}}-${{ steps.date.outputs.time }}
+        name: buckyos-windows-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{inputs.version}}+build${{ steps.short_time.outputs.last6 }}
         path: src/rootfs
         if-no-files-found: error
+    - name: Report Upload Urls
+      run: |
+        npm i
+        npm run build
+        node client.js seturl ${{inputs.version}}+build${{ steps.short_time.outputs.last6 }} windows ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}}
+      working-directory: ./test/test_server
+      env:
+        USERNAME: ${{ secrets.TEST_SERVER_USERNAME }}
+        PRIVATE_KEY: ${{ secrets.TEST_SERVER_PRIVATE_KEY }}
+        ENDPOINT: "https://buckyos.ai"
     outputs:
       build_time: ${{ steps.date.outputs.time }}

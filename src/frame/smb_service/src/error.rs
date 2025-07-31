@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 pub use sfo_result::err as smb_err;
 pub use sfo_result::into_err as into_smb_err;
 

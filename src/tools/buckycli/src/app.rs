@@ -274,7 +274,7 @@ mod tests {
         assert!(result.is_ok());
         let full_app_config = result.unwrap();
         println!("Full App Config: {}", full_app_config);
-        let app_config: AppConfig = serde_json::from_str(&full_app_config).unwrap();
-        let test_parse_value: Value = serde_json::from_str(&full_app_config).unwrap();
+        let _app_config: AppConfig = serde_json::from_str(&full_app_config).unwrap();
+        let _test_parse_value: Value = serde_json::from_str(&full_app_config).unwrap();
     }
 }

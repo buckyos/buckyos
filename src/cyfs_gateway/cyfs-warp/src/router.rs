@@ -134,8 +134,16 @@ impl Router {
                             break;
                         }
                     }
-        
+                    
+                    //appid.* 这种格式，通过SN转发的时候 appid.username.web3.buckyos.io 可以转发到特定appid的upstream
                     if key.ends_with(".*") {
+                        if host.starts_with(&key[..key.len()-1]) {
+                            host_config = Some(value);
+                            break;
+                        }
+                    }
+                    //appid-* 这种格式， 通过SN转发的时候  appid-username.web3.buckyos.io 可以转移到特定appid的upstream
+                    if key.ends_with("*") {
                         if host.starts_with(&key[..key.len()-1]) {
                             host_config = Some(value);
                             break;

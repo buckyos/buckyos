@@ -22,7 +22,7 @@ fn build_app_service_config(user_id:&str,app_config:&AppConfig,node_info:&Device
         result_config.docker_image_pkg_id = Some(docker_pkg_info.pkg_id.clone());
         result_config.docker_image_name = docker_pkg_info.docker_image_name.clone();
         result_config.docker_image_hash = docker_pkg_info.docker_image_hash.clone();
-        
+        result_config.container_param = app_config.container_param.clone();
     } else {
         // 解析是否有<arch>_<os_type>_app字段
         let app_pkg_name = format!("{}_{}_app", node_info.arch.as_str(),node_info.os.as_str());
@@ -86,10 +86,10 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
         let mut user_owner_domain:Option<String> = None;
         //if user_id is owner,then use app_id as prefix
         if user_id == "root" {
-            app_prefix = format!("{}.*",app_id);
+            app_prefix = format!("{}*",app_id);
         } else {
             if user_owner_domain.is_none() {
-                app_prefix = format!("{}-{}.*",app_id,user_id);
+                app_prefix = format!("{}-{}*",app_id,user_id);
             } else {
                 app_prefix = format!("{}.{}",app_id,user_owner_domain.as_ref().unwrap());
             }
@@ -132,7 +132,7 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
                     // 使用系统快捷方式会让 appid前缀失效（我们不希望有两个不同的URL都可以访问APP），注意谨慎选择
                     let short_prefix = match key.as_str() {
                         "www" => "*".to_string(),
-                        _ => format!("{}.*",key.as_str()),
+                        _ => format!("{}*",key.as_str()),
                     };
                     let gateway_path = format!("/servers/main_http_server/hosts/{}/routes/\"/\"",short_prefix);
                     set_action.insert(gateway_path,Some(json!({

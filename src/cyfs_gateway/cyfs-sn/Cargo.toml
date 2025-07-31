@@ -20,9 +20,10 @@ rand = "0.9.0"
 once_cell = "*"
 jsonwebtoken = "*"
 
-buckyos-kit = { path = "../../components/buckyos-kit" }
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
-kRPC = { path = "../../kernel/kRPC" }
-buckyos-api = { path = "../../kernel/buckyos-api" }
-name-lib = { path = "../../components/name-lib" }
-name-client = { path = "../../components/name-client" }
+kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC" }
+
+name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client" }
+name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib" }
+#buckyos-api = { path = "../../kernel/buckyos-api" }

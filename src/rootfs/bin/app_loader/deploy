@@ -4,8 +4,11 @@ import os
 import sys
 import json
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts import util
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+import util
 
 def load_image_from_tar(image_tar_path):
     load_cmd = f"docker load -i {image_tar_path}"

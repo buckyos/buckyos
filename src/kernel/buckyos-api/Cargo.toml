@@ -20,10 +20,10 @@ tokio = { version = "*", features = ["full"] }
 jsonwebtoken = "*"
 reqwest = "*"
 
-buckyos-kit = { path = "../../components/buckyos-kit" }
-package-lib = { path = "../../components/package-lib" }
-name-lib = { path = "../../components/name-lib" }
-name-client = { path = "../../components/name-client" }
-kRPC ={ path = "../kRPC" }
-rbac = { path = "../rbac" }
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
+package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib" }
+name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib" }
+name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client" }
+kRPC ={ git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC" }
+rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac" }
 
