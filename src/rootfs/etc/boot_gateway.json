@@ -64,7 +64,15 @@
                     "enable_cors":true,
                     "routes": {
                         "/":{
-                            "local_dir":"{{BUCKYOS_ROOT}}/bin/control_panel"
+                            "local_dir":"{BUCKYOS_ROOT}/bin/control_panel"
+                        }
+                    }
+                },
+                "sys.*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{BUCKYOS_ROOT}/bin/control_panel"
                         }
                     }
                 },
@@ -72,7 +80,15 @@
                     "enable_cors":true,
                     "routes": {
                         "/":{
-                            "local_dir":"{{BUCKYOS_ROOT}}/bin/sys_test"
+                            "local_dir":"{BUCKYOS_ROOT}/bin/sys_test"
+                        }
+                    }
+                },
+                "sys-test.*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{BUCKYOS_ROOT}/bin/sys_test"
                         }
                     }
                 }
