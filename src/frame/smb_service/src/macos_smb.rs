@@ -231,7 +231,7 @@ struct ACLItem {
 async fn get_acl(path: &str) -> SmbResult<Vec<ACLItem>> {
     let output = execute(format!("ls -lde {}", path).as_str()).await.map_err(into_smb_err!(SmbErrorCode::Failed))?;
     let output_str = String::from_utf8_lossy(output.as_slice()).to_string();
-    let mut lines = output_str.lines();
+    let lines = output_str.lines();
     let mut acl_items = Vec::new();
     for line in lines {
         let elments = line.split_whitespace().collect::<Vec<&str>>();

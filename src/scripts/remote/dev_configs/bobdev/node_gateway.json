@@ -3,11 +3,11 @@
     "device_name": "ood1",
     "dispatcher": {
         "tcp://0.0.0.0:443": {
-            "id": "main_http_server",
+            "id": "zone_gateway",
             "type": "server"
         },
         "tcp://0.0.0.0:80": {
-            "id": "main_http_server",
+            "id": "zone_gateway",
             "type": "server"
         }
     },
@@ -17,7 +17,7 @@
         }
     },
     "servers": {
-        "main_http_server": {
+        "zone_gateway": {
             "bind": "0.0.0.0",
             "hosts": {
                 "*": {

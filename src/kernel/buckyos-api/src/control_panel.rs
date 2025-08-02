@@ -11,7 +11,6 @@ use crate::system_config::*;
 use package_lib::PackageMeta;
 use crate::KVAction;
 
-
 pub const SERVICE_INSTANCE_INFO_UPDATE_INTERVAL: u64 = 30;
 
 #[derive(Serialize, Deserialize)]
@@ -32,18 +31,24 @@ pub struct ServiceInstanceInfo {
     pub pid: u32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize,Clone)]
 pub struct ServiceNodeInfo {
     pub weight: u32,
     pub state: String,
     pub port: u16,
     pub node_did:String,
+    pub node_net_id:Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct ServiceInfo {
+    //TODO:后续要提供类似nginx的cluster的支持
+    pub selector_type:String,//random ONLY
+    //node_name -> ServiceNodeInfo
     pub node_list: HashMap<String, ServiceNodeInfo>,
 }
+
+
 
 #[derive(Serialize, Deserialize)]
 pub struct InstallConfig {
@@ -197,7 +202,7 @@ pub struct AppServiceInstanceConfig {
     // memory quota in bytes
     pub memory_quota: Option<u64>,
 
-    // target port ==> real port in docker
+    // host port ==> real port in docker
     pub tcp_ports: HashMap<u16,u16>,
     pub udp_ports: HashMap<u16,u16>,
     //pub service_image_name : String, // support mutil platform image name (arm/x86...)
@@ -224,7 +229,7 @@ impl AppServiceInstanceConfig {
             max_cpu_num: app_config.max_cpu_num.clone(),
             max_cpu_percent: app_config.max_cpu_percent.clone(),
             memory_quota: app_config.memory_quota.clone(),
-            tcp_ports: HashMap::new(),//TODO
+            tcp_ports: HashMap::new(),
             udp_ports: HashMap::new(),
             container_param: app_config.container_param.clone(),
         }

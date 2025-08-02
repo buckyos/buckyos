@@ -991,8 +991,6 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         set_buckyos_api_runtime(runtime);
     }
     
-
-
     info!("{}@{} boot OK, enter node daemon main loop.", &device_name, node_identity.zone_did.to_host_name());
     node_daemon_main_loop(node_id,&device_name, is_ood)
         .await

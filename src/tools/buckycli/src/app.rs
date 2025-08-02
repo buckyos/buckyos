@@ -2,7 +2,6 @@
 use buckyos_api::*;
 use serde_json::Value;
 
-use crate::app;
 
 /* app_config.json example:
 {
@@ -158,7 +157,7 @@ fn build_app_service_config(app_config: &serde_json::Value) -> Result<String, St
         .and_then(|v| v.as_str())
         .unwrap_or("unknown_docker_image")
         .to_string();
-    let mut data_mount_point = app_config
+    let data_mount_point = app_config
         .get("data_mount_point")
         .and_then(|v| v.as_object())
         .map(|v| {

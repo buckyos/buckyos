@@ -16,6 +16,8 @@ use jsonwebtoken::{decode,Validation, EncodingKey, DecodingKey};
 
 use name_lib::*;
 use name_client::*;
+use rand::Rng;
+
 use crate::zone_provider::*;
 use crate::repo_client::*;
 use crate::system_config::*;
@@ -27,6 +29,7 @@ use crate::verify_hub_client::*;
 use crate::{get_buckyos_api_runtime,get_full_appid,get_session_token_env_key};
 
 
+const DEFAULT_NODE_GATEWAY_PORT:u16 = 3180;
 
 #[derive(Debug, Clone,PartialEq,Eq)]
 pub enum BuckyOSRuntimeType {
@@ -34,14 +37,17 @@ pub enum BuckyOSRuntimeType {
     AppService,   //R2 运行在Node上，指定用户，可能在容器里
     FrameService, //R1 运行在Node上，可能在容器里
     KernelService,//R0 运行在Node上
+    Gateway,//R0,node-gateway专用
 }
 
 
 pub struct BuckyOSRuntime {
     pub app_owner_id:Option<String>,
     pub app_id:String,
+    pub app_host_perfix:String,
     pub runtime_type:BuckyOSRuntimeType,
     pub main_service_port:RwLock<u16>,
+
 
     pub user_id:Option<String>,
     pub user_config:Option<OwnerConfig>,
@@ -53,6 +59,7 @@ pub struct BuckyOSRuntime {
 
     pub zone_id:DID,
     pub zone_boot_config:Option<ZoneBootConfig>,
+    pub node_gateway_port:u16,
 
     //pub is_token_iss_by_self:bool,
     pub zone_config:Option<ZoneConfig>,
@@ -67,9 +74,17 @@ pub struct BuckyOSRuntime {
 
 impl BuckyOSRuntime {
     pub fn new(app_id: &str,app_owner_user_id: Option<String>,runtime_type: BuckyOSRuntimeType) -> Self {
+        let app_host_perfix;
+        if app_owner_user_id.is_none() {
+            app_host_perfix = format!("{}",app_id);
+        } else {
+            app_host_perfix = format!("{}-{}",app_id,app_owner_user_id.clone().unwrap());
+        }
+
         let runtime = BuckyOSRuntime {
             app_id: app_id.to_string(),
             app_owner_id: app_owner_user_id,
+            app_host_perfix: app_host_perfix,
             main_service_port: RwLock::new(0),
             user_id: None,
             runtime_type,
@@ -83,6 +98,7 @@ impl BuckyOSRuntime {
             user_config: None,
             zone_id: DID::undefined(),
             zone_boot_config: None,
+            node_gateway_port: DEFAULT_NODE_GATEWAY_PORT,
             trust_keys: Arc::new(RwLock::new(HashMap::new())),
             last_update_service_info_time: RwLock::new(0),
             web3_bridges: HashMap::new(),
@@ -423,7 +439,15 @@ impl BuckyOSRuntime {
         if refresh_result.is_err() {
             warn!("buckyos-api-runtime::keep_alive failed {:?}",refresh_result.err().unwrap());
         }
+
         let _ = buckyos_api_runtime.update_service_instance_info().await;
+
+        if buckyos_api_runtime.is_service() {
+            let control_panel_client = buckyos_api_runtime.get_control_panel_client().await?;
+            let (rbac_model,rbac_policy) = control_panel_client.load_rbac_config().await?;
+            rbac::create_enforcer(Some(rbac_model.as_str()),Some(rbac_policy.as_str())).await.unwrap();
+            buckyos_api_runtime.refresh_trust_keys().await?;
+        }
         Ok(())
     }
     //if login by jwt failed, exit current process is the best choose
@@ -443,6 +467,7 @@ impl BuckyOSRuntime {
             }
         }
         init_name_lib(&self.web3_bridges).await;
+
         {
             let mut session_token = self.session_token.write().await;
             if session_token.is_empty() {
@@ -497,26 +522,27 @@ impl BuckyOSRuntime {
         let zone_config = control_panel_client.load_zone_config().await?;
         self.zone_config = Some(zone_config); 
         info!("get zone config OK ,api-runtime: login success");
+
         if self.runtime_type == BuckyOSRuntimeType::KernelService || self.runtime_type == BuckyOSRuntimeType::FrameService {
             let (rbac_model,rbac_policy) = control_panel_client.load_rbac_config().await?;
             rbac::create_enforcer(Some(rbac_model.as_str()),Some(rbac_policy.as_str())).await.unwrap();
             self.refresh_trust_keys().await?;
             info!("refresh trust keys OK");
-
-            //start keep-alive timer to
-            tokio::task::spawn(async move {
-                // 从当前时间+5秒开始，每5秒执行一次
-                let start = tokio::time::Instant::now() + Duration::from_secs(5);
-                let mut timer = tokio::time::interval_at(start, Duration::from_secs(5));
-                loop {
-                    timer.tick().await;
-                    let result = BuckyOSRuntime::keep_alive().await;
-                    if result.is_err() {
-                        warn!("buckyos-api-runtime::keep_alive failed {:?}",result.err().unwrap());
-                    }
-                }
-            });
         }
+
+        //start keep-alive timer 
+        tokio::task::spawn(async move {
+            let start = tokio::time::Instant::now() + Duration::from_secs(5);
+            let mut timer = tokio::time::interval_at(start, Duration::from_secs(5));
+            loop {
+                timer.tick().await;
+                let result = BuckyOSRuntime::keep_alive().await;
+                if result.is_err() {
+                    warn!("buckyos-api-runtime::keep_alive failed {:?}",result.err().unwrap());
+                }
+            }
+        });
+        
         Ok(())
     }
 
@@ -766,7 +792,7 @@ impl BuckyOSRuntime {
                 //返回 
                 return self.buckyos_root_dir.join("data").join(self.user_id.clone().unwrap()).join(self.app_id.clone());
             }
-            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
+            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService | BuckyOSRuntimeType::Gateway => {
                 return self.buckyos_root_dir.join("data").join(self.app_id.clone());     //返回 
             }
         }
@@ -782,7 +808,7 @@ impl BuckyOSRuntime {
                 //返回 
                 return self.buckyos_root_dir.join("cache").join(self.user_id.clone().unwrap()).join(self.app_id.clone());
             }
-            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
+            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService | BuckyOSRuntimeType::Gateway => {
                 return self.buckyos_root_dir.join("cache").join(self.app_id.clone());     //返回 
             }
         }
@@ -797,7 +823,7 @@ impl BuckyOSRuntime {
             BuckyOSRuntimeType::AppService => {
                 return self.buckyos_root_dir.join("tmp").join(self.user_id.clone().unwrap()).join(self.app_id.clone());
             }
-            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
+            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService | BuckyOSRuntimeType::Gateway => {
                 return self.buckyos_root_dir.join("tmp").join(self.app_id.clone());     
             }
         }
@@ -830,7 +856,7 @@ impl BuckyOSRuntime {
             BuckyOSRuntimeType::AppService => {
                 format!("users/{}/apps/{}/settings",self.user_id.as_ref().unwrap(),self.app_id.as_str())
             }
-            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
+            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService | BuckyOSRuntimeType::Gateway => {
                 format!("services/{}/settings",self.app_id.as_str())
             }
         }
@@ -891,7 +917,7 @@ impl BuckyOSRuntime {
             BuckyOSRuntimeType::AppService => {
                 format!("users/{}/apps/{}/{}",self.user_id.as_ref().unwrap(),self.app_id.as_str(),config_name)
             }
-            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
+            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService | BuckyOSRuntimeType::Gateway => {
                 format!("services/{}/{}",self.app_id.as_str(),config_name)
             }
         }
@@ -906,6 +932,12 @@ impl BuckyOSRuntime {
         } 
 
         return false;
+    }
+
+    pub async fn get_system_control_panel_client(&self) -> Result<ControlPanelClient> {
+        let system_config_client = self.get_system_config_client().await?;
+        let client = ControlPanelClient::new(system_config_client);
+        Ok(client)
     }
 
     pub async fn get_system_config_client(&self) -> Result<SystemConfigClient> {
@@ -978,8 +1010,67 @@ impl BuckyOSRuntime {
     pub async fn get_zone_boot_info(&self) -> Result<ZoneBootInfo> {
         unimplemented!()
     }
+
+    //return (url,is_local)
+    pub async fn get_kernel_service_url(&self,service_name: &str) -> Result<(String,bool)> {
+        // get service info from system_config
+        if self.device_config.is_none() {
+            return Err(RPCErrors::ReasonError("access kernel service need set device_config".to_string()));
+        }
+        let control_panel_client = self.get_system_control_panel_client().await?;
+        let service_info = control_panel_client.get_services_info(service_name).await?;
+        // select best instance 
+        let local_node = service_info.node_list.get(self.device_config.as_ref().unwrap().name.as_str());
+        if local_node.is_some() {
+            let local_node = local_node.unwrap();
+            if local_node.node_did == self.device_config.as_ref().unwrap().id.to_string() {
+                if local_node.state == "Running" {
+                    return Ok((format!("http://127.0.0.1:{}/kapi/{}",local_node.port,service_name),true));
+                }
+            }
+        }
+
+        if self.runtime_type != BuckyOSRuntimeType::Gateway {
+            return Ok((format!("http://127.0.0.1:{}/kapi/{}",DEFAULT_NODE_GATEWAY_PORT,service_name),false));
+        }
+
+        let mut total_weight = 0;
+        for (_node_name,node_info) in service_info.node_list.iter() {
+            if node_info.state == "Running" {
+                total_weight += node_info.weight;
+            }
+        }
+
+        let mut rng = rand::rng();
+        let random_num = rng.random_range(0..total_weight);
+        let mut current_weight = 0;
+        let mut last_best_same_lan_node_url = String::new();
+        let mut last_best_wan_node_url = String::new();
+        for (_node_name, node_info) in service_info.node_list.iter() {
+            if node_info.state == "Running" {
+                if node_info.node_net_id == self.device_config.as_ref().unwrap().net_id {
+                    last_best_same_lan_node_url = format!("rtcp://{}/127.0.0.1:{}",node_info.node_did.to_string(),node_info.port);
+                }
+                if node_info.node_net_id == Some("wan".to_string()) {
+                    last_best_wan_node_url = format!("rtcp://{}/127.0.0.1:{}",node_info.node_did.to_string(),node_info.port);
+                }
+                current_weight += node_info.weight;
+                if current_weight >= random_num {
+                    if last_best_same_lan_node_url.len() > 0 {
+                        return Ok((last_best_same_lan_node_url,false));
+                    } 
+                    if last_best_wan_node_url.len() > 0 {
+                        return Ok((last_best_wan_node_url,false));
+                    }
+                }
+            }
+        }
+        //todo: use wan_node to get the
+        return Err(RPCErrors::ReasonError("no running instance found".to_string()));
+    }
+
     //if http_only is false, return the url with tunnel protocol
-    pub fn get_zone_service_url(&self,service_name: &str,https_only: bool) -> Result<String> {
+    pub async fn get_zone_service_url(&self,service_name: &str,https_only: bool) -> Result<String> {
         let mut schema = "http";
         if https_only {
             schema = "https";
@@ -987,34 +1078,31 @@ impl BuckyOSRuntime {
 
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
+                //TODO: 基于appid对system service的访问进行控制，以消除对跨域的依赖，需要依赖新版本的cyfs-gateway
+                //let host_name = format!("{}.{}",self.app_host_perfix,self.zone_id.to_host_name());
                 let host_name = self.zone_id.to_host_name();
                 return Ok(format!("{}://{}/kapi/{}",schema,host_name,service_name));
             }
-            BuckyOSRuntimeType::AppService => {
-                //考虑到应用集成SDK的版本问题，为了乡下兼容，总是通过本地的cyfs-gateway去访问其它的service
-                //由cyfs-gateway来执行service selector的逻辑
-                return Ok(format!("http://127.0.0.1/kapi/{}",service_name));
+            BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService  => {
+                let (result_url,is_local) = self.get_kernel_service_url(service_name).await?;
+                if is_local {
+                    return Ok(result_url);
+                }
+                return Ok(format!("http://127.0.0.1:{}/kapi/{}",self.node_gateway_port,service_name));
             }
-            BuckyOSRuntimeType::FrameService | BuckyOSRuntimeType::KernelService => {
-                //执行service discover逻辑
-
-                let service_port = match service_name {
-                    "system_config" => 3200,
-                    "verify-hub" => 3300,
-                    "repo-service" => 4000,
-                    "task-manager" => 3380,
-                    _ => {
-                        return Err(RPCErrors::ServiceNotValid(service_name.to_string()));
-                    }
-                };
-
-                return Ok(format!("http://127.0.0.1:{}/kapi/{}",service_port,service_name));
+            BuckyOSRuntimeType::KernelService => {
+                let (result_url,_is_local) = self.get_kernel_service_url(service_name).await?;
+                return Ok(result_url);
+            }
+            BuckyOSRuntimeType::Gateway => {
+                let (result_url,_is_local) = self.get_kernel_service_url(service_name).await?;
+                return Ok(result_url);
             }
         }
     }
 
     pub async fn get_zone_service_krpc_client(&self,service_name: &str) -> Result<kRPC> {
-        let url = self.get_zone_service_url(service_name,self.force_https)?;
+        let url = self.get_zone_service_url(service_name,self.force_https).await?;
         let session_token = self.session_token.read().await;
         let client = kRPC::new(&url,Some(session_token.clone()));
         Ok(client)

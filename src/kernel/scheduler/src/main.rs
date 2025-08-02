@@ -330,6 +330,13 @@ fn schedule_action_to_tx_actions(
     input_config: &HashMap<String, String>,
 ) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
+    let zone_config = input_config.get("boot/config");
+    if zone_config.is_none() {
+        return Err(anyhow::anyhow!("zone_config not found"));
+    }
+    let zone_config = zone_config.unwrap();
+    let zone_config: ZoneConfig = serde_json::from_str(zone_config.as_str())?;
+    let zone_gateway = zone_config.zone_gateway;
     match action {
         SchedulerAction::ChangeNodeStatus(node_id, node_status) => {
             let key = format!("nodes/{}/config", node_id);
@@ -384,7 +391,8 @@ fn schedule_action_to_tx_actions(
                     let service_config = service_config.unwrap();
                     let service_config: KernelServiceConfig =
                         serde_json::from_str(service_config.as_str())?;
-                    let instance_action = instance_service(new_instance, &service_config)?;
+                    let is_zone_gateway = zone_gateway.contains(&new_instance.node_id);
+                    let instance_action = instance_service(new_instance, &service_config, is_zone_gateway)?;
                     result.extend(instance_action);
                 }
             }
@@ -432,7 +440,7 @@ fn schedule_action_to_tx_actions(
             }
         }
         SchedulerAction::UpdatePodServiceInfo(pod_id, pod_info) => {
-            let update_action = update_service_info(pod_id.as_str(), &pod_info)?;
+            let update_action = update_service_info(pod_id.as_str(), &pod_info, device_list)?;
             result.extend(update_action);
         }
     }
