@@ -441,6 +441,8 @@ impl NsProvider for ZoneProvider {
 impl InnerServiceHandler for ZoneProvider {
     async fn handle_http_get(&self, req_path:&str,ip_from:IpAddr) -> std::result::Result<String,RPCErrors> {
         // Check if the path contains a "resolve" folder and extract the filename after it
+        //url like https://dev-resolver.example.com/1.0/identifiers/did:dev:abcdefg
+        // GET https://resolver.example.com/did-query?name=alice
         if req_path.contains("/resolve/") {
             let parts: Vec<&str> = req_path.split("/resolve/").collect();
             if parts.len() > 1 && !parts[1].is_empty() {

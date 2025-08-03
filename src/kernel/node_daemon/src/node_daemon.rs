@@ -243,7 +243,7 @@ async fn do_boot_upgreade() -> std::result::Result<(), String>  {
 }
 
 
-async fn check_and_update_system_pkgs(pkg_list: Vec<String>,session_token: Option<String>) -> std::result::Result<bool, String>  {
+async fn check_and_update_system_pkgs(pkg_list: Vec<String>) -> std::result::Result<bool, String>  {
     let mut is_self_upgrade = false;
     let mut pkg_env = PackageEnv::new(get_buckyos_system_bin_dir());
     for pkg_id in pkg_list {
@@ -543,13 +543,14 @@ async fn node_main(node_host_name: &str,
             "node_active".to_string(),
             "buckycli".to_string(),
             "control_panel".to_string(),
+            "sys_test".to_string(),
             "repo_service".to_string(),
             "cyfs_gateway".to_string(),
             "system_config".to_string(),
             "verify_hub".to_string(),
             "node_daemon".to_string(),
         ];
-        let is_self_upgrade = check_and_update_system_pkgs(system_pkgs,buckyos_api_client.get_session_token()).await;
+        let is_self_upgrade = check_and_update_system_pkgs(system_pkgs).await;
         if is_self_upgrade.is_err() {
             warn!("check and update system pkgs failed! {}", is_self_upgrade.err().unwrap());
         } else {
@@ -763,6 +764,8 @@ async fn generate_device_session_token(device_doc: &DeviceConfig, device_private
     return Ok(device_session_token_jwt);
 }
 
+
+
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = matches.get_one::<String>("id");
     let enable_active = matches.get_flag("enable_active");
@@ -782,6 +785,9 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         return String::from("init default name client failed!");
     })?;
     info!("init default name client OK!");
+
+
+    check_and_update_system_pkgs(vec!["node_active".to_string(),"control_panel".to_string(),"sys_test".to_string()]).await;
 
     //load node identity config
     let node_identity_file = get_buckyos_system_etc_dir().join("node_identity.json");
