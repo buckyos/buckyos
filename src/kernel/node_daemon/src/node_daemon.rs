@@ -133,25 +133,6 @@ async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<
     }
     zone_boot_config.owner_key = Some(node_identity.owner_public_key.clone());
 
-
-    //zone_config.name = Some(node_identity.zone_did.clone());
-    //let zone_config_json = serde_json::to_value(zone_config.clone()).unwrap();
-    //let cache_did_doc = EncodedDocument::JsonLd(zone_config_json);
-    //add_did_cache(zone_did,cache_did_doc).await.unwrap();
-    //info!("add zone did {}  to cache success!",zone_did.to_string());
-    //try load lasted document from name_lib
-    // let zone_doc: EncodedDocument = resolve_did(zone_did.as_str(),None).await.map_err(|err| {
-    //     error!("resolve zone did failed! {}", err);
-    //     return NodeDaemonErrors::ReasonError("resolve zone did failed!".to_string());
-    // })?;
-    // let mut zone_config:ZoneConfig = ZoneConfig::decode(&zone_doc,Some(&owner_public_key)).map_err(|err| {
-    //     error!("parse zone config failed! {}", err);
-    //     return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
-    // })?;
-    // if zone_config.name.is_none() {
-    //     zone_config.name = Some(node_identity.zone_did.clone());
-    // }
-
     return Ok(zone_boot_config);
 }
 
@@ -809,33 +790,33 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_identity = node_identity.unwrap();
     info!("node_identity.json load OK,  zone_did:{}, owner_did:{}.", 
         node_identity.zone_did.to_string(),node_identity.owner_did.to_string());
-    //verify device_doc by owner_public_key
-    {
-        //let owner_name = node_identity.owner_did.to_string();
-        let owner_config = resolve_did(&node_identity.owner_did,None).await;
-        match owner_config {
-            Ok(owner_config) => {
-                let owner_config = OwnerConfig::decode(&owner_config,None);
-                if owner_config.is_ok() {
-                    let owner_config = owner_config.unwrap();
-                    let default_key = owner_config.get_default_key();
-                    if default_key.is_none() {
-                        warn!("owner public key not defined in owner_config! ");
-                        return Err("owner public key not defined in owner_config!".to_string());
-                    }
+    //verify device_doc by owner_public_key (skip now)
+    // {
+    //     //let owner_name = node_identity.owner_did.to_string();
+    //     let owner_config = resolve_did(&node_identity.owner_did,None).await;
+    //     match owner_config {
+    //         Ok(owner_config) => {
+    //             let owner_config = OwnerConfig::decode(&owner_config,None);
+    //             if owner_config.is_ok() {
+    //                 let owner_config = owner_config.unwrap();
+    //                 let default_key = owner_config.get_default_key();
+    //                 if default_key.is_none() {
+    //                     warn!("owner public key not defined in owner_config! ");
+    //                     return Err("owner public key not defined in owner_config!".to_string());
+    //                 }
 
-                    let default_key = default_key.unwrap();
-                    if default_key != node_identity.owner_public_key {
-                        warn!("owner_config's default key not match to node_identity's owner_public_key! ");
-                        return Err("owner_config's default key not match to node_identity's owner_public_key!".to_string());
-                    }
-                }
-            }
-            Err(err) => {
-                info!("skip resolve owner_config. {} ", err);
-            }
-        }
-    }
+    //                 let default_key = default_key.unwrap();
+    //                 if default_key != node_identity.owner_public_key {
+    //                     warn!("owner_config's default key not match to node_identity's owner_public_key! ");
+    //                     return Err("owner_config's default key not match to node_identity's owner_public_key!".to_string());
+    //                 }
+    //             }
+    //         }
+    //         Err(err) => {
+    //             info!("skip resolve owner_config. {} ", err);
+    //         }
+    //     }
+    // }
 
     let device_doc_json = decode_json_from_jwt_with_default_pk(&node_identity.device_doc_jwt, &node_identity.owner_public_key)
         .map_err(|err| {
@@ -880,11 +861,12 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     info!("set env var BUCKY_ZONE_OWNER,BUCKYOS_ZONE_BOOT_CONFIG,BUCKYOS_THIS_DEVICE OK!");
 
-    keep_cyfs_gateway_service(node_id.as_str(),&device_doc, &device_private_key,   
-        zone_boot_config.sn.clone(),false).await.map_err(|err| {
-            error!("init cyfs_gateway service failed! {}", err);
-            return String::from("init cyfs_gateway service failed!");
-    })?;
+    // uncomment this when cyfs-gateway support etcd
+    // keep_cyfs_gateway_service(node_id.as_str(),&device_doc, &device_private_key,   
+    //     zone_boot_config.sn.clone(),false).await.map_err(|err| {
+    //         error!("init cyfs_gateway service failed! {}", err);
+    //         return String::from("init cyfs_gateway service failed!");
+    // })?;
 
     let device_session_token_jwt = generate_device_session_token(&device_doc, &device_private_key,true).await.map_err(|err| {
         error!("generate device session token failed! {}", err);
@@ -955,7 +937,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
         info!("--------------------------------");
 
-        let mut runtime = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::KernelService);
+        let mut runtime = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::Kernel);
         runtime.fill_policy_by_load_config().await.map_err(|err| {
             error!("fill policy by load config failed! {}", err);
             return String::from("fill policy by load config failed!");
@@ -965,14 +947,13 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         runtime.device_private_key = Some(device_private_key);
         runtime.device_info = Some(device_info);
         runtime.zone_id = node_identity.zone_did.clone();
-        runtime.zone_boot_config = Some(zone_boot_config);
         runtime.zone_config = Some(zone_config);
         runtime.session_token = Arc::new(RwLock::new(device_session_token_jwt.clone()));
         runtime.force_https = false;
         set_buckyos_api_runtime(runtime);
     } else {
         //this node is not ood: try connect to system_config_service
-        let mut runtime = init_buckyos_api_runtime("node-daemon", None, BuckyOSRuntimeType::KernelService)
+        let mut runtime = init_buckyos_api_runtime("node-daemon", None, BuckyOSRuntimeType::Kernel)
                 .await
                 .map_err(|e| {
                     error!("init_buckyos_api_runtime failed: {:?}", e);

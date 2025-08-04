@@ -12,7 +12,7 @@ use serde_json::from_value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use url::Url;
-//use buckyos_api::ZONE_PROVIDER;
+use buckyos_api::ZONE_PROVIDER;
 
 pub struct GatewayConfig {
     pub dispatcher: HashMap<Url, DispatcherConfig>,
@@ -167,13 +167,14 @@ impl GatewayConfig {
                             Box::new(sn_server.clone())
                         })
                         .await;
+                    },
+                    "zone-provider" => {
+                        info!("Register zone provider: {:?}", server_id);
+                        register_inner_service_builder(server_id, move || {
+                            Box::new(ZONE_PROVIDER.clone())
+                        })
+                        .await;
                     }
-                    // "zone-provider" => {
-                    //     register_inner_service_builder(server_id, move || {
-                    //         Box::new(ZONE_PROVIDER.clone())
-                    //     })
-                    //     .await;
-                    // }
                     _ => {
                         return Err(format!("Invalid server type: {}", server_type));
                     }

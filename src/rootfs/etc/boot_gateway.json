@@ -13,6 +13,11 @@
             "type": "server"
         }
     },
+    "inner_services": {
+        "zone_provider": {
+            "type": "zone-provider"
+        }
+    },
     "servers":{
         "node_gateway":{
             "type":"cyfs-warp",
@@ -33,6 +38,12 @@
                                 "is_chunk_id_in_path":true,
                                 "enable_mgr_file_path":true
                             }
+                        },
+                        "/1.0/identifiers/":{
+                            "inner_service":"zone_provider"
+                        },
+                        "/did-query":{
+                            "inner_service":"zone_provider"
                         }
                     }
                 }
@@ -57,6 +68,12 @@
                                 "is_chunk_id_in_path":true,
                                 "enable_mgr_file_path":true
                             }
+                        },
+                        "/1.0/identifiers/":{
+                            "inner_service":"zone_provider"
+                        },
+                        "/did-query": {
+                            "inner_service":"zone_provider"
                         }
                     }
                 },

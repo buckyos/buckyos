@@ -21,7 +21,7 @@ buckyos_root = util.get_buckyos_root()
 
 config_file = f"{buckyos_root}/etc/cyfs_gateway.json"
 print(f"Gateway config_file: {config_file}")
-run_cmd = f"{current_dir}/cyfs_gateway --config_file {config_file}"
+run_cmd = f"{current_dir}/cyfs_gateway --config_file {config_file} --enable_buckyos"
 if keep_tunnel is not None:
     run_cmd += f" --keep_tunnel {keep_tunnel}"
 util.nohup_start(run_cmd)
