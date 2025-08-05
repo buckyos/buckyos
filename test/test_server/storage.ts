@@ -41,7 +41,7 @@ export class Storage {
             throw new Error("Database not initialized");
         }
         await this.db.run(
-            `INSERT INTO versions (version, os, arch, url) VALUES (?, ?, ?, ?)`,
+            `INSERT OR REPLACE INTO versions (version, os, arch, url) VALUES (?, ?, ?, ?)`,
             version, os, arch, url
         );
     }
