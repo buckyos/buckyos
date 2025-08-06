@@ -16,7 +16,7 @@ serde = "*"
 serde_json = "*"
 url = "*"
 tokio = { version = "*", features = ["full"] }
-warp = "*"
+warp = "0.3.7"
 sled = "*"
 lazy_static = "*"
 thiserror = "*"

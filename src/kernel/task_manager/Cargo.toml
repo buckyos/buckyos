@@ -7,7 +7,7 @@ authors = ["BuckyOS DAO","@alexsunxl","@waterflier"]
 [dependencies]
 async-trait = "*"
 tokio = { version = "1", features = ["full"] }
-warp = "*"
+warp = "0.3.7"
 chrono = { version = "*", features = ["serde"] }
 rusqlite =  { version = "*", features = ["bundled"] }
 serde = { version = "*", features = ["derive"] }
