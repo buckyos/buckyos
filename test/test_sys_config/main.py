@@ -141,7 +141,7 @@ def nodes():
         assert 'inner_services' in gateway_config_json, "inner_services error"
         assert 'zone_provider' in gateway_config_json['inner_services'], "inner_services error"
         assert 'servers' in gateway_config_json, "servers error"
-        assert 'main_http_server' in gateway_config_json['servers'], "servers error"
+        assert 'zone_gateway' in gateway_config_json['servers'], "servers error"
 
 
 # services: gateway repo-service scheduler verify-hub

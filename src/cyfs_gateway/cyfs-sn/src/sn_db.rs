@@ -13,6 +13,7 @@ use serde_json;
 use tokio::sync::Mutex;
 use std::sync::Arc;
 use lazy_static::lazy_static;
+use std::collections::HashSet;
 
 // global
 lazy_static! {
@@ -72,11 +73,25 @@ impl SnDB {
     pub fn generate_activation_codes(&self, count: usize) -> Result<Vec<String>> {
         let mut codes: Vec<String> = Vec::new();
         let mut stmt = self.conn.prepare("INSERT INTO activation_codes (code, used) VALUES (?1, 0)")?;
-        for _ in 0..count {
-            let code: String = rand::rng().random_range(0..1000000).to_string();
-            codes.push(code.clone());
-            stmt.execute(params![code])?;
+        let mut rng = rand::rng();
+        
+        // 使用HashSet来检查重复
+        let mut used_codes = HashSet::new();
+        
+        while codes.len() < count {
+            // 生成32字节的随机字符串作为激活码
+            let code: String = (0..12)
+                .map(|_| format!("{:02x}", rng.random::<u8>()))
+                .collect();
+            
+            // 检查是否已存在该激活码
+            if !used_codes.contains(&code) {
+                used_codes.insert(code.clone());
+                codes.push(code.clone());
+                stmt.execute(params![code])?;
+            }
         }
+        
         Ok(codes)
     }
 
@@ -267,7 +282,7 @@ mod tests {
         let db = SnDB::new_by_path(db_path_str)?;
         db.initialize_database()?;
         let codes = db.generate_activation_codes(100)?;
-        println!("codes: {:?}", codes);
+        // println!("codes: {:?}", codes);
         // Example usage
         println!("codes: {:?}", codes);
         let first_code = codes.first().unwrap();

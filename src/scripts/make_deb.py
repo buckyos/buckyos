@@ -3,6 +3,7 @@ import sys
 import tempfile
 import shutil
 import subprocess
+import platform
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 publish_dir = os.path.join(src_dir, "publish", "deb_template")
@@ -21,7 +22,6 @@ def adjust_control_file(dest_dir, new_version, architecture):
 temp_dir = tempfile.gettempdir()
 
 def make_deb(architecture, version):
-    print(f"make deb with architecture: {architecture}, version: {version}")
     deb_root_dir = os.path.join(temp_dir, "deb_build")
     print(f"deb_root_dir: {deb_root_dir}")
     deb_dir = os.path.join(deb_root_dir, architecture)
@@ -48,13 +48,9 @@ def make_deb(architecture, version):
 
 if __name__ == "__main__":
     print("make sure YOU already run build.py!!!")
-    architecture = "amd64"
-    version = "0.5.0"
-
-    if len(sys.argv) > 1:
-        architecture = sys.argv[1]
-
-    if len(sys.argv) > 2:
-        version = sys.argv[2]
-        
+    architecture = platform.machine().lower()
+    version = open(os.path.join(src_dir, "VERSION")).read().strip()
+    print(f"make deb with architecture: {architecture}, version: {version}")
     make_deb(architecture, version)
+
+

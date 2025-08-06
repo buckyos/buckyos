@@ -22,7 +22,7 @@ use crate::*;
 use ::kRPC::*;
 use lazy_static::lazy_static;
 use std::sync::Mutex;
-
+use url::Url;
 
 fn is_unicast_link_local_stable(ipv6: &Ipv6Addr) -> bool {
     ipv6.segments()[0] == 0xfe80
@@ -212,14 +212,15 @@ impl ZoneProvider {
             let device_config_str = serde_json::to_string_pretty(&device_config).unwrap();
             init_hash_map.insert(device_config.id.to_string(),device_config_str);
         }
-
+        info!("ZoneProvider Init success!");
         Self { 
             did_cache:Arc::new(RwLock::new(init_hash_map)),
         }
     }
 
 
-    async fn do_query_did(&self,did_str:&str) -> NSResult<String> {
+    async fn do_query_did(&self,did_str:&str,typ:Option<String>) -> NSResult<String> {
+        
         if DID::is_did(did_str) {
             let did = DID::from_str(did_str);
             if did.is_ok() {
@@ -234,15 +235,17 @@ impl ZoneProvider {
             }
             return Err(NSError::NotFound(format!("did {} not found",did_str)));
         } else {
+            let runtime = get_buckyos_api_runtime().unwrap();
             match did_str {
-                // "this_zone" => {
-                //     let zone_config = CURRENT_ZONE_CONFIG.get();
-                //     if zone_config.is_none() {
-                //         return Err(NSError::NotFound("current zone config not found".to_string()));
-                //     }
-                //     let zone_config = zone_config.unwrap();
-                //     return Ok(serde_json::to_string(&zone_config).unwrap());
-                // },
+                "self" => {
+                    let zone_config = runtime.get_zone_config();
+                    if zone_config.is_none() {
+                        return Err(NSError::NotFound("zone config not set".to_string()));
+                    }
+                    let zone_config = zone_config.unwrap();
+                    let zone_config_str = serde_json::to_string_pretty(&zone_config).unwrap();
+                    return Ok(zone_config_str);
+                },
                 // "this_device" => {
                 //     let device_config = CURRENT_DEVICE_CONFIG.get();
                 //     if device_config.is_none() {
@@ -261,10 +264,6 @@ impl ZoneProvider {
                 //     unimplemented!()
                 // },
                 _ => {
-                    let runtime = get_buckyos_api_runtime().map_err(|e|{
-                        warn!("ZoneProvider get buckyos api runtime failed: {}",e);
-                        NSError::NotFound(format!("get buckyos api runtime failed: {}",e))
-                    })?;
         
                     let system_config_client = runtime.get_system_config_client().await
                         .map_err(|e|{
@@ -441,29 +440,45 @@ impl NsProvider for ZoneProvider {
 impl InnerServiceHandler for ZoneProvider {
     async fn handle_http_get(&self, req_path:&str,ip_from:IpAddr) -> std::result::Result<String,RPCErrors> {
         // Check if the path contains a "resolve" folder and extract the filename after it
-        if req_path.contains("/resolve/") {
-            let parts: Vec<&str> = req_path.split("/resolve/").collect();
-            if parts.len() > 1 && !parts[1].is_empty() {
-                let domain_name = parts[1];
-                debug!("ZoneProvider trying to resolve domain: {}", domain_name);
-                if domain_name.ends_with("/info") {
-                    let info = self.do_query_info(domain_name).await.map_err(|e|{
-                        warn!("ZoneProvider query object info failed: {}",e);
-                        RPCErrors::ReasonError(e.to_string())
-                    })?;
-                    return Ok(info);
-         
-                } else {
-                    let did_doc = self.do_query_did(domain_name).await.map_err(|e|{
-                        warn!("ZoneProvider query object did-document failed: {}",e);
-                        RPCErrors::ReasonError(e.to_string())
-                    })?;
-
-                    let did_doc_string = did_doc.to_string();
-                    return Ok(did_doc_string);
-                }
-            }
+        //url like https://dev-resolver.example.com/1.0/identifiers/did:dev:abcdefg
+        if req_path.starts_with("/1.0/identifiers/") {
+           
+            let parts: Vec<&str> = req_path.split("/").collect();
+            let did_str = parts[parts.len() - 1];
+            info!("ZoneProvider do_query_did handle http get for {}",did_str);
+            return self.do_query_did(did_str,None).await.map_err(|e|{
+                warn!("ZoneProvider query did failed: {}",e);
+                RPCErrors::ReasonError(e.to_string())
+            });
         }
+        // GET https://resolver.example.com/did-query?name=alice&type=user
+        if req_path.starts_with("/did-query") {
+  
+            let base = "http://localhost";
+            let full_url = format!("{}{}", base, req_path);
+            let parsed_url = Url::parse(&full_url);
+            if parsed_url.is_err() {
+                return Err(RPCErrors::ReasonError("invalid url".to_string()));
+            }
+            let parsed_url = parsed_url.unwrap();
+            let query_pairs = parsed_url.query_pairs().collect::<std::collections::HashMap<_, _>>();
+
+            // 提取 name 和 type 参数
+            info!("ZoneProvider did-query handle http get for {} with query: {:?}",req_path,query_pairs);
+            let name = query_pairs.get("name").map(|v| v.to_string());
+            let typ = query_pairs.get("type").map(|v| v.to_string());
+
+            if name.is_none() {
+                warn!("ZoneProvider did-query handle http get for {} with missing name or type parameter",req_path);
+                return Err(RPCErrors::ReasonError("missing name or type parameter".to_string()));
+            }
+
+            return self.do_query_did(name.unwrap().as_str(),typ).await.map_err(|e|{
+                warn!("ZoneProvider did-query failed: {}",e);
+                RPCErrors::ReasonError(e.to_string())
+            });
+        }
+        
         return Err(RPCErrors::UnknownMethod(req_path.to_string()));
     }
     async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> std::result::Result<RPCResponse,RPCErrors> {

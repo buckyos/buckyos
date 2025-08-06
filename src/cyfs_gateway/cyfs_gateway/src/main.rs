@@ -29,12 +29,23 @@ use name_client::*;
 use name_lib::*;
 use std::path::PathBuf;
 use serde_json::{Value};
+use buckyos_api::*;
 use tokio::task;
 use url::Url;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 async fn service_main(config_json: serde_json::Value, matches: &clap::ArgMatches) -> Result<()> {
+    if matches.get_flag("enable_buckyos") {
+        let mut runtime = init_buckyos_api_runtime("cyfs-gateway",None,BuckyOSRuntimeType::Kernel).await?;
+        let login_result = runtime.login().await;
+        if  login_result.is_err() {
+            warn!("cyfs-gateway service login to buckyossystem failed! err:{:?}", login_result);
+        } 
+        set_buckyos_api_runtime(runtime);
+        info!("cyfs-gateway init buckyos-api-runtime success!");
+    }
+
     // Load config from json
     let load_result = config_loader::GatewayConfig::load_from_json_value(config_json).await;
     if load_result.is_err() {
@@ -139,6 +150,13 @@ async fn main() {
                 .required(false)
                 .action(ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("enable_buckyos")
+                .long("enable_buckyos")
+                .help("enable buckyos api")
+                .required(false)
+                .action(ArgAction::SetTrue),
+        )
         .get_matches();
 
     // set buckyos root dir
@@ -148,6 +166,7 @@ async fn main() {
     }
 
     // init log
+    //std::env::set_var("BUCKY_LOG", "debug");
     init_logging("cyfs_gateway",true);
     info!("cyfs_gateway start...");
 

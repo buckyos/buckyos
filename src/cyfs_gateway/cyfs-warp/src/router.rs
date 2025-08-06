@@ -335,7 +335,8 @@ impl Router {
                 })?)))
             }
             hyper::Method::GET => {
-                let resp = true_service.handle_http_get(req.uri().path(),client_ip).await;
+                let uri = req.uri().to_string();
+                let resp = true_service.handle_http_get(uri.as_str(),client_ip).await;
                 //TODO: RPCError to RouterError
                 if resp.is_err() {
                     return Err(RouterError::Internal(format!("Failed to handle http get: {}", resp.as_ref().unwrap_err())));

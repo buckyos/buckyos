@@ -9,6 +9,9 @@ use crate::scheduler::*;
 
 use anyhow::Result;
 
+const MAX_APP_INDEX:u16 = 2048;
+const BASE_APP_PORT:u16 = 10000;
+
 fn build_app_service_config(user_id:&str,app_config:&AppConfig,node_info:&DeviceInfo) -> Result<AppServiceInstanceConfig> {
     let mut result_config = AppServiceInstanceConfig::new(user_id,app_config);
     //result_config.app_pkg_id = Some(docker_pkg_info.pkg_id.clone());
@@ -33,12 +36,12 @@ fn build_app_service_config(user_id:&str,app_config:&AppConfig,node_info:&Device
         }
     }
 
-    if  app_config.app_index  > 1024 {
+    if  app_config.app_index  > MAX_APP_INDEX {
         warn!("app_index: {} is too large,skip",app_config.app_index);
         return Err(anyhow::anyhow!("app_index: {} is too large",app_config.app_index));
     }
 
-    let mut real_port:u16 = 20080 + app_config.app_index * 32;
+    let mut real_port:u16 = BASE_APP_PORT + app_config.app_index * 16;
     for (port_desc,inner_port) in app_config.tcp_ports.iter() {
         result_config.tcp_ports.insert(real_port, inner_port.clone());
         real_port += 1;
@@ -96,7 +99,7 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
         }
         
         //创建默认的appid-userid的短域名给node-gateway.json
-        let gateway_path = format!("/servers/main_http_server/hosts/{}",app_prefix);
+        let gateway_path = format!("/servers/zone_gateway/hosts/{}",app_prefix);
         let app_gateway_config = json!(
             {
                 "routes":{
@@ -134,7 +137,7 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
                         "www" => "*".to_string(),
                         _ => format!("{}*",key.as_str()),
                     };
-                    let gateway_path = format!("/servers/main_http_server/hosts/{}/routes/\"/\"",short_prefix);
+                    let gateway_path = format!("/servers/zone_gateway/hosts/{}/routes/\"/\"",short_prefix);
                     set_action.insert(gateway_path,Some(json!({
                         "upstream":format!("http://127.0.0.1:{}",http_port)
                     })));
@@ -171,7 +174,7 @@ pub fn uninstance_app_service(instance:&PodInstance)->Result<HashMap<String,KVAc
     } else {
         app_prefix = format!("{}_{}.*",app_id,user_id);
     }
-    set_action.insert(format!("/servers/main_http_server/hosts/{}",app_prefix.as_str()), None);
+    set_action.insert(format!("/servers/zone_gateway/hosts/{}",app_prefix.as_str()), None);
     result.insert(key_path,KVAction::SetByJsonPath(set_action));
     Ok(result)
 }

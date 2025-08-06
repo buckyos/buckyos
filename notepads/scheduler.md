@@ -106,6 +106,16 @@ node只需要加入集群后，就可以完全零运维，后续的运维操作�
 
 根据不同的常见操作系统发行版，实现一些通用的OPTask
 
+## zone-gateway的确定
+如果不特别说明，所有的ood都默认是zone-gateway
+用户可以手工将任意node设置为zone-gateway
+系统的zone-gateway列表保存在zone_config中（boot/config
+Zone-gateway列表的第一个，是默认zone-gateway
+SN转发流量到默认zone-gateway
+端口转发，用户需要将端口转发的目标配置为默认zone-gateway
+(什么时候确定是不是zone-gateway? 所有的ood都是zone-gateway有什么问题？zone-gateway的配置是不是都相同？)
+
+
 ## 调度器的幂等性
 
 为了减少复杂度，调度器的各种算法都是幂等性的，也就是说基于相同的 Pod/Node/Instance 集合，调度器必然应该得到相同的结果.
@@ -185,6 +195,13 @@ install_config由系统读取，应用无法感知自己的install_config
 #### 设备管理
 
 - 添加设备
+构建device_doc并由owner签名
+将device_doc加入到devices/$deviceid/doc 目录
+如果是node（将运行node_daemon），则创建 nodes/$deviceid/config, nodes/$deviceid/gateway_config目录（均有默认值）
+
+等待node_daemon启动，会自动更新device_info
+等待scheduler工作，会根据device_info在增加新的NodeItem,并等待调度新的Instance上来
+
 
 - 删除设备
 

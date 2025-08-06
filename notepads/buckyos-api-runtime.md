@@ -20,14 +20,36 @@ sys_cfg_client.set("key","value")
 - 系统内部服务之间互相访问，因为总是可以使用最新版本的buckyos-api-runtim，因此总是以最高性能模式运行
 - 对应用开发者来说，即使使用老版本的api-runtime开发，也能跑在新版本的系统上，因此其实现更关注兼容性。
 
-## 访问系统服务的方法
 
-- 最大兼容方法：访问一个正确初始化的cyfs-gateway,然后通过其 /kapi/service_name 发送krpc请求@http，cyfs-gateway的内部会根据buckyos的系统实际情况，将请求转发到真正能处理的节点上。
+## 访问(系统)服务的方法
 
-- 最佳性能方法：连接system_config服务，根据当前服务的配置，决定用什么协议，向一个具体的ep(比如http://192.168.1.220:3200) 发起krpc请求。在某些配置下，这个请求会转换成对inner_service的进程调用，以提高性能。
+get_service_url(service_id,params)
 
-在最大兼容方法中，cyfs- Gateway的内部实现会使用最佳性能方法来访问真正的服务。
-buckyos-api-runtime还会在内部统一管理缓存（缓存策略可以配置），让某些系统调用可以安全的使用缓存，提高调用性能。
+- 公共方法: https://$appid.$zoneid/kapi/service_name
+如果是客户端设备，并没有和OOD保持通信，那么访问  $appid.$zoneid/kapi/service_name 即可
+通过http协议公共访问，其安全机制依赖tls和zone-gateway的综合控制。通过zone-gateway用户可以随时控制哪些app可以被公网访问
+TODO：目前挂载 https://sys.$zoneid/kapi/service_name 下的各种系统api直接暴露给公网，是否会有问题？
+
+- 最大兼容方法：http://127.0.0.1:3180/kapi/service_name
+访问一个正确初始化的cyfs-gateway,然后通过其 /kapi/service_name 发送krpc请求@http，cyfs-gateway的内部会根据buckyos的系统实际情况，将请求转发到真正能处理的节点上。
+如果是应用服务（运行在和OOD保持通信的设备上），那么访问 http://127.0.0.1:3180/kapi/service_name即可， 从安全的角度，这个URL通常也只允许来自本机的链接或来自zone内其它设备的rtcp链接
+node-gateway会允许来自本机或授权设备通过rtcp访问
+
+在内部，该访问会被解析成 rtcp://$device_id/127.0.0.1:$service_port/kapi/service_name，或 rtcp://$sn/$device_id:$service_port/kapi/service_name
+
+TODO:这个流程会导致node-gateway成为所有应用服务都依赖的节点，一旦该服务down掉，那么所有的应有服务都会暂时不可用
+
+
+- 最佳性能方法：http://127.0.0.1:$service_port
+连接system_config服务，根据当前服务的配置，决定用什么协议，向一个具体的service instance ep(比如http://192.168.1.220:3200) 发起krpc请求。在某些配置下，这个请求会转换成对inner_service的进程调用，以提高性能。
+最佳性能方法的细节可能会随着系统升级而升级，因此只有内核组件和服务之间应用用该方法来访问服务
+
+
+- 是否要在这个步骤中引入类似一致性哈希这样的选择器? 目前不选择，因为一致性hash基本上说明是和状态有关的，而对于状态相关服务来说，get_service_url带来的分区支持是完全不够用的。通常做法应该是
+    client->state_service_portal_service(stateless)->chunk service(分区服务)
+
+- service_port的确定
+系统除了serivce_config的service_port是固定的，其它端口都需要通过service_config得到了具体的service_instance_info后来确定    
 
 ## login的具体实现
 
@@ -46,9 +68,11 @@ buckyos-api-runtime还会在内部统一管理缓存（缓存策略可以配置�
 
 ## 为login准备必要的数据
 - system_config的连接数据 (配置的越多，则初始化时所需要的时间越短)
-    - zone_host_name， 通过https://zonehost/kapi/system_config 连接
+    - zone_host_name， 通过https://$zone_id/kapi/system_config 连接
     - zone_boot_confg  
     - zone_config
+- 对于OOD来说，不能使用$zoneid来链接system_config,而需要使用ood finder逻辑来尝试找到其它的OOD（这个阶段可能zone gateway没有启动）
+- 对于Node来说，也可能会优先尝试使用ood finder来得到可以用system_config hostname, 这个设定让cluster能稳定工作在无WLAN访问的环境（只需要在buckyos/etc 目录下配置必要的zoneconfig文件，那么就可以直接在内网运行起来）
 - 对FrameService和KernelService来说，Login时CURRENT_DEVICE_CONFIG必须已经被设置了
 - 构造session-token的必要信息
     方法1：外部传入。不需要构造，只需要检验外部构造的session-token能用就好了
@@ -122,5 +146,7 @@ cyfs-gateaway 则要严格注意依赖关系，其本身是不依赖buckyos的�
 inner_service创建zone_provider的时候，依赖完整的buckyos_runtime
 
 zone_provider还可以是tunnel selctor,用来更智能的实现selector
+
+
 
 

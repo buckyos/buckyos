@@ -105,6 +105,15 @@ impl Gateway {
         let public_key = encode_ed25519_pkcs8_sk_to_pk(&device_private_key);
         info!("cyfs-gatway load device public key: {}", public_key);
         let mut will_use_current_device_from_env = false;
+        if CURRENT_DEVICE_CONFIG.get().is_some()  {
+            let device_config = CURRENT_DEVICE_CONFIG.get().unwrap();
+            let set_result = self.device_config.set(device_config.clone());
+            if set_result.is_err() {
+                error!("device_config can only be set once");
+            }
+            return Ok(());
+        }
+
         if try_load_current_device_config_from_env().is_ok() {
             let device_config = CURRENT_DEVICE_CONFIG.get().unwrap();
             let x_of_auth_key = get_x_from_jwk(&device_config.get_default_key().unwrap());

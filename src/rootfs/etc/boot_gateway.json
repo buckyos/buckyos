@@ -1,1 +1,115 @@
-{}
+{
+    "dispatcher": {
+        "tcp://0.0.0.0:443": {
+            "id": "zone_gateway",
+            "type": "server"
+        },
+        "tcp://0.0.0.0:80": {
+            "id": "zone_gateway",
+            "type": "server"
+        },
+        "tcp://0.0.0.0:3180": {
+            "id": "node_gateway",
+            "type": "server"
+        }
+    },
+    "inner_services": {
+        "zone_provider": {
+            "type": "zone-provider"
+        }
+    },
+    "servers":{
+        "node_gateway":{
+            "type":"cyfs-warp",
+            "bind":"127.0.0.1",
+            "http_port":3180,
+            "hosts":{
+                "*":{
+                    "enable_cors":true,
+                    "routes": {
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/ndn/": {
+                            "named_mgr": {
+                                "named_data_mgr_id":"default",
+                                "read_only":false,
+                                "guest_access":true,
+                                "is_chunk_id_in_path":true,
+                                "enable_mgr_file_path":true
+                            }
+                        },
+                        "/1.0/identifiers/":{
+                            "inner_service":"zone_provider"
+                        },
+                        "/did-query":{
+                            "inner_service":"zone_provider"
+                        }
+                    }
+                }
+            }
+        },
+        "zone_gateway":{
+            "type":"cyfs-warp",
+            "bind":"0.0.0.0",
+            "http_port":80,
+            "hosts": {
+                "*":{
+                    "enable_cors":true,
+                    "routes": {
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
+                        "/ndn/": {
+                            "named_mgr": {
+                                "named_data_mgr_id":"default",
+                                "read_only":false,
+                                "guest_access":true,
+                                "is_chunk_id_in_path":true,
+                                "enable_mgr_file_path":true
+                            }
+                        },
+                        "/1.0/identifiers/":{
+                            "inner_service":"zone_provider"
+                        },
+                        "/did-query": {
+                            "inner_service":"zone_provider"
+                        }
+                    }
+                },
+                "sys*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{BUCKYOS_ROOT}/bin/control_panel"
+                        }
+                    }
+                },
+                "sys.*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{BUCKYOS_ROOT}/bin/control_panel"
+                        }
+                    }
+                },
+                "sys-test*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{BUCKYOS_ROOT}/bin/sys_test"
+                        }
+                    }
+                },
+                "sys-test.*": {
+                    "enable_cors":true,
+                    "routes": {
+                        "/":{
+                            "local_dir":"{BUCKYOS_ROOT}/bin/sys_test"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

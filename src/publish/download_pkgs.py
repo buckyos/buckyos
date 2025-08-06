@@ -24,8 +24,15 @@ machine_list = ["amd64", "aarch64"]
 
 gh_token = os.environ.get('GITHUB_API_TOKEN')
 if not gh_token:
-    print("GITHUB_API_TOKEN environment variable is not set.")
-    os._exit(1)
+    # read token from file ~/.github_api_token
+    token_file = Path.home() / ".github_api_token"
+    if token_file.exists():
+        with open(token_file, 'r') as f:
+            gh_token = f.read().strip()
+
+if not gh_token:
+    print("GITHUB_API_TOKEN is not set, please set it or create ~/.github_api_token file with your token.")
+    sys.exit(1)
 
 def unzip_rootfs(rootfs_path, target_dir):
     """
@@ -127,7 +134,7 @@ def download_rootfs(version):
     pass
 
 if __name__ == "__main__":
-    #version = "0.4.0-250724"
+    #version = "0.4.0+build250724"
     version = sys.argv[1]
     if not os.path.exists(download_base_dir):
         os.makedirs(download_base_dir)

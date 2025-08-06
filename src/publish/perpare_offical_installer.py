@@ -51,6 +51,7 @@ def prepare_bin_package(src_pkg_dir, prefix, version, target_dir):
     pack_pkg_items = glob.glob(os.path.join(src_pkg_dir,f"{prefix}*"))
     print(f"# prepare_bin_package: {src_pkg_dir} ({prefix}*)")
     install_pkg("node_daemon",target_dir,prefix,version)
+    install_pkg("node_active",target_dir,prefix,version)
     install_pkg("buckycli",target_dir,prefix,version)
     # for pack_pkg_item in pack_pkg_items:
     #     if os.path.isdir(pack_pkg_item):

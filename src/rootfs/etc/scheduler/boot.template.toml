@@ -285,67 +285,22 @@
 "nodes/ood1/gateway_config" = """
 {
     "servers":{
-        "main_http_server":{
+        "zone_gateway":{
             "type":"cyfs-warp",
             "bind":"0.0.0.0",
             "http_port":80,
             "hosts": {
-                "*": {
-                    "enable_cors":true,
-                    "routes": {
-                        "/ndn/": {
-                            "named_mgr": {
-                                "named_data_mgr_id":"default",
-                                "read_only":false,
-                                "guest_access":true,
-                                "is_chunk_id_in_path":true,
-                                "enable_mgr_file_path":true
-                            }
-                        },
-                        "/kapi/system_config":{
-                            "upstream":"http://127.0.0.1:3200"
-                        }
-                    }
-                },
-                "sys*": {
-                    "enable_cors":true,
-                    "routes": {
-                        "/":{
-                            "local_dir":"{{BUCKYOS_ROOT}}/bin/control_panel"
-                        },
-                        "/kapi/system_config":{
-                            "upstream":"http://127.0.0.1:3200"
-                        },
-                        "/kapi/verify-hub":{
-                            "cluster":{
-                                "type":"random",
-                                "upstream":{
-                                    "http://127.0.0.1:3300":100,
-                                    "rtcp://web3.buckyos.io/node1:3300":100
-                                }
-                            }
-                        }
-                    }
-                },
-                "sys-test*": {
-                    "enable_cors":true,
-                    "routes": {
-                        "/":{
-                            "local_dir":"{{BUCKYOS_ROOT}}/bin/sys_test"
-                        }
-                    }
-                }
             }
         }
     },
     "dispatcher" : {
         "tcp://0.0.0.0:80":{
             "type":"server",
-            "id":"main_http_server"
+            "id":"zone_gateway"
         },
         "tcp://0.0.0.0:443":{
             "type":"server",
-            "id":"main_http_server"
+            "id":"zone_gateway"
         }
     }
 }
@@ -399,6 +354,10 @@
     "node_name": "ood1"
   },
   "oods": [
+    "ood1"
+  ],
+  "zone_gateway": [
+    "ood1"
   ]
 }
 """

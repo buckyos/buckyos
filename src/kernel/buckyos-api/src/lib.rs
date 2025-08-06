@@ -67,16 +67,24 @@ pub async fn init_buckyos_api_runtime(app_id:&str,app_owner_id:Option<String>,ru
                 return Err(RPCErrors::ReasonError("owner_user_id is required for AppClient or AppService".to_string()));
             }
         }
+        BuckyOSRuntimeType::FrameService => {
+            return Err(RPCErrors::ReasonError("FrameService is not supported yet".to_string()));
+        }
         _ => {
             //do nothing
         }
     }
 
-    let mut runtime = BuckyOSRuntime::new(app_id,app_owner_id,runtime_type);
+    let mut runtime = BuckyOSRuntime::new(app_id,app_owner_id,runtime_type.clone());
     runtime.fill_policy_by_load_config().await?;
-    runtime.fill_by_load_config().await?;
+
+    if runtime_type == BuckyOSRuntimeType::Kernel || 
+    runtime_type == BuckyOSRuntimeType::AppClient || 
+    runtime_type == BuckyOSRuntimeType::KernelService  {
+        runtime.fill_by_load_config().await?;
+    } 
     runtime.fill_by_env_var().await?;
-    //CURRENT_BUCKYOS_RUNTIME.set(runtime);
+
     Ok(runtime)
 }
 

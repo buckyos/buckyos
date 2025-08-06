@@ -120,7 +120,7 @@
 {
     "device_key_path":"{{BUCKYOS_ROOT}}/etc/node_private_key.pem",
     "servers":{
-        "main_http_server":{
+        "zone_gateway":{
             "type":"cyfs-warp",
             "bind":"0.0.0.0",
             "http_port":80,
@@ -163,11 +163,11 @@
     "dispatcher" : {
         "tcp://0.0.0.0:80":{
             "type":"server",
-            "id":"main_http_server"
+            "id":"zone_gateway"
         },
         "tcp://0.0.0.0:443":{
             "type":"server",
-            "id":"main_http_server"
+            "id":"zone_gateway"
         }
     }
 }
@@ -351,7 +351,30 @@
 {
     "device_key_path":"{{BUCKYOS_ROOT}}/etc/node_private_key.pem",
     "servers":{
-        "main_http_server":{
+        "node_gateway":{
+            "type":"cyfs-warp",
+            "bind":"127.0.0.1",
+            "http_port":3180,
+            "hosts":{
+                "*":{
+                    "routes":{
+                        "/kapi/verify_hub":{
+                            "service_selector":"verify_hub"
+                        },
+                        "/kapi/scheduler":{
+                            "cluster":{
+                                "type":"random",
+                                "url_list":{
+                                    "http://127.0.0.1:3300":100,
+                                    "rtcp://web3.buckyos.io/node1:3300":100
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "zone_gateway":{
             "type":"cyfs-warp",
             "bind":"0.0.0.0",
             "http_port":80,
@@ -394,7 +417,7 @@
     "dispatcher" : {
         "tcp://0.0.0.0:80":{
             "type":"server",
-            "id":"main_http_server"
+            "id":"zone_gateway"
         },
         "tcp://0.0.0.0:443":{
             "type":"server",
