@@ -27,9 +27,9 @@
         <img src="success.png" style="width: 120px;height: 120px;"/>
         <p>您的Personal Server已成功激活</p>
         {{#if use_self_domain}}
-        <p>点击 <a href="http://{{self_domain}}/index.html">http://{{self_domain}}/index.html</a> 访问</p>
+        <p>点击 <a href="https://{{self_domain}}/index.html">https://{{self_domain}}/index.html</a> 访问</p>
         {{else}}
-        <p>点击 <a href="http://{{sn_user_name}}.{{web3_base_host}}/index.html">http://{{sn_user_name}}.{{web3_base_host}}/index.html</a> 访问</p>
+        <p>点击 <a href="https://{{sn_user_name}}.{{web3_base_host}}/index.html">https://{{sn_user_name}}.{{web3_base_host}}/index.html</a> 访问</p>
         {{/if}}
         <p>默认用户名密码是admin/admin.</p>
         <p>首次打开页面如有错误请多刷新几次.</p>
