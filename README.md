@@ -1,144 +1,196 @@
-# BuckyOS Alpha2(0.4.0) Launch!
 
-This is second alpha release for developers.	The core goal of Alpha2 is to ***stabilize the design***.
+# BuckyOS Alpha3 (0.4.1) Release!
 
-In this version, we stabilized key designs for developers, built the first version of the SDK, and spent a lot of work on the bottom layer, hoping to stabilize the most basic data storage structure and the new cyfs:// design. We need to protect the intellectual investment of BuckyOS application developers and do our best to reduce future breaking changes.
+Alpha3 is the final planned Alpha release. Its primary goals are to **complete features left over from Alpha2**, improve system stability by establishing a more extensive testing system, and prepare for the public Beta release.
 
-The following are the main updates of this version:
+The main features planned for Alpha3 include:
 
-- Stabilize the kernel design, stabilize the development interface of `frame service` and `dApp` (including websdk)
-- Stabilize the design of ndn-related protocols in cyfs://, including the interface design of key modules such as DID system, URL construction, NamedDataManager, etc.
-- Stabilize the Tunnel framework of cyfs-gateway, and implement the rtcp protocl and socks protocol base this framework
-- Stabilize the dfs://, kv:// data directory structure design of buckyos, as well as the isolation logic and rbac logic of multiple users.
-- Stabilize pkg-system, and realize the installation and auto-update of applications and services through `subscription source -> repo-server -> ood nodes`
-- Stabilize the Product UI framework design of BuckyOS. Including the structure of BuckyOS Desktop/App, and the implementation of the system Control Panel
-- (Delay to Alpha3) Stabilize the "processing chain configuration" (probe->matcher->process->post_resp_filter) of cyfs-gateway to implement a scalable intelligent gateway on a consistent basic design
-- (Delay to Alpha3) Realize the backup and recovery of the system and the export and import of user data.
+* Fixing kernel components that were rushed in the previous release to ensure robustness, and improving related test cases
+* Improving the standard distributed development environment and building test cases based on it
+* Optimizing the repository structure to prepare for the independent productization of `cyfs-gateway`
+* Building a comprehensive nightly channel with support for automatic version updates
+* Improving `ndn-lib` with support for `chunklist` in `fileobject`
+* Adding basic support for containers and `DirObject` (Git mode) in `ndn-lib`
+* Supporting access to `smba` services via USB4 on macOS
+* Supporting quick addition of Docker URLs in BuckyOS and access through `appID.$zoneID`
+* Postponing the productization of backup and `cyfs-gateway` to Beta1
+* Temporarily shelving the plan to support an etcd backend for `system_config` due to integration concerns with `dfs`
 
-Join us on this journey! Please feel free to submit issues or pull requests! Let's build the next generation of `Dsstributed Personal AI Operating System` together!
+Join us on this journey! Feel free to submit issues or pull requests. Let’s build the next generation of **Distributed Personal AI Operating System** together!
 
-We are currently in the DAO acceptance phase for Alpha2, and we plan to start the development of Alpha3 next week. Alpha3 is a key version of BuckyOS, and we will integrate this version with [OpenDAN](https://github.com/fiatrete/OpenDAN-Personal-AI-OS) as planned, providing the key AI capabilities required by OpenDAN in BuckyOS.
+We are currently in the DAO acceptance phase for Alpha3 and plan to start the development of Beta1 ASAP. Beta1 is a key version of BuckyOS. As planned, it will integrate with [OpenDAN](https://github.com/fiatrete/OpenDAN-Personal-AI-OS), providing the essential AI capabilities required by OpenDAN within BuckyOS.
 
-## Let's Get Started
+---
 
-Get Active Code First:
+## Getting Started
+
+Get Active Code:
 [https://github.com/buckyos/buckyos/discussions/70](https://github.com/buckyos/buckyos/discussions/70)
 
-### No Docker Installation Method
+### Install Without Docker
 
 We know everyone loves Docker!
 
-However, since BuckyOS can be considered a "Deploying Kubernetes at Home with No IT Support" it relies on container technology but shouldn't run inside Docker itself. To provide a Docker-like experience, BuckyOS releases all binaries as statically linked files, so in 99% of cases, you won't face "depends issues."
+However, since BuckyOS is designed to be a "Deploying Kubernetes at Home with No IT Support" solution, it relies on container technology but should not run inside Docker itself. To offer a Docker-like experience, BuckyOS distributes all binaries as statically linked files, so in 99% of cases, you won’t encounter dependency issues.
 
-### Installing from deb
+### Installing from `.deb`
 
-Suitable for x86_64 Linux distributions using apt and WSL2. Depending on your internet speed, the process takes around 5-10 minutes.
+Suitable for x86\_64 Linux distributions using `apt` or WSL2. The process takes about 5–10 minutes depending on your network speed.
 
-Run the following command to download and install buckyos.deb:
-
-```bash
-wget https://buckyos.ai/static/buckyos_amd64.deb && dpkg -i ./buckyos_amd64.deb
-```
-
-If you're installing on ARM devices like Raspberry Pi, use buckyos_aarch64.deb:
+To install on x86\_64:
 
 ```bash
-wget https://buckyos.ai/static/buckyos_aarch64.deb && dpkg -i ./buckyos_aarch64.deb
+wget https://www.buckyos.ai/static/buckyos_amd64.deb && dpkg -i ./buckyos_amd64.deb
 ```
 
-The installation process will automatically download dependencies and default application Docker images, so make sure you have a stable internet connection that can access apt/pip/Docker repositories.
+To install on ARM devices (like Raspberry Pi):
 
-During installation, you may see some permission errors, but most of them are not significant. After installation, open your browser and go to:
+```bash
+wget https://www.buckyos.ai/static/buckyos_aarch64.deb && dpkg -i ./buckyos_aarch64.deb
+```
+
+The installer will automatically download dependencies and default application Docker images, so make sure your internet connection is stable and can access apt/pip/Docker repositories.
+
+You may encounter some permission errors during installation, but most are harmless. After installation, open your browser and visit:
 
 ```
 http://<your_server_ip>:3180/index.html
 ```
 
-You will see the BuckyOS startup setup page, follow the instructions to complete the setup, and you're good to go! During the Alpha testing phase, using the `web3.buckyos.ai` relay and D-DNS services requires an invitation code (Get Invitation Code here), which you can obtain from our issue page. (If you have your own domain and have set up port forwarding on your router, you don't need any of the services from `web3.buckyos.ai` and can try it without an invitation code.)
+You will see the BuckyOS startup setup page. Follow the instructions to complete the setup.
+
+During the Alpha phase, access to relay and D-DNS services from `sn.buckyos.ai` requires an invitation code (Get it from our issue page). If you already have your own domain and have configured port forwarding on your router, you can try BuckyOS directly without relying on any `sn.buckyos.ai` services.
 
 ### Install on Windows
 
-Coming Soon.
+Coming soon.
 
-### Install on MacOS
+### Install on macOS
 
-Coming Soon.
+Coming soon.
 
-### Install on Linux without .deb support
+### Install on Linux without `.deb` support
 
-Coming Soon.
+Coming soon.
 
+---
 
 ## Installing from a Virtual Machine
 
-We are preparing related images to support running BuckyOS on Windows, macOS, and major NAS brands that do not have WSL environments. We promise to complete this work before the Alpha2 release.
+We are preparing VM images to support BuckyOS on Windows, macOS, and popular NAS platforms that lack WSL environments. We promise to complete this work before the Alpha2 release.
 
-## Installing from Source Code
+---
 
-Installing from source is a great way to learn more about BuckyOS and is the first step towards contributing. By installing from source, you can also install BuckyOS on macOS.
+## Installing from Source
 
+Installing from source is a great way to explore BuckyOS and is the first step toward contributing. It also allows you to run BuckyOS on macOS.
 
 ```bash
 git clone https://github.com/buckyos/buckyos.git && cd buckyos && python3 devenv.py && python3 src/build.py
 ```
 
-Once the build script completes, the installation is done on your local machine (for convenience, it includes test identity information by default). Run the following commands to start BuckyOS in its initial state:
+Once the build script completes, the local installation is ready (test identity info is included by default). To start BuckyOS in its initial state:
 
 ```bash
 sudo /opt/buckyos/bin/node_daemon --enable_active
 ```
 
-## BuckyOS's Vision
+### Common Scripts in the Source Directory
 
+* To build only the Rust components:
 
-- **Internet is BuckyOS**: By creating a new decentralized (and necessarily open-source) infrastructure, we aim to build a new dApp ecosystem where applications are more interconnected, more modular, and better integrated with AI. This approach can support building applications an order of magnitude more complex than those we have today, while also reducing both development and operating costs by a similar scale—ultimately increasing productivity by a factor of 100.
+```bash
+cd src
+python3 build.py --no-build-web-apps
+```
 
-- **The infrastructure of the Internet cannot be controlled by corporations**: Services running on the Cloud (Server) are closely related to our lives today, and people can hardly live without services in their daily lives. However, there is no operating system specifically designed to run services. A decentralized infrastructure can eliminate platform taxes and unfair platform policies. By distributing Tokens, the underlying infrastructure can be co-owned by developers, evangelists, all users, and capital, sharing in the revenue and jointly setting fairer rules for the platform.
+* To copy the compiled binaries and launch `/opt/buckyos`:
 
-- **“Killing apps” through LLMs**: The underlying logic here is “use LLMs to solve the shortage of information filtering.” While AI-based content generation is needed by a subset of users, AI-based filtering is needed by everyone. By leveraging AI’s general reasoning abilities, we help users filter the information they receive—tackling the “echo chamber” problem. This yields obvious benefits for users and positive social impact. Moreover, for the AI industry, connecting every user’s KnowledgeBase into a semantic network through CYFS provides LLMs with real-time and accurate information, resulting in better outcomes.
+```bash
+cd src
+python3 start.py
+```
 
-###  Learn more about BuckyOS
+* To reinstall BuckyOS using a specified configuration group:
 
-- BuckyOS Architecture Design (Coming Soon)
-- Hello BuckyOS! (Coming Soon)
-- BuckyOS dApp Developer Manual (Coming Soon)
-- BuckyOS Contributor Guide (Coming Soon)
+```bash
+cd src
+python3 start.py -reinstall $group_name
+```
 
-## The Next Generation of GPL: Creating a New Model for Open Source Collaboration
+If `group_name` is empty, BuckyOS will start with an empty config and enter the pending activation state.
 
-"Open source organizations have a long history and brilliant achievements. Practice has proved that an open source organization can achieve the goal of writing better code only by working in the virtual world. We believe that software development work is very suitable for DAO. We call this DAO for decentralized organizations to jointly develop software as SourceDAO." ---- from the White Paper of CodeDAO (https://www.codedao.ai)
+Currently, there are two built-in config groups:
 
-BuckyOS’s open-source community operates in a DAO-like manner. Our goal is to address the issue where open-source contributors typically receive no direct return, or are treated as free labor:
+* `dev`
+* `dev_no_docker`
 
-- **Coding mining**: Enhance the quality of version releases by aligning interests.
-  - We employ a GPL-like “copyleft” mechanism to build a shared interest structure among upstream and downstream stakeholders.  
-  - Through automatic smart contract–based revenue sharing, contributors to fundamental libraries that keep the world running smoothly can enjoy stable and long-term income (which they deserve).
-- **Governance**: By unifying token holdings and aligning everyone’s interests, we create a common ground among both users and developers. This lets us make rational decisions based on shared benefits (even disagreements are “family disputes”).
-- **Return to a standard open-source development process**.
+The old `python3 start.py --all` is now equivalent to `python3 start.py --reinstall dev`.
 
-`Open, Transparent, Free to Come and Go (everyone can participate), and Result-Oriented`
+---
 
-SourceDAO is our open source DAO smart contract based on the above concept. Visit [https://dao.buckyos.org/](https://dao.buckyos.org/) for more details.
+## BuckyOS Vision
 
+* **Internet is BuckyOS**: Build a new dApp ecosystem with a decentralized (and necessarily open-source) infrastructure where applications are more interconnected, more modular, and better integrated with AI. This supports apps an order of magnitude more complex than today’s, while reducing development and operational costs by the same factor — boosting productivity 100x.
 
-## Preliminary Version Plan:
+* **The internet’s infrastructure should not be owned by corporations**: A decentralized infrastructure eliminates platform taxes and unfair policies. By distributing tokens, the base infrastructure can be co-owned by developers, evangelists, users, and capital, allowing shared revenue and governance.
+
+* **"Killing apps" through LLMs**: The core idea is using LLMs to solve the “information filtering crisis.” While AI-generated content helps some users, **everyone** needs AI-based filtering. LLMs can help users filter incoming information, solving the "echo chamber" problem. The impact is immediate and positive, both socially and technically. CYFS can also connect every user’s KnowledgeBase into a semantic network, giving LLMs real-time and accurate information for better results.
+
+---
+
+### Learn More About BuckyOS
+
+* BuckyOS Architecture Design (Coming Soon)
+* Hello BuckyOS! (Coming Soon)
+* BuckyOS dApp Developer Manual (Coming Soon)
+* BuckyOS Contributor Guide (Coming Soon)
+
+---
+
+## The Next Generation of GPL: A New Model for Open Source Collaboration
+
+> “Open source organizations have a long history and brilliant achievements. Practice has proven that better code can be written purely in the virtual world. We believe that software development is well suited for the DAO model. We call this DAO for collaborative decentralized software development: SourceDAO.” — from the CodeDAO White Paper ([https://www.codedao.ai](https://www.codedao.ai))
+
+BuckyOS’s open-source community operates like a DAO. Our goal is to address the problem of unpaid open-source labor:
+
+* **Code mining**: Improve version quality by aligning incentives
+* **Shared interests**: A copyleft-like mechanism (inspired by GPL) links upstream and downstream contributors into a common interest structure
+* **Automated revenue sharing**: Through smart contracts, contributors to core libraries receive stable and long-term income — what they rightfully deserve
+
+For governance, shared token ownership aligns users and developers to make rational, consensus-based decisions. Even conflicts remain "family arguments."
+
+**Open, Transparent, Free to Participate, and Result-Oriented**
+
+SourceDAO is our DAO smart contract based on this philosophy. Visit [https://dao.buckyos.org/](https://dao.buckyos.org/) for more.
+
+---
+
+## Preliminary Version Plan
 
 #### 2024
 
-- **0.1 Demo:** 2.5% (Done)
-- **0.2 PoC:**  2.5% (Done)
-- **0.3 Alpha1:** 2.5% (DONE)
-- **0.4 Alpha2:** 2.5% (Last Release!)
+* **0.1 Demo** – 2.5% (Done)
+* **0.2 PoC** – 2.5% (Done)
+* **0.3 Alpha1** – 2.5% (Done)
+* **0.4 Alpha2** – 2.5% (Released April 2025, Done)
 
 #### 2025
-- **0.5 Alpha3:** 2.5% (2025Q2 First Public Test)
-- **0.6 Beta** 5% (First public release version)
-- **0.7 Release:** 2.5% (2025 Q4)
 
+* **0.4.1 Alpha3** – 2.5% (This Release)
+* **0.5 Beta1** – 5% (Public Release in October 2025)
+* **0.6 Beta2** – 2.5% (Planned for Q4 2025)
 
+---
 
 ## License
 
-BuckyOS is a free, open-source, decentralized system encouraging vendors to build commercial products based on BuckyOS, fostering fair competition. Our licensing choice aims to achieve ecosystem win-win, maintain a decentralized core, protect contributor interests, and build a sustainable ecosystem. We adopt dual licensing: a traditional LGPL-based license requiring GPL compliance for kernel modifications, allowing closed-source applications (which cannot be essential system components), and a SourceDAO-based license. When a DAO-token issuing organization uses BuckyOS, it must donate a portion of its tokens to the BuckyOS DAO according to this license.
+BuckyOS is a free, open-source, decentralized system. We encourage vendors to build commercial products based on BuckyOS, fostering fair competition. Our licensing aims to ensure ecosystem win-win, preserve decentralization, protect contributors, and support long-term sustainability.
 
-There is currently no license that meets our requirements, so we will temporarily use the BSD license for DEMO. I think we will definitely have a formal license ready when the PoC is completed.
+We adopt dual licensing:
+
+* A traditional LGPL-based license: kernel modifications must comply with GPL. Closed-source applications are allowed but **cannot** be core system components.
+* A SourceDAO-based license: DAO-token issuing organizations using BuckyOS must donate a portion of their tokens to the BuckyOS DAO under this license.
+
+Since no existing license fully meets our needs, we are temporarily using the BSD license during the DEMO phase. A formal license will be introduced once the PoC is finalized.
+
