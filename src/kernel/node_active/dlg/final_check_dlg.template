@@ -34,7 +34,7 @@
                 {{#if is_direct_connect}}
                 <li>访问链路:直接连接到您的Personal Server</li>
                 {{else}}
-                <li>访问链路:使用buckyos.io提供的Web3网桥</li>
+                <li>访问链路:使用buckyos.ai提供的Web3网桥</li>
                 {{/if}}
             </ul>
         </div>
