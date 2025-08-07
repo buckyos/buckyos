@@ -122,10 +122,10 @@ pub(crate) fn did_matches(matches: &ArgMatches) {
 }
 
 fn did_genkey() {
-    let (privete_key, public_key) = generate_ed25519_key_pair();
-    // println!("{} \n\n\n {}", privete_key, public_key);
+    let (private_key, public_key) = generate_ed25519_key_pair();
+    // println!("{} \n\n\n {}", private_key, public_key);
     let mut private_key_file = File::create("user_private_key.pem").unwrap();
-    private_key_file.write_all(privete_key.as_bytes()).unwrap();
+    private_key_file.write_all(private_key.as_bytes()).unwrap();
     let mut public_key_file = File::create("user_public_key.pem").unwrap();
 
     public_key_file
