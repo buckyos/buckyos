@@ -31,7 +31,7 @@ export type ActiveWizzardData = {
 }
 
 export let SN_API_URL:string = "https://sn.buckyos.ai/kapi/sn";
-export let SN_HOST:string = "sn.buckyos.ai";
+export let SN_HOST:string = "web3.buckyos.ai";  // *.web3.buckyos.ai
 
 export function set_sn_api_url(url:string) {
     SN_API_URL = url;
