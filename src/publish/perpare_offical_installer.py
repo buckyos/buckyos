@@ -36,7 +36,6 @@ def install_pkg(pkg_name, target_dir, prefix, version):
     meta_obj_id = open(meta_obj_id_file).read().strip()
     target_pkg_dir = os.path.join(target_dir, pkg_name)
 
-
     pkg_file = os.path.join(pkg_dir, f"{pkg_full_name}#{version}.tar.gz")
     if not os.path.exists(pkg_file):
         print(f"# pkg_file not found in {pkg_dir}")
@@ -51,7 +50,7 @@ def prepare_bin_package(src_pkg_dir, prefix, version, target_dir):
     pack_pkg_items = glob.glob(os.path.join(src_pkg_dir,f"{prefix}*"))
     print(f"# prepare_bin_package: {src_pkg_dir} ({prefix}*)")
     install_pkg("node_daemon",target_dir,prefix,version)
-    install_pkg("node_active",target_dir,prefix,version)
+    #install_pkg("node_active",target_dir,prefix,version)
     install_pkg("buckycli",target_dir,prefix,version)
     # for pack_pkg_item in pack_pkg_items:
     #     if os.path.isdir(pack_pkg_item):
