@@ -356,9 +356,15 @@ async fn report_ood_info_to_sn(device_info: &DeviceInfo, device_token_jwt: &str,
     }
 
     let ood_string = ood_string.unwrap();
+    let owner_did = zone_config.owner.clone();
+    if owner_did.is_none() {
+        error!("zone config owner_did is not set!");
+        return Err(String::from("zone config owner_did is not set!"));
+    }
+    let owner_did = owner_did.unwrap();
 
     sn_update_device_info(sn_url.as_str(), Some(device_token_jwt.to_string()),
-                          &zone_config.get_zone_short_name(),device_info.name.as_str(), &device_info).await;
+                          &owner_did.id,device_info.name.as_str(), &device_info).await;
 
     info!("update {} 's info to sn {} success!",device_info.name.as_str(),sn_url.as_str());
     Ok(())
