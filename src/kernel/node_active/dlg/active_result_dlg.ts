@@ -20,7 +20,7 @@ class ActiveResultDlg extends HTMLElement {
 
         let btn_end = shadow.getElementById('btn_end') as MdFilledButton;
         //TODO: use sn_host
-        let target_url = `http://${wizzard_data.sn_user_name}.${wizzard_data.sn_host}/`;
+        let target_url = `http://${wizzard_data.sn_user_name}.${wizzard_data.web3_base_host}/`;
         if (wizzard_data.use_self_domain) {
             target_url = `http://${wizzard_data.self_domain}/`;
         }

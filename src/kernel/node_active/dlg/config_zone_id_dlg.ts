@@ -101,8 +101,9 @@ class ConfigZoneIdDlg extends HTMLElement {
                         }
                     });
                 }
+                const sn_url = new URL(wizzard_data.sn_url);
 
-                generate_zone_boot_config_jwt(wizzard_data.sn_host,wizzard_data.owner_private_key).then((zone_config_jwt) => {
+                generate_zone_boot_config_jwt(sn_url.hostname,wizzard_data.owner_private_key).then((zone_config_jwt) => {
                     let txt_zone_config = shadow.getElementById('txt_zone_id_value') as MdFilledTextField;
                     txt_zone_config.value = "DID="+zone_config_jwt+";";
                     wizzard_data.zone_config_jwt = zone_config_jwt;

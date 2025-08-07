@@ -69,7 +69,7 @@ window.onload = async () => {
         owner_private_key : "",
         zone_config_jwt : "",
         sn_url : SN_API_URL,
-        sn_host : "",
+        web3_base_host : "",
     }
     
     const activeWizzard = document.getElementById('active-wizzard') as BuckyWizzardDlg;

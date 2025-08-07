@@ -25,7 +25,7 @@
     <div class="container">
         <bucky-checkbox id="chk_use_buckyos_name" lable="使用buckyos.io的二级域名" check="true"></bucky-checkbox>
         <div>* 激活完成后,您将通过下面域名访问您的Personal Server</div> 
-        <div id="show_buckyos_name"> - http://$name.web3.buckyos.ai </div>
+        <div id="show_buckyos_name"> - https://$name.web3.buckyos.ai </div>
         <div>- Alpha测试期间,使用buckyos.io的二级域名服务需要邀请码:</div>
         <md-outlined-text-field id="txt_bucky_sn_token"  placeholder="请输入邀请码" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
     </div>

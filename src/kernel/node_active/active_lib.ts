@@ -14,7 +14,7 @@ export type ActiveWizzardData = {
     sn_active_code : string;
     sn_user_name : string;
     sn_url :string;
-    sn_host : string;
+    web3_base_host : string;
 
     use_self_domain : boolean;
     self_domain : string;
@@ -31,7 +31,7 @@ export type ActiveWizzardData = {
 }
 
 export let SN_API_URL:string = "https://sn.buckyos.ai/kapi/sn";
-export let SN_HOST:string = "web3.buckyos.ai";  // *.web3.buckyos.ai
+export let WEB3_BASE_HOST:string = "web3.buckyos.ai";
 
 export function set_sn_api_url(url:string) {
     SN_API_URL = url;
@@ -149,7 +149,7 @@ export async function active_ood(wizzard_data:ActiveWizzardData,zone_name:string
         guest_access:wizzard_data.enable_guest_access,
         friend_passcode:wizzard_data.friend_passcode,
         sn_url:wizzard_data.sn_url,
-        sn_host:wizzard_data.sn_host
+        sn_host:wizzard_data.web3_base_host
     });
     return result["code"] == 0;
 }
@@ -195,7 +195,7 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
     if (data.use_self_domain) {
         zone_name = data.self_domain;
     } else {
-        zone_name = data.sn_user_name + "." + data.sn_host;
+        zone_name = data.sn_user_name + "." + data.web3_base_host;
     }
 
 
