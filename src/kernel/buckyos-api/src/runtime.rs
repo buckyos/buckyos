@@ -279,7 +279,7 @@ impl BuckyOSRuntime {
         }
         info!("will load config for buckyos-runtime from {} ", 
             config_root_dir.to_string_lossy());
-    
+        
         let node_identity_file = config_root_dir.join("node_identity.json");
         let device_private_key_file = config_root_dir.join("node_private_key.pem");
 
@@ -287,28 +287,38 @@ impl BuckyOSRuntime {
             .map_err(|e| {
                 error!("Failed to load node identity config: {}", e);
                 RPCErrors::ReasonError(format!("Failed to load node identity config: {}", e))
-            })?;
+            });
+        
+        if node_identity_config.is_ok() {
+            let node_identity_config = node_identity_config.unwrap();
+            if CURRENT_DEVICE_CONFIG.get().is_none() {
+                let device_config = decode_jwt_claim_without_verify(node_identity_config.device_doc_jwt.as_str())
+                    .map_err(|e| {
+                        error!("Failed to decode device config: {}", e);
+                        RPCErrors::ReasonError(format!("Failed to decode device config: {}", e))
+                    })?;
 
-        if CURRENT_DEVICE_CONFIG.get().is_none() {
-            let device_config = decode_jwt_claim_without_verify(node_identity_config.device_doc_jwt.as_str())
-                .map_err(|e| {
-                    error!("Failed to decode device config: {}", e);
-                    RPCErrors::ReasonError(format!("Failed to decode device config: {}", e))
-                })?;
+                let devcie_config = serde_json::from_value::<DeviceConfig>(device_config);
+                if devcie_config.is_err() {
+                    error!("Failed to parse device config: {}", devcie_config.err().unwrap());
+                    return Err(RPCErrors::ReasonError(format!("Failed to parse device config from jwt: {}", node_identity_config.device_doc_jwt.as_str())));
+                }
+                let device_config = devcie_config.unwrap();
+                self.device_config = Some(device_config.clone());
+                self.user_id = Some(device_config.name.clone());
+                let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
+                if set_result.is_err() {
+                    warn!("Failed to set CURRENT_DEVICE_CONFIG");
+                        return Err(RPCErrors::ReasonError("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
+                }
+                let zone_did = node_identity_config.zone_did.clone();
+                self.zone_id = zone_did.clone();
+            }
+        } else {
+            if self.runtime_type != BuckyOSRuntimeType::AppClient {
+                return Err(RPCErrors::ReasonError("node_identity_config is not set".to_string()));
+            }
 
-            let devcie_config = serde_json::from_value::<DeviceConfig>(device_config);
-            if devcie_config.is_err() {
-                error!("Failed to parse device config: {}", devcie_config.err().unwrap());
-                return Err(RPCErrors::ReasonError(format!("Failed to parse device config from jwt: {}", node_identity_config.device_doc_jwt.as_str())));
-            }
-            let device_config = devcie_config.unwrap();
-            self.device_config = Some(device_config.clone());
-            self.user_id = Some(device_config.name.clone());
-            let set_result = CURRENT_DEVICE_CONFIG.set(device_config.clone());
-            if set_result.is_err() {
-                warn!("Failed to set CURRENT_DEVICE_CONFIG");
-                    return Err(RPCErrors::ReasonError("Failed to set CURRENT_DEVICE_CONFIG".to_string()));
-            }
         }
 
         if self.runtime_type == BuckyOSRuntimeType::AppClient || self.runtime_type == BuckyOSRuntimeType::Kernel {
@@ -331,8 +341,17 @@ impl BuckyOSRuntime {
                         RPCErrors::ReasonError(format!("Failed to load owner config: {}", e))
                     })?;
                 self.user_id = Some(owner_config.name.clone());
+                if !self.zone_id.is_valid() {
+                    if owner_config.default_zone_did.is_some() {
+                        let zone_did = owner_config.default_zone_did.clone().unwrap();
+                        self.zone_id = zone_did.clone();
+                    } else {
+                        return Err(RPCErrors::ReasonError("default_zone_did is not set".to_string()));
+                    }
+                }
+
                 self.user_config = Some(owner_config);
-                
+     
                 let private_key = load_private_key(&user_private_key_file);
                 if private_key.is_ok() {
                     info!("!!!! Make sure your development machine is secured,user_private_key_file {} load success, ",user_private_key_file.to_string_lossy());
@@ -343,8 +362,7 @@ impl BuckyOSRuntime {
                 }
             }
         }
-        let zone_did = node_identity_config.zone_did.clone();
-        self.zone_id = zone_did.clone();
+
 
         Ok(())
     }

@@ -22,5 +22,6 @@
   "exp": 2059372061,
   "iat": 1744012061,
   "name": "devtest",
-  "full_name": "zhicong liu"
+  "full_name": "zhicong liu",
+  "default_zone_did": "did:web:test.buckyos.io"
 }
