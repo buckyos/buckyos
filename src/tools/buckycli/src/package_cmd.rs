@@ -633,7 +633,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let result = pack_raw_pkg(
             src_path.to_str().unwrap(),
             &dest_path,
-            Some(("did:bns:buckyos",&encoding_key)),
+            Some(("did:bns:buckyos".to_string(),encoding_key)),
         ).await;
         
         // 由于我们没有真正的私钥，这个测试可能会失败
