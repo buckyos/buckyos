@@ -673,63 +673,61 @@ impl NsProvider for SNServer {
 
         //query TXT record
         //如果用户存在，则返回用户的ZoneConfig
-        let end_string = format!(".{}.", self.server_host.as_str());
-        if name.ends_with(&end_string) {
-            let sub_name = name[0..name.len() - end_string.len()].to_string();
-            //split sub_name by "."
-            let subs: Vec<&str> = sub_name.split(".").collect();
-            let username = subs.last();
-            if username.is_none() {
+        //let end_string = format!(".{}.", self.server_host.as_str());
+        if req_real_name.ends_with(&self.server_host) {
+            let get_result = SNServer::get_user_subhost_from_host(&req_real_name, &self.server_host);
+            if get_result.is_some() {
+                let (sub_name,username) = get_result.unwrap();
+    
+                info!("query web3-bridge name, {}, username: {}, record_type: {:?}",
+                    &req_real_name,&username, record_type);
+
+                match record_type {
+                    RecordType::TXT => {
+                        let zone_config = self.get_user_zone_config(username.as_str()).await;
+                        if zone_config.is_some() {
+                            let zone_config = zone_config.unwrap();
+                            let pkx = get_x_from_jwk_string(zone_config.0.as_str()).map_err(|e| {
+                                error!("failed to get x from jwk string: {:?}", e);
+                                NSError::NotFound(format!(
+                                    "failed to get x from jwk string: {}",
+                                    e.to_string()
+                                ))
+                            })?;
+                            let result_name_info = NameInfo::from_zone_config_str(
+                                name,
+                                zone_config.1.as_str(),
+                                pkx.as_str(),
+                                &None,
+                            );
+                            info!("result_name_info: {:?}", result_name_info);
+                            return Ok(result_name_info);
+                        } else {
+                            return Err(NSError::NotFound(name.to_string()));
+                        }
+                    }
+                    RecordType::A | RecordType::AAAA => {
+                        let address_vec = self.get_user_zonegate_address(username.as_str()).await;
+                        if address_vec.is_some() {
+                            let address_vec = address_vec.unwrap();
+                            let result_name_info = NameInfo::from_address_vec(name, address_vec);
+                            return Ok(result_name_info);
+                        } else {
+                            return Err(NSError::NotFound(name.to_string()));
+                        }
+                    }
+                    _ => {
+                        return Err(NSError::NotFound(format!(
+                            "sn-server not support record type {}",
+                            record_type.to_string()
+                        )));
+                    }
+                }
+            } else {
                 return Err(NSError::NotFound(name.to_string()));
             }
-            let username = username.unwrap();
-            info!(
-                "sub zone {},enter sn serverquery: {}, record_type: {:?}",
-                username, name, record_type
-            );
-            match record_type {
-                RecordType::TXT => {
-                    let zone_config = self.get_user_zone_config(username).await;
-                    if zone_config.is_some() {
-                        let zone_config = zone_config.unwrap();
-                        let pkx = get_x_from_jwk_string(zone_config.0.as_str()).map_err(|e| {
-                            error!("failed to get x from jwk string: {:?}", e);
-                            NSError::NotFound(format!(
-                                "failed to get x from jwk string: {}",
-                                e.to_string()
-                            ))
-                        })?;
-                        let result_name_info = NameInfo::from_zone_config_str(
-                            name,
-                            zone_config.1.as_str(),
-                            pkx.as_str(),
-                            &None,
-                        );
-                        info!("result_name_info: {:?}", result_name_info);
-                        return Ok(result_name_info);
-                    } else {
-                        return Err(NSError::NotFound(name.to_string()));
-                    }
-                }
-                RecordType::A | RecordType::AAAA => {
-                    let address_vec = self.get_user_zonegate_address(username).await;
-                    if address_vec.is_some() {
-                        let address_vec = address_vec.unwrap();
-                        let result_name_info = NameInfo::from_address_vec(name, address_vec);
-                        return Ok(result_name_info);
-                    } else {
-                        return Err(NSError::NotFound(name.to_string()));
-                    }
-                }
-                _ => {
-                    return Err(NSError::NotFound(format!(
-                        "sn-server not support record type {}",
-                        record_type.to_string()
-                    )));
-                }
-            }
         } else {
-            let real_domain_name = name[0..name.len() - 1].to_string();
+            let real_domain_name = req_real_name.clone();
             let db = GLOBAL_SN_DB.lock().await;
             let user_info = db
                 .get_user_info_by_domain(real_domain_name.as_str())
@@ -932,5 +930,10 @@ mod tests {
         let (sub_host,username) = SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
         assert_eq!(sub_host, "buckyos-filebrowser-lzc".to_string());
         assert_eq!(username, "lzc".to_string());
+
+        let req_host = "sys-test-lzc07.web3.buckyos.io".to_string();
+        let (sub_host,username) = SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
+        assert_eq!(sub_host, "sys-test-lzc07".to_string());
+        assert_eq!(username, "lzc07".to_string());
     }
 }
