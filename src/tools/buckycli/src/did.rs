@@ -11,7 +11,7 @@ use std::io::Write;
 
 pub(crate) async fn sign_json_data(
     matches: &ArgMatches,
-    private_key: Option<(&str, &EncodingKey)>,
+    private_key: Option<(String, EncodingKey)>,
 ) {
     let json = matches.get_one::<String>("json").unwrap();
     println!("data: {} ", json);

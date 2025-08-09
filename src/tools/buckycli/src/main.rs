@@ -287,17 +287,18 @@ oods look like this 'ood1,ood2'.")
             println!("Failed to login: {}", e);
             return e.to_string();
         })?;
-       
+        set_buckyos_api_runtime(runtime);
         let buckyos_runtime = get_buckyos_api_runtime().unwrap();
         let zone_host_name = buckyos_runtime.zone_id.to_host_name();
         println!("Connect to {:?} @ {:?}",buckyos_runtime.user_id,zone_host_name);
-        if buckyos_runtime.user_private_key.is_some() {
-            println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
-                private_key = Some((buckyos_runtime.user_id.as_deref().unwrap(),buckyos_runtime.user_private_key.as_ref().unwrap()));
-        }
-    }
-    set_buckyos_api_runtime(runtime);
 
+    } else {
+        if runtime.user_private_key.is_some() {
+            println!("Warning: You are using a developer private key, please make sure you are on a secure development machine!!!");
+            private_key = Some((runtime.user_id.clone().unwrap(),runtime.user_private_key.clone().unwrap()));
+        }
+        set_buckyos_api_runtime(runtime);
+    }
 
     // 处理子命令
     match subcommand {
@@ -369,7 +370,7 @@ oods look like this 'ood1,ood2'.")
             let src_pkg_path = matches.get_one::<String>("src_pkg_path").unwrap();
             let target_path = matches.get_one::<String>("target_path").unwrap();
 
-            match pack_raw_pkg(src_pkg_path, target_path,private_key).await {
+            match pack_raw_pkg(src_pkg_path, target_path,private_key.clone()).await {
                 Ok(_) => {
                     println!("############\nPack package success!");
                 }
@@ -498,7 +499,7 @@ oods look like this 'ood1,ood2'.")
             sys_config::connect_into().await;
         }
         Some(("sign", matches)) => {
-            did::sign_json_data(matches, private_key).await;
+            did::sign_json_data(matches, private_key.clone()).await;
         }
         Some(("did", sub_matches)) => {
             did::did_matches(sub_matches);

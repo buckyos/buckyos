@@ -86,7 +86,7 @@ async fn tar_gz(src_dir: &Path, tarball_path: &Path) -> Result<(), String> {
 }
 
 
-pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(&str,&EncodingKey)>) -> Result<(), String> {
+pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(String,EncodingKey)>) -> Result<(), String> {
     println!("Starting to package path: {}", pkg_path);
     let pkg_path = Path::new(pkg_path);
     if !pkg_path.exists() {
@@ -153,7 +153,7 @@ pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str,private_key:Option<(&st
     // If private key is provided, sign the metadata
     if let Some((kid,private_key)) = private_key { 
         let jwt_token = named_obj_to_jwt(&meta_data_json,
-            private_key,Some(kid.to_string()))
+            &private_key,Some(kid.to_string()))
             .map_err(|e| format!("Failed to generate pkg_meta.jwt: {}", e.to_string()))?;
         let jwt_path = dest_dir_path.join("pkg_meta.jwt");
         fs::write(&jwt_path, jwt_token).map_err(|e| {
