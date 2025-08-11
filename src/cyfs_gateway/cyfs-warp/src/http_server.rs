@@ -262,7 +262,10 @@ impl CyfsWarpServer {
                     anyhow::anyhow!("Failed to open key file: {} {}", host_config.tls.key_path.as_ref().unwrap(), e)
                 })?;
                 let mut key_file = BufReader::new(key_file);
-                let mut keys = pkcs8_private_keys(&mut key_file).unwrap();
+                let mut keys = pkcs8_private_keys(&mut key_file).map_err(|e| {
+                    error!("Failed to parse key file: {} {}", host_config.tls.key_path.as_ref().unwrap(), e);
+                    anyhow::anyhow!("Failed to parse key file: {} {}", host_config.tls.key_path.as_ref().unwrap(), e)
+                })?;
                 if keys.is_empty() {
                     error!("No private keys found in key file");
                     return Err(anyhow::anyhow!("No private keys found in key file"));

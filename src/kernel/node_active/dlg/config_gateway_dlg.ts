@@ -1,7 +1,7 @@
 import templateContent from './config_gateway_dlg.template?raw';  
 import {BuckyCheckBox} from '../components/checkbox';
 import {BuckyWizzardDlg} from '../components/wizzard-dlg';
-import { GatewayType,ActiveWizzardData,check_sn_active_code,set_sn_api_url,SN_API_URL,SN_HOST } from '../active_lib';
+import { GatewayType,ActiveWizzardData,check_sn_active_code,set_sn_api_url,SN_API_URL,WEB3_BASE_HOST } from '../active_lib';
 import {MdOutlinedTextField} from '@material/web/textfield/outlined-text-field.js';
 import {MdFilledButton} from '@material/web/button/filled-button.js';
 import Handlebars from 'handlebars';
@@ -34,10 +34,10 @@ class ConfigGatewayDlg extends HTMLElement {
             const url = new URL(txt_bucky_sn_url.value);
             const host = url.host;  // 包含端口号
             wizzard_data.sn_url = txt_bucky_sn_url.value;
-            wizzard_data.sn_host = host;
+            wizzard_data.web3_base_host = host;
         } else {
             wizzard_data.sn_url = SN_API_URL;
-            wizzard_data.sn_host = SN_HOST;
+            wizzard_data.web3_base_host = WEB3_BASE_HOST;
         }
         set_sn_api_url(wizzard_data.sn_url);
 
@@ -56,7 +56,7 @@ class ConfigGatewayDlg extends HTMLElement {
         } else {
             wizzard_data.gatewy_type = GatewayType.PortForward;
             wizzard_data.sn_url = "";
-            wizzard_data.sn_host = "";
+            wizzard_data.web3_base_host = "";
             wizzard_data.is_direct_connect = true;
         }
 

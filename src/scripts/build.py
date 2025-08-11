@@ -34,7 +34,8 @@ def build(skip_web_app, skip_install, target, with_tray_controller, auto_win_sdk
     if not skip_install:
         install.install()
 
-if __name__ == "__main__":
+
+def build_main():
     skip_web_app = False
     skip_install = False
     system = platform.system() # Linux / Windows / Darwin
@@ -72,3 +73,6 @@ if __name__ == "__main__":
 
     print(f"will build buckyos: with_tray_controller={with_tray_controller}, auto_win_sdk={auto_win_sdk}")
     build(skip_web_app, skip_install, target, with_tray_controller, auto_win_sdk)
+    
+if __name__ == "__main__":
+    build_main()

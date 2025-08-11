@@ -1,23 +1,23 @@
-# BuckyOS Alpha2(0.4.0) 发布！
+# BuckyOS Alpha3(0.4.1) 发布！
 
-这是面向开发者的第二个 Alpha 版本。Alpha2 的核心目标是 ***稳定设计***。
+Alpha3 是计划中的最后一个 Alpha 版本，其主要目标是完成 Alpha2 中遗留的功能，通过建立更完善的测试体系来提升系统稳定性，并为 Beta 版本的公开测试做好准备。
 
-我们面向开发者稳定了一些关键设计，构建了首个版本的SDK，并在底层进行了大量工作，旨在稳定最基础的数据存储结构以及全新的 cyfs:// 设计。我们需要保护 BuckyOS 应用开发者的智力投资，并尽最大努力减少未来的Breaking Change。
+Alpha3 计划实现的主要功能包括：
 
-以下是本版本的主要更新内容：
-
-- 稳定内核设计，稳定 `frame service` 和 `dApp`（包括 websdk）的开发接口
-- 稳定 cyfs:// 中与 ndn 相关协议的设计，包括 DID 系统、URL 构造、NamedDataManager 等关键模块的接口设计
-- 稳定 cyfs-gateway 的 Tunnel 框架，并基于该框架实现了 rtcp 协议和 socks 协议
-- 稳定 buckyos 中 dfs://、kv:// 数据目录结构设计，以及多用户隔离逻辑和 RBAC 权限控制逻辑
-- 稳定 pkg-system，通过 “订阅源 -> 仓库服务器 -> ood 节点” 实现了应用和服务的安装和自动更新
-- 稳定 BuckyOS 的产品 UI 框架设计，包括 BuckyOS Desktop/App 的结构以及系统控制面板的实现
-- （延期至 Alpha3）稳定 cyfs-gateway 的 “处理链配置”（probe->matcher->process->post_resp_filter），以在一致的基础设计上实现可扩展的智能网关
-- （延期至 Alpha3）实现系统的备份与恢复以及用户数据的导出与导入
+* 修复上一个版本中为赶进度而匆忙开发的内核组件，确保其健壮性，并完善测试用例
+* 改进标准的分布式开发环境，并基于该环境构建测试用例
+* 优化代码仓库结构，为 cyfs-gateway 的独立产品化做准备
+* 构建完整的 Nightl-channel，并支持自动版本更新
+* 改进 ndn-lib，新增对 fileobject 的 chunklist 支持
+* 为 ndn-lib 增加对容器与 DirObject（Git 模式）的基本支持支持 
+* 支持通过 USB4 在 Mac 上连接并访问 smba 服务
+* 支持在 BuckyOS 中快速添加 Docker URL，并通过 appID.\$zoneID 方式访问应用
+* backup/cyfs-gateway独立产品化的规划移至beta1
+* 考虑到dfs的集成问题，暂时搁置system_config的etcd后端计划
 
 加入我们的征程吧！欢迎随时提交 issue 或 pull request！让我们共同构建下一代分布式AI操作系统！
 
-目前我们正处于Alpha2的版本DAO验收阶段，我们计划下周开启Alpha3的研发工作。Alpha3是BuckyOS是一个关键的版本，这个版本我们将按计划完成与[OpenDAN](https://github.com/fiatrete/OpenDAN-Personal-AI-OS)进行整合，在BuckyOS里提供OpenDAN所需要的关键AI能力。
+目前我们正处于Alpha3的版本DAO验收阶段，我们计划下周开启Beta1的研发工作。Beta1是BuckyOS是一个关键的版本，这个版本我们将按计划完成与[OpenDAN](https://github.com/fiatrete/OpenDAN-Personal-AI-OS)进行整合，在BuckyOS里提供OpenDAN所需要的关键AI能力。
 
 
 ## 开始使用
@@ -38,13 +38,13 @@
 运行以下命令下载并安装 buckyos.deb：
 
 ```bash
-wget https://buckyos.ai/static/buckyos_amd64.deb && dpkg -i ./buckyos_amd64.deb
+wget https://www.buckyos.ai/static/buckyos_amd64.deb && dpkg -i ./buckyos_amd64.deb
 ```
 
 如果你在 ARM 设备（如树莓派）上安装，请使用 buckyos_aarch64.deb：
 
 ```bash
-wget https://buckyos.ai/static/buckyos_aarch64.deb && dpkg -i ./buckyos_aarch64.deb
+wget https://www.buckyos.ai/static/buckyos_aarch64.deb && dpkg -i ./buckyos_aarch64.deb
 ```
 
 安装过程中将自动下载依赖项和默认应用的 Docker 镜像，因此请确保你的网络连接稳定且能访问 apt/pip/Docker 仓库。
@@ -55,7 +55,7 @@ wget https://buckyos.ai/static/buckyos_aarch64.deb && dpkg -i ./buckyos_aarch64.
 http://<你的服务器IP>:3180/index.html
 ```
 
-你将看到 BuckyOS 的启动设置页面，按照指示完成设置即可！在 Alpha 测试阶段，使用 `web3.buckyos.ai` 的中继和 D-DNS 服务需要邀请码（点击此处获取邀请码），你可以从我们的 issue 页面获得。（如果你拥有自己的域名并已在路由器上设置端口转发，则无需使用 `web3.buckyos.ai` 的任何服务，可直接尝试，无需邀请码）
+你将看到 BuckyOS 的启动设置页面，按照指示完成设置即可！在 Alpha 测试阶段，使用 `sn.buckyos.ai` 的中继和 D-DNS 服务需要邀请码（点击此处获取邀请码），你可以从我们的 issue 页面获得。（如果你拥有自己的域名并已在路由器上设置端口转发，则无需使用 `sn.buckyos.ai` 的任何服务，可直接尝试，无需邀请码）
 
 ### Windows 安装
 
@@ -88,6 +88,33 @@ git clone https://github.com/buckyos/buckyos.git && cd buckyos && python3 devenv
 ```bash
 sudo /opt/buckyos/bin/node_daemon --enable_active
 ```
+
+### 源码目录的常用脚本
+
+- 下面脚本只进行rust部分的构建
+```bash
+cd src
+python3 build.py --no-build-web-apps
+```
+
+- 下面脚本用只更新编译的二进制文件后启动/opt/buckyos
+```bash
+cd src
+python3 start.py
+```
+
+- 下面脚本基于指定的配置组重装buckyos
+```bash
+cd src
+python3 start.py -reinstall $group_name
+```
+如果group_name为空，则用空配置文件启动buckyos,此时进入待激活状态。
+目前系统带有两组配置文件
+- dev 
+- dev_no_docker
+
+老的 `python3 start.py --all`脚本现在等价于  `python3 start.py --reinstall dev`
+
 
 ## BuckyOS 的愿景
 
@@ -125,13 +152,13 @@ SourceDAO 是基于以上理念的我们的开源 DAO 智能合约。更多详�
 - **0.1 Demo：** 2.5%（已完成）
 - **0.2 PoC：** 2.5%（已完成）
 - **0.3 Alpha1：** 2.5%（已完成）
-- **0.4 Alpha2：** 2.5%（最新发布！）
+- **0.4 Alpha2：** 2.5%（实际发布日期2025年4月，已完成）
 
 #### 2025
 
-- **0.5 Alpha3：** 2.5%（2025 年 Q2 首次公开测试）
-- **0.6 Beta：** 5%（首个公开发行版本）
-- **0.7 Release：** 2.5%（2025 年 Q4）
+- **0.4.1 Alpha3：** 2.5%（本次发布）
+- **0.5 Beta1:** 5%（2025年10月 首个公开发行版本）
+- **0.6 Beta2:** 2.5%（2025 年 Q4）
 
 
 ## 许可证

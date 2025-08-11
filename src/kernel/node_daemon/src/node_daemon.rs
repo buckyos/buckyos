@@ -50,6 +50,24 @@ enum NodeDaemonErrors {
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
+fn get_system_pkgs() -> Vec<String> {
+    vec![
+        "app_loader".to_string(),
+        "buckycli".to_string(),
+        "control_panel".to_string(),
+        "repo_service".to_string(),
+        "cyfs_gateway".to_string(),
+        "node_active".to_string(),
+        "node_daemon".to_string(),
+        "repo_service".to_string(),
+        "scheduler".to_string(),
+        "smb_service".to_string(),
+        "sys_test".to_string(),
+        "system_config".to_string(),
+        "verify_hub".to_string(),
+    ]
+}
+
 async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<ZoneBootConfig> {
     //If local files exist, priority loads local files
     let etc_dir = get_buckyos_system_etc_dir();
@@ -224,7 +242,7 @@ async fn do_boot_upgreade() -> std::result::Result<(), String>  {
 }
 
 
-async fn check_and_update_system_pkgs(pkg_list: Vec<String>) -> std::result::Result<bool, String>  {
+async fn check_and_update_system_pkgs(pkg_list: &Vec<String>) -> std::result::Result<bool, String>  {
     let mut is_self_upgrade = false;
     let mut pkg_env = PackageEnv::new(get_buckyos_system_bin_dir());
     for pkg_id in pkg_list {
@@ -356,9 +374,15 @@ async fn report_ood_info_to_sn(device_info: &DeviceInfo, device_token_jwt: &str,
     }
 
     let ood_string = ood_string.unwrap();
+    let owner_did = zone_config.owner.clone();
+    if owner_did.is_none() {
+        error!("zone config owner_did is not set!");
+        return Err(String::from("zone config owner_did is not set!"));
+    }
+    let owner_did = owner_did.unwrap();
 
     sn_update_device_info(sn_url.as_str(), Some(device_token_jwt.to_string()),
-                          &zone_config.get_zone_short_name(),device_info.name.as_str(), &device_info).await;
+                          &owner_did.id,device_info.name.as_str(), &device_info).await;
 
     info!("update {} 's info to sn {} success!",device_info.name.as_str(),sn_url.as_str());
     Ok(())
@@ -519,19 +543,8 @@ async fn node_main(node_host_name: &str,
         if root_env_need_upgrade.is_err() {
             warn!("check and update root_pkg_env index db failed! {}", root_env_need_upgrade.err().unwrap());
         }
-        let system_pkgs = vec![
-            "app_loader".to_string(),
-            "node_active".to_string(),
-            "buckycli".to_string(),
-            "control_panel".to_string(),
-            "sys_test".to_string(),
-            "repo_service".to_string(),
-            "cyfs_gateway".to_string(),
-            "system_config".to_string(),
-            "verify_hub".to_string(),
-            "node_daemon".to_string(),
-        ];
-        let is_self_upgrade = check_and_update_system_pkgs(system_pkgs).await;
+        let system_pkgs = get_system_pkgs();
+        let is_self_upgrade = check_and_update_system_pkgs(&system_pkgs).await;
         if is_self_upgrade.is_err() {
             warn!("check and update system pkgs failed! {}", is_self_upgrade.err().unwrap());
         } else {
@@ -768,7 +781,8 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     info!("init default name client OK!");
 
 
-    check_and_update_system_pkgs(vec!["node_active".to_string(),"control_panel".to_string(),"sys_test".to_string()]).await;
+    let initial_pkgs = get_system_pkgs();
+    check_and_update_system_pkgs(&initial_pkgs).await;
 
     //load node identity config
     let node_identity_file = get_buckyos_system_etc_dir().join("node_identity.json");

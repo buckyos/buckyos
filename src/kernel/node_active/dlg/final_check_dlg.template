@@ -27,14 +27,14 @@
             <ul>
                 <li>用户名:{{sn_user_name}}</li>
                 {{#if use_self_domain}}
-                <li>访问域名: <a href="http://{{self_domain}}">http://{{self_domain}}</a> </li>
+                <li>访问域名: <a href="https://{{self_domain}}">https://{{self_domain}}</a> </li>
                 {{else}}
-                <li>访问域名: <a href="http://{{sn_user_name}}.{{sn_host}}">http://{{sn_user_name}}.{{sn_host}}</a> </li>
+                <li>访问域名: <a href="https://{{sn_user_name}}.{{web3_base_host}}" target="_blank">https://{{sn_user_name}}.{{web3_base_host}}</a> </li>
                 {{/if}}
                 {{#if is_direct_connect}}
                 <li>访问链路:直接连接到您的Personal Server</li>
                 {{else}}
-                <li>访问链路:使用buckyos.io提供的Web3网桥</li>
+                <li>访问链路:使用buckyos.ai提供的Web3网桥</li>
                 {{/if}}
             </ul>
         </div>
