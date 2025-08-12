@@ -490,14 +490,14 @@ impl BuckyOSRuntime {
                         let (session_token_str,_real_session_token) = RPCSessionToken::generate_jwt_token(
                             self.user_id.as_ref().unwrap(),
                             self.app_id.as_str(),
-                            Some(self.user_config.as_ref().unwrap().name.to_string()),
+                            None,//none means root
                             self.user_private_key.as_ref().unwrap()
                         )?;
                         *session_token = session_token_str;
                     } 
                 }
 
-                if self.device_private_key.is_some() && self.device_config.is_some() {
+                if self.device_private_key.is_some() && self.device_config.is_some() && session_token.is_empty() {
                     info!("buckyos-api-runtime: session token is empty,runtime_type:{:?},try to create session token by device_private_key",self.runtime_type);
                     let (session_token_str,_real_session_token) = RPCSessionToken::generate_jwt_token(
                         self.user_id.as_ref().unwrap(),

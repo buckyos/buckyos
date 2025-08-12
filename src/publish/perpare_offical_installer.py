@@ -134,6 +134,7 @@ def prepare_rootfs_for_installer(target_dir, os_name, arch, version):
     prepare_meta_db(target_dir,packed_pkgs_dir)
     prepare_named_mgr_data(target_dir,packed_pkgs_dir,f"nightly-{os_name}-{arch}")
     
+    
     # clean up etc dir
     clean_dir = os.path.join(target_dir, "etc")
     print(f"clean all .pem and .toml files and start_config.json in {clean_dir}")
@@ -156,6 +157,7 @@ if __name__ == "__main__":
     os_name = "linux"
     arch = "amd64"
     version = "0.4.0-250724"
+    print(f"TEST perpare_offical_installer.py start... {os_name}-{arch}-{version}")
     if os.path.exists(target_dir):
         shutil.rmtree(target_dir)
     os.makedirs(target_dir)

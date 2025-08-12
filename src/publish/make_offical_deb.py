@@ -51,16 +51,15 @@ def make_deb(architecture, version):
     print(f"copy deb to {dst_deb_path}")
 
 if __name__ == "__main__":
-    architecture = "x86_64"
-    #architecture = "aarch64"
-    version = "0.4.0-250724"
 
-    if len(sys.argv) > 1:
-        architecture = sys.argv[1]
 
-    if len(sys.argv) > 2:
-        version = sys.argv[2]
-
+    if len(sys.argv) != 3:
+        print("Usage: python make_offical_deb.py <architecture> <version>")
+        print("  - python make_offical_deb.py amd64 0.4.1-250724")
+        print("  - python make_offical_deb.py aarch64 0.4.1-250724")
+        sys.exit(1)
+    architecture = sys.argv[1]
+    version = sys.argv[2]
     if architecture == "x86_64":
         architecture = "amd64"
     make_deb(architecture, version)
