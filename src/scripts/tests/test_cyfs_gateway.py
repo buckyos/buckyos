@@ -143,8 +143,8 @@ def init_context():
     print("VM gateway2 created successfully")
 
     yield
-    # _run_command(f'multipass delete gateway1 --purge')
-    # _run_command(f'multipass delete gateway2 --purge')
+    _run_command(f'multipass delete gateway1 --purge')
+    _run_command(f'multipass delete gateway2 --purge')
 
 
 def reset_gateway1(ip: str):
@@ -220,159 +220,159 @@ def test_forward(init_context):
 
 
 
-# def test_dns(init_context):
-#     init_context
-#     ips = get_vm_ips('gateway1')
-#     print(f"gateway1 ips: {ips}")
-#     reset_gateway1(ips[0])
-#
-#     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="A")
-#     assert list is not None
-#     assert len(list) == 1
-#     assert list[0] == ips[0]
-#     list = query_with_dns('web3.buckyos.cc', dns_server=ips[0], record_type="A")
-#     assert list is not None
-#     assert len(list) == 1
-#     assert list[0] == ips[0]
-#     list = query_with_dns('web3.buckyos.ai', dns_server=ips[0], record_type="A")
-#     assert list is not None
-#     assert len(list) == 1
-#     assert list[0] == ips[0]
-#     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="AAAA")
-#     assert list is None
-#     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="TXT")
-#     print(f"web3.buckyos.io: {list}")
-#     assert list is not None
-#     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="SRV")
-#     assert list is None
-#     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="CNAME")
-#     assert list is None
-#     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="MX")
-#     assert list is None
-#     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="NS")
-#     assert list is None
-#     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="PTR")
-#     assert list is None
-#     list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="SOA")
-#     assert list is None
-#     list = query_with_dns('www.github.com', dns_server=ips[0], record_type="A")
-#     print(f"www.github.com: {list}")
-#     assert list is not None
-#     assert len(list) >= 1
-#     list = query_with_dns('www.github.com', dns_server=ips[0], record_type="SRV")
-#     assert list is None
-#     list = query_with_dns('www.github.com', dns_server=ips[0], record_type="CNAME")
-#     assert list is None
-#     list = query_with_dns('www.github.com', dns_server=ips[0], record_type="MX")
-#     assert list is None
-#     list = query_with_dns('www.github.com', dns_server=ips[0], record_type="NS")
-#     assert list is None
-#     list = query_with_dns('www.github.com', dns_server=ips[0], record_type="PTR")
-#     assert list is None
-#     list = query_with_dns('www.github.com', dns_server=ips[0], record_type="SOA")
-#     assert list is None
-#     list = query_with_dns('www.github.com', dns_server=ips[0], record_type="A", dns_port=534)
-#     assert list is None
-#
-#     list = query_with_dns('www.buckyos.com', dns_server=ips[0], record_type="TXT")
-#     print(f"www.buckyos.com: {list}")
-#     assert list is not None
-#     assert len(list) == 2
-#     assert list[0] == '"THISISATEST"'
-#
-#     list = query_with_dns('test.buckyos.com', dns_server=ips[0], record_type="A")
-#     assert list is not None
-#     assert len(list) == 1
-#     assert list[0] == "192.168.1.2"
-#
-#     list = query_with_dns('test.sub.buckyos.com', dns_server=ips[0], record_type="A")
-#     assert list is not None
-#     assert len(list) == 1
-#     assert list[0] == "192.168.1.3"
-#
-#     list = query_with_dns('mail.buckyos.com', dns_server=ips[0], record_type="A")
-#     assert list is not None
-#     assert len(list) == 1
-#     assert list[0] == "192.168.1.106"
-#
-#
-# @pytest.mark.asyncio
-# async def test_sn(init_context):
-#     init_context
-#     ips = get_vm_ips('gateway1')
-#     print(f"gateway1 ips: {ips}")
-#     reset_gateway1(ips[0])
-#     await sn_check_active_code(ips[0], "123456121234", False)
-#     await sn_check_active_code(ips[0], None, False)
-#     await sn_check_active_code(ips[0], "22222")
-#     await sn_check_username(ips[0], "test")
-#     await regsiter_sn_user(ips[0], None, None, None, None, assert_failed=False)
-#     await regsiter_sn_user(ips[0], "test", "22222", "dsdfsdf", "sdfsdfsdfg")
-#     await sn_check_active_code(ips[0], "22222", False)
-#     await sn_check_username(ips[0], "test", False)
-#
-#
-# def test_http_server(init_context):
-#     init_context
-#     ips = get_vm_ips('gateway1')
-#     print(f"gateway1 ips: {ips}")
-#     reset_gateway1(ips[0])
-#     register_domain_ip("web3.buckyos.ai", ips[0])
-#     register_domain_ip("web3.buckyos.com", ips[0])
-#     resp = requests.get(f"http://web3.buckyos.ai/static/gateway.json")
-#     assert resp.status_code == 200
-#     resp = requests.get(f"http://web3.buckyos.ai/static/gateway1.json")
-#     assert resp.status_code == 404
-#     resp = requests.get(f"http://web3.buckyos.ai/test_upstream")
-#     assert resp.status_code == 200
-#     resp = requests.get(f"http://web3.buckyos.ai/test_upstream/test")
-#     assert resp.status_code == 200
-#     resp = requests.get(f"http://web3.buckyos.ai/test_upstream_permanent", allow_redirects=False)
-#     assert resp.status_code == 308
-#     resp = requests.get(f"http://web3.buckyos.ai/test_upstream_temporary", allow_redirects=False)
-#     assert resp.status_code == 307
-#     response = requests.options(f"http://web3.buckyos.ai/static/gateway.json")
-#     if "Access-Control-Allow-Origin" not in response.headers:
-#         assert False, "Access-Control-Allow-Origin header not found in response"
-#     resp = requests.get(f"http://{ips[0]}/test_upstream")
-#     assert resp.status_code == 200
-#     resp = requests.get(f"http://{ips[0]}/test_upstream/test")
-#     assert resp.status_code == 200
-#     resp = requests.get(f"http://{ips[0]}/test_upstream_permanent", allow_redirects=False)
-#     assert resp.status_code == 308
-#     resp = requests.get(f"http://{ips[0]}/test_upstream_temporary", allow_redirects=False)
-#     assert resp.status_code == 307
-#     resp = requests.get(f"http://{ips[0]}/_test_upstream/test")
-#     assert resp.status_code == 404
-#     resp = requests.get(f"http://web3.buckyos.com/static/gateway.json", headers={
-#         "Referer": "https://web3.buckyos.com/previous-page",
-#         "User-Agent": "Mozilla/5.0"
-#     })
-#     assert resp.status_code == 200
-#     response = requests.options(f"http://web3.buckyos.com/static/gateway.json")
-#     print(response.headers)
-#     if "Access-Control-Allow-Origin" in response.headers:
-#         assert False, "Access-Control-Allow-Origin header in response"
-#     response = requests.options(f"http://web3.buckyos.ai/test_upstream")
-#     if "Access-Control-Allow-Origin" not in response.headers:
-#         assert False, "Access-Control-Allow-Origin header not found in response"
-#
-#
-# def test_https_server(init_context):
-#     init_context
-#     ips = get_vm_ips('gateway1')
-#     print(f"gateway1 ips: {ips}")
-#     reset_gateway1(ips[0])
-#     register_domain_ip("web3.buckyos.site", ips[0])
-#     register_domain_ip("web3.buckyos.xx", ips[0])
-#     register_domain_ip("www.buckyos.site", ips[0])
-#     resp = requests.get(f"https://web3.buckyos.site/static/gateway.json", verify=False)
-#     assert resp.status_code == 200
-#     resp = requests.get(f"https://web3.buckyos.xx/static/gateway.json", verify=False)
-#     assert resp.status_code == 200
-#     resp = requests.get(f"https://www.buckyos.site/static/gateway.json", verify=False)
-#     assert resp.status_code == 200
-#     resp = requests.get(f"http://web3.buckyos.site/test_upstream", verify=False)
-#     assert resp.status_code == 200
-#     resp = requests.get(f"https://web3.buckyos.site/test_upstream", verify=False)
-#     assert resp.status_code == 200
+def test_dns(init_context):
+    init_context
+    ips = get_vm_ips('gateway1')
+    print(f"gateway1 ips: {ips}")
+    reset_gateway1(ips[0])
+
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="A")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == ips[0]
+    list = query_with_dns('web3.buckyos.cc', dns_server=ips[0], record_type="A")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == ips[0]
+    list = query_with_dns('web3.buckyos.ai', dns_server=ips[0], record_type="A")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == ips[0]
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="AAAA")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="TXT")
+    print(f"web3.buckyos.io: {list}")
+    assert list is not None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="SRV")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="CNAME")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="MX")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="NS")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="PTR")
+    assert list is None
+    list = query_with_dns('web3.buckyos.io', dns_server=ips[0], record_type="SOA")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="A")
+    print(f"www.github.com: {list}")
+    assert list is not None
+    assert len(list) >= 1
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="SRV")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="CNAME")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="MX")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="NS")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="PTR")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="SOA")
+    assert list is None
+    list = query_with_dns('www.github.com', dns_server=ips[0], record_type="A", dns_port=534)
+    assert list is None
+
+    list = query_with_dns('www.buckyos.com', dns_server=ips[0], record_type="TXT")
+    print(f"www.buckyos.com: {list}")
+    assert list is not None
+    assert len(list) == 2
+    assert list[0] == '"THISISATEST"'
+
+    list = query_with_dns('test.buckyos.com', dns_server=ips[0], record_type="A")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == "192.168.1.2"
+
+    list = query_with_dns('test.sub.buckyos.com', dns_server=ips[0], record_type="A")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == "192.168.1.3"
+
+    list = query_with_dns('mail.buckyos.com', dns_server=ips[0], record_type="A")
+    assert list is not None
+    assert len(list) == 1
+    assert list[0] == "192.168.1.106"
+
+
+@pytest.mark.asyncio
+async def test_sn(init_context):
+    init_context
+    ips = get_vm_ips('gateway1')
+    print(f"gateway1 ips: {ips}")
+    reset_gateway1(ips[0])
+    await sn_check_active_code(ips[0], "123456121234", False)
+    await sn_check_active_code(ips[0], None, False)
+    await sn_check_active_code(ips[0], "22222")
+    await sn_check_username(ips[0], "test")
+    await regsiter_sn_user(ips[0], None, None, None, None, assert_failed=False)
+    await regsiter_sn_user(ips[0], "test", "22222", "dsdfsdf", "sdfsdfsdfg")
+    await sn_check_active_code(ips[0], "22222", False)
+    await sn_check_username(ips[0], "test", False)
+
+
+def test_http_server(init_context):
+    init_context
+    ips = get_vm_ips('gateway1')
+    print(f"gateway1 ips: {ips}")
+    reset_gateway1(ips[0])
+    register_domain_ip("web3.buckyos.ai", ips[0])
+    register_domain_ip("web3.buckyos.com", ips[0])
+    resp = requests.get(f"http://web3.buckyos.ai/static/gateway.json")
+    assert resp.status_code == 200
+    resp = requests.get(f"http://web3.buckyos.ai/static/gateway1.json")
+    assert resp.status_code == 404
+    resp = requests.get(f"http://web3.buckyos.ai/test_upstream")
+    assert resp.status_code == 200
+    resp = requests.get(f"http://web3.buckyos.ai/test_upstream/test")
+    assert resp.status_code == 200
+    resp = requests.get(f"http://web3.buckyos.ai/test_upstream_permanent", allow_redirects=False)
+    assert resp.status_code == 308
+    resp = requests.get(f"http://web3.buckyos.ai/test_upstream_temporary", allow_redirects=False)
+    assert resp.status_code == 307
+    response = requests.options(f"http://web3.buckyos.ai/static/gateway.json")
+    if "Access-Control-Allow-Origin" not in response.headers:
+        assert False, "Access-Control-Allow-Origin header not found in response"
+    resp = requests.get(f"http://{ips[0]}/test_upstream")
+    assert resp.status_code == 200
+    resp = requests.get(f"http://{ips[0]}/test_upstream/test")
+    assert resp.status_code == 200
+    resp = requests.get(f"http://{ips[0]}/test_upstream_permanent", allow_redirects=False)
+    assert resp.status_code == 308
+    resp = requests.get(f"http://{ips[0]}/test_upstream_temporary", allow_redirects=False)
+    assert resp.status_code == 307
+    resp = requests.get(f"http://{ips[0]}/_test_upstream/test")
+    assert resp.status_code == 404
+    resp = requests.get(f"http://web3.buckyos.com/static/gateway.json", headers={
+        "Referer": "https://web3.buckyos.com/previous-page",
+        "User-Agent": "Mozilla/5.0"
+    })
+    assert resp.status_code == 200
+    response = requests.options(f"http://web3.buckyos.com/static/gateway.json")
+    # print(response.headers)
+    # if "Access-Control-Allow-Origin" in response.headers:
+    #     assert False, "Access-Control-Allow-Origin header in response"
+    response = requests.options(f"http://web3.buckyos.ai/test_upstream")
+    if "Access-Control-Allow-Origin" not in response.headers:
+        assert False, "Access-Control-Allow-Origin header not found in response"
+
+
+def test_https_server(init_context):
+    init_context
+    ips = get_vm_ips('gateway1')
+    print(f"gateway1 ips: {ips}")
+    reset_gateway1(ips[0])
+    register_domain_ip("web3.buckyos.site", ips[0])
+    register_domain_ip("web3.buckyos.xx", ips[0])
+    register_domain_ip("www.buckyos.site", ips[0])
+    resp = requests.get(f"https://web3.buckyos.site/static/gateway.json", verify=False)
+    assert resp.status_code == 200
+    resp = requests.get(f"https://web3.buckyos.xx/static/gateway.json", verify=False)
+    assert resp.status_code == 200
+    resp = requests.get(f"https://www.buckyos.site/static/gateway.json", verify=False)
+    assert resp.status_code == 200
+    resp = requests.get(f"http://web3.buckyos.site/test_upstream", verify=False)
+    assert resp.status_code == 200
+    resp = requests.get(f"https://web3.buckyos.site/test_upstream", verify=False)
+    assert resp.status_code == 200
