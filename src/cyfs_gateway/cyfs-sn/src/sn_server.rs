@@ -731,7 +731,11 @@ impl NsProvider for SNServer {
             let db = GLOBAL_SN_DB.lock().await;
             let user_info = db
                 .get_user_info_by_domain(real_domain_name.as_str())
-                .unwrap();
+                .map_err(|e| {
+                    error!("failed to get user info by domain {}: {:?}", real_domain_name, e);
+                    NSError::NotFound(format!("failed to get user info by domain {}: {}", real_domain_name, e.to_string()))
+                })?;
+
             if user_info.is_none() {
                 return Err(NSError::NotFound(name.to_string()));
             }
