@@ -163,7 +163,7 @@ pub fn uninstance_app_service(instance:&PodInstance)->Result<HashMap<String,KVAc
 
     let key_path = format!("nodes/{}/config",instance.node_id.as_str());
     let mut set_action = HashMap::new();
-    set_action.insert(format!("/apps/{}",instance.instance_id.as_str()), None);
+    set_action.insert(format!("/apps/{}/target_state",instance.instance_id.as_str()), Some(json!("Stopped")));
     result.insert(key_path,KVAction::SetByJsonPath(set_action));
 
     let key_path = format!("nodes/{}/gateway_config",instance.node_id.as_str());

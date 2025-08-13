@@ -55,8 +55,8 @@ if __name__ == "__main__":
 
     if len(sys.argv) != 3:
         print("Usage: python make_offical_deb.py <architecture> <version>")
-        print("  - python make_offical_deb.py amd64 0.4.1-250724")
-        print("  - python make_offical_deb.py aarch64 0.4.1-250724")
+        print("  - python make_offical_deb.py amd64 0.4.1+build250724")
+        print("  - python make_offical_deb.py aarch64 0.4.1+build250724")
         sys.exit(1)
     architecture = sys.argv[1]
     version = sys.argv[2]
