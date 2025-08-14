@@ -2,7 +2,6 @@
 use buckyos_api::*;
 use serde_json::Value;
 
-
 /* app_config.json example:
 {
     "app_id": "test_app",
@@ -38,7 +37,7 @@ pub async fn create_app(app_config: &str) {
     };
     println!("Parsed app config: {:?}", app_config);
 
-    let full_app_config = match build_app_service_config(&app_config) {
+    let full_app_config = match build_app_service_config(&app_config).await {
         Ok(config) => config,
         Err(e) => {
             eprintln!("Failed to build app service config: {}", e);
@@ -62,7 +61,18 @@ pub async fn create_app(app_config: &str) {
     }
 }
 
-fn build_app_service_config(app_config: &serde_json::Value) -> Result<String, String> {
+// async fn is_app_exist(app_id: &str) -> Result<bool, String> {
+//     let api_runtime = get_buckyos_api_runtime().unwrap();
+//     let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
+//     let config_key = format!("users/devtest/apps/{}", app_id);
+//     match syc_cfg_client.get(&config_key).await {
+//         Ok(Some(_)) => Ok(true),
+//         Ok(None) => Ok(false),
+//         Err(e) => Err(format!("Failed to check if app exists: {}", e)),
+//     }
+// }
+
+async fn build_app_service_config(app_config: &serde_json::Value) -> Result<String, String> {
     // 检查app_config是否包含必要字段
     if !app_config.is_object() {
         return Err("Invalid app config format, expected a JSON object.".into());
@@ -73,6 +83,7 @@ fn build_app_service_config(app_config: &serde_json::Value) -> Result<String, St
     if !app_config.get("docker_image").is_some() {
         return Err("Missing 'docker_image' in app config.".into());
     }
+    let cur_app_count = get_app_count().await.map_err(|e| e.to_string())?;
     /*
     let full_app_config = r#"
     {
@@ -107,7 +118,7 @@ fn build_app_service_config(app_config: &serde_json::Value) -> Result<String, St
                 "udp_ports": { }
             }
         },
-        "app_index": 2,
+        "app_index": {},
         "enable": true,
         "state": "New",
         "instance": 1,
@@ -215,7 +226,7 @@ fn build_app_service_config(app_config: &serde_json::Value) -> Result<String, St
                     }}
                 }}
             }},
-            "app_index": 2,
+            "app_index": {},
             "enable": true,
             "state": "New",
             "instance": 1,
@@ -242,18 +253,58 @@ fn build_app_service_config(app_config: &serde_json::Value) -> Result<String, St
         version,
         data_mount_point_config,
         tcp_ports,
+        cur_app_count + 1,
         data_mount_point,
         tcp_ports
     );
     return Ok(full_app_config);
 }
 
+async fn get_app_count() -> Result<u64, String> {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
+    let result = syc_cfg_client.list("/users").await;
+    let users = result.map_err(|e| format!("Failed to list users: {}", e))?;
+    if users.is_empty() {
+        return Ok(0);
+    }
+    println!("list uesrs: {:?}", users);
+    let mut app_count = 0;
+    for user in users {
+        let user_apps_key = format!("/users/{}/apps", user);
+        let result = syc_cfg_client.list(&user_apps_key).await;
+        let apps = result.map_err(|e| format!("Failed to list apps for user {}: {}", user, e))?;
+        println!("list apps for user {}: {:?}", user, apps);
+        app_count += apps.len() as u64;
+    }
+    Ok(app_count)
+}
+
 //test build_app_service_config
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn test_build_app_service_config() {
+    #[tokio::test]
+    async fn test_build_app_service_config() {
+        if !is_buckyos_api_runtime_set() {
+            match init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient).await {
+                Ok(mut runtime) => match runtime.login().await {
+                    Ok(_) => {
+                        println!("user id {:?}", runtime.user_id);
+                        println!("user config {:?}", runtime.user_config);
+                        set_buckyos_api_runtime(runtime);
+                    }
+                    Err(e) => {
+                        println!("Failed to login: {}", e);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    println!("Failed to init buckyos runtime: {}", e);
+                    return;
+                }
+            }
+        }
         let app_config = r#"
         {
             "app_id": "test_app",
@@ -269,7 +320,7 @@ mod tests {
         "#;
         let app_config: serde_json::Value = serde_json::from_str(app_config).unwrap();
         println!("App Config: {:?}", app_config);
-        let result = build_app_service_config(&app_config);
+        let result = build_app_service_config(&app_config).await;
         assert!(result.is_ok());
         let full_app_config = result.unwrap();
         println!("Full App Config: {}", full_app_config);
