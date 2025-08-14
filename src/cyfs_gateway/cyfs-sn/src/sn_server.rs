@@ -126,9 +126,8 @@ impl SNServer {
 
     // 辅助函数：检测字符串是否包含特殊字符
     fn contains_special_chars(s: &str) -> bool {
-        s.chars().any(|c| {
-            !c.is_alphanumeric() && !c.is_whitespace() && c != '_' && c != '-' && c != '.'
-        })
+        s.chars()
+            .any(|c| !c.is_alphanumeric() && !c.is_whitespace() && c != '_' && c != '-' && c != '.')
     }
 
     pub async fn check_active_code(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
@@ -410,31 +409,29 @@ impl SNServer {
         }
     }
 
-    async fn get_user_sn_ips(&self, owner_id: &str) ->Vec<IpAddr> {
+    async fn get_user_sn_ips(&self, owner_id: &str) -> Vec<IpAddr> {
         let db = GLOBAL_SN_DB.lock().await;
-        let sn_ips = db.get_user_sn_ips_as_vec(owner_id);
-        if sn_ips.is_err() {
-            warn!("failed to get user sn ips for {}: {:?}", owner_id, sn_ips.err().unwrap());
-            return vec![];
-        }
-        let sn_ips = sn_ips.unwrap();
-        if sn_ips.is_none() {
-            return vec![];
-        }
-        let sn_ips = sn_ips.unwrap();
-        if sn_ips.is_empty() {
-            return vec![];
-        }
-        let mut sn_ip_add:Vec<IpAddr> = Vec::new();
-        for ip_str in sn_ips {
-            let ip = IpAddr::from_str(ip_str.as_str());
-            if ip.is_ok() {
-                sn_ip_add.push(ip.unwrap());
-            } else {
-                warn!("failed to parse ip {} {}",ip_str,ip.err().unwrap());
+        // 获取用户的SN IP列表
+        let sn_ips = match db.get_user_sn_ips_as_vec(owner_id) {
+            Ok(Some(ips)) if !ips.is_empty() => ips,
+            Ok(Some(_)) | Ok(None) => {
+                vec![]
             }
-        }
-        return sn_ip_add;
+            Err(e) => {
+                vec![]
+            }
+        };
+        let sn_ip_addrs: Vec<IpAddr> = sn_ips
+            .iter()
+            .filter_map(|ip_str| match IpAddr::from_str(ip_str.as_str()) {
+                Ok(ip) => Some(ip),
+                Err(e) => {
+                    warn!("failed to parse ip {} {}", ip_str, e);
+                    None
+                }
+            })
+            .collect();
+        return sn_ip_addrs;
     }
 
     async fn get_device_info(
@@ -479,7 +476,10 @@ impl SNServer {
     }
 
     //return (owner_public_key,zone_config_jwt)
-    async fn get_user_zone_config(&self, username: &str) -> Option<(String, String, Option<String>)> {
+    async fn get_user_zone_config(
+        &self,
+        username: &str,
+    ) -> Option<(String, String, Option<String>)> {
         let mut user_zone_config_map = self.all_user_zone_config.lock().await;
         let zone_config_reuslt = user_zone_config_map.get(username).cloned();
         if zone_config_reuslt.is_none() {
@@ -511,9 +511,8 @@ impl SNServer {
         return None;
     }
 
-
     //return (subhost,username)
-    pub fn get_user_subhost_from_host(host: &str,server_host: &str) -> Option<(String,String)> {
+    pub fn get_user_subhost_from_host(host: &str, server_host: &str) -> Option<(String, String)> {
         let end_string = format!(".{}", server_host);
         if host.ends_with(&end_string) {
             let sub_name = host[0..host.len() - end_string.len()].to_string();
@@ -536,7 +535,7 @@ impl SNServer {
                     } else {
                         return None;
                     }
-                } 
+                }
                 return Some((sub_name.clone(), sub_name));
             }
         }
@@ -545,7 +544,7 @@ impl SNServer {
 
     async fn get_user_zonegate_address(&self, username: &str) -> Option<Vec<IpAddr>> {
         let device_info = self.get_device_info(username, "ood1").await;
-        
+
         if device_info.is_some() {
             let (device_info, device_ip) = device_info.unwrap();
             let mut address_vec: Vec<IpAddr> = Vec::new();
@@ -581,6 +580,10 @@ impl SNServer {
                 }
             } else {
                 let sn_ips = self.get_user_sn_ips(username).await;
+                info!(
+                    "get_user_zonegate_address get_user_sn_ips for {}: {:?}",
+                    username, sn_ips
+                );
                 if sn_ips.is_empty() {
                     address_vec.push(self.server_ip);
                 } else {
@@ -627,15 +630,12 @@ impl NsProvider for SNServer {
                 record_type.to_string()
             )));
         }
-        let mut req_real_name:String = name.to_string();
+        let mut req_real_name: String = name.to_string();
         if name.ends_with(".") {
             req_real_name = name.trim_end_matches('.').to_string();
         }
-        
-        if req_real_name == self.server_host 
-        || self.server_aliases.contains(&req_real_name)
 
-        {
+        if req_real_name == self.server_host || self.server_aliases.contains(&req_real_name) {
             //返回当前服务器的地址
             match record_type {
                 RecordType::A => {
@@ -675,25 +675,29 @@ impl NsProvider for SNServer {
         //如果用户存在，则返回用户的ZoneConfig
         //let end_string = format!(".{}.", self.server_host.as_str());
         if req_real_name.ends_with(&self.server_host) {
-            let get_result = SNServer::get_user_subhost_from_host(&req_real_name, &self.server_host);
+            let get_result =
+                SNServer::get_user_subhost_from_host(&req_real_name, &self.server_host);
             if get_result.is_some() {
-                let (sub_name,username) = get_result.unwrap();
-    
-                info!("query web3-bridge name, {}, username: {}, record_type: {:?}",
-                    &req_real_name,&username, record_type);
+                let (sub_name, username) = get_result.unwrap();
+
+                info!(
+                    "query web3-bridge name, {}, username: {}, record_type: {:?}",
+                    &req_real_name, &username, record_type
+                );
 
                 match record_type {
                     RecordType::TXT => {
                         let zone_config = self.get_user_zone_config(username.as_str()).await;
                         if zone_config.is_some() {
                             let zone_config = zone_config.unwrap();
-                            let pkx = get_x_from_jwk_string(zone_config.0.as_str()).map_err(|e| {
-                                error!("failed to get x from jwk string: {:?}", e);
-                                NSError::NotFound(format!(
-                                    "failed to get x from jwk string: {}",
-                                    e.to_string()
-                                ))
-                            })?;
+                            let pkx =
+                                get_x_from_jwk_string(zone_config.0.as_str()).map_err(|e| {
+                                    error!("failed to get x from jwk string: {:?}", e);
+                                    NSError::NotFound(format!(
+                                        "failed to get x from jwk string: {}",
+                                        e.to_string()
+                                    ))
+                                })?;
                             let result_name_info = NameInfo::from_zone_config_str(
                                 name,
                                 zone_config.1.as_str(),
@@ -732,8 +736,15 @@ impl NsProvider for SNServer {
             let user_info = db
                 .get_user_info_by_domain(real_domain_name.as_str())
                 .map_err(|e| {
-                    error!("failed to get user info by domain {}: {:?}", real_domain_name, e);
-                    NSError::NotFound(format!("failed to get user info by domain {}: {}", real_domain_name, e.to_string()))
+                    error!(
+                        "failed to get user info by domain {}: {:?}",
+                        real_domain_name, e
+                    );
+                    NSError::NotFound(format!(
+                        "failed to get user info by domain {}: {}",
+                        real_domain_name,
+                        e.to_string()
+                    ))
                 })?;
 
             if user_info.is_none() {
@@ -828,8 +839,6 @@ impl InnerServiceHandler for SNServer {
     }
 }
 
-
-
 #[async_trait]
 impl TunnelSelector for SNServer {
     async fn select_tunnel_for_http_upstream(
@@ -837,10 +846,9 @@ impl TunnelSelector for SNServer {
         req_host: &str,
         req_path: &str,
     ) -> Option<String> {
-
         let get_result = SNServer::get_user_subhost_from_host(req_host, &self.server_host);
         if get_result.is_some() {
-            let (sub_host,username) = get_result.unwrap();
+            let (sub_host, username) = get_result.unwrap();
             let device_info = self.get_device_info(username.as_str(), "ood1").await;
             if device_info.is_some() {
                 //info!("ood1 device info found for {} in sn server",username);
@@ -921,22 +929,26 @@ mod tests {
     fn test_get_user_subhost_from_host() {
         let server_host = "web3.buckyos.io".to_string();
         let req_host = "home.lzc.web3.buckyos.io".to_string();
-        let (sub_host,username) = SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
+        let (sub_host, username) =
+            SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
         assert_eq!(sub_host, "home.lzc".to_string());
         assert_eq!(username, "lzc".to_string());
 
         let req_host = "www-lzc.web3.buckyos.io".to_string();
-        let (sub_host,username) = SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
+        let (sub_host, username) =
+            SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
         assert_eq!(sub_host, "www-lzc".to_string());
         assert_eq!(username, "lzc".to_string());
 
         let req_host = "buckyos-filebrowser-lzc.web3.buckyos.io".to_string();
-        let (sub_host,username) = SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
+        let (sub_host, username) =
+            SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
         assert_eq!(sub_host, "buckyos-filebrowser-lzc".to_string());
         assert_eq!(username, "lzc".to_string());
 
         let req_host = "sys-test-lzc07.web3.buckyos.io".to_string();
-        let (sub_host,username) = SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
+        let (sub_host, username) =
+            SNServer::get_user_subhost_from_host(&req_host, &server_host).unwrap();
         assert_eq!(sub_host, "sys-test-lzc07".to_string());
         assert_eq!(username, "lzc07".to_string());
     }
