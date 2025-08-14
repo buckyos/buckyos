@@ -1,0 +1,10 @@
+[Unit]
+Description=buckyos web3 bridge gateway service
+After=network.target
+[Service]
+ExecStart=/opt/web3_bridge/web3_gateway --config_file /opt/web3_bridge/web3_gateway.json
+User=root
+WorkingDirectory=/opt/web3_bridge
+Restart=always
+[Install]
+WantedBy=multi-user.target

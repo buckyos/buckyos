@@ -114,7 +114,7 @@ def main():
         case "install":
             install.main()
         case "active_sn":
-            sn.active_sn(util.CONFIG_BASE)
+            sn.active_sn()
         case "active":
             # active 非sn的ood和node
             active.active()
