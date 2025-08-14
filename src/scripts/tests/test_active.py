@@ -13,19 +13,19 @@ from krpc import kRPCClient, regsiter_sn_user, query_with_dns
 
 local_path = os.path.realpath(os.path.dirname(__file__))
 
-sys.path.append(os.path.realpath(os.path.join(local_path, '../remote')))
+sys.path.append(os.path.realpath(os.path.join(local_path, '../remote/py_src')))
 from remote_device import remote_device
 
 @pytest.fixture(scope='module')
 def init_context():
-    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'init'], check=True)
-    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'network'], check=True)
-    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'create'], check=True)
-    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'install', '--all'], check=True)
-    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'active_sn'], check=True)
-    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'start_sn'], check=True)
-    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'active'], check=True)
-    # subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'start', '--all'], check=True)
+    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'init'], check=True)
+    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'network'], check=True)
+    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'create'], check=True)
+    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'install', '--all'], check=True)
+    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'active_sn'], check=True)
+    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'start_sn'], check=True)
+    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'active'], check=True)
+    subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'start', '--all'], check=True)
     subprocess.run(['python', os.path.join(local_path, '../remote/main.py'), 'deviceinfo'], check=True)
     with open(os.path.join(local_path, '../remote/dev_configs/device_info.json'), 'r') as f:
         resp = json.load(f)

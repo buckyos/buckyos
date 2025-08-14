@@ -193,7 +193,7 @@
           "cache": true
         }
       ],
-      "fallback": ["223.5.5.5","6.6.6.6"]
+      "fallback": ["223.5.5.5","8.8.8.8"]
     },
      "second_dns_server":{
        "type":"cyfs-dns",
@@ -206,7 +206,7 @@
            "cache": true
          }
        ],
-       "fallback": ["223.5.5.5","6.6.6.6"]
+       "fallback": ["223.5.5.5","8.8.8.8"]
      }
   },
 
