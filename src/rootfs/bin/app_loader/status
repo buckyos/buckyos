@@ -17,13 +17,6 @@ def is_container_running(container_name,docker_image_name,docker_image_hash):
         output = os.popen(cmd).read().strip()
         if output:
             print(f"Container '{container_name}' is running.")
-            if docker_image_hash:
-                cmd = f"docker images --no-trunc -q '{docker_image_name}'"
-                output = os.popen(cmd).read().strip()
-                if output:
-                    if not docker_image_hash.startswith(output):
-                        print(f"Container '{container_name}' is running but with wrong image hash.")
-                    
             return True
         
         return False
