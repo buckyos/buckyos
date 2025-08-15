@@ -9,6 +9,8 @@ use ndn_lib::*;
 use cyfs_gateway_lib::{NamedDataMgrRouteConfig};
 use serde_json::Value;
 use crate::parse_range;
+use tokio_util::io::StreamReader;
+use futures_util::stream::TryStreamExt;
 
 //1. get objid and inner path
 //2. if enable, try use relative path to get objid and inner path
@@ -195,10 +197,32 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(0);
-        // 如果是最后一块数据，完成写入
+
+    // 获取 offset，优先使用 cyfs-chunk-offset 头，其次使用 Content-Range 头
+    let offset = req.headers()
+        .get("cyfs-chunk-offset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .or_else(|| {
+            req.headers()
+                .get("Content-Range")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|range_str| {
+                    // 解析 Content-Range: bytes start-end/total
+                    // 例如: "bytes 1024-2047/8192" -> offset = 1024
+                    if range_str.starts_with("bytes ") {
+                        let range_part = range_str[6..].split('/').next()?;
+                        let start = range_part.split('-').next()?;
+                        start.parse::<u64>().ok()
+                    } else {
+                        None
+                    }
+                })
+        })
+        .unwrap_or(0);
 
     // 打开写入器
-    let (chunk_writer, _) = named_mgr_lock.open_chunk_writer_impl(&chunk_id, total_size, 0).await.map_err(|e| {
+    let (chunk_writer, _) = named_mgr_lock.open_chunk_writer_impl(&chunk_id, total_size, offset).await.map_err(|e| {
         warn!("Failed to open chunk writer: {}", e);
         match e {
             NdnError::NotFound(e2) => RouterError::NotFound(e2),
@@ -207,12 +231,11 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
     })?;
     drop(named_mgr_lock);
     
-    // 读取整个请求体到内存
-    let body_bytes = hyper::body::to_bytes(req.into_body()).await
-        .map_err(|e| RouterError::BadRequest(format!("Failed to read request body: {}", e)))?;
+    // 将 hyper::Body 转换为 StreamReader，避免将整个请求体读到内存
+    let body_stream = req.into_body();
+    let mapped_stream = body_stream.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+    let chunk_reader = StreamReader::new(mapped_stream);
     
-    // 创建一个内存读取器
-    let chunk_reader = std::io::Cursor::new(body_bytes);
     let write_result = ndn_lib::copy_chunk(
         chunk_id.clone(), 
         chunk_reader, 
@@ -228,7 +251,7 @@ pub async fn handle_chunk_put(mgr_config: &NamedDataMgrRouteConfig, req: Request
             }
         })?;
     
-    if write_result == total_size {
+    if write_result == total_size-offset {
         let named_mgr_lock = named_mgr.lock().await;
         named_mgr_lock.complete_chunk_writer_impl(&chunk_id).await.map_err(|e| {
             warn!("Failed to complete chunk: {}", e);
