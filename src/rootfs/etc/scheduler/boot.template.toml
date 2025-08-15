@@ -45,36 +45,34 @@
         "description": {
             "detail": "BuckyOS File Browser"
         },
-        "author": "did:web:buckyos.io",
+        "author": "did:web:buckyos.ai",
         "pub_time": 1743008063,
         "exp": 1837616063,
         "pkg_list": {
             "amd64_docker_image": {
-                "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.0-amd64",
-                "pkg_id": "nightly-linux-amd64.buckyos-filebrowser-img#0.4.0",
-                "docker_image_hash": "sha256:ab004b6d5c60ec9aa5fbb5a8a46cf4c81137333091af3b18ba0858555ab5e5b7"
+                "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-amd64",
+                "pkg_id": "nightly-linux-amd64.buckyos-filebrowser-img#0.4.1"
             },
             "aarch64_docker_image": {
-                "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.0-aarch64",
-                "pkg_id": "nightly-linux-aarch64.buckyos-filebrowser-img#0.4.0",
-                "docker_image_hash": "sha256:237c67af98da4a0d6f26de1bb9acd82e1f18e9d75684c82961b5754197a5b81b"
+                "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-aarch64",
+                "pkg_id": "nightly-linux-aarch64.buckyos-filebrowser-img#0.4.1"
             },
             "amd64_win_app": {
-                "pkg_id": "nightly-windows-amd64.buckyos-filebrowser-bin#0.4.0"
+                "pkg_id": "nightly-windows-amd64.buckyos-filebrowser-bin#0.4.1"
             },
             "aarch64_apple_app": {
-                "pkg_id": "nightly-apple-aarch64.buckyos-filebrowser-bin#0.4.0"
+                "pkg_id": "nightly-apple-aarch64.buckyos-filebrowser-bin#0.4.1"
             },
             "amd64_apple_app": {
-                "pkg_id": "nightly-apple-amd64.buckyos-filebrowser-bin#0.4.0"
+                "pkg_id": "nightly-apple-amd64.buckyos-filebrowser-bin#0.4.1"
             }
         },
         "deps": {
-            "nightly-linux-amd64.buckyos-filebrowser-img": "0.4.0",
-            "nightly-linux-aarch64.buckyos-filebrowser-img": "0.4.0",
-            "nightly-windows-amd64.buckyos-filebrowser-bin": "0.4.0",
-            "nightly-apple-amd64.buckyos-filebrowser-bin": "0.4.0",
-            "nightly-apple-aarch64.buckyos-filebrowser-bin": "0.4.0"
+            "nightly-linux-amd64.buckyos-filebrowser-img": "0.4.1",
+            "nightly-linux-aarch64.buckyos-filebrowser-img": "0.4.1",
+            "nightly-windows-amd64.buckyos-filebrowser-bin": "0.4.1",
+            "nightly-apple-amd64.buckyos-filebrowser-bin": "0.4.1",
+            "nightly-apple-aarch64.buckyos-filebrowser-bin": "0.4.1"
         },
         "install_config": {
             "data_mount_point": [
@@ -87,8 +85,7 @@
             "tcp_ports": {
                 "www": 80
             },
-            "udp_ports": {},
-            "container_param": "--privileged"
+            "udp_ports": {}
         }
     },
     "app_index" : 1,
