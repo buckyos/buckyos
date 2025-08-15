@@ -39,19 +39,21 @@ def active_sn():
     vmsn.scp_put(f"{base_dir}/sn_server/web3_gateway.json", "/opt/web3_bridge/web3_gateway.json")
     vmsn.scp_put(f"{base_dir}/sn_db.sqlite3", "/opt/web3_bridge/sn_db.sqlite3")
     vmsn.scp_put(f"{base_dir}/sn_server/device_key.pem", "/opt/web3_bridge/device_key.pem")
+    vmsn.scp_put(f"{base_dir}/sn_server/resolved.conf", "/opt/web3_bridge/resolved.conf")
+    vmsn.scp_put(f"{base_dir}/sn_server/web3_gateway.service", "/opt/web3_bridge/web3_gateway.service")
     print("sn config file, db file uploaded")
 
-
+    print("disable dnsstub")
     # 不能用 stop systemd-resolved的方式
     # dns_provider.rs里面的
     # `resolver = TokioAsyncResolver::tokio_from_system_conf()` 需要读取 /etc/resolver文件
-    print("disable dnsstub")
-    # vmsn.run_command("sudo mkdir /etc/systemd/resolved.conf.d")
-    # vmsn.run_command("echo -e '[Resolve]\nDNSStubListener=no' | sudo tee /etc/systemd/resolved.conf.d/disable-dnsstub.conf")
-    vmsn.run_command(f"sudo sed -i 's/#DNS=.*/DNS={sn_ip[0]}/' /etc/systemd/resolved.conf")
-    vmsn.run_command(f"sudo sed -i 's/#Domains=.*/Domains=/' /etc/systemd/resolved.conf")
-    vmsn.run_command(f"sudo sed -i 's/#DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf")
+    vmsn.run_command("sudo cp /opt/web3_bridge/resolved.conf /etc/systemd/resolved.conf")
     vmsn.run_command("sudo systemctl restart systemd-resolved")
+    vmsn.run_command("sudo rm /etc/resolv.conf")
+    vmsn.run_command("sudo ln -s /run/systemd/resolve/resolv.conf /etc/resolv.conf")
+
+    vmsn.run_command("sudo cp /opt/web3_bridge/web3_gateway.service /etc/systemd/system/web3_gateway.service")
+    vmsn.run_command("sudo systemctl daemon-reload")
 
 
 # sudo mkdir /etc/systemd/resolved.conf.d | echo -e '[Resolve]\nDNSStubListener=no' | sudo tee /etc/systemd/resolved.conf.d/disable-dnsstub.conf
@@ -67,7 +69,7 @@ def start_sn():
     # update_node_dns(device, sn_ip[0])
     # device.run_command("sudo systemctl stop systemd-resolved")
     # device.run_command("sudo systemctl disable systemd-resolved")
-    start.start_all_apps(device)
+    device.run_command("sudo systemctl start web3_gateway")
 
 
 
