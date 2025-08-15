@@ -614,10 +614,10 @@ impl BuckyOSRuntime {
                 let kid = device_config.get_id().to_string();
                 let key = device_key.as_ref().unwrap().0.clone();
                 self.set_trust_key(kid.as_str(),&key).await;
-                info!("set trust key - device_config.did: {}",kid);
+                debug!("set trust key - device_config.did: {}",kid);
                 let kid = device_config.name.clone();
                 self.set_trust_key(kid.as_str(),&key).await;
-                info!("set trust key - device_config.name: {}",kid);
+                debug!("set trust key - device_config.name: {}",kid);
             }
         }
 
@@ -631,7 +631,7 @@ impl BuckyOSRuntime {
                 let key = DecodingKey::from_jwk(&verify_hub_info.public_key);
                 if key.is_ok() {
                     self.set_trust_key(kid.as_str(),&key.unwrap()).await;
-                    info!("set trust key - verify-hub");
+                    debug!("set trust key - verify-hub");
                 }
             } else {
                 warn!("NO verfiy-hub publick key, system init with errors!");
@@ -647,10 +647,11 @@ impl BuckyOSRuntime {
                         RPCErrors::ReasonError(err.to_string())
                     })?;
                     let _ = self.set_trust_key("root",&owner_public_key).await;
-                    info!("set trust key - root");
+                    debug!("set trust key - root");
                     let _ = self.set_trust_key(owner_did.to_string().as_str(),&owner_public_key).await;
                     let _ = self.set_trust_key(owner_did.id.clone().as_str(),&owner_public_key).await;
-                    info!("update owner_public_key [{}],[{}] to trust keys",owner_did.to_string(),owner_did.id);
+                    let _ = self.set_trust_key("$default",&owner_public_key).await;
+                    debug!("update owner_public_key [{}],[{}] to trust keys",owner_did.to_string(),owner_did.id);
                 }
             }
         }
