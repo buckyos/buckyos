@@ -1,5 +1,6 @@
 #[allow(dead_code, unused)]
 use buckyos_api::*;
+use serde_json::json;
 use serde_json::Value;
 
 /* app_config.json example:
@@ -18,6 +19,13 @@ use serde_json::Value;
  */
 
 pub async fn create_app(app_config: &str) {
+    let api_runtime = get_buckyos_api_runtime()
+        .map_err(|e| {
+            eprintln!("Failed to get BuckyOS API runtime: {}", e);
+            return;
+        })
+        .unwrap();
+
     // 从文件读取app_config, 解析app_id, pkg_name, version, app_name, description等信息
     let result = std::fs::File::open(app_config);
     let file = match result {
@@ -37,6 +45,13 @@ pub async fn create_app(app_config: &str) {
     };
     println!("Parsed app config: {:?}", app_config);
 
+    let user_id = api_runtime.user_id.clone();
+    if user_id.is_none() {
+        eprintln!("User ID is not set in the BuckyOS API runtime.");
+        return;
+    }
+    let user_id = user_id.unwrap();
+
     let full_app_config = match build_app_service_config(&app_config).await {
         Ok(config) => config,
         Err(e) => {
@@ -47,9 +62,21 @@ pub async fn create_app(app_config: &str) {
     let config_value: Value = serde_json::from_str(&full_app_config).unwrap();
     let app_id = config_value.get("app_id").and_then(|v| v.as_str()).unwrap();
 
-    let api_runtime = get_buckyos_api_runtime().unwrap();
+    match is_app_exist(app_id).await {
+        Ok(exists) => {
+            if exists {
+                eprintln!("App {} already exists, please remove it first.", app_id);
+                return;
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to check if app {} exists: {}", app_id, e);
+            return;
+        }
+    }
+
     let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
-    let config_key = format!("users/devtest/apps/{}/config", app_id);
+    let config_key = format!("users/{}/apps/{}/config", user_id, app_id);
     match syc_cfg_client.set(&config_key, &full_app_config).await {
         Ok(_) => {
             println!("App service config set successfully for app_id: {}", app_id);
@@ -59,18 +86,164 @@ pub async fn create_app(app_config: &str) {
             return;
         }
     }
+    //2. update gateway shortcuts
+    let mut app_url = String::new();
+    let tcp_port = app_config
+        .get("tcp_ports")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if tcp_port > 0 {
+        let short_json_path = format!("/shortcuts/{}", app_id);
+        let short_json_value = json!({
+            "type": "app",
+            "user_id": user_id,
+            "app_id": app_id
+        });
+        let short_json_value_str = serde_json::to_string(&short_json_value).unwrap();
+        match syc_cfg_client
+            .set_by_json_path(
+                "services/gateway/settings",
+                short_json_path.as_str(),
+                short_json_value_str.as_str(),
+            )
+            .await
+        {
+            Ok(_) => {
+                println!(
+                    "Gateway shortcut created successfully for app_id: {}",
+                    app_id
+                );
+                let user_zone_host = api_runtime.zone_id.to_host_name();
+                app_url = format!("{}-{}.{}", app_id, user_id, user_zone_host);
+            }
+            Err(e) => {
+                eprintln!("Failed to create gateway shortcut: {}", e);
+                return;
+            }
+        }
+    } else {
+        println!("No TCP port specified, skipping gateway shortcut creation.");
+    }
+    //3. update rbac
+    let rbac = match syc_cfg_client.get("system/rbac/policy").await {
+        Ok(policy) => policy,
+        Err(e) => {
+            eprintln!("Failed to get RBAC policy: {}", e);
+            return;
+        }
+    };
+    if rbac.value.is_empty() {
+        eprintln!("RBAC policy is empty.");
+        return;
+    } else {
+        let app_rbac = format!("g, {}, app", app_id);
+        if rbac.value.contains(&app_rbac) {
+            println!("RBAC policy already contains: {}", app_rbac);
+        } else {
+            println!("Adding RBAC policy: {}", app_rbac);
+            match syc_cfg_client
+                .append("system/rbac/policy", app_rbac.as_str())
+                .await
+            {
+                Ok(_) => {
+                    println!("RBAC policy added successfully for app_id: {}", app_id);
+                }
+                Err(e) => {
+                    eprintln!("Failed to add RBAC policy: {}", e);
+                    return;
+                }
+            }
+        }
+    }
+
+    if app_url.is_empty() {
+        println!("App {} created successfully, but no gateway shortcut created due to no TCP port specified.", app_id);
+    } else {
+        println!(
+            "App {} created successfully, access it at: http://{}",
+            app_id, app_url
+        );
+    }
 }
 
-// async fn is_app_exist(app_id: &str) -> Result<bool, String> {
-//     let api_runtime = get_buckyos_api_runtime().unwrap();
-//     let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
-//     let config_key = format!("users/devtest/apps/{}", app_id);
-//     match syc_cfg_client.get(&config_key).await {
-//         Ok(Some(_)) => Ok(true),
-//         Ok(None) => Ok(false),
-//         Err(e) => Err(format!("Failed to check if app exists: {}", e)),
-//     }
-// }
+async fn is_app_exist(app_id: &str) -> Result<bool, String> {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
+    let result = syc_cfg_client.list("/users").await;
+    let users = result.map_err(|e| format!("Failed to list users: {}", e))?;
+    if users.is_empty() {
+        return Ok(false);
+    } else {
+        for user in users {
+            let apps_key = format!("users/{}/apps/{}", user, app_id);
+            let result = syc_cfg_client.list(&apps_key).await;
+            let keys =
+                result.map_err(|e| format!("Failed to list keys for app {}: {}", apps_key, e))?;
+            if !keys.is_empty() {
+                println!("App {} exists for user {}", app_id, user);
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+pub async fn delete_app(app_id: &str) {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
+    let result = syc_cfg_client.list("/users").await;
+    let users = match result {
+        Ok(users) => users,
+        Err(e) => {
+            eprintln!("Failed to list users: {}", e);
+            return;
+        }
+    };
+    if users.is_empty() {
+        eprintln!("No users found in the system.");
+        return;
+    }
+    let mut config_key = String::new();
+    let mut config_content = String::new();
+    for user in users {
+        let app_key = format!("/users/{}/apps/{}/config", user, app_id);
+        if let Ok(content) = syc_cfg_client.get(&app_key).await {
+            println!("App {} found for user {}", app_id, user);
+            config_key = app_key;
+            config_content = content.value;
+            break;
+        }
+    }
+    if config_key.is_empty() || config_content.is_empty() {
+        eprintln!("App {} not found for any user.", app_id);
+        return;
+    }
+    let mut app_config: serde_json::Value = match serde_json::from_str(&config_content) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to parse app config: {}", e);
+            return;
+        }
+    };
+    // set state to "PodItemState::Removing"
+    app_config["state"] = "Removing".into();
+    let app_config_str = match serde_json::to_string(&app_config) {
+        Ok(config_str) => config_str,
+        Err(e) => {
+            eprintln!("Failed to serialize app config: {}", e);
+            return;
+        }
+    };
+    // update app config
+    match syc_cfg_client.set(&config_key, &app_config_str).await {
+        Ok(_) => {
+            println!("App {} deleted successfully.", app_id);
+        }
+        Err(e) => {
+            eprintln!("Failed to delete app {}: {}", app_id, e);
+        }
+    }
+}
 
 async fn build_app_service_config(app_config: &serde_json::Value) -> Result<String, String> {
     // 检查app_config是否包含必要字段
@@ -133,7 +306,7 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         "tcp_ports": {
             "www": 80
         },
-        "udp_ports": { }
+        "udp_ports": { },
     }"#;
     */
 
@@ -193,6 +366,12 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         Some(port) => format!("\"www\": {}", port),
         None => " ".to_string(),
     };
+    let container_param = app_config
+        .get("container_param")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     let full_app_config = format!(
         r#"
         {{
@@ -224,7 +403,8 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
                     }},
                     "udp_ports": {{ 
                     }}
-                }}
+                }},
+                "container_param": "{}"
             }},
             "app_index": {},
             "enable": true,
@@ -240,7 +420,8 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
                 {}
             }},
             "udp_ports": {{
-            }}
+            }},
+            "container_param": "{}"
         }}"#,
         app_id,
         app_id,
@@ -253,9 +434,11 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         version,
         data_mount_point_config,
         tcp_ports,
+        container_param,
         cur_app_count + 1,
         data_mount_point,
-        tcp_ports
+        tcp_ports,
+        container_param
     );
     return Ok(full_app_config);
 }
@@ -286,36 +469,39 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn test_build_app_service_config() {
-        if !is_buckyos_api_runtime_set() {
-            match init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient).await {
-                Ok(mut runtime) => match runtime.login().await {
-                    Ok(_) => {
-                        println!("user id {:?}", runtime.user_id);
-                        println!("user config {:?}", runtime.user_config);
-                        set_buckyos_api_runtime(runtime);
-                    }
-                    Err(e) => {
-                        println!("Failed to login: {}", e);
-                        return;
-                    }
-                },
+        let user_id;
+        match init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient).await {
+            Ok(mut runtime) => match runtime.login().await {
+                Ok(_) => {
+                    user_id = runtime.user_id.clone().unwrap();
+                    println!("user id {:?}", runtime.user_id);
+                    println!("user config {:?}", runtime.user_config);
+                    set_buckyos_api_runtime(runtime);
+                }
                 Err(e) => {
-                    println!("Failed to init buckyos runtime: {}", e);
+                    println!("Failed to login: {}", e);
                     return;
                 }
+            },
+            Err(e) => {
+                println!("Failed to init buckyos runtime: {}", e);
+                return;
             }
         }
+
         let app_config = r#"
         {
-            "app_id": "test_app",
-            "app_name": "Test App",
-            "version": "0.1.0",
-            "author": "Test Author",
-            "description": "This is a test app",
-            "docker_image": "https://test_docker_url",
+            "app_id": "n8n",
+            "app_name": "n8n",
+            "version": "*",
+            "author": "n8nio",
+            "description": "This is n8n",
+            "docker_image": "docker.n8n.io/n8nio/n8n",
             "data_mount_point": {
+                "/home/node/.n8n/" :  "n8n/data/"
             },
-            "tcp_ports": 80
+            "tcp_ports": 5678,
+            "container_param": "-e N8N_SECURE_COOKIE=false"
         }
         "#;
         let app_config: serde_json::Value = serde_json::from_str(app_config).unwrap();
