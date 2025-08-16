@@ -168,7 +168,7 @@ def prepare_meta_db(rootfs_version:str):
     pkg_items = glob.glob(os.path.join(target_dir, "*"))
     for pkg_item in pkg_items:
         if os.path.isdir(pkg_item):
-            pkg_item = os.path.join(pkg_item, "pkg_meta.json")
+            pkg_item = os.path.join(pkg_item, "pkg_meta.jwt")
             if os.path.exists(pkg_item):
                 print(f"# add pkg_meta_info to meta db from {pkg_item}")
                 subprocess.run([buckycli_path,"set_pkg_meta",pkg_item,meta_db_path], check=True)
