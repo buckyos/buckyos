@@ -200,7 +200,7 @@ def add_app_pkgs(rootfs_version:str,app_name:str,app_version:str):
         if os.path.isdir(packed_pkg):
             packed_pkg_meta_file = os.path.join(packed_pkg,"pkg_meta.json")
             if os.path.exists(packed_pkg_meta_file):
-                shutil.copy(packed_pkg, target_dir)
+                shutil.copytree(packed_pkg, os.path.join(target_dir, os.path.basename(packed_pkg)),dirs_exist_ok=True)
                 print(f"# copy packed_app_pkg {packed_pkg} => {target_dir} OK")
 
 if __name__ == "__main__":
