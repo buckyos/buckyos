@@ -51,7 +51,7 @@ def prepare_bin_package(src_pkg_dir, prefix, version, target_dir):
     print(f"# prepare_bin_package: {src_pkg_dir} ({prefix}*)")
     install_pkg("node_daemon",target_dir,prefix,version)
     #install_pkg("node_active",target_dir,prefix,version)
-    install_pkg("buckycli",target_dir,prefix,version)
+    #install_pkg("buckycli",target_dir,prefix,version)
     # for pack_pkg_item in pack_pkg_items:
     #     if os.path.isdir(pack_pkg_item):
     #         #nightly-windows-amd64.app_loader ,app_loader is pkg_name
