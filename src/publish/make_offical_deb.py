@@ -14,6 +14,8 @@ def adjust_control_file(dest_dir, new_version, architecture):
     deb_arch = architecture
     if deb_arch == "x86_64":
         deb_arch = "amd64"
+    if deb_arch == "aarch64":
+        deb_arch = "arm64"
     control_file = os.path.join(dest_dir, "DEBIAN/control")
     f = open(control_file, "r")
     content = f.read()
