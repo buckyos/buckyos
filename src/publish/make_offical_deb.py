@@ -8,6 +8,7 @@ import perpare_offical_installer
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 publish_dir = os.path.join(src_dir, "publish", "deb_template")
+result_base_dir = "/opt/buckyosci/publish"
 
 def adjust_control_file(dest_dir, new_version, architecture):
     deb_arch = architecture
@@ -27,6 +28,9 @@ temp_dir = tempfile.gettempdir()
 
 def make_deb(architecture, version):
     print(f"make deb with architecture: {architecture}, version: {version}")
+    result_dir = os.path.join(result_base_dir, version)
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir)
     deb_root_dir = os.path.join(temp_dir, "deb_build")
     print(f"deb_root_dir: {deb_root_dir}")
     deb_dir = os.path.join(deb_root_dir, architecture)
@@ -46,9 +50,9 @@ def make_deb(architecture, version):
     subprocess.run([f"dpkg-deb --build {architecture}"], shell=True, check=True, cwd=deb_root_dir)
     print(f"build deb success at {deb_dir}")
 
-    dst_deb_path = os.path.join(publish_dir, f"buckyos-{architecture}-{version}.deb")
+    dst_deb_path = os.path.join(result_dir, f"buckyos-{architecture}-{version}.deb")
     shutil.move(f"{deb_root_dir}/{architecture}.deb", dst_deb_path)
-    print(f"move deb to {dst_deb_path}")
+    print(f"move deb from {deb_root_dir}/{architecture}.deb to {dst_deb_path}")
 
 if __name__ == "__main__":
 
