@@ -490,7 +490,7 @@ impl BuckyOSRuntime {
                         let (session_token_str,_real_session_token) = RPCSessionToken::generate_jwt_token(
                             self.user_id.as_ref().unwrap(),
                             self.app_id.as_str(),
-                            None,//none means root
+                            Some("root".to_string()),//none means root
                             self.user_private_key.as_ref().unwrap()
                         )?;
                         *session_token = session_token_str;
