@@ -683,7 +683,7 @@ impl BuckyOSRuntime {
         })?;
 
         let key_map = self.trust_keys.read().await;
-        let kid = header.kid.unwrap_or("$default".to_string());
+        let kid = header.kid.unwrap_or("root".to_string());
         let decoding_key = key_map.get(&kid);
         if decoding_key.is_none() {
             warn!("kid {} not found,Session token is not valid",kid.as_str());

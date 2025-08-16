@@ -64,6 +64,7 @@ def prepare_named_mgr_data(rootfs_dir,src_pkg_dir,prefix):
     named_data_dir = os.path.join(rootfs_dir, "data", "ndn")
     for pack_pkg_item in pack_pkg_items:
         if os.path.isdir(pack_pkg_item):
+            print(f"# prepare_named_mgr_data: add {pack_pkg_item} to installer")
             #nightly-windows-amd64.app_loader ,app_loader is pkg_name
             chunk_files = glob.glob(os.path.join(pack_pkg_item,"*.tar.gz"))
             for chunk_file in chunk_files:
