@@ -11,13 +11,16 @@ import platform
 import json
 import shutil
 import time
+from urllib.request import urlretrieve
 
 publish_root_dir = os.path.dirname(os.path.abspath(__file__))
 system_list = ["windows", "linux", "apple"]
 machine_list = ["amd64", "aarch64"]
-rootfs_base_dir = "/opt/buckyosci/rootfs"
-target_base_dir = "/opt/buckyosci/pack_pkgs"
-
+rootfs_base_dir = "/opt/buckyosci/rootfs/"
+target_base_dir = "/opt/buckyosci/pack_pkgs/"
+app_base_dir = "/opt/buckyosci/apps/"
+app_raw_dir = "/opt/buckyosci/app_build/"
+base_meta_db_url = "https://buckyos.ai/ndn/repo/meta_index.db/content"
 
 buckycli_path = os.getenv("BUCKYCLI_PATH", "/opt/buckyos/bin/buckycli/buckycli")
 
@@ -154,11 +157,58 @@ def pack_rootfs_pkgs(rootfs_version: str):
     
     print(f"pack rootfs pkgs to {target_dir} done")
 
-def download_app_pkgs(rootfs_version:str):
-    pass
+def prepare_meta_db(rootfs_version:str):
+    target_dir = os.path.join(target_base_dir, rootfs_version)
+    meta_db_path = os.path.join(target_dir, "meta_index.db")
+    urlretrieve(base_meta_db_url, meta_db_path)
+    # subprocess.run(["wget",base_meta_db_url,"-O",root_env_db_path], check=True)
+    print(f"# download {base_meta_db_url} => {meta_db_path}")
+
+    # 2 scan packed pkgs dir, add pkg_meta_info to meta db
+    pkg_items = glob.glob(os.path.join(target_dir, "*"))
+    for pkg_item in pkg_items:
+        if os.path.isdir(pkg_item):
+            pkg_item = os.path.join(pkg_item, "pkg_meta.json")
+            if os.path.exists(pkg_item):
+                print(f"# add pkg_meta_info to meta db from {pkg_item}")
+                subprocess.run([buckycli_path,"set_pkg_meta",pkg_item,meta_db_path], check=True)
+                print(f"# add pkg_meta_info to meta db from {pkg_item} OK")
+    print(f"# update meat_index_db success, => {meta_db_path}")
+
+    fileobj_path = os.path.join(target_dir,"buckyos-linux-amd64/local/node_daemon/root_pkg_env/pkgs/meta_index.db.fileobj")
+    fileobj = json.load(open(fileobj_path))
+    current_time = int(time.time())
+    fileobj["create_time"] = current_time
+    fileobj_target_path = os.path.join(target_dir,"meta_index.db.fileobj")
+    json.dump(fileobj, open(fileobj_target_path, "w"))
+
+    print(f"# update fileobj ({fileobj_path}) create_time to {current_time} => {fileobj_target_path}")
+
+
+def add_app_pkgs(rootfs_version:str,app_name:str,app_version:str):
+    target_dir = os.path.join(target_base_dir, rootfs_version)
+    app_dir = os.path.join(app_base_dir, app_name,app_version)
+    
+    if not os.path.exists(app_dir):
+        print(f"# app {app_name} {app_version} not found in {app_base_dir}")
+        return
+    else: 
+        print(f"# add app {app_name} {app_version} pkgs from {app_dir} ...")
+
+    packed_pkgs = glob.glob(os.path.join(app_dir,"*"))
+    for packed_pkg in packed_pkgs:
+        if os.path.isdir(packed_pkg):
+            packed_pkg_meta_file = os.path.join(packed_pkg,"pkg_meta.json")
+            if os.path.exists(packed_pkg_meta_file):
+                shutil.copy(packed_pkg, target_dir)
+                print(f"# copy packed_app_pkg {packed_pkg} => {target_dir} OK")
 
 if __name__ == "__main__":
     root_version = sys.argv[1]
     pack_rootfs_pkgs(root_version)
-    # app包已经打好了，所以不用pack直接下载到/opt/buckyos_pack_pkgs/$version/目录下
-    download_app_pkgs(root_version)
+
+    # app的包已经打好了，放在 /opt/buckyosci/apps/buckyos-filebrowser/0.4.1/目录下
+    # 如果有多个default app,则调用多行add_app_pkgs
+    # TODO 这里版本号是写死的，应该有更完整的配置文件，描述一个版本里所携带的app列表
+    add_app_pkgs(root_version,"buckyos-filebrowser","0.4.1")
+    prepare_meta_db(root_version)

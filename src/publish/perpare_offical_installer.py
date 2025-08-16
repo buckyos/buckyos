@@ -71,39 +71,32 @@ def prepare_named_mgr_data(rootfs_dir,src_pkg_dir,prefix):
                 subprocess.run([buckycli_path,"create_chunk",chunk_file,named_data_dir], check=True)
 
 def prepare_meta_db(rootfs_dir,packed_pkgs_dir):
-    bin_dir = os.path.join(rootfs_dir,"bin")
-    # 1 download base meta db (already in pack_pkgs dir)
-    root_env_dir = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env")
-
+    meta_db_path = os.path.join(packed_pkgs_dir,"meta_index.db")
+    meta_db_fileobj_path = os.path.join(packed_pkgs_dir,"meta_index.db.fileobj")
+    if not os.path.exists(meta_db_path):
+        print(f"!!! meta_db_path not found in {packed_pkgs_dir}")
+        return
+    if not os.path.exists(meta_db_fileobj_path):
+        print(f"!!! meta_db_fileobj_path not found in {packed_pkgs_dir}")
+        return
+    
     os.makedirs(os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs"), exist_ok=True)
     root_env_db_path = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs","meta_index.db")
-    urlretrieve(base_meta_db_url, root_env_db_path)
+    shutil.copy(meta_db_path, root_env_db_path)
     # subprocess.run(["wget",base_meta_db_url,"-O",root_env_db_path], check=True)
-    print(f"# download {base_meta_db_url} => {root_env_db_path}")
+    print(f"# copy {meta_db_path} => {root_env_db_path}")
 
-    # 2 scan packed pkgs dir, add pkg_meta_info to meta db
-    print(f"# packed_pkgs_dir: {packed_pkgs_dir}")
-    pkg_items = glob.glob(os.path.join(packed_pkgs_dir, "*"))
-    for pkg_item in pkg_items:
-        print(f"# add pkg_meta_info to meta db from {pkg_item}")
-        if os.path.isdir(pkg_item):
-            pkg_item = os.path.join(pkg_item, "pkg_meta.json")
-            if os.path.exists(pkg_item):
-                subprocess.run([buckycli_path,"set_pkg_meta",pkg_item,root_env_db_path], check=True)
-                print(f"# add pkg_meta_info to meta db from {pkg_item}")
-
-    meta_db_path = os.path.join(rootfs_dir, "data", "repo-service", "default_meta_index.db")
-    shutil.copy(root_env_db_path, meta_db_path)
-    print(f"# save meta db to {meta_db_path}")
-    
     fileobj_path = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs", "meta_index.db.fileobj")
-    fileobj = json.load(open(fileobj_path))
-    current_time = int(time.time())
-    fileobj["create_time"] = current_time
-    json.dump(fileobj, open(fileobj_path, "w"))
+    shutil.copy(meta_db_fileobj_path, fileobj_path)
+    print(f"# copy {meta_db_fileobj_path} => {fileobj_path}")
+
+    repo_meta_db_path = os.path.join(rootfs_dir, "data", "repo-service", "default_meta_index.db")
+    shutil.copy(meta_db_path, repo_meta_db_path)
+    print(f"# copy {meta_db_path} => {repo_meta_db_path}")
+    
     fileobj_path = os.path.join(rootfs_dir, "data", "repo-service", "default_meta_index.db.fileobj")
-    json.dump(fileobj, open(fileobj_path, "w"))
-    print(f"# update fileobj create_time to {current_time} for {fileobj_path}")
+    shutil.copy(meta_db_fileobj_path, fileobj_path)
+    print(f"# copy {meta_db_fileobj_path} => {fileobj_path}")
 
 
 def prepare_rootfs_for_installer(target_dir, os_name, arch, version):
@@ -114,7 +107,6 @@ def prepare_rootfs_for_installer(target_dir, os_name, arch, version):
     print(f"# copy rootfs: {rootfs_dir} => {target_dir}")    
     shutil.copytree(rootfs_dir, target_dir, dirs_exist_ok=True)
     
-
     # install pkg to rootfs/bin
     bin_dir = os.path.join(target_dir, "bin")
 
