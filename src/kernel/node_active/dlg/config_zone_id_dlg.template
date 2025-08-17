@@ -18,28 +18,29 @@
 </style>
 </style>
 <div class="frame">
-    <h3>2. 设置访问Personal Server使用的域名</h3>
-    <p>您的名字:</p>
-    <md-outlined-text-field id="txt_name" placeholder="用户名" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
-    <p>基于您的名字构建的域名,创建后无法修改!</p>
+    <h3 data-i18n="title_step_2">2. 设置访问Personal Server使用的域名</h3>
+    <p data-i18n="your_name">您的名字:</p>
+    <md-outlined-text-field id="txt_name" data-i18n-placeholder="username_placeholder" placeholder="用户名" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
+    <p data-i18n="domain_based_name">基于您的名字构建的域名,创建后无法修改!</p>
     <div class="container">
-        <bucky-checkbox id="chk_use_buckyos_name" lable="使用web3.buckyos.ai的二级域名" check="true"></bucky-checkbox>
-        <div>* 激活完成后,您将通过下面域名访问您的Personal Server</div> 
-        <div id="show_buckyos_name"> - https://$name.web3.buckyos.ai </div>
-        <div>- Alpha测试期间,使用web3.buckyos.ai的二级域名服务需要邀请码:</div>
-        <md-outlined-text-field id="txt_bucky_sn_token"  placeholder="请输入邀请码" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
+        <bucky-checkbox id="chk_use_buckyos_name" lable="{{t "use_buckyos_domain"}}" check="true"></bucky-checkbox>
+        <div data-i18n="domain_access_desc">* 激活完成后,您将通过下面域名访问您的Personal Server</div> 
+        <div id="show_buckyos_name" data-i18n="domain_format"> - https://$name.web3.buckyos.ai </div>
+        <div data-i18n="invite_code_required">- Alpha测试期间,使用web3.buckyos.ai的二级域名服务需要邀请码:</div>
+        <md-outlined-text-field id="txt_bucky_sn_token" data-i18n-placeholder="invite_code_placeholder" placeholder="请输入邀请码" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
     </div>
     <p></p>
     <div class="container">
-        <bucky-checkbox id="chk_use_self_name" lable="使用自己拥有的域名"></bucky-checkbox>
-        <md-outlined-text-field id="txt_domain" placeholder="输入将使用的域名" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
+        <bucky-checkbox id="chk_use_self_name" lable="{{t "use_own_domain"}}"></bucky-checkbox>
+        <md-outlined-text-field id="txt_domain" data-i18n-placeholder="domain_placeholder" placeholder="输入将使用的域名" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
         <div style="margin-top: 0px; margin-left: 28px;">
-        <p>您需要通过域名提供商进行以下设置:</p>
+        <p data-i18n="domain_provider_setup">您需要通过域名提供商进行以下设置:</p>
         <ul>
-        <li id="txt_dns_tip">设置A记录: 设置为您的Personal Server的公网IP</li>
-        <li>设置TXT记录: 为您的域名添加TXT记录,值为:<a id="copyButton" href="#">(复制)</a></li>
+        <li id="txt_dns_tip" data-i18n="dns_a_record">设置A记录: 设置为您的Personal Server的公网IP</li>
+        <li data-i18n="dns_txt_record">设置TXT记录: 为您的域名添加TXT记录,值为:<a id="copyButton" href="#" data-i18n="copy_button">(复制)</a></li>
         </ul>
-        <md-filled-text-field id="txt_zone_id_value" type="textarea" label="TXT Record" disabled="true"
+        <md-filled-text-field id="txt_zone_id_value" type="textarea" data-i18n-label="txt_record_label" label="TXT Record" disabled="true"
+        data-i18n-value="txt_record_placeholder"
         value="(请先输入用户名)"
         rows="5">
         </md-filled-text-field>
@@ -48,7 +49,7 @@
     <p></p>
     <p></p>
     <div class="button-container">
-        <md-filled-button id="btn_next" style="width: 150px;">Next</md-filled-button>
+        <md-filled-button id="btn_next" style="width: 150px;" data-i18n="next_button">Next</md-filled-button>
     </div>
 </div>
 

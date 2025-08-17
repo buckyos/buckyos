@@ -82,6 +82,9 @@
                     "routes": {
                         "/":{
                             "local_dir":"{BUCKYOS_ROOT}/bin/control_panel"
+                        },
+                        "/kapi/system_config": {
+                            "upstream":"http://127.0.0.1:3200"
                         }
                     }
                 },
@@ -90,7 +93,10 @@
                     "routes": {
                         "/":{
                             "local_dir":"{BUCKYOS_ROOT}/bin/control_panel"
-                        }
+                        },
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
                     }
                 },
                 "sys-test*": {
@@ -98,7 +104,10 @@
                     "routes": {
                         "/":{
                             "local_dir":"{BUCKYOS_ROOT}/bin/sys_test"
-                        }
+                        },
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
                     }
                 },
                 "sys-test.*": {
@@ -106,7 +115,10 @@
                     "routes": {
                         "/":{
                             "local_dir":"{BUCKYOS_ROOT}/bin/sys_test"
-                        }
+                        },
+                        "/kapi/system_config":{
+                            "upstream":"http://127.0.0.1:3200"
+                        },
                     }
                 }
             }

@@ -5,6 +5,7 @@ import {BuckyCheckBox} from '../components/checkbox/index';
 import { WizzardDlg } from '../components/wizzard-dlg/index';
 import { ActiveWizzardData} from '../active_lib';
 import { buckyos } from 'buckyos';
+import i18next from '../i18n';
 
 class ConfigSystemDlg extends HTMLElement {
     constructor() {
@@ -21,13 +22,13 @@ class ConfigSystemDlg extends HTMLElement {
         let txt_password_again = shadow.getElementById('txt_password_again') as MdOutlinedTextField;
         if (txt_admin_password.value != txt_password_again.value){
             txt_password_again.error = true; 
-            txt_password_again.errorText = "两次输入的密码不一致";
+            txt_password_again.errorText = i18next.t("error_password_mismatch");
             return false;
         }
         let txt_friend_code = shadow.getElementById('txt_friend_code') as MdOutlinedTextField;
         if (txt_admin_password.value.length < 8){
             txt_admin_password.error = true; 
-            txt_admin_password.errorText = "密码长度不能小于8";
+            txt_admin_password.errorText = i18next.t("error_password_too_short");
             return false;
         }
 
@@ -35,7 +36,7 @@ class ConfigSystemDlg extends HTMLElement {
         if (txt_friend_code.value.length > 0){
             if (txt_friend_code.value.length < 6){
                 txt_friend_code.error = true; 
-                txt_friend_code.errorText = "好友访问码长度不能小于6";
+                txt_friend_code.errorText = i18next.t("error_friend_code_too_short");
                 return false;
             }
         }

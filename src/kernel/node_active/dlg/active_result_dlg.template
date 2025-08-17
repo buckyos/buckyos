@@ -23,21 +23,21 @@
 </style>
 <div class="frame">
     <div class="container">
-        <h2>激活成功!</h2>
+        <h2 data-i18n="activation_success">激活成功!</h2>
         <img src="success.png" style="width: 120px;height: 120px;"/>
-        <p>您的Personal Server已成功激活</p>
+        <p data-i18n="activation_success_desc">您的Personal Server已成功激活</p>
         {{#if use_self_domain}}
-        <p>点击 <a href="https://{{self_domain}}/index.html">https://{{self_domain}}/index.html</a> 访问</p>
+        <p><span data-i18n="click_to_access">点击</span> <a href="https://{{self_domain}}/index.html">https://{{self_domain}}/index.html</a> <span data-i18n="access_link">访问</span></p>
         {{else}}
-        <p>点击 <a href="https://{{sn_user_name}}.{{web3_base_host}}/index.html">https://{{sn_user_name}}.{{web3_base_host}}/index.html</a> 访问</p>
+        <p><span data-i18n="click_to_access">点击</span> <a href="https://{{sn_user_name}}.{{web3_base_host}}/index.html">https://{{sn_user_name}}.{{web3_base_host}}/index.html</a> <span data-i18n="access_link">访问</span></p>
         {{/if}}
-        <p>默认用户名密码是admin/admin.</p>
-        <p>首次打开页面如有错误请多刷新几次.</p>
+        <p data-i18n="default_credentials">默认用户名密码是admin/admin.</p>
+        <p data-i18n="refresh_note">首次打开页面如有错误请多刷新几次.</p>
     </div>
     
     <p></p>
     <p></p>
     <div class="button-container">
-        <md-filled-button id="btn_end">关闭并跳转</md-filled-button>
+        <md-filled-button id="btn_end" data-i18n="close_and_redirect">关闭并跳转</md-filled-button>
     </div>
 </div>

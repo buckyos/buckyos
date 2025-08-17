@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e" pages="2">
-    <diagram name="Page1" id="_c5SOJppO-HaUyLpSSM0">
-        <mxGraphModel dx="585" dy="546" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <diagram name="Quick Start" id="_c5SOJppO-HaUyLpSSM0">
+        <mxGraphModel dx="1202" dy="942" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -13,8 +13,8 @@
             </root>
         </mxGraphModel>
     </diagram>
-    <diagram id="Hk6XF6Ve5vXdAK_MnxZZ" name="Page-2">
-        <mxGraphModel dx="931" dy="661" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <diagram id="Hk6XF6Ve5vXdAK_MnxZZ" name="Basic">
+        <mxGraphModel dx="1202" dy="942" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -178,60 +178,63 @@
             </root>
         </mxGraphModel>
     </diagram>
-    <diagram id="6NgGjk6tVoeCivgmBa_m" name="Page-4">
-        <mxGraphModel dx="776" dy="551" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <diagram id="6NgGjk6tVoeCivgmBa_m" name="标准分布式开发环境">
+        <mxGraphModel dx="1202" dy="942" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-2" value="Zone test.buckyos.io" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" vertex="1" parent="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-2" value="Zone test.buckyos.io" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" parent="1" vertex="1">
                     <mxGeometry x="80" y="50" width="250" height="270" as="geometry"/>
                 </mxCell>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-1" value="开发机&lt;div&gt;OOD1&lt;/div&gt;&lt;div&gt;Linux/OSX/Windows&lt;/div&gt;&lt;div&gt;WLAN&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" vertex="1" parent="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-1" value="开发机&lt;div&gt;OOD1&lt;/div&gt;&lt;div&gt;Linux/OSX/Windows&lt;/div&gt;&lt;div&gt;WLAN&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
                     <mxGeometry x="140" y="100" width="120" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-3" value="VM&lt;br&gt;&lt;div&gt;Node1&lt;/div&gt;&lt;div&gt;Linux&lt;/div&gt;&lt;div&gt;NAT&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" vertex="1" parent="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-3" value="VM&lt;br&gt;&lt;div&gt;Node1&lt;/div&gt;&lt;div&gt;Linux&lt;/div&gt;&lt;div&gt;NAT&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
                     <mxGeometry x="140" y="220" width="120" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-4" value="Zone sn.buckyos.io" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" vertex="1" parent="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-4" value="Zone sn.buckyos.io" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" parent="1" vertex="1">
                     <mxGeometry x="390" y="50" width="250" height="120" as="geometry"/>
                 </mxCell>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-5" value="VM&lt;br&gt;&lt;div&gt;SN Server&lt;/div&gt;&lt;div&gt;WLAN&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" vertex="1" parent="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-5" value="VM&lt;br&gt;&lt;div&gt;SN Server&lt;/div&gt;&lt;div&gt;WLAN&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
                     <mxGeometry x="450" y="90" width="120" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-6" value="Zone bob.web3.buckyos.io&lt;div&gt;(did:bns:bob)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" vertex="1" parent="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-6" value="Zone bob.web3.buckyos.io&lt;div&gt;(did:bns:bob)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;verticalAlign=top;fillColor=none;" parent="1" vertex="1">
                     <mxGeometry x="390" y="200" width="250" height="120" as="geometry"/>
                 </mxCell>
-                <mxCell id="tXxmC5UZVwhhfbEr_8o1-3" style="edgeStyle=none;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="0K5GHQBQ3lg5-S8yyhjc-7" target="0K5GHQBQ3lg5-S8yyhjc-4">
+                <mxCell id="tXxmC5UZVwhhfbEr_8o1-3" style="edgeStyle=none;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="0K5GHQBQ3lg5-S8yyhjc-7" target="0K5GHQBQ3lg5-S8yyhjc-4" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-7" value="VM&lt;br&gt;&lt;div&gt;OOD1&lt;/div&gt;&lt;div&gt;Linux&lt;/div&gt;&lt;div&gt;NAT&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" vertex="1" parent="1">
+                <mxCell id="0K5GHQBQ3lg5-S8yyhjc-7" value="VM&lt;br&gt;&lt;div&gt;OOD1&lt;/div&gt;&lt;div&gt;Linux&lt;/div&gt;&lt;div&gt;NAT&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontStyle=1" parent="1" vertex="1">
                     <mxGeometry x="455" y="250" width="120" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="tXxmC5UZVwhhfbEr_8o1-1" value="&lt;b&gt;标准分布式开发环境的设计目的&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1）在能覆盖常见场景的情况下，机构哦尽量简单&lt;/div&gt;&lt;div&gt;2）标准环境中设备的身份固定，没有随机性，方便基于日志进行讨论&lt;/div&gt;&lt;div&gt;3）在一键构建的基础上，优化 部署/调试/更新 循环。减少因为配置问题带来的bug和浪费，提升开发效率&lt;/div&gt;&lt;div&gt;4） 基于该标准环境精心构建测试用例，提高系统的质量&lt;/div&gt;&lt;div&gt;5）基于相同的基准环境进行性能评测&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                <mxCell id="tXxmC5UZVwhhfbEr_8o1-1" value="&lt;b&gt;标准分布式开发环境的设计目的&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1）在能覆盖常见场景的情况下，机构哦尽量简单&lt;/div&gt;&lt;div&gt;2）标准环境中设备的身份固定，没有随机性，方便基于日志进行讨论&lt;/div&gt;&lt;div&gt;3）在一键构建的基础上，优化 部署/调试/更新 循环。减少因为配置问题带来的bug和浪费，提升开发效率&lt;/div&gt;&lt;div&gt;4） 基于该标准环境精心构建测试用例，提高系统的质量&lt;/div&gt;&lt;div&gt;5）基于相同的基准环境进行性能评测&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="80" y="330" width="400" height="150" as="geometry"/>
                 </mxCell>
-                <mxCell id="tXxmC5UZVwhhfbEr_8o1-4" value="Text" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                <mxCell id="tXxmC5UZVwhhfbEr_8o1-4" value="Text" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="310" y="400" width="60" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="tXxmC5UZVwhhfbEr_8o1-5" value="&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;&lt;b&gt;基本使用流程：&lt;/b&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;编写拓扑配置(demo_env.json),包括必要的身份文件&lt;/div&gt;&lt;div&gt;基于拓扑配置从头构造虚拟机&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 目前的主要问题是网络配置的自动化，现在需要理解一些原理&lt;br&gt;&lt;/div&gt;&lt;div&gt;根据虚拟机结果得到device_info.json,并基于此使用群控脚本&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 正确的配置文件可以操作任意集群&lt;br&gt;&lt;/div&gt;&lt;div&gt;编译得到rootfs(编译的结果要是虚拟机支持的）&lt;/div&gt;&lt;div&gt;使用群控脚本将rootfs推送到虚拟机里&lt;/div&gt;&lt;div&gt;使用群控脚本将必要的身份文件和配置文件，推送到虚拟机里&lt;/div&gt;&lt;div&gt;启动系统&lt;/div&gt;&lt;div&gt;运行系统状态检测脚本，确定系统正在工作，环境可以使用&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;开发循环：&lt;/b&gt;&lt;/div&gt;&lt;div&gt;通过群控脚本在特定设备上运行特定命令&lt;/div&gt;&lt;div&gt;使用群控脚本的日志收集工具，将所有日志下载到本地并进行诊断&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;分布式系统一定要基于日志进行调试&lt;br&gt;&lt;/div&gt;&lt;div&gt;修改代码，编译得到最新的rootfs&lt;/div&gt;&lt;div&gt;通过群控脚本停止系统，并更新rootfs&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;复杂的，有状态的测试可能需要集群处于特定状态。应该编写脚本，通过从0 开始构建的方法到达目标状态。每次测试完后重新创建集群&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                <mxCell id="tXxmC5UZVwhhfbEr_8o1-5" value="&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;&lt;b&gt;基本使用流程：&lt;/b&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;编写拓扑配置(demo_env.json),包括必要的身份文件&lt;/div&gt;&lt;div&gt;基于拓扑配置从头构造虚拟机&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 目前的主要问题是网络配置的自动化，现在需要理解一些原理&lt;br&gt;&lt;/div&gt;&lt;div&gt;根据虚拟机结果得到device_info.json,并基于此使用群控脚本&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;- 正确的配置文件可以操作任意集群&lt;br&gt;&lt;/div&gt;&lt;div&gt;编译得到rootfs(编译的结果要是虚拟机支持的）&lt;/div&gt;&lt;div&gt;使用群控脚本将rootfs推送到虚拟机里&lt;/div&gt;&lt;div&gt;使用群控脚本将必要的身份文件和配置文件，推送到虚拟机里&lt;/div&gt;&lt;div&gt;启动系统&lt;/div&gt;&lt;div&gt;运行系统状态检测脚本，确定系统正在工作，环境可以使用&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;开发循环：&lt;/b&gt;&lt;/div&gt;&lt;div&gt;通过群控脚本在特定设备上运行特定命令&lt;/div&gt;&lt;div&gt;使用群控脚本的日志收集工具，将所有日志下载到本地并进行诊断&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;分布式系统一定要基于日志进行调试&lt;br&gt;&lt;/div&gt;&lt;div&gt;修改代码，编译得到最新的rootfs&lt;/div&gt;&lt;div&gt;通过群控脚本停止系统，并更新rootfs&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;复杂的，有状态的测试可能需要集群处于特定状态。应该编写脚本，通过从0 开始构建的方法到达目标状态。每次测试完后重新创建集群&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="80" y="470" width="400" height="350" as="geometry"/>
                 </mxCell>
-                <mxCell id="tXxmC5UZVwhhfbEr_8o1-6" value="&lt;b&gt;一些重要的基本知识&lt;/b&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;0. 系统主要涉及两个系统服务: node_daemon和web3_gateway,这些服务已经启动&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;div&gt;1. 如果启动设备，则应通过启动日志进行分析，分析的过程需要理解系统的关键配置设计。根据经验，配置错误是最常见的错误类型&lt;/div&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;2. 理解系统状态检测脚本对系统的各个组件是否正常工作的检测逻辑，并基于此理解系统的主要的运行流。在进行debug前一定要确保优先排除了配置错误&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3.常见的bug总是和身份验证有关，&lt;span style=&quot;color: rgb(63, 63, 63); background-color: transparent;&quot;&gt;很多系统服务返回的常见错误都是权限错误&lt;/span&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;（我们的系统在这里是比较敏感的）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;每个request都有session token&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;sessiontoken的构造与验证（签发者和过期时间）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;从有效的sessiontoken中提取userid和appid&lt;/div&gt;&lt;div&gt;基于userid,appid, opid, resid,进行rbac验证&amp;nbsp;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                <mxCell id="tXxmC5UZVwhhfbEr_8o1-6" value="&lt;b&gt;一些重要的基本知识&lt;/b&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;0. 系统主要涉及两个系统服务: node_daemon和web3_gateway,这些服务已经启动&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;div&gt;1. 如果启动设备，则应通过启动日志进行分析，分析的过程需要理解系统的关键配置设计。根据经验，配置错误是最常见的错误类型&lt;/div&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;2. 理解系统状态检测脚本对系统的各个组件是否正常工作的检测逻辑，并基于此理解系统的主要的运行流。在进行debug前一定要确保优先排除了配置错误&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3.常见的bug总是和身份验证有关，&lt;span style=&quot;color: rgb(63, 63, 63); background-color: transparent;&quot;&gt;很多系统服务返回的常见错误都是权限错误&lt;/span&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;（我们的系统在这里是比较敏感的）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;每个request都有session token&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;sessiontoken的构造与验证（签发者和过期时间）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;从有效的sessiontoken中提取userid和appid&lt;/div&gt;&lt;div&gt;基于userid,appid, opid, resid,进行rbac验证&amp;nbsp;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="75" y="820" width="410" height="310" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>
     </diagram>
-    <diagram id="f-WaLlq4udPQjtP0OP_e" name="Page-3">
-        <mxGraphModel dx="931" dy="1761" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <diagram id="f-WaLlq4udPQjtP0OP_e" name="基于Dockr开发应用服务">
+        <mxGraphModel dx="962" dy="2042" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
                 <mxCell id="9fp8VTBnur2RI_b8cXzo-1" value="BuckyOS中的应用服务&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;最简单的理解，应用服务是一个HTTP服务。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;如果我们有一个已经开发完成的HTTP服务，那么通过下面步骤，就可以将其变成一个BuckyOS DApp&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;可以看到，这个过程完全没有使用BuckyOS SDK,这也是我们的最大兼容模式。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;这里还有一个重要的假设，我们认为这个HTTP服务是单进程的，通过传统的文件系统（桌面数据库sqlite也是基于文件系统）来保存状态。并且通常是单进程的，通过传统的进程内同步设施来处理并行的请求。站在传统服务器开发的角度来看，这也是一个典型的简单服务。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;如果旧的服务考虑了横向扩展的问题（自己本身是多进程的），并且依赖Mysql,redis等中间件。坦白说这类服务并不是传统的“安装在NAS上”的服务，通常是需要专门的IT支持才能运维这类服务。 我们并不鼓励对这类服务进行直接移植：家庭集群通常假设的在线用户在1000以内，一般服务只需要用好当前设备的硬件能力（纵向扩展）就能支持这个规模的请求，因此引入横向扩展能力大部分情况下只会白白增加系统的复杂度。但如果实在是有需求，我们提供了2条道路&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1. 我们有一个可选的内核服务K8S，打开后，可以支持Docker Compose&lt;/div&gt;&lt;div&gt;2. BuckyOS本身设计成更适合家庭集群，或从小规模开始扩容的集群控制系统，这类复杂服务，应考虑基于buckyos-api进行改写来实现更好的性能和更理想的稳定性&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
-                    <mxGeometry x="500" y="30" width="340" height="480" as="geometry"/>
+                    <mxGeometry x="35" y="-1020" width="340" height="480" as="geometry"/>
                 </mxCell>
                 <mxCell id="9fp8VTBnur2RI_b8cXzo-2" value="1. 如何移植?&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;2. 编写hello buckyos(有一个简单的状态管理）&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;div&gt;3. 理解dapp的安装、部署、运行流程&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp;&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;推荐的开发测试工作流：&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; 最大兼容模式，可以先用自己喜欢的任何方式进行测试，然后再进行集成测试。集成测试的方法：再自己的repo server上发布dapp,然后通过命令行工具安装（更新），全新安装测试可以用命令行工具删除。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp;&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;div&gt;3.5 系统里的几种组件&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;系统组件（静态库）&lt;/div&gt;&lt;div&gt;内核服务 可以稳定依赖，必定在运行的基础服务&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;系统服务 buckyos的不同发行版可以扩展，允许应用依赖，能看到所有用户的数据，默认不需要完整的读写系统的权限，但也允许配置管理员权限。BuckyOS未来的功能扩展主要是通过扩展系统服务实现&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;应用服务：&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;应用函数：系统里支持的最小权限组件，只能将输入处理后返回输出，无状态。除了输入数据无法访问系统里的任何其他数据&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;4. 使用buckyos的系统服务的统一方法&lt;/div&gt;&lt;div&gt;理解kRPC过程： (Web)UI-&amp;gt;服务进程-&amp;gt;系统服务&lt;/div&gt;&lt;div&gt;理解登录与session-token&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;通过域名确定了 app-id&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;通过登录确定了 user-id&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;5. 管理状态的方法&lt;/div&gt;&lt;div&gt;状态的一致性&lt;/div&gt;&lt;div&gt;状态的可靠性&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;状态的事务性&lt;/span&gt;&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;6. 处理长任务(Task)&lt;/div&gt;&lt;div&gt;系统对应用使用资源有限额，进程可能会别挂起或结束&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;7.发布dapp&lt;/div&gt;&lt;div&gt;&lt;br&gt;再次理解系统安装dapp的原理，是如何实现来源的可信的&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;- 直接分享给朋友&lt;/div&gt;&lt;div&gt;- 通过bucky repo发布&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; 认证为开发者 -&amp;gt; 在自己的repo发布 -&amp;gt; 提交AppDoc -&amp;gt; 等待审核 --&amp;gt; 审核通过，应用（的新版本）被收录&lt;/div&gt;&lt;div&gt;&amp;nbsp;&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
-                    <mxGeometry x="60" y="-140" width="370" height="930" as="geometry"/>
+                    <mxGeometry x="480" y="-1040" width="370" height="930" as="geometry"/>
+                </mxCell>
+                <mxCell id="kLGPeQjpxWYEgb5TcQZR-1" value="&lt;b&gt;BuckyOS SDK&lt;/b&gt;:&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;buckyos-web-sdk 用来开发前端页面。相对比较简单&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;开发应用服务：&lt;/div&gt;&lt;div&gt;目前最全功能的是 buckyos-api-runtime (rust)&lt;/div&gt;&lt;div&gt;计划支持4种主流的后台开发语言&lt;/div&gt;&lt;div&gt;buckyos-ts-runtime&lt;/div&gt;&lt;div&gt;buckyos-py-runtime&lt;/div&gt;&lt;div&gt;buckyos-go-runtime&lt;/div&gt;&lt;div&gt;buckyos-java-runtime&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;这些sdk的语义基本一致，但会根据各个语言的习惯进行充分的设计&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="40" y="-490" width="290" height="180" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>

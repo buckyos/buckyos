@@ -16,9 +16,20 @@
             display: flex;
             justify-content: center;
         }
+        
+        .language-switcher-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
     </style>
 </head>
 <body>
+
+    <div class="language-switcher-container">
+        <language-switcher></language-switcher>
+    </div>
 
     <div id="background">
         <bucky-wizzard-dlg id="active-wizzard">
