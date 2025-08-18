@@ -30,6 +30,12 @@ pub fn instance_service(new_instance:&PodInstance,server_config:&KernelServiceCo
             "upstream":format!("http://127.0.0.1:{}",server_config.port),
         });
         set_actions.insert(json_path,Some(set_value));
+
+        let json_path = format!("servers/zone_gateway/hosts/sys*/routes/\"/kapi/{}\"",new_instance.pod_id.as_str());
+        let set_value = json!({
+            "upstream":format!("http://127.0.0.1:{}",server_config.port),
+        });
+        set_actions.insert(json_path,Some(set_value));
     }
 
     let json_path = format!("servers/node_gateway/hosts/*/routes/\"/kapi/{}\"",new_instance.pod_id.as_str());
@@ -37,8 +43,6 @@ pub fn instance_service(new_instance:&PodInstance,server_config:&KernelServiceCo
         "upstream":format!("http://127.0.0.1:{}",server_config.port),
     });
     set_actions.insert(json_path,Some(set_value));
-
-    
    
     let set_action = KVAction::SetByJsonPath(set_actions);
     result.insert(key_path,set_action);

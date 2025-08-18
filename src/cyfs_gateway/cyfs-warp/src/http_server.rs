@@ -112,7 +112,7 @@ impl CyfsWarpServer {
         // }
 
         // Start all servers
-        let bind = self.config.bind.clone().unwrap_or("0.0.0.0".to_string());
+        let bind = self.config.bind.clone().unwrap_or("127.0.0.1".to_string());
         let bind_addrs: Vec<&str> = bind.split(';').collect();
         for bind_addr in bind_addrs {
             let http_router = http_router.clone();
@@ -136,6 +136,7 @@ impl CyfsWarpServer {
                     return Err(e);
                 }
             }
+            
             if self.config.tls_port > 0 {
                 let bind_addr_https = format!("{}:{}", formatted_bind_addr, self.config.tls_port);
                 match Self::start_listen_https(
