@@ -136,7 +136,7 @@ impl CyfsWarpServer {
                     return Err(e);
                 }
             }
-            
+
             if self.config.tls_port > 0 {
                 let bind_addr_https = format!("{}:{}", formatted_bind_addr, self.config.tls_port);
                 match Self::start_listen_https(
@@ -278,7 +278,7 @@ impl CyfsWarpServer {
                     .with_single_cert(cert, key)
                     .unwrap();
                 config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-                tls_cfg_map.insert(host.clone(), Arc::new(config));
+                tls_cfg_map.insert(host.clone(), config);
             }
         }
 

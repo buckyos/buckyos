@@ -520,15 +520,15 @@ impl Router {
 }
 
 pub struct SNIResolver {
-    configs: HashMap<String, Arc<ServerConfig>>,
+    configs: HashMap<String, ServerConfig>,
 }
 
 impl SNIResolver {
-    pub fn new(configs: HashMap<String, Arc<ServerConfig>>) -> Self {
+    pub fn new(configs: HashMap<String, ServerConfig>) -> Self {
         SNIResolver { configs }
     }
 
-    fn get_config_by_host(&self,host:&str) -> Option<&Arc<ServerConfig>> {
+    fn get_config_by_host(&self,host:&str) -> Option<&ServerConfig> {
         let host_config = self.configs.get(host);
         if host_config.is_some() {
             debug!("find tls config for host: {}",host);
