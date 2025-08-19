@@ -128,6 +128,15 @@ impl Router {
             } else {
                 let mut host_config =  hosts.get("*");
                 for (key,value) in hosts.iter() {
+                    if key == "*" {
+                        continue;
+                    }
+
+                    if key == host {
+                        host_config = Some(value);
+                        break;
+                    }
+
                     if key.starts_with("*.") {
                         if host.ends_with(&key[1..]) {
                             host_config = Some(value);
