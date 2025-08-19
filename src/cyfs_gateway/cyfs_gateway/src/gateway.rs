@@ -211,7 +211,7 @@ impl Gateway {
                 }
 
                 if last_ok {
-                    tokio::time::sleep(std::time::Duration::from_secs(60 * 2)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 } else {
                     tokio::time::sleep(std::time::Duration::from_secs(15)).await;
                 }
