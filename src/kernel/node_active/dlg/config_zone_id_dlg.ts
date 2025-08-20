@@ -5,6 +5,8 @@ import {MdOutlinedTextField} from '@material/web/textfield/outlined-text-field.j
 import {MdFilledButton} from '@material/web/button/filled-button.js';
 import {MdFilledTextField} from '@material/web/textfield/filled-text-field.js';
 import { GatewayType,ActiveWizzardData,generate_key_pair,check_bucky_username,isValidDomain,generate_zone_boot_config_jwt,check_sn_active_code } from '../active_lib';
+import i18next, { waitForI18n } from '../i18n';
+import Handlebars from 'handlebars';
 
 class ConfigZoneIdDlg extends HTMLElement {
     constructor() {
@@ -18,41 +20,40 @@ class ConfigZoneIdDlg extends HTMLElement {
             return false;
         }
 
-        let chk_use_buckyos_name = shadow.getElementById('chk_use_buckyos_name') as BuckyCheckBox;
-        let chk_use_self_name = shadow.getElementById('chk_use_self_name') as BuckyCheckBox;
-        let txt_name = shadow.getElementById('txt_name') as MdOutlinedTextField;
+        const chk_use_buckyos_name = shadow.getElementById('chk_use_buckyos_name') as BuckyCheckBox;
+        const chk_use_self_domain = shadow.getElementById('chk_use_self_name') as BuckyCheckBox;
+        const txt_name = shadow.getElementById('txt_name') as MdOutlinedTextField;
+        const txt_domain = shadow.getElementById('txt_domain') as MdOutlinedTextField;
+        const txt_bucky_sn_token = shadow.getElementById('txt_bucky_sn_token') as MdOutlinedTextField;
         
-        if (txt_name.value.length < 4) {
-            txt_name.error = true;
-            txt_name.errorText = "名字长度必须大于4";
-            return false;
-        }
-        wizzard_data.sn_user_name = txt_name.value;
-
-        if (chk_use_buckyos_name.checked){
-            if (!await check_bucky_username(txt_name.value)) {
-                txt_name.error = true;
-                txt_name.errorText = "名字已被使用";
+        if (chk_use_buckyos_name.checked) {
+            if (txt_name.error) {
                 return false;
             }
-            let txt_bucky_sn_token = shadow.getElementById('txt_bucky_sn_token') as MdOutlinedTextField;
-            wizzard_data.sn_active_code = txt_bucky_sn_token.value;
-            return true;
-        }
-       
-        if (chk_use_self_name.checked){
-            let txt_domain = shadow.getElementById('txt_domain') as MdOutlinedTextField;
+            if (txt_name.value.length <= 4) {
+                txt_name.error = true;
+                txt_name.errorText = i18next.t("error_name_too_short");
+                return false;
+            }
+            if (txt_bucky_sn_token.error) {
+                return false;
+            }
+            wizzard_data.sn_user_name = txt_name.value;
+            wizzard_data.use_self_domain = false;
+        } else {
+            if (txt_domain.error) {
+                return false;
+            }
             if (!isValidDomain(txt_domain.value)) {
                 txt_domain.error = true;
-                txt_domain.errorText = "域名格式不正确";
+                txt_domain.errorText = i18next.t("error_domain_format");
                 return false;
             }
-            wizzard_data.use_self_domain = true;
             wizzard_data.self_domain = txt_domain.value;
-            return true;
+            wizzard_data.use_self_domain = true;
         }
 
-        return false;
+        return true;
     }
 
     connectedCallback() {
@@ -70,7 +71,12 @@ class ConfigZoneIdDlg extends HTMLElement {
         }
 
         const template = document.createElement('template');
-        template.innerHTML = templateContent;
+        const template_compiled = Handlebars.compile(templateContent);
+        const params = {
+            use_buckyos_domain: i18next.t("use_buckyos_domain"),
+            use_own_domain: i18next.t("use_own_domain")
+        }
+        template.innerHTML = template_compiled(params);
         const shadow = this.attachShadow({ mode: 'open' });
         shadow.appendChild(template.content.cloneNode(true));
 
@@ -97,7 +103,7 @@ class ConfigZoneIdDlg extends HTMLElement {
                     check_bucky_username(txt_name.value).then((result) => {
                         if (!result){
                             txt_name.error = true;
-                            txt_name.errorText = "名字已被使用";
+                            txt_name.errorText = i18next.t("error_name_taken");
                         }
                     });
                 }
@@ -119,7 +125,7 @@ class ConfigZoneIdDlg extends HTMLElement {
                 check_sn_active_code(sn_token).then((is_ok) => {
                     if (!is_ok) {
                         txt_bucky_sn_token.error = true;
-                        txt_bucky_sn_token.errorText = "邀请码有误";
+                        txt_bucky_sn_token.errorText = i18next.t("error_invite_code_invalid");
                     }
                 });
             }
@@ -155,7 +161,7 @@ class ConfigZoneIdDlg extends HTMLElement {
             // 移除临时元素
             document.body.removeChild(tempInput);
             
-            alert('内容已复制到剪贴板');
+            alert(i18next.t("success_copied"));
         });
 
 

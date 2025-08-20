@@ -134,7 +134,7 @@ impl RunItemControl for AppRunItem {
 
         let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
         let instance_pkg_id = self.get_instance_pkg_id(env.is_strict())?;
-        info!("install app instance pkg {}",instance_pkg_id);
+        info!("install app pkg {}",instance_pkg_id);
         let install_result = env.install_pkg(&instance_pkg_id, true,false).await
             .map_err(|e| {
                 error!("AppRunItem install pkg {} failed! {}", self.app_id, e);
@@ -241,6 +241,7 @@ impl RunItemControl for AppRunItem {
             }
             is_system_app = true;
         } else {
+
             is_system_app = false;
         }  
         

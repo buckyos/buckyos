@@ -3,6 +3,7 @@ import { WizzardDlg } from '../components/wizzard-dlg';
 import { MdFilledButton } from '@material/web/button/filled-button.js';
 import { ActiveWizzardData,do_active } from '../active_lib';
 import Handlebars from 'handlebars';
+import i18next from '../i18n';
 
 class FinalCheckDlg extends HTMLElement {
     constructor() {
@@ -39,7 +40,7 @@ class FinalCheckDlg extends HTMLElement {
             }).catch((err) => {
                 console.error('激活失败', err);
                 next_btn.disabled = false;
-                alert('激活失败:' + err);
+                alert(i18next.t("error_activation_failed") + err);
             });
         });
     }

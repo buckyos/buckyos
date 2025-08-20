@@ -149,8 +149,8 @@ impl ServicePkg {
         let result = self.execute_operation("status", params).await?;
         match result {
             0 => Ok(ServiceState::Started),
-            -1 => Ok(ServiceState::NotExist),
-            -2 => Ok(ServiceState::Deploying),
+            255 => Ok(ServiceState::NotExist),
+            254 => Ok(ServiceState::Deploying),
             _ => Ok(ServiceState::Stopped),
         }
     }

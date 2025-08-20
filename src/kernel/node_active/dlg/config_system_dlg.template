@@ -2,32 +2,30 @@
     .container {
         display: flex;
         flex-direction: column;
-        gap: 12px;
         min-width: 480px;
+        gap: 10px;
     }
 
     .button-container {
-        position: absolute;
-        bottom: 24px;
-        left: 50%;
-        transform: translateX(-50%);
+        display: flex;
+        justify-content: center; 
+        align-items: center;
     }
-
 </style>
 <div class="frame">
-    <div class="container">
-        <h3>3.设置系统访问权限</h3>
-        <div>设置管理密码</div>
-        <md-outlined-text-field  id="txt_admin_password" placeholder="设置管理密码" type="password"></md-outlined-text-field >
-        <p>再次输入密码</p>
-        <md-outlined-text-field  id="txt_password_again" placeholder="再次输入密码" type="password"></md-outlined-text-field >
-        <div>设置好友访问码后,凭访问码可访问"好友可见内容"</div>
-        <md-outlined-text-field  id="txt_friend_code" placeholder="功能暂未实现,可随意设置"></md-outlined-text-field >
-        <bucky-checkbox id="chk_enable_guest" lable="启用访客模式" check="true"></bucky-checkbox>
-        <div style="margin-top: 0px; margin-left: 28px;">启用访客模式后,任何人都可以访问您的公开内容</div>
-    </div>
+    <h3 data-i18n="title_step_3">3.设置系统访问权限</h3>
+    <div data-i18n="set_admin_password">设置管理密码</div>
+    <md-outlined-text-field  id="txt_admin_password" data-i18n-placeholder="admin_password_placeholder" placeholder="设置管理密码" type="password"></md-outlined-text-field >
+    <p data-i18n="confirm_password">再次输入密码</p>
+    <md-outlined-text-field  id="txt_password_again" data-i18n-placeholder="confirm_password_placeholder" placeholder="再次输入密码" type="password"></md-outlined-text-field >
+    <div data-i18n="friend_code_desc">设置好友访问码后,凭访问码可访问"好友可见内容"</div>
+    <md-outlined-text-field  id="txt_friend_code" data-i18n-placeholder="friend_code_placeholder" placeholder="功能暂未实现,可随意设置"></md-outlined-text-field >
+    <bucky-checkbox id="chk_enable_guest" lable="{{t "enable_guest_mode"}}" check="true"></bucky-checkbox>
+    <div style="margin-top: 0px; margin-left: 28px;" data-i18n="guest_mode_desc">启用访客模式后,任何人都可以访问您的公开内容</div>
+    <p></p>
+    <p></p>
     <div class="button-container">
-        <md-filled-button id="btn_next" style="width: 150px;">下一步</md-filled-button>
+        <md-filled-button id="btn_next" style="width: 150px;" data-i18n="next_button">下一步</md-filled-button>
     </div>
 </div>
 

@@ -11,24 +11,27 @@ import util
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
-def is_container_running(container_name,docker_image_name,docker_image_hash):
+def is_container_running(container_name,docker_image_name):
     try:
         cmd = f"docker ps -q -f name=^{container_name}$"
         output = os.popen(cmd).read().strip()
         if output:
             print(f"Container '{container_name}' is running.")
-            if docker_image_hash:
-                cmd = f"docker images --no-trunc -q '{docker_image_name}'"
-                output = os.popen(cmd).read().strip()
-                if output:
-                    if not docker_image_hash.startswith(output):
-                        print(f"Container '{container_name}' is running but with wrong image hash.")
-                    
             return True
         
         return False
     except Exception as e:
         print(f"Error checking container status: {e}")
+        return False
+    
+def is_docker_image_exist(docker_image_name):
+    try:
+        cmd = f"docker images -q {docker_image_name}"
+        output = os.popen(cmd).read().strip()
+        if output:
+            return True
+    except Exception as e:
+        print(f"Error checking docker image status: {e}")
         return False
 
 def check_port() -> bool:
@@ -66,12 +69,17 @@ if __name__ == "__main__":
 
     if is_support_docker:
         # check docker container status
-        docker_image_hash = app_instance_config.get("docker_image_hash")
+        #docker_image_hash = app_instance_config.get("docker_image_hash")
         docker_image_name = app_instance_config.get("docker_image_name")
-        if is_container_running(container_id,docker_image_name,docker_image_hash):
+        if is_container_running(container_id,docker_image_name):
             exit(0)
-        print(f"app's container {container_id} is not running")
-        exit(1)
+
+        if not is_docker_image_exist(docker_image_name):
+            print(f"app's docker image {docker_image_name} is not exist")
+            exit(255)
+        else:    
+            print(f"app's docker image exist,but container {container_id} is not running")
+            exit(1)
     else:
         if media_info_str is None:
             print(f"No media info found for appid: {full_appid}")

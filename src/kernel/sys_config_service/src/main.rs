@@ -523,6 +523,7 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
                     let mut trust_keys = TRUST_KEYS.lock().await;
                     trust_keys.insert(owner_did.to_string(), owner_public_key.clone());
                     trust_keys.insert("root".to_string(), owner_public_key.clone());
+                    trust_keys.insert("$default".to_string(), owner_public_key.clone());
                     info!(
                         "update owner_public_key [{}],[{}] to trust keys",
                         owner_did.to_string(),

@@ -3,62 +3,45 @@ import sys
 import tempfile
 import shutil
 import subprocess
-import perpare_installer
 from datetime import datetime
+import perpare_offical_installer
+from pathlib import Path
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 rootfs_dir = os.path.join(src_dir, "rootfs")
 installer_script = os.path.join(src_dir, "publish", "installer.iss")
+result_base_dir = "/opt/buckyosci/publish"
+dest_dir = Path("/") / "opt" / "buckyosci" / "windows-installer"
 
-def make_installer(version, date, onlyBuild, noBuild):
-    root_dir = os.path.join(src_dir, "buckyos_installer")
-    dest_dir = os.path.join(root_dir, "rootfs")
-    if not onlyBuild:
-        if os.path.exists(root_dir):
-            shutil.rmtree(root_dir)
-        os.makedirs(root_dir)
-        shutil.copy(installer_script, os.path.join(root_dir, "installer.iss"))
+def make_installer(architecture, version):
+    print(f"make deb with architecture: {architecture}, version: {version}")
+    result_dir = os.path.join(result_base_dir, version)
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir)
 
-        perpare_installer.prepare_installer(dest_dir, "nightly", "windows", "amd64", version, date)
+    if not os.path.exists(dest_dir):
+        os.makedirs(dest_dir)
 
-        print(f"download home-station...")
-        app_bin_dir = os.path.join(dest_dir, "bin", "home-station")
-        if not os.path.exists(app_bin_dir):
-            print("downloading filebrowser app on windows")
-            os.makedirs(app_bin_dir,exist_ok=True)
+    shutil.copy(installer_script, dest_dir)
+    print(f"copy installer script to {dest_dir}")
 
-            import urllib.request
-            import zipfile
-            [tmp_path, msg] = urllib.request.urlretrieve("https://web3.buckyos.io/static/home-station-win.zip")
+    # dest_dir is rootfs, collection items to this NEW rootfs
+    perpare_offical_installer.prepare_rootfs_for_installer(dest_dir / "rootfs",  "windows", architecture, version)
 
-            with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
-                zip_ref.extractall(app_bin_dir)
-            os.remove(tmp_path)
-    else:
-        shutil.copy(installer_script, os.path.join(root_dir, "installer.iss"))
-    
-    if not noBuild:
-        print(f"run build in {root_dir}")
-        subprocess.run(f"iscc /DMyAppVersion={version} /DAllowArch=x64os .\\installer.iss", shell=True, check=True, cwd=root_dir)
-        print(f"build installer success at {root_dir}")
-        shutil.copy(f"{root_dir}/buckyos-installer-{version}.exe", src_dir)
-        print(f"copy installer to {src_dir}")
+    print(f"run build in {dest_dir}")
+    subprocess.run(f"iscc /DMyAppVersion={version} /DAllowArch=x64os .\\installer.iss", shell=True, check=True, cwd=dest_dir)
+    print(f"build installer success at {dest_dir}")
+    shutil.copy(f"{dest_dir}/buckyos-x64os-{version}.exe", result_base_dir)
+    print(f"copy installer to {result_base_dir}")
 
 if __name__ == "__main__":
-    print("make sure YOU already run build.py!!!")
-    version = "0.4.0"
-    date = datetime.now().strftime("%Y%m%d")
-    onlyBuild = False
-    noBuild = False
-    for arg in sys.argv:
-        if arg == "--only-build":
-            onlyBuild = True
-        elif arg == "--no-build":
-            noBuild = True
-        elif arg.startswith("--builddate="):
-            date = arg.split("=")[1]
-        elif arg.startswith("--version="):
-            version = arg.split("=")[1]
-        else:
-            version = arg
-    make_installer(version, date, onlyBuild, noBuild)
+    if len(sys.argv) != 3:
+        print("Usage: python make_win_installer.py <architecture> <version>")
+        print("  - python make_win_installer.py amd64 0.4.1+build250724")
+        print("  - python make_win_installer.py aarch64 0.4.1+build250724")
+        sys.exit(1)
+    architecture = sys.argv[1]
+    version = sys.argv[2]
+    if architecture == "x86_64":
+        architecture = "amd64"
+    make_installer(architecture, version)

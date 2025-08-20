@@ -21,27 +21,27 @@
 
 </style>
 <div class="frame">
-    <h3>4. 激活前最后确认</h3>
+    <h3 data-i18n="title_step_4">4. 激活前最后确认</h3>
     <div class="container">
         <div style="margin-top: 0px; margin-left:5px;gap:4px">
             <ul>
-                <li>用户名:{{sn_user_name}}</li>
+                <li><span data-i18n="username_label">用户名:</span>{{sn_user_name}}</li>
                 {{#if use_self_domain}}
-                <li>访问域名: <a href="https://{{self_domain}}">https://{{self_domain}}</a> </li>
+                <li><span data-i18n="access_domain">访问域名:</span> <a href="https://{{self_domain}}">https://{{self_domain}}</a> </li>
                 {{else}}
-                <li>访问域名: <a href="https://{{sn_user_name}}.{{web3_base_host}}" target="_blank">https://{{sn_user_name}}.{{web3_base_host}}</a> </li>
+                <li><span data-i18n="access_domain">访问域名:</span> <a href="https://{{sn_user_name}}.{{web3_base_host}}" target="_blank">https://{{sn_user_name}}.{{web3_base_host}}</a> </li>
                 {{/if}}
                 {{#if is_direct_connect}}
-                <li>访问链路:直接连接到您的Personal Server</li>
+                <li data-i18n="access_method_direct">访问链路:直接连接到您的Personal Server</li>
                 {{else}}
-                <li>访问链路:使用buckyos.ai提供的Web3网桥</li>
+                <li data-i18n="access_method_bridge">访问链路:使用buckyos.ai提供的Web3网桥</li>
                 {{/if}}
             </ul>
         </div>
-        <p>请妥善保管以下私钥,激活后将无法查看!</p>
-        <p>私钥丢失后将无法找回,会造成不可挽回的损失,请务必妥善保管.</p>
-        <p>私钥泄露后会造成数据或财产的损失,因此请使用非电子方式保管秘钥.</p>
-        <md-filled-text-field id="txt_private_key" type="textarea" label="Owner Private Key" disabled="true"
+        <p data-i18n="private_key_warning1">请妥善保管以下私钥,激活后将无法查看!</p>
+        <p data-i18n="private_key_warning2">私钥丢失后将无法找回,会造成不可挽回的损失,请务必妥善保管.</p>
+        <p data-i18n="private_key_warning3">私钥泄露后会造成数据或财产的损失,因此请使用非电子方式保管秘钥.</p>
+        <md-filled-text-field id="txt_private_key" type="textarea" data-i18n-label="owner_private_key" label="Owner Private Key" disabled="true"
         value="{{owner_private_key}}"
         rows="5">
         </md-filled-text-field>
@@ -49,7 +49,7 @@
     <p></p>
     <p></p>
     <div class="button-container">
-        <md-filled-button id="btn_next" style="width: 150px;">激活!</md-filled-button>
+        <md-filled-button id="btn_next" style="width: 150px;" data-i18n="activate_button">激活!</md-filled-button>
     </div>
 </div>
 

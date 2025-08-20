@@ -5,14 +5,14 @@ import { GatewayType,ActiveWizzardData,check_sn_active_code,set_sn_api_url,SN_AP
 import {MdOutlinedTextField} from '@material/web/textfield/outlined-text-field.js';
 import {MdFilledButton} from '@material/web/button/filled-button.js';
 import Handlebars from 'handlebars';
-import i18next from '../i18n';
+import i18next, { waitForI18n } from '../i18n';
 
 
 Handlebars.registerHelper('t', function(key, options) {
     const params = options && options.hash || {};
 
     let result = i18next.t(key, params);
-    console.log(key,result);
+    //console.log(key,result);
     return result;
 });
 
@@ -47,7 +47,7 @@ class ConfigGatewayDlg extends HTMLElement {
             }
 
             if (txt_bucky_sn_token.value.length < 8) {
-                alert("邀请码长度必须大于8位");
+                alert(i18next.t("error_invite_code_too_short"));
                 return false;
             }
 
@@ -71,7 +71,10 @@ class ConfigGatewayDlg extends HTMLElement {
     connectedCallback() {
         const template = document.createElement('template');
         const template_compiled = Handlebars.compile(templateContent);
-        const params = {}
+        const params = {
+            invite_code_placeholder: i18next.t("invite_code_placeholder"),
+            custom_sn_placeholder: i18next.t("custom_sn_placeholder")
+        }
         template.innerHTML = template_compiled(params);
         const shadow = this.attachShadow({ mode: 'open' });
         shadow.appendChild(template.content.cloneNode(true));
@@ -87,7 +90,7 @@ class ConfigGatewayDlg extends HTMLElement {
                 this.check_bucky_sn_token(sn_token).then((is_ok) => {
                     if (!is_ok) {
                         txt_bucky_sn_token.error = true;
-                        txt_bucky_sn_token.errorText = "邀请码有误";
+                        txt_bucky_sn_token.errorText = i18next.t("error_invite_code_invalid");
                     }
                 });
             }
