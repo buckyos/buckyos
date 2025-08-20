@@ -70,6 +70,9 @@ def pack_packages(pkg_dir, target_dir):
 
 
 def copy_rootfs(src_dir:str, target_dir:str):
+    if not os.path.exists(src_dir):
+        print(f"Source directory does not exist: {src_dir}, skip")
+        return
     if os.path.exists(target_dir):
         shutil.rmtree(target_dir)
     os.makedirs(target_dir)

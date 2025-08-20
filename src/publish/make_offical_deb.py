@@ -57,8 +57,6 @@ def make_deb(architecture, version):
     print(f"move deb from {deb_root_dir}/{architecture}.deb to {dst_deb_path}")
 
 if __name__ == "__main__":
-
-
     if len(sys.argv) != 3:
         print("Usage: python make_offical_deb.py <architecture> <version>")
         print("  - python make_offical_deb.py amd64 0.4.1+build250724")

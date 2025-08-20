@@ -93,20 +93,35 @@ def download_from_github_url(github_url):
             file_name = 'artifact.zip'
         print("\tFile name:", file_name)
         save_path = download_base_dir / file_name
+        if os.path.exists(save_path):
+            print(f"File {save_path} already exists, checking length.")
+            existing_size = os.path.getsize(save_path)
+            if existing_size == int(file_length):
+                print(f"File {save_path} already exists and is complete, skipping download.")
+                return save_path
+            else:
+                print(f"File {save_path} exists but is incomplete, remove and downloading again.")
+                os.remove(save_path)
         print("\tSaving to file:", save_path)
         with open(save_path, 'wb') as f:
             for chunk in resp.iter_content(chunk_size=8192):
                 f.write(chunk)
+        
+        return save_path
     else:
         print(f"Failed to download artifact from {gh_api_url}, status code: {resp.status_code}")
-        return
+        return None
         
         
 
-def download_rootfs(version):
+def download_rootfs(version, os_str, arch):
     # do download
     # get github artifact url from official test server
     query_url = f"https://buckyos.ai/version/?version={urllib.parse.quote(version)}"
+    if os_str:
+        query_url += f"&os={urllib.parse.quote(os_str)}"
+    if arch:
+        query_url += f"&arch={urllib.parse.quote(arch)}"
     print(f"Qureying artifacts from official test server...")
     with urllib.request.urlopen(query_url) as response:
         if response.status != 200:
@@ -115,32 +130,35 @@ def download_rootfs(version):
         data = response.read().decode('utf-8')
         versions = json.loads(data)
         for item in versions['items']:
-            print(f"downloading buckyos: {item['os']}-{item['arch']}-{item['version']}")
-            download_from_github_url(item['url'])
-    # unzip rootfs
-    
-    for os_name in system_list:
-        for machine_name in machine_list:
-            if os_name == "windows" and machine_name == "aarch64":
+            if item['os'] == "windows" and item['arch'] == "aarch64":
+                print("Skipping windows aarch64 rootfs")
                 continue
-            rootfs_id = f"buckyos-{os_name}-{machine_name}"
+            rootfs_id = f"buckyos-{item['os']}-{item['arch']}"
             target_dir = os.path.join(buckyosci_rootfs_dir, version, rootfs_id)
+            if os.path.exists(target_dir):
+                print(f"Rootfs already exists for {rootfs_id}, skipping download.")
+                continue
+            print(f"downloading buckyos: {item['os']}-{item['arch']}-{item['version']}")
+            zipfile = download_from_github_url(item['url'])
+            if not zipfile:
+                print(f"Failed to download artifact for {item['os']}-{item['arch']}")
+                break
+            
+            print(f"Extracting rootfs for {rootfs_id}")
             if not os.path.exists(target_dir):
                 os.makedirs(target_dir)
-            zipfile = os.path.join(download_base_dir, f"buckyos-{os_name}-{machine_name}-{version}.zip")
             unzip_rootfs(zipfile, target_dir)
-
-
-    pass
 
 if __name__ == "__main__":
     #version = "0.4.0+build250724"
     version = sys.argv[1]
+    os_str = sys.argv[2] if len(sys.argv) > 2 else None
+    arch = sys.argv[3] if len(sys.argv) > 3 else None
     if not os.path.exists(download_base_dir):
         os.makedirs(download_base_dir)
     if not os.path.exists(buckyosci_rootfs_dir):
         os.makedirs(buckyosci_rootfs_dir)
-    download_rootfs(version)
+    download_rootfs(version, os_str, arch)
     print("download_rootfs done")
 
 
