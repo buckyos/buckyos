@@ -1,9 +1,7 @@
 import os
 import sys
-import tempfile
 import shutil
 import subprocess
-from datetime import datetime
 import perpare_offical_installer
 from pathlib import Path
 
@@ -14,13 +12,13 @@ result_base_dir = "/opt/buckyosci/publish"
 dest_dir = Path("/") / "opt" / "buckyosci" / "windows-installer"
 
 def make_installer(architecture, version):
-    print(f"make deb with architecture: {architecture}, version: {version}")
+    print(f"make installer with architecture: {architecture}, version: {version}")
     result_dir = os.path.join(result_base_dir, version)
     if not os.path.exists(result_dir):
         os.makedirs(result_dir)
 
-    if not os.path.exists(dest_dir):
-        os.makedirs(dest_dir)
+    shutil.rmtree(dest_dir, ignore_errors=True)
+    os.makedirs(dest_dir)
 
     shutil.copy(installer_script, dest_dir)
     print(f"copy installer script to {dest_dir}")
@@ -29,9 +27,10 @@ def make_installer(architecture, version):
     perpare_offical_installer.prepare_rootfs_for_installer(dest_dir / "rootfs",  "windows", architecture, version)
 
     print(f"run build in {dest_dir}")
-    subprocess.run(f"iscc /DMyAppVersion={version} /DAllowArch=x64os .\\installer.iss", shell=True, check=True, cwd=dest_dir)
+    iscc_arch = "x64os" if architecture == "amd64" else "arm64os"
+    subprocess.run(f"iscc /DMyAppVersion={version} /DAllowArch={iscc_arch} .\\installer.iss", shell=True, check=True, cwd=dest_dir)
     print(f"build installer success at {dest_dir}")
-    shutil.copy(f"{dest_dir}/buckyos-x64os-{version}.exe", result_base_dir)
+    shutil.copy(f"{dest_dir}/buckyos-{iscc_arch}-{version}.exe", os.path.join(result_dir, f"buckyos-windows-{architecture}-{version}.exe"))
     print(f"copy installer to {result_base_dir}")
 
 if __name__ == "__main__":
