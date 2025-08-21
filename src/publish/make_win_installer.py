@@ -7,8 +7,8 @@ from pathlib import Path
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 installer_script = os.path.join(src_dir, "publish", "installer.iss")
-result_root_dir = os.environ.get("BUCKYOS_BUILD_DIR", "/opt/buckyosci")
-publish_dir = os.path.join(result_root_dir, "publish_dir")
+result_root_dir = os.environ.get("BUCKYOS_BUILD_ROOT", "/opt/buckyosci")
+publish_dir = os.path.join(result_root_dir, "publish")
 tmp_install_dir = os.path.join(result_root_dir, "win-installer")
 
 def make_installer(architecture, version):
@@ -24,7 +24,7 @@ def make_installer(architecture, version):
     print(f"copy installer script to {tmp_install_dir}")
 
     # dest_dir is rootfs, collection items to this NEW rootfs
-    perpare_offical_installer.prepare_rootfs_for_installer(tmp_install_dir / "rootfs",  "windows", architecture, version)
+    perpare_offical_installer.prepare_rootfs_for_installer(os.path.join(tmp_install_dir, "rootfs"),  "windows", architecture, version)
 
     print(f"run build in {tmp_install_dir}")
     iscc_arch = "x64os" if architecture == "amd64" else "arm64os"

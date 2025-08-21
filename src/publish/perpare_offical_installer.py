@@ -16,7 +16,7 @@ import platform
 from urllib.request import urlretrieve
 
 publish_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
-buckyosci_base = "/opt/buckyosci"
+buckyosci_base = os.environ.get("BUCKYOS_BUILD_ROOT", "/opt/buckyosci")
 packed_pkg_base_dir = os.path.join(buckyosci_base, "pack_pkgs")
 rootfs_base_dir = packed_pkg_base_dir
 base_meta_db_url = "https://buckyos.ai/ndn/repo/meta_index.db/content"
@@ -82,20 +82,23 @@ def prepare_meta_db(rootfs_dir,packed_pkgs_dir):
     
     os.makedirs(os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs"), exist_ok=True)
     root_env_db_path = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs","meta_index.db")
-    shutil.copy(meta_db_path, root_env_db_path)
+    shutil.copyfile(meta_db_path, root_env_db_path)
     # subprocess.run(["wget",base_meta_db_url,"-O",root_env_db_path], check=True)
     print(f"# copy {meta_db_path} => {root_env_db_path}")
 
     fileobj_path = os.path.join(rootfs_dir, "local", "node_daemon", "root_pkg_env","pkgs", "meta_index.db.fileobj")
-    shutil.copy(meta_db_fileobj_path, fileobj_path)
+    try: 
+        shutil.copy(meta_db_fileobj_path, fileobj_path)
+    except shutil.SameFileError:
+        pass  # 如果文件已经存在且相同，则忽略错误
     print(f"# copy {meta_db_fileobj_path} => {fileobj_path}")
 
     repo_meta_db_path = os.path.join(rootfs_dir, "data", "repo-service", "default_meta_index.db")
-    shutil.copy(meta_db_path, repo_meta_db_path)
+    shutil.copyfile(meta_db_path, repo_meta_db_path)
     print(f"# copy {meta_db_path} => {repo_meta_db_path}")
     
     fileobj_path = os.path.join(rootfs_dir, "data", "repo-service", "default_meta_index.db.fileobj")
-    shutil.copy(meta_db_fileobj_path, fileobj_path)
+    shutil.copyfile(meta_db_fileobj_path, fileobj_path)
     print(f"# copy {meta_db_fileobj_path} => {fileobj_path}")
 
 
