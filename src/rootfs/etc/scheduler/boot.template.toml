@@ -106,8 +106,7 @@
         "www":80
     },
     "udp_ports" : {
-    },
-    "container_param": "--privileged"
+    }
 }
 """
 
