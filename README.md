@@ -40,13 +40,13 @@ Suitable for x86\_64 Linux distributions using `apt` or WSL2. The process takes 
 To install on x86\_64:
 
 ```bash
-wget https://www.buckyos.ai/static/buckyos_amd64.deb && dpkg -i ./buckyos_amd64.deb
+wget https://buckyos.ai/static/buckyos-amd64-latest.deb && sudo apt -f install ./buckyos-amd64-latest.deb
 ```
 
 To install on ARM devices (like Raspberry Pi):
 
 ```bash
-wget https://www.buckyos.ai/static/buckyos_aarch64.deb && dpkg -i ./buckyos_aarch64.deb
+wget https://buckyos.ai/static/buckyos-aarch64-latest.deb && sudo apt -f install ./buckyos-aarch64-latest.deb
 ```
 
 The installer will automatically download dependencies and default application Docker images, so make sure your internet connection is stable and can access apt/pip/Docker repositories.
