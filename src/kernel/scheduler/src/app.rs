@@ -56,13 +56,14 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
     let app_config_path = format!("users/{}/apps/{}/config",user_id,app_id);
     let app_config = input_config.get(&app_config_path);
     if app_config.is_none() {
+        warn!("app_config: {} not found",app_config_path);
         return Err(anyhow::anyhow!("app_config: {} not found",app_config_path));
     }
     let app_config = app_config.unwrap();
     debug!("will instance_app_service app_config: {}",app_config);
     let app_config = serde_json::from_str(&app_config);
     if app_config.is_err() {
-        println!("{:?}",app_config.err());
+        warn!("app_config: {} is not a valid json",app_config_path);
         return Err(anyhow::anyhow!("app_config: {} is not a valid json",app_config_path));
     }
     let app_config : AppConfig = app_config.unwrap();
@@ -82,7 +83,8 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
     result.insert(format!("nodes/{}/config",new_instance.node_id),app_service_config_set_action);
 
     //write to gateway_config
-    let http_port = app_service_config.get_http_port();
+    let app_www_port = app_config.tcp_ports.get("www").unwrap_or(&80);
+    let http_port = app_service_config.get_http_port(*app_www_port);
     if http_port.is_some() {
         let http_port = http_port.unwrap();
         let app_prefix;
