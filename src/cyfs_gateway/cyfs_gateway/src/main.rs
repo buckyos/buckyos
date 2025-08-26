@@ -165,10 +165,15 @@ async fn main() {
         std::process::exit(0);
     }
 
-    // init log
-    //std::env::set_var("BUCKY_LOG", "debug");
-    init_logging("cyfs_gateway",true);
-    info!("cyfs_gateway start...");
+    if matches.get_flag("debug") {
+        std::env::set_var("RUST_BACKTRACE", "1");
+        buckyos_tracing::init_tracing("cyfs_gateway", true).await;
+        info!("cyfs_gateway start...");
+    } else {
+        //std::env::set_var("BUCKY_LOG", "debug");
+        init_logging("cyfs_gateway", true);
+        info!("cyfs_gateway start...");
+    }
 
     let config_json: serde_json::Value = load_config_from_args(&matches)
         .await
@@ -177,20 +182,16 @@ async fn main() {
             std::process::exit(1);
         })
         .unwrap();
-    
-    //let config_json : Value = config_json.unwrap();
-    info!("Gateway config: {}", serde_json::to_string_pretty(&config_json).unwrap());
 
-    if matches.get_flag("debug") {
-        info!("Debug mode enabled");
-        std::env::set_var("RUST_BACKTRACE", "1");
-        console_subscriber::init();
-    }
+    //let config_json : Value = config_json.unwrap();
+    info!(
+        "Gateway config: {}",
+        serde_json::to_string_pretty(&config_json).unwrap()
+    );
 
     if let Err(e) = service_main(config_json, &matches).await {
         error!("Gateway run error: {}", e);
     }
-
 }
 
 #[cfg(test)]

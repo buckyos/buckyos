@@ -21,8 +21,8 @@ bytes = "*"
 dirs = "*"
 once_cell = "*"
 anyhow = "*"
-
-buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
+buckyos-kit= { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
+buckyos-tracing = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-tracing" }
 name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client" }
 name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib" }
 
