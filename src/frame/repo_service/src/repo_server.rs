@@ -594,12 +594,16 @@ impl RepoServer {
         let ndn_client = NdnClient::new(root_source_url.clone(), Some(session_token), None);
 
         let is_better = ndn_client
-            .local_is_better(
+            .remote_is_better(
                 root_source_url.as_str(),
                 &self.get_my_default_meta_index_db_path(),
             )
-            .await;
-        if is_better.is_ok() && is_better.unwrap() {
+            .await
+            .map_err(|e| {
+                error!("check remote meta-index-db is better than local meta-index-db failed, err:{}", e);
+                RPCErrors::ReasonError(format!("check remote meta-index-db is better than local meta-index-db failed, err:{}", e))
+            })?;
+        if !is_better {
             info!("local meta-index-db is better than remote, will not download");
             return Ok(RPCResponse::new(
                 RPCResult::Success(json!({
@@ -608,10 +612,6 @@ impl RepoServer {
                 req.id,
             ));
         }
-        info!(
-            "remote is better, will download remote meta-index-db by {}",
-            root_source_url
-        );
 
         ndn_client
             .download_fileobj_to_local(root_source_url.as_str(), &new_meta_index_db_path, None)

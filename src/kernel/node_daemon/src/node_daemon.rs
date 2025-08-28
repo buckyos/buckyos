@@ -294,7 +294,6 @@ async fn make_sure_system_pkgs_ready(meta_db_path: &PathBuf,prefix: &str,session
         info!("make_sure_system_pkgs_ready: pull chunk {} success", chunk_id.to_string());
     }
 
-
     Ok(())
 }
 
@@ -306,8 +305,12 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
     let zone_repo_index_db_url = "http://127.0.0.1/ndn/repo/meta_index.db";
     let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
     
-    let local_is_better = ndn_client.local_is_better(zone_repo_index_db_url,&meta_db_file_patgh).await;
-    if local_is_better.is_ok() && local_is_better.unwrap() {
+    let remote_is_better = ndn_client.remote_is_better(zone_repo_index_db_url,&meta_db_file_patgh).await
+        .map_err(|e| {
+            error!("check remote meta-index.db is better than local meta-index.db failed, err:{}", e);
+            return String::from("check remote meta-index.db is better than local meta-index.db failed!");
+        })?;
+    if !remote_is_better {
         info!("local meta-index.db is better than repo's default meta-index.db, no need to update!");
         return Ok(false);
     }
