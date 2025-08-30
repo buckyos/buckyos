@@ -302,6 +302,7 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
     let mut root_env = PackageEnv::new(root_env_path.clone());
     let meta_db_file_patgh = root_env_path.join("pkgs").join("meta_index.db");
 
+    //TODO:beta1 需要得到正确的repo service地址
     let zone_repo_index_db_url = "http://127.0.0.1/ndn/repo/meta_index.db";
     let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
     
@@ -322,7 +323,7 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
             error!("download remote index db to root pkg env's meta-Index db failed! {}", err);
             return String::from("download remote index db to root pkg env's meta-Index db failed!");
         })?;
-    info!("download new meta-index.db success,update root env's meta-index.db..");
+    info!("download new meta-index.db success, will update root env's meta-index.db..");
 
     let prefix = root_env.get_prefix();
     make_sure_system_pkgs_ready(&download_path, &prefix, session_token.clone()).await?;

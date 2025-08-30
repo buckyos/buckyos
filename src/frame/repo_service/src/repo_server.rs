@@ -18,6 +18,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::{env, hash::Hash};
+use std::time::Duration;
 use tokio::io::AsyncSeekExt;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -90,10 +91,16 @@ install_pkg:
 
 */
 
+fn default_enable_auto_sync() -> bool { true }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoServerSetting {
     remote_source: HashMap<String, String>,
     enable_dev_mode: bool,
+    #[serde(default = "default_enable_auto_sync")]
+    enable_auto_sync: bool,
+    #[serde(flatten)]
+    pub configs:HashMap<String,String>,
 }
 
 impl Default for RepoServerSetting {
@@ -101,7 +108,9 @@ impl Default for RepoServerSetting {
         Self {
             remote_source: HashMap::new(),
             enable_dev_mode: false,
-        }
+            enable_auto_sync:false,
+            configs:HashMap::new(),
+        }   
     }
 }
 
@@ -119,14 +128,24 @@ impl RepoServer {
         Ok(RepoServer { setting: config })
     }
 
-    pub async fn init_check(&self) -> Result<(), RPCErrors> {
+    pub async fn init(&self) -> Result<(), RPCErrors> {
+        if self.setting.enable_auto_sync {
+            info!("Repo Service enable auto sync, will sync from remote meta-index-db");
+            let setting = self.setting.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    RepoServer::do_sycn_from_remote_source(&setting).await;
+                }
+            });
+        }
+
         let get_result = NamedDataMgr::get_obj_id_by_path(None, "/repo/meta_index.db").await;
         if get_result.is_ok() {
-            let default_meta_index_db_path = self.get_my_default_meta_index_db_path();
+            let default_meta_index_db_path = RepoServer::get_my_default_meta_index_db_path();
             if !default_meta_index_db_path.exists() {
                 info!("default meta-index-db found, but not set to NDN, bind it");
-                let mut file_object =
-                    FileObject::new("meta_index.db".to_string(), 0, String::new());
+                let mut file_object = FileObject::new("meta_index.db".to_string(), 0, String::new());
                 NamedDataMgr::pub_local_file_as_fileobj(
                     None,
                     &default_meta_index_db_path,
@@ -151,7 +170,6 @@ impl RepoServer {
 
     //成功返回需要下载的chunkid列表
     async fn get_need_chunk_in_remote_index_db(
-        &self,
         new_meta_index_db_path: &PathBuf,
     ) -> Result<HashMap<String, WillDownloadPkgInfo>, RPCErrors> {
         let meta_index_db =
@@ -164,8 +182,8 @@ impl RepoServer {
                 RPCErrors::ReasonError(format!("open new meta-index-db failed, err:{}", e))
             })?;
 
-        let pin_pkg_list = self.get_pin_pkg_list().await?;
-        let mut chunk_list: HashMap<String, WillDownloadPkgInfo> = HashMap::new();
+        let pin_pkg_list = RepoServer::get_pin_pkg_list().await?;
+        let mut download_list: HashMap<String, WillDownloadPkgInfo> = HashMap::new();
         let mut deps_metas: HashMap<String, PackageMeta> = HashMap::new();
         for (pkg_id, _chunk_id) in pin_pkg_list.iter() {
             let pkg_meta = meta_index_db.get_pkg_meta(pkg_id.as_str());
@@ -196,7 +214,7 @@ impl RepoServer {
                     RPCErrors::ReasonError(format!("cacl_pkg_deps_metas failed, err:{}", e))
                 })?;
             if pkg_meta.chunk_id.is_some() {
-                chunk_list.insert(
+                download_list.insert(
                     pkg_meta.chunk_id.clone().unwrap(),
                     WillDownloadPkgInfo {
                         pkg_name: pkg_meta.pkg_name.clone(),
@@ -210,7 +228,7 @@ impl RepoServer {
 
         for (pkg_meta_obj_id, pkg_meta) in deps_metas.iter() {
             if pkg_meta.chunk_id.is_some() {
-                chunk_list.insert(
+                download_list.insert(
                     pkg_meta.chunk_id.clone().unwrap(),
                     WillDownloadPkgInfo {
                         pkg_name: pkg_meta.pkg_name.clone(),
@@ -221,12 +239,12 @@ impl RepoServer {
                 );
             }
         }
-        return Ok(chunk_list);
+        return Ok(download_list);
     }
 
-    fn get_source_meta_index_db_path(&self, source: &str) -> PathBuf {
+    fn get_source_meta_index_db_path(source: &str) -> PathBuf {
         if source == "root" {
-            return self.get_my_default_meta_index_db_path();
+            return RepoServer::get_my_default_meta_index_db_path();
         }
 
         let runtime = get_buckyos_api_runtime().unwrap();
@@ -234,26 +252,26 @@ impl RepoServer {
         return path;
     }
 
-    fn get_my_pub_meta_index_db_path(&self) -> PathBuf {
+    fn get_my_pub_meta_index_db_path() -> PathBuf {
         let runtime = get_buckyos_api_runtime().unwrap();
         let path = runtime.get_data_folder().join("pub_meta_index.db");
         return path;
     }
 
-    fn get_my_wait_pub_meta_index_db_path(&self) -> PathBuf {
+    fn get_my_wait_pub_meta_index_db_path() -> PathBuf {
         let runtime = get_buckyos_api_runtime().unwrap();
         let path = runtime.get_data_folder().join("wait_pub_meta_index.db");
         return path;
     }
 
-    fn get_my_default_meta_index_db_path(&self) -> PathBuf {
+    fn get_my_default_meta_index_db_path() -> PathBuf {
         let runtime = get_buckyos_api_runtime().unwrap();
         let path = runtime.get_data_folder().join("default_meta_index.db");
         return path;
     }
 
     async fn try_create_wait_pub_meta_index_db(&self) -> Result<(), RPCErrors> {
-        let wait_pub_meta_index_db_path = self.get_my_wait_pub_meta_index_db_path();
+        let wait_pub_meta_index_db_path = RepoServer::get_my_wait_pub_meta_index_db_path();
 
         // 检查文件是否存在
         if !wait_pub_meta_index_db_path.exists() {
@@ -372,7 +390,7 @@ impl RepoServer {
         Ok(())
     }
 
-    async fn get_pin_pkg_list(&self) -> Result<HashMap<String, String>, RPCErrors> {
+    async fn get_pin_pkg_list() -> Result<HashMap<String, String>, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
         let sys_config_client = runtime.get_system_config_client().await?;
         let sys_config_path = runtime.get_my_sys_config_path("pkg_list");
@@ -415,7 +433,7 @@ impl RepoServer {
                 RPCErrors::ReasonError(format!("parse pkg_list failed, err:{}", e))
             })?;
 
-        let root_meta_db = self.get_source_meta_index_db_path("root");
+        let root_meta_db = RepoServer::get_source_meta_index_db_path("root");
         let root_meta_db = MetaIndexDb::new(root_meta_db, true).map_err(|e| {
             error!("open root meta-index-db failed, err:{}", e);
             RPCErrors::ReasonError(format!("open root meta-index-db failed, err:{}", e))
@@ -558,59 +576,40 @@ impl RepoServer {
             req.id,
         ))
     }
-    // 将source-meta-index更新到最新版本
-    async fn handle_sync_from_remote_source(
-        &self,
-        req: RPCRequest,
-    ) -> Result<RPCResponse, RPCErrors> {
+
+
+    async fn do_sycn_from_remote_source(setting: &RepoServerSetting) -> Result<(), RPCErrors> {
         // 该操作可能会修改default_meta_index_db_path，需要加锁
         let _lock = DEFAULT_META_INDEX_DB_LOCK.lock().await;
-        let runtime = get_buckyos_api_runtime()?;
-        let _r = runtime
-            .enforce(&req, "write", "dfs://system/data/repo/meta_index.db")
-            .await?;
+
 
         //尝试拿到sync操作的锁，拿不到则说明已经在处理了
         //1.先下载并验证远程版本到临时db
         //let will_update_source_list = self.settng.remote_source.keys().cloned();
         //let key_map = HashMap::new();
-        let root_source_url = self.setting.remote_source.get("root");
+        let root_source_url = setting.remote_source.get("root");
         if root_source_url.is_none() {
             error!("handle_sync_from_remote_source error:root source not found");
             return Err(RPCErrors::ReasonError("root source not found".to_string()));
         }
         let root_source_url = root_source_url.unwrap();
 
-        info!(
-            "update meta-index-db:source {}, download url:{}",
-            "root", root_source_url
-        );
-        let new_meta_index_db_path = self
-            .get_my_default_meta_index_db_path()
-            .with_extension("download");
+        info!("update meta-index-db:source tag root, download url:{}",root_source_url);
+        let new_meta_index_db_path = RepoServer::get_my_default_meta_index_db_path().with_extension("download");
 
         let runtime = get_buckyos_api_runtime()?;
         let session_token = runtime.get_session_token().await;
         let ndn_client = NdnClient::new(root_source_url.clone(), Some(session_token), None);
 
-        let is_better = ndn_client
-            .remote_is_better(
-                root_source_url.as_str(),
-                &self.get_my_default_meta_index_db_path(),
-            )
-            .await
+        let is_better = ndn_client.remote_is_better(root_source_url.as_str(),&RepoServer::get_my_default_meta_index_db_path()).await
             .map_err(|e| {
                 error!("check remote meta-index-db is better than local meta-index-db failed, err:{}", e);
                 RPCErrors::ReasonError(format!("check remote meta-index-db is better than local meta-index-db failed, err:{}", e))
             })?;
+
         if !is_better {
-            info!("local meta-index-db is better than remote, will not download");
-            return Ok(RPCResponse::new(
-                RPCResult::Success(json!({
-                    "success": true,
-                })),
-                req.id,
-            ));
+            info!("local meta-index-db is better than remote, will not sync from remote meta-index-db");
+            return Ok(());
         }
 
         ndn_client
@@ -627,9 +626,9 @@ impl RepoServer {
                 ))
             })?;
 
-        let need_check_chunk_list = self
-            .get_need_chunk_in_remote_index_db(&new_meta_index_db_path)
+        let need_check_chunk_list = RepoServer::get_need_chunk_in_remote_index_db(&new_meta_index_db_path)
             .await;
+
         if need_check_chunk_list.is_err() {
             error!("check_new_remote_index failed, source:{}", "root");
             return Err(RPCErrors::ReasonError(
@@ -684,10 +683,20 @@ impl RepoServer {
                 })?;
         }
 
-        let current_meta_index_db_path = self.get_my_default_meta_index_db_path();
+        let current_meta_index_db_path = RepoServer::get_my_default_meta_index_db_path();
         RepoServer::replace_file(&current_meta_index_db_path, &new_meta_index_db_path).await?;
 
-        self.create_new_default_meta_index_db("root").await?;
+        RepoServer::create_new_default_meta_index_db("root").await?;
+        Ok(())
+    }
+
+    // 将source-meta-index更新到最新版本
+    async fn handle_sync_from_remote_source(
+        &self,
+        req: RPCRequest,
+    ) -> Result<RPCResponse, RPCErrors> {
+
+        RepoServer::do_sycn_from_remote_source(&self.setting).await?;
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
@@ -697,13 +706,13 @@ impl RepoServer {
         ))
     }
 
-    async fn create_new_default_meta_index_db(&self, user_id: &str) -> Result<(), RPCErrors> {
+    async fn create_new_default_meta_index_db(user_id: &str) -> Result<(), RPCErrors> {
         // 获取锁，确保只有一个调用可以进入临界区
         //et _lock = DEFAULT_META_INDEX_DB_LOCK.lock().await;
 
-        let default_meta_index_db_path = self.get_my_default_meta_index_db_path();
-        let default_source_meta_index_db_path = self.get_source_meta_index_db_path("root");
-        let pub_meta_index_db_path = self.get_my_pub_meta_index_db_path();
+        let default_meta_index_db_path = RepoServer::get_my_default_meta_index_db_path();
+        let default_source_meta_index_db_path = RepoServer::get_source_meta_index_db_path("root");
+        let pub_meta_index_db_path = RepoServer::get_my_pub_meta_index_db_path();
         info!(
             "will create_new_default_meta_index_db, default_meta_index_db_path:{}",
             default_meta_index_db_path.display()
@@ -758,7 +767,7 @@ impl RepoServer {
         //TODO: 将meta-index-db发布到named-mgr
         //info!("will pub new default meta-index-db to named-mgr");
         let mut file_object = FileObject::new("meta_index.db".to_string(), 0, String::new());
-        let default_meta_index_db_path = self.get_my_default_meta_index_db_path();
+        let default_meta_index_db_path = RepoServer::get_my_default_meta_index_db_path();
         NamedDataMgr::pub_local_file_as_fileobj(
             None,
             &default_meta_index_db_path,
@@ -907,7 +916,7 @@ impl RepoServer {
         }
         info!("pkg_list check success, will pub pkg_list to local-wait-pub-meta-index-db");
         //self.try_create_wait_pub_meta_index_db().await?;
-        let wait_meta_db_path = self.get_my_wait_pub_meta_index_db_path();
+        let wait_meta_db_path = RepoServer::get_my_wait_pub_meta_index_db_path();
         let wait_meta_db = MetaIndexDb::new(wait_meta_db_path, false).map_err(|e| {
             error!("new wait-meta-db failed, err:{}", e);
             RPCErrors::ReasonError(format!("new wait-meta-db failed, err:{}", e))
@@ -943,8 +952,8 @@ impl RepoServer {
             .enforce(&req, "write", "dfs://system/data/repo/meta_index.db")
             .await?;
 
-        let wait_meta_db_path = self.get_my_wait_pub_meta_index_db_path();
-        let pub_meta_db_path = self.get_my_pub_meta_index_db_path();
+        let wait_meta_db_path = RepoServer::get_my_wait_pub_meta_index_db_path();
+        let pub_meta_db_path = RepoServer::get_my_pub_meta_index_db_path();
         //info!("start replace pub_meta_db with wait_meta_db, pub_meta_db_path:{}", pub_meta_db_path.display());
         RepoServer::copy_file(&pub_meta_db_path, &wait_meta_db_path).await?;
         info!("copy wait_meta_db to pub_meta_db success");
@@ -966,7 +975,7 @@ impl RepoServer {
             RPCErrors::ReasonError(format!("pub_index failed, err:{}", e))
         })?;
         info!("pub pub_meta_index.db to named-mgr success");
-        self.create_new_default_meta_index_db("root").await?;
+        RepoServer::create_new_default_meta_index_db("root").await?;
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
@@ -1199,7 +1208,7 @@ impl RepoServer {
             RPCErrors::ReasonError(format!("list tasks failed, err:{}", e))
         })?;
 
-        let wait_meta_db_path = self.get_my_wait_pub_meta_index_db_path();
+        let wait_meta_db_path = RepoServer::get_my_wait_pub_meta_index_db_path();
         let wait_meta_db = MetaIndexDb::new(wait_meta_db_path, false).map_err(|e| {
             error!("new wait-meta-db failed, err:{}", e);
             RPCErrors::ReasonError(format!("new wait-meta-db failed, err:{}", e))

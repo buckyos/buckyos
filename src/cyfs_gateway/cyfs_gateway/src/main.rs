@@ -176,20 +176,13 @@ fn main() {
     info!("cyfs_gateway start...");
 
     // 2) 手动创建 runtime（多线程或当前线程都行）
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let _ = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap();
-
-    rt.block_on(async {
-        let matches_owned = matches.clone();
-        let _h2 = task::Builder::new()
-            .name("main_task")
-            .spawn(async move { async_main(&matches_owned).await }); // 未命名也能看到
-
-        // // 4) 主任务继续等 Ctrl+C
-        let _ = tokio::signal::ctrl_c().await;
-    });
+        .unwrap()
+        .block_on(
+        async_main(&matches) // 未命名也能看到
+        );
 }
 
 async fn async_main(matches: &clap::ArgMatches) -> anyhow::Result<()> {
