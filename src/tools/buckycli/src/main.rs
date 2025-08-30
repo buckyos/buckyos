@@ -53,13 +53,7 @@ async fn main() -> Result<(), String> {
         )
         .subcommand(
             Command::new("pub_app")
-                .about("update app doc and publish app to local repo")
-                .arg(
-                    Arg::new("app_name")
-                        .long("app_name")
-                        .help("app name")
-                        .required(true),
-                )
+                .about("upload app doc and upload packed pkg to author's repo")
                 .arg(
                     Arg::new("target_dir")
                         .long("target_dir")
