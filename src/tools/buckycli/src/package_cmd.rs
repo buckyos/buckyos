@@ -289,26 +289,14 @@ pub async fn publish_app_pkg(dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<
         if !pkg_path.exists() {
             return Err(format!("sub pkg {} directory does not exist", pkg_path.display()));
         }
-        let pkg_meta_path = pkg_path.join("pkg_meta.json");
+        let pkg_meta_path = pkg_path.join("pkg_meta.jwt");
         if !pkg_meta_path.exists() {
-            return Err(format!("sub pkg {} pkg_meta.json does not exist", pkg_path.display()));
+            return Err(format!("sub pkg {} pkg_meta.jwt does not exist", pkg_path.display()));
         }
-        let pkg_meta_str = fs::read_to_string(pkg_meta_path)
-            .map_err(|e| format!("Failed to read pkg_meta.json: {}", e.to_string()))?;
-        let pkg_meta:PackageMeta = serde_json::from_str(&pkg_meta_str)
-            .map_err(|e| format!("Failed to parse pkg_meta.json: {}", e.to_string()))?;
-        let version = pkg_meta.version.clone();
-        //pkg_desc.pkg_id = format!("{}#{}",sub_pkg_section,version);
-        println!("{} => {}", sub_pkg_section,pkg_meta.get_package_id().to_string());
+
+        println!("app sub pkg {} => {}", sub_pkg_section,pkg_path.display());
         pkg_path_list.push(pkg_path);
         
-    }
-
-    if is_pub_sub_pkg {
-        println!("Publishing sub_pkg");
-        publish_raw_pkg(&pkg_path_list).await?;
-    } else {
-        println!("Skipping sub_pkg publishing");
     }
 
     let repo_client = runtime.get_repo_client().await.unwrap();
@@ -316,17 +304,19 @@ pub async fn publish_app_pkg(dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<
     let app_doc_json = serde_json::to_value(&app_meta).map_err(|e| {
         format!("Failed to serialize app_doc: {}", e.to_string())
     })?;
+
     let (app_doc_obj_id,_) = build_named_object_by_json("app",&app_doc_json);
     let app_doc_jwt = named_obj_to_jwt(&app_doc_json,runtime.user_private_key.as_ref().unwrap(),runtime.user_id.clone())
         .map_err(|e| format!("Failed to generate app_doc.jwt: {}", e.to_string()))?;
     app_meta_jwt_map.insert(app_doc_obj_id.to_string(),app_doc_jwt);
+
     repo_client.pub_pkg(app_meta_jwt_map).await.map_err(|e| {
         format!("Failed to publish app doc: {}", e.to_string())
     })?;
-    repo_client.pub_index().await.map_err(|e| {
-        format!("Failed to publish repo index: {}", e.to_string())
-    })?;
-    println!("Successfully published App {}", app_name);
+
+    let pub_result = publish_raw_pkg(&pkg_path_list).await?;
+
+    println!("Successfully published App {}", app_meta.pkg_name);
     Ok(())
 }
 
