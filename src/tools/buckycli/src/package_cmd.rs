@@ -261,13 +261,13 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
 }
 
 // Prepare dapp_meta for publishing, this dapp_meta can be used for the next step of publishing
-pub async fn publish_app_pkg(app_name: &str,dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<(), String> {
+pub async fn publish_app_pkg(dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<(), String> {
     // Before publishing dapp_pkg, users need to ensure sub_pkgs
     let runtime = get_buckyos_api_runtime().unwrap();
     if runtime.user_private_key.is_none() {
         return Err("No developer private key provided, skipping dapp_pkg publishing".to_string());
     }
-    let app_doc_file_name = format!("{}.doc.json",app_name);
+    let app_doc_file_name = format!("app.doc.json");
     let app_meta_path = Path::new(dapp_dir_path).join(app_doc_file_name);
     if !app_meta_path.exists() {
         return Err(format!("{} file does not exist", app_meta_path.display()));

@@ -363,9 +363,8 @@ oods look like this 'ood1,ood2'.")
             println!("############\nPublish pkg success!");
         }
         Some(("pub_app", matches)) => {
-            let app_name = matches.get_one::<String>("app_name").unwrap();
             let app_dir_path = matches.get_one::<String>("target_dir").unwrap();
-            let pub_result = publish_app_pkg(app_name, app_dir_path,true).await;
+            let pub_result = publish_app_pkg( app_dir_path,true).await;
             if pub_result.is_err() {
                 println!("Publish app failed! {}", pub_result.err().unwrap());
                 return Err("publish app failed!".to_string());
