@@ -126,7 +126,7 @@ def main():
             start.main()
         case "stop":
             stop.main()
-        case "clog":
+        case "clog": # 收集日志
             if len(sys.argv) >= 3:
                 device_id = sys.argv[2]
                 print("Collecting log for device_id: ", device_id)

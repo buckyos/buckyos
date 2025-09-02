@@ -74,14 +74,11 @@ async fn service_main(config_json: serde_json::Value, matches: &clap::ArgMatches
 
 // Parse config first, then config file if supplied by user
 async fn load_config_from_args(matches: &clap::ArgMatches) -> Result<serde_json::Value> {
-    let default_config = get_buckyos_system_etc_dir().join("cyfs_gateway.json");
-    let config_file = matches.get_one::<String>("config_file");
-    let real_config_file;
-    if config_file.is_none() {
-        real_config_file = default_config;
-    } else {
-        real_config_file = PathBuf::from(config_file.unwrap());
-    }
+    // 优先从--config_file参数获取路径
+    let real_config_file = matches
+        .get_one::<String>("config_file")
+        .map(|path| PathBuf::from(path))
+        .unwrap_or(get_buckyos_system_etc_dir().join("cyfs_gateway.json"));
 
     let config_dir = real_config_file.parent().ok_or_else(|| {
         let msg = format!("cannot get config dir: {real_config_file:?}");
@@ -181,7 +178,7 @@ fn main() {
         .build()
         .unwrap()
         .block_on(
-        async_main(&matches) // 未命名也能看到
+            async_main(&matches), // 未命名也能看到
         );
 }
 
