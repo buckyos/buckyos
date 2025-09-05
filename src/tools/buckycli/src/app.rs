@@ -409,7 +409,11 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
                 "pkg_list": {{
                     "amd64_docker_image": {{
                         "docker_image_name": "{}",
-                        "pkg_id": "{}#{}"
+                        "pkg_id": "{}"
+                    }},
+                    "aarch64_docker_image": {{
+                        "docker_image_name": "{}",
+                        "pkg_id": "{}"
                     }}
                 }},
                 "deps": {{}},
@@ -452,7 +456,8 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         author,
         docker_image,
         app_id,
-        version,
+        docker_image,
+        app_id,
         data_mount_point_config,
         tcp_ports,
         udp_ports,

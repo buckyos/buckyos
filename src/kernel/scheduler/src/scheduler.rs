@@ -280,9 +280,9 @@ impl From<String> for NodeState {
 #[derive(Clone,PartialEq,Debug)]
 pub struct PodInstance {
     pub node_id: String,
-    pub pod_id: String,
+    pub pod_id: String,//service_name or app_id
     pub res_limits: HashMap<String, f64>,
-    pub instance_id: String,
+    pub instance_id: String,//format!("{}-{}", service_name, instance_node_id
     pub last_update_time: u64,
     pub state : PodInstanceState,
     pub service_port: u16,
@@ -301,7 +301,7 @@ pub enum SchedulerAction {
     ChangePodStatus(String, PodItemState),
     InstancePod(PodInstance),
     UpdatePodInstance(String, PodInstance),
-    RemovePodInstance(String), //value is pod_id@node_id
+    RemovePodInstance(String,String,String), //value is pod_id,instance_id,node_id
     UpdatePodServiceInfo(String, PodInfo),
 }
 //pod_id@node_id
@@ -313,7 +313,9 @@ pub fn parse_instance_id(instance_id: &str) -> Result<(String, String)> {
             instance_id
         ));
     }
-    Ok((parts[0].to_string(), parts[1].to_string()))
+    //return parts1's before '_'
+    let part2 = parts[1].split('_').nth(0).unwrap().to_string();
+    Ok((parts[0].to_string(), part2))
 }
 
 // app_id@user_id
@@ -395,7 +397,7 @@ impl PodScheduler {
     }
 
     pub fn add_pod_instance(&mut self, instance: PodInstance) {
-        let key = format!("{}@{}", instance.pod_id, instance.node_id);
+        let key = instance.instance_id.clone();
         self.pod_instances.insert(key, instance);
     }
 
@@ -552,13 +554,20 @@ impl PodScheduler {
                     ));
                 }
                 PodItemState::Removing => {
+                    let mut is_moved = false;
                     for instance in self.pod_instances.values() {
-                        if instance.pod_id == *pod_id {
-                            pod_actions.push(SchedulerAction::RemovePodInstance(format!(
-                                "{}@{}",
-                                pod_id, instance.node_id
-                            )));
+                        if instance.pod_id == format!("{}@{}", pod.app_id, pod.owner_id) {
+                            info!("will remove pod instance: {},pod_id:{}", instance.instance_id, &instance.pod_id);
+                            is_moved = true;
+                            pod_actions.push(SchedulerAction::RemovePodInstance(
+                                instance.pod_id.clone(),
+                                instance.instance_id.clone(),
+                                instance.node_id.clone(),
+                            ));
                         }
+                    }
+                    if !is_moved {
+                        warn!("pod_id:{} instance not found,no instance uninstance", pod_id);
                     }
                     //TODO:现在没有删除中的状态
                     pod_actions.push(SchedulerAction::ChangePodStatus(

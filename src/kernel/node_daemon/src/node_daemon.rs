@@ -638,7 +638,7 @@ async fn node_daemon_main_loop(
     let mut loop_step = 0;
     let mut is_running = true;
     let mut last_register_time = 0;
-    let mut node_gateway_config = None;
+    let mut node_gateway_config_id:Option<ObjId> = None;
 
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -701,22 +701,23 @@ async fn node_daemon_main_loop(
             if new_node_gateway_config.is_ok() {
                 let mut need_restart = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
-                if node_gateway_config.is_none() {
-                    node_gateway_config = Some(new_node_gateway_config);
+                let (new_node_gateway_config_id,new_node_gateway_config_str)= build_named_object_by_json("nodeconfig",&new_node_gateway_config);
+                if node_gateway_config_id.is_none() {
                     need_restart = true;
+                    node_gateway_config_id = Some(new_node_gateway_config_id);
                 } else {
-                    if new_node_gateway_config == node_gateway_config.unwrap() {
-                        need_restart = false;
+                    if node_gateway_config_id.as_ref().unwrap() == &new_node_gateway_config_id {
+                        need_restart = false;                        
                     } else {
                         need_restart = true;
+                        node_gateway_config_id = Some(new_node_gateway_config_id);
                     }
-                    node_gateway_config = Some(new_node_gateway_config);
                 }
 
                 if need_restart {
                     info!("node gateway_config changed, will write to node_gateway.json and restart cyfs_gateway service");
                     let gateway_config_path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
-                    std::fs::write(gateway_config_path, serde_json::to_string(&node_gateway_config).unwrap()).unwrap();
+                    std::fs::write(gateway_config_path, new_node_gateway_config_str.as_bytes()).unwrap();
                 }
             
                 let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();

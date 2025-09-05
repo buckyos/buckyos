@@ -233,8 +233,10 @@ fn test_pod_state_change() {
     scheduler.update_pod_state("pod1", PodItemState::Removing);
     let actions = scheduler.schedule_pod_change().unwrap();
     assert_eq!(actions.len(), 2);
-    if let SchedulerAction::RemovePodInstance(instance_id) = &actions[0] {
+    if let SchedulerAction::RemovePodInstance(pod_id, instance_id, node_id) = &actions[0] {
         assert_eq!(instance_id, "pod1@node1");
+        assert_eq!(pod_id, "pod1");
+        assert_eq!(node_id, "node1");
     } else {
         panic!("Expected RemovePodInstance action");
     }
