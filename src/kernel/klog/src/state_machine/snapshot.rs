@@ -116,6 +116,8 @@ impl SnapshotManager {
         if path.exists() {
             if let Err(e) = tokio::fs::remove_file(&path).await {
                 error!("Failed to remove existing snapshot file: {}", e);
+            } else {
+                info!("Removed existing snapshot file: {:?}", path);
             }
         }
 
@@ -133,11 +135,58 @@ impl SnapshotManager {
     pub async fn install_snapshot(
         &self,
         meta: &KSnapshotMeta,
-        _snapshot: Box<tokio::fs::File>,
+        mut snapshot: Box<tokio::fs::File>,
     ) -> StorageResult<KSnapshotData> {
-        let src = self.get_temp_snapshot_path();
-        let dest = self.data_dir.join(format!("snapshot_{}", meta.snapshot_id));
+        // TODO Should we remove the temp snapshot file after installation?
+        // let src = self.get_temp_snapshot_path();
 
+        let dest = self.data_dir.join(format!("snapshot_{}", meta.snapshot_id));
+        info!(
+            "Installing snapshot {} to {:?}",
+            meta.snapshot_id, dest
+        );
+
+        // Save snapshot data to dest path
+        if dest.exists() {
+            warn!("Snapshot file already exists: {:?}, overwriting", dest);
+            if let Err(e) = tokio::fs::remove_file(&dest).await {
+                error!("Failed to remove existing snapshot file: {}", e);
+                return Err(StorageError::IO {
+                    source: StorageIOError::write(&e),
+                });
+            } else {
+                info!("Removed existing snapshot file: {:?}", dest);
+            }
+        }
+
+        let mut dest_file = tokio::fs::File::create_new(&dest).await.map_err(|err| {
+            let msg = format!("Failed to create snapshot file: {}", err);
+            error!("{}", msg);
+            StorageError::IO {
+                source: StorageIOError::write(&err),
+            }
+        })?;
+
+        // Copy the temp file to the final destination
+        tokio::io::copy(&mut snapshot, &mut dest_file)
+            .await
+            .map_err(|err| {
+                let msg = format!("Failed to write snapshot file: {}", err);
+                error!("{}", msg);
+                StorageError::IO {
+                    source: StorageIOError::write(&err),
+                }
+            })?;
+
+        dest_file.flush().await.map_err(|err| {
+            let msg = format!("Failed to flush snapshot file: {}", err);
+            error!("{}", msg);
+            StorageError::IO {
+                source: StorageIOError::write(&err),
+            }
+        })?;
+
+        /*
         info!("Installing snapshot from {:?} to {:?}", src, dest);
         tokio::fs::copy(&src, &dest).await.map_err(|err| {
             let msg = format!("Failed to copy snapshot file: {}", err);
@@ -155,6 +204,7 @@ impl SnapshotManager {
                 source: StorageIOError::write(&err),
             }
         })?;
+        */
 
         let snapshot = self.load_snapshot_from_file(Some(meta), &dest).await?;
 
@@ -383,9 +433,43 @@ impl SnapshotManager {
             if let Err(e) = tokio::fs::remove_file(&path).await {
                 error!("Failed to remove old snapshot file {:?}: {}", path, e);
             }
-        }   
+        }
 
         info!("Old snapshots cleanup completed.");
+        Ok(())
+    }
+
+    /// Remove all snapshots in the snapshots directory
+    pub async fn clean_all_snapshots(&self) -> StorageResult<()> {
+        if !self.data_dir.exists() {
+            warn!("Snapshots directory does not exist: {:?}", self.data_dir);
+            return Ok(());
+        }
+
+        // Remove the snapshots directory and all its contents
+        info!("Removing all snapshots in directory {:?}", self.data_dir);
+        if let Err(e) = tokio::fs::remove_dir_all(&self.data_dir).await {
+            error!(
+                "Failed to remove snapshots directory {:?}: {}",
+                self.data_dir, e
+            );
+            return Err(StorageError::IO {
+                source: StorageIOError::write(&e),
+            });
+        }
+
+        // Recreate the snapshots directory
+        if let Err(e) = tokio::fs::create_dir_all(&self.data_dir).await {
+            error!(
+                "Failed to recreate snapshots directory {:?}: {}",
+                self.data_dir, e
+            );
+            return Err(StorageError::IO {
+                source: StorageIOError::write(&e),
+            });
+        }
+
+        info!("All snapshots removed and directory recreated.");
         Ok(())
     }
 }

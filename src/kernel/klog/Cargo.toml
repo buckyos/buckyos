@@ -13,3 +13,6 @@ bincode = { version = "2", features = ["serde"] }
 chrono = "*"
 anyhow = "*"
 anyerror = { version = "*", features = ["anyhow"]}
+simplelog = "*"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

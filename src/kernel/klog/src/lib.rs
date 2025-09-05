@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 mod logs;
 mod state_machine;
 mod storage;
+mod test;
 
 #[macro_use]
 extern crate log;

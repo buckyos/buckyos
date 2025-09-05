@@ -1,5 +1,7 @@
+use openraft::entry::RaftPayload;
 use openraft::{LogId, OptionalSend, Vote, Entry};
 use openraft::{RaftLogReader, storage::{RaftLogStorage, LogFlushed}};
+use tracing_subscriber::field::debug;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::ops::RangeBounds;
@@ -28,7 +30,7 @@ impl MemoryLogState {
 }
 
 #[derive(Debug, Clone)]
-struct MemoryLogStorage {
+pub struct MemoryLogStorage {
     state: Arc<AsyncMutex<MemoryLogState>>,
     logs: Arc<AsyncMutex<BTreeMap<u64, LogEntry>>>,
 }
@@ -50,9 +52,17 @@ impl RaftLogReader<KTypeConfig> for MemoryLogStorage {
         &mut self,
         range: RB,
     ) -> StorageResult<Vec<LogEntry>> {
+        debug!("try_get_log_entries: range={:?}", range);
+
         let logs = self.logs.lock().await;
         let entries: Vec<LogEntry> = logs.range(range).map(|(_, entry)| entry.clone()).collect();
 
+        for entry in &entries {
+            if entry.get_membership().is_some() {
+                debug!("Found membership entry: {:?}", entry);
+            }
+        }
+        
         Ok(entries)
     }
 }
@@ -63,12 +73,16 @@ impl RaftLogStorage<KTypeConfig> for MemoryLogStorage {
     async fn get_log_state(&mut self) -> StorageResult<openraft::LogState<KTypeConfig>> {
         let last_log_id = {
             let logs = self.logs.lock().await;
-            logs.values().last().map(|e| e.log_id.clone())
+            logs.iter().last().map(|(_, item)| item.log_id.clone())
         };
 
         let last_purged_log_id = {
             let state = self.state.lock().await;
             state.last_purged.clone()
+        };
+        let last_log_id = match last_log_id {
+            Some(id) => Some(id),
+            None => last_purged_log_id,
         };
 
         Ok(openraft::LogState {
@@ -83,7 +97,9 @@ impl RaftLogStorage<KTypeConfig> for MemoryLogStorage {
 
     async fn save_vote(&mut self, vote: &Vote<KNodeId>) -> StorageResult<()> {
         let mut state = self.state.lock().await;
+        debug!("save_vote: {:?}", vote);
         state.vote = Some(vote.clone());
+
         Ok(())
     }
 
@@ -99,6 +115,7 @@ impl RaftLogStorage<KTypeConfig> for MemoryLogStorage {
     {
         let mut logs = self.logs.lock().await;
         for entry in entries {
+            debug!("Appending raft log entry: {:?}", entry);
             logs.insert(entry.log_id.index, entry);
         }
 
@@ -108,6 +125,8 @@ impl RaftLogStorage<KTypeConfig> for MemoryLogStorage {
     }
 
     async fn truncate(&mut self, log_id: LogId<KNodeId>) -> StorageResult<()> {
+        info!("Truncating raft logs from index {}", log_id.index);
+
         let mut logs = self.logs.lock().await;
 
         // Remove all entries with index >= log_id.index
@@ -117,6 +136,8 @@ impl RaftLogStorage<KTypeConfig> for MemoryLogStorage {
 
     /// Remove all log entries that index <= `log_id.index`
     async fn purge(&mut self, log_id: LogId<KNodeId>) -> StorageResult<()> {
+        info!("Purging raft logs up to index {}", log_id.index);
+
         {
             let mut logs = self.logs.lock().await;
             let new_logs=  logs.split_off(&(log_id.index + 1));

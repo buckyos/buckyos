@@ -69,13 +69,11 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
         let entries = entries.into_iter();
         let mut replies = Vec::with_capacity(entries.size_hint().0);
 
-        // TODO if this takes `&mut self`, can we assume that there will be no reads in between?
-        // TODO -> we could take the lock only once at the start and be much faster with everything!
         let mut data = self.data.write().await;
 
-        let mut last_applied_log_id = None;
+
         for entry in entries {
-            last_applied_log_id = Some(entry.log_id);
+            data.last_applied_log_id = Some(entry.log_id);
 
             // we are using sync sends -> unbounded channels
             let resp_value = match entry.payload {
@@ -84,6 +82,8 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
                 EntryPayload::Normal(req) => self.process_request(req).await,
 
                 EntryPayload::Membership(mem) => {
+                    info!("Updating membership to: {:?}", mem);
+
                     data.last_membership = StoredMembership::new(Some(entry.log_id), mem);
                     KLogResponse::Empty
                 }
@@ -91,8 +91,6 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
 
             replies.push(resp_value);
         }
-
-        data.last_applied_log_id = last_applied_log_id;
 
         Ok(replies)
     }
@@ -122,7 +120,7 @@ impl RaftStateMachine<KTypeConfig> for KLogMemoryStateMachine {
         drop(state); // Release the lock before potentially long operations
 
         // Then, update the state machine's internal data structures
-        todo!();
+        // todo!();
 
         Ok(())
     }
