@@ -1,0 +1,15 @@
+[package]
+name = "klog"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+openraft = { version = "0.9", features = ["serde", "storage-v2", "anyhow"]}
+serde = "*"
+tokio = { version = "*", features = ["full"] }
+async-trait = "*"
+log = "*"
+bincode = { version = "2", features = ["serde"] }
+chrono = "*"
+anyhow = "*"
+anyerror = { version = "*", features = ["anyhow"]}
