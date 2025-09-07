@@ -4,12 +4,23 @@ use serde::{Deserialize, Serialize};
 mod logs;
 mod state_machine;
 mod storage;
+mod network;
 mod test;
 
 #[macro_use]
 extern crate log;
 
-pub type KResult<T> = anyhow::Result<T, anyhow::Error>;
+
+
+#[derive(Serialize, Deserialize, Debug, Clone, thiserror::Error)]
+pub enum KLogError {
+    #[error("Invalid format: {0}")]
+    InvalidFormat(String),
+}
+
+
+pub type KResult<T> = Result<T, KLogError>;
+
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct KLogEntry {
@@ -38,6 +49,7 @@ pub type KNodeId = u64;
 pub struct KNode {
     pub id: KNodeId,
     pub addr: String,
+    pub port: u16,
 }
 
 declare_raft_types!(

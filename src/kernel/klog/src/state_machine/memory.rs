@@ -171,7 +171,7 @@ impl RaftSnapshotBuilder<KTypeConfig> for KLogMemoryStateMachine {
             let msg = format!("Failed to build log storage snapshot: {}", e);
             error!("{}", msg);
             StorageError::IO {
-                source: StorageIOError::write_snapshot(None, e),
+                source: StorageIOError::write_snapshot(None, &e),
             }
         })?;
 

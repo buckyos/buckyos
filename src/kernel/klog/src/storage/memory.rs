@@ -1,5 +1,5 @@
 use super::storage::{KLogStorage, KLogStorageSnapshot};
-use crate::{KResult, KLogEntry};
+use crate::{KResult, KLogEntry, KLogError};
 use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -31,7 +31,7 @@ impl KLogStorage for SimpleLogStorage {
             bincode::serde::encode_to_vec(&*logs, bincode::config::legacy()).map_err(|e| {
                 let msg = format!("Failed to serialize logs for snapshot: {}", e);
                 error!("{}", msg);
-                anyhow::anyhow!(msg)
+                KLogError::InvalidFormat(msg)
             })?;
 
         Ok(KLogStorageSnapshot { data })
