@@ -543,7 +543,7 @@ mod tests {
         // Step 1: Initialize a new NamedDataMgr in a temporary directory and create a test object
         let temp_dir = tempfile::tempdir().unwrap();
         let config = NamedDataMgrConfig {
-            local_stores: vec![temp_dir.path().to_str().unwrap().to_string()],
+            local_store: temp_dir.path().to_str().unwrap().to_string(),
             local_cache: None,
             mmap_cache_dir: None,
         };
@@ -607,7 +607,7 @@ mod tests {
         //===================================================================
         let temp_dir = tempfile::tempdir().unwrap();
         let config = NamedDataMgrConfig {
-            local_stores: vec![temp_dir.path().to_str().unwrap().to_string()],
+            local_store: temp_dir.path().to_str().unwrap().to_string(),
             local_cache: None,
             mmap_cache_dir: None,
         };    
