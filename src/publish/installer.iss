@@ -34,7 +34,7 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "BUCKYOS_ROOT"; ValueData: "{app}"; Flags: preservestringtype uninsdeletevalue
 
 [Run]
-Filename: "sc.exe"; Parameters: "create buckyos start=auto binPath=""{app}\bin\node_daemon.exe --as_win_srv --enable_active"""; Flags: runhidden; StatusMsg: "Creating BuckyOS service..."
+Filename: "sc.exe"; Parameters: "create buckyos start=auto binPath=""{app}\bin\node_daemon\node_daemon.exe --as_win_srv --enable_active"""; Flags: runhidden; StatusMsg: "Creating BuckyOS service..."
 Filename: "sc.exe"; Parameters: "failure buckyos reset=3600 actions=restart/5000/restart/10000"; Flags: runhidden; StatusMsg: "Setting BuckyOS service failure actions..."
 Filename: "sc.exe"; Parameters: "start buckyos"; Flags: runhidden; StatusMsg: "Starting BuckyOS service..."
 
