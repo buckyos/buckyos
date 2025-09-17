@@ -1,0 +1,50 @@
+name: Auto Build
+
+on:
+    schedule:
+      - cron: '0 0 * * *'  # 每天午夜运行一次
+    workflow_dispatch:  # 测试用，临时允许手动触发
+
+jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      have_new_commit: ${{ steps.compare-commits.outputs.have_new_commit }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+      - name: Compare Current Commit with url from https://buckyos.ai/version/latest/commit
+        id: compare-commits
+        run: |
+          latest_commit_url="https://buckyos.ai/version/latest/commit"
+          latest_commit_sha=$(curl -s $latest_commit_url)
+          echo "Latest commit SHA from server: $latest_commit_sha"
+          echo "Current commit SHA: ${{ github.sha }}"
+          
+          if [ "$latest_commit_sha" != "${{ github.sha }}" ]; then
+            echo "New commit detected."
+            echo "have_new_commit=true" >> $GITHUB_OUTPUT
+          else
+            echo "No new commit."
+            echo "have_new_commit=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Get Version From Git Tags
+        id: get-version
+        if: steps.compare-commits.outputs.have_new_commit == 'true'
+        run: |
+          latest_tag=$(git describe --tags $(git rev-list --tags --max-count=1))
+          if [[ -z "$latest_tag" ]]; then
+            echo "No tags found, using default version 0.1.0"
+            echo "version=0.1.0" >> $GITHUB_OUTPUT
+          else
+            echo "Latest tag is $latest_tag"
+            echo "version=$latest_tag" >> $GITHUB_OUTPUT
+          fi
+  auto-build:
+    needs: get-version
+    if: needs.get-version.outputs.have_new_commit == 'true'
+    uses: ./.github/workflows/build-all.yml
+    with:
+      version: ${{ needs.get-version.outputs.version }}
+    secrets: inherit
