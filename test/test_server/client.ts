@@ -51,8 +51,9 @@ async function setUrl() {
     let os = argv[4];
     let arch = argv[5];
     let url = argv[6];
-    if (!version || !os || !arch || !url) {
-        console.error("Usage: node client.js seturl <version> <os> <arch> <url>");
+    let commit = argv[7];
+    if (!version || !os || !arch || !url || !commit) {
+        console.error("Usage: node client.js seturl <version> <os> <arch> <url> <commit>");
         process.exit(1);
     }
 
@@ -61,6 +62,7 @@ async function setUrl() {
         os: os,
         arch: arch,
         url: url,
+        commit: commit,
     }
 
     await postData("/version/url", content);
