@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
+        with:
+            fetch-tags: true
       - name: Compare Current Commit with url from https://buckyos.ai/version/latest/commit
         id: compare-commits
         run: |
