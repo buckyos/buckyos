@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e" pages="12">
     <diagram id="RZdW4h8mW8Q3h_B0Vpwn" name="UI Frame">
-        <mxGraphModel dx="1584" dy="612" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+        <mxGraphModel dx="2683" dy="574" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -928,7 +928,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="8t5dLJr-iKYSUIDq8Arc" name="Control Panel">
-        <mxGraphModel dx="1607" dy="1131" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1856" dy="574" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -981,7 +981,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="kGCvWIt6N2KHzVKJu8ju" name="dAppList">
-        <mxGraphModel dx="757" dy="612" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1856" dy="574" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -1070,16 +1070,16 @@
                     <mxGeometry x="420" y="70" width="160" height="30" as="geometry"/>
                 </mxCell>
                 <mxCell id="wYce-iAIPyecAn0gZP5J-1" value="srv" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
-                    <mxGeometry x="485" y="330" width="60" height="30" as="geometry"/>
+                    <mxGeometry x="365" y="396" width="60" height="30" as="geometry"/>
                 </mxCell>
                 <mxCell id="wYce-iAIPyecAn0gZP5J-2" value="database" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
-                    <mxGeometry x="485" y="366" width="60" height="30" as="geometry"/>
+                    <mxGeometry x="365" y="432" width="60" height="30" as="geometry"/>
                 </mxCell>
                 <mxCell id="wYce-iAIPyecAn0gZP5J-3" value="config" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
-                    <mxGeometry x="485" y="401" width="60" height="30" as="geometry"/>
+                    <mxGeometry x="365" y="467" width="60" height="30" as="geometry"/>
                 </mxCell>
                 <mxCell id="wYce-iAIPyecAn0gZP5J-10" value="MyHome" style="rounded=1;fillColor=#F1F2F4;strokeColor=none;html=1;whiteSpace=wrap;fontColor=#596780;align=left;fontSize=12;spacingLeft=10;sketch=0;" parent="1" vertex="1">
-                    <mxGeometry x="573" y="327" width="140" height="33" as="geometry"/>
+                    <mxGeometry x="453" y="393" width="140" height="33" as="geometry"/>
                 </mxCell>
                 <mxCell id="wYce-iAIPyecAn0gZP5J-11" value="" style="shape=triangle;direction=south;fillColor=#596780;strokeColor=none;html=1;sketch=0;" parent="wYce-iAIPyecAn0gZP5J-10" vertex="1">
                     <mxGeometry x="1" y="0.5" width="12" height="6" relative="1" as="geometry">
@@ -1087,7 +1087,7 @@
                     </mxGeometry>
                 </mxCell>
                 <mxCell id="wYce-iAIPyecAn0gZP5J-12" value="appid/database" style="rounded=1;fillColor=#F1F2F4;strokeColor=none;html=1;whiteSpace=wrap;fontColor=#596780;align=left;fontSize=12;spacingLeft=10;sketch=0;" parent="1" vertex="1">
-                    <mxGeometry x="573" y="363" width="140" height="33" as="geometry"/>
+                    <mxGeometry x="453" y="429" width="140" height="33" as="geometry"/>
                 </mxCell>
                 <mxCell id="wYce-iAIPyecAn0gZP5J-13" value="" style="shape=triangle;direction=south;fillColor=#596780;strokeColor=none;html=1;sketch=0;" parent="wYce-iAIPyecAn0gZP5J-12" vertex="1">
                     <mxGeometry x="1" y="0.5" width="12" height="6" relative="1" as="geometry">
@@ -1095,7 +1095,7 @@
                     </mxGeometry>
                 </mxCell>
                 <mxCell id="wYce-iAIPyecAn0gZP5J-14" value="appid/config" style="rounded=1;fillColor=#F1F2F4;strokeColor=none;html=1;whiteSpace=wrap;fontColor=#596780;align=left;fontSize=12;spacingLeft=10;sketch=0;" parent="1" vertex="1">
-                    <mxGeometry x="573" y="396" width="140" height="33" as="geometry"/>
+                    <mxGeometry x="453" y="462" width="140" height="33" as="geometry"/>
                 </mxCell>
                 <mxCell id="wYce-iAIPyecAn0gZP5J-15" value="" style="shape=triangle;direction=south;fillColor=#596780;strokeColor=none;html=1;sketch=0;" parent="wYce-iAIPyecAn0gZP5J-14" vertex="1">
                     <mxGeometry x="1" y="0.5" width="12" height="6" relative="1" as="geometry">
@@ -1118,7 +1118,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="ci5L6UyUetsJyWySYwX9" name="dApp Store">
-        <mxGraphModel dx="1607" dy="1131" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1856" dy="574" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -1281,7 +1281,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="WrfOyPTYKlQQvffiSIZa" name="Backup &amp; Restore">
-        <mxGraphModel dx="2457" dy="2231" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="2066" dy="1674" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
