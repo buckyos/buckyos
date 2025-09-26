@@ -111,6 +111,8 @@ cd src
 python3 start.py
 ```
 
+Open http://test.buckyos.io/ to verify that the system is working properly (remember to confirm that the host file is configured with test.buckyos.io pointing to 127.0.0.1)
+
 * To reinstall BuckyOS using a specified configuration group:
 
 ```bash
