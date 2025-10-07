@@ -14,7 +14,7 @@ toml = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 log = "*"
-jsonwebtoken = "*"  
+jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
 buckyos-kit = { path = "../../components/buckyos-kit" }
 name-lib = { path = "../../components/name-lib" }
 name-client = {path = "../../components/name-client"}

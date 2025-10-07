@@ -19,7 +19,7 @@ tokio = { version = "*", features = ["full"] }
 async-trait = "*"
 futures = "*"
 lazy_static = "*"
-jsonwebtoken = "*"  
+jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
 num_cpus = "*"
 reqwest = "*"
 url = "*"

@@ -9,7 +9,7 @@ clap = "4.5.4"
 serde_json = "1.0.116"
 log = "0.4"
 env_logger = "0.10"
-jsonwebtoken = "9.3.0"
+jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
 buckyos-api = { path = "../../kernel/buckyos-api"}
 buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
 kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC"}
