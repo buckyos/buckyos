@@ -1,3 +1,3 @@
 mod client;
-mod server;
+//mod server;
 mod request;

@@ -4,11 +4,8 @@ use crate::storage::{
     KLogStorage, KLogStorageManager, KLogStorageManagerRef, KLogStorageRef, SimpleLogStorage,
 };
 use crate::{KTypeConfig, StorageResult};
-use openraft::storage::{RaftLogStorage, RaftStateMachine};
 use openraft::testing::StoreBuilder;
-use simplelog::*;
 use std::sync::Arc;
-use tracing_subscriber::{EnvFilter, fmt};
 
 struct TestMemoryContext {
     log_storage: MemoryLogStorage,

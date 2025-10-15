@@ -1,5 +1,9 @@
+#![allow(dead_code)]
+
 use openraft::{declare_raft_types, LogId};
 use serde::{Deserialize, Serialize};
+use openraft::Raft;
+use std::sync::Arc;
 
 mod logs;
 mod state_machine;
@@ -62,3 +66,7 @@ declare_raft_types!(
 
 pub type StorageResult<T> = Result<T, openraft::StorageError<KNodeId>>;
 pub type KLogId = LogId<KNodeId>;
+
+
+pub type KRaft = Raft<KTypeConfig>;
+pub type KRaftRef = Arc<KRaft>;

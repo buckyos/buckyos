@@ -1,5 +1,4 @@
-use crate::{KNode, KNodeId, KResult, KTypeConfig, KLogError};
-use bincode::error;
+use crate::{KNodeId, KResult, KTypeConfig, KLogError};
 use openraft::error::PayloadTooLarge;
 use openraft::network::RPCTypes;
 use openraft::raft::{
@@ -7,6 +6,23 @@ use openraft::raft::{
     VoteRequest, VoteResponse,
 };
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum RaftRequestType {
+    AppendEntries,
+    InstallSnapshot,
+    Vote,
+}
+
+impl RaftRequestType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            RaftRequestType::AppendEntries => "append-entries",
+            RaftRequestType::InstallSnapshot => "install-snapshot",
+            RaftRequestType::Vote => "vote",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RaftRequest {
@@ -16,12 +32,16 @@ pub enum RaftRequest {
 }
 
 impl RaftRequest {
-    pub fn request_path(&self) -> &str {
+    pub fn request_type(&self) -> RaftRequestType {
         match self {
-            RaftRequest::AppendEntries(_) => "append-entries",
-            RaftRequest::InstallSnapshot(_) => "install-snapshot",
-            RaftRequest::Vote(_) => "vote",
+            RaftRequest::AppendEntries(_) => RaftRequestType::AppendEntries,
+            RaftRequest::InstallSnapshot(_) => RaftRequestType::InstallSnapshot,
+            RaftRequest::Vote(_) => RaftRequestType::Vote,
         }
+    }
+
+    pub fn request_path(&self) -> String {
+        self.request_type().as_str().to_string()
     }
 
     pub fn rpc_type(&self) -> RPCTypes {

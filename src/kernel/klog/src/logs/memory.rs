@@ -1,7 +1,6 @@
 use openraft::entry::RaftPayload;
 use openraft::{LogId, OptionalSend, Vote, Entry};
 use openraft::{RaftLogReader, storage::{RaftLogStorage, LogFlushed}};
-use tracing_subscriber::field::debug;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::ops::RangeBounds;
