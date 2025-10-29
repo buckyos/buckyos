@@ -375,6 +375,120 @@ impl SNServer {
         return Ok(resp);
     }
 
+    pub async fn get_device_by_public_key(
+        &self,
+        req: RPCRequest,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let public_key = req
+            .params
+            .get("public_key")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                RPCErrors::ParseRequestError("Invalid params, public_key is none".to_string())
+            })?
+            .to_string();
+        let pk_preview: String = public_key.chars().take(16).collect();
+        info!(
+            "get_device_by_public_key start: req_id={}, public_key_len={}, pk_preview={}",
+            req.id,
+            public_key.len(),
+            pk_preview
+        );
+        let device_name = req
+            .params
+            .get("device_name")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ood1".to_string());
+        debug!(
+            "get_device_by_public_key resolved device_name={}, req_id={}",
+            device_name, req.id
+        );
+
+        let user_info = {
+            let db = GLOBAL_SN_DB.lock().await;
+            db.get_user_by_public_key(public_key.as_str())
+                .map_err(|e| {
+                    error!(
+                        "Failed to query user by public_key {}, err: {:?}",
+                        public_key, e
+                    );
+                    RPCErrors::ReasonError(e.to_string())
+                })?
+        };
+
+        if user_info.is_none() {
+            warn!("user not found for public_key {}", public_key);
+            return Err(RPCErrors::ParseRequestError("user not found".to_string()));
+        }
+
+        let (username, zone_config, _) = user_info.unwrap();
+        info!(
+            "get_device_by_public_key matched username={} for req_id={}",
+            username, req.id
+        );
+
+        let device_entry = self
+            .get_device_info(username.as_str(), device_name.as_str())
+            .await;
+        if device_entry.is_some() {
+            info!(
+                "device info found for {}_{} when querying by public_key",
+                username, device_name
+            );
+        } else {
+            warn!(
+                "device info missing for {}_{} when querying by public_key",
+                username, device_name
+            );
+        }
+
+        let sn_ips_vec = self
+            .get_user_sn_ips(username.as_str())
+            .await
+            .into_iter()
+            .map(|ip| ip.to_string())
+            .collect::<Vec<String>>();
+        debug!(
+            "get_device_by_public_key collected {} sn_ips for user {}",
+            sn_ips_vec.len(),
+            username
+        );
+
+        let (device_info_value, device_sn_ip_value) =
+            if let Some((device_info, sn_ip)) = device_entry {
+                let device_value = serde_json::to_value(device_info).map_err(|e| {
+                    error!(
+                        "Failed to serialize device info for {}_{}: {:?}",
+                        username, device_name, e
+                    );
+                    RPCErrors::ReasonError(e.to_string())
+                })?;
+                (Some(device_value), Some(sn_ip.to_string()))
+            } else {
+                (None, None)
+            };
+
+        let response_value = json!({
+            "user_name": username,
+            "public_key": public_key,
+            "device_name": device_name,
+            "zone_config": zone_config,
+            "sn_ips": sn_ips_vec,
+            "device_info": device_info_value,
+            "device_sn_ip": device_sn_ip_value,
+        });
+        info!(
+            "get_device_by_public_key success for user={}, device={}, device_found={}, sn_ip_cached={}",
+            response_value["user_name"].as_str().unwrap_or_default(),
+            response_value["device_name"].as_str().unwrap_or_default(),
+            response_value["device_info"].is_object(),
+            response_value["device_sn_ip"].is_string()
+        );
+
+        Ok(RPCResponse::new(RPCResult::Success(response_value), req.id))
+    }
+
     //get device info by device_name and owner_name
     pub async fn get_device(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         //verify request.sesion_token is valid (known device token)
@@ -829,6 +943,10 @@ impl InnerServiceHandler for SNServer {
             "get" => {
                 //get device info
                 return self.get_device(req).await;
+            }
+            "get_by_pk" => {
+                // get ood all info by public_key
+                return self.get_device_by_public_key(req).await;
             }
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }

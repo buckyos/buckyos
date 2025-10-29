@@ -333,6 +333,7 @@ impl CyfsWarpServer {
                 let https_router = https_router.clone();
                 async move {
                     Ok::<_, hyper::Error>(service_fn(move |req| {
+                        trace!("receive https request from {client_ip}: {req:?}");
                         Self::handle_request(https_router.clone(), req, client_ip)
                     }))
                 }
