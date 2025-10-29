@@ -193,19 +193,6 @@ impl SnDB {
         .optional()?;
         Ok(user_info)
     }
-    pub fn get_user_by_public_key(&self, public_key: &str) -> Result<Option<(String, String, Option<String>)>> {
-        let mut stmt = self.conn.prepare("SELECT username, zone_config, sn_ips FROM users WHERE public_key =?1")?;
-        let user_info = stmt
-            .query_row(params![public_key], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            })
-            .optional()?;
-        Ok(user_info)
-    }
     pub fn register_device(&self, username: &str, device_name: &str, did: &str, ip: &str, description: &str) -> Result<()> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let mut stmt = self.conn.prepare("INSERT INTO devices (owner, device_name, did, ip, description, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6)")?;
