@@ -74,7 +74,7 @@ jobs:
       run: |
         npm i
         npm run build
-        node client.js seturl ${{inputs.version}}+build${{ steps.short_time.outputs.last6 }} macos ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}}
+        node client.js seturl ${{inputs.version}}+build${{ steps.short_time.outputs.last6 }} macos ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}} ${{github.sha}}
       working-directory: ./test/test_server
       env:
         USERNAME: ${{ secrets.TEST_SERVER_USERNAME }}

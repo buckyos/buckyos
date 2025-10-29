@@ -1,0 +1,143 @@
+<mxfile host="65bd71144e">
+    <diagram name="简介" id="dgCNba_4N36sK-C0k3VW">
+        <mxGraphModel dx="1659" dy="905" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="gQ9-Sp076uqV0BIO-Fmd-1" value="# CYFS的名字系统&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;CYFS基本上使用W3C的 DID/DID-Document设计来描述系统中的有身份实体。所谓的有身份实体是指能成为操作的发起者（可以做主语），相对的，NamedData体系里使用ObjId,这些Obj通常是被操作的对象（可以做宾语）&lt;/span&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;系统里打量使用DID来构造URL，尤其是包含用于描述“主谓宾”的结构里，主语通常很难省略，比如下面url(使用cyfs://只是为了说明其是符合cyfs规范的url,实际使用中可以用http://,但不是https)&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;```&lt;/div&gt;&lt;div&gt;cyfs://$did/$objid/$obj_field&amp;nbsp; &amp;nbsp;&lt;/div&gt;&lt;div&gt;```&lt;/div&gt;&lt;div&gt;上面URL指向obj的一个字段，其谓语为默认的“持有语意” ，&amp;nbsp; &amp;nbsp;说明&amp;nbsp; $did持有$objid&lt;/div&gt;&lt;div&gt;从上面例子可看到，did通常和域名的意义相同. 另一方面，因为域名具有广义的唯一性，所以所有的域名都是did.&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;## 解析DID：resolve($did)&amp;nbsp; --&amp;gt; NameInfo&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;过去，通过域名可以得到一系列的Record，并且通过一些特殊的Record(NS,CNAME),还可以改变查询逻辑。这些记录域名的拥有者并不需要拥有任何服务器就可以保障这些查询的可用性，DNS协议的查询是通过域名注册商的服务器来实现的。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;传统的DNS协议，明面上最大的问题有2个&lt;/div&gt;&lt;div&gt;1. 因为协议基于UDP，所以能返回的Record长度非常有限&lt;/div&gt;&lt;div&gt;2. 标准的DNS协议几乎是明文协议，易于被篡改和污染。&amp;nbsp;&lt;/div&gt;&lt;div&gt;目前的DNS生态通过引入EDNS,DNSSEC,DoT,DoH&amp;nbsp; 能解决一些问题，但这些新的协议让DNS协议的实现（尤其是服务端）的实现都变的复杂了&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;DNS系统在支持建立可信通信上的核心问题？&lt;/div&gt;&lt;div&gt;1. 中心化&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;cyfs-ns 要演进到基于区块链的BNS系统）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;2. 域名和CA系统割裂：用户要向证书提供商证明自己拥有该域名，并交保护费。&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;这钱花的值得么？。&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; &lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;cyfs-ns 通过 名字解析直接得到可用公钥，不需要再引入证书系统。（比CA要脆弱一些）&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3. 在传输层看不到 准确的名字，只能看到IP，这潜在的让整个路由系统都在面向链接优化路由，而不是面向内容优化路由。需要接入CDN来提高内容的传输速度和可靠性&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;cyfs协议鼓励区分使用http和https, 可以选择用 明文可信传输来传输公开发布的内容，这些内容更易于被整个网络去中心化的缓存。&amp;nbsp;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;上面3个核心问题也导致了今天个人难以独立的通过http://协议发布自己的内容&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;在开发上。&lt;/div&gt;&lt;div&gt;开发环境需要对DNS的返回结果进行一些配置，配置host功能太简单（有的设备难以在无管理员权限的情况下配置Host），而自建开发DNS又太复杂，并容易引入无法上网的BUG。 （如何让一组设备的解析结果走自定义的规则， 到底是改Client还是改Server的问题）&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;DNS协议通常还用来做GLB（Global Load Balance),一般CDN厂商尤其擅长。错误的DNS协议配置通常会导致“无法上网的严重后果”，所以&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;解析返回的是NameInfo,DID Document只是其中的一部分。这是因为查询名字返回的结果里，存在一些字段是“可变的” (所有以Info结尾的数据结构，都说明该结构包含一部分可变部分。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;## 使用人类友好的DID&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;什么时候使用did:pub:xxxx?&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;使用人类友好的DID，最关键的安全问题是如何通过该友好名字，得到可信的公钥，进而对后续的所有关联数据进行验证。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;## BNS是理想的实现&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;## 向下兼容，演进&lt;/div&gt;&lt;div&gt;在DNS记录中配置地址&lt;/div&gt;&lt;div&gt;在DNS记录中配置DID Document和PublicKey&lt;/div&gt;&lt;div&gt;建立hostname&amp;lt;-&amp;gt;标准DID的转换机制&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;引入可配置的网桥&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;通过特定URL获取zone_config进行探测&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;## 对IP网络的改进：从面向地址向面向身份转变&lt;/div&gt;&lt;div&gt;不用每个网络程序都需要重头实现网络安全，通过DID体系，可以在网关层实现更通用和基础的网络安全控制&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="30" y="10" width="460" height="1460" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="三种DID-Document体系&lt;div&gt;1. 逻辑名字-&amp;gt; Document,需要有一个权威的可信解析器&lt;/div&gt;&lt;div&gt;2. 公钥-&amp;gt;Document, 可以可靠的验证Document,但无法100%确定是最新的&lt;/div&gt;&lt;div&gt;3. Hash-&amp;gt;Document, 可以可靠的验证Document,但这个Document是不能更新的。工程中我们把这类结构称作Named Object&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;DID-Document对系统的作用&lt;/div&gt;&lt;div&gt;1） 可信的存储Boot信息&lt;/div&gt;&lt;div&gt;2） 用于可信通讯(并不会代替https + CA)&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;解决的核心问题&lt;/div&gt;&lt;div&gt;1. 对现有DNS系统的全面升级&lt;/div&gt;&lt;div&gt;2.&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;包含的内容：&lt;/div&gt;&lt;div&gt;1. 在现有DNS-HTTP协议上，对DID-Resolve系统的实现&lt;/div&gt;&lt;div&gt;2. 定义了3个重要的，DID-document （因为CYFS的历史原因，这几个类型叫XXX Config&lt;/div&gt;&lt;div&gt;3.&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="610" y="40" width="480" height="250" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="3DwUiGZNFsntd3UhKipu" name="核心的DID-Doc">
+        <mxGraphModel dx="1915" dy="905" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-1" value="DID本身就包含了Public Key" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-3" target="ws1-4ca1cbL5pG8BIjbI-5" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-3" target="ws1-4ca1cbL5pG8BIjbI-9" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-3" value="DID" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="320" y="30" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-4" value="验证必须依赖" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-5" target="ws1-4ca1cbL5pG8BIjbI-11" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-5" value="DID Public Key&lt;div&gt;(用于验证 DID的签名)&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="110" y="150" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-9" target="ws1-4ca1cbL5pG8BIjbI-5" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-9" target="ws1-4ca1cbL5pG8BIjbI-11" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-9" target="ws1-4ca1cbL5pG8BIjbI-20" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-9" value="Global Resovle" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="320" y="150" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-11" target="ws1-4ca1cbL5pG8BIjbI-13" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-11" value="DID Document&lt;div&gt;因为有签名，所以是不可变信息&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="320" y="260" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-13" target="ws1-4ca1cbL5pG8BIjbI-16" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-13" value="Owner Zone&lt;div&gt;(Zone DID)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="320" y="350" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-16" target="ws1-4ca1cbL5pG8BIjbI-17" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-16" target="ws1-4ca1cbL5pG8BIjbI-18" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-16" value="&lt;p&gt;Zone Resovle&lt;/p&gt;&lt;p&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;http://$zone_host/1.0/identifiers/$did&lt;br&gt;&lt;/span&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;rtcp://$zone_gateway_did&lt;/span&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;/:80/identifiers/$did&lt;/span&gt;&lt;/p&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="257.5" y="455" width="245" height="65" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-17" value="DID Document&lt;div&gt;因为有签名，所以是不可变信息&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="220" y="555" width="120" height="155" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-18" value="&lt;div&gt;DID Info&lt;/div&gt;&lt;div&gt;可变信息&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="400" y="555" width="120" height="155" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-19" value="更新Global Resovle(DNS,BNS）中的信息，通常是缓慢且高成本的" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="110" width="210" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-20" value="ZoneGateway&lt;div&gt;Device DID&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="500" y="150" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-21" value="Build rtcp&lt;div&gt;使用rtcp通信可以让大量的应用不用处理身份验证&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;dashed=1;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-20" edge="1">
+                    <mxGeometry x="-0.2953" y="14" relative="1" as="geometry">
+                        <mxPoint x="459" y="450" as="targetPoint"/>
+                        <mxPoint x="10" y="-4" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-22" value="尽量用Zone Resolve,少用Global Resolve" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="530" y="472.5" width="160" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-23" value="" style="endArrow=none;html=1;rounded=0;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="65" y="740" as="sourcePoint"/>
+                        <mxPoint x="695" y="740" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-24" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-25" target="ws1-4ca1cbL5pG8BIjbI-27" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-25" value="&lt;b&gt;与一个agent通信&lt;/b&gt;&lt;br&gt;did:agent:$agent_name:$zone_did" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="240" y="760" width="260" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-26" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-27" target="ws1-4ca1cbL5pG8BIjbI-29" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-27" value="Global Resovle&lt;div&gt;$zone_did&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="240" y="860" width="260" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-28" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-29" target="ws1-4ca1cbL5pG8BIjbI-31" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-29" value="Zone Resovle&lt;div&gt;http://$zone_host/1.0/identifiers/did:agent:$agent_name&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="205" y="960" width="330" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-30" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="ws1-4ca1cbL5pG8BIjbI-31" target="ws1-4ca1cbL5pG8BIjbI-32" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-31" value="Agent Document" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="310" y="1060" width="120" height="155" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-32" value="Post Agent Message to Agent Endpoint" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="310" y="1250" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ws1-4ca1cbL5pG8BIjbI-33" value="" style="endArrow=none;html=1;rounded=0;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="65" y="1350" as="sourcePoint"/>
+                        <mxPoint x="695" y="1350" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="BqyJVnJ3Z_a8BjGaUYVz-1" value="DID-Doc的关键要素：&lt;div&gt;1. 授权方法，通过该方法验证可以认为得到了DID对象的授权&lt;/div&gt;&lt;div&gt;2.&amp;nbsp;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="690" y="30" width="190" height="30" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="tbGa0DJDk_xj_UEVjeoF" name="标准DID-Doc的定义">
+        <mxGraphModel dx="1915" dy="905" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

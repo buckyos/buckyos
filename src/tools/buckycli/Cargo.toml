@@ -21,7 +21,7 @@ name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "nam
 ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib"}
 buckyos-api = { path = "../../kernel/buckyos-api"}
 package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib"}
-jsonwebtoken = "9.3.0"
+jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
 ed25519-dalek = { version = "*", features = ["pkcs8", "pem"] } 
 base64 = "*"
 log = "0.4"

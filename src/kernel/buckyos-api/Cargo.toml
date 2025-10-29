@@ -17,7 +17,7 @@ chrono = "*"
 once_cell = "*"
 toml = "*"
 tokio = { version = "*", features = ["full"] }
-jsonwebtoken = "*"
+jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
 reqwest = "*"
 url = "*"
 

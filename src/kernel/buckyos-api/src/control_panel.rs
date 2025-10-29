@@ -235,13 +235,18 @@ impl AppServiceInstanceConfig {
         }
     }
 
-    pub fn get_http_port(&self) -> Option<u16> {
+    pub fn get_http_port(&self,www_port:u16) -> Option<u16> {
         for (real_port,docker_port) in self.tcp_ports.iter() {
-            if docker_port == &80 {
+            if docker_port == &www_port {
                 return Some(*real_port);
-            }
+            }            
         }
+
         None
+    }
+
+    pub fn to_string(&self) -> String {
+        serde_json::to_string(self).unwrap()
     }
 }  
 

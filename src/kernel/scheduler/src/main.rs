@@ -139,7 +139,7 @@ async fn do_boot_scheduler() -> Result<()> {
     info!("do first schedule!");
     let boot_result = schedule_loop(true).await;
     if boot_result.is_err() {
-        error!("schedule_loop failed: {:?}", boot_result.err().unwrap());
+        error!("boot schedule_loop failed: {:?}", boot_result.err().unwrap());
         return Err(anyhow::anyhow!("schedule_loop failed"));
     }
     system_config_client.refresh_trust_keys().await?;
@@ -295,11 +295,35 @@ fn create_scheduler_by_input_config(
             pod_scheduler.add_pod(pod_item);
         }
 
+        if key.starts_with("nodes/") && key.ends_with("/config") {
+            let key_parts = key.split('/').collect::<Vec<&str>>();
+            let node_id = key_parts[1];
+            let node_config:NodeConfig = serde_json::from_str(value.as_str())
+                .map_err(|e| {
+                    error!("NodeConfig serde_json::from_str failed: {:?}", e);
+                    e
+                })?;
+            for (app_instance_id,app_config) in node_config.apps.iter() {
+                //add app instance:buckyos-filebrowser@devtest_0660a649-b4fc-4479-80c5-c26d99ac96fc @ ood1
+                let app_config_str = app_config.to_string();
+                info!("add app instance:{},{}",format!("{} @ {}", app_instance_id, node_id),app_config_str.as_str());
+                let pod_instance = PodInstance {
+                    pod_id: format!("{}@{}", app_config.app_id.clone(), app_config.user_id.clone()),
+                    node_id: node_id.to_string(),
+                    res_limits: HashMap::new(),
+                    instance_id: app_instance_id.to_string(),
+                    last_update_time: 0,
+                    state: PodInstanceState::from(app_config.target_state.clone()),
+                    service_port: 0,
+                };
+                pod_scheduler.add_pod_instance(pod_instance);
+            }
+        }
         //add pod_instance 
         // services/$server_name/instances/$node_id
         let key_parts = key.split('/').collect::<Vec<&str>>();
         if key_parts.len() > 3 && key_parts[0] == "services" && key_parts[2] == "instances" {
-            //debug!("add pod_instance:{}",key);
+            info!("add serviceinstance:{}",key);
             let service_name = key_parts[1];
             let instance_node_id = key_parts[3];
             let instance_info: ServiceInstanceInfo = serde_json::from_str(value.as_str())
@@ -318,6 +342,8 @@ fn create_scheduler_by_input_config(
             };
             pod_scheduler.add_pod_instance(pod_instance);
         }
+
+        
     }
 
     Ok((pod_scheduler, device_list))
@@ -343,6 +369,7 @@ fn schedule_action_to_tx_actions(
             let mut set_paths = HashMap::new();
             set_paths.insert("state".to_string(), Some(json!(node_status.to_string())));
             //TODO:需要将insert替换成合并
+            info!("will change node status: {} -> {}", node_id, node_status);
             result.insert(key, KVAction::SetByJsonPath(set_paths));
         }
         SchedulerAction::ChangePodStatus(pod_id, pod_status) => {
@@ -354,10 +381,12 @@ fn schedule_action_to_tx_actions(
             match pod_item.pod_type {
                 PodItemType::App => {
                     let set_state_action = set_app_service_state(pod_id.as_str(), pod_status)?;
+                    info!("will change app pod status: {} -> {}", pod_id, pod_status);
                     result.extend(set_state_action);
                 }
                 PodItemType::Service|PodItemType::Kernel => {
                     let set_state_action = set_service_state(pod_id.as_str(), pod_status)?;
+                    info!("will change service pod status: {} -> {}", pod_id, pod_status);
                     result.extend(set_state_action);
                 }
             }
@@ -377,6 +406,7 @@ fn schedule_action_to_tx_actions(
                 PodItemType::App => {
                     let instance_action =
                         instance_app_service(new_instance, &device_list, &input_config)?;
+                    info!("will instance app pod: {}", new_instance.pod_id);
                     result.extend(instance_action);
                 }
                 PodItemType::Service|PodItemType::Kernel => {
@@ -393,12 +423,12 @@ fn schedule_action_to_tx_actions(
                         serde_json::from_str(service_config.as_str())?;
                     let is_zone_gateway = zone_gateway.contains(&new_instance.node_id);
                     let instance_action = instance_service(new_instance, &service_config, is_zone_gateway)?;
+                    info!("will instance service pod: {}", new_instance.pod_id);
                     result.extend(instance_action);
                 }
             }
         }
-        SchedulerAction::RemovePodInstance(instance_id) => {
-            let (pod_id, node_id) = parse_instance_id(instance_id.as_str())?;
+        SchedulerAction::RemovePodInstance(pod_id,instance_id, node_id) => {
             let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
             if pod_item.is_none() {
                 return Err(anyhow::anyhow!("pod_item not found"));
@@ -411,10 +441,12 @@ fn schedule_action_to_tx_actions(
             let pod_instance = pod_instance.unwrap();
             match pod_item.pod_type {
                 PodItemType::App => {
+                    info!("will uninstance app pod: {}", pod_instance.pod_id);
                     let uninstance_action = uninstance_app_service(&pod_instance)?;
                     result.extend(uninstance_action);
                 }
                 PodItemType::Service|PodItemType::Kernel => {
+                    info!("will uninstance service pod: {}", pod_instance.pod_id);
                     let uninstance_action = uninstance_service(&pod_instance)?;
                     result.extend(uninstance_action);
                 }
@@ -431,16 +463,19 @@ fn schedule_action_to_tx_actions(
             match pod_item.pod_type {
                 PodItemType::App => {
                     let update_action = update_app_service_instance(&pod_instance)?;
+                    info!("will update app pod instance: {}", pod_instance.pod_id);
                     result.extend(update_action);
                 }
                 PodItemType::Service|PodItemType::Kernel => {
                     let update_action = update_service_instance(&pod_instance)?;
+                    info!("will update service pod instance: {}", pod_instance.pod_id);
                     result.extend(update_action);
                 }
             }
         }
         SchedulerAction::UpdatePodServiceInfo(pod_id, pod_info) => {
             let update_action = update_service_info(pod_id.as_str(), &pod_info, device_list)?;
+            info!("will update service pod info: {}", pod_id);
             result.extend(update_action);
         }
     }
@@ -665,7 +700,7 @@ async fn service_main(is_boot: bool) -> Result<i32> {
         schedule_loop(false).await.map_err(|e| {
             error!("schedule_loop failed: {:?}", e);
             e
-        })?;
+        });
         return Ok(0);
     }
 }

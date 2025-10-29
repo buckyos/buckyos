@@ -1,7 +1,5 @@
-import subprocess
 import sys
 import os
-import yaml  # 新增导入 yaml 模块
 import json
 import util
 
@@ -12,27 +10,128 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 import remote_device
-import start
 
+
+
+# web3_gateway.json 's content
+
+base_config_content = """
+{
+    "device_name":"web3.buckyos.io",
+    "device_key_path":"/opt/web3_bridge/device_key.pem",
+    "inner_services":{
+        "main_sn" : {
+            "type" : "cyfs-sn",
+            "host":"web3.buckyos.io",
+            "ip":"<ip>",
+            "zone_config_jwt":"TODO",
+            "zone_config_pkx":"TODO"
+        },
+        "zone_provider" : {
+            "type" : "zone-provider"
+        }
+    },
+    "servers":{
+        "main_http_server":{
+            "type":"cyfs-warp",
+            "bind":"0.0.0.0",
+            "http_port":80,
+            "tls_port":443,
+            "default_tls_host":"*.buckyos.ai",
+            "hosts": {
+                "web3.buckyos.ai": {
+                    "tls": {
+                        "disable_tls": false,
+                        "enable_acme": false,
+                        "cert_path": "fullchain.cer",
+                        "key_path": "buckyos.ai.key"
+                    },
+                    "enable_cors":true,
+                    "routes": {
+                        "/kapi/sn":{
+                            "inner_service":"main_sn"
+                        },
+                        "/static":{
+                            "local_dir":"/tmp"
+                        }
+                    }
+                },
+                "sn.buckyos.ai": {
+                    "tls": {
+						"disable_tls": false,
+                        "enable_acme": false,
+                        "cert_path": "fullchain.cer",
+                        "key_path": "buckyos.ai.key"
+                    },
+                    "routes": {
+                        "/":{
+                            "tunnel_selector":"main_sn"
+                        }
+                    }
+                },
+                "*":{
+                    "routes": {
+                        "/":{
+                            "tunnel_selector":"main_sn"
+                        },
+                        "/resolve":{
+                            "inner_service":"zone_provider"
+                        }
+                    }
+                }
+            }
+        },
+        "main_dns_server":{
+            "type":"cyfs-dns",
+            "bind":"0.0.0.0",
+            "port":2053,
+            "this_name":"buckyos.ai",
+            "resolver_chain": [
+                {
+                  "type": "SN",
+                  "server_id": "main_sn"
+                },
+                {
+                    "type": "dns",
+                    "cache": true
+                }
+            ],
+            "fallback": ["8.8.8.8","6.6.6.6"]
+        }
+    },
+    
+    "dispatcher" : {
+        "udp://0.0.0.0:53":{
+            "type":"server",
+            "id":"main_dns_server"
+        },
+        "tcp://0.0.0.0:80":{
+            "type":"server",
+            "id":"main_http_server"
+        },
+        "tcp://0.0.0.0:443":{
+            "type":"server",
+            "id":"main_http_server"
+        }
+    },
+    "includes": []
+}
+"""
 
 
 
 def active_sn():
     base_dir = util.CONFIG_BASE
-    temp_config =os.path.join(base_dir, "sn_server/web3_gateway.json.temp")
-    sn_ip =  util.get_multipass_ip("sn")
+    sn_ip = util.get_multipass_ip("sn")
     print(f"sn vm ip: {sn_ip}")
 
-    # 读取sn配置文件模板，修改ip字段，生成配置文件
-    with open(temp_config, 'r') as f:
-        config = json.load(f)
-        config["inner_services"]["main_sn"]["ip"] = sn_ip[0]
-        # fix
-        config["includes"] = []
-        with open(f"{base_dir}/sn_server/web3_gateway.json", 'w') as f:
-            json.dump(config, f, indent=4)
-        print("generate web3_gateway.json")
-        # print(config["inner_services"]["main_sn"]["ip"])
+    # 从base_config_content变量读取配置模板，修改ip字段，生成配置文件
+    config = json.loads(base_config_content)
+    config["inner_services"]["main_sn"]["ip"] = sn_ip[0]
+    # fix
+    with open(f"{base_dir}/sn_server/web3_gateway.json", 'w') as f:
+        json.dump(config, f, indent=4)
+    print("generate web3_gateway.json done")
 
     vmsn = remote_device.remote_device("sn")
     vmsn.run_command("sudo mkdir -p /opt/web3_bridge")

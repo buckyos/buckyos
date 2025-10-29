@@ -17,7 +17,7 @@ serde_json = "*"
 toml = "*"
 thiserror = "*"
 reqwest = {version = "*", features = ["json", "rustls-tls"]}
-jsonwebtoken = "*"
+jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
 x25519-dalek = { version = "*", features = ["static_secrets","getrandom"] }
 ed25519-dalek = { version = "*", features = ["rand_core"] } 
 ed25519_to_curve25519 = "*"

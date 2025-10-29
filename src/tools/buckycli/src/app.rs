@@ -14,7 +14,9 @@ use serde_json::Value;
     "data_mount_point": {
         "/srv/": "home/"
     },
-    "tcp_ports": 80
+    "tcp_ports": {
+        "www": 80,
+    }
 }
  */
 
@@ -90,6 +92,8 @@ pub async fn create_app(app_config: &str) {
     let mut app_url = String::new();
     let tcp_port = app_config
         .get("tcp_ports")
+        .and_then(|v| v.as_object())
+        .and_then(|v| v.get("www"))
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
     if tcp_port > 0 {
@@ -114,7 +118,7 @@ pub async fn create_app(app_config: &str) {
                     app_id
                 );
                 let user_zone_host = api_runtime.zone_id.to_host_name();
-                app_url = format!("{}-{}.{}", app_id, user_id, user_zone_host);
+                app_url = format!("{}.{}", app_id, user_zone_host);
             }
             Err(e) => {
                 eprintln!("Failed to create gateway shortcut: {}", e);
@@ -361,11 +365,26 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
                 .join(", ")
         })
         .unwrap_or("".to_string());
-    let tcp_ports = app_config.get("tcp_ports").and_then(|v| v.as_i64());
-    let tcp_ports = match tcp_ports {
-        Some(port) => format!("\"www\": {}", port),
-        None => " ".to_string(),
-    };
+    let tcp_ports = app_config
+        .get("tcp_ports")
+        .and_then(|v| v.as_object())
+        .map(|v| {
+            v.iter()
+                .map(|(k, v)| format!("\"{}\": {}", k, v.as_i64().unwrap_or(0)))
+                .collect::<Vec<String>>()
+                .join(", ")
+        })
+        .unwrap_or("".to_string());
+    let udp_ports = app_config
+        .get("udp_ports")
+        .and_then(|v| v.as_object())
+        .map(|v| {
+            v.iter()
+                .map(|(k, v)| format!("\"{}\": {}", k, v.as_i64().unwrap_or(0)))
+                .collect::<Vec<String>>()
+                .join(", ")
+        })
+        .unwrap_or("".to_string());
     let container_param = app_config
         .get("container_param")
         .and_then(|v| v.as_str())
@@ -390,7 +409,11 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
                 "pkg_list": {{
                     "amd64_docker_image": {{
                         "docker_image_name": "{}",
-                        "pkg_id": "{}#{}"
+                        "pkg_id": "{}"
+                    }},
+                    "aarch64_docker_image": {{
+                        "docker_image_name": "{}",
+                        "pkg_id": "{}"
                     }}
                 }},
                 "deps": {{}},
@@ -401,7 +424,8 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
                     "tcp_ports": {{
                         {}
                     }},
-                    "udp_ports": {{ 
+                    "udp_ports": {{
+                        {}
                     }}
                 }},
                 "container_param": "{}"
@@ -420,6 +444,7 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
                 {}
             }},
             "udp_ports": {{
+                {}
             }},
             "container_param": "{}"
         }}"#,
@@ -431,13 +456,16 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         author,
         docker_image,
         app_id,
-        version,
+        docker_image,
+        app_id,
         data_mount_point_config,
         tcp_ports,
+        udp_ports,
         container_param,
         cur_app_count + 1,
         data_mount_point,
         tcp_ports,
+        udp_ports,
         container_param
     );
     return Ok(full_app_config);
@@ -489,7 +517,7 @@ mod tests {
             }
         }
 
-        let app_config = r#"
+        let app_config_1 = r#"
         {
             "app_id": "n8n",
             "app_name": "n8n",
@@ -500,11 +528,36 @@ mod tests {
             "data_mount_point": {
                 "/home/node/.n8n/" :  "n8n/data/"
             },
-            "tcp_ports": 5678,
-            "container_param": "-e N8N_SECURE_COOKIE=false"
+            "tcp_ports": {
+                "www": 80
+            },
+            "container_param": "-e N8N_SECURE_COOKIE=false -e N8N_PORT=80"
         }
         "#;
-        let app_config: serde_json::Value = serde_json::from_str(app_config).unwrap();
+        let app_config: serde_json::Value = serde_json::from_str(app_config_1).unwrap();
+        println!("App Config: {:?}", app_config);
+        let result = build_app_service_config(&app_config).await;
+        assert!(result.is_ok());
+        let full_app_config = result.unwrap();
+        println!("Full App Config: {}", full_app_config);
+        let _app_config: AppConfig = serde_json::from_str(&full_app_config).unwrap();
+        let _test_parse_value: Value = serde_json::from_str(&full_app_config).unwrap();
+
+        let app_config_2 = r#"
+        {
+            "app_id": "home-assistant",
+            "app_name": "Home Assistant",
+            "version": "*",
+            "author": "home-assistant",
+            "description": "This is home-assistant",
+            "docker_image": "homeassistant/home-assistant",
+            "data_mount_point": {
+                "/config":  "homeassistant/config/"
+            },
+            "container_param": "-v /run/dbus:/run/dbus:ro -v /etc/localtime:/etc/localtime:ro --network=host --privileged"
+        }
+        "#;
+        let app_config: serde_json::Value = serde_json::from_str(app_config_2).unwrap();
         println!("App Config: {:?}", app_config);
         let result = build_app_service_config(&app_config).await;
         assert!(result.is_ok());

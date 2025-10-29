@@ -112,7 +112,7 @@ impl CyfsWarpServer {
         // }
 
         // Start all servers
-        let bind = self.config.bind.clone().unwrap_or("127.0.0.1".to_string());
+        let bind = self.config.bind.clone().unwrap_or("0.0.0.0".to_string());
         let bind_addrs: Vec<&str> = bind.split(';').collect();
         for bind_addr in bind_addrs {
             let http_router = http_router.clone();

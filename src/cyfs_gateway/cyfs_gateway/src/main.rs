@@ -18,18 +18,16 @@ mod socks;
 extern crate log;
 
 use crate::gateway::{Gateway, GatewayParams};
+use buckyos_api::*;
 use buckyos_kit::*;
 use clap::{Arg, ArgAction, Command};
-use console_subscriber::{self, Server};
-use cyfs_dns::start_cyfs_dns_server;
 use cyfs_gateway_lib::*;
 use cyfs_warp::*;
 use log::*;
 use name_client::*;
 use name_lib::*;
+use serde_json::Value;
 use std::path::PathBuf;
-use serde_json::{Value};
-use buckyos_api::*;
 use tokio::task;
 use url::Url;
 
@@ -37,11 +35,12 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 async fn service_main(config_json: serde_json::Value, matches: &clap::ArgMatches) -> Result<()> {
     if matches.get_flag("enable_buckyos") {
-        let mut runtime = init_buckyos_api_runtime("cyfs-gateway",None,BuckyOSRuntimeType::Kernel).await?;
+        let mut runtime =
+            init_buckyos_api_runtime("cyfs-gateway", None, BuckyOSRuntimeType::Kernel).await?;
         let login_result = runtime.login().await;
-        if  login_result.is_err() {
-            warn!("cyfs-gateway service login to buckyossystem failed! err:{:?}", login_result);
-        } 
+        if login_result.is_err() {
+            warn!("cyfs-gateway service login to buckyossystem failed! err:{login_result:?}");
+        }
         set_buckyos_api_runtime(runtime);
         info!("cyfs-gateway init buckyos-api-runtime success!");
     }
@@ -50,7 +49,7 @@ async fn service_main(config_json: serde_json::Value, matches: &clap::ArgMatches
     let load_result = config_loader::GatewayConfig::load_from_json_value(config_json).await;
     if load_result.is_err() {
         let msg = format!("Error loading config: {}", load_result.err().unwrap());
-        error!("{}", msg);
+        error!("{msg}");
         std::process::exit(1);
     }
     let config_loader = load_result.unwrap();
@@ -75,22 +74,20 @@ async fn service_main(config_json: serde_json::Value, matches: &clap::ArgMatches
 
 // Parse config first, then config file if supplied by user
 async fn load_config_from_args(matches: &clap::ArgMatches) -> Result<serde_json::Value> {
-    let default_config = get_buckyos_system_etc_dir().join("cyfs_gateway.json");
-    let config_file = matches.get_one::<String>("config_file");
-    let real_config_file;
-    if config_file.is_none() {
-        real_config_file = default_config;
-    } else {
-        real_config_file = PathBuf::from(config_file.unwrap());
-    }
+    // 优先从--config_file参数获取路径
+    let real_config_file = matches
+        .get_one::<String>("config_file")
+        .map(|path| PathBuf::from(path))
+        .unwrap_or(get_buckyos_system_etc_dir().join("cyfs_gateway.json"));
 
     let config_dir = real_config_file.parent().ok_or_else(|| {
-        let msg = format!("cannot get config dir: {:?}", real_config_file);
-        error!("{}", msg);
+        let msg = format!("cannot get config dir: {real_config_file:?}");
+        error!("{msg}");
         msg
     })?;
-    
-    let config_json = buckyos_kit::ConfigMerger::load_dir_with_root(&config_dir, &real_config_file).await?;
+
+    let config_json =
+        buckyos_kit::ConfigMerger::load_dir_with_root(&config_dir, &real_config_file).await?;
 
     Ok(config_json)
 }
@@ -115,8 +112,7 @@ fn generate_ed25519_key_pair_to_local() {
     println!("Public key saved to: {:?}", pk_file);
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let matches = Command::new("CYFS Gateway Service")
         .version(buckyos_kit::get_version())
         .arg(
@@ -165,32 +161,44 @@ async fn main() {
         std::process::exit(0);
     }
 
-    // init log
-    //std::env::set_var("BUCKY_LOG", "debug");
-    init_logging("cyfs_gateway",true);
+    if matches.get_flag("debug") {
+        std::env::set_var("RUST_BACKTRACE", "1");
+        // 1) 在创建 runtime 之前初始化 console 订阅者
+        // _guard 需要活到进程结束, 否则drop掉会导致文件日志丢失
+        let _guard = buckyos_tracing::init_tracing("cyfs_gateway", true);
+    } else {
+        //std::env::set_var("BUCKY_LOG", "debug");
+        init_logging("cyfs_gateway", true);
+    }
     info!("cyfs_gateway start...");
 
+    // 2) 手动创建 runtime（多线程或当前线程都行）
+    let _ = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(
+            async_main(&matches), // 未命名也能看到
+        );
+}
+
+async fn async_main(matches: &clap::ArgMatches) -> anyhow::Result<()> {
     let config_json: serde_json::Value = load_config_from_args(&matches)
         .await
         .map_err(|e| {
-            error!("Error loading config: {}", e);
+            error!("Error loading config: {e}");
             std::process::exit(1);
         })
         .unwrap();
-    
-    //let config_json : Value = config_json.unwrap();
-    info!("Gateway config: {}", serde_json::to_string_pretty(&config_json).unwrap());
-
-    if matches.get_flag("debug") {
-        info!("Debug mode enabled");
-        std::env::set_var("RUST_BACKTRACE", "1");
-        console_subscriber::init();
-    }
+    info!(
+        "Gateway config: {}",
+        serde_json::to_string_pretty(&config_json).unwrap()
+    );
 
     if let Err(e) = service_main(config_json, &matches).await {
-        error!("Gateway run error: {}", e);
+        error!("Gateway run error: {e:?}");
     }
-
+    Ok(())
 }
 
 #[cfg(test)]
@@ -217,7 +225,7 @@ mod tests {
     async fn test_dispatcher() {
         //TODO: need fix
         std::env::set_var("BUCKY_LOG", "debug");
-        buckyos_kit::init_logging("test_dispatcher",false);
+        buckyos_kit::init_logging("test_dispatcher", false);
         buckyos_kit::start_tcp_echo_server("127.0.0.1:8888").await;
         buckyos_kit::start_udp_echo_server("127.0.0.1:8889").await;
 
@@ -253,7 +261,7 @@ mod tests {
             .unwrap();
 
         let tunnel_manager = GATEWAY_TUNNEL_MANAGER.get().unwrap();
-        let dispatcher = dispatcher::ServiceDispatcher::new(tunnel_manager.clone(),dispatcher_cfg);
+        let dispatcher = dispatcher::ServiceDispatcher::new(tunnel_manager.clone(), dispatcher_cfg);
         dispatcher.start().await;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         buckyos_kit::start_tcp_echo_client("127.0.0.1:6001").await;

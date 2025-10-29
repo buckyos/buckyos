@@ -51,8 +51,9 @@ async function setUrl() {
     let os = argv[4];
     let arch = argv[5];
     let url = argv[6];
-    if (!version || !os || !arch || !url) {
-        console.error("Usage: node client.js seturl <version> <os> <arch> <url>");
+    let commit = argv[7];
+    if (!version || !os || !arch || !url || !commit) {
+        console.error("Usage: node client.js seturl <version> <os> <arch> <url> <commit>");
         process.exit(1);
     }
 
@@ -61,6 +62,7 @@ async function setUrl() {
         os: os,
         arch: arch,
         url: url,
+        commit: commit,
     }
 
     await postData("/version/url", content);
@@ -106,6 +108,26 @@ async function setPublish() {
     await postData("/version/publish", content);
 }
 
+async function setPack() {
+    let version = argv[3];
+    let os = argv[4];
+    let arch = argv[5];
+    let packed = argv[6] === "true";
+    if (!version || !os || !arch) {
+        console.error("Usage: node client.js setpack <version> <os> <arch> <true|false>");
+        process.exit(1);
+    }
+
+    let content = {
+        version: version,
+        os: os,
+        arch: arch,
+        packed: packed,
+    }
+
+    await postData("/version/pack", content);
+}
+
 async function test_auth() {
     let content = {
         msg: "this is a test message",
@@ -122,10 +144,12 @@ async function run() {
         await setTest();
     } else if (method === "setpublish") {
         await setPublish();
+    } else if (method == "setpack") {
+        await setPack();
     } else if (method == "auth") {
         await test_auth();
     } else {
-        console.error("Usage: node client.js <seturl|settest|setpublish>");
+        console.error("Usage: node client.js <seturl|settest|setpublish|setpack>");
         process.exit(1);
     }
 }

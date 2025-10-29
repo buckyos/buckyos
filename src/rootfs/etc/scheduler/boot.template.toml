@@ -106,8 +106,7 @@
         "www":80
     },
     "udp_ports" : {
-    },
-    "container_param": "--privileged"
+    }
 }
 """
 
@@ -233,18 +232,13 @@
     "nightly-linux-amd64.node_daemon":"no",
     "nightly-linux-aarch64.node_daemon":"no",
     "nightly-windows-amd64.node_daemon":"no",
-    "nightly-windows-aarch64.node_daemon":"no",
     "nightly-apple-amd64.node_daemon":"no",
     "nightly-apple-aarch64.node_daemon":"no",
-
     "nightly-linux-amd64.buckycli":"no",
     "nightly-linux-aarch64.buckycli":"no",
     "nightly-windows-amd64.buckycli":"no",
-    "nightly-windows-aarch64.buckycli":"no",
     "nightly-apple-amd64.buckycli":"no",
-    "nightly-apple-aarch64.buckycli":"no",
-
-    "buckyos-filebrowser":"no"
+    "nightly-apple-aarch64.buckycli":"no"
 }
 """
 

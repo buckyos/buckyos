@@ -40,13 +40,13 @@ Suitable for x86\_64 Linux distributions using `apt` or WSL2. The process takes 
 To install on x86\_64:
 
 ```bash
-wget https://www.buckyos.ai/static/buckyos_amd64.deb && dpkg -i ./buckyos_amd64.deb
+wget https://buckyos.ai/static/buckyos-amd64-latest.deb && sudo apt -f install ./buckyos-amd64-latest.deb
 ```
 
 To install on ARM devices (like Raspberry Pi):
 
 ```bash
-wget https://www.buckyos.ai/static/buckyos_aarch64.deb && dpkg -i ./buckyos_aarch64.deb
+wget https://buckyos.ai/static/buckyos-aarch64-latest.deb && sudo apt -f install ./buckyos-aarch64-latest.deb
 ```
 
 The installer will automatically download dependencies and default application Docker images, so make sure your internet connection is stable and can access apt/pip/Docker repositories.
@@ -110,6 +110,8 @@ python3 build.py --no-build-web-apps
 cd src
 python3 start.py
 ```
+
+Open http://test.buckyos.io/ to verify that the system is working properly (remember to confirm that the host file is configured with test.buckyos.io pointing to 127.0.0.1)
 
 * To reinstall BuckyOS using a specified configuration group:
 

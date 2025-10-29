@@ -128,6 +128,15 @@ impl Router {
             } else {
                 let mut host_config =  hosts.get("*");
                 for (key,value) in hosts.iter() {
+                    if key == "*" {
+                        continue;
+                    }
+
+                    if key == host {
+                        host_config = Some(value);
+                        break;
+                    }
+
                     if key.starts_with("*.") {
                         if host.ends_with(&key[1..]) {
                             host_config = Some(value);
@@ -357,6 +366,7 @@ impl Router {
         if sn_server.is_some() {
             let sn_server = sn_server.unwrap();
             let req_path = req.uri().path();
+            trace!("tunnel_selector handle host:{host} req_path:{req_path}");
             let tunnel_url = sn_server.select_tunnel_for_http_upstream(host,req_path).await;
             if tunnel_url.is_some() {
                 let tunnel_url = tunnel_url.unwrap();
@@ -366,8 +376,7 @@ impl Router {
         } else {
             warn!("No sn server found for selector: {}",selector_id);
         }
-
-        return Err(RouterError::BadGateway("No tunnel selected".to_string()));
+        Err(RouterError::BadGateway("No tunnel selected".to_string()))
     }
 
     async fn handle_upstream(&self, req: Request<Body>, upstream: &UpstreamRouteConfig) -> RouterResult<Response<Body>> {

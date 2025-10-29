@@ -61,7 +61,7 @@ async fn service_main() -> Result<()> {
         anyhow::anyhow!("repo service init error! err:{}", e)
       })?;
     
-    repo_server.init_check().await?;
+    repo_server.init().await?;
     info!("repo service init check OK.");
 
     register_inner_service_builder("repo_server", move || Box::new(repo_server.clone())).await;

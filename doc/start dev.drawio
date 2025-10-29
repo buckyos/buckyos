@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e" pages="2">
     <diagram name="Quick Start" id="_c5SOJppO-HaUyLpSSM0">
-        <mxGraphModel dx="1004" dy="942" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+        <mxGraphModel dx="768" dy="929" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -179,7 +179,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="6NgGjk6tVoeCivgmBa_m" name="标准分布式开发环境">
-        <mxGraphModel dx="1202" dy="942" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="768" dy="929" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -223,7 +223,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="f-WaLlq4udPQjtP0OP_e" name="基于Dockr开发应用服务">
-        <mxGraphModel dx="669" dy="1728" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="768" dy="2029" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -233,7 +233,7 @@
                 <mxCell id="9fp8VTBnur2RI_b8cXzo-2" value="1. 如何移植?&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;2. 编写hello buckyos(有一个简单的状态管理）&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;div&gt;3. 理解dapp的安装、部署、运行流程&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp;&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;推荐的开发测试工作流：&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; 最大兼容模式，可以先用自己喜欢的任何方式进行测试，然后再进行集成测试。集成测试的方法：再自己的repo server上发布dapp,然后通过命令行工具安装（更新），全新安装测试可以用命令行工具删除。&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp;&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;&lt;div&gt;3.5 系统里的几种组件&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;系统组件（静态库）&lt;/div&gt;&lt;div&gt;内核服务 可以稳定依赖，必定在运行的基础服务&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;系统服务 buckyos的不同发行版可以扩展，允许应用依赖，能看到所有用户的数据，默认不需要完整的读写系统的权限，但也允许配置管理员权限。BuckyOS未来的功能扩展主要是通过扩展系统服务实现&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;应用服务：&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;应用函数：系统里支持的最小权限组件，只能将输入处理后返回输出，无状态。除了输入数据无法访问系统里的任何其他数据&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;4. 使用buckyos的系统服务的统一方法&lt;/div&gt;&lt;div&gt;理解kRPC过程： (Web)UI-&amp;gt;服务进程-&amp;gt;系统服务&lt;/div&gt;&lt;div&gt;理解登录与session-token&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;通过域名确定了 app-id&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;通过登录确定了 user-id&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;5. 管理状态的方法&lt;/div&gt;&lt;div&gt;状态的一致性&lt;/div&gt;&lt;div&gt;状态的可靠性&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;状态的事务性&lt;/span&gt;&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;6. 处理长任务(Task)&lt;/div&gt;&lt;div&gt;系统对应用使用资源有限额，进程可能会别挂起或结束&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;7.发布dapp&lt;/div&gt;&lt;div&gt;&lt;br&gt;再次理解系统安装dapp的原理，是如何实现来源的可信的&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;- 直接分享给朋友&lt;/div&gt;&lt;div&gt;- 通过bucky repo发布&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; 认证为开发者 -&amp;gt; 在自己的repo发布 -&amp;gt; 提交AppDoc -&amp;gt; 等待审核 --&amp;gt; 审核通过，应用（的新版本）被收录&lt;/div&gt;&lt;div&gt;&amp;nbsp;&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="480" y="-1040" width="370" height="930" as="geometry"/>
                 </mxCell>
-                <mxCell id="kLGPeQjpxWYEgb5TcQZR-1" value="&lt;b&gt;BuckyOS SDK&lt;/b&gt;:&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;buckyos-web-sdk 用来开发前端页面。相对比较简单&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;开发应用服务：&lt;/div&gt;&lt;div&gt;目前最全功能的是 buckyos-api-runtime (rust)&lt;/div&gt;&lt;div&gt;计划支持4种主流的后台开发语言&lt;/div&gt;&lt;div&gt;buckyos-ts-runtime&lt;/div&gt;&lt;div&gt;buckyos-py-runtime&lt;/div&gt;&lt;div&gt;buckyos-go-runtime&lt;/div&gt;&lt;div&gt;buckyos-java-runtime&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;这些sdk的语义基本一致，但会根据各个语言的习惯进行充分的设计&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                <mxCell id="kLGPeQjpxWYEgb5TcQZR-1" value="&lt;b&gt;BuckyOS SDK&lt;/b&gt;:&lt;div&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;buckyos-web-sdk 用来开发前端页面。相对比较简单&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;开发应用服务：&lt;/div&gt;&lt;div&gt;目前最全功能的是 buckyos-api-runtime (rust)&lt;/div&gt;&lt;div&gt;计划支持4种主流的后台开发语言&lt;/div&gt;&lt;div&gt;buckyos-ts-runtime&lt;/div&gt;&lt;div&gt;buckyos-py-runtime&lt;/div&gt;&lt;div&gt;buckyos-go-runtime&lt;/div&gt;&lt;div&gt;buckyos-java-runtime&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;这些sdk的语义基本一致，但会根据各个语言的习惯进行充分的设计&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
                     <mxGeometry x="40" y="-490" width="290" height="180" as="geometry"/>
                 </mxCell>
             </root>

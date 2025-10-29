@@ -4,7 +4,7 @@ import platform
 
 src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
-install_root_dir = ""
+install_root_dir = os.environ.get("BUCKYOS_ROOT", "")
 
 pre_install_apps = [
     {
@@ -13,10 +13,11 @@ pre_install_apps = [
     }
 ]
 
-if platform.system() == "Windows":
-    install_root_dir = os.path.join(os.path.expandvars("%AppData%"), "buckyos")
-else:
-    install_root_dir = "/opt/buckyos"
+if install_root_dir == "":
+    if platform.system() == "Windows":
+        install_root_dir = os.path.join(os.path.expandvars("%AppData%"), "buckyos")
+    else:
+        install_root_dir = "/opt/buckyos"
 
 def set_data_dir_permissions():
     if platform.system() != "Windows":  # Windows doesn't need permission setting

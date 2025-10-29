@@ -59,6 +59,7 @@ async fn load_obj(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset
     if obj_id.is_chunk() {
         let chunk_id = ChunkId::from_obj_id(&obj_id);
         let seek_from = SeekFrom::Start(offset);
+
         let (chunk_reader,chunk_size) = real_mgr.open_chunk_reader_impl(&chunk_id, seek_from, true).await
             .map_err(|e| {
                 warn!("get chunk reader by objid failed: {}", e);
@@ -542,15 +543,16 @@ mod tests {
 
         // Step 1: Initialize a new NamedDataMgr in a temporary directory and create a test object
         let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir_path = temp_dir.keep();
         let config = NamedDataMgrConfig {
-            local_stores: vec![temp_dir.path().to_str().unwrap().to_string()],
+            local_store: temp_dir_path.to_str().unwrap().to_string(),
             local_cache: None,
             mmap_cache_dir: None,
         };
         
         let pub_named_mgr = NamedDataMgr::from_config(
             Some("test_pub".to_string()),
-            temp_dir.path().to_path_buf(),
+            temp_dir_path.to_path_buf(),
             config
         ).await.unwrap();
         let chunk_a_size:u64 = 1024*1024 + 321;
@@ -606,14 +608,15 @@ mod tests {
         NamedDataMgr::set_mgr_by_id(Some("test_pub"),pub_named_mgr).await.unwrap();
         //===================================================================
         let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir_path = temp_dir.keep();
         let config = NamedDataMgrConfig {
-            local_stores: vec![temp_dir.path().to_str().unwrap().to_string()],
+            local_store: temp_dir_path.to_string_lossy().to_string(),
             local_cache: None,
             mmap_cache_dir: None,
         };    
         let named_mgr2 = NamedDataMgr::from_config(
             Some("test_client".to_string()),
-            temp_dir.path().to_path_buf(),
+            temp_dir_path,
             config
         ).await.unwrap();
         info!("named_mgr [test_client] init OK!");
