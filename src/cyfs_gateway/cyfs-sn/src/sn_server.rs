@@ -394,17 +394,7 @@ impl SNServer {
             public_key.len(),
             pk_preview
         );
-        let device_name = req
-            .params
-            .get("device_name")
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "ood1".to_string());
-        debug!(
-            "get_device_by_public_key resolved device_name={}, req_id={}",
-            device_name, req.id
-        );
-
+        let device_name = "ood1";
         let user_info = {
             let db = GLOBAL_SN_DB.lock().await;
             db.get_user_by_public_key(public_key.as_str())
@@ -419,7 +409,21 @@ impl SNServer {
 
         if user_info.is_none() {
             warn!("user not found for public_key {}", public_key);
-            return Err(RPCErrors::ParseRequestError("user not found".to_string()));
+            let response_value = json!({
+                "user_name": Value::Null,
+                "public_key": public_key,
+                "device_name": device_name,
+                "zone_config": Value::Null,
+                "sn_ips": Vec::<String>::new(),
+                "device_info": Value::Null,
+                "device_sn_ip": Value::Null,
+                "found": false,
+                "reason": "user not found",
+            });
+            return Ok(RPCResponse::new(
+                RPCResult::Success(response_value),
+                req.id,
+            ));
         }
 
         let (username, zone_config, _) = user_info.unwrap();
@@ -429,7 +433,7 @@ impl SNServer {
         );
 
         let device_entry = self
-            .get_device_info(username.as_str(), device_name.as_str())
+            .get_device_info(username.as_str(), device_name)
             .await;
         if device_entry.is_some() {
             info!(
@@ -455,7 +459,7 @@ impl SNServer {
             username
         );
 
-        let (device_info_value, device_sn_ip_value) =
+        let (device_info_value, device_sn_ip_value, reason_value) =
             if let Some((device_info, sn_ip)) = device_entry {
                 let device_value = serde_json::to_value(device_info).map_err(|e| {
                     error!(
@@ -464,10 +468,15 @@ impl SNServer {
                     );
                     RPCErrors::ReasonError(e.to_string())
                 })?;
-                (Some(device_value), Some(sn_ip.to_string()))
+                (Some(device_value), Some(sn_ip.to_string()), Value::Null)
             } else {
-                (None, None)
+                (
+                    None,
+                    None,
+                    Value::String("device info not found".to_string()),
+                )
             };
+        let found = device_info_value.is_some();
 
         let response_value = json!({
             "user_name": username,
@@ -477,6 +486,8 @@ impl SNServer {
             "sn_ips": sn_ips_vec,
             "device_info": device_info_value,
             "device_sn_ip": device_sn_ip_value,
+            "found": found,
+            "reason": reason_value,
         });
         info!(
             "get_device_by_public_key success for user={}, device={}, device_found={}, sn_ip_cached={}",
