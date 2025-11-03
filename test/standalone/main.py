@@ -14,7 +14,7 @@ print(f"Perpareing temporary root directory: {temp_root_dir}")
 
 print("Detecting system architecture...")
 ext = ""
-architecture = platform.machine()
+architecture = platform.machine().lower()
 if architecture == "x86_64":
     architecture = "amd64"
 

@@ -17,8 +17,11 @@ from pathlib import Path
 
 import requests
 
-download_base_dir = Path("/") / "opt" / "buckyosci" / "download"
-buckyosci_rootfs_dir = Path("/") / "opt" / "buckyosci" / "rootfs"
+buckyosci_root = os.environ.get('BUCKYOS_BUILD_ROOT', "/opt/buckyosci")
+print(f"Using BUCKYOS_BUILD_ROOT: {buckyosci_root}")
+
+download_base_dir = os.path.join(buckyosci_root, "download")
+buckyosci_rootfs_dir = os.path.join(buckyosci_root, "rootfs")
 system_list = ["windows", "linux", "apple"]
 machine_list = ["amd64", "aarch64"]
 
@@ -92,7 +95,7 @@ def download_from_github_url(github_url):
         else:
             file_name = 'artifact.zip'
         print("\tFile name:", file_name)
-        save_path = download_base_dir / file_name
+        save_path = os.path.join(download_base_dir, file_name)
         if os.path.exists(save_path):
             print(f"File {save_path} already exists, checking length.")
             existing_size = os.path.getsize(save_path)
