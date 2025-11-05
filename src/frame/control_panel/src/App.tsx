@@ -1,15 +1,8 @@
-import './App.css'
+import { RouterProvider } from 'react-router-dom'
+import router from './routes/router'
 
-function App() {
-  return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center px-6 py-16">
-      <div className="max-w-xl text-center space-y-6">
-        <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-          BuckyOS Control Panel
-        </h1>
-      </div>
-    </main>
-  )
+const App = () => {
+  return <RouterProvider router={router} />
 }
 
 export default App
