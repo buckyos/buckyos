@@ -1,0 +1,427 @@
+import type { CSSProperties } from 'react'
+import { Link } from 'react-router-dom'
+
+type EventItem = {
+  title: string
+  subtitle: string
+  tone: 'success' | 'warning' | 'info'
+}
+
+type DappItem = {
+  name: string
+  status: 'running' | 'stopped'
+  icon: string
+}
+
+type QuickAction = {
+  label: string
+  icon: string
+  to: string
+}
+
+type ResourcePoint = {
+  time: string
+  cpu: number
+  memory: number
+}
+
+type StorageSlice = {
+  label: string
+  value: number
+  color: string
+}
+
+const recentEvents: EventItem[] = [
+  { title: 'System backup completed', subtitle: '2 mins ago', tone: 'success' },
+  { title: 'High memory usage detected', subtitle: '15 mins ago', tone: 'warning' },
+  { title: 'New device connected: iPhone 15', subtitle: '1 hour ago', tone: 'info' },
+  { title: 'dApp "FileSync" updated successfully', subtitle: '2 hours ago', tone: 'success' },
+  { title: 'New admin policy applied', subtitle: 'Yesterday', tone: 'info' },
+]
+
+const dapps: DappItem[] = [
+  { name: 'FileSync', icon: '🗂️', status: 'running' },
+  { name: 'SecureChat', icon: '💬', status: 'stopped' },
+  { name: 'CloudBridge', icon: '🌉', status: 'stopped' },
+  { name: 'PhotoVault', icon: '📷', status: 'running' },
+  { name: 'DataAnalyzer', icon: '📊', status: 'running' },
+  { name: 'WebPortal', icon: '🌐', status: 'running' },
+]
+
+const quickActions: QuickAction[] = [
+  { label: 'Manage Users', icon: '👤', to: '/users' },
+  { label: 'Storage Settings', icon: '💾', to: '/storage' },
+  { label: 'Network Config', icon: '🛰️', to: '/settings' },
+  { label: 'System Logs', icon: '📈', to: '/notifications' },
+]
+
+const toneStyles: Record<EventItem['tone'], string> = {
+  success: 'bg-emerald-500/20 text-emerald-300',
+  warning: 'bg-amber-500/20 text-amber-300',
+  info: 'bg-sky-500/20 text-sky-300',
+}
+
+const resourceTimeline: ResourcePoint[] = [
+  { time: '00:00', cpu: 52, memory: 68 },
+  { time: '00:05', cpu: 62, memory: 70 },
+  { time: '00:10', cpu: 58, memory: 72 },
+  { time: '00:15', cpu: 54, memory: 74 },
+  { time: '00:20', cpu: 57, memory: 75 },
+  { time: '00:25', cpu: 60, memory: 76 },
+]
+
+const storageSlices: StorageSlice[] = [
+  { label: 'Apps', value: 28, color: '#1d4ed8' },
+  { label: 'System', value: 22, color: '#6b7280' },
+  { label: 'Photos', value: 18, color: '#22c55e' },
+  { label: 'Documents', value: 12, color: '#facc15' },
+  { label: 'Other', value: 20, color: '#38bdf8' },
+]
+
+const totalStorageUsed = storageSlices.reduce((sum, slice) => sum + slice.value, 0)
+const storageTotalCapacity = 4000 // GB
+const storageUsedTb = 2400 // GB
+
+const DashboardPage = () => {
+  const cpuUsage = resourceTimeline.at(-1)?.cpu ?? 0
+  const memoryUsage = resourceTimeline.at(-1)?.memory ?? 0
+  const resourceLinePoints = resourceTimeline
+    .map((point, index) => {
+      const x = (index / (resourceTimeline.length - 1)) * 100
+      const cpuY = 100 - point.cpu
+      const memoryY = 100 - point.memory
+      return { x, cpuY, memoryY }
+    })
+    .reduce<{ cpu: string; memory: string }>(
+      (acc, { x, cpuY, memoryY }) => ({
+        cpu: `${acc.cpu}${acc.cpu ? ' ' : ''}${x},${cpuY}`,
+        memory: `${acc.memory}${acc.memory ? ' ' : ''}${x},${memoryY}`,
+      }),
+      { cpu: '', memory: '' },
+    )
+
+  const storageBarSegments = storageSlices.map((slice) => ({
+    ...slice,
+    width: `${(slice.value / totalStorageUsed) * 100}%`,
+  }))
+
+  const storageDonutStyle: CSSProperties = {
+    background: `conic-gradient(${storageSlices
+      .map((slice, index) => {
+        const start =
+          storageSlices.slice(0, index).reduce((sum, current) => sum + current.value, 0) /
+          totalStorageUsed
+        const end = start + slice.value / totalStorageUsed
+        return `${slice.color} ${start * 360}deg ${end * 360}deg`
+      })
+      .join(', ')})`,
+  }
+
+  return (
+    <div className="space-y-6">
+      <header className="rounded-3xl border border-slate-900/60 bg-slate-900/40 px-8 py-6 shadow-lg shadow-black/20 backdrop-blur">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold text-white sm:text-3xl">System Overview</h1>
+            <p className="text-sm text-slate-400">
+              Monitor your decentralized personal cloud infrastructure
+            </p>
+          </div>
+          <div className="flex items-center gap-3 text-sm text-slate-300">
+            <span className="inline-flex size-2 rounded-full bg-emerald-400" aria-hidden />
+            System Online
+          </div>
+        </div>
+      </header>
+
+      <section className="grid gap-6 lg:grid-cols-[2fr_1fr]">
+        <div className="rounded-3xl border border-slate-900/60 bg-slate-900/60 p-6 shadow-lg shadow-black/20">
+          <div className="mb-6 flex items-center gap-2 text-lg font-semibold text-white">
+            <span aria-hidden>⚡</span>
+            <h2>System Resources</h2>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
+            <div className="space-y-4">
+              <div className="flex items-center gap-4 text-sm text-slate-300">
+                <div className="flex flex-1 items-center gap-3 rounded-xl bg-slate-900/70 px-4 py-2 ring-1 ring-slate-800">
+                  <span className="inline-flex size-2 rounded-full bg-sky-500" aria-hidden />
+                  <span className="flex-1 font-medium text-white">CPU</span>
+                  <span className="text-xs uppercase tracking-wide text-slate-400">58%</span>
+                </div>
+                <div className="flex flex-1 items-center gap-3 rounded-xl bg-slate-900/70 px-4 py-2 ring-1 ring-slate-800">
+                  <span className="inline-flex size-2 rounded-full bg-emerald-500" aria-hidden />
+                  <span className="flex-1 font-medium text-white">Memory</span>
+                  <span className="text-xs uppercase tracking-wide text-slate-400">76%</span>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-900/80 bg-slate-950/40 p-4">
+                <svg viewBox="0 0 100 60" className="h-40 w-full text-slate-700">
+                  <rect x="0" y="0" width="100" height="60" fill="transparent" />
+                  {[20, 40, 60, 80].map((value) => (
+                    <line
+                      // eslint-disable-next-line react/no-array-index-key
+                      key={value}
+                      x1="0"
+                      y1={60 - value * 0.6}
+                      x2="100"
+                      y2={60 - value * 0.6}
+                      stroke="currentColor"
+                      strokeWidth="0.4"
+                      strokeDasharray="2"
+                    />
+                  ))}
+                  <polyline
+                    points={resourceLinePoints.cpu}
+                    fill="none"
+                    stroke="#38bdf8"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <polyline
+                    points={resourceLinePoints.memory}
+                    fill="none"
+                    stroke="#22c55e"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                <div className="mt-3 flex justify-between text-xs text-slate-500">
+                  {resourceTimeline.map((point) => (
+                    <span key={point.time}>{point.time}</span>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-col justify-between gap-6 text-sm text-slate-300">
+              <div className="rounded-2xl bg-slate-900/70 px-4 py-5 text-center ring-1 ring-slate-800">
+                <p className="text-xs uppercase tracking-wide text-slate-400">CPU Usage</p>
+                <p className="mt-2 text-3xl font-semibold text-white">{cpuUsage}%</p>
+                <p className="text-xs text-emerald-400">Stable</p>
+              </div>
+              <div className="rounded-2xl bg-slate-900/70 px-4 py-5 text-center ring-1 ring-slate-800">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Memory Usage</p>
+                <p className="mt-2 text-3xl font-semibold text-white">{memoryUsage}%</p>
+                <p className="text-xs text-sky-400">Healthy</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-900/60 bg-slate-900/60 p-6 shadow-lg shadow-black/20">
+          <div className="mb-6 flex items-center gap-2 text-lg font-semibold text-white">
+            <span aria-hidden>🧠</span>
+            <h2>Storage Overview</h2>
+          </div>
+          <div className="space-y-6 text-sm text-slate-300">
+            <div className="flex items-center justify-between text-xs uppercase tracking-wide text-slate-500">
+              <span>Used Space</span>
+              <span className="text-white">
+                {(storageUsedTb / 1024).toFixed(1)}TB / {(storageTotalCapacity / 1024).toFixed(1)}TB
+              </span>
+            </div>
+            <div className="flex h-2 overflow-hidden rounded-full bg-slate-800">
+              {storageBarSegments.map((segment) => (
+                <span
+                  key={segment.label}
+                  style={{ width: segment.width, backgroundColor: segment.color }}
+                  className="h-full"
+                />
+              ))}
+            </div>
+            <div className="flex flex-col items-center gap-6 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-center gap-5">
+                <div
+                  style={storageDonutStyle}
+                  className="relative flex size-24 items-center justify-center rounded-full"
+                >
+                  <div className="size-10 rounded-full bg-slate-900" />
+                </div>
+                <div className="space-y-2 text-xs text-slate-400">
+                  {storageSlices.map((slice) => (
+                    <div key={slice.label} className="flex items-center gap-2">
+                      <span
+                        className="inline-flex size-2 rounded-full"
+                        style={{ backgroundColor: slice.color }}
+                      />
+                      <span className="w-20 text-slate-300">{slice.label}</span>
+                      <span>{slice.value}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-2xl bg-slate-900/70 px-5 py-4 text-xs text-slate-400 ring-1 ring-slate-800">
+                <div className="flex justify-between text-slate-300">
+                  <span>Snapshots</span>
+                  <span>12</span>
+                </div>
+                <div className="flex justify-between text-slate-300">
+                  <span>Replication</span>
+                  <span>Enabled</span>
+                </div>
+                <div className="mt-2 rounded-lg bg-slate-950/50 px-3 py-2 text-sky-300">
+                  4 nodes synced
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-6 lg:grid-cols-[2fr_1fr]">
+        <div className="rounded-3xl border border-slate-900/60 bg-slate-900/60 p-6 shadow-lg shadow-black/20">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-white">Recent Events</h2>
+            <span className="text-xs uppercase tracking-wide text-slate-500">Last 24h</span>
+          </div>
+          <div className="mt-5 max-h-64 space-y-3 overflow-y-auto pr-1">
+            {recentEvents.map((item) => (
+              <div
+                key={item.title}
+                className="flex items-start gap-3 rounded-2xl bg-slate-900/70 px-4 py-3 text-sm text-slate-300 ring-1 ring-slate-800"
+              >
+                <span
+                  className={`mt-0.5 inline-flex size-6 items-center justify-center rounded-full text-xs font-semibold ${toneStyles[item.tone]}`}
+                >
+                  ●
+                </span>
+                <div className="flex-1">
+                  <p className="font-medium text-white">{item.title}</p>
+                  <p className="text-xs text-slate-500">{item.subtitle}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-900/60 bg-slate-900/60 p-6 shadow-lg shadow-black/20">
+          <div className="mb-4 flex items-center gap-2 text-lg font-semibold text-white">
+            <span aria-hidden>🧩</span>
+            <h2>dApps</h2>
+          </div>
+          <div className="space-y-3">
+            {dapps.map((dapp) => (
+              <div
+                key={dapp.name}
+                className="flex items-center justify-between rounded-2xl bg-slate-900/70 px-4 py-3 text-sm ring-1 ring-slate-800"
+              >
+                <div className="flex items-center gap-3 text-slate-200">
+                  <span className="text-lg" aria-hidden>
+                    {dapp.icon}
+                  </span>
+                  <span>{dapp.name}</span>
+                </div>
+                <span
+                  className={[
+                    'rounded-full px-3 py-1 text-xs font-semibold capitalize',
+                    dapp.status === 'running'
+                      ? 'bg-emerald-500/15 text-emerald-300'
+                      : 'bg-slate-700/60 text-slate-400',
+                  ].join(' ')}
+                >
+                  {dapp.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-6 lg:grid-cols-[1.5fr_1fr_1fr]">
+        <div className="rounded-3xl border border-slate-900/60 bg-slate-900/60 p-6 shadow-lg shadow-black/20">
+          <div className="mb-6 flex items-center gap-2 text-lg font-semibold text-white">
+            <span aria-hidden>🌐</span>
+            <h2>Network Status</h2>
+          </div>
+          <div className="space-y-6 text-sm text-slate-300">
+            <div>
+              <div className="mb-1 flex justify-between text-xs uppercase tracking-wide text-slate-500">
+                <span>Upload</span>
+                <span className="text-white">12.5 MB/s</span>
+              </div>
+              <div className="h-2 rounded-full bg-slate-800">
+                <div className="h-full w-3/5 rounded-full bg-sky-500" />
+              </div>
+            </div>
+            <div>
+              <div className="mb-1 flex justify-between text-xs uppercase tracking-wide text-slate-500">
+                <span>Download</span>
+                <span className="text-white">24.8 MB/s</span>
+              </div>
+              <div className="h-2 rounded-full bg-slate-800">
+                <div className="h-full w-4/5 rounded-full bg-blue-500" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4 text-xs text-slate-400">
+              <div>
+                <p className="uppercase tracking-wide">Connected Peers</p>
+                <p className="mt-1 text-lg font-semibold text-white">847</p>
+              </div>
+              <div>
+                <p className="uppercase tracking-wide">Active Connections</p>
+                <p className="mt-1 text-lg font-semibold text-white">23</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-900/60 bg-slate-900/60 p-6 shadow-lg shadow-black/20">
+          <div className="mb-6 flex items-center gap-2 text-lg font-semibold text-white">
+            <span aria-hidden>🗃️</span>
+            <h2>My Assets</h2>
+          </div>
+          <div className="space-y-6 text-sm text-slate-300">
+            <div className="text-center">
+              <p className="text-4xl font-semibold text-white">156</p>
+              <p className="text-xs uppercase tracking-wide text-slate-500">Total Assets</p>
+            </div>
+            <div className="space-y-2 text-xs text-slate-400">
+              <div className="flex justify-between">
+                <span>Files</span>
+                <span className="text-white">89</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Photos</span>
+                <span className="text-white">43</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Documents</span>
+                <span className="text-white">24</span>
+              </div>
+            </div>
+            <Link
+              to="/storage"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/70 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-slate-500 hover:text-white"
+            >
+              View All Assets
+            </Link>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-900/60 bg-slate-900/60 p-6 shadow-lg shadow-black/20">
+          <div className="mb-6 flex items-center gap-2 text-lg font-semibold text-white">
+            <span aria-hidden>⚡</span>
+            <h2>Quick Actions</h2>
+          </div>
+          <div className="space-y-3 text-sm text-slate-200">
+            {quickActions.map((action) => (
+              <Link
+                key={action.to}
+                to={action.to}
+                className="flex w-full items-center gap-3 rounded-2xl bg-slate-900/70 px-4 py-3 text-left transition hover:bg-slate-800"
+              >
+                <span className="text-lg" aria-hidden>
+                  {action.icon}
+                </span>
+                <span>{action.label}</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+export default DashboardPage
