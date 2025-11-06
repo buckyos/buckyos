@@ -1,6 +1,7 @@
 import { createBrowserRouter } from 'react-router-dom'
 import RootLayout from '../ui/RootLayout'
 import DashboardPage from '../ui/pages/DashboardPage'
+import StoragePage from '../ui/pages/StoragePage'
 import PlaceholderPage from '../ui/pages/PlaceholderPage'
 
 const router = createBrowserRouter([
@@ -21,13 +22,7 @@ const router = createBrowserRouter([
       },
       {
         path: 'storage',
-        element: (
-          <PlaceholderPage
-            title="Storage"
-            description="Inspect capacity usage, configure replication policies, and manage snapshots."
-            ctaLabel="Open Storage Console"
-          />
-        ),
+        element: <StoragePage />,
       },
       {
         path: 'dapps',

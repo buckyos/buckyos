@@ -26,8 +26,8 @@ const baseNavClasses =
 const RootLayout = () => {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      <div className="mx-auto flex min-h-screen max-w-7xl gap-8 px-6 py-10 lg:px-10">
-        <aside className="flex w-64 flex-col rounded-3xl bg-slate-900/60 p-6 backdrop-blur">
+      <div className="mx-auto flex h-screen max-w-7xl gap-8 overflow-hidden px-6 py-10 lg:px-10">
+        <aside className="flex h-full w-64 flex-col rounded-3xl bg-slate-900/60 p-6 backdrop-blur">
           <div className="mb-10 flex items-center gap-3 text-lg font-semibold tracking-tight">
             <span className="inline-flex size-10 items-center justify-center rounded-2xl bg-sky-500 text-2xl">
               B
@@ -115,7 +115,7 @@ const RootLayout = () => {
           </div>
         </aside>
 
-        <main className="flex-1 pb-10">
+        <main className="flex-1 overflow-y-auto pb-10 pr-2">
           <Outlet />
         </main>
       </div>
