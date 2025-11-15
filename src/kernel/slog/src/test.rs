@@ -43,14 +43,14 @@ fn test_write() {
     log::info!("This is an info log.");
     log::debug!("This is a debug log.");
 
-    let mut index = 0;
-    loop {
+    for index in 0..7 {
         log::info!("Info log message number {}", index);
         log::debug!("Debug log message number {}", index);
-        index += 1;
 
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
     }
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
 }
 
 fn test_read() {

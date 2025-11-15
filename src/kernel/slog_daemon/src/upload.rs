@@ -39,7 +39,7 @@ impl LogUploader {
         } else {
             let msg = format!("server returned error status: {}", response.status());
             error!("{}", msg);
-            Err(msg)    
+            Err(msg)
         }
     }
 }

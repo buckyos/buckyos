@@ -202,9 +202,19 @@ impl FileLogReader {
         let read_info = file_lock.as_mut().unwrap();
         let file_path = self.dir.join(&read_info.meta.name);
 
+        debug!(
+            "reading log records from file: {}, read_index: {}, last_read_index: {}, batch_size: {}",
+            file_path.display(),
+            read_info.meta.read_index,
+            read_info.last_read_index,
+            batch_size
+        );
+        
+        let mut records = Vec::new();
+        let mut buf_reader = std::io::BufReader::new(&mut read_info.file);
+
         // Always seek to read_index, not the last_read_index
-        read_info
-            .file
+        buf_reader
             .seek(std::io::SeekFrom::Start(read_info.meta.read_index as u64))
             .map_err(|e| {
                 let msg = format!(
@@ -216,8 +226,6 @@ impl FileLogReader {
                 msg
             })?;
 
-        let mut records = Vec::new();
-        let mut buf_reader = std::io::BufReader::new(&mut read_info.file);
         let mut line = String::new();
 
         for _ in 0..batch_size {
@@ -232,6 +240,24 @@ impl FileLogReader {
                 msg
             })?;
 
+            /* 
+            let pos = buf_reader.seek(std::io::SeekFrom::Current(0)).map_err(|e| {
+                let msg = format!(
+                    "failed to get current position of log file: {}, {}",
+                    file_path.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            debug!(
+                "read line from log file: {}, bytes_read: {}, pos: {}",
+                file_path.display(),
+                bytes_read,
+                pos,
+            );
+            */
+            
             if bytes_read == 0 {
                 break; // EOF
             }
@@ -256,18 +282,22 @@ impl FileLogReader {
         }
 
         // Save last read index
-        let current_pos = read_info
-            .file
-            .seek(std::io::SeekFrom::Current(0))
-            .map_err(|e| {
-                let msg = format!(
-                    "failed to get current position of log file: {}, {}",
-                    file_path.display(),
-                    e
-                );
-                error!("{}", msg);
-                msg
-            })?;
+        let current_pos = buf_reader.stream_position().map_err(|e| {
+            let msg = format!(
+                "failed to get current position of log file: {}, {}",
+                file_path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        info!(
+            "read {} lines from log file: {}, current pos: {}",
+            records.len(),
+            file_path.display(),
+            current_pos
+        );
         // Just update last_read_index in memory, must call flush_read_index to persist to meta db
         read_info.last_read_index = current_pos as usize;
 
@@ -283,6 +313,11 @@ impl FileLogReader {
 
         let read_info = file_lock.as_mut().unwrap();
 
+        debug!(
+            "flushing read index for log file id: {}, last_read_index: {}",
+            read_info.meta.id,
+            read_info.last_read_index
+        );
         // Update meta db
         self.meta
             .update_file_read_index(read_info.meta.id, read_info.last_read_index as i64)
@@ -300,4 +335,31 @@ impl FileLogReader {
 
         Ok(())
     }
+}
+
+
+#[test]
+fn test_read() {
+    let log_dir = crate::get_buckyos_log_root_dir().join("test_slog_service");
+    let file = log_dir.join("test_slog_service.1.log");
+
+    // Open the file and read lines
+    let mut file = std::fs::File::open(file).unwrap();
+    let mut buf_reader = std::io::BufReader::new(&file);
+
+    for i in 0..100 {
+        let mut line = String::new();
+        let bytes_read = buf_reader.read_line(&mut line).unwrap();
+        if bytes_read == 0 {
+            break;
+        }
+        println!("line {}: {}", i, line.trim_end());
+    }
+
+    // Get current position
+    let pos = buf_reader.seek(std::io::SeekFrom::Current(0)).unwrap();
+    println!("current position: {}", pos);
+
+    let pos = file.seek(std::io::SeekFrom::Current(0)).unwrap();
+    println!("file current position: {}", pos);
 }

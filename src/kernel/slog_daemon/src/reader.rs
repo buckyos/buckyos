@@ -1,8 +1,9 @@
-use slog::{FileLogReader, LogMeta, SystemLogRecord};
+use slog::{FileLogReader, SystemLogRecord};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 // Log records read from a log directory, identified by id as service name(directory name)
+#[derive(Clone)]
 pub struct LogRecordItem {
     pub records: Vec<SystemLogRecord>,
     pub id: String,
@@ -16,13 +17,17 @@ struct LogDirItem {
 
 pub struct LogDirReader {
     dir: PathBuf,
+    excluded: Vec<String>,
     list: Mutex<Vec<LogDirItem>>,
 }
 
 impl LogDirReader {
-    pub fn open(log_dir: &Path) -> Result<Self, String> {
+    pub fn open(log_dir: &Path, excluded: Vec<String>) -> Result<Self, String> {
+        info!("opening log dir reader at dir: {}, excluded: {:?}", log_dir.display(), excluded);
+        
         let reader = LogDirReader {
             dir: log_dir.to_path_buf(),
+            excluded,
             list: Mutex::new(Vec::new()),
         };
 
@@ -48,7 +53,7 @@ impl LogDirReader {
                             id: item.id.clone(),
                         });
 
-                        if batch_size == 0 {
+                        if remain_size == 0 {
                             break;
                         }
                     }
@@ -133,10 +138,19 @@ impl LogDirReader {
                 error!("{}", msg);
                 msg
             })?;
+
+            // Check if excluded
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if self.excluded.iter().any(|ex| ex == &file_name) {
+                debug!("log dir {} is excluded, skip it", file_name);
+                continue;
+            }
+
             let path = entry.path();
             if path.is_dir() {
                 let meta_path = path.join("log_meta.db");
                 if meta_path.exists() {
+                    // info!("found sub log dir: {}", path.display());
                     log_dirs.push(path);
                 }
             }
@@ -145,4 +159,3 @@ impl LogDirReader {
         Ok(log_dirs)
     }
 }
-
