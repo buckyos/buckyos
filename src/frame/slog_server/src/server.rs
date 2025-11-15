@@ -24,6 +24,12 @@ impl LogHttpServer {
             post(move |log_records: axum::Json<LogRecords>| {
                 let storage = storage.clone();
                 async move {
+                    info!(
+                        "Received log records: node {}, service: {}, count {}",
+                        log_records.0.node,
+                        log_records.0.service,
+                        log_records.0.logs.len()
+                    );
                     match storage.append_logs(log_records.0).await {
                         Ok(_) => axum::Json(LogResponseMessage {
                             ret: 0,

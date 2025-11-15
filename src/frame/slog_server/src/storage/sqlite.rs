@@ -1,6 +1,5 @@
 use super::storage::{LogRecords, LogStorage};
-use rusqlite::{Connection, OptionalExtension, Result as SqlResult};
-use slog::SystemLogRecord;
+use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -236,21 +235,24 @@ mod test {
         storage.append(log_records).unwrap();
 
         // For another node and service
-        let records2 = vec![SystemLogRecord {
-            level: LogLevel::Warn,
-            target: "test_target_2".to_string(),
-            time: 1625079720000,
-            file: Some("test_file_2.rs".to_string()),
-            line: Some(84),
-            content: "This is a warning log message.".to_string(),
-        }, SystemLogRecord {
-            level: LogLevel::Debug,
-            target: "test_target_2".to_string(),
-            time: 1625079780000,
-            file: None,
-            line: None,
-            content: "This is a debug log message.".to_string(),
-        }];
+        let records2 = vec![
+            SystemLogRecord {
+                level: LogLevel::Warn,
+                target: "test_target_2".to_string(),
+                time: 1625079720000,
+                file: Some("test_file_2.rs".to_string()),
+                line: Some(84),
+                content: "This is a warning log message.".to_string(),
+            },
+            SystemLogRecord {
+                level: LogLevel::Debug,
+                target: "test_target_2".to_string(),
+                time: 1625079780000,
+                file: None,
+                line: None,
+                content: "This is a debug log message.".to_string(),
+            },
+        ];
 
         let log_records2 = LogRecords {
             node: "test_node_2".to_string(),
