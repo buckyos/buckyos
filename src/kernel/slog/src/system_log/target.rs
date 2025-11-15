@@ -1,8 +1,8 @@
 use super::constants::*;
-use log::{Log, Record};
-use serde::{Serialize, Deserialize};
-use chrono::offset::{Local, Utc};
 use chrono::DateTime;
+use chrono::offset::{Local, Utc};
+use log::Record;
+use serde::{Deserialize, Serialize};
 
 pub struct LogTimeHelper;
 
@@ -12,7 +12,8 @@ impl LogTimeHelper {
     }
 
     pub fn time_to_local_string(time: u64) -> String {
-        let datetime: DateTime<Utc> = DateTime::from_timestamp_millis(time as i64).unwrap_or(DateTime::default());
+        let datetime: DateTime<Utc> =
+            DateTime::from_timestamp_millis(time as i64).unwrap_or(DateTime::default());
         let datetime: DateTime<Local> = DateTime::from(datetime);
 
         datetime.format("%Y-%m-%d_%H:%M:%S%.3f_%:z").to_string()
@@ -109,7 +110,6 @@ impl SystemLogRecord {
         }
     }
 }
-
 
 impl std::fmt::Display for SystemLogRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

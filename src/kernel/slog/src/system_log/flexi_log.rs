@@ -167,10 +167,10 @@ impl FlexiModuleLogger {
             logger = logger.duplicate_to_stderr(config.console.clone().into());
             logger = logger.format_for_stderr(console_format);
 
-            #[cfg(feature = "colors")]
-            {
-                logger = logger.format_for_stderr(cyfs_colored_default_format);
-            }
+            //#[cfg(feature = "colors")]
+            //{
+            //    logger = logger.format_for_stderr(cyfs_colored_default_format);
+            //}
         }
 
         let (logger, _handle) = logger.build().map_err(|e| {
@@ -259,7 +259,7 @@ impl Log for FlexiLogger {
 
         let logger = self.get_logger(target);
         if logger.check_level(record.metadata().level()) {
-            // println!("will output");
+            //println!("will output");
             logger.logger.log(record);
 
             // If there are other targets, output to the targets

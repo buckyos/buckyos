@@ -28,6 +28,7 @@ impl SystemLogRecordLineFormatter {
     }
 
     pub fn parse_record(line: &str) -> Result<SystemLogRecord, String> {
+        // println!("Parsing log line: {}", line);
         let parts: Vec<&str> = line.splitn(4, ' ').collect();
         if parts.len() < 4 {
             let msg = format!("invalid log line format: {}", line);

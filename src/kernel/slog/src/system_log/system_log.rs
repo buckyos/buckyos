@@ -33,10 +33,10 @@ pub struct SystemLoggerBuilder {
 }
 
 impl SystemLoggerBuilder {
-    pub fn new(log_root: &Path, name: &str, category: SystemLoggerCategory) -> Self {
+    pub fn new(log_root: &Path, name: &str, _category: SystemLoggerCategory) -> Self {
         // simple_logger::SimpleLogger::default().init().unwrap();
 
-        let log_dir = Self::get_log_dir(log_root, name, &category);
+        let log_dir = Self::get_log_dir(log_root, name);
         let config = LogConfig::new(log_dir);
         Self {
             config,
@@ -59,6 +59,7 @@ impl SystemLoggerBuilder {
         self
     }
 
+    
     pub fn file(mut self, enable: bool) -> Self {
         self.config.global.file = enable;
         self
@@ -113,11 +114,10 @@ impl SystemLoggerBuilder {
         Ok(ret)
     }
 
-    pub fn get_log_dir(log_root: &Path, name: &str, category: &SystemLoggerCategory) -> PathBuf {
+    pub fn get_log_dir(log_root: &Path, name: &str) -> PathBuf {
         assert!(!name.is_empty());
     
         let mut root = PathBuf::from(log_root);
-        root.push(category.as_str());
         root.push(name);
         root
     }

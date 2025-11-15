@@ -1,8 +1,6 @@
-use log::Log;
-
 use super::meta::LogMeta;
 use crate::system_log::{SystemLogTarget, SystemLogRecord};
-use std::{fs::File, path::PathBuf};
+use std::{fs::File, path::{PathBuf, Path}};
 use std::sync::{Mutex, Arc};
 use super::format::SystemLogRecordLineFormatter;
 use std::io::Write;
@@ -41,7 +39,6 @@ struct FileLogTargetInner {
     log_dir: PathBuf,
     service_name: String,
     max_file_size: u64,
-    max_total_size: u64,
     flush_interval_ms: u64,
 
     meta: LogMeta,
@@ -58,29 +55,30 @@ pub struct FileLogTarget {
 
 impl FileLogTarget {
     pub fn new(
-        log_dir: PathBuf,
+        log_dir: &Path,
         service_name: String,
         max_file_size: u64,
-        max_total_size: u64,
         flush_interval_ms: u64,
     ) -> Result<Self, String> {
         let meta = LogMeta::open(std::path::Path::new(&log_dir))?;
         let cache = LogRecordCache::new();
 
         let inner = FileLogTargetInner {
-            log_dir,
+            log_dir: log_dir.to_path_buf(),
             service_name,
             max_file_size,
-            max_total_size,
             flush_interval_ms,
             meta,
             current_file: Mutex::new(None),
             cache,
         };
 
-        Ok(FileLogTarget {
+        let ret = Self {
             inner: Arc::new(inner),
-        })
+        };
+        ret.start();
+
+        Ok(ret)
     }
 
     fn start(&self) {
@@ -99,6 +97,7 @@ impl FileLogTarget {
             return;
         }
 
+        // println!("Flushing {} log records to file...", records.len());
         // First try to log to file
         if let Err(e) = self.log_to_file(&records) {
             error!("failed to flush logs to file: {}", e);
@@ -199,8 +198,15 @@ impl FileLogTarget {
 
         let file_info = current_file.as_mut().unwrap();
         
+        // Get current pos of the file
+        use std::io::Seek;
+        let pos = file_info.file.seek(std::io::SeekFrom::Current(0)).map_err(|e| {
+            let msg = format!("failed to seek to end of log file: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
         let mut i = 0;
-        let mut count = 0;
         let ret = loop {
             if i >= lines.len() {
                 break Ok(());
@@ -211,7 +217,6 @@ impl FileLogTarget {
             match  file_info.file.write_all(line.as_bytes()) {
                 Ok(_) => {
                     file_info.size += line.len() as u64;
-                    count += line.len();
                 },
                 Err(e) => {
                     let msg = format!("failed to write log to file: {}", e);
@@ -221,9 +226,15 @@ impl FileLogTarget {
             }
         };
 
+        let new_pos = file_info.file.seek(std::io::SeekFrom::Current(0)).map_err(|e| {
+            let msg = format!("failed to seek log file after writing: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
         // If any logs were written, update the write index in meta
-        if count > 0 {
-            self.inner.meta.increase_current_write_index(count as i64).map_err(|e| {
+        if new_pos > pos {
+            self.inner.meta.update_current_write_index(new_pos).map_err(|e| {
                 let msg = format!("failed to update write index of current log file: {}", e);
                 error!("{}", msg);
                 msg
@@ -236,6 +247,7 @@ impl FileLogTarget {
 
 impl SystemLogTarget for FileLogTarget {
     fn log(&self, record: &SystemLogRecord) {
+        // println!("Caching log record to file log target...");
         self.inner.cache.add_record(record.clone());
     }
 }

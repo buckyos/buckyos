@@ -87,7 +87,7 @@ impl LogModuleConfig {
 
             level: LogLevel::default(),
             console: LogLevel::default(),
-            file: true,
+            file: false,    // Disable file log by default
             file_name: Some(name.to_string()),
             file_max_size: 1024 * 1024 * 10,
             file_max_count: 10,

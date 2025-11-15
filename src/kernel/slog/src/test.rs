@@ -1,17 +1,87 @@
 use crate::*;
+use std::io::Write;
 
-fn test_log() {
-    let logger = SystemLoggerBuilder::new(
-        std::path::Path::new("/var/log/slog"),
-        "test_service",
-        SystemLoggerCategory::Service,
-    )
-    .level("info")
-    .console("debug")
-    .file(true)
-    .build()
-    .unwrap();
+const SERVICE_NAME: &str = "test_slog_service";
 
-    logger.log_info("This is an info log from test_log.");
-    logger.log_debug("This is a debug log from test_log.");
-}   
+#[test]
+fn test_main() {
+    // Start new thread to read logs
+    std::thread::spawn(|| {
+        test_read();
+    });
+
+    test_write();
+}
+
+#[test]
+fn test_write() {
+    let log_root_dir = get_buckyos_log_root_dir();
+    std::fs::create_dir_all(&log_root_dir).unwrap();
+
+    let log_dir = log_root_dir.join(SERVICE_NAME);
+    std::fs::create_dir_all(&log_dir).unwrap();
+    println!("Log directory: {:?}", log_dir);
+
+    // Create file log target
+    let target = FileLogTarget::new(
+        &log_dir,
+        SERVICE_NAME.to_string(),
+        1024 * 1024 * 16, // 16 MB max file size
+        1000,             // flush interval ms
+    ).unwrap();
+    let target = Box::new(target) as Box<dyn SystemLogTarget>;
+
+    let logger =
+        SystemLoggerBuilder::new(&log_root_dir, SERVICE_NAME, SystemLoggerCategory::Service)
+            .level("info")
+            .console("debug")
+            .target(target)
+            .build()
+            .unwrap();
+    logger.start();
+
+    log::info!("This is an info log.");
+    log::debug!("This is a debug log.");
+
+    let mut index = 0;
+    loop {
+        log::info!("Info log message number {}", index);
+        log::debug!("Debug log message number {}", index);
+        index += 1;
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+fn test_read() {
+    let log_root_dir = get_buckyos_log_root_dir();
+    let log_dir = log_root_dir.join(SERVICE_NAME);
+
+    let reader = FileLogReader::open(&log_dir).unwrap();
+
+    // Write logs to a separate file
+    let target_file = log_dir.join(format!("{}_copy.log", SERVICE_NAME));
+    let mut target_file = std::fs::File::create(&target_file).unwrap();
+
+    loop {
+        let records = reader.try_read_next_records(100).unwrap();
+        if !records.is_empty() {
+            info!("Read {} log records", records.len());
+            for record in &records {
+                let s = SystemLogRecordLineFormatter::format_record(record);
+                println!(
+                    "read record: {}",
+                    s
+                );
+                target_file
+                    .write_all(s.as_bytes())
+                    .unwrap();
+            }
+
+            target_file.flush().unwrap();
+            reader.flush_read_index().unwrap();
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}

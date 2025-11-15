@@ -3,7 +3,6 @@ use super::meta::LogFileReadInfo;
 use super::meta::LogMeta;
 use crate::system_log::SystemLogRecord;
 use std::fs::File;
-use std::io::BufReader;
 use std::io::Seek;
 use std::io::prelude::*;
 use std::path::{PathBuf, Path};
@@ -75,63 +74,118 @@ impl FileLogReader {
             }
         }
 
-        // Get a new read file
-        let read_info = self.meta.get_active_read_file().map_err(|e| {
-            let msg = format!("failed to get active read log file: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
+        loop {
+            // Get a new read file
+            let read_info = self.meta.get_active_read_file().map_err(|e| {
+                let msg = format!("failed to get active read log file: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
 
-        if read_info.is_none() {
-            // No new log file to read, so we should wait
-            // info!("no active read log file, waiting for new logs");
-            return Ok(false);
-        }
+            if read_info.is_none() {
+                // No new log file to read, so we should wait
+                // info!("no active read log file, waiting for new logs");
+                return Ok(false);
+            }
 
-        let read_info = read_info.unwrap();
+            let mut read_info = read_info.unwrap();
 
-        // Open the file for reading
-        info!(
-            "opening log file for reading: {}, {}",
-            read_info.id, read_info.name
-        );
-
-        let file_path = self.dir.join(&read_info.name);
-        let mut file = std::fs::File::open(&file_path).map_err(|e| {
-            let msg = format!(
-                "failed to open log file for reading: {}, {}",
-                file_path.display(),
-                e
-            );
-            error!("{}", msg);
-            msg
-        })?;
-
-        // Seek to the read index by pos
-        if read_info.read_index > 0 {
+            // Open the file for reading
             info!(
-                "seeking log file to read pos: {}, {}",
-                read_info.read_index,
-                file_path.display()
+                "opening log file for reading: {:?}",
+                read_info
             );
 
-            file.seek(std::io::SeekFrom::Start(read_info.read_index as u64))
-                .map_err(|e| {
+            let file_path = self.dir.join(&read_info.name);
+            // Check file exists
+            if !file_path.exists() {
+                let msg = format!(
+                    "log file for reading does not exist: {}",
+                    file_path.display()
+                );
+                warn!("{}", msg);
+
+                // Mark read complete to skip this file
+                self.meta.mark_file_read_complete(read_info.id).map_err(|e| {
+                    let msg = format!("failed to mark log file read complete: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+                continue; // Try next file
+            }
+
+            let mut file = std::fs::File::open(&file_path).map_err(|e| {
+                let msg = format!(
+                    "failed to open log file for reading: {}, {}",
+                    file_path.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+            // Seek to the read index by pos
+            if read_info.read_index > 0 {
+                info!(
+                    "seeking log file to read pos: {}, {}",
+                    read_info.read_index,
+                    file_path.display()
+                );
+
+                // Check if read_index is valid
+                let metadata = file.metadata().map_err(|e| {
                     let msg = format!(
-                        "failed to seek log file for reading: {}, {}",
+                        "failed to get metadata of log file {}: {}",
                         file_path.display(),
                         e
                     );
                     error!("{}", msg);
                     msg
                 })?;
-        }
 
-        *current_file = Some(ReadFileInfo {
-            last_read_index: read_info.read_index as usize,
-            meta: read_info,
-            file,
-        });
+                // If read_index is beyond file size, adjust it
+                if read_info.read_index as u64 > metadata.len() {
+                    let msg = format!(
+                        "invalid read index {} for log file {}, file size {}",
+                        read_info.read_index,
+                        file_path.display(),
+                        metadata.len()
+                    );
+                    warn!("{}", msg);
+                    self.meta.update_file_read_index(read_info.id, metadata.len() as i64).map_err(|e| {
+                        let msg = format!(
+                            "failed to update read index of log file: {}, {}",
+                            file_path.display(),
+                            e
+                        );
+                        error!("{}", msg);
+                        msg
+                    })?;
+
+                    read_info.read_index = metadata.len() as i64;
+                }
+
+                file.seek(std::io::SeekFrom::Start(read_info.read_index as u64))
+                    .map_err(|e| {
+                        let msg = format!(
+                            "failed to seek log file for reading: {}, {}",
+                            file_path.display(),
+                            e
+                        );
+                        error!("{}", msg);
+                        msg
+                    })?;
+            }
+
+            *current_file = Some(ReadFileInfo {
+                last_read_index: read_info.read_index as usize,
+                meta: read_info,
+                file,
+            });
+
+            break;
+        }
 
         Ok(true)
     }
@@ -182,8 +236,23 @@ impl FileLogReader {
                 break; // EOF
             }
 
-            let record = SystemLogRecordLineFormatter::parse_record(line.trim_end())?;
-            records.push(record);
+            match SystemLogRecordLineFormatter::parse_record(line.trim_end()) {
+                Ok(record) => {
+                    records.push(record);
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "failed to parse log record from line: {}, {}, {}",
+                        file_path.display(),
+                        line.trim_end(),
+                        e
+                    );
+                    println!("{}", msg);
+                    
+                    // TODO: skip invalid log line for now
+                    continue;
+                }
+            }
         }
 
         // Save last read index

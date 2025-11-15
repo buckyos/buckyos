@@ -161,19 +161,21 @@ impl LogMeta {
         Ok(file_option)
     }
 
-    pub fn update_current_write_index(&self, new_index: i64) -> SqlResult<()> {
+    pub fn update_current_write_index(&self, new_index: u64) -> SqlResult<()> {
         let current_file = self.get_active_write_file()?;
         if let Some(file) = current_file {
             let conn = self.conn.lock().unwrap();
             conn.execute(
                 "UPDATE LogFiles SET write_index = ?1 WHERE id = ?2",
-                &[&new_index, &file.id],
+                &[&(new_index as i64), &file.id],
             )?;
 
-            info!(
+            /*
+            println!(
                 "Updated write index for log file: {}, {} to {}",
                 file.id, file.name, new_index
             );
+            */
 
             Ok(())
         } else {
@@ -193,7 +195,7 @@ impl LogMeta {
                 &[&increment, &file.id],
             )?;
 
-            info!(
+            println!(
                 "Increased write index for log file: {}, {} by {}",
                 file.id, file.name, increment
             );
@@ -272,10 +274,16 @@ impl LogMeta {
 
     pub fn update_file_read_index(&self, file_id: i64, new_index: i64) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(
+        let ret = conn.execute(
             "UPDATE LogFiles SET read_index = ?1 WHERE id = ?2",
             &[&new_index, &file_id],
         )?;
+
+        if ret == 0 {
+            let msg = format!("no log file found with id: {}", file_id);
+            error!("{}", msg);
+            return Err(rusqlite::Error::InvalidQuery); // Or some other appropriate error
+        }
 
         info!(
             "Updated read index for log file: {} to {}",

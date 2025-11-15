@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod system_log;
 mod file;
 mod util;
