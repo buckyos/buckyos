@@ -131,6 +131,7 @@ impl std::fmt::Display for SystemLogRecord {
 
 pub trait SystemLogTarget: Send + Sync {
     fn log(&self, record: &SystemLogRecord);
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 pub struct ConsoleCyfsLogTarget {}
@@ -138,5 +139,9 @@ pub struct ConsoleCyfsLogTarget {}
 impl SystemLogTarget for ConsoleCyfsLogTarget {
     fn log(&self, record: &SystemLogRecord) {
         println!(">>>{}", record);
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

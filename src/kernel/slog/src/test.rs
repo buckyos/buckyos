@@ -23,19 +23,13 @@ fn test_write() {
     println!("Log directory: {:?}", log_dir);
 
     // Create file log target
-    let target = FileLogTarget::new(
-        &log_dir,
-        SERVICE_NAME.to_string(),
-        1024 * 1024 * 16, // 16 MB max file size
-        1000,             // flush interval ms
-    ).unwrap();
-    let target = Box::new(target) as Box<dyn SystemLogTarget>;
 
     let logger =
         SystemLoggerBuilder::new(&log_root_dir, SERVICE_NAME, SystemLoggerCategory::Service)
             .level("info")
             .console("debug")
-            .target(target)
+            .enable_file_with_upload()
+            .unwrap()
             .build()
             .unwrap();
     logger.start();
@@ -69,13 +63,8 @@ fn test_read() {
             info!("Read {} log records", records.len());
             for record in &records {
                 let s = SystemLogRecordLineFormatter::format_record(record);
-                println!(
-                    "read record: {}",
-                    s
-                );
-                target_file
-                    .write_all(s.as_bytes())
-                    .unwrap();
+                println!("read record: {}", s);
+                target_file.write_all(s.as_bytes()).unwrap();
             }
 
             target_file.flush().unwrap();

@@ -2,8 +2,9 @@ use super::constants::*;
 use super::flexi_log::*;
 use super::log_config::*;
 use super::target::*;
+use crate::file::FileLogTarget;
 use log::Log;
-use std::path::{PathBuf, Path};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 pub struct SystemLogger {
@@ -28,6 +29,8 @@ impl SystemLoggerCategory {
 }
 
 pub struct SystemLoggerBuilder {
+    log_root: PathBuf,
+    name: String,
     config: LogConfig,
     targets: Vec<Box<dyn SystemLogTarget>>,
 }
@@ -39,6 +42,8 @@ impl SystemLoggerBuilder {
         let log_dir = Self::get_log_dir(log_root, name);
         let config = LogConfig::new(log_dir);
         Self {
+            log_root: log_root.to_path_buf(),
+            name: name.to_string(),
             config,
             targets: vec![],
         }
@@ -59,7 +64,29 @@ impl SystemLoggerBuilder {
         self
     }
 
-    
+    pub fn enable_file_with_upload(mut self) -> Result<Self, String> {
+        // First check if SystemLogTarget of this service already exists
+        for target in &self.targets {
+            if let Some(_) = target.as_any().downcast_ref::<FileLogTarget>() {
+                // Found existing FileLogTarget
+                return Ok(self);
+            }
+        }
+
+        let log_dir = self.log_root.join(&self.name);
+        let target = FileLogTarget::new(
+            &log_dir,
+            self.name.clone(),
+            1024 * 1024 * 16, // 16 MB max file size
+            1000,             // flush interval ms
+        )?;
+        
+        let target = Box::new(target) as Box<dyn SystemLogTarget>;
+        self.targets.push(target);
+
+        Ok(self)
+    }
+
     pub fn file(mut self, enable: bool) -> Self {
         self.config.global.file = enable;
         self
@@ -116,7 +143,7 @@ impl SystemLoggerBuilder {
 
     pub fn get_log_dir(log_root: &Path, name: &str) -> PathBuf {
         assert!(!name.is_empty());
-    
+
         let mut root = PathBuf::from(log_root);
         root.push(name);
         root

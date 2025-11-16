@@ -250,4 +250,8 @@ impl SystemLogTarget for FileLogTarget {
         // println!("Caching log record to file log target...");
         self.inner.cache.add_record(record.clone());
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
