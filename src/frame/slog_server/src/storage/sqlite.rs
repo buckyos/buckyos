@@ -1,8 +1,32 @@
-use super::storage::{LogRecords, LogStorage};
+use super::storage::{LogRecords, LogStorage, LogQueryRequest};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use slog::SystemLogRecord;
 
+struct SystemLogRecordResult {
+    pub level: u32,
+    pub target: String,
+    pub time: u64,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub content: String,
+}
+
+impl TryInto<SystemLogRecord> for SystemLogRecordResult {
+    type Error = String;
+
+    fn try_into(self) -> Result<SystemLogRecord, Self::Error> {
+        Ok(SystemLogRecord {
+            level: slog::LogLevel::try_from(self.level)?,
+            target: self.target,
+            time: self.time,
+            file: self.file,
+            line: self.line,
+            content: self.content,
+        })
+    }
+}
 pub struct SqliteLogStorage {
     db_path: PathBuf,
     conn: Arc<Mutex<Connection>>,
@@ -180,12 +204,117 @@ impl SqliteLogStorage {
 
         Ok(())
     }
+
+    fn query(&self, request: LogQueryRequest) -> Result<Vec<LogRecords>, String> {
+        let conn_lock = self.conn.lock().unwrap();
+
+        // Build the query dynamically based on the request parameters
+        let mut query = String::from(
+            "SELECT ls.node_id, ls.service_name, l.timestamp, l.level, l.target, l.file, l.line, l.content
+             FROM logs l
+             JOIN log_sources ls ON l.source_fk = ls.source_id
+             WHERE 1=1",
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(node) = request.node {
+            query.push_str(" AND ls.node_id = ? ");
+            params.push(Box::new(node));
+        }
+        if let Some(service) = request.service {
+            query.push_str(" AND ls.service_name = ? ");
+            params.push(Box::new(service));
+        }
+        if let Some(level) = request.level {
+            query.push_str(" AND l.level = ? ");
+            params.push(Box::new(level as i32));
+        }
+        if let Some(start_time) = request.start_time {
+            query.push_str(" AND l.timestamp >= ? ");
+            params.push(Box::new(start_time as i64));
+        }
+        if let Some(end_time) = request.end_time {
+            query.push_str(" AND l.timestamp <= ? ");
+            params.push(Box::new(end_time as i64));
+        }
+
+        query.push_str(" ORDER BY l.timestamp DESC ");
+
+        if let Some(limit) = request.limit {
+            query.push_str(" LIMIT ? ");
+            params.push(Box::new(limit as i64));
+        }
+
+        let mut stmt = conn_lock.prepare(&query).map_err(|e| {
+            let msg = format!("Failed to prepare log query statement: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let log_iter = stmt
+            .query_map(rusqlite::params_from_iter(params.iter().map(|p| &**p)), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    SystemLogRecordResult {
+                        time: row.get::<_, i64>(2)? as u64,
+                        level: row.get::<_, i32>(3)? as u32,
+                        target: row.get::<_, String>(4)?,
+                        file: row.get::<_, Option<String>>(5)?,
+                        line: row.get::<_, Option<i64>>(6)?.map(|v| v as u32),
+                        content: row.get::<_, String>(7)?,
+                    },
+                ))
+            })
+            .map_err(|e| {
+                let msg = format!("Failed to execute log query: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+        let mut records_map: std::collections::HashMap<(String, String), Vec<SystemLogRecord>> =
+            std::collections::HashMap::new();
+        for log_result in log_iter {
+            let (node, service, record) = log_result.map_err(|e| {
+                let msg = format!("Failed to map log row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+            let key = (node.clone(), service.clone());
+            match record.try_into() {
+                Ok(rec) => {
+                    records_map
+                        .entry(key)
+                        .or_insert_with(Vec::new)
+                        .push(rec);
+                }
+                Err(e) => {
+                    let msg = format!("Failed to convert log record: {}", e);
+                    warn!("{}", msg);
+                    continue;
+                }
+            }
+        }
+
+        let mut result = Vec::new();
+        for ((node, service), logs) in records_map {
+            result.push(LogRecords { node, service, logs });
+        }
+
+        Ok(result)
+    }
 }
 
 #[async_trait::async_trait]
 impl LogStorage for SqliteLogStorage {
     async fn append_logs(&self, logs: LogRecords) -> Result<(), String> {
         self.append(logs)
+    }
+
+    async fn query_logs(
+        &self,
+        request: LogQueryRequest,
+    ) -> Result<Vec<LogRecords>, String> {
+        self.query(request)
     }
 }
 

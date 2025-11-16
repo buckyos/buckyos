@@ -31,6 +31,22 @@ impl Default for LogLevel {
     }
 }
 
+impl TryFrom<u32> for LogLevel {
+    type Error = String;
+
+    fn try_from(value: u32) -> Result<Self, String> {
+        match value {
+            0 => Ok(LogLevel::Off),
+            1 => Ok(LogLevel::Error),
+            2 => Ok(LogLevel::Warn),
+            3 => Ok(LogLevel::Info),
+            4 => Ok(LogLevel::Debug),
+            5 => Ok(LogLevel::Trace),
+            _ => Err("Invalid LogLevel value. Must be between 0 and 5.".to_string()),
+        }
+    }
+}
+
 impl Display for LogLevel {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let level = match *self {
