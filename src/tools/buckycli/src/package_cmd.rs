@@ -216,7 +216,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
             continue;
         }
         //let real_named_mgr = named_mgr.lock().await;
-        let is_exist = NamedDataMgr::have_chunk(&chunk_id,None).await;
+        let is_exist = NamedDataMgr::have_chunk(None,&chunk_id).await;
         if !is_exist {
             let (mut chunk_writer, _) = NamedDataMgr::open_chunk_writer(None,&chunk_id, file_size, 0).await.map_err(|e| {
                 format!("Failed to open chunk writer: {}", e.to_string())

@@ -58,9 +58,7 @@ async fn load_obj(mgr:Arc<tokio::sync::Mutex<NamedDataMgr>>,obj_id:&ObjId,offset
     let mgr_id = real_mgr.get_mgr_id();
     if obj_id.is_chunk() {
         let chunk_id = ChunkId::from_obj_id(&obj_id);
-        let seek_from = SeekFrom::Start(offset);
-
-        let (chunk_reader,chunk_size) = real_mgr.open_chunk_reader_impl(&chunk_id, seek_from, true).await
+        let (chunk_reader,chunk_size) = real_mgr.open_chunk_reader_impl(&chunk_id, offset, true).await
             .map_err(|e| {
                 warn!("get chunk reader by objid failed: {}", e);
                 match e {
@@ -288,6 +286,9 @@ pub async fn handle_chunk_status(mgr_config: &NamedDataMgrRouteConfig, req: Requ
     })?;
     let status_code;
     match chunk_state {
+        ChunkState::LocalLink(_) => {
+            status_code = StatusCode::MOVED_PERMANENTLY;
+        }
         ChunkState::New => {
             status_code = StatusCode::CREATED;
         }
@@ -302,9 +303,6 @@ pub async fn handle_chunk_status(mgr_config: &NamedDataMgrRouteConfig, req: Requ
         }
         ChunkState::NotExist => {
             status_code = StatusCode::NOT_FOUND;
-        }
-        ChunkState::Link(_) => {
-            status_code = StatusCode::MOVED_PERMANENTLY;
         }
     }
     return Ok(Response::builder()

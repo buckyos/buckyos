@@ -1,6 +1,6 @@
 [package]
 name = "cyfs-warp"
-version = "0.4.0"
+version.workspace = true
 edition = "2021"
 authors = ["BuckyOS DAO","@waterflier"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -32,11 +32,11 @@ async-trait = "*"
 thiserror = "*"
 
 
-ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib" }
+ndn-lib = { workspace = true }
 cyfs-gateway-lib = { path = "../cyfs-gateway-lib" }
 cyfs-sn = { path = "../cyfs-sn" }
-buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
-kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC" }
+buckyos-kit = { workspace = true }
+kRPC = { workspace = true }
 
 
 [dev-dependencies]

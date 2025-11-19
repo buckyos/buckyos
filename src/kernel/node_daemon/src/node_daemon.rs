@@ -287,7 +287,7 @@ async fn make_sure_system_pkgs_ready(meta_db_path: &PathBuf,prefix: &str,session
     
     for chunk_id in miss_chunk_list {
         let ndn_client = NdnClient::new("http://127.0.0.1/ndn/".to_string(), session_token.clone(),None);
-        let chunk_result = ndn_client.pull_chunk(chunk_id.clone(),None).await;
+        let chunk_result = ndn_client.pull_chunk(chunk_id.clone(), StoreMode::StoreInNamedMgr).await;
         if chunk_result.is_err() {
             error!("make_sure_system_pkgs_ready: pull chunk {} failed! {}", chunk_id.to_string(), chunk_result.err().unwrap());
         }
@@ -318,7 +318,7 @@ async fn check_and_update_root_pkg_index_db(session_token: Option<String>) -> st
 
     info!("remote index db is not same as local index db, start update node's root_pkg_env.meta_index.db");
     let download_path = root_env_path.join("pkgs").join("meta_index.downloading");
-    ndn_client.download_fileobj_to_local(zone_repo_index_db_url, &download_path, None).await
+    ndn_client.download_fileobj(zone_repo_index_db_url, &download_path, None).await
         .map_err(|err| {
             error!("download remote index db to root pkg env's meta-Index db failed! {}", err);
             return String::from("download remote index db to root pkg env's meta-Index db failed!");

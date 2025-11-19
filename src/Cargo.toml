@@ -28,3 +28,16 @@ exclude = [
     "./tools/ns-tool",
     "./apps/tray-controller"
 ]
+
+[workspace.package]
+version = "0.5.1"
+
+[workspace.dependencies]
+buckyos-tracing = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-tracing", branch = "beta1"}
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit", branch = "beta1" }
+package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", branch = "beta1" }
+name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib", branch = "beta1" }
+name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client", branch = "beta1" }
+kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC", branch = "beta1" }
+rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac", branch = "beta1" }
+ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib", branch = "beta1" }

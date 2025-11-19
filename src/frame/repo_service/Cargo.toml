@@ -1,6 +1,6 @@
 [package]
 name = "repo_service"
-version = "0.4.0"
+version.workspace = true
 edition = "2021"
 authors = ["BuckyOS DAO","@waterflier"]
 
@@ -26,12 +26,12 @@ rusqlite =  { version = "*", features = ["bundled"] }
 sha2 = { version = ">=0.11.0-pre.4" }
 reqwest = {version = "*", features = ["json", "rustls-tls"]}
 
-ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib" }
-package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib" }
-name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib" }
-name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client" }
-buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
-kRPC ={ git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC" }
+ndn-lib = { workspace = true }
+package-lib = { workspace = true }
+name-lib = { workspace = true }
+name-client = { workspace = true }
+buckyos-kit = { workspace = true }
+kRPC ={ workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
 cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }

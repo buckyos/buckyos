@@ -1,6 +1,6 @@
 [package]
 name = "cyfs-gateway-lib"
-version = "0.4.0"
+version.workspace = true
 edition = "2021"
 authors = ["BuckyOS DAO","@waterflier"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -40,9 +40,9 @@ ring = "0.17"
 tokio-socks = "*"
 libsocks_client = "*"
 
-buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
-name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client" }
-name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib" }
-ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib" }
+buckyos-kit = { workspace = true }
+name-client = { workspace = true }
+name-lib = { workspace = true }
+ndn-lib = { workspace = true }
 cyfs-socks = { path = "../cyfs-socks" }
 #buckyos-api = { path = "../../kernel/buckyos-api" }
