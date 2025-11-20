@@ -37,10 +37,10 @@ def get_device_log(device: remote_device) -> bool:
             print(f"No log directory found on {device_id}")
             return True
         
-        # 直接使用scp下载整个日志目录
+        # 下载整个日志目录
         print(f"Downloading logs from {device_id}...")
         print(f"Local directory: {local_dir}")
-        device.scp_pull("/opt/buckyos/logs", local_dir, recursive=True)
+        device.pull("/opt/buckyos/logs", local_dir, recursive=True)
         
         print(f"Logs from {device_id} saved to {local_dir}")
         return True

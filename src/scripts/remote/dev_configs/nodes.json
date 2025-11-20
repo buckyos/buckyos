@@ -1,0 +1,73 @@
+{
+  "nodes": {
+    "sn": {
+      "node_id": "sn",
+      "zone_id": "web3.buckyos.io",
+      "vm_template": "ubuntu_buckyos",
+      "network": {
+        "lan_id": "lan1",
+        "type": "bridge",
+        "bridge": "mpqemubr0"
+      },
+      "apps": [
+        "web3_bridge"
+      ],
+      "init_commands": [
+        "hostnamectl set-hostname sn"
+      ],
+      "config_generators": [
+        {
+          "command": "python3 generate_sn_config.py --node_id=sn --sn_ip={{sn.ip}}",
+          "output_dir": "node_configs/sn"
+        }
+      ]
+    },
+    "nodeA2": {
+      "node_id": "nodeA2",
+      "zone_id": "bob.web3.buckyos.io",
+      "vm_template": "ubuntu_basic",
+      "network": {
+        "lan_id": "lan1",
+        "type": "bridge",
+        "bridge": "mpqemubr0"
+      },
+      "apps": [
+        "buckyos"
+      ],
+      "init_commands": [
+        "hostnamectl set-hostname nodeA2",
+        "echo '{{sn.ip}} sn' >> /etc/hosts"
+      ],
+      "config_generators": [
+        {
+          "command": "python3 generate_node_config.py --node_id=nodeA2 --sn_ip={{sn.ip}} --zone_id={{nodeA2.zone_id}}",
+          "output_dir": "node_configs/nodeA2"
+        }
+      ]
+    },
+    "nodeB1": {
+      "node_id": "nodeB1",
+      "zone_id": "bob.web3.buckyos.io",
+      "vm_template": "ubuntu_basic",
+      "network": {
+        "lan_id": "lan1",
+        "type": "bridge",
+        "bridge": "mpqemubr0"
+      },
+      "apps": [
+        "buckyos"
+      ],
+      "init_commands": [
+        "hostnamectl set-hostname nodeB1"
+      ],
+      "config_generators": [
+        {
+          "command": "python3 generate_node_config.py --node_id=nodeB1 --sn_ip={{sn.ip}} --zone_id={{nodeB1.zone_id}}",
+          "output_dir": "node_configs/nodeB1"
+        }
+      ]
+    }
+  },
+  "instance_order": ["sn", "nodeA2", "nodeB1"]
+}
+

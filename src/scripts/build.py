@@ -50,7 +50,7 @@ def build_main():
 #         target = "aarch64-unknown-linux-gnu"
     elif system == "Darwin" and (arch == "arm64" or arch == "arm"):
         target = "aarch64-apple-darwin"
-    print(f"DEBUG: target is : {target}")
+
 
     auto_win_sdk = False
     with_tray_controller = False
@@ -62,7 +62,7 @@ def build_main():
         if arg == "amd64":
             target = "x86_64-unknown-linux-musl"
         if arg == "aarch64":
-            target = "aarch64-unknown-linux-gnu"
+            target = "aarch64-unknown-linux-musl"
         if arg == "--auto-win-sdk":
             auto_win_sdk = True
         if arg == "--tray-controller":
@@ -70,7 +70,7 @@ def build_main():
         if arg.startswith("--target="):
             target = arg.split("=")[1]
 
-
+    print(f"Target is : {target}")
     print(f"will build buckyos: with_tray_controller={with_tray_controller}, auto_win_sdk={auto_win_sdk}")
     build(skip_web_app, skip_install, target, with_tray_controller, auto_win_sdk)
     

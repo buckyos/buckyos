@@ -50,9 +50,10 @@ def install_sn(device):
     project_dir = get_project_dir()
     print(f"project_dir, {project_dir}")
     device.run_command("sudo mkdir -p /opt/web3_bridge")
-    device.scp_put(f"{project_dir}/web3_bridge/start.py", "/opt/web3_bridge/start.py")
-    device.scp_put(f"{project_dir}/web3_bridge/stop.py", "/opt/web3_bridge/stop.py")
-    device.scp_put(f"{project_dir}/web3_bridge/web3_gateway", "/opt/web3_bridge/web3_gateway")
+    device.run_command("sudo chmod 777 /opt/web3_bridge")
+    device.push(f"{project_dir}/web3_bridge/start.py", "/opt/web3_bridge/start.py")
+    device.push(f"{project_dir}/web3_bridge/stop.py", "/opt/web3_bridge/stop.py")
+    device.push(f"{project_dir}/web3_bridge/web3_gateway", "/opt/web3_bridge/web3_gateway")
     print("web3_bridge uploaded")
 
 
@@ -83,14 +84,15 @@ def install(device_id: str):
         # 4. 上传tar包
         print("Uploading rootfs...")
         remote_tar = os.path.join(remote_temp_dir, "rootfs.tar.gz")
-        device.scp_put(tar_path, remote_tar)
+        device.push(tar_path, remote_tar)
         
         
         # 5. 安装过程
         if is_fresh_install:
             print("Performing fresh installation...")
             install_commands = [
-                "mkdir -p /opt/buckyos",
+                "sudo mkdir -p /opt/buckyos",
+                "sudo chmod 777 /opt/buckyos",
                 f"cd /opt/buckyos && tar xzf {remote_tar}",
                 "mkdir -p /opt/buckyos/etc"
             ]

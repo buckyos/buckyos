@@ -17,6 +17,7 @@ import py_src.sn as sn
 import py_src.state as state
 import py_src.run as run
 import py_src.active as active
+import py_src.instance as instance
 
 
 def print_usage():
@@ -39,6 +40,8 @@ def print_usage():
     print("  ./main.py all_in_one               # 一键快速启动配置内的所有vm，包括安装激活启动步骤")
     print("  ./main.py clog                     # 收集node日志")
     print("  ./main.py info                     # list vm device info")
+    print("  ./main.py instance <node_id>       # 实例化单个节点（新配置系统）")
+    print("  ./main.py instance --all           # 实例化所有节点（新配置系统）")
 
 
 # chekc network bridge
@@ -139,6 +142,8 @@ def main():
                 clog.get_device_log(device)
         case "all_in_one":
             run.run()
+        case "instance":
+            instance.main()
         case _:
             print("unknown command")
             print("")

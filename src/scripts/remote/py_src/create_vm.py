@@ -8,6 +8,7 @@ import time
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 import util
+import vm_mgr
 
 # create vm by read demo_env.json
 def create():
@@ -27,6 +28,8 @@ class VMCreator:
         # 验证配置文件
         self._validate_config()
         self.config_base = config_base
+        # 初始化 VM 管理器
+        self.vm_manager = vm_mgr.VMManager(backend_type="multipass")
         
     def _validate_config(self):
         """验证配置文件格式"""
@@ -39,21 +42,6 @@ class VMCreator:
                 vm_config = device_config['vm']
                 if 'network' in vm_config and 'type' not in vm_config['network']:
                     raise ValueError(f"VM network config for {device_id} must specify type (bridge/nat)")
-    
-    def _run_command(self, cmd: str, check=True) -> tuple:
-        """执行shell命令"""
-        try:
-            result = subprocess.run(cmd, shell=True, check=check,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE,
-                                  text=True)
-            return result.stdout, result.stderr
-        except subprocess.CalledProcessError as e:
-            print(f"Command failed: {cmd}")
-            print(f"Error: {e.stderr}")
-            if check:
-                raise
-            return e.stdout, e.stderr
 
     def _create_vm(self, device_id: str, device_config: dict):
         """创建单个虚拟机"""
@@ -61,45 +49,34 @@ class VMCreator:
         
         vm_config = device_config['vm']
         
-        # 基本参数
-        cpu = vm_config.get('cpu', 1)
-        memory = vm_config.get('memory', '1G')
-        disk = vm_config.get('disk', '10G')
-        init_yaml = os.path.join(self.config_base, 'vm_init.yaml')
-        # 创建VM的基本命令
-        cmd = f"multipass launch --name {device_id} --cpus {cpu} --memory {memory} --disk {disk} --cloud-init {init_yaml} "
-
+        # 准备 VM 配置
+        vm_create_config = {
+            'cpu': vm_config.get('cpu', 1),
+            'memory': vm_config.get('memory', '1G'),
+            'disk': vm_config.get('disk', '10G'),
+            'config_base': self.config_base
+        }
         
-        # 添加网络配置
-        if 'network' in vm_config:
-            net_config = vm_config['network']
-            if net_config['type'] == 'bridge':
-                cmd += f"--network name={net_config['bridge']}"
-        # 启动VM
-        print(f"Running command: {cmd}")
-        self._run_command(cmd)
+        # 使用 vm_mgr 创建 VM
+        print(f"Creating VM with config: {vm_create_config}")
+        success = self.vm_manager.create_vm(device_id, vm_create_config)
+        
+        if not success:
+            raise Exception(f"Failed to create VM {device_id}")
+        
         time.sleep(5)  # 等待VM完全启动
-    
-        
-        # 配置hostname
-        self._run_command(f"multipass exec {device_id} -- sudo hostnamectl set-hostname {device_id}")
-
-        
         print(f"VM {device_id} created successfully")
 
     
 
     def create_all(self):
         """创建所有配置的虚拟机"""
-        # 检查是否已存在同名VM
-        stdout, _ = self._run_command("multipass list", check=False)
-        existing_vms = [line.split()[0] for line in stdout.split('\n')[1:] if line.strip()]
-        
         for device_id, device_config in self.devices.items():
             if 'vm' not in device_config:
                 continue
-                
-            if device_id in existing_vms:
+            
+            # 检查是否已存在同名VM
+            if self.vm_manager.is_vm_exists(device_id):
                 print(f"Warning: VM {device_id} already exists, skipping...")
                 continue
             

@@ -135,11 +135,11 @@ def active_sn():
 
     vmsn = remote_device.remote_device("sn")
     vmsn.run_command("sudo mkdir -p /opt/web3_bridge")
-    vmsn.scp_put(f"{base_dir}/sn_server/web3_gateway.json", "/opt/web3_bridge/web3_gateway.json")
-    vmsn.scp_put(f"{base_dir}/sn_db.sqlite3", "/opt/web3_bridge/sn_db.sqlite3")
-    vmsn.scp_put(f"{base_dir}/sn_server/device_key.pem", "/opt/web3_bridge/device_key.pem")
-    vmsn.scp_put(f"{base_dir}/sn_server/resolved.conf", "/opt/web3_bridge/resolved.conf")
-    vmsn.scp_put(f"{base_dir}/sn_server/web3_gateway.service", "/opt/web3_bridge/web3_gateway.service")
+    vmsn.push(f"{base_dir}/sn_server/web3_gateway.json", "/opt/web3_bridge/web3_gateway.json")
+    vmsn.push(f"{base_dir}/sn_db.sqlite3", "/opt/web3_bridge/sn_db.sqlite3")
+    vmsn.push(f"{base_dir}/sn_server/device_key.pem", "/opt/web3_bridge/device_key.pem")
+    vmsn.push(f"{base_dir}/sn_server/resolved.conf", "/opt/web3_bridge/resolved.conf")
+    vmsn.push(f"{base_dir}/sn_server/web3_gateway.service", "/opt/web3_bridge/web3_gateway.service")
     print("sn config file, db file uploaded")
 
     print("disable dnsstub")
