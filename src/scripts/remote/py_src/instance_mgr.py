@@ -15,6 +15,8 @@ import config_generator
 import vm_mgr
 import remote_device
 import util
+import cert_mgr
+import os
 
 
 class InstanceManager:
@@ -197,6 +199,83 @@ class InstanceManager:
         
         print(f"App {app_name} installed successfully on node {node_id}")
     
+    def ensure_test_ca(self):
+        """
+        确保测试 CA 证书存在，如果不存在则创建
+        
+        Returns:
+            (ca_cert_path, ca_key_path) 元组
+        """
+        # 获取测试 CA 证书路径
+        test_ca_dir = os.path.join(self.config_base, "..", "test_ca")
+        os.makedirs(test_ca_dir, exist_ok=True)
+        
+        ca_cert_path = os.path.join(test_ca_dir, "test_ca_cert.pem")
+        ca_key_path = os.path.join(test_ca_dir, "test_ca_key.pem")
+        
+        # 如果不存在，创建新的 CA
+        if not os.path.exists(ca_cert_path) or not os.path.exists(ca_key_path):
+            print("Test CA not found, creating new one...")
+            cert_manager = cert_mgr.CertManager()
+            cert_manager.create_ca(test_ca_dir, "BuckyOS Test CA")
+        else:
+            print(f"Test CA already exists: {ca_cert_path}")
+        
+        return ca_cert_path, ca_key_path
+    
+    def install_ca_certificate(self, node_id: str):
+        """
+        安装测试 CA 证书到节点
+        
+        注意：在测试环境（Linux VM）中，可以通过命令行自动安装 CA 证书。
+        这不需要手工操作，完全自动化。
+        
+        Args:
+            node_id: 节点 ID
+        """
+        print(f"\nInstalling test CA certificate on node {node_id}")
+        
+        # 确保测试 CA 存在
+        ca_cert_path, _ = self.ensure_test_ca()
+        
+        device = remote_device.remote_device(node_id)
+        
+        # 检测目标系统的类型（通常是 Linux）
+        # 先尝试检测 Linux 发行版
+        stdout, stderr = device.run_command("cat /etc/os-release 2>/dev/null || echo 'unknown'")
+        os_info = stdout.strip().lower() if stdout else ""
+        
+        # 确定 CA 证书目录和更新命令
+        if "debian" in os_info or "ubuntu" in os_info:
+            # Debian/Ubuntu
+            remote_ca_dir = "/usr/local/share/ca-certificates"
+            update_cmd = "update-ca-certificates"
+        elif "redhat" in os_info or "centos" in os_info or "fedora" in os_info:
+            # RHEL/CentOS/Fedora
+            remote_ca_dir = "/etc/pki/ca-trust/source/anchors"
+            update_cmd = "update-ca-trust"
+        else:
+            # 默认使用 Debian/Ubuntu 方法
+            remote_ca_dir = "/usr/local/share/ca-certificates"
+            update_cmd = "update-ca-certificates"
+        
+        remote_ca_cert = os.path.join(remote_ca_dir, "buckyos-test-ca.crt")
+        
+        # 1. 复制 CA 证书到系统 CA 证书目录
+        print(f"Copying CA certificate to {node_id}...")
+        device.run_command(f"mkdir -p {remote_ca_dir}")
+        device.push(ca_cert_path, remote_ca_cert)
+        
+        # 2. 更新 CA 证书存储
+        print("Updating CA certificate store...")
+        stdout, stderr = device.run_command(update_cmd)
+        if stderr and "error" in stderr.lower():
+            print(f"Warning: Failed to update CA certificates: {stderr}")
+            print("You may need to run the update command manually on the node.")
+        else:
+            print(f"CA certificate installed successfully on {node_id}")
+            print("Note: Some applications may need to be restarted to recognize the new CA.")
+    
     def apply_node_config(self, node_id: str):
         """
         应用节点配置
@@ -283,6 +362,9 @@ class InstanceManager:
         
         # 5. 应用配置
         self.apply_node_config(node_id)
+        
+        # 6. 安装测试 CA 证书
+        self.install_ca_certificate(node_id)
         
         print(f"\nNode {node_id} instanced successfully!")
     

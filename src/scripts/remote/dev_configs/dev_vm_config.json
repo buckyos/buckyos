@@ -41,7 +41,7 @@
             }
         }
     },
-        "nodeB1": {
+    "nodeB1": {
         "username": "root",
         "port": 22,
         "zone_id":"bob.web3.buckyos.io",

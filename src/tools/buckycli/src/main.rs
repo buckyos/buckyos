@@ -4,12 +4,13 @@ mod sys_config;
 mod did;
 mod app;
 mod ndn;
+mod test_config;
 
 use std::path::Path;
 use buckyos_api::*;
 use clap::{Arg, Command};
 use package_cmd::*;
-
+use test_config::*;
 
 fn is_local_cmd(cmd_name: &str) -> bool {
     const LOCAL_COMMANDS: &[&str] = &[
@@ -519,7 +520,6 @@ oods look like this 'ood1,ood2'.")
                     return Ok(());
                 }
             }
-
         }
         _ => {
             println!("unknown command!");
