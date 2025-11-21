@@ -35,5 +35,5 @@ name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "
 package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib" }
 ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib" }
 #package-installer = { path = "../../components/package-installer" }
-kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC" }
+kRPC = { workspace = true }
 buckyos-api = { path = "../../../kernel/buckyos-api" }
