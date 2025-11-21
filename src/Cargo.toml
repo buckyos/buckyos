@@ -19,6 +19,8 @@ members = [
 
     "./frame/repo_service",
     "./frame/smb_service",
+    
+    "./frame/control_panel/service",
 
     "./tools/buckycli", 
     "test/test_rbac", "kernel/klog", "kernel/slog", "kernel/slog_daemon", "frame/slog_server", 
