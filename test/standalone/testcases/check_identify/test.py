@@ -5,7 +5,7 @@ import sys
 import json
 # 以后可以使用bucky_sdk替代单纯的requ
 
-url = "http://test.buckyos.io/1.0/identifiers/self"
+url = "http://127.0.0.1/1.0/identifiers/self"
 try:
     with urllib.request.urlopen(url) as response:
         if response.status == 200:

@@ -24,9 +24,9 @@ if system_os == "darwin":
 elif system_os == "windows":
     ext=".exe"
 
-# 如果是linux，使用dev_docker配置
+# 如果是linux，使用dev配置, 否则使用dev_no_docker配置
 if system_os == "linux":
-    group_name = "dev_docker"
+    group_name = "dev"
 else:
     group_name = "dev_no_docker"
 
@@ -82,6 +82,11 @@ def main():
         shutil.rmtree(testcases_output_dir, ignore_errors=True)
 
     os.makedirs(testcases_output_dir, exist_ok=True)
+
+    # wait 30 secs for node-daemon to start
+    print("Waiting 30 seconds for node-daemon to start...")
+    import time
+    time.sleep(30)
 
     print("starting all testcases...")
     test_results = {}
