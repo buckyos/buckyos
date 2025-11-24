@@ -5,7 +5,7 @@ use buckyos_kit::buckyos_get_unix_timestamp;
 use core::error;
 use log::*;
 use name_lib::*;
-use name_lib::{DeviceConfig, ZoneConfig};
+use name_lib::DeviceConfig;
 use ndn_lib::*;
 use package_lib::*;
 use serde::{Deserialize, Serialize};

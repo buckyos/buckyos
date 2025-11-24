@@ -167,18 +167,19 @@ pub struct DeviceInfo {
 
 ```
 
-### 非OOD(Node)的启动流程(与ZoneBootConfig无关) `未实现`
+### 非OOD(Node/Client)的启动流程(与ZoneBootConfig无关) `未实现`
 1. Node启动的时候，系统已经启动完成。因此Node在启动时的核心目标是连接上SystemConfig Service。
-2. Node可以基于OOD搜索流程，主动尝试直连OOD (可以避免ZoneGateway生效导致内网不可用)
+2. Node可以基于OOD搜索流程，主动尝试连接OOD (可以避免ZoneGateway失效导致的内网不可用)，尝试流程
 3. Node通过ZoneGateway 可以直接访问SystemConfig Service(优先rtcp)
 4. 通过SystemConfig Service返回的OOD DeviceInfo,可以使用最佳的方法与OOD建立RTCP连接（尽量直连）,提高后续访问的速度
 
 ## ZoneGateway的定义
 - ZoneGateway通常是OOD，但可以是普通Node，系统里可以有多个ZoneGateway
 - 在一个典型的小型系统中，使用单OOD，随后可以添加一个最便宜的VPS Node做ZoneGateway
-- ZoneGateway持有zone hostname的tls证书,会启动tls stack
+- ZoneGateway持有zone hostname的tls证书,会启动tls stack(可选，但一般都有)
     - 在有SN的情况下，SN收到tls连接请求，会转发到的Node就是ZoneGateway 
     - 在无SN的情况下，DNS解析的结果，指向ZoneGateway
+- 通过rtcp访问zonegateway后，再访问zone gateway的http服务，也是可靠的访问zone service的方法
 - ZoneGateway通过URL rouer,提供了对Zone内所有服务的访问能力（每台机器上的cyfs-gateway都有这个能力，但通常不对外提供服务）
 
 ### ZoneGateway Node的启动(非OOD）`TODO未实现`
@@ -205,13 +206,13 @@ DeviceInfo中，说明了通过那个中转节点可以连通 Device。
 每个LAN中只有一个Node（通常是OOD）负责与特定的中转节点保持连接，然后就可以通过上述rtcp url到达目标Node
 
 
-## 与另一个Zone（Gateway)建立连接
+## 与（另一个）Zone-Gateway建立连接
 - ZoneGateway支持http/https, 因此简单的使用 https://zoen_hostname/ 就能连接上正常工作的zone-gateway
 - ZoneGateway也必须支持rtcp (可以不依赖https zone-gateay的存在)
 建立rtcp的标准流程 (`TODO:未完全正确实现`)
-1. 通过zone-did查询得到可信的did-document,里面有exchange key（通过gateway-nodeid可以获取不同的key)
-2. 解析nodeid的端口信息 -> 查询device的did-coument
-3. 建立rtcp连接
+1. 通过zone-did查询得到可信的did-document,里面有gateway的device config jwt (包含rtcp port)
+2. zone域名解析返回的IP (`多个怎么办?`)
+3. 基于IP+rtcp port建立rtcp连接
 对于“非完全端口映射环境”，可指定rtcp port可以与zone gateway建立直连 
 
 ### 为什么有PX1
@@ -237,8 +238,80 @@ rtcp://$device_did/
 
 ## ZoneBootConfig与ZoneConfig
 - 通过ZoneBootConfig可以构造符合W3C标准的ZoneConfig
-- ZoneBootConfig只在 OOD Boot和 连接ZoneGateway时用到
-- 
+- ZoneBootConfig只在 OOD Boot和 连接另一个Zone的Gateway时必须用到
+- Node在启动时要连接当前ZoneGateway，也有可能用到ZoneBootConfig
+
+### `ZoneConfig有啥用？`
+- 现在的ZoneConfig由调度器构造（没有签名），应该是ZoneInfo(`TODO 需要修改`)
+- 没有255字节限制，可以用来保存Zone内的各种各样的信息,供调度器使用
+
+## Zone的接入方式
+
+### 无SN模式
+- 有至少一个WLAN的ZoneGateway (可以是OOD)
+- 用户有自己的域名
+    - 将域名解析配置到ZoneGateway
+    - 配置域名的TXT Record，设置DID,PX0,ZoneGatewayDeviceConfig
+- 用户将自己域名的NS记录，指向ZoneGateway （可选?,`TODO:未实现`）
+    - 可以支持自动ACMA获得TLS证书
+    - 可以支持对子设备的域名查询
+
+### 有SN模式
+SN提供的基本能力
+- 免费的二级域名注册（自动在BNS上注册?)
+- 支持域名解析
+    基于ZoneGateway 动态IP的D-DNS
+    自动配置域名的TXT Record，设置DID,PX0,ZoneGatewayDeviceConfig
+    支持对Zone子设备的域名查询
+    支持自动ACMA获得TLS证书
+- 支持http转发,根据用户配置,将http流量转发到指定的节点列表A上
+- 支持rtcp转发，根据用户配置，允许节点列表B中的设备与sn keep tunnel。用户可以通过SN中转，连接节点列表B中的设备
+- 支持device info查询？（`TODO:需要支持`）
+- 支持rudp call/called(传统的P2P打洞)
+用户可以根据配置，组合的启用SN的上述能力
+
+#### NAT 后OOD + 二级域名
+最常见的家庭配置
+- SN 配置当前用户的自定义hostname为none (启用二级域名)
+- ZoneBootConfig设置SN,OOD会与SN Keep tunnel
+- ZoneGatewayNode会与SN keep tunnel(一般不会有NAT后的ZoneGateway)
+
+#### NAT 后OOD + 自定义域名
+- SN 配置当前用户的自定义hostname为自定义域名
+其它同上
+
+#### NAT 后OOD 只开放2980端口映射 + 二级域名
+- 定义了端口映射的OOD或ZoneGatway，会在DeviceConfig JWT中说明自己的rtcp端口（`TODO:需要支持`）
+其它同 ` NAT 后OOD + 二级域名` （为了支持https访问，还是要keep tunnel的）
+
+#### NAT 后OOD 只开放2980端口映射 + 自定义域名
+- SN 配置当前用户的自定义hostname为自定义域名
+其它同上
+
+#### NAT 后OOD 完全端口映射 + 二级域名
+完全端口映射下，有一个OOD可以看成是“动态IP的WAN Node“，该OOD不会与SN keep tunnel,但是会定期report device info
+- ZoneBootConfig中，OOD配置ood@wlan
+- SN 配置当前用户的自定义hostname为none (启用二级域名)
+- ZoneBootConfig设置SN
+
+#### NAT 后OOD 完全端口映射 + 自定义域名
+- SN 配置当前用户的自定义hostname为定义域名
+其它同`NAT 后OOD 完全端口映射 + 二级域名`
+
+#### WAN OOD/ZoneGateway + 二级域名
+用户买了有固定IP的VPS，但没有买域名
+
+- SN 配置当前用户的自定义hostname为none (启用二级域名)
+- ZoneBootConfig中设置SN （定期report device info的成本很低，但不需要keep tunnel)
+- ZoneBootConfig中设置OOD为OOD:ipv4 / zonegateway:ipv4
+
+## OOD String
+- ood1 相当于 ood1@unknown_lan
+- ood1@wlan ood1是处在waln的非固定IP设备 
+- ood1:210.34.120.23 ood1是有固定IP的WLAN设备
+- ood1@lan1 ood1是处在lan1的设备
+- #ood1 该节点是zone-gateway节点？
+- #node1 该节点是非ood zone-gateawy节点？
 
 ## 关于故障的思考
 ### 简单环境，单OOD + 单ZoneGateway
