@@ -1,0 +1,13 @@
+[package]
+name = "slog_daemon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+slog = { path = "../slog" }
+log = "*"
+tokio = { version = "*", features = ["full"] }
+reqwest = {version = "*", features = ["json"]}
+serde = "*"
+serde_json = "*"
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
