@@ -1,12 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
 
-type NavItem = {
-  label: string
-  icon: string
-  path: string
-  badge?: string
-}
-
 const primaryNav: NavItem[] = [
   { label: 'Dashboard', icon: '📊', path: '/' },
   { label: 'User Management', icon: '👥', path: '/users' },

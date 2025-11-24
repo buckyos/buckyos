@@ -1,9 +1,3 @@
-type PlaceholderPageProps = {
-  title: string
-  description: string
-  ctaLabel?: string
-}
-
 const PlaceholderPage = ({ title, description, ctaLabel }: PlaceholderPageProps) => {
   return (
     <div className="rounded-3xl border border-slate-900/60 bg-slate-900/40 px-10 py-16 text-center shadow-lg shadow-black/20 backdrop-blur">
