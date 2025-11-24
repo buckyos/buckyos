@@ -47,7 +47,7 @@ OOD的安全启动引导流程如下：
     - 通过DNS查询：zone_hostname 或 `推导设备子域名(TODO:要设计确定规则)`
     - 向SN查询(如果配置了SN)DeviceInfo (这一项也许是和上一项的合并)
 - 与该IP地址的2980端口通信
-- 与对方进行DevcieConfig交换 （`TODO：这一步可能有缺失`）
+- 与对方进行DevcieConfig交换 （`TODO：这一步有缺失`）
 - 两端均基于自己的OwnerConfig里的公钥，对DeviceConfig进行验证，包括验证name是OOD
 7.2 基于Device'Name 尝试通过中转建立连接 (此时无法keep tunnel)
 当无法直接建立连接时，会视是否有中转节点来尝试通过中转建立rtcp stream,下面是尝试open stream
@@ -207,6 +207,7 @@ DeviceInfo中，说明了通过那个中转节点可以连通 Device。
 
 
 ## 与（另一个）Zone-Gateway建立连接
+- 当同Zone的Device，在未连接OOD时尝试与ZoneGateway建立连接，也走该流程
 - ZoneGateway支持http/https, 因此简单的使用 https://zoen_hostname/ 就能连接上正常工作的zone-gateway
 - ZoneGateway也必须支持rtcp (可以不依赖https zone-gateay的存在)
 建立rtcp的标准流程 (`TODO:未完全正确实现`)
@@ -242,10 +243,11 @@ rtcp://$device_did/
 - Node在启动时要连接当前ZoneGateway，也有可能用到ZoneBootConfig
 
 ### `ZoneConfig有啥用？`
-- 现在的ZoneConfig由调度器构造（没有签名），应该是ZoneInfo(`TODO 需要修改`)
-- 没有255字节限制，可以用来保存Zone内的各种各样的信息,供调度器使用
+- 现在的ZoneConfig由调度器构造（没有签名），获取的时候已经连接上了SystemConfig,应该是ZoneInfo(`TODO 需要修改`)
+- 没有255字节限制，可以用来保存Zone内的各种各样的全局信息，由调度器统一刷新
+- 各个应用都可以基于ZoneConfig里的信息，调整自己的逻辑（尤其是有重要的基础服务的状态）
 
-## Zone的接入方式
+## Zone 的接入方式
 
 ### 无SN模式
 - 有至少一个WLAN的ZoneGateway (可以是OOD)
@@ -305,7 +307,7 @@ SN提供的基本能力
 - ZoneBootConfig中设置SN （定期report device info的成本很低，但不需要keep tunnel)
 - ZoneBootConfig中设置OOD为OOD:ipv4 / zonegateway:ipv4
 
-## OOD String
+## OOD String 
 - ood1 相当于 ood1@unknown_lan
 - ood1@wlan ood1是处在waln的非固定IP设备 
 - ood1:210.34.120.23 ood1是有固定IP的WLAN设备
@@ -321,6 +323,33 @@ SN提供的基本能力
 ### 高可用环境，3个OOD + 单ZoneGateway
 - 任何一个OOD掉线，系统都会有问题，只有2个OOD挂了，系统才不可写入。可通过ZoneGateway访问只读信息（通常是基于NDN发布的内容）
 - ZoneGateway掉线，如果3个OOD都在独立的LAN（多么SB的配置），会导致OOD通信失败，进而系统失效
+
+
+
+## 思考的一些实际问题
+### 使用http/https访问zone gateway的逻辑，和zone boot config一点关系都没有
+通过修改dns污染，篡改tls证书,（如何应对？）就是可以制造访站
+
+### 目前给定hostname,建立rtcp的流程
+- 需要ip
+- 需要得到ip对应的device exchange key(px1)
+- 通过hostname支持返回多个 device,由rtcp协议栈负责选择？
+
+标准流程：
+1. 通过Hostname -> zoee_did -> zone_did's owner （域名的Owner的通用过查询方法）`放入zone boot config最简单`
+2. zone_did's owner -> owner's public key
+DNS污染可以替换到另一个zone boot config上去？通过引入BNS ,可以防止篡改（交易域名的时候也需要更换BNS配置）
+尽快变成都通过BNS合约来获取zone boot config,可以保证不被域名注册商篡改 --> 使用Rtcp访问zone更安全
+
+3. zone_did -> gateway_devices config(多个)
+目前计划采用px1的方案，但放入device config的jwt,用owner's public key对gateway_device config进行验证
+bns方案则可以通过更完整的zone boot config直接得到。只需要验证zone boot config即可
+
+使用DNS方案，通过预装的trust hostname ower方案，可以防止对一些关键服务的zone boot config进行“篡改”
+通过向这些服务器发起bns查询，可以进一步提高对所有zone-did的保护
+
+
+
 
 
 
