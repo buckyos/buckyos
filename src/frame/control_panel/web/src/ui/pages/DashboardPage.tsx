@@ -1,29 +1,8 @@
 import type { CSSProperties } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
-const recentEvents: EventItem[] = [
-  { title: 'System backup completed', subtitle: '2 mins ago', tone: 'success' },
-  { title: 'High memory usage detected', subtitle: '15 mins ago', tone: 'warning' },
-  { title: 'New device connected: iPhone 15', subtitle: '1 hour ago', tone: 'info' },
-  { title: 'dApp "FileSync" updated successfully', subtitle: '2 hours ago', tone: 'success' },
-  { title: 'New admin policy applied', subtitle: 'Yesterday', tone: 'info' },
-]
-
-const dapps: DappItem[] = [
-  { name: 'FileSync', icon: '🗂️', status: 'running' },
-  { name: 'SecureChat', icon: '💬', status: 'stopped' },
-  { name: 'CloudBridge', icon: '🌉', status: 'stopped' },
-  { name: 'PhotoVault', icon: '📷', status: 'running' },
-  { name: 'DataAnalyzer', icon: '📊', status: 'running' },
-  { name: 'WebPortal', icon: '🌐', status: 'running' },
-]
-
-const quickActions: QuickAction[] = [
-  { label: 'Manage Users', icon: '👤', to: '/users' },
-  { label: 'Storage Settings', icon: '💾', to: '/storage' },
-  { label: 'Network Config', icon: '🛰️', to: '/settings' },
-  { label: 'System Logs', icon: '📈', to: '/notifications' },
-]
+import { fetchDashboard, mockDashboardData } from '@/api'
 
 const toneStyles: Record<EventItem['tone'], string> = {
   success: 'bg-emerald-500/20 text-emerald-300',
@@ -31,28 +10,38 @@ const toneStyles: Record<EventItem['tone'], string> = {
   info: 'bg-sky-500/20 text-sky-300',
 }
 
-const resourceTimeline: ResourcePoint[] = [
-  { time: '00:00', cpu: 52, memory: 68 },
-  { time: '00:05', cpu: 62, memory: 70 },
-  { time: '00:10', cpu: 58, memory: 72 },
-  { time: '00:15', cpu: 54, memory: 74 },
-  { time: '00:20', cpu: 57, memory: 75 },
-  { time: '00:25', cpu: 60, memory: 76 },
-]
-
-const storageSlices: StorageSlice[] = [
-  { label: 'Apps', value: 28, color: '#1d4ed8' },
-  { label: 'System', value: 22, color: '#6b7280' },
-  { label: 'Photos', value: 18, color: '#22c55e' },
-  { label: 'Documents', value: 12, color: '#facc15' },
-  { label: 'Other', value: 20, color: '#38bdf8' },
-]
-
-const totalStorageUsed = storageSlices.reduce((sum, slice) => sum + slice.value, 0)
-const storageTotalCapacity = 4000 // GB
-const storageUsedTb = 2400 // GB
-
 const DashboardPage = () => {
+  const [dashboardData, setDashboardData] = useState<DashboardState | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    const loadDashboard = async () => {
+      const { data, error } = await fetchDashboard()
+      if (!cancelled) {
+        setDashboardData(data ?? mockDashboardData)
+        if (error) {
+          // eslint-disable-next-line no-console
+          console.warn('Dashboard API unavailable, using mock data', error)
+        }
+        setLoading(false)
+      }
+    }
+
+    loadDashboard()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const recentEvents = dashboardData?.recentEvents ?? []
+  const dapps = dashboardData?.dapps ?? []
+  const quickActions = dashboardData?.quickActions ?? []
+  const resourceTimeline = dashboardData?.resourceTimeline ?? []
+  const storageSlices = dashboardData?.storageSlices ?? []
+  const storageCapacityGb = dashboardData?.storageCapacityGb ?? 0
+  const storageUsedGb = dashboardData?.storageUsedGb ?? 0
+
   const cpuUsage = resourceTimeline.at(-1)?.cpu ?? 0
   const memoryUsage = resourceTimeline.at(-1)?.memory ?? 0
   const resourceLinePoints = resourceTimeline
@@ -70,21 +59,33 @@ const DashboardPage = () => {
       { cpu: '', memory: '' },
     )
 
-  const storageBarSegments = storageSlices.map((slice) => ({
-    ...slice,
-    width: `${(slice.value / totalStorageUsed) * 100}%`,
-  }))
+const storageSlicesTotal = storageSlices.reduce((sum, slice) => sum + slice.value, 0) || 1
+const storageBarSegments = storageSlices.map((slice) => ({
+  ...slice,
+  width: `${(slice.value / storageSlicesTotal) * 100}%`,
+}))
 
   const storageDonutStyle: CSSProperties = {
     background: `conic-gradient(${storageSlices
       .map((slice, index) => {
         const start =
           storageSlices.slice(0, index).reduce((sum, current) => sum + current.value, 0) /
-          totalStorageUsed
-        const end = start + slice.value / totalStorageUsed
+          storageSlicesTotal
+        const end = start + slice.value / storageSlicesTotal
         return `${slice.color} ${start * 360}deg ${end * 360}deg`
       })
       .join(', ')})`,
+  }
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center rounded-3xl border border-slate-900/60 bg-slate-900/40 px-8 py-12 shadow-lg shadow-black/20 backdrop-blur">
+        <div className="flex items-center gap-3 text-slate-300">
+          <span className="size-3 animate-pulse rounded-full bg-sky-400" aria-hidden />
+          <span className="text-sm">Loading dashboard...</span>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -188,7 +189,7 @@ const DashboardPage = () => {
             <div className="flex items-center justify-between text-xs uppercase tracking-wide text-slate-500">
               <span>Used Space</span>
               <span className="text-white">
-                {(storageUsedTb / 1024).toFixed(1)}TB / {(storageTotalCapacity / 1024).toFixed(1)}TB
+                {(storageUsedGb / 1024).toFixed(1)}TB / {(storageCapacityGb / 1024).toFixed(1)}TB
               </span>
             </div>
             <div className="flex h-2 overflow-hidden rounded-full bg-slate-800">
