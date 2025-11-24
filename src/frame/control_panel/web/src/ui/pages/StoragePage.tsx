@@ -1,16 +1,3 @@
-type PoolCategory = {
-  label: string
-  percent: number
-  sizeGb: number
-  color: string
-}
-
-type ActivityPoint = {
-  time: string
-  read: number
-  write: number
-}
-
 const poolCategories: PoolCategory[] = [
   { label: 'Applications', percent: 28, sizeGb: 450, color: '#2563eb' },
   { label: 'System Files', percent: 15, sizeGb: 240, color: '#f97316' },
@@ -40,22 +27,6 @@ const readWriteQps: ActivityPoint[] = [
   { time: '00:20', read: 1480, write: 980 },
   { time: '00:25', read: 1580, write: 1020 },
 ]
-
-type DeviceDisk = {
-  label: string
-  sizeTb: number
-  usagePercent: number
-  status: 'healthy' | 'warning' | 'offline'
-}
-
-type DeviceNode = {
-  name: string
-  role: string
-  totalTb: number
-  usedTb: number
-  status: 'healthy' | 'degraded' | 'offline'
-  disks: DeviceDisk[]
-}
 
 const storageNodes: DeviceNode[] = [
   {

@@ -1,36 +1,6 @@
 import type { CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 
-type EventItem = {
-  title: string
-  subtitle: string
-  tone: 'success' | 'warning' | 'info'
-}
-
-type DappItem = {
-  name: string
-  status: 'running' | 'stopped'
-  icon: string
-}
-
-type QuickAction = {
-  label: string
-  icon: string
-  to: string
-}
-
-type ResourcePoint = {
-  time: string
-  cpu: number
-  memory: number
-}
-
-type StorageSlice = {
-  label: string
-  value: number
-  color: string
-}
-
 const recentEvents: EventItem[] = [
   { title: 'System backup completed', subtitle: '2 mins ago', tone: 'success' },
   { title: 'High memory usage detected', subtitle: '15 mins ago', tone: 'warning' },

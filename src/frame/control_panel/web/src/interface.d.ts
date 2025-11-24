@@ -1,0 +1,75 @@
+export {}
+
+declare global {
+  type NavItem = {
+    label: string
+    icon: string
+    path: string
+    badge?: string
+  }
+
+  type EventItem = {
+    title: string
+    subtitle: string
+    tone: 'success' | 'warning' | 'info'
+  }
+
+  type DappItem = {
+    name: string
+    status: 'running' | 'stopped'
+    icon: string
+  }
+
+  type QuickAction = {
+    label: string
+    icon: string
+    to: string
+  }
+
+  type ResourcePoint = {
+    time: string
+    cpu: number
+    memory: number
+  }
+
+  type StorageSlice = {
+    label: string
+    value: number
+    color: string
+  }
+
+  type PoolCategory = {
+    label: string
+    percent: number
+    sizeGb: number
+    color: string
+  }
+
+  type ActivityPoint = {
+    time: string
+    read: number
+    write: number
+  }
+
+  type DeviceDisk = {
+    label: string
+    sizeTb: number
+    usagePercent: number
+    status: 'healthy' | 'warning' | 'offline'
+  }
+
+  type DeviceNode = {
+    name: string
+    role: string
+    totalTb: number
+    usedTb: number
+    status: 'healthy' | 'degraded' | 'offline'
+    disks: DeviceDisk[]
+  }
+
+  type PlaceholderPageProps = {
+    title: string
+    description: string
+    ctaLabel?: string
+  }
+}
