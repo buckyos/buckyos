@@ -21,7 +21,7 @@ members = [
     "./frame/smb_service",
 
     "./tools/buckycli", 
-    "test/test_rbac", 
+    "test/test_rbac", "kernel/klog", "kernel/slog", "kernel/slog_daemon", "frame/slog_server", 
 ]
 
 exclude = [
