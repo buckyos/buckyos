@@ -1,11 +1,11 @@
 {
   "@context": "https://www.w3.org/ns/did/v1",
-  "id": "did:bns:bobdev",
+  "id": "did:bns:bob",
   "verificationMethod": [
     {
       "type": "Ed25519VerificationKey2020",
       "id": "#main_key",
-      "controller": "did:bns:bobdev",
+      "controller": "did:bns:bob",
       "publicKeyJwk": {
         "kty": "OKP",
         "crv": "Ed25519",
@@ -19,8 +19,8 @@
   "assertion_method": [
     "#main_key"
   ],
-  "exp": 2063269991,
-  "iat": 1747909991,
-  "name": "bobdev",
-  "full_name": "bobdev"
+  "exp": 2079142883,
+  "iat": 1763782883,
+  "name": "bob",
+  "full_name": "bob"
 }

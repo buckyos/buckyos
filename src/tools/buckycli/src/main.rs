@@ -10,7 +10,6 @@ use std::path::Path;
 use buckyos_api::*;
 use clap::{Arg, Command};
 use package_cmd::*;
-use test_config::*;
 
 fn is_local_cmd(cmd_name: &str) -> bool {
     const LOCAL_COMMANDS: &[&str] = &[
@@ -20,7 +19,10 @@ fn is_local_cmd(cmd_name: &str) -> bool {
         "load_pkg",
         "set_pkg_meta",
         "did",
-        "create_chunk"
+        "create_chunk",
+        "create_user_env",
+        "create_node_configs",
+        "create_sn_configs"
     ];
     LOCAL_COMMANDS.contains(&cmd_name)
 }
@@ -272,6 +274,88 @@ oods look like this 'ood1,ood2'.")
                     .help("chunk will store at target ndn data dir")
                 )
         )
+        .subcommand(
+            Command::new("create_user_env")
+                .about("create user environment configs")
+                .arg(
+                    Arg::new("username")
+                        .long("username")
+                        .value_name("username")
+                        .help("username for the user environment")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("hostname")
+                        .long("hostname")
+                        .value_name("hostname")
+                        .help("zone hostname (e.g., test.buckyos.io)")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("netid")
+                        .long("netid")
+                        .value_name("netid")
+                        .help("zone network id")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("output_dir")
+                        .long("output_dir")
+                        .value_name("output_dir")
+                        .help("output directory (optional, defaults to current directory)")
+                        .required(false)
+                )
+        )
+        .subcommand(
+            Command::new("create_node_configs")
+                .about("create node configs")
+                .arg(
+                    Arg::new("username")
+                        .long("username")
+                        .value_name("username")
+                        .help("username for the node")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("device_name")
+                        .long("device_name")
+                        .value_name("device_name")
+                        .help("device name (e.g., ood1, node1)")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("zone_name")
+                        .long("zone_name")
+                        .value_name("zone_name")
+                        .help("zone name")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("output_dir")
+                        .long("output_dir")
+                        .value_name("output_dir")
+                        .help("output directory (optional, defaults to current directory)")
+                        .required(false)
+                )
+                .arg(
+                    Arg::new("net_id")
+                        .long("net_id")
+                        .value_name("net_id")
+                        .help("network id (optional)")
+                        .required(false)
+                )
+        )
+        .subcommand(
+            Command::new("create_sn_configs")
+                .about("create SN (Service Node) configs")
+                .arg(
+                    Arg::new("output_dir")
+                        .long("output_dir")
+                        .value_name("output_dir")
+                        .help("output directory (optional, defaults to current directory)")
+                        .required(false)
+                )
+        )
         .get_matches();
 
     let mut private_key = None;
@@ -518,6 +602,65 @@ oods look like this 'ood1,ood2'.")
                 if let Some(target) = matches.get_one::<String>("target") {
                     ndn::create_ndn_chunk(filepath,target).await;
                     return Ok(());
+                }
+            }
+        }
+        Some(("create_user_env", matches)) => {
+            let username = matches.get_one::<String>("username").unwrap();
+            let hostname = matches.get_one::<String>("hostname").unwrap();
+            let netid = matches.get_one::<String>("netid").unwrap();
+            let output_dir = matches.get_one::<String>("output_dir");
+            
+            match test_config::cmd_create_user_env(
+                username,
+                hostname,
+                netid,
+                output_dir.map(|s| s.as_str()),
+            ).await {
+                Ok(_) => {
+                    println!("成功创建用户环境配置");
+                }
+                Err(e) => {
+                    println!("创建用户环境配置失败: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Some(("create_node_configs", matches)) => {
+            let username = matches.get_one::<String>("username").unwrap();
+            let device_name = matches.get_one::<String>("device_name").unwrap();
+            let zone_name = matches.get_one::<String>("zone_name").unwrap();
+            let output_dir = matches.get_one::<String>("output_dir");
+            let net_id = matches.get_one::<String>("net_id");
+            
+            match test_config::cmd_create_node_configs(
+                username,
+                device_name,
+                zone_name,
+                output_dir.map(|s| s.as_str()),
+                net_id.map(|s| s.as_str()),
+            ).await {
+                Ok(_) => {
+                    println!("成功创建节点配置");
+                }
+                Err(e) => {
+                    println!("创建节点配置失败: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Some(("create_sn_configs", matches)) => {
+            let output_dir = matches.get_one::<String>("output_dir");
+            
+            match test_config::cmd_create_sn_configs(
+                output_dir.map(|s| s.as_str()),
+            ).await {
+                Ok(_) => {
+                    println!("成功创建 SN 配置");
+                }
+                Err(e) => {
+                    println!("创建 SN 配置失败: {}", e);
+                    return Err(e);
                 }
             }
         }
