@@ -169,8 +169,9 @@ pub struct DeviceInfo {
 
 ### 非OOD(Node)的启动流程(与ZoneBootConfig无关) `未实现`
 1. Node启动的时候，系统已经启动完成。因此Node在启动时的核心目标是连接上SystemConfig Service。
-2. Node通过ZoneGateway 可以直接访问SystemConfig Service(优先rtcp)
-3. 通过SystemConfig Service返回的OOD DeviceInfo,可以使用最佳的方法与OOD建立RTCP连接（尽量直连）,提高后续访问的速度
+2. Node可以基于OOD搜索流程，主动尝试直连OOD (可以避免ZoneGateway生效导致内网不可用)
+3. Node通过ZoneGateway 可以直接访问SystemConfig Service(优先rtcp)
+4. 通过SystemConfig Service返回的OOD DeviceInfo,可以使用最佳的方法与OOD建立RTCP连接（尽量直连）,提高后续访问的速度
 
 ## ZoneGateway的定义
 - ZoneGateway通常是OOD，但可以是普通Node，系统里可以有多个ZoneGateway
@@ -233,6 +234,20 @@ rtcp://$device_did/
 - 直连
 - 中转连接（基于device'owner zone-gateway或SN中转)
 
+
+## ZoneBootConfig与ZoneConfig
+- 通过ZoneBootConfig可以构造符合W3C标准的ZoneConfig
+- ZoneBootConfig只在 OOD Boot和 连接ZoneGateway时用到
+- 
+
+## 关于故障的思考
+### 简单环境，单OOD + 单ZoneGateway
+- OOD掉线，系统不可写入，可通过ZoneGateway访问只读信息（通常是基于NDN发布的内容）
+- ZoneGateway掉线， 系统不可被Zone外访问，同局域网的Zone内设备可以继续基于rtcp使用
+
+### 高可用环境，3个OOD + 单ZoneGateway
+- 任何一个OOD掉线，系统都会有问题，只有2个OOD挂了，系统才不可写入。可通过ZoneGateway访问只读信息（通常是基于NDN发布的内容）
+- ZoneGateway掉线，如果3个OOD都在独立的LAN（多么SB的配置），会导致OOD通信失败，进而系统失效
 
 
 
