@@ -72,4 +72,34 @@ declare global {
     description: string
     ctaLabel?: string
   }
+
+  type UserProfile = {
+    name: string
+    email: string
+    avatar: string
+  }
+
+  type SystemStatus = {
+    label: string
+    state: 'online' | 'degraded' | 'offline'
+    networkPeers: number
+    activeSessions: number
+  }
+
+  type RootLayoutData = {
+    primaryNav: NavItem[]
+    secondaryNav: NavItem[]
+    profile: UserProfile
+    systemStatus: SystemStatus
+  }
+
+  type DashboardState = {
+    recentEvents: EventItem[]
+    dapps: DappItem[]
+    quickActions: QuickAction[]
+    resourceTimeline: ResourcePoint[]
+    storageSlices: StorageSlice[]
+    storageCapacityGb: number
+    storageUsedGb: number
+  }
 }
