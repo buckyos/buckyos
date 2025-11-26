@@ -8,6 +8,7 @@ use name_lib::{
 use ndn_lib::named_obj_to_jwt;
 use std::fs::File;
 use std::io::Write;
+use std::collections::HashMap;
 
 pub(crate) async fn sign_json_data(
     matches: &ArgMatches,
@@ -251,14 +252,15 @@ fn did_create_zoneboot(oods: Vec<String>, sn_host: Option<String>) {
 
     let zone_boot_config = ZoneBootConfig {
         id: None,
-        oods,
+        oods: oods.into_iter().map(|ood| ood.parse().unwrap()).collect(),
         sn: sn_host,
         exp,
-        iat: now as u32,
+        devices:HashMap::new(),
         owner: None,
         owner_key: None,
         gateway_devs: vec![],
         extra_info: std::collections::HashMap::new(),
+
     };
     let zone_boot_config_json_str = serde_json::to_string_pretty(&zone_boot_config).unwrap();
 

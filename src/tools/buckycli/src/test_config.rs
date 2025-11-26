@@ -294,10 +294,10 @@ impl<'a> UserEnvScope<'a> {
         
         let zone_boot = ZoneBootConfig {
             id: None,
-            oods: vec!["ood1".to_string()],
+            oods: vec!["ood1".to_string().parse().unwrap()],
             sn: sn_host,
             exp: self.builder.exp,
-            iat: self.builder.now as u32,
+            devices:HashMap::new(),
             owner: None,
             owner_key: None,
             gateway_devs: vec![],
@@ -401,14 +401,14 @@ pub async fn create_sn_config(builder: &DevEnvBuilder) {
     // 创建 ZoneBootConfig
     let zone_boot = ZoneBootConfig {
         id: None,
-        oods: vec!["ood1".to_string()],
+        oods: vec!["ood1".parse().unwrap()],
         sn: None,
         exp: builder.exp(),
-        iat: builder.now() as u32,
         owner: None,
         owner_key: None,
         gateway_devs: vec![],
         extra_info: HashMap::new(),
+        devices: HashMap::new(),
     };
 
     let owner_key = get_encoding_key(owner_keys.private_key_pem);

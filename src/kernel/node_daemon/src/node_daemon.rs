@@ -136,7 +136,7 @@ async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<
     }
     
     zone_boot_config.id = Some(node_identity.zone_did.clone());
-    if node_identity.zone_iat > zone_boot_config.iat {
+    if node_identity.zone_iat > zone_boot_config.get_iat().unwrap_or(0) as u32 {
         error!("zone_boot_config.iat is earlier than node_identity.zone_iat!");
         return Err(NodeDaemonErrors::ReasonError("zone_boot_config.iat is not match!".to_string()));
     }
@@ -865,7 +865,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     info!("Load zone_boot_config OK, {}", zone_config_json_str);
 
     //verify node_name is this device's hostname
-    let is_ood = zone_boot_config.oods.contains(&device_doc.name);
+    let is_ood = zone_boot_config.device_is_ood(&device_doc.name);
     let device_name = device_doc.name.clone();
     //CURRENT_ZONE_CONFIG.set(zone_config).unwrap();
     if is_ood {
