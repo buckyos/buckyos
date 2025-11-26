@@ -18,12 +18,69 @@ impl ControlPanelServer {
     }
 
     async fn handle_main(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        return Ok(RPCResponse::new(
+        Ok(RPCResponse::new(
             RPCResult::Success(json!({
                 "test":"test",
             })),
             req.id,
-        ));
+        ))
+    }
+
+    async fn handle_layout(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let layout = json!({
+            "profile": {
+                "name": "Admin User",
+                "email": "admin@buckyos.io",
+                "avatar": "https://i.pravatar.cc/64?img=12"
+            },
+            "systemStatus": {
+                "label": "System Online",
+                "state": "online",
+                "networkPeers": 10,
+                "activeSessions": 23
+            }
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(layout), req.id))
+    }
+
+    async fn handle_dashboard(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+        let dashboard = json!({
+            "recentEvents": [
+                { "title": "System backup completed", "subtitle": "2 mins ago", "tone": "success" },
+                { "title": "High memory usage detected", "subtitle": "15 mins ago", "tone": "warning" },
+                { "title": "New device connected: iPhone 15", "subtitle": "1 hour ago", "tone": "info" },
+                { "title": "dApp \"FileSync\" updated successfully", "subtitle": "2 hours ago", "tone": "success" },
+                { "title": "New admin policy applied", "subtitle": "Yesterday", "tone": "info" }
+            ],
+            "dapps": [
+                { "name": "FileSync", "icon": "🗂️", "status": "running" },
+                { "name": "SecureChat", "icon": "💬", "status": "stopped" },
+                { "name": "CloudBridge", "icon": "🌉", "status": "stopped" },
+                { "name": "PhotoVault", "icon": "📷", "status": "running" },
+                { "name": "DataAnalyzer", "icon": "📊", "status": "running" },
+                { "name": "WebPortal", "icon": "🌐", "status": "running" }
+            ],
+            "resourceTimeline": [
+                { "time": "00:00", "cpu": 52, "memory": 68 },
+                { "time": "00:05", "cpu": 62, "memory": 70 },
+                { "time": "00:10", "cpu": 58, "memory": 72 },
+                { "time": "00:15", "cpu": 54, "memory": 74 },
+                { "time": "00:20", "cpu": 57, "memory": 75 },
+                { "time": "00:25", "cpu": 60, "memory": 76 }
+            ],
+            "storageSlices": [
+                { "label": "Apps", "value": 28, "color": "#1d4ed8" },
+                { "label": "System", "value": 22, "color": "#6b7280" },
+                { "label": "Photos", "value": 18, "color": "#22c55e" },
+                { "label": "Documents", "value": 12, "color": "#facc15" },
+                { "label": "Other", "value": 20, "color": "#38bdf8" }
+            ],
+            "storageCapacityGb": 4000,
+            "storageUsedGb": 2400
+        });
+
+        Ok(RPCResponse::new(RPCResult::Success(dashboard), req.id))
     }
 }
 
@@ -36,6 +93,8 @@ impl InnerServiceHandler for ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         match req.method.as_str() {
             "main" => self.handle_main(req).await,
+            "layout" => self.handle_layout(req).await,
+            "dashboard" => self.handle_dashboard(req).await,
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }
     }

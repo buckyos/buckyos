@@ -66,8 +66,8 @@ const RootLayout = () => {
           </div>
         </div>
       ) : null}
-      <div className="mx-auto flex h-screen max-w-7xl gap-8 overflow-hidden px-6 py-10 lg:px-10">
-        <aside className="flex h-full w-64 flex-col rounded-3xl bg-slate-900/60 p-6 backdrop-blur">
+      <div className="mx-auto flex min-h-screen w-full gap-8 px-6 py-10 lg:px-10">
+        <aside className="fixed left-6 top-10 z-20 flex h-[calc(100vh-5rem)] w-64 flex-col rounded-3xl bg-slate-900/60 p-6 backdrop-blur">
           <div className="mb-10 flex items-center gap-3 text-lg font-semibold tracking-tight">
             <span className="inline-flex size-10 items-center justify-center rounded-2xl bg-sky-500 text-2xl">
               B
@@ -90,7 +90,7 @@ const RootLayout = () => {
                       baseNavClasses,
                       isActive
                         ? 'bg-sky-500 text-white shadow-lg shadow-sky-500/30'
-                        : 'text-slate-300 hover:bg-slate-800/80 hover:text-white',
+                        : 'text-slate-300 hover:bg-slate-800/80',
                     ].join(' ')
                   }
                 >
@@ -110,7 +110,7 @@ const RootLayout = () => {
                       baseNavClasses,
                       isActive
                         ? 'bg-slate-800/90 text-white'
-                        : 'text-slate-300 hover:bg-slate-800/80 hover:text-white',
+                        : 'text-slate-300 hover:bg-slate-800/80',
                     ].join(' ')
                   }
                 >
@@ -155,7 +155,7 @@ const RootLayout = () => {
           </div>
         </aside>
 
-        <main className="flex-1 overflow-y-auto pb-10 pr-2">
+        <main className="ml-[18rem] flex-1 pb-10 pr-2">
           <Outlet />
         </main>
       </div>
