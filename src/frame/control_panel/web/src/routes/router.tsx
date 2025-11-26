@@ -3,6 +3,9 @@ import RootLayout from '../ui/RootLayout'
 import DashboardPage from '../ui/pages/DashboardPage'
 import StoragePage from '../ui/pages/StoragePage'
 import PlaceholderPage from '../ui/pages/PlaceholderPage'
+import UserManagementPage from '../ui/pages/UserManagementPage'
+import DappStorePage from '../ui/pages/DappStorePage'
+import SettingsPage from '../ui/pages/SettingsPage'
 
 const router = createBrowserRouter([
   {
@@ -12,13 +15,7 @@ const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       {
         path: 'users',
-        element: (
-          <PlaceholderPage
-            title="User Management"
-            description="Manage user roles, invitations, and access policies for your BuckyOS zone."
-            ctaLabel="Invite User"
-          />
-        ),
+        element: <UserManagementPage />,
       },
       {
         path: 'storage',
@@ -26,23 +23,11 @@ const router = createBrowserRouter([
       },
       {
         path: 'dapps',
-        element: (
-          <PlaceholderPage
-            title="dApp Store"
-            description="Discover, install, and keep your decentralized applications up to date."
-            ctaLabel="Browse dApps"
-          />
-        ),
+        element: <DappStorePage />,
       },
       {
         path: 'settings',
-        element: (
-          <PlaceholderPage
-            title="Settings"
-            description="Adjust system preferences, security hardening, and advanced node configuration."
-            ctaLabel="Update Settings"
-          />
-        ),
+        element: <SettingsPage />,
       },
       {
         path: 'notifications',

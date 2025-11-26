@@ -102,4 +102,27 @@ declare global {
     storageCapacityGb: number
     storageUsedGb: number
   }
+
+  type UserSummary = {
+    name: string
+    email: string
+    role: string
+    status: 'active' | 'pending' | 'disabled'
+    avatar: string
+  }
+
+  type DappCard = {
+    name: string
+    icon: string
+    category: string
+    status: 'installed' | 'available'
+    version: string
+  }
+
+  type SettingBlock = {
+    title: string
+    description: string
+    actions: string[]
+    icon: string
+  }
 }

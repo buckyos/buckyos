@@ -66,14 +66,21 @@ const mockDashboardData: DashboardState = {
   storageUsedGb: 2400,
 }
 
-const sleep = (ms = 150) => new Promise((resolve) => setTimeout(resolve, ms))
-
 export const fetchLayout = async (): Promise<{ data: RootLayoutData | null; error: unknown }> => {
   try {
-    let rpc_client = new buckyos.kRPCClient("/kapi/control-panel")
-    let result = await rpc_client.call("main",{})
-    console.log(result)
-    return { data: mockLayoutData, error: null }
+    const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
+    const result = await rpcClient.call('layout', {})
+    if (!result || typeof result !== 'object') {
+      throw new Error('Invalid layout response')
+    }
+    const merged: RootLayoutData = {
+      ...mockLayoutData,
+      ...(result as Record<string, unknown>),
+      primaryNav: mockLayoutData.primaryNav,
+      secondaryNav: mockLayoutData.secondaryNav,
+    }
+    console.log('fetchLayout', merged)
+    return { data: merged, error: null }
   } catch (error) {
     return { data: null, error }
   }
@@ -81,8 +88,17 @@ export const fetchLayout = async (): Promise<{ data: RootLayoutData | null; erro
 
 export const fetchDashboard = async (): Promise<{ data: DashboardState | null; error: unknown }> => {
   try {
-    await sleep()
-    return { data: mockDashboardData, error: null }
+    const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
+    const result = await rpcClient.call('dashboard', {})
+    if (!result || typeof result !== 'object') {
+      throw new Error('Invalid dashboard response')
+    }
+    const merged: DashboardState = {
+      ...mockDashboardData,
+      ...(result as Record<string, unknown>),
+      quickActions: mockDashboardData.quickActions,
+    }
+    return { data: merged, error: null }
   } catch (error) {
     return { data: null, error }
   }
