@@ -9,4 +9,4 @@ edition = "2021"
 fuser="*"
 clap="*"
 libc="*"
-env_logger = "*"
+env_logger = { workspace = true }
