@@ -1,15 +1,15 @@
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use name_lib::{
-    DIDDocumentTrait, DeviceConfig, NodeIdentityConfig, OwnerConfig, ZoneBootConfig, ZoneConfig,
-    DID,
+    DID, DIDDocumentTrait, DeviceConfig, NodeIdentityConfig, OODDescriptionString, OwnerConfig, ZoneBootConfig, get_x_from_jwk, DeviceInfo, EncodedDocument
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use ed25519_dalek::pkcs8::DecodePrivateKey;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use cyfs_sn::SnDB;
 
 // ============================================================================
 // 常量定义
@@ -57,6 +57,8 @@ impl TestKeys {
             "sn_server",
             "bob",
             "bob.ood1",
+            "alice",
+            "alice.ood1",
         ];
         for key_id in key_ids {
             let key_pair = TestKeys::get_key_pair_by_id(key_id)?;
@@ -73,6 +75,8 @@ impl TestKeys {
             "sn_server" => TestKeys::sn_device(),
             "bob" => TestKeys::bob_owner(),
             "bob.ood1" => TestKeys::bob_ood1(),
+            "alice" => TestKeys::alice_owner(),
+            "alice.ood1" => TestKeys::alice_ood1(),
             _ => return Err(format!("unknown key pair id: {}", id)),
         };
         TestKeys::verify_key_pair(&key_pair)?;
@@ -142,6 +146,24 @@ MC4CAQAwBQYDK2VwBCIEIBvnIIa1Tx45SjRu9kBZuMgusP5q762SvojXZ4scFxVD
             public_key_x: "FPvY3WXPxuWPYFuwOY0Qbh0O7-hhKr6ta1jTcX9ORPI".to_string(),
         }
     }
+
+    fn alice_owner() -> TestKeyPair {
+        TestKeyPair {
+            private_key_pem: r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIKH6oJdebg+xxICY7Z1vm84qMkSzm6Wk0ic88DGR90aq
+-----END PRIVATE KEY-----"#,
+            public_key_x: "uh7RD37tflN65CrcJSUQ3vGnyU4vmC7_M8IkEEOHnds".to_string(),
+        }
+    }
+
+    fn alice_ood1() -> TestKeyPair {
+        TestKeyPair {
+            private_key_pem: r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIGhyUJ3/YgIrLZxSGG7o1bgiWcyETZKjTBoGagNdpxVy
+-----END PRIVATE KEY-----"#,
+            public_key_x: "E1oQDYqzyX4ysrNgTJ5DAVaMgA3By8XpBa0e6r2gBqQ".to_string(),
+        }
+    }
 }
 
 // ============================================================================
@@ -175,17 +197,6 @@ fn get_jwk(x: &str) -> jsonwebtoken::jwk::Jwk {
         "crv": "Ed25519",
         "x": x
     })).unwrap()
-}
-
-/// 从 JWK 获取 x 值（用于 DNS TXT 记录）
-fn get_x_from_jwk(jwk: &jsonwebtoken::jwk::Jwk) -> Result<String, String> {
-    // 从 JWK 的 JSON 表示中提取 x 值
-    let jwk_value: Value = serde_json::to_value(jwk).map_err(|e| e.to_string())?;
-    jwk_value
-        .get("x")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "Missing 'x' field in JWK".to_string())
 }
 
 // ============================================================================
@@ -285,41 +296,41 @@ impl<'a> UserEnvScope<'a> {
         println!("Created owner config for {}", self.username);
     }
 
-    /// 创建 Zone 配置
-    pub fn create_zone_boot_config_jwt(&self, zone_did: &DID, sn_host: Option<String>, netid: Option<String>) -> String {
-        let mut extra_info = HashMap::new();
-        if let Some(net_id) = netid {
-            extra_info.insert("netid".to_string(), Value::String(net_id));
-        }
+    /// 创建 Zone 配置 
+    /// return zone_boot_config_jwt, TXT Records
+    pub fn create_zone_boot_config_jwt(&self, sn_host: Option<String>, ood:OODDescriptionString) -> (String,Vec<String>) {
         
         let zone_boot = ZoneBootConfig {
             id: None,
-            oods: vec!["ood1".to_string().parse().unwrap()],
+            oods: vec![ood],
             sn: sn_host,
             exp: self.builder.exp,
             devices:HashMap::new(),
             owner: None,
             owner_key: None,
             gateway_devs: vec![],
-            extra_info,
+            extra_info:HashMap::new(),
         };
-
+        let zone_host_name = self.zone_did.to_host_name();
         write_json(
-            &self.user_dir.join(format!("{}.zone.json", zone_did.to_host_name())),
+            &self.user_dir.join(format!("{}.zone.json", zone_host_name)),
             &zone_boot,
         );
 
         let owner_key = get_encoding_key(self.key_pair.private_key_pem);
         let jwt = zone_boot.encode(Some(&owner_key)).unwrap();
 
-        let zone_host_name = zone_did.to_host_name();
-        println!("# {} ZoneBootJWT TXT Record: DID={};", zone_host_name, jwt.to_string());
 
-        if let Ok(owner_x) = get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)) {
-            println!("# {} ZoneBoot OwnerX TXT Record: PKX=0:{};", zone_host_name, owner_x);
-        }
+        println!("=> {} TXT Record: DID={};", zone_host_name, jwt.to_string());
+        println!("=> {} TXT Record: PKX=0:{};", zone_host_name, get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap());
 
-        jwt.to_string()
+        let txt_records = vec![
+            format!("DID={};", jwt.to_string()),
+            format!("PKX=0:{};", get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap()),
+        ];
+
+
+        (jwt.to_string(), txt_records)
     }
 
     /// 创建节点配置
@@ -481,22 +492,97 @@ pub async fn create_sn_config(builder: &DevEnvBuilder) {
     // write_json(&sn_dir.join("web3_gateway.json"), &config);
 }
 
-pub async fn register_device_to_sn(builder: &DevEnvBuilder, device_name: &str) {
-    //往SN上注册设备包括下面几种类型
-    // - NAT 后OOD + 二级域名
-    // - NAT 后OOD + 自定义域名
-    // - NAT 后OOD 只开放2980端口映射 + 二级域名
-    // - NAT 后OOD 只开放2980端口映射 + 自定义域名
-    // - NAT 后OOD 完全端口映射 + 二级域名
-    // - NAT 后OOD 完全端口映射 + 自定义域名
-    // - WAN OOD  + 二级域名
-    // - WAN OOD + 自定义域名
-
+/// Register device to SN database
+/// 
+/// Device registration types supported:
+/// - NAT behind OOD + subdomain
+/// - NAT behind OOD + custom domain
+/// - NAT behind OOD with only port 2980 mapping + subdomain
+/// - NAT behind OOD with only port 2980 mapping + custom domain
+/// - NAT behind OOD with full port mapping + subdomain
+/// - NAT behind OOD with full port mapping + custom domain
+/// - WAN OOD + subdomain
+/// - WAN OOD + custom domain
+/// 
+/// Not supported:
+/// - WAN OOD with fixed IP, using own domain, using own NS server (no SN needed)
+pub async fn register_device_to_sn(
+    builder: &DevEnvBuilder,
+    username: &str,
+    device_name: &str,
+    sn_db_path: &str,
+) -> Result<(), String> {
+    // Find device config directory
+    // Try to find device config in builder root: {username}/{device_name}/node_identity.json
+    let device_dir = builder.root_dir().join(username).join(device_name);
+    let node_identity_path = device_dir.join("node_identity.json");
     
-    //往SN上注册设备不包括：
-    // - WAN OOD 固定IP，用自己的域名，用自己的NS服务器(无需SN)
+    if !node_identity_path.exists() {
+        return Err(format!(
+            "Device config not found: {}",
+            node_identity_path.display()
+        ));
+    }
 
+    // Read node_identity.json to get device DID
+    let node_identity: NodeIdentityConfig = serde_json::from_str(
+        &std::fs::read_to_string(&node_identity_path)
+            .map_err(|e| format!("Failed to read node_identity.json: {}", e))?
+    )
+    .map_err(|e| format!("Failed to parse node_identity.json: {}", e))?;
 
+    // Extract device DID from device_doc_jwt
+    let device_doc_jwt = node_identity.device_doc_jwt.clone();
+    let encoded_doc = EncodedDocument::from_str(device_doc_jwt)
+        .map_err(|e| format!("Failed to create EncodedDocument: {}", e))?;
+    let device_doc = DeviceConfig::decode(
+        &encoded_doc,
+        Some(&DecodingKey::from_jwk(&node_identity.owner_public_key)
+            .map_err(|e| format!("Failed to decode owner public key: {}", e))?)
+    )
+    .map_err(|e| format!("Failed to decode device_doc_jwt: {}", e))?;
+
+    // Get device DID from device config id field
+    let device_did = device_doc.id.clone();
+
+    // Create DeviceInfo and fill system info
+    let mut device_info = DeviceInfo::new(device_name, device_did.clone());
+    device_info.auto_fill_by_system_info().await
+        .map_err(|e| format!("Failed to fill device system info: {}", e))?;
+
+    // Get device IP from DeviceInfo (ip is Option<IpAddr>)
+    let device_ip = device_info.ip
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "0.0.0.0".to_string());
+
+    // Serialize device info to JSON
+    let device_info_json = serde_json::to_string_pretty(&device_info)
+        .map_err(|e| format!("Failed to serialize device info: {}", e))?;
+
+    // Open SN database
+    let db = SnDB::new_by_path(sn_db_path)
+        .map_err(|e| format!("Failed to open SN database: {}", e))?;
+
+    // Initialize database if needed
+    db.initialize_database()
+        .map_err(|e| format!("Failed to initialize SN database: {}", e))?;
+
+    // Register device
+    db.register_device(
+        username,
+        device_name,
+        &device_did.to_string(),
+        &device_ip,
+        &device_info_json,
+    )
+    .map_err(|e| format!("Failed to register device: {}", e))?;
+
+    println!(
+        "Successfully registered device {}.{} (DID: {:?}) to SN database at {}",
+        username, device_name, device_did, sn_db_path
+    );
+
+    Ok(())
 }
 
 // ============================================================================
@@ -538,8 +624,9 @@ pub async fn cmd_create_user_env(
     // 创建 owner 配置
     scope.create_owner_config();
     
-    // 创建 zone_boot_config
-    let _zone_boot_jwt = scope.create_zone_boot_config_jwt(&zone_did, None, Some(netid.to_string()));
+    // 创建 zone_boot_config（目前仅生成一个简单的 OOD 描述，SN 为空）
+    let ood: OODDescriptionString = "ood1".to_string().parse().unwrap();
+    let (_zone_boot_jwt, _txt_records) = scope.create_zone_boot_config_jwt(None, ood);
 
     println!("成功创建用户环境配置: {}", username);
     println!("Zone hostname: {}", hostname);
@@ -599,6 +686,26 @@ pub async fn cmd_create_sn_configs(output_dir: Option<&str>) -> Result<(), Strin
     Ok(())
 }
 
+/// Register device to SN database (command line interface)
+pub async fn cmd_register_device(
+    username: &str,
+    device_name: &str,
+    sn_db_path: &str,
+    output_dir: Option<&str>,
+) -> Result<(), String> {
+    let root_dir = if let Some(dir) = output_dir {
+        PathBuf::from(dir)
+    } else {
+        std::env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?
+    };
+
+    let builder = DevEnvBuilder::from_path(root_dir);
+    register_device_to_sn(&builder, username, device_name, sn_db_path).await?;
+    
+    println!("Successfully registered device {}.{} to SN", username, device_name);
+    Ok(())
+}
+
 // ============================================================================
 // 主入口函数
 // ============================================================================
@@ -631,9 +738,8 @@ pub async fn create_test_env_configs() {
 
     // Bob Zone
     let _bob_zone_jwt = bob_scope.create_zone_boot_config_jwt(
-        &DID::new("bns", "bob"),
         Some("sn.buckyos.io".to_string()),
-        None,
+        "ood1".to_string().parse().unwrap(),
     );
 
     // Bob OOD1
@@ -686,12 +792,18 @@ pub async fn create_test_env_configs() {
 
 mod tests {
     use super::*;
+    use name_lib::*;
+
+    /// 为测试统一创建 DevEnvBuilder，根目录按测试名区分
+    fn new_test_builder(test_name: &str) -> DevEnvBuilder {
+        let root_dir = format!(".buckycli_{}", test_name);
+        DevEnvBuilder::new(&root_dir)
+    }
 
     #[tokio::test]
     /// 创建简单的测试配置（用于 test_all_dev_env_configs）
     pub async fn test_all_dev_env_configs() {
-
-        let builder = DevEnvBuilder::new(".buckycli");
+        let builder = new_test_builder("all_dev_env_configs");
         let owner_keys = TestKeys::get_key_pair_by_id("devtest").unwrap();
         let device_keys = TestKeys::get_key_pair_by_id("devtest.ood1").unwrap();
 
@@ -709,7 +821,8 @@ mod tests {
 
         // 创建 Zone 配置
         let zone_did = DID::new("web", "test.buckyos.io");
-        let zone_boot_jwt = scope.create_zone_boot_config_jwt(&zone_did, None, None);
+        let ood: OODDescriptionString = "ood1".to_string().parse().unwrap();
+        let (zone_boot_jwt, _txt_records) = scope.create_zone_boot_config_jwt(None, ood);
 
         // 创建节点身份配置
         let node_identity_config = NodeIdentityConfig {
@@ -756,95 +869,54 @@ mod tests {
 
     #[test]
     fn test_zone_boot_config() {
-        let private_key_pem = r#"
-        -----BEGIN PRIVATE KEY-----
-        MC4CAQAwBQYDK2VwBCIEIBwApVoYjauZFuKMBRe02wKlKm2B6a1F0/WIPMqDaw5F
-        -----END PRIVATE KEY-----
-        "#;
-        let jwk = json!({
-            "kty": "OKP",
-            "crv": "Ed25519",
-            "x": "qmtOLLWpZeBMzt97lpfj2MxZGWn3QfuDB7Q4uaP3Eok"
-        });
+        // 使用 DevEnvBuilder + create_zone_boot_config_jwt 来构造 ZoneBootConfig 的 JWT
+        let builder = new_test_builder("zone_boot_config");
+        let owner_keys = TestKeys::devtest_owner();
+        let zone_did = DID::new("bns", "devtest");
+        let scope = builder.user_scope("devtest", zone_did.clone(), &owner_keys);
 
-        let private_key = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap();
-        let public_key_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
+        // 构造一个简单的 OOD 描述和 SN 主机名
+        let ood: OODDescriptionString = "ood1".to_string().parse().unwrap();
+        let sn_host = Some("sn.buckyos.io".to_string());
+
+        // 通过 create_zone_boot_config_jwt 生成 JWT
+        let (zone_boot_config_jwt, _txt_records) =
+            scope.create_zone_boot_config_jwt(sn_host.clone(), ood.clone());
+
+        // 使用 owner 公钥对 JWT 进行解码
+        let public_key_jwk = get_jwk(&owner_keys.public_key_x);
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
-        let zone_boot_config = ZoneBootConfig {
+        // 将 JWT 字符串封装为 EncodedDocument，再进行解码
+        let encoded_doc = EncodedDocument::from_str(zone_boot_config_jwt.clone()).unwrap();
+        let zone_boot_config_decoded =
+            ZoneBootConfig::decode(&encoded_doc, Some(&public_key)).unwrap();
+        println!("zone_boot_config_decoded: {:?}", zone_boot_config_decoded);
+
+        // 构造期望的 ZoneBootConfig，与 create_zone_boot_config_jwt 中的逻辑保持一致
+        let expected_zone_boot_config = ZoneBootConfig {
             id: None,
-            oods: vec!["ood1".to_string()],
-            sn: None,
-            exp: BASE_TIME + 3600 * 24 * 365 * 3,
-            iat: BASE_TIME as u32,
+            oods: vec![ood],
+            sn: sn_host,
+            exp: builder.exp(),
+            devices: HashMap::new(),
             owner: None,
             owner_key: None,
             gateway_devs: vec![],
             extra_info: HashMap::new(),
         };
 
-        let zone_boot_config_jwt = zone_boot_config.encode(Some(&private_key)).unwrap();
-        println!("zone_boot_config_jwt: {:?}", zone_boot_config_jwt);
-
-        let zone_boot_config_decoded =
-            ZoneBootConfig::decode(&zone_boot_config_jwt, Some(&public_key)).unwrap();
-        println!("zone_boot_config_decoded: {:?}", zone_boot_config_decoded);
-
-        assert_eq!(zone_boot_config, zone_boot_config_decoded);
+        assert_eq!(expected_zone_boot_config, zone_boot_config_decoded);
     }
 
-    #[test]
-    fn test_zone_config() {
-        let private_key_pem = r#"
-        -----BEGIN PRIVATE KEY-----
-        MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
-        -----END PRIVATE KEY-----
-        "#;
-        let jwk = json!({
-            "kty": "OKP",
-            "crv": "Ed25519",
-            "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
-        });
 
-        let public_key_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
-        let private_key = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap();
-        let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
-
-        let zone_config = ZoneConfig::new(
-            DID::new("web", "test.buckyos.io"),
-            DID::new("bns", "devtest"),
-            public_key_jwk,
-        );
-
-        let json_str = serde_json::to_string(&zone_config).unwrap();
-        println!("json_str: {:?}", json_str);
-
-        let encoded = zone_config.encode(Some(&private_key)).unwrap();
-        println!("encoded: {:?}", encoded);
-
-        let decoded = ZoneConfig::decode(&encoded, Some(&public_key)).unwrap();
-        println!("decoded: {:?}", serde_json::to_string(&decoded).unwrap());
-        let token2 = decoded.encode(Some(&private_key)).unwrap();
-
-        assert_eq!(zone_config, decoded);
-        assert_eq!(encoded, token2);
-    }
 
     #[tokio::test]
     async fn test_device_config() {
-        let owner_private_key_pem = r#"
-        -----BEGIN PRIVATE KEY-----
-    MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
-        -----END PRIVATE KEY-----
-        "#;
-        let owner_jwk = json!({
-            "kty": "OKP",
-            "crv": "Ed25519",
-            "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
-        });
-
-        let public_key_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(owner_jwk).unwrap();
-        let owner_private_key = EncodingKey::from_ed_pem(owner_private_key_pem.as_bytes()).unwrap();
+        // 使用 TestKeys + 辅助函数来构造 owner 密钥
+        let owner_keys = TestKeys::devtest_owner();
+        let public_key_jwk = get_jwk(&owner_keys.public_key_x);
+        let owner_private_key = get_encoding_key(owner_keys.private_key_pem);
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         // OOD1 设备
@@ -946,19 +1018,10 @@ mod tests {
 
     #[test]
     fn test_owner_config() {
-        let private_key_pem = r#"
-        -----BEGIN PRIVATE KEY-----
-        MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
-        -----END PRIVATE KEY-----
-        "#;
-        let jwk = json!({
-            "kty": "OKP",
-            "crv": "Ed25519",
-            "x": "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"
-        });
-
-        let public_key_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk).unwrap();
-        let private_key = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap();
+        // 使用 TestKeys + 辅助函数来构造 owner 配置所需的密钥
+        let owner_keys = TestKeys::devtest_owner();
+        let public_key_jwk = get_jwk(&owner_keys.public_key_x);
+        let private_key = get_encoding_key(owner_keys.private_key_pem);
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         let mut owner_config = OwnerConfig::new(

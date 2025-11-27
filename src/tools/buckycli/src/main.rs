@@ -22,7 +22,8 @@ fn is_local_cmd(cmd_name: &str) -> bool {
         "create_chunk",
         "create_user_env",
         "create_node_configs",
-        "create_sn_configs"
+        "create_sn_configs",
+        "register_device"
     ];
     LOCAL_COMMANDS.contains(&cmd_name)
 }
@@ -356,6 +357,38 @@ oods look like this 'ood1,ood2'.")
                         .required(false)
                 )
         )
+        .subcommand(
+            Command::new("register_device")
+                .about("register device to SN database")
+                .arg(
+                    Arg::new("username")
+                        .long("username")
+                        .value_name("username")
+                        .help("username (owner) of the device")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("device_name")
+                        .long("device_name")
+                        .value_name("device_name")
+                        .help("device name (e.g., ood1, node1)")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("sn_db_path")
+                        .long("sn_db_path")
+                        .value_name("sn_db_path")
+                        .help("path to SN database file (e.g., /opt/web3_bridge/sn_db.sqlite3)")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("output_dir")
+                        .long("output_dir")
+                        .value_name("output_dir")
+                        .help("output directory where device configs are located (optional, defaults to current directory)")
+                        .required(false)
+                )
+        )
         .get_matches();
 
     let mut private_key = None;
@@ -660,6 +693,27 @@ oods look like this 'ood1,ood2'.")
                 }
                 Err(e) => {
                     println!("创建 SN 配置失败: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Some(("register_device", matches)) => {
+            let username = matches.get_one::<String>("username").unwrap();
+            let device_name = matches.get_one::<String>("device_name").unwrap();
+            let sn_db_path = matches.get_one::<String>("sn_db_path").unwrap();
+            let output_dir = matches.get_one::<String>("output_dir");
+            
+            match test_config::cmd_register_device(
+                username,
+                device_name,
+                sn_db_path,
+                output_dir.map(|s| s.as_str()),
+            ).await {
+                Ok(_) => {
+                    println!("Successfully registered device {}.{} to SN", username, device_name);
+                }
+                Err(e) => {
+                    println!("Failed to register device: {}", e);
                     return Err(e);
                 }
             }

@@ -43,3 +43,4 @@ pnpm-lock.yaml
 src/Cargo.lock
 **/node_modules
 .pnpm-store
+src/scripts/remote/dev_configs.bak
