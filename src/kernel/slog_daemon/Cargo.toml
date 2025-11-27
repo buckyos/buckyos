@@ -5,9 +5,9 @@ edition = "2024"
 
 [dependencies]
 slog = { path = "../slog" }
-log = "*"
-tokio = { version = "*", features = ["full"] }
-reqwest = {version = "*", features = ["json"]}
-serde = "*"
-serde_json = "*"
+log = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }

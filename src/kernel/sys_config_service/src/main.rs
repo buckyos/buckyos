@@ -13,7 +13,8 @@ use log::*;
 use lazy_static::lazy_static;
 use serde_json::Value;
 use tokio::sync::Mutex;
-use warp::Filter;
+// NOTE: warp dependency has been removed
+// use warp::Filter;
 
 use ::kRPC::*;
 use buckyos_kit::*;
@@ -801,6 +802,8 @@ async fn init_by_boot_config() -> Result<()> {
     Ok(())
 }
 
+// NOTE: warp dependency has been removed, this function is commented out
+// TODO: Replace with server-runner or other HTTP server implementation
 async fn service_main() {
     //std::env::set_var("BUCKY_LOG","debug");
     init_logging("system_config_service", true);
@@ -808,6 +811,8 @@ async fn service_main() {
     init_by_boot_config().await.unwrap();
     // Select the rear end storage, here you can switch different implementation
 
+    // NOTE: warp code commented out - needs to be replaced with server-runner
+    /*
     let cors_response = warp::path!("kapi" / "system_config")
         .and(warp::options())
         .map(|| {
@@ -866,6 +871,8 @@ async fn service_main() {
     warp::serve(cors_response.or(rpc_route))
         .run(([0, 0, 0, 0], 3200))
         .await;
+    */
+    error!("service_main: warp has been removed, needs to be replaced with server-runner");
 }
 
 #[tokio::main]

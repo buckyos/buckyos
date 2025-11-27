@@ -16,7 +16,8 @@ use serde_json::*;
 
 use buckyos_kit::*;
 use name_client::*;
-use cyfs_gateway_lib::WarpServerConfig;
+// NOTE: warp dependency has been removed
+// use cyfs_gateway_lib::WarpServerConfig;
 use server_runner::*;
 
 use anyhow::Result;

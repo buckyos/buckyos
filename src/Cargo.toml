@@ -31,6 +31,7 @@ exclude = [
 version = "0.5.1"
 
 [workspace.dependencies]
+# BuckyOS internal dependencies
 buckyos-tracing = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-tracing", branch = "beta1"}
 buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit", branch = "beta1" }
 package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", branch = "beta1" }
@@ -43,3 +44,72 @@ cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = 
 cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "main" }
 cyfs-sn = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-sn", branch = "main" }
 server-runner =  { git = "https://github.com/buckyos/cyfs-gateway.git", package = "server-runner", branch = "main" }
+
+# Common async runtime and utilities
+tokio = { version = "*", features = ["full"] }
+async-trait = "*"
+futures = "*"
+futures-util = "*"
+
+# Serialization
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+
+# Logging
+log = "*"
+simplelog = "*"
+env_logger = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "*"
+anyhow = "*"
+anyerror = { version = "*", features = ["anyhow"] }
+
+# HTTP and web
+reqwest = "*"
+url = "*"
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+axum = "*"
+
+# Time and date
+chrono = "*"
+time = { version = "^0.3", features = ["formatting"] }
+
+# Configuration and parsing
+toml = "*"
+clap = "*"
+
+# Crypto and security
+jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
+base64 = "*"
+sha2 = "*"
+rand = "*"
+ed25519-dalek = { version = "*", features = ["pkcs8", "pem"] }
+
+# Database
+rusqlite = { version = "*", features = ["bundled"] }
+sled = "*"
+
+# Utilities
+lazy_static = "*"
+once_cell = "*"
+uuid = { version = "*", features = ["v4"] }
+hex = "*"
+semver = "*"
+num_cpus = "*"
+sysinfo = "*"
+if-addrs = "*"
+
+# Other
+upon = "*"
+async-recursion = "*"
+rustyline = "11.0.0"
+flate2 = "1.0"
+tar = "0.4"
+bincode = { version = "2", features = ["serde"] }
+flexi_logger = "*"
+tempfile = "*"

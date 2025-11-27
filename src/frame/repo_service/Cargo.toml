@@ -5,29 +5,29 @@ edition = "2021"
 authors = ["BuckyOS DAO","@waterflier"]
 
 [dependencies]
-time = { version = "^0.3", features = ["formatting"] }
-async-trait = "*"
-log = "*"
-anyhow = "*"
-serde = "*"
-serde_json = "*"
-url = "*"
-tokio = { version = "*", features = ["full"] }
-lazy_static = "*"
-thiserror = "*"
-semver = "*"
-base64 = "*"
-ed25519-dalek = { version = "*", features = ["pkcs8", "pem"] } 
-async-recursion = "*"
-jsonwebtoken = "*" 
-futures-util = "*"
-hex = "*"
-rusqlite =  { version = "*", features = ["bundled"] }
-sha2 = { version = ">=0.11.0-pre.4" }
-reqwest = {version = "*", features = ["json", "rustls-tls"]}
-bytes = "1"
-http = "1"
-http-body-util = "0.1"
+time = { workspace = true }
+async-trait = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+tokio = { workspace = true }
+lazy_static = { workspace = true }
+thiserror = { workspace = true }
+semver = { workspace = true }
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
+async-recursion = { workspace = true }
+jsonwebtoken = { workspace = true }
+futures-util = { workspace = true }
+hex = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
 ndn-lib = { workspace = true }
 package-lib = { workspace = true }
 name-lib = { workspace = true }

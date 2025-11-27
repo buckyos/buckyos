@@ -6,20 +6,20 @@ authors = ["BuckyOS DAO","@waterflier","@alexsunxl"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-log = "*"
-serde = "*"
-serde_json = "*"
-lazy_static = "*"
-thiserror = "*"
-rand = "*"
-async-trait = "*"
-chrono = "*"
-once_cell = "*"
-toml = "*"
-tokio = { version = "*", features = ["full"] }
-jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
-reqwest = "*"
-url = "*"
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+lazy_static = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+once_cell = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
 
 buckyos-kit = { workspace = true }
 package-lib = { workspace = true }

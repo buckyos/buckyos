@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use warp::Filter;
+// NOTE: warp dependency has been removed
+// use warp::Filter;
 
 use ::kRPC::*;
 use buckyos_api::*;
@@ -702,6 +703,9 @@ async fn service_main() -> i32 {
     });
     //load cache from service_cache@dfs:// and service_local_cache@fs://
 
+    // NOTE: warp dependency has been removed, this code is commented out
+    // TODO: Replace with server-runner or other HTTP server implementation
+    /*
     let cors_response = warp::path!("kapi" / "verify-hub")
         .and(warp::options())
         .map(|| {
@@ -753,6 +757,8 @@ async fn service_main() -> i32 {
 
     info!("verify_hub service initialized, running on port 3300");
     warp::serve(routes).run(([127, 0, 0, 1], 3300)).await;
+    */
+    error!("service_main: warp has been removed, needs to be replaced with server-runner");
     return 0;
 }
 

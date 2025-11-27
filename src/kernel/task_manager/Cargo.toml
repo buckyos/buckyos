@@ -5,15 +5,14 @@ edition = "2021"
 authors = ["BuckyOS DAO","@alexsunxl","@waterflier"]
 
 [dependencies]
-async-trait = "*"
-tokio = { version = "1", features = ["full"] }
-warp = "0.3.7"
-chrono = { version = "*", features = ["serde"] }
-rusqlite =  { version = "*", features = ["bundled"] }
-serde = { version = "*", features = ["derive"] }
-serde_json = "*"
-log = "*"
-lazy_static = "*"
+async-trait = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+lazy_static = { workspace = true }
 
 
 
@@ -21,9 +20,9 @@ server-runner = { workspace = true }
 kRPC = { workspace = true }
 buckyos-kit = { workspace = true }
 cyfs-gateway-lib = { workspace = true }
-bytes = "1"
-http = "1"
-http-body-util = "0.1"
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
 
 [dev-dependencies]
-tempfile = "*"
+tempfile = { workspace = true }

@@ -6,4 +6,4 @@ authors = ["BuckyOS DAO","@waterflier"]
 
 [dependencies]
 cyfs-gateway = { workspace = true }
-tokio = { version = "*", features = ["full"] }
+tokio = { workspace = true }

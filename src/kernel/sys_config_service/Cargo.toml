@@ -8,19 +8,18 @@ authors = ["BuckyOS DAO","@waterflier"]
 
 
 [dependencies]
-time = { version = "^0.3", features = ["formatting"] }
-async-trait = "*"
-log = "*"
-simplelog = "*"
-serde = "*"
-serde_json = "*"
-url = "*"
-tokio = { version = "*", features = ["full"] }
-warp = "0.3.7"
-sled = "*"
-lazy_static = "*"
-thiserror = "*"
-jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
+time = { workspace = true }
+async-trait = { workspace = true }
+log = { workspace = true }
+simplelog = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+tokio = { workspace = true }
+sled = { workspace = true }
+lazy_static = { workspace = true }
+thiserror = { workspace = true }
+jsonwebtoken = { workspace = true }
 # rocksdb = "*"
 buckyos-kit = { workspace = true }
 name-lib = { workspace = true }

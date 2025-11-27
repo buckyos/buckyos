@@ -6,22 +6,21 @@ authors = ["BuckyOS DAO","@waterflier"]
 
 
 [dependencies]
-time = { version = "^0.3", features = ["formatting"] }
-async-trait = "*"
-log = "*"
-simplelog = "*"
-serde = "*"
-serde_json = "*"
-url = "*"
-tokio = { version = "*", features = ["full"] }
-warp = "0.3.7"
-lazy_static = "*"
-thiserror = "*"
-jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
-toml = "*"
-upon = "*"
-anyhow = "*"
-uuid = { version = "*", features = ["v4"] }
+time = { workspace = true }
+async-trait = { workspace = true }
+log = { workspace = true }
+simplelog = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+tokio = { workspace = true }
+lazy_static = { workspace = true }
+thiserror = { workspace = true }
+jsonwebtoken = { workspace = true }
+toml = { workspace = true }
+upon = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
 # rocksdb = "*"
 buckyos-kit = { workspace = true }
 name-lib = { workspace = true }
@@ -31,6 +30,6 @@ kRPC = { workspace = true }
 buckyos-api = { path = "../buckyos-api" }
 server-runner = { workspace = true }
 cyfs-gateway-lib = { workspace = true }
-bytes = "1"
-http = "1"
-http-body-util = "0.1"
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
