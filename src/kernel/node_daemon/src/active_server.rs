@@ -5,15 +5,18 @@ use serde_json::{Value,json};
 use std::collections::HashMap;
 use std::{net::IpAddr, process::exit};
 use std::result::Result;
+use std::sync::Arc;
 use ::kRPC::*;
-use cyfs_gateway_lib::*;
-use cyfs_warp::*;
+use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, serve_http_by_rpc_handler, server_err, ServerErrorCode};
 use name_lib::*;
 use name_client::*;
 use log::*;
-use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
+use jsonwebtoken::EncodingKey;
 use buckyos_api::*;
-use url::Url;
+use server_runner::*;
+use bytes::Bytes;
+use http::{Method, Version};
+use http_body_util::combinators::BoxBody;
 #[derive(Clone)]
 struct ActiveServer {
 }
@@ -215,7 +218,7 @@ impl ActiveServer {
 }
 
 #[async_trait]
-impl InnerServiceHandler for ActiveServer {
+impl RPCHandler for ActiveServer {
     async fn handle_rpc_call(&self, req:RPCRequest,ip_from:IpAddr) -> Result<RPCResponse,RPCErrors> {
         match req.method.as_str() {
             "generate_key_pair" => self.handle_generate_key_pair(req).await,
@@ -225,41 +228,53 @@ impl InnerServiceHandler for ActiveServer {
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }
     }
+}
 
-    async fn handle_http_get(&self, req_path:&str,ip_from:IpAddr) -> Result<String,RPCErrors> {
-        return Err(RPCErrors::UnknownMethod(req_path.to_string()));
+#[async_trait]
+impl HttpServer for ActiveServer {
+    async fn serve_request(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        info: StreamInfo,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if *req.method() == Method::POST {
+            return serve_http_by_rpc_handler(req, info, self).await;
+        }
+        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+    }
+
+    fn id(&self) -> String {
+        "active-server".to_string()
+    }
+
+    fn http_version(&self) -> Version {
+        Version::HTTP_11
+    }
+
+    fn http3_port(&self) -> Option<u16> {
+        None
     }
 }
 
 pub async fn start_node_active_service() {
     let active_server = ActiveServer::new();
-    //register active server as inner service
-    register_inner_service_builder("active_server", move || {  
-        Box::new(active_server.clone())
-    }).await;
+    
     //active server config
     let active_server_dir = get_buckyos_system_bin_dir().join("node_active");
-    let active_server_config = json!({
-      "tls_port":3143,
-      "http_port":3180,
-      "hosts": {
-        "*": {
-          "enable_cors":true,
-          "routes": {
-            "/": {
-              "local_dir": active_server_dir.to_str().unwrap()
-            },
-            "/kapi/active" : {
-                "inner_service":"active_server"
-            }
-          } 
-        }
-      }
-    });  
-
-    let active_server_config:WarpServerConfig = serde_json::from_value(active_server_config).unwrap();
+    
     //start!
     info!("start node active service...");
-    start_cyfs_warp_server(active_server_config).await;
-    tokio::signal::ctrl_c().await.unwrap();
+    
+    const ACTIVE_SERVICE_MAIN_PORT: u16 = 3180;
+    let runner = Runner::new(ACTIVE_SERVICE_MAIN_PORT);
+    
+    // 添加静态文件服务
+    if active_server_dir.exists() {
+        runner.add_dir_handler("/".to_string(), active_server_dir);
+    }
+    
+    // 添加 RPC 服务
+    runner.add_http_server("/kapi/active".to_string(), Arc::new(active_server));
+    
+    runner.run().await;
 }

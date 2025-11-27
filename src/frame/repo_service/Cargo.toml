@@ -25,7 +25,9 @@ hex = "*"
 rusqlite =  { version = "*", features = ["bundled"] }
 sha2 = { version = ">=0.11.0-pre.4" }
 reqwest = {version = "*", features = ["json", "rustls-tls"]}
-
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
 ndn-lib = { workspace = true }
 package-lib = { workspace = true }
 name-lib = { workspace = true }
@@ -33,7 +35,7 @@ name-client = { workspace = true }
 buckyos-kit = { workspace = true }
 kRPC ={ workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
-cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
-cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
+server-runner = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
 
 

@@ -27,8 +27,7 @@ time = { version = "^0.3", features = ["formatting"] }
 sysinfo = "*"
 chrono = { version = "*", features = ["serde"] }
 if-addrs = "*"
-cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
-cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
+cyfs-gateway-lib = { workspace = true }
 kRPC = { workspace = true }
 buckyos-kit = { workspace = true }
 name-lib = { workspace = true }
@@ -38,6 +37,10 @@ ndn-lib = { workspace = true }
 #package-installer = { path = "../../components/package-installer" }
 buckyos-api = { path = "../buckyos-api" }
 anyhow = "*"
+server-runner = { workspace = true }
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"

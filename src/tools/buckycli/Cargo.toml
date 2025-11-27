@@ -27,7 +27,7 @@ base64 = "*"
 log = "0.4"
 env_logger = "0.10"
 rustyline = "11.0.0"
-cyfs-sn = { path = "../../cyfs_gateway/cyfs-sn" }
+cyfs-sn = { workspace = true }
 
 [dev-dependencies]
 tempfile = "*"

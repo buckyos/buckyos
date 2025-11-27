@@ -17,10 +17,13 @@ lazy_static = "*"
 
 
 
-cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
+server-runner = { workspace = true }
 kRPC = { workspace = true }
 buckyos-kit = { workspace = true }
-cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
+cyfs-gateway-lib = { workspace = true }
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
 
 [dev-dependencies]
 tempfile = "*"

@@ -8,7 +8,7 @@ mod pkg_task_data;
 mod test;
 
 use crate::repo_server::*;
-use std::fs::File;
+use std::{fs::File, sync::Arc};
 use buckyos_api::*;
 
 use log::*;
@@ -17,7 +17,7 @@ use serde_json::*;
 use buckyos_kit::*;
 use name_client::*;
 use cyfs_gateway_lib::WarpServerConfig;
-use cyfs_warp::*;
+use server_runner::*;
 
 use anyhow::Result;
 
@@ -62,32 +62,14 @@ async fn service_main() -> Result<()> {
       })?;
     
     repo_server.init().await?;
-    info!("repo service init check OK.");
+    info!("repo service init check OK, start server...");
 
-    register_inner_service_builder("repo_server", move || Box::new(repo_server.clone())).await;
-    //let repo_server_dir = get_buckyos_system_bin_dir().join("repo");
-    let repo_server_config = json!({
-      "http_port":REPO_SERVICE_MAIN_PORT,//TODO：服务的端口分配和管理
-      "tls_port":0,
-      "hosts": {
-        "*": {
-          "enable_cors":true,
-          "routes": {
-            "/kapi/repo-service" : {
-                "inner_service":"repo_server"
-            }
-          }
-        }
-      }
-    });
-
-    let repo_server_config: WarpServerConfig = serde_json::from_value(repo_server_config).unwrap();
     //start!
-    info!("Start Repo Service...");
-    start_cyfs_warp_server(repo_server_config).await;
-    info!("Repo Service started.");
-    
-    let _ = tokio::signal::ctrl_c().await;
+    let runner = Runner::new(REPO_SERVICE_MAIN_PORT);
+    runner.add_http_server("/kapi/repo-service".to_string(),Arc::new(repo_server));
+    runner.run().await;
+
+
     Ok(())
 }
 

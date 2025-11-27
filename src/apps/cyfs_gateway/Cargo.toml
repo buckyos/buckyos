@@ -1,0 +1,9 @@
+[package]
+name = "cyfs_gateway"
+version.workspace = true
+edition = "2021"
+authors = ["BuckyOS DAO","@waterflier"]
+
+[dependencies]
+cyfs-gateway = { workspace = true }
+tokio = { version = "*", features = ["full"] }

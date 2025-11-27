@@ -24,8 +24,8 @@ use name_lib::*;
 use scheduler::*;
 use scheduler_server::*;
 use service::*;
-use cyfs_warp::*;
-use cyfs_gateway_lib::WarpServerConfig;
+use server_runner::*;
+use std::sync::Arc;
 use anyhow::Result;
 
 async fn create_init_list_by_template() -> Result<HashMap<String, String>> {
@@ -675,27 +675,12 @@ async fn service_main(is_boot: bool) -> Result<i32> {
         set_buckyos_api_runtime(runtime);
 
         let scheduler_server = SchedulerServer::new();
-        register_inner_service_builder("scheduler_server", move || Box::new(scheduler_server.clone())).await;
-        //let repo_server_dir = get_buckyos_system_bin_dir().join("repo");
-        let scheduler_server_config = json!({
-          "http_port":SCHEDULER_SERVICE_MAIN_PORT,//TODO：服务的端口分配和管理
-          "tls_port":0,
-          "hosts": {
-            "*": {
-              "enable_cors":true,
-              "routes": {
-                "/kapi/scheduler" : {
-                    "inner_service":"scheduler_server"
-                }
-              }
-            }
-          }
-        });
-    
-        let scheduler_server_config: WarpServerConfig = serde_json::from_value(scheduler_server_config).unwrap();
+        
         //start!
         info!("Start Scheduler Server...");
-        start_cyfs_warp_server(scheduler_server_config).await;
+        let runner = Runner::new(SCHEDULER_SERVICE_MAIN_PORT);
+        runner.add_http_server("/kapi/scheduler".to_string(), Arc::new(scheduler_server));
+        runner.run().await;
 
         schedule_loop(false).await.map_err(|e| {
             error!("schedule_loop failed: {:?}", e);

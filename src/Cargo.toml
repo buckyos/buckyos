@@ -2,26 +2,24 @@
 resolver = "2"
 
 members = [
-
-    "./cyfs_gateway/cyfs-gateway-lib",
-    "./cyfs_gateway/cyfs_gateway",
-    "./cyfs_gateway/cyfs-dns",
-    "./cyfs_gateway/cyfs-warp",
-    "./cyfs_gateway/cyfs-sn",
-    "./cyfs_gateway/cyfs-socks",
-
     "./kernel/buckyos-api",
     "./kernel/sys_config_service",
     "./kernel/verify_hub",
     "./kernel/node_daemon",
     "./kernel/scheduler",
     "./kernel/task_manager",    
+    "./kernel/klog", 
+    "./kernel/slog", 
+    "./kernel/slog_daemon",
 
+    "./frame/slog_server", 
     "./frame/repo_service",
     "./frame/smb_service",
 
     "./tools/buckycli", 
-    "test/test_rbac", "kernel/klog", "kernel/slog", "kernel/slog_daemon", "frame/slog_server", 
+    "./test/test_rbac", 
+
+    "./apps/cyfs_gateway",
 ]
 
 exclude = [
@@ -41,3 +39,7 @@ name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "
 kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC", branch = "beta1" }
 rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac", branch = "beta1" }
 ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib", branch = "beta1" }
+cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", branch = "main" }
+cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "main" }
+cyfs-sn = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-sn", branch = "main" }
+server-runner =  { git = "https://github.com/buckyos/cyfs-gateway.git", package = "server-runner", branch = "main" }

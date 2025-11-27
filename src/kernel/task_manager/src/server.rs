@@ -2,13 +2,16 @@ use crate::task_db::DB_MANAGER;
 use crate::task::{Task, TaskStatus};
 use ::kRPC::*;
 use async_trait::async_trait;
-use buckyos_kit::*;
-use cyfs_gateway_lib::*;
-use cyfs_warp::*;
+use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, serve_http_by_rpc_handler, server_err, ServerErrorCode};
+use server_runner::*;
 use log::*;
 use serde_json::{json, Value};
 use std::net::IpAddr;
 use std::result::Result;
+use std::sync::Arc;
+use bytes::Bytes;
+use http::{Method, Version};
+use http_body_util::combinators::BoxBody;
 
 #[derive(Clone)]
 struct TaskManagerServer {}
@@ -483,7 +486,7 @@ impl TaskManagerServer {
 }
 
 #[async_trait]
-impl InnerServiceHandler for TaskManagerServer {
+impl RPCHandler for TaskManagerServer {
     async fn handle_rpc_call(
         &self,
         req: RPCRequest,
@@ -510,34 +513,42 @@ impl InnerServiceHandler for TaskManagerServer {
         }
         return result;
     }
-    
-    async fn handle_http_get(&self, req_path:&str,_ip_from:IpAddr) -> Result<String,RPCErrors> {
-        return Err(RPCErrors::UnknownMethod(req_path.to_string()));
+}
+
+#[async_trait]
+impl HttpServer for TaskManagerServer {
+    async fn serve_request(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        info: StreamInfo,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if *req.method() == Method::POST {
+            return serve_http_by_rpc_handler(req, info, self).await;
+        }
+        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+    }
+
+    fn id(&self) -> String {
+        "task-manager-server".to_string()
+    }
+
+    fn http_version(&self) -> Version {
+        Version::HTTP_11
+    }
+
+    fn http3_port(&self) -> Option<u16> {
+        None
     }
 }
 
 pub async fn start_task_manager_service() {
     let server = TaskManagerServer::new();
-    register_inner_service_builder("task_manager", move || Box::new(server.clone())).await;
-    let _ = get_buckyos_system_bin_dir().join("task_manager");
-
-    let active_server_config = json!({
-      "http_port":3380,
-      "hosts": {
-        "*": {
-          "enable_cors":true,
-          "routes": {
-            "/kapi/task-manager" : {
-                "inner_service":"task_manager"
-            }
-          }
-        }
-      }
-    });
-    let active_server_config: WarpServerConfig =
-        serde_json::from_value(active_server_config).unwrap();
+    
     info!("start node task manager service...");
-    let _ = start_cyfs_warp_server(active_server_config).await;
+    const TASK_MANAGER_SERVICE_MAIN_PORT: u16 = 3380;
+    let runner = Runner::new(TASK_MANAGER_SERVICE_MAIN_PORT);
+    runner.add_http_server("/kapi/task-manager".to_string(), Arc::new(server));
+    runner.run().await;
 }
 
 #[cfg(test)]

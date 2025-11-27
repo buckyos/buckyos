@@ -24,8 +24,8 @@ name-lib = { path = "../../src/components/name-lib" }
 name-client = { path = "../../src/components/name-client" }
 tempfile = "*"
 rand = "0.9.1"
-cyfs-gateway-lib = { path = "../../src/cyfs_gateway/cyfs-gateway-lib" }
-cyfs-warp = { path = "../../src/cyfs_gateway/cyfs-warp" }
+cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "main" }
+server-runner = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "main" }
 kRPC = { path = "../../src/kernel/kRPC" }
 ndn-lib = {path = "../../src/components/ndn-lib"}
 

@@ -29,5 +29,8 @@ name-client = { workspace = true }
 rbac = { workspace = true }
 kRPC = { workspace = true }
 buckyos-api = { path = "../buckyos-api" }
-cyfs-warp = { path = "../../cyfs_gateway/cyfs-warp" }
-cyfs-gateway-lib = { path = "../../cyfs_gateway/cyfs-gateway-lib" }
+server-runner = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
+bytes = "1"
+http = "1"
+http-body-util = "0.1"

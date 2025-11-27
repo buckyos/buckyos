@@ -1,3 +1,4 @@
+
 use ::kRPC::*;
 use async_trait::async_trait;
 use buckyos_api::*;
@@ -22,6 +23,11 @@ use std::time::Duration;
 use tokio::io::AsyncSeekExt;
 use tokio::sync::Mutex as TokioMutex;
 
+use bytes::Bytes;
+use cyfs_gateway_lib::{HttpServer, ServerError, ServerResult, StreamInfo, serve_http_by_rpc_handler, server_err, ServerErrorCode};
+use http::{Method, Response, StatusCode, Version};
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full};
 use crate::pkg_task_data::*;
 struct ReqHelper;
 
@@ -1331,7 +1337,7 @@ impl RepoServer {
 }
 
 #[async_trait]
-impl InnerServiceHandler for RepoServer {
+impl RPCHandler for RepoServer {
     async fn handle_rpc_call(
         &self,
         req: RPCRequest,
@@ -1353,9 +1359,31 @@ impl InnerServiceHandler for RepoServer {
             }
         }
     }
+}
 
-    async fn handle_http_get(&self, req_path: &str, ip_from: IpAddr) -> Result<String, RPCErrors> {
-        return Err(RPCErrors::UnknownMethod(req_path.to_string()));
+#[async_trait]
+impl HttpServer for RepoServer {
+    async fn serve_request(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        info: StreamInfo,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if *req.method() == Method::POST {
+            return serve_http_by_rpc_handler(req, info, self).await;
+        }
+        return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
+    }
+
+    fn id(&self) -> String {
+        "repo-server".to_string()
+    }
+
+    fn http_version(&self) -> Version {
+        Version::HTTP_11
+    }
+
+    fn http3_port(&self) -> Option<u16> {
+        None
     }
 }
 
