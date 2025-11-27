@@ -25,5 +25,10 @@ buckyos-kit = { workspace = true }
 name-lib = { workspace = true }
 kRPC = { workspace = true }
 rbac = { workspace = true }
+server-runner = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
 
 
