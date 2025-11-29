@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use serde_json::{json,Value};
 use buckyos_api::*;
 use buckyos_kit::*;
-use crate::scheduler::*;
+use crate::scheduler::{ServiceInfo as SchedulerServiceInfo, ReplicaInstance, ServiceSpecState};
 use anyhow::Result;
 use name_lib::DeviceInfo;
 use log::warn;
@@ -13,7 +13,7 @@ pub fn instance_service(new_instance:&ReplicaInstance,server_config:&KernelServi
     //add instance to node config
     let kernel_service_config = KernelServiceInstanceConfig::new(server_config.pkg_id.clone());
     let key_path = format!("nodes/{}/config",new_instance.node_id.as_str());
-    let json_path = format!("kernel/{}",new_instance.pod_id.as_str());
+    let json_path = format!("kernel/{}",new_instance.spec_id.as_str());
     let set_value = serde_json::to_value(kernel_service_config)?;
     let mut set_actions = HashMap::new();
     set_actions.insert(json_path,Some(set_value));
@@ -25,20 +25,20 @@ pub fn instance_service(new_instance:&ReplicaInstance,server_config:&KernelServi
     let mut set_actions = HashMap::new();
     //TODO: cyfs-gateway need support router-cluster or router-buckyos_service_selector
     if is_zone_gateway {
-        let json_path = format!("servers/zone_gateway/hosts/*/routes/\"/kapi/{}\"",new_instance.pod_id.as_str());
+        let json_path = format!("servers/zone_gateway/hosts/*/routes/\"/kapi/{}\"",new_instance.spec_id.as_str());
         let set_value = json!({
             "upstream":format!("http://127.0.0.1:{}",server_config.port),
         });
         set_actions.insert(json_path,Some(set_value));
 
-        let json_path = format!("servers/zone_gateway/hosts/sys*/routes/\"/kapi/{}\"",new_instance.pod_id.as_str());
+        let json_path = format!("servers/zone_gateway/hosts/sys*/routes/\"/kapi/{}\"",new_instance.spec_id.as_str());
         let set_value = json!({
             "upstream":format!("http://127.0.0.1:{}",server_config.port),
         });
         set_actions.insert(json_path,Some(set_value));
     }
 
-    let json_path = format!("servers/node_gateway/hosts/*/routes/\"/kapi/{}\"",new_instance.pod_id.as_str());
+    let json_path = format!("servers/node_gateway/hosts/*/routes/\"/kapi/{}\"",new_instance.spec_id.as_str());
     let set_value = json!({
         "upstream":format!("http://127.0.0.1:{}",server_config.port),
     });
@@ -52,13 +52,13 @@ pub fn instance_service(new_instance:&ReplicaInstance,server_config:&KernelServi
 pub fn uninstance_service(instance:&ReplicaInstance)->Result<HashMap<String,KVAction>> {
     let mut result = HashMap::new();
     let key_path = format!("nodes/{}/config",instance.node_id.as_str());
-    let json_path = format!("kernel/{}",instance.pod_id.as_str());
+    let json_path = format!("kernel/{}",instance.spec_id.as_str());
     let mut set_actions = HashMap::new();
     set_actions.insert(json_path,None);
     result.insert(key_path,KVAction::SetByJsonPath(set_actions));
 
     let key_path = format!("nodes/{}/gateway_config",instance.node_id.as_str());
-    let json_path = format!("servers/zone_gateway/hosts/*/routes/\"/kapi/{}\"",instance.pod_id.as_str());
+    let json_path = format!("servers/zone_gateway/hosts/*/routes/\"/kapi/{}\"",instance.spec_id.as_str());
     let mut set_actions:HashMap<String,Option<Value>> = HashMap::new();
     set_actions.insert(json_path,None);
     let set_action = KVAction::SetByJsonPath(set_actions);
@@ -71,14 +71,14 @@ pub fn update_service_instance(instance:&ReplicaInstance)->Result<HashMap<String
     unimplemented!();
 }
 
-pub fn update_service_info(pod_id: &str, pod_info: &PodInfo,device_list:&HashMap<String, DeviceInfo>) -> Result<HashMap<String, KVAction>> {
+pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,device_list:&HashMap<String, DeviceInfo>) -> Result<HashMap<String, KVAction>> {
     //update service info
     let mut result = HashMap::new();
 
-    let key = format!("services/{}/info",pod_id);
+    let key = format!("services/{}/info",spec_id);
     let mut info_map:HashMap<String, ServiceNodeInfo> = HashMap::new();
-    match pod_info {
-        PodInfo::RandomCluster(cluster) => {
+    match service_info {
+        SchedulerServiceInfo::RandomCluster(cluster) => {
             for (node_id, (weight,instance)) in cluster.iter() {
                 let device_info = device_list.get(node_id.as_str());
                 if device_info.is_some() {
@@ -105,12 +105,12 @@ pub fn update_service_info(pod_id: &str, pod_info: &PodInfo,device_list:&HashMap
 
     result.insert(key,KVAction::Update(serde_json::to_string(&service_info)?));
 
-    //TODO: update pod_item's cyfs_gateway upstream cluster info here?
+    //TODO: update service_spec's cyfs_gateway upstream cluster info here?
     Ok(result)
 }
 
-pub fn set_service_state(pod_id:&str,state:&ServiceSpecState)->Result<HashMap<String,KVAction>> {
-    let key = format!("services/{}/config",pod_id);
+pub fn set_service_state(spec_id:&str,state:&ServiceSpecState)->Result<HashMap<String,KVAction>> {
+    let key = format!("services/{}/config",spec_id);
     let mut set_paths = HashMap::new();
     set_paths.insert("state".to_string(),Some(json!(state.to_string())));
     let mut result = HashMap::new();

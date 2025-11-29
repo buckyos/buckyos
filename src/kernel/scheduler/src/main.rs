@@ -173,8 +173,8 @@ fn craete_node_item_by_device_info(device_name: &str, device_info: &DeviceInfo) 
     }
 }
 
-fn create_pod_item_by_app_config(full_app_id: &str, owner_user_id: &str, app_config: &AppConfig) -> ServiceSpec {
-    let pod_state = ServiceSpecState::from(app_config.state.clone());
+fn create_service_spec_by_app_config(full_app_id: &str, owner_user_id: &str, app_config: &AppConfig) -> ServiceSpec {
+    let spec_state = ServiceSpecState::from(app_config.state.clone());
     let mut need_container = true;
     if app_config.app_doc.pkg_list.iter().any(|(_, pkg)| pkg.docker_image_name.is_none()) &&
        //TODO: 需要从配置中获取所有的可信发布商列表
@@ -189,9 +189,9 @@ fn create_pod_item_by_app_config(full_app_id: &str, owner_user_id: &str, app_con
         id: full_app_id.to_string(),
         app_id: app_config.app_id.clone(),
         owner_id: owner_user_id.to_string(),
-        pod_type: ServiceSpecType::App,
+        spec_type: ServiceSpecType::App,
         default_service_port: 0, 
-        state: pod_state,
+        state: spec_state,
         need_container: need_container,
         best_instance_count: app_config.instance,
         required_cpu_mhz: 200,
@@ -204,18 +204,18 @@ fn create_pod_item_by_app_config(full_app_id: &str, owner_user_id: &str, app_con
 }
 
 
-fn create_pod_item_by_service_config(
+fn create_service_spec_by_service_config(
     service_name: &str,
     service_config: &KernelServiceConfig,
 ) -> ServiceSpec {
-    let pod_state = ServiceSpecState::from(service_config.state.clone());
-    let pod_type = ServiceSpecType::from(service_config.service_type.clone());
+    let spec_state = ServiceSpecState::from(service_config.state.clone());
+    let spec_type = ServiceSpecType::from(service_config.service_type.clone());
     ServiceSpec {
         id: service_name.to_string(),
         app_id: service_name.to_string(),
         owner_id: "root".to_string(),
-        pod_type: pod_type,
-        state: pod_state,
+        spec_type: spec_type,
+        state: spec_state,
         default_service_port: service_config.port,
         need_container: false,
         best_instance_count: service_config.instance,
@@ -230,8 +230,8 @@ fn create_pod_item_by_service_config(
 
 fn create_scheduler_by_input_config(
     input_config: &HashMap<String, String>,
-) -> Result<(PodScheduler, HashMap<String, DeviceInfo>)> {
-    let mut pod_scheduler = PodScheduler::new_empty(1, buckyos_get_unix_timestamp());
+) -> Result<(NodeScheduler, HashMap<String, DeviceInfo>)> {
+    let mut scheduler_ctx = NodeScheduler::new_empty(1, buckyos_get_unix_timestamp());
     let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
     for (key, value) in input_config.iter() {
         //add node
@@ -242,11 +242,12 @@ fn create_scheduler_by_input_config(
                 e
             })?;
             let node_item = craete_node_item_by_device_info(device_name, &device_info);
+            let node_item = craete_node_item_by_device_info(device_name, &device_info);
             device_list.insert(device_name.to_string(), device_info);
-            pod_scheduler.add_node(node_item);
+            scheduler_ctx.add_node(node_item);
         }
 
-        //add app pod
+        //add app service_spec
         if key.starts_with("users/") {
             if key.ends_with("/config") {
                 let parts: Vec<&str> = key.split('/').collect();
@@ -262,8 +263,8 @@ fn create_scheduler_by_input_config(
                         );
                         e
                     })?;
-                    let pod_item = create_pod_item_by_app_config(full_appid.as_str(), user_id, &app_config);
-                    pod_scheduler.add_pod(pod_item);
+                    let service_spec = create_service_spec_by_app_config(full_appid.as_str(), user_id, &app_config);
+                    scheduler_ctx.add_service_spec(service_spec);
                 }
             }
             else if key.ends_with("/settings") {
@@ -278,12 +279,12 @@ fn create_scheduler_by_input_config(
                         userid: user_id.to_string(),
                         user_type: UserType::from(user_settings.user_type.clone()),
                     };
-                    pod_scheduler.add_user(user_item);
+                    scheduler_ctx.add_user(user_item);
                 }
             }
         }
 
-        //add service pod
+        //add service service_spec
         if key.starts_with("services/") && key.ends_with("/config") {
             let service_name = key.split('/').nth(1).unwrap();
             let service_config: KernelServiceConfig = serde_json::from_str(value.as_str())
@@ -291,8 +292,8 @@ fn create_scheduler_by_input_config(
                     error!("KernelServiceConfig serde_json::from_str failed: {:?}", e);
                     e
                 })?;
-            let pod_item = create_pod_item_by_service_config(service_name, &service_config);
-            pod_scheduler.add_pod(pod_item);
+            let service_spec = create_service_spec_by_service_config(service_name, &service_config);
+            scheduler_ctx.add_service_spec(service_spec);
         }
 
         if key.starts_with("nodes/") && key.ends_with("/config") {
@@ -307,8 +308,8 @@ fn create_scheduler_by_input_config(
                 //add app instance:buckyos-filebrowser@devtest_0660a649-b4fc-4479-80c5-c26d99ac96fc @ ood1
                 let app_config_str = app_config.to_string();
                 info!("add app instance:{},{}",format!("{} @ {}", app_instance_id, node_id),app_config_str.as_str());
-                let pod_instance = ReplicaInstance {
-                    pod_id: format!("{}@{}", app_config.app_id.clone(), app_config.user_id.clone()),
+                let instance = ReplicaInstance {
+                    spec_id: format!("{}@{}", app_config.app_id.clone(), app_config.user_id.clone()),
                     node_id: node_id.to_string(),
                     res_limits: HashMap::new(),
                     instance_id: app_instance_id.to_string(),
@@ -316,10 +317,10 @@ fn create_scheduler_by_input_config(
                     state: InstanceState::from(app_config.target_state.clone()),
                     service_port: 0,
                 };
-                pod_scheduler.add_pod_instance(pod_instance);
+                scheduler_ctx.add_replica_instance(instance);
             }
         }
-        //add pod_instance 
+        //add instance 
         // services/$server_name/instances/$node_id
         let key_parts = key.split('/').collect::<Vec<&str>>();
         if key_parts.len() > 3 && key_parts[0] == "services" && key_parts[2] == "instances" {
@@ -331,8 +332,8 @@ fn create_scheduler_by_input_config(
                     error!("ServiceInstanceInfo serde_json::from_str failed: {:?}", e);
                     e
                 })?;
-            let pod_instance = ReplicaInstance {
-                pod_id: service_name.to_string(),
+            let instance = ReplicaInstance {
+                spec_id: service_name.to_string(),
                 node_id: instance_node_id.to_string(),
                 res_limits: HashMap::new(),
                 instance_id: format!("{}-{}", service_name, instance_node_id),
@@ -340,18 +341,18 @@ fn create_scheduler_by_input_config(
                 state: InstanceState::from(instance_info.state),
                 service_port: instance_info.port,
             };
-            pod_scheduler.add_pod_instance(pod_instance);
+            scheduler_ctx.add_replica_instance(instance);
         }
 
         
     }
 
-    Ok((pod_scheduler, device_list))
+    Ok((scheduler_ctx, device_list))
 }
 
 fn schedule_action_to_tx_actions(
     action: &SchedulerAction,
-    pod_scheduler: &PodScheduler,
+    scheduler_ctx: &NodeScheduler,
     device_list: &HashMap<String, DeviceInfo>,
     input_config: &HashMap<String, String>,
 ) -> Result<HashMap<String, KVAction>> {
@@ -372,21 +373,21 @@ fn schedule_action_to_tx_actions(
             info!("will change node status: {} -> {}", node_id, node_status);
             result.insert(key, KVAction::SetByJsonPath(set_paths));
         }
-        SchedulerAction::ChangePodStatus(pod_id, pod_status) => {
-            let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
-            if pod_item.is_none() {
-                return Err(anyhow::anyhow!("pod_item not found"));
+        SchedulerAction::ChangeServiceStatus(spec_id, spec_status) => {
+            let service_spec = scheduler_ctx.get_service_spec(spec_id.as_str());
+            if service_spec.is_none() {
+                return Err(anyhow::anyhow!("service_spec not found"));
             }
-            let pod_item = pod_item.unwrap();
-            match pod_item.pod_type {
+            let service_spec = service_spec.unwrap();
+            match service_spec.spec_type {
                 ServiceSpecType::App => {
-                    let set_state_action = set_app_service_state(pod_id.as_str(), pod_status)?;
-                    info!("will change app pod status: {} -> {}", pod_id, pod_status);
+                    let set_state_action = set_app_service_state(spec_id.as_str(), spec_status)?;
+                    info!("will change app service status: {} -> {}", spec_id, spec_status);
                     result.extend(set_state_action);
                 }
                 ServiceSpecType::Service|ServiceSpecType::Kernel => {
-                    let set_state_action = set_service_state(pod_id.as_str(), pod_status)?;
-                    info!("will change service pod status: {} -> {}", pod_id, pod_status);
+                    let set_state_action = set_service_state(spec_id.as_str(), spec_status)?;
+                    info!("will change service status: {} -> {}", spec_id, spec_status);
                     result.extend(set_state_action);
                 }
             }
@@ -395,27 +396,27 @@ fn schedule_action_to_tx_actions(
             //TODO:
             unimplemented!();
         }
-        SchedulerAction::InstancePod(new_instance) => {
+        SchedulerAction::InstanceReplica(new_instance) => {
             //最复杂的流程,需要根据pod的类型,来执行实例化操作
-            let pod_item = pod_scheduler.get_pod_item(new_instance.pod_id.as_str());
-            if pod_item.is_none() {
-                return Err(anyhow::anyhow!("pod_item not found"));
+            let service_spec = scheduler_ctx.get_service_spec(new_instance.spec_id.as_str());
+            if service_spec.is_none() {
+                return Err(anyhow::anyhow!("service_spec not found"));
             }
-            let pod_item = pod_item.unwrap();
-            match pod_item.pod_type {
+            let service_spec = service_spec.unwrap();
+            match service_spec.spec_type {
                 ServiceSpecType::App => {
                     let instance_action =
                         instance_app_service(new_instance, &device_list, &input_config)?;
-                    info!("will instance app pod: {}", new_instance.pod_id);
+                    info!("will instance app pod: {}", new_instance.spec_id);
                     result.extend(instance_action);
                 }
                 ServiceSpecType::Service|ServiceSpecType::Kernel => {
                     let service_config = input_config
-                        .get(format!("services/{}/config", pod_item.id.as_str()).as_str());
+                        .get(format!("services/{}/config", service_spec.id.as_str()).as_str());
                     if service_config.is_none() {
                         return Err(anyhow::anyhow!(
                             "service_config {} not found",
-                            pod_item.id.as_str()
+                            service_spec.id.as_str()
                         ));
                     }
                     let service_config = service_config.unwrap();
@@ -423,66 +424,66 @@ fn schedule_action_to_tx_actions(
                         serde_json::from_str(service_config.as_str())?;
                     let is_zone_gateway = zone_gateway.contains(&new_instance.node_id);
                     let instance_action = instance_service(new_instance, &service_config, is_zone_gateway)?;
-                    info!("will instance service pod: {}", new_instance.pod_id);
+                    info!("will instance service pod: {}", new_instance.spec_id);
                     result.extend(instance_action);
                 }
             }
         }
-        SchedulerAction::RemoveInstance(pod_id,instance_id, node_id) => {
-            let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
-            if pod_item.is_none() {
-                return Err(anyhow::anyhow!("pod_item not found"));
+        SchedulerAction::RemoveInstance(spec_id,instance_id, node_id) => {
+            let service_spec = scheduler_ctx.get_service_spec(spec_id.as_str());
+            if service_spec.is_none() {
+                return Err(anyhow::anyhow!("service_spec not found"));
             }
-            let pod_item = pod_item.unwrap();
-            let pod_instance = pod_scheduler.get_pod_instance(instance_id.as_str());
-            if pod_instance.is_none() {
-                return Err(anyhow::anyhow!("pod_instance not found"));
+            let service_spec = service_spec.unwrap();
+            let instance = scheduler_ctx.get_replica_instance(instance_id.as_str());
+            if instance.is_none() {
+                return Err(anyhow::anyhow!("instance not found"));
             }
-            let pod_instance = pod_instance.unwrap();
-            match pod_item.pod_type {
+            let instance = instance.unwrap();
+            match service_spec.spec_type {
                 ServiceSpecType::App => {
-                    info!("will uninstance app pod: {}", pod_instance.pod_id);
-                    let uninstance_action = uninstance_app_service(&pod_instance)?;
+                    info!("will uninstance app service: {}", instance.spec_id);
+                    let uninstance_action = uninstance_app_service(instance)?;
                     result.extend(uninstance_action);
                 }
                 ServiceSpecType::Service|ServiceSpecType::Kernel => {
-                    info!("will uninstance service pod: {}", pod_instance.pod_id);
-                    let uninstance_action = uninstance_service(&pod_instance)?;
+                    info!("will uninstance service: {}", instance.spec_id);
+                    let uninstance_action = uninstance_service(instance)?;
                     result.extend(uninstance_action);
                 }
             }
         }
-        SchedulerAction::UpdateInstance(instance_id, pod_instance) => {
-            //相对比较复杂的操作:需要根据pod的类型,来执行更新实例化操作
-            let (pod_id, node_id) = parse_instance_id(instance_id.as_str())?;
-            let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
-            if pod_item.is_none() {
-                return Err(anyhow::anyhow!("pod_item not found"));
+        SchedulerAction::UpdateInstance(instance_id, instance) => {
+            //相对比较复杂的操作:需要根据service_spec的类型,来执行更新实例化操作
+            let (spec_id, node_id) = parse_instance_id(instance_id.as_str())?;
+            let service_spec_opt = scheduler_ctx.get_service_spec(spec_id.as_str());
+            if service_spec_opt.is_none() {
+                return Err(anyhow::anyhow!("service_spec not found"));
             }
-            let pod_item = pod_item.unwrap();
-            match pod_item.pod_type {
+            let service_spec = service_spec_opt.unwrap();
+            match service_spec.spec_type {
                 ServiceSpecType::App => {
-                    let update_action = update_app_service_instance(&pod_instance)?;
-                    info!("will update app pod instance: {}", pod_instance.pod_id);
+                    let update_action = update_app_service_instance(instance)?;
+                    info!("will update app service instance: {}", instance.spec_id);
                     result.extend(update_action);
                 }
                 ServiceSpecType::Service|ServiceSpecType::Kernel => {
-                    let update_action = update_service_instance(&pod_instance)?;
-                    info!("will update service pod instance: {}", pod_instance.pod_id);
+                    let update_action = update_service_instance(instance)?;
+                    info!("will update service instance: {}", instance.spec_id);
                     result.extend(update_action);
                 }
             }
         }
-        SchedulerAction::UpdatePodServiceInfo(pod_id, pod_info) => {
-            let update_action = update_service_info(pod_id.as_str(), &pod_info, device_list)?;
-            info!("will update service pod info: {}", pod_id);
+        SchedulerAction::UpdateServiceInfo(spec_id, service_info) => {
+            let update_action = update_service_info(spec_id.as_str(), service_info, device_list)?;
+            info!("will update service info: {}", spec_id);
             result.extend(update_action);
         }
     }
     Ok(result)
 }
 
-async fn update_rbac(input_config: &HashMap<String, String>, pod_scheduler: &PodScheduler) -> Result<HashMap<String, KVAction>> {   
+async fn update_rbac(input_config: &HashMap<String, String>, scheduler_ctx: &NodeScheduler) -> Result<HashMap<String, KVAction>> {   
     let basic_rbac_policy = input_config.get("system/rbac/basic_policy");
     let current_rbac_policy = input_config.get("system/rbac/policy");
     let mut rbac_policy = String::new();
@@ -492,7 +493,7 @@ async fn update_rbac(input_config: &HashMap<String, String>, pod_scheduler: &Pod
         rbac_policy = basic_rbac_policy.unwrap().clone();
     }
 
-    for (user_id, user_item) in pod_scheduler.users.iter() {
+    for (user_id, user_item) in scheduler_ctx.users.iter() {
         if user_id == "root" {
             continue;
         }
@@ -509,7 +510,7 @@ async fn update_rbac(input_config: &HashMap<String, String>, pod_scheduler: &Pod
         }
     }
 
-    for (node_id, node_item) in pod_scheduler.nodes.iter() {
+    for (node_id, node_item) in scheduler_ctx.nodes.iter() {
         match node_item.node_type {
             NodeType::OOD => {
                 rbac_policy.push_str(&format!("\ng, {}, ood", node_id));
@@ -523,13 +524,13 @@ async fn update_rbac(input_config: &HashMap<String, String>, pod_scheduler: &Pod
         }
     }
     
-    for (pod_id, pod_item) in pod_scheduler.pods.iter() {
-        match pod_item.pod_type {
+    for (spec_id, service_spec) in scheduler_ctx.specs.iter() {
+        match service_spec.spec_type {
             ServiceSpecType::App => {
-                rbac_policy.push_str(&format!("\ng, {}, app", pod_item.app_id));
+                rbac_policy.push_str(&format!("\ng, {}, app", service_spec.app_id));
             }
             ServiceSpecType::Service => {
-                rbac_policy.push_str(&format!("\ng, {}, service", pod_id));
+                rbac_policy.push_str(&format!("\ng, {}, service", spec_id));
             }
             // ServiceSpecType::Kernel => {
             //     kernel service already set in basic_policy
@@ -597,16 +598,16 @@ async fn schedule_loop(is_boot: bool) -> Result<()> {
         let input_config = input_config.unwrap();
 
         //init scheduler
-        let (mut pod_scheduler, device_list) = create_scheduler_by_input_config(&input_config)?;
+        let (mut scheduler_ctx, device_list) = create_scheduler_by_input_config(&input_config)?;
 
         //schedule
-        let action_list = pod_scheduler.schedule();
+        let action_list = scheduler_ctx.schedule();
         if action_list.is_err() {
             error!(
-                "pod_scheduler.schedule failed: {:?}",
+                "scheduler.schedule failed: {:?}",
                 action_list.err().unwrap()
             );
-            return Err(anyhow::anyhow!("pod_scheduler.schedule failed"));
+            return Err(anyhow::anyhow!("scheduler.schedule failed"));
         }
 
         let action_list = action_list.unwrap();
@@ -614,7 +615,7 @@ async fn schedule_loop(is_boot: bool) -> Result<()> {
         for action in action_list {
             let new_tx_actions = schedule_action_to_tx_actions(
                 &action,
-                &pod_scheduler,
+                &scheduler_ctx,
                 &device_list,
                 &input_config,
             )?;
@@ -623,7 +624,7 @@ async fn schedule_loop(is_boot: bool) -> Result<()> {
 
 
         if need_update_rbac {
-            let rbac_actions = update_rbac(&input_config,&pod_scheduler).await?;
+            let rbac_actions = update_rbac(&input_config,&scheduler_ctx).await?;
             extend_kv_action_map(&mut tx_actions, &rbac_actions);
         }
 

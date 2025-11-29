@@ -559,7 +559,7 @@ async fn node_main(node_host_name: &str,
         }
     }
 
-    //control pod instance to target state
+    //control replica instance to target state
     let node_config = load_node_config(node_host_name, buckyos_api_client).await
         .map_err(|err| {
             error!("load node config failed! {}", err);
