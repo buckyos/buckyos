@@ -277,6 +277,7 @@ fn create_scheduler_by_input_config(
                     })?;
                     let user_item = UserItem {
                         userid: user_id.to_string(),
+                        res_pool_id: None,
                         user_type: UserType::from(user_settings.user_type.clone()),
                     };
                     scheduler_ctx.add_user(user_item);
@@ -305,7 +306,6 @@ fn create_scheduler_by_input_config(
                     e
                 })?;
             for (app_instance_id,app_config) in node_config.apps.iter() {
-                //add app instance:buckyos-filebrowser@devtest_0660a649-b4fc-4479-80c5-c26d99ac96fc @ ood1
                 let app_config_str = app_config.to_string();
                 info!("add app instance:{},{}",format!("{} @ {}", app_instance_id, node_id),app_config_str.as_str());
                 let instance = ReplicaInstance {
@@ -455,7 +455,7 @@ fn schedule_action_to_tx_actions(
         }
         SchedulerAction::UpdateInstance(instance_id, instance) => {
             //相对比较复杂的操作:需要根据service_spec的类型,来执行更新实例化操作
-            let (spec_id, node_id) = parse_instance_id(instance_id.as_str())?;
+            let (spec_id, owner_id, node_id) = parse_instance_id(instance_id.as_str())?;
             let service_spec_opt = scheduler_ctx.get_service_spec(spec_id.as_str());
             if service_spec_opt.is_none() {
                 return Err(anyhow::anyhow!("service_spec not found"));

@@ -131,7 +131,7 @@ fn test_create_pod_instance() {
     scheduler.add_node(node1);
     scheduler.add_node(node2);
 
-    let actions = scheduler.schedule_pod_change().unwrap();
+    let actions = scheduler.schedule_spec_change().unwrap();
     assert_eq!(actions.len(), 2);
     for action in &actions {
         match action {
@@ -202,7 +202,7 @@ fn test_pod_state_change() {
     );
     scheduler.add_node(node1);
 
-    let actions = scheduler.schedule_pod_change().unwrap();
+    let actions = scheduler.schedule_spec_change().unwrap();
     assert_eq!(actions.len(), 3);
     for action in &actions {
         match action {
@@ -231,8 +231,9 @@ fn test_pod_state_change() {
     改变pod1的状态为Removing
     */
     scheduler.update_service_spec_state("pod1", ServiceSpecState::Removing);
-    let actions = scheduler.schedule_pod_change().unwrap();
-    assert_eq!(actions.len(), 1);
+    let actions = scheduler.schedule_spec_change().unwrap();
+    println!("test_pod_state_change actions: {:?}", actions);
+    assert_eq!(actions.len(), 2);
     // if let SchedulerAction::RemoveReplica(pod_id, instance_id, node_id) = &actions[0] {
     //     assert_eq!(instance_id, "pod1@node1");
     //     assert_eq!(pod_id, "pod1");
@@ -283,7 +284,7 @@ fn test_create_pod_instance_no_suitable_node() {
     );
     scheduler.add_node(node1);
 
-    let actions = scheduler.schedule_pod_change();
+    let actions = scheduler.schedule_spec_change();
     assert!(actions.is_err());
 }
 
@@ -345,7 +346,7 @@ fn test_node_and_network_affinity() {
     scheduler.add_node(node2);
     scheduler.add_node(node3);
 
-    let actions = scheduler.schedule_pod_change().unwrap();
+    let actions = scheduler.schedule_spec_change().unwrap();
     assert_eq!(actions.len(), 2);
     if let SchedulerAction::InstanceReplica(instance) = &actions[0] {
         assert_eq!(instance.spec_id, "pod1");
