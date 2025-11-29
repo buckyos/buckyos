@@ -7,7 +7,7 @@ use anyhow::Result;
 use name_lib::DeviceInfo;
 use log::warn;
 
-pub fn instance_service(new_instance:&PodInstance,server_config:&KernelServiceConfig,is_zone_gateway:bool)->Result<HashMap<String,KVAction>> {
+pub fn instance_service(new_instance:&ReplicaInstance,server_config:&KernelServiceConfig,is_zone_gateway:bool)->Result<HashMap<String,KVAction>> {
     let mut result = HashMap::new();
     //目前所有的service都是kernel service (no docker) ,有标准的frame service也是应该运行在docker中的.
     //add instance to node config
@@ -49,7 +49,7 @@ pub fn instance_service(new_instance:&PodInstance,server_config:&KernelServiceCo
     Ok(result)
 }
 
-pub fn uninstance_service(instance:&PodInstance)->Result<HashMap<String,KVAction>> {
+pub fn uninstance_service(instance:&ReplicaInstance)->Result<HashMap<String,KVAction>> {
     let mut result = HashMap::new();
     let key_path = format!("nodes/{}/config",instance.node_id.as_str());
     let json_path = format!("kernel/{}",instance.pod_id.as_str());
@@ -67,7 +67,7 @@ pub fn uninstance_service(instance:&PodInstance)->Result<HashMap<String,KVAction
     Ok(result)
 }
 
-pub fn update_service_instance(instance:&PodInstance)->Result<HashMap<String,KVAction>> {
+pub fn update_service_instance(instance:&ReplicaInstance)->Result<HashMap<String,KVAction>> {
     unimplemented!();
 }
 
@@ -109,7 +109,7 @@ pub fn update_service_info(pod_id: &str, pod_info: &PodInfo,device_list:&HashMap
     Ok(result)
 }
 
-pub fn set_service_state(pod_id:&str,state:&PodItemState)->Result<HashMap<String,KVAction>> {
+pub fn set_service_state(pod_id:&str,state:&ServiceSpecState)->Result<HashMap<String,KVAction>> {
     let key = format!("services/{}/config",pod_id);
     let mut set_paths = HashMap::new();
     set_paths.insert("state".to_string(),Some(json!(state.to_string())));

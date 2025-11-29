@@ -49,7 +49,7 @@ fn build_app_service_config(user_id:&str,app_config:&AppConfig,node_info:&Device
     return Ok(result_config)
 }
 
-pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<String,DeviceInfo>,input_config:&HashMap<String,String>)->Result<HashMap<String,KVAction>> {
+pub fn instance_app_service(new_instance:&ReplicaInstance,device_list:&HashMap<String,DeviceInfo>,input_config:&HashMap<String,String>)->Result<HashMap<String,KVAction>> {
     let mut result = HashMap::new();
     
     let (app_id,user_id) = parse_app_pod_id(new_instance.pod_id.as_str())?;
@@ -159,7 +159,7 @@ pub fn instance_app_service(new_instance:&PodInstance,device_list:&HashMap<Strin
     Ok(result)
 }
 
-pub fn uninstance_app_service(instance:&PodInstance)->Result<HashMap<String,KVAction>> {
+pub fn uninstance_app_service(instance:&ReplicaInstance)->Result<HashMap<String,KVAction>> {
     let mut result = HashMap::new();
     let (app_id,user_id) = parse_app_pod_id(instance.pod_id.as_str())?;
 
@@ -181,11 +181,11 @@ pub fn uninstance_app_service(instance:&PodInstance)->Result<HashMap<String,KVAc
     Ok(result)
 }
 
-pub fn update_app_service_instance(instance:&PodInstance)->Result<HashMap<String,KVAction>> {
+pub fn update_app_service_instance(instance:&ReplicaInstance)->Result<HashMap<String,KVAction>> {
     unimplemented!();
 }
 
-pub fn set_app_service_state(pod_id:&str,state:&PodItemState)->Result<HashMap<String,KVAction>> {
+pub fn set_app_service_state(pod_id:&str,state:&ServiceSpecState)->Result<HashMap<String,KVAction>> {
     //pod_id 是app_id@user_id
     let (app_id,user_id) = parse_app_pod_id(pod_id)?;
     let key = format!("users/{}/apps/{}/config",user_id,app_id);

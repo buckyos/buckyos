@@ -229,7 +229,7 @@ pub async fn delete_app(app_id: &str) {
             return;
         }
     };
-    // set state to "PodItemState::Removing"
+    // set state to "ServiceSpecState::Removing"
     app_config["state"] = "Removing".into();
     let app_config_str = match serde_json::to_string(&app_config) {
         Ok(config_str) => config_str,

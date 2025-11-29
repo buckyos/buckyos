@@ -1,0 +1,108 @@
+
+#global_process_chains:
+#  - id: global1
+#    priority: 1
+#    blocks:
+#      - id: default
+#        block: |
+#          reject;
+#
+#  - id: global2
+#    priority: 1
+#    blocks:
+#      - id: default
+#        block: |
+#          reject;
+
+
+servers:
+  - id: main_dns
+    type: dns
+    hook_point:
+      - id: main
+        priority: 1
+        blocks:
+          - id: default
+            block: |
+              call resolve ${REQ.name} ${REQ.record_type} local_dns && return;
+              call resolve ${REQ.name} ${REQ.record_type} "223.5.5.5:53" && return;
+
+stacks:
+  - id: node_gateway_http_stack
+    bind: 127.0.0.1:3180
+    protocol: tcp
+    hook_point:
+      - id: main
+        priority: 1
+        blocks:
+          - id: default
+            block: |
+              call https-sni-probe && return "forward rtcp://home.zhicong.me:2980/${REQ.dest_host}:443";
+              call http-probe  && return "forward rtcp://home.zhicong.me:2980/${REQ.dest_host}:80";
+              eq ${REQ.ext.method} "CONNECT" && return "forward tcp:///${REQ.dest_host}";
+              return "forward tcp:///${REQ.dest_host}:80";
+
+  - id: zone_gateway_https
+    bind: 0.0.0.0:443
+    protocol: tls
+    hook_point:
+      - id: main
+        priority: 1
+        blocks:
+          - id: default
+            block: |
+              reject;
+
+  - id: test3
+    bind: 0.0.0.0:9545
+    protocol: udp
+    transparent: false
+    hook_point:
+      - id: main
+        priority: 1
+        blocks:
+          - id: default
+            block: |
+              return "server main_dns";
+
+#  - id: test5
+#    bind: 0.0.0.0:2980
+#    protocol: rtcp
+#    key_path: ./rootfs/etc/device.key.pem
+#    device_config_path: ./rootfs/etc/device.doc.json
+#    hook_point:
+#      - id: main
+#        priority: 1
+#        blocks:
+#          - id: default
+#            block: |
+#              reject;
+#
+#  - bind: 0.0.0.0:8083
+#    protocol: tls
+#    certs:
+#      - domain: "web3.buckyos.com"
+#        cert_file: ./cert.pem
+#        key_file: ./key.pem
+#    hook_point:
+#      - id: main
+#        priority: 1
+#        blocks:
+#          - id: default
+#            block: |
+#              reject;
+#
+#  - bind: 0.0.0.0:8083
+#    protocol: quic
+#    certs:
+#      - domain: "web3.buckyos.com"
+#        cert_file: ./cert.pem
+#        key_file: ./key.pem
+#    hook_point:
+#      - id: main
+#        priority: 1
+#        blocks:
+#          - id: default
+#            block: |
+#              reject;
+

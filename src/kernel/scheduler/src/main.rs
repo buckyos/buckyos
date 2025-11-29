@@ -173,8 +173,8 @@ fn craete_node_item_by_device_info(device_name: &str, device_info: &DeviceInfo) 
     }
 }
 
-fn create_pod_item_by_app_config(full_app_id: &str, owner_user_id: &str, app_config: &AppConfig) -> PodItem {
-    let pod_state = PodItemState::from(app_config.state.clone());
+fn create_pod_item_by_app_config(full_app_id: &str, owner_user_id: &str, app_config: &AppConfig) -> ServiceSpec {
+    let pod_state = ServiceSpecState::from(app_config.state.clone());
     let mut need_container = true;
     if app_config.app_doc.pkg_list.iter().any(|(_, pkg)| pkg.docker_image_name.is_none()) &&
        //TODO: 需要从配置中获取所有的可信发布商列表
@@ -185,11 +185,11 @@ fn create_pod_item_by_app_config(full_app_id: &str, owner_user_id: &str, app_con
         need_container = false;
     }
 
-    PodItem {
+    ServiceSpec {
         id: full_app_id.to_string(),
         app_id: app_config.app_id.clone(),
         owner_id: owner_user_id.to_string(),
-        pod_type: PodItemType::App,
+        pod_type: ServiceSpecType::App,
         default_service_port: 0, 
         state: pod_state,
         need_container: need_container,
@@ -207,10 +207,10 @@ fn create_pod_item_by_app_config(full_app_id: &str, owner_user_id: &str, app_con
 fn create_pod_item_by_service_config(
     service_name: &str,
     service_config: &KernelServiceConfig,
-) -> PodItem {
-    let pod_state = PodItemState::from(service_config.state.clone());
-    let pod_type = PodItemType::from(service_config.service_type.clone());
-    PodItem {
+) -> ServiceSpec {
+    let pod_state = ServiceSpecState::from(service_config.state.clone());
+    let pod_type = ServiceSpecType::from(service_config.service_type.clone());
+    ServiceSpec {
         id: service_name.to_string(),
         app_id: service_name.to_string(),
         owner_id: "root".to_string(),
@@ -307,13 +307,13 @@ fn create_scheduler_by_input_config(
                 //add app instance:buckyos-filebrowser@devtest_0660a649-b4fc-4479-80c5-c26d99ac96fc @ ood1
                 let app_config_str = app_config.to_string();
                 info!("add app instance:{},{}",format!("{} @ {}", app_instance_id, node_id),app_config_str.as_str());
-                let pod_instance = PodInstance {
+                let pod_instance = ReplicaInstance {
                     pod_id: format!("{}@{}", app_config.app_id.clone(), app_config.user_id.clone()),
                     node_id: node_id.to_string(),
                     res_limits: HashMap::new(),
                     instance_id: app_instance_id.to_string(),
                     last_update_time: 0,
-                    state: PodInstanceState::from(app_config.target_state.clone()),
+                    state: InstanceState::from(app_config.target_state.clone()),
                     service_port: 0,
                 };
                 pod_scheduler.add_pod_instance(pod_instance);
@@ -331,13 +331,13 @@ fn create_scheduler_by_input_config(
                     error!("ServiceInstanceInfo serde_json::from_str failed: {:?}", e);
                     e
                 })?;
-            let pod_instance = PodInstance {
+            let pod_instance = ReplicaInstance {
                 pod_id: service_name.to_string(),
                 node_id: instance_node_id.to_string(),
                 res_limits: HashMap::new(),
                 instance_id: format!("{}-{}", service_name, instance_node_id),
                 last_update_time: instance_info.last_update_time,
-                state: PodInstanceState::from(instance_info.state),
+                state: InstanceState::from(instance_info.state),
                 service_port: instance_info.port,
             };
             pod_scheduler.add_pod_instance(pod_instance);
@@ -379,12 +379,12 @@ fn schedule_action_to_tx_actions(
             }
             let pod_item = pod_item.unwrap();
             match pod_item.pod_type {
-                PodItemType::App => {
+                ServiceSpecType::App => {
                     let set_state_action = set_app_service_state(pod_id.as_str(), pod_status)?;
                     info!("will change app pod status: {} -> {}", pod_id, pod_status);
                     result.extend(set_state_action);
                 }
-                PodItemType::Service|PodItemType::Kernel => {
+                ServiceSpecType::Service|ServiceSpecType::Kernel => {
                     let set_state_action = set_service_state(pod_id.as_str(), pod_status)?;
                     info!("will change service pod status: {} -> {}", pod_id, pod_status);
                     result.extend(set_state_action);
@@ -403,13 +403,13 @@ fn schedule_action_to_tx_actions(
             }
             let pod_item = pod_item.unwrap();
             match pod_item.pod_type {
-                PodItemType::App => {
+                ServiceSpecType::App => {
                     let instance_action =
                         instance_app_service(new_instance, &device_list, &input_config)?;
                     info!("will instance app pod: {}", new_instance.pod_id);
                     result.extend(instance_action);
                 }
-                PodItemType::Service|PodItemType::Kernel => {
+                ServiceSpecType::Service|ServiceSpecType::Kernel => {
                     let service_config = input_config
                         .get(format!("services/{}/config", pod_item.id.as_str()).as_str());
                     if service_config.is_none() {
@@ -428,7 +428,7 @@ fn schedule_action_to_tx_actions(
                 }
             }
         }
-        SchedulerAction::RemovePodInstance(pod_id,instance_id, node_id) => {
+        SchedulerAction::RemoveInstance(pod_id,instance_id, node_id) => {
             let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
             if pod_item.is_none() {
                 return Err(anyhow::anyhow!("pod_item not found"));
@@ -440,19 +440,19 @@ fn schedule_action_to_tx_actions(
             }
             let pod_instance = pod_instance.unwrap();
             match pod_item.pod_type {
-                PodItemType::App => {
+                ServiceSpecType::App => {
                     info!("will uninstance app pod: {}", pod_instance.pod_id);
                     let uninstance_action = uninstance_app_service(&pod_instance)?;
                     result.extend(uninstance_action);
                 }
-                PodItemType::Service|PodItemType::Kernel => {
+                ServiceSpecType::Service|ServiceSpecType::Kernel => {
                     info!("will uninstance service pod: {}", pod_instance.pod_id);
                     let uninstance_action = uninstance_service(&pod_instance)?;
                     result.extend(uninstance_action);
                 }
             }
         }
-        SchedulerAction::UpdatePodInstance(instance_id, pod_instance) => {
+        SchedulerAction::UpdateInstance(instance_id, pod_instance) => {
             //相对比较复杂的操作:需要根据pod的类型,来执行更新实例化操作
             let (pod_id, node_id) = parse_instance_id(instance_id.as_str())?;
             let pod_item = pod_scheduler.get_pod_item(pod_id.as_str());
@@ -461,12 +461,12 @@ fn schedule_action_to_tx_actions(
             }
             let pod_item = pod_item.unwrap();
             match pod_item.pod_type {
-                PodItemType::App => {
+                ServiceSpecType::App => {
                     let update_action = update_app_service_instance(&pod_instance)?;
                     info!("will update app pod instance: {}", pod_instance.pod_id);
                     result.extend(update_action);
                 }
-                PodItemType::Service|PodItemType::Kernel => {
+                ServiceSpecType::Service|ServiceSpecType::Kernel => {
                     let update_action = update_service_instance(&pod_instance)?;
                     info!("will update service pod instance: {}", pod_instance.pod_id);
                     result.extend(update_action);
@@ -525,13 +525,13 @@ async fn update_rbac(input_config: &HashMap<String, String>, pod_scheduler: &Pod
     
     for (pod_id, pod_item) in pod_scheduler.pods.iter() {
         match pod_item.pod_type {
-            PodItemType::App => {
+            ServiceSpecType::App => {
                 rbac_policy.push_str(&format!("\ng, {}, app", pod_item.app_id));
             }
-            PodItemType::Service => {
+            ServiceSpecType::Service => {
                 rbac_policy.push_str(&format!("\ng, {}, service", pod_id));
             }
-            // PodItemType::Kernel => {
+            // ServiceSpecType::Kernel => {
             //     kernel service already set in basic_policy
             //     rbac_policy.push_str(&format!("\ng, {}, kernel", pod_id));
             // }
