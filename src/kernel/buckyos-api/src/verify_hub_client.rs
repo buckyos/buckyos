@@ -1,9 +1,15 @@
 use ::kRPC::*;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 
 pub const VERIFY_HUB_SERVICE_NAME: &str = "verify-hub";
 pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60*10;//10 minutes
+
+#[derive(Serialize, Deserialize)]
+struct VerifyHubSettings {
+    trust_keys: Vec<String>,
+}
 
 pub struct VerifyHubClient {
     krpc_client: kRPC,

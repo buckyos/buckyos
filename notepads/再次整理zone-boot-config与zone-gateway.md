@@ -193,6 +193,13 @@ pub struct DeviceInfo {
 - 在ZoneBootConfig中手工指定(目前的PX1=>应该变成额外的DeviceConfig JWT)
 - 通过调度器自动构造`TODO 未实现`
 
+### ZoneGateway与NodeGateway
+- NodeGateway的首要目标是实现device的rtcp stack
+- 基于node rtcp stack,实现基于rtcp访问node上运行的各种服务
+- 基于权限管理，不少服务只允许绑定在127.0.0.1，因此只能通过rtcp(node_gateway)去访问
+- node_gatway上，也提供了基于127:3180端口的http服务，通过该端口可以以device的身份，通过rtcp协议访问Zone内的所有服务（这个能力是zone_gateway访问zone内服务的底层能力）
+- 
+
 ## Zone内的Device之间建立连接
 当系统启动后，Zone内的Device之间连接可以基于SystemConfig上保存的DeviceInfo，能做的选择更多
 

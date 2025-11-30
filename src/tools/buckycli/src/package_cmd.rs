@@ -280,7 +280,7 @@ pub async fn publish_app_pkg(dapp_dir_path: &str,is_pub_sub_pkg:bool) -> Result<
     //info!("app_meta:{} {}",app_meta.pkg_name.as_str(), serde_json::to_string_pretty(&app_meta).unwrap());
     let mut pkg_path_list = Vec::new();
 
-    for (sub_pkg_section,pkg_desc) in app_meta.pkg_list.iter_mut() {
+    for (sub_pkg_section,pkg_desc) in app_meta.pkg_list.iter() {
         let sub_pkg_id = pkg_desc.pkg_id.clone();
         let sub_pkg_id:PackageId = PackageId::parse(sub_pkg_id.as_str())
             .map_err(|e| format!("Failed to parse sub_pkg_id: {}", e.to_string()))?;

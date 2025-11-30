@@ -9,7 +9,8 @@ mod verify_hub_client;
 mod zone_provider;
 mod repo_client;
 mod runtime;
-
+mod app_mgr;
+mod gateway_control;
 pub use system_config::*;
 pub use sn_client::*;
 pub use zone_gateway::*;
@@ -19,7 +20,8 @@ pub use scheduler_client::*;
 pub use verify_hub_client::*;
 pub use zone_provider::*;
 pub use runtime::*;
-
+pub use app_mgr::*;
+pub use gateway_control::*;
 use tokio::sync::RwLock;
 use std::sync::{Arc};
 use std::collections::HashMap;

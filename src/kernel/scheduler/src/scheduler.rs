@@ -86,6 +86,7 @@ Instance管理 （自动负载均衡）
 */
 #[warn(unused, unused_mut, dead_code)]
 use anyhow::Result;
+use buckyos_api::{ServiceInstanceState, ServiceState};
 use buckyos_kit::buckyos_get_unix_timestamp;
 
 use log::*;
@@ -144,6 +145,15 @@ impl From<String> for InstanceState {
     }
 }
 
+impl From<ServiceInstanceState> for InstanceState {
+    fn from(state: ServiceInstanceState) -> Self {
+        match state {
+            ServiceInstanceState::Started => InstanceState::Running,
+            _ => InstanceState::New,
+        }
+    }
+}
+
 impl ToString for InstanceState {
     fn to_string(&self) -> String {
         match self {
@@ -181,6 +191,18 @@ impl From<String> for ServiceSpecState {
             "Removing" => ServiceSpecState::Removing,
             "Deleted" => ServiceSpecState::Deleted,
             _ => ServiceSpecState::Unavailable,
+        }
+    }
+}
+
+impl From<ServiceState> for ServiceSpecState {
+    fn from(state: ServiceState) -> Self {
+        match state {
+            ServiceState::Running => ServiceSpecState::Deployed,
+            ServiceState::Starting | ServiceState::Restarting | ServiceState::Updating => {
+                ServiceSpecState::Deploying
+            }
+            ServiceState::Stopping | ServiceState::Stopped => ServiceSpecState::Unavailable,
         }
     }
 }

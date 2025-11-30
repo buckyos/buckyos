@@ -3,7 +3,13 @@
 use serde_json::json;
 use std::collections::HashMap;
 use ::kRPC::*;
+use serde::{Deserialize, Serialize};
 
+#[derive(Serialize, Deserialize)]
+struct RepoServiceSettings {
+    remote_source: HashMap<String, String>,
+    enable_dev_mode: bool,
+}
 
 pub struct RepoClient {
     krpc_client: kRPC,

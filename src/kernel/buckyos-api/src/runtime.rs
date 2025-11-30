@@ -25,7 +25,7 @@ use crate::task_mgr::*;
 use crate::scheduler_client::*;
 use crate::control_panel::*;
 use crate::verify_hub_client::*;
-
+use crate::app_mgr::*;
 use crate::{get_buckyos_api_runtime,get_full_appid,get_session_token_env_key};
 
 
@@ -381,16 +381,30 @@ impl BuckyOSRuntime {
 
         let mut last_update_service_info_time = self.last_update_service_info_time.write().await;
         let now = buckyos_get_unix_timestamp();
-        if now - *last_update_service_info_time < SERVICE_INSTANCE_INFO_UPDATE_INTERVAL {
+        if now - *last_update_service_info_time < crate::app_mgr::SERVICE_INSTANCE_INFO_UPDATE_INTERVAL {
             return Ok(());
         }
         *last_update_service_info_time = now;
         drop(last_update_service_info_time);
 
         let device_name = self.device_config.as_ref().unwrap().name.clone();
-        let service_instance_info = ServiceInstanceInfo {
-            state: "running".to_string(),
-            port: 0,
+        let instance_id = format!(
+            "{}-{}",
+            self.app_id,
+            self.device_config
+                .as_ref()
+                .map(|cfg| cfg.name.clone())
+                .unwrap_or_default()
+        );
+        let main_port = *self.main_service_port.read().await;
+        let mut service_ports = HashMap::new();
+        if main_port > 0 {
+            service_ports.insert("main".to_string(), main_port);
+        }
+        let service_instance_info = ServiceInstanceReportInfo {
+            instance_id,
+            state: ServiceInstanceState::Started,
+            service_ports,
             last_update_time: buckyos_get_unix_timestamp(),
             start_time: 0,
             pid: std::process::id(),
@@ -1035,12 +1049,21 @@ impl BuckyOSRuntime {
         let control_panel_client = self.get_system_control_panel_client().await?;
         let service_info = control_panel_client.get_services_info(service_name).await?;
         // select best instance 
-        let local_node = service_info.node_list.get(self.device_config.as_ref().unwrap().name.as_str());
+        let local_node = service_info
+            .node_list
+            .get(self.device_config.as_ref().unwrap().name.as_str());
         if local_node.is_some() {
             let local_node = local_node.unwrap();
             if local_node.node_did == self.device_config.as_ref().unwrap().id.to_string() {
-                if local_node.state == "Running" {
-                    return Ok((format!("http://127.0.0.1:{}/kapi/{}",local_node.port,service_name),true));
+                if local_node.state == ServiceInstanceState::Started {
+                    if let Some(port) =
+                        Self::resolve_service_port(local_node, service_name)
+                    {
+                        return Ok((
+                            format!("http://127.0.0.1:{}/kapi/{}", port, service_name),
+                            true,
+                        ));
+                    }
                 }
             }
         }
@@ -1051,7 +1074,7 @@ impl BuckyOSRuntime {
 
         let mut total_weight = 0;
         for (_node_name,node_info) in service_info.node_list.iter() {
-            if node_info.state == "Running" {
+            if node_info.state == ServiceInstanceState::Started {
                 total_weight += node_info.weight;
             }
         }
@@ -1062,12 +1085,25 @@ impl BuckyOSRuntime {
         let mut last_best_same_lan_node_url = String::new();
         let mut last_best_wan_node_url = String::new();
         for (_node_name, node_info) in service_info.node_list.iter() {
-            if node_info.state == "Running" {
+            if node_info.state == ServiceInstanceState::Started {
+                let maybe_port = Self::resolve_service_port(node_info, service_name);
+                if maybe_port.is_none() {
+                    continue;
+                }
+                let port = maybe_port.unwrap();
                 if node_info.node_net_id == self.device_config.as_ref().unwrap().net_id {
-                    last_best_same_lan_node_url = format!("rtcp://{}/127.0.0.1:{}",node_info.node_did.to_string(),node_info.port);
+                    last_best_same_lan_node_url = format!(
+                        "rtcp://{}/127.0.0.1:{}",
+                        node_info.node_did.to_string(),
+                        port
+                    );
                 }
                 if node_info.node_net_id == Some("wan".to_string()) {
-                    last_best_wan_node_url = format!("rtcp://{}/127.0.0.1:{}",node_info.node_did.to_string(),node_info.port);
+                    last_best_wan_node_url = format!(
+                        "rtcp://{}/127.0.0.1:{}",
+                        node_info.node_did.to_string(),
+                        port
+                    );
                 }
                 current_weight += node_info.weight;
                 if current_weight >= random_num {
@@ -1082,6 +1118,17 @@ impl BuckyOSRuntime {
         }
         //todo: use wan_node to get the
         return Err(RPCErrors::ReasonError("no running instance found".to_string()));
+    }
+
+    fn resolve_service_port(node_info: &ServiceNode, service_name: &str) -> Option<u16> {
+        node_info
+            .service_port
+            .get(service_name)
+            .copied()
+            .or_else(|| node_info.service_port.get("main").copied())
+            .or_else(|| node_info.service_port.get("http").copied())
+            .or_else(|| node_info.service_port.get("https").copied())
+            .or_else(|| node_info.service_port.values().next().copied())
     }
 
     //if http_only is false, return the url with tunnel protocol

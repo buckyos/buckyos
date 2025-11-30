@@ -445,10 +445,10 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
             return String::from("stop system_config_service failed!");
         })?;
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        running_state = ServiceState::Stopped;
+        running_state = ServiceInstanceState::Stopped;
     }
 
-    if running_state == ServiceState::Stopped {
+    if running_state == ServiceInstanceState::Stopped {
         warn!("check system_config_service is stopped,try to start system_config_service");
         let start_result = system_config_service_pkg.start(None).await.map_err(|err| {
             error!("start system_config_service failed! {}", err);
@@ -470,7 +470,7 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
     })?;
     debug!("cyfs_gateway service pkg status: {:?}",running_state);
 
-    if running_state == ServiceState::NotExist {        
+    if running_state == ServiceInstanceState::NotExist {        
         //当版本更新后,上述检查会返回NotExist, 并触发更新操作
         warn!("cyfs_gateway service pkg not exist, try install it...");
         let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
@@ -490,10 +490,10 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
             return String::from("stop cyfs_gateway service failed!");
         })?;
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        running_state = ServiceState::Stopped;
+        running_state = ServiceInstanceState::Stopped;
     }
 
-    if running_state == ServiceState::Stopped {
+    if running_state == ServiceInstanceState::Stopped {
         warn!("check cyfs_gateway is stopped,try to start cyfs_gateway");
         //params: boot cyfs-gateway configs, identiy_etc folder, keep_tunnel list
         //  ood: keep tunnel to other ood, keep tunnel to gateway
@@ -566,7 +566,7 @@ async fn node_main(node_host_name: &str,
             return NodeDaemonErrors::SystemConfigError("cann't load node config!".to_string());
         })?;
     
-    if !node_config.is_running {
+    if !node_config.is_running() {
         warn!("node_config.is_running is set to false manually, will restart node_daemon...");
         return Ok(false);
     }
@@ -576,7 +576,7 @@ async fn node_main(node_host_name: &str,
         let kernel_run_item = KernelServiceRunItem::new(
             kernel_service_name.as_str(),&kernel_cfg);
 
-        let target_state = RunItemTargetState::from_str(&kernel_cfg.target_state.as_str()).unwrap();
+        let target_state = RunItemTargetState::from_instance_state(&kernel_cfg.target_state);
         
         let _ = ensure_run_item_state(&kernel_run_item, target_state)
             .await
@@ -605,14 +605,14 @@ async fn node_main(node_host_name: &str,
     let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
         let app_loader = ServicePkg::new("app_loader".to_string(),get_buckyos_system_bin_dir());
   
-        let app_run_item = AppRunItem::new(&app_cfg.app_id,app_cfg.clone(),app_loader);
+        let app_run_item = AppRunItem::new(&app_id_with_name,app_cfg.clone(),app_loader);
 
-        let target_state = RunItemTargetState::from_str(&app_cfg.target_state).unwrap();
+        let target_state = RunItemTargetState::from_instance_state(&app_cfg.target_state);
         let _ = ensure_run_item_state(&app_run_item, target_state)
             .await
             .map_err(|_err| {
-                error!("ensure app {} to target state failed!",app_cfg.app_id.clone());
-                return NodeDaemonErrors::SystemConfigError(app_cfg.app_id.clone());
+                error!("ensure app {} to target state failed!",app_id_with_name.clone());
+                return NodeDaemonErrors::SystemConfigError(app_id_with_name.clone());
             });
     });
 

@@ -4,14 +4,26 @@ use buckyos_api::*;
 use buckyos_kit::*;
 use crate::scheduler::{ServiceInfo as SchedulerServiceInfo, ReplicaInstance, ServiceSpecState};
 use anyhow::Result;
-use name_lib::DeviceInfo;
+pub use name_lib::DeviceInfo;
 use log::warn;
 
-pub fn instance_service(new_instance:&ReplicaInstance,server_config:&KernelServiceConfig,is_zone_gateway:bool)->Result<HashMap<String,KVAction>> {
+pub fn instance_service(
+    new_instance:&ReplicaInstance,
+    server_config:&KernelServiceSpec,
+    is_zone_gateway:bool
+)->Result<HashMap<String,KVAction>> {
     let mut result = HashMap::new();
     //目前所有的service都是kernel service (no docker) ,有标准的frame service也是应该运行在docker中的.
     //add instance to node config
-    let kernel_service_config = KernelServiceInstanceConfig::new(server_config.pkg_id.clone());
+    let service_port = server_config
+        .install_config
+        .service_ports
+        .get("main")
+        .copied()
+        .or_else(|| server_config.install_config.service_ports.values().next().copied())
+        .unwrap_or(0);
+    let kernel_service_config =
+        KernelServiceInstanceConfig::new(server_config.clone(), new_instance.node_id.clone());
     let key_path = format!("nodes/{}/config",new_instance.node_id.as_str());
     let json_path = format!("kernel/{}",new_instance.spec_id.as_str());
     let set_value = serde_json::to_value(kernel_service_config)?;
@@ -27,20 +39,20 @@ pub fn instance_service(new_instance:&ReplicaInstance,server_config:&KernelServi
     if is_zone_gateway {
         let json_path = format!("servers/zone_gateway/hosts/*/routes/\"/kapi/{}\"",new_instance.spec_id.as_str());
         let set_value = json!({
-            "upstream":format!("http://127.0.0.1:{}",server_config.port),
+            "upstream":format!("http://127.0.0.1:{}",service_port),
         });
         set_actions.insert(json_path,Some(set_value));
 
         let json_path = format!("servers/zone_gateway/hosts/sys*/routes/\"/kapi/{}\"",new_instance.spec_id.as_str());
         let set_value = json!({
-            "upstream":format!("http://127.0.0.1:{}",server_config.port),
+            "upstream":format!("http://127.0.0.1:{}",service_port),
         });
         set_actions.insert(json_path,Some(set_value));
     }
 
     let json_path = format!("servers/node_gateway/hosts/*/routes/\"/kapi/{}\"",new_instance.spec_id.as_str());
     let set_value = json!({
-        "upstream":format!("http://127.0.0.1:{}",server_config.port),
+        "upstream":format!("http://127.0.0.1:{}",service_port),
     });
     set_actions.insert(json_path,Some(set_value));
    
@@ -76,7 +88,7 @@ pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,de
     let mut result = HashMap::new();
 
     let key = format!("services/{}/info",spec_id);
-    let mut info_map:HashMap<String, ServiceNodeInfo> = HashMap::new();
+    let mut info_map:HashMap<String, ServiceNode> = HashMap::new();
     match service_info {
         SchedulerServiceInfo::RandomCluster(cluster) => {
             for (node_id, (weight,instance)) in cluster.iter() {
@@ -85,12 +97,15 @@ pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,de
                     let device_info = device_info.unwrap();
                     let node_net_id = device_info.device_doc.net_id.clone();
 
-                    info_map.insert(node_id.clone(), ServiceNodeInfo {
-                        weight: weight.clone(),
-                        state: "Running".to_string(), 
-                        port: instance.service_port,
+                    info_map.insert(node_id.clone(), ServiceNode {
                         node_did: instance.node_id.clone(),
-                        node_net_id:node_net_id,
+                        node_net_id,
+                        state: ServiceInstanceState::Started,
+                        weight: *weight,
+                        service_port: HashMap::from([(
+                            "main".to_string(),
+                            instance.service_port,
+                        )]),
                     });
                 } else {
                     warn!("device info not found for node: {}",node_id);

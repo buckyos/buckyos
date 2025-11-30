@@ -3,7 +3,7 @@ use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::{debug, info, warn};
 use serde_json::Value;
 use serde::{Deserialize, Serialize};
-
+use buckyos_api::ServiceInstanceState;
 use crate::service_pkg::*;
 use thiserror::Error;
 #[derive(Error, Debug)]
@@ -29,11 +29,10 @@ pub enum RunItemTargetState {
 }
 
 impl RunItemTargetState {
-    pub fn from_str(state: &str) -> Result<Self> {
+    pub fn from_instance_state(state: &ServiceInstanceState) -> Self {
         match state {
-            "Running" => Ok(RunItemTargetState::Running),
-            "Stopped" => Ok(RunItemTargetState::Stopped),
-            _ => Err(ControlRuntItemErrors::ParserConfigError(format!("invalid target state: {}", state))),
+            ServiceInstanceState::Started => RunItemTargetState::Running,
+            _ => RunItemTargetState::Stopped,
         }
     }
 }
@@ -55,7 +54,7 @@ pub trait RunItemControl: Send + Sync {
 
     async fn start(&self,params:Option<&Vec<String>>) -> Result<()>;
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()>;
-    async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceState>;
+    async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState>;
 }
 
 pub async fn ensure_run_item_state(
@@ -65,44 +64,44 @@ pub async fn ensure_run_item_state(
     let item_name = item.get_item_name()?;
     match target_state {
         RunItemTargetState::Running => match item.get_state(None).await? {
-            ServiceState::Started => {
+            ServiceInstanceState::Started => {
                 debug!("{} is already running, do nothing!", item_name);
                 Ok(())
             }
-            ServiceState::NotExist => {
+            ServiceInstanceState::NotExist => {
                 warn!("{} not exist,deploy and start it!", item_name);
                 item.deploy(None).await?;
                 warn!("{} deploy success,start it!", item_name);
                 item.start(None).await?;
                 Ok(())
             }
-            ServiceState::Stopped => {
+            ServiceInstanceState::Stopped => {
                 warn!("{} stopped,start it!", item_name);
                 item.start(None).await?;
                 Ok(())
             }
-            ServiceState::Deploying => {
+            ServiceInstanceState::Deploying => {
                 warn!("{} is deploying,wait for it!", item_name);
                 Ok(())
             }
         },
         RunItemTargetState::Stopped => match item.get_state(None).await? {
-            ServiceState::Started => {
+            ServiceInstanceState::Started => {
                 warn!("{} is running,stop it!", item_name);
                 item.stop(None).await?;
                 Ok(())
             }
-            ServiceState::NotExist => {
+            ServiceInstanceState::NotExist => {
                 //warn!("{} not exist,deploy it!", item_name);
                 //item.deploy(None).await?;
                 debug!("{} not exist,do nothing!", item_name);
                 Ok(())
             }
-            ServiceState::Stopped => {
+            ServiceInstanceState::Stopped => {
                 debug!("{} already stopped, do nothing!", item_name);
                 Ok(())
             }
-            ServiceState::Deploying => {
+            ServiceInstanceState::Deploying => {
                 warn!("{} is deploying,wait for it!", item_name);
                 Ok(())
             }
