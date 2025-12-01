@@ -41,6 +41,17 @@ const DashboardPage = () => {
   const storageSlices = dashboardData?.storageSlices ?? []
   const storageCapacityGb = dashboardData?.storageCapacityGb ?? 0
   const storageUsedGb = dashboardData?.storageUsedGb ?? 0
+  const devices = dashboardData?.devices ?? []
+  const memoryInfo = dashboardData?.memory
+  const cpuInfo = dashboardData?.cpu
+  const disks = dashboardData?.disks ?? []
+
+  const totalMemoryGb = memoryInfo?.totalGb ?? 0
+  const usedMemoryGb = memoryInfo?.usedGb ?? 0
+  const memoryPercent = Math.round(memoryInfo?.usagePercent ?? 0)
+  const cpuPercent = Math.round(cpuInfo?.usagePercent ?? 0)
+  const cpuModel = cpuInfo?.model ?? 'Unknown CPU'
+  const cpuCores = cpuInfo?.cores ?? 0
 
   const cpuUsage = resourceTimeline.at(-1)?.cpu ?? 0
   const memoryUsage = resourceTimeline.at(-1)?.memory ?? 0
@@ -113,16 +124,20 @@ const storageBarSegments = storageSlices.map((slice) => ({
           </div>
           <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
             <div className="space-y-4">
-              <div className="flex items-center gap-4 text-sm text-slate-300">
-                <div className="flex flex-1 items-center gap-3 rounded-xl bg-slate-900/70 px-4 py-2 ring-1 ring-slate-800">
+              <div className="flex flex-wrap gap-3 text-sm text-slate-300">
+                <div className="flex min-w-[180px] flex-1 items-center gap-3 rounded-xl bg-slate-900/70 px-4 py-2 ring-1 ring-slate-800">
                   <span className="inline-flex size-2 rounded-full bg-sky-500" aria-hidden />
                   <span className="flex-1 font-medium text-white">CPU</span>
-                  <span className="text-xs uppercase tracking-wide text-slate-400">58%</span>
+                  <span className="text-xs uppercase tracking-wide text-slate-400">
+                    {cpuPercent || cpuUsage}%
+                  </span>
                 </div>
-                <div className="flex flex-1 items-center gap-3 rounded-xl bg-slate-900/70 px-4 py-2 ring-1 ring-slate-800">
+                <div className="flex min-w-[180px] flex-1 items-center gap-3 rounded-xl bg-slate-900/70 px-4 py-2 ring-1 ring-slate-800">
                   <span className="inline-flex size-2 rounded-full bg-emerald-500" aria-hidden />
                   <span className="flex-1 font-medium text-white">Memory</span>
-                  <span className="text-xs uppercase tracking-wide text-slate-400">76%</span>
+                  <span className="text-xs uppercase tracking-wide text-slate-400">
+                    {memoryPercent || memoryUsage}%
+                  </span>
                 </div>
               </div>
               <div className="rounded-2xl border border-slate-900/80 bg-slate-950/40 p-4">
@@ -168,13 +183,22 @@ const storageBarSegments = storageSlices.map((slice) => ({
             <div className="flex flex-col justify-between gap-6 text-sm text-slate-300">
               <div className="rounded-2xl bg-slate-900/70 px-4 py-5 text-center ring-1 ring-slate-800">
                 <p className="text-xs uppercase tracking-wide text-slate-400">CPU Usage</p>
-                <p className="mt-2 text-3xl font-semibold text-white">{cpuUsage}%</p>
-                <p className="text-xs text-emerald-400">Stable</p>
+                <p className="mt-2 text-3xl font-semibold text-white">{cpuPercent || cpuUsage}%</p>
+                <p className="text-xs text-emerald-400">Live</p>
+                <p className="mt-1 truncate text-[11px] text-slate-500">
+                  {cpuModel}
+                  {cpuCores ? ` · ${cpuCores} cores` : ''}
+                </p>
               </div>
               <div className="rounded-2xl bg-slate-900/70 px-4 py-5 text-center ring-1 ring-slate-800">
                 <p className="text-xs uppercase tracking-wide text-slate-400">Memory Usage</p>
-                <p className="mt-2 text-3xl font-semibold text-white">{memoryUsage}%</p>
-                <p className="text-xs text-sky-400">Healthy</p>
+                <p className="mt-2 text-3xl font-semibold text-white">
+                  {memoryPercent || memoryUsage}%
+                </p>
+                <p className="text-xs text-sky-400">Live</p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {usedMemoryGb.toFixed(1)} / {totalMemoryGb.toFixed(1)} GB
+                </p>
               </div>
             </div>
           </div>
@@ -339,34 +363,43 @@ const storageBarSegments = storageSlices.map((slice) => ({
 
         <div className="rounded-3xl border border-slate-900/60 bg-slate-900/60 p-6 shadow-lg shadow-black/20">
           <div className="mb-6 flex items-center gap-2 text-lg font-semibold text-white">
-            <span aria-hidden>🗃️</span>
-            <h2>My Assets</h2>
+            <span aria-hidden>🧠</span>
+            <h2>Storage</h2>
           </div>
-          <div className="space-y-6 text-sm text-slate-300">
-            <div className="text-center">
-              <p className="text-4xl font-semibold text-white">156</p>
-              <p className="text-xs uppercase tracking-wide text-slate-500">Total Assets</p>
+          <div className="space-y-4 text-sm text-slate-300">
+            <div className="flex items-center justify-between text-xs uppercase tracking-wide text-slate-500">
+              <span>Capacity</span>
+              <span className="text-white">{storageCapacityGb.toFixed(0)} GB</span>
+            </div>
+            <div className="flex items-center justify-between text-xs uppercase tracking-wide text-slate-500">
+              <span>Used</span>
+              <span className="text-white">{storageUsedGb.toFixed(0)} GB</span>
+            </div>
+            <div className="flex h-2 overflow-hidden rounded-full bg-slate-800">
+              <span
+                className="block h-full rounded-full bg-sky-500"
+                style={{
+                  width: `${storageCapacityGb ? Math.min((storageUsedGb / storageCapacityGb) * 100, 100) : 0}%`,
+                }}
+              />
             </div>
             <div className="space-y-2 text-xs text-slate-400">
-              <div className="flex justify-between">
-                <span>Files</span>
-                <span className="text-white">89</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Photos</span>
-                <span className="text-white">43</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Documents</span>
-                <span className="text-white">24</span>
-              </div>
+              {disks.map((disk: any) => (
+                <div
+                  key={`${disk.mount}-${disk.label}`}
+                  className="flex items-center justify-between rounded-xl bg-slate-900/70 px-3 py-2 ring-1 ring-slate-800"
+                >
+                  <div className="text-xs text-slate-400">
+                    <p className="text-white">{disk.label}</p>
+                    <p>{disk.mount}</p>
+                  </div>
+                  <div className="text-xs text-slate-300">
+                    <span className="text-white">{disk.usedGb.toFixed(1)} GB</span>
+                    <span className="text-slate-500"> / {disk.totalGb.toFixed(1)} GB</span>
+                  </div>
+                </div>
+              ))}
             </div>
-            <Link
-              to="/storage"
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/70 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-slate-500 hover:text-white"
-            >
-              View All Assets
-            </Link>
           </div>
         </div>
 
@@ -389,6 +422,56 @@ const storageBarSegments = storageSlices.map((slice) => ({
               </Link>
             ))}
           </div>
+        </div>
+      </section>
+
+      <section className="rounded-3xl border border-slate-900/60 bg-slate-900/60 p-6 shadow-lg shadow-black/20">
+          <div className="mb-2 flex items-center gap-2 text-lg font-semibold text-white">
+            <span aria-hidden>🖥️</span>
+            <h2>Hardware</h2>
+          </div>
+          <p className="mb-4 text-xs text-slate-400">
+            CPU: {cpuModel}
+            {cpuCores ? ` · ${cpuCores} cores` : ''}
+          </p>
+          <p className="mb-4 text-xs text-slate-400">
+            Memory: {usedMemoryGb.toFixed(1)} / {totalMemoryGb.toFixed(1)} GB
+          </p>
+          <div className="grid gap-3 text-sm text-slate-300 md:grid-cols-2">
+            {(devices as any[]).map((device) => (
+              <div
+              key={device.name}
+              className="flex flex-col gap-2 rounded-2xl bg-slate-900/70 p-4 ring-1 ring-slate-800"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{device.name}</p>
+                  <p className="text-xs text-slate-500 capitalize">{device.role}</p>
+                </div>
+                <span
+                  className={[
+                    'rounded-full px-3 py-1 text-[11px] uppercase tracking-wide',
+                    device.status === 'online'
+                      ? 'bg-emerald-500/15 text-emerald-300'
+                      : 'bg-amber-500/15 text-amber-300',
+                  ].join(' ')}
+                >
+                  {device.status}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-slate-300">
+                <span className="rounded-full bg-slate-800 px-3 py-1">
+                  CPU {device.cpu ?? cpuPercent ?? cpuUsage}%
+                </span>
+                <span className="rounded-full bg-slate-800 px-3 py-1">
+                  Mem {device.memory ?? memoryPercent ?? memoryUsage}%
+                </span>
+              </div>
+              <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                Uptime {device.uptimeHours ?? 0}h
+              </div>
+            </div>
+          ))}
         </div>
       </section>
     </div>

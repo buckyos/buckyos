@@ -101,6 +101,39 @@ declare global {
     storageSlices: StorageSlice[]
     storageCapacityGb: number
     storageUsedGb: number
+    devices?: DeviceInfo[]
+    disks?: DiskInfo[]
+    cpu?: DashboardCPU
+    memory?: DashboardMemory
+  }
+
+  type DeviceInfo = {
+    name: string
+    role: string
+    status: string
+    uptimeHours: number
+    cpu?: number
+    memory?: number
+  }
+
+  type DashboardCPU = {
+    usagePercent: number
+    model?: string
+    cores?: number
+  }
+
+  type DashboardMemory = {
+    totalGb: number
+    usedGb: number
+    usagePercent: number
+  }
+
+  type DiskInfo = {
+    label: string
+    mount: string
+    totalGb: number
+    usedGb: number
+    fs?: string
   }
 
   type UserSummary = {

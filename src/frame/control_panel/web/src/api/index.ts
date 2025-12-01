@@ -64,6 +64,23 @@ const mockDashboardData: DashboardState = {
   ],
   storageCapacityGb: 4000,
   storageUsedGb: 2400,
+  devices: [
+    { name: 'Mock Node', role: 'server', status: 'online', uptimeHours: 120, cpu: 45, memory: 62 },
+  ],
+  cpu: {
+    usagePercent: 58,
+    model: 'Mock CPU 8-Core',
+    cores: 8,
+  },
+  memory: {
+    totalGb: 32,
+    usedGb: 19,
+    usagePercent: 59,
+  },
+  disks: [
+    { label: '/dev/sda1', mount: '/', totalGb: 512, usedGb: 310, fs: 'ext4' },
+    { label: '/dev/sdb1', mount: '/data', totalGb: 1024, usedGb: 640, fs: 'ext4' },
+  ],
 }
 
 export const fetchLayout = async (): Promise<{ data: RootLayoutData | null; error: unknown }> => {
