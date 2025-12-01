@@ -5,12 +5,18 @@ use serde::{Deserialize, Serialize};
 use openraft::Raft;
 use std::sync::Arc;
 
+#[cfg(test)]
 mod logs;
+#[cfg(test)]
 mod state_machine;
+#[cfg(test)]
 mod storage;
+#[cfg(test)]
 mod network;
+#[cfg(test)]
 mod test;
 
+#[cfg(test)]
 #[macro_use]
 extern crate log;
 

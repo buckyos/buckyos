@@ -1,6 +1,3 @@
-use std::ops::Deref;
-//system control panel client
-
 use name_lib::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -9,10 +6,7 @@ use log::*;
 use ::kRPC::*; 
 use crate::system_config::*;
 use crate::app_mgr::*;
-use package_lib::PackageMeta;
 use crate::KVAction;
-
-pub const SERVICE_INSTANCE_INFO_UPDATE_INTERVAL: u64 = 30;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(try_from = "String", into = "String")]

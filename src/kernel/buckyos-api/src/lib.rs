@@ -21,7 +21,6 @@ pub use verify_hub_client::*;
 pub use zone_provider::*;
 pub use runtime::*;
 pub use app_mgr::*;
-pub use gateway_control::*;
 use tokio::sync::RwLock;
 use std::sync::{Arc};
 use std::collections::HashMap;

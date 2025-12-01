@@ -547,8 +547,12 @@ pub async fn start_task_manager_service() {
     info!("start node task manager service...");
     const TASK_MANAGER_SERVICE_MAIN_PORT: u16 = 3380;
     let runner = Runner::new(TASK_MANAGER_SERVICE_MAIN_PORT);
-    runner.add_http_server("/kapi/task-manager".to_string(), Arc::new(server));
-    runner.run().await;
+    if let Err(err) = runner.add_http_server("/kapi/task-manager".to_string(), Arc::new(server)) {
+        error!("failed to add task manager http server: {:?}", err);
+    }
+    if let Err(err) = runner.run().await {
+        error!("task manager runner exited with error: {:?}", err);
+    }
 }
 
 #[cfg(test)]

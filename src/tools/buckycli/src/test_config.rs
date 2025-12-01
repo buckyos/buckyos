@@ -24,7 +24,7 @@ const ADMIN_PASSWORD_HASH: &str = "o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4="
 // ============================================================================
 
 /// 测试密钥对集合
-struct TestKeyPair {
+pub(crate) struct TestKeyPair {
     private_key_pem: &'static str,
     public_key_x: String,
 }
@@ -48,6 +48,7 @@ impl TestKeys {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn verify_all_key_pairs() -> Result<(), String> {
         let key_ids = vec![
             "devtest",
@@ -61,7 +62,7 @@ impl TestKeys {
             "alice.ood1",
         ];
         for key_id in key_ids {
-            let key_pair = TestKeys::get_key_pair_by_id(key_id)?;
+            TestKeys::get_key_pair_by_id(key_id)?;
         }
         Ok(())
     }
@@ -212,6 +213,7 @@ pub struct DevEnvBuilder {
 
 impl DevEnvBuilder {
     /// 创建新的构建器
+    #[allow(dead_code)]
     pub fn new(root_dir_name: &str) -> Self {
         let root_dir = std::env::temp_dir().join(root_dir_name);
         std::fs::create_dir_all(&root_dir).unwrap();
@@ -242,6 +244,7 @@ impl DevEnvBuilder {
     }
 
     /// 获取当前时间戳
+    #[allow(dead_code)]
     pub fn now(&self) -> u64 {
         self.now
     }
@@ -423,8 +426,8 @@ pub async fn create_sn_config(builder: &DevEnvBuilder) {
     };
 
     let owner_key = get_encoding_key(owner_keys.private_key_pem);
-    let zone_boot_jwt = zone_boot.encode(Some(&owner_key)).unwrap();
-    let x_str = owner_keys.public_key_x;
+    let _zone_boot_jwt = zone_boot.encode(Some(&owner_key)).unwrap();
+    let _x_str = owner_keys.public_key_x;
 
     // let sn_host = "buckyos.io";
     // let sn_ip = "192.168.1.188";
@@ -711,6 +714,7 @@ pub async fn cmd_register_device(
 // ============================================================================
 
 /// 创建完整的测试环境配置
+#[allow(dead_code)]
 pub async fn create_test_env_configs() {
     let builder = DevEnvBuilder::new("buckyos_dev_configs");
 
@@ -725,7 +729,7 @@ pub async fn create_test_env_configs() {
     devtest_scope.create_owner_config();
 
     // devtest node1
-    let node1_keys = TestKeys::devtest_node1();
+    let _node1_keys = TestKeys::devtest_node1();
     devtest_scope.create_node_config(
         "node1",
         Some("lan1".to_string()),
@@ -790,6 +794,7 @@ pub async fn create_test_env_configs() {
     // println!("# sn_db created at {}", sn_db_path.to_string_lossy());
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
     use name_lib::*;
