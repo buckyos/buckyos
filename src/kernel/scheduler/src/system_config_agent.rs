@@ -119,7 +119,7 @@ fn create_service_spec_by_service_config(
     }
 }
 
-fn create_scheduler_by_system_config(
+pub fn create_scheduler_by_system_config(
     input_config: &HashMap<String, String>,
 ) -> Result<(NodeScheduler, HashMap<String, DeviceInfo>)> {
     let mut scheduler_ctx = NodeScheduler::new_empty(1, buckyos_get_unix_timestamp());

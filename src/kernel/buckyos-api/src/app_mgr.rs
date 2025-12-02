@@ -11,12 +11,19 @@ pub const SERVICE_INSTANCE_INFO_UPDATE_INTERVAL: u64 = 30;
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceState {
+    New,
     Running,
     Stopped,
     Starting,
     Stopping,
     Restarting,
     Updating,
+}
+
+impl Default for ServiceState {
+    fn default() -> Self {
+        ServiceState::New
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq,Debug)]
@@ -444,7 +451,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_parse_app_doc() {
         let app_doc = json!({
-            "pkg_name": "buckyos-filebrowser",
+            "pkg_name": "buckyos_filebrowser",
             "version": "0.4.1",
             "tag": "latest",
             "show_name": "BuckyOS File Browser",
@@ -465,29 +472,29 @@ mod tests {
             },
             "pkg_list": {
                 "amd64_docker_image": {
-                    "pkg_id": "nightly-linux-amd64.buckyos-filebrowser-img#0.4.1",
+                    "pkg_id": "nightly-linux-amd64.buckyos_filebrowser-img#0.4.1",
                     "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-amd64"
                 },
                 "aarch64_docker_image": {
-                    "pkg_id": "nightly-linux-aarch64.buckyos-filebrowser-img#0.4.1",
+                    "pkg_id": "nightly-linux-aarch64.buckyos_filebrowser-img#0.4.1",
                     "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-aarch64"
                 },
                 "amd64_win_app": {
-                    "pkg_id": "nightly-windows-amd64.buckyos-filebrowser-bin#0.4.1"
+                    "pkg_id": "nightly-windows-amd64.buckyos_filebrowser-bin#0.4.1"
                 },
                 "aarch64_apple_app": {
-                    "pkg_id": "nightly-apple-aarch64.buckyos-filebrowser-bin#0.4.1"
+                    "pkg_id": "nightly-apple-aarch64.buckyos_filebrowser-bin#0.4.1"
                 },
                 "amd64_apple_app": {
-                    "pkg_id": "nightly-apple-amd64.buckyos-filebrowser-bin#0.4.1"
+                    "pkg_id": "nightly-apple-amd64.buckyos_filebrowser-bin#0.4.1"
                 }
             },
             "deps": {
-                "nightly-linux-amd64.buckyos-filebrowser-img": "0.4.1",
-                "nightly-linux-aarch64.buckyos-filebrowser-img": "0.4.1",
-                "nightly-windows-amd64.buckyos-filebrowser-bin": "0.4.1",
-                "nightly-apple-amd64.buckyos-filebrowser-bin": "0.4.1",
-                "nightly-apple-aarch64.buckyos-filebrowser-bin": "0.4.1"
+                "nightly-linux-amd64.buckyos_filebrowser-img": "0.4.1",
+                "nightly-linux-aarch64.buckyos_filebrowser-img": "0.4.1",
+                "nightly-windows-amd64.buckyos_filebrowser-bin": "0.4.1",
+                "nightly-apple-amd64.buckyos_filebrowser-bin": "0.4.1",
+                "nightly-apple-aarch64.buckyos_filebrowser-bin": "0.4.1"
             }
         });
         let app_doc:AppDoc = serde_json::from_value(app_doc).unwrap();

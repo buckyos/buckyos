@@ -4,10 +4,11 @@ mod sys_config;
 mod did;
 mod app;
 mod ndn;
-mod test_config;
+
 
 use std::path::Path;
 use buckyos_api::*;
+use buckyos_api::test_config;
 use clap::{Arg, Command};
 use package_cmd::*;
 

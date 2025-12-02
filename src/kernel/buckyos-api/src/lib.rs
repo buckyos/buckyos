@@ -11,6 +11,7 @@ mod repo_client;
 mod runtime;
 mod app_mgr;
 mod gateway_control;
+pub mod test_config;
 
 pub use system_config::*;
 pub use sn_client::*;
@@ -23,6 +24,7 @@ pub use repo_client::*;
 pub use zone_provider::*;
 pub use runtime::*;
 pub use app_mgr::*;
+
 
 
 use tokio::sync::RwLock;

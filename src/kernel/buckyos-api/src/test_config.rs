@@ -255,7 +255,7 @@ impl DevEnvBuilder {
     }
 
     /// 创建用户作用域
-    pub fn user_scope<'a>(
+    fn user_scope<'a>(
         &'a self,
         username: &'a str,
         zone_did: DID,
@@ -381,6 +381,7 @@ impl<'a> UserEnvScope<'a> {
                 "admin_password_hash": ADMIN_PASSWORD_HASH,
                 "device_private_key": device_key_pair.private_key_pem,
                 "device_public_key": device_jwk,
+                "ood_jwt": device_jwt.to_string(),
                 "friend_passcode": "sdfsdfsdf",
                 "gateway_type": "PortForward",
                 "guest_access": true,

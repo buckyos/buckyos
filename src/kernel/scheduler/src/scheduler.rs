@@ -128,6 +128,12 @@ pub enum ServiceSpecState {
     Deleted,
 }
 
+impl Default for ServiceSpecState {
+    fn default() -> Self {
+        ServiceSpecState::New
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum InstanceState {
     New,
@@ -198,6 +204,7 @@ impl From<String> for ServiceSpecState {
 impl From<ServiceState> for ServiceSpecState {
     fn from(state: ServiceState) -> Self {
         match state {
+            ServiceState::New => ServiceSpecState::New,
             ServiceState::Running => ServiceSpecState::Deployed,
             ServiceState::Starting | ServiceState::Restarting | ServiceState::Updating => {
                 ServiceSpecState::Deploying
@@ -542,6 +549,7 @@ impl NodeScheduler {
 
         // Step2. 处理service_spec的实例化与反实例化
         if self.is_spec_changed() {
+            debug!("spec changed, schedule spec change");
             let spec_actions = self.schedule_spec_change()?;
             actions.extend(spec_actions);
         }

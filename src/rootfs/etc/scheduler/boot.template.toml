@@ -7,17 +7,17 @@
 "system/install_settings" = """
 {
     "pre_install_apps": {
-        "buckyos-filebrowser": {
+        "buckyos_filebrowser": {
             "data_mount_point": {
                 "root": "/root"
             },
             "cache_mount_point": [
             ],
             "local_cache_mount_point": [
-            ]
+            ],
             "bind_address": "0.0.0.0",
             "service_ports": {
-                "http": 80,
+                "http": 80
             },
             "res_pool_id": "default"
         }

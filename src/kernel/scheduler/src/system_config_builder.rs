@@ -108,7 +108,7 @@ impl SystemConfigBuilder {
                 user_id: config.user_name.clone(),
                 enable: true,
                 expected_instance_count: 1,
-                state: ServiceState::Running,
+                state: ServiceState::default(),
                 install_config: app_install_config.clone(),
             };
 
@@ -352,7 +352,7 @@ async fn build_kernel_service_spec(
         service_doc,
         enable: true,
         expected_instance_count,
-        state: ServiceState::Running,
+        state: ServiceState::default(),
         install_config,
     })
 }

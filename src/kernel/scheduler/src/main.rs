@@ -50,8 +50,6 @@ async fn create_init_list_by_template(zone_boot_config: &ZoneBootConfig) -> Resu
     let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
     let verify_hub_public_key: Jwk = serde_json::from_value(public_key_jwk).map_err(|e| anyhow::anyhow!("invalid jwk: {}", e))?;
 
-
-
     //load boot.template
     let template_type_str = "boot".to_string();
     let template_file_path = get_buckyos_system_etc_dir()
@@ -242,38 +240,53 @@ async fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
+    use system_config_agent::create_scheduler_by_system_config;
     use async_trait::async_trait;
-    use jsonwebtoken::jwk::Jwk;
+    use jsonwebtoken::{jwk::Jwk, DecodingKey};
     use name_client::{
         NameClient, NameClientConfig, NameInfo, NsProvider, RecordType, GLOBAL_NAME_CLIENT,
     };
-    use name_lib::{EncodedDocument, NSError, OODDescriptionString, DEFAULT_EXPIRE_TIME};
+    use name_lib::{
+        DeviceConfig, DeviceInfo, EncodedDocument, NSError, OODDescriptionString, DEFAULT_EXPIRE_TIME,
+    };
     use package_lib::PackageId;
-    use serde_json::{json, Value};
+    use serde_json::json;
     use std::collections::HashMap;
     use std::fs;
     use std::net::IpAddr;
     use std::path::Path;
     use std::sync::Arc;
     use tempfile::TempDir;
+    use buckyos_api::test_config;
 
-    const TEST_PUBLIC_KEY_X: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const TEST_USERNAME: &str = "devtest";
+    const TEST_ZONE_NAME: &str = "devtest";
+    const TEST_HOSTNAME: &str = "devtest.buckyos.io";
+    const TEST_DEVICE_NAME: &str = "ood1";
+    const TEST_NET_ID: &str = "lan1";
 
     #[tokio::test]
-    async fn create_init_list_by_template_generates_service_specs() {
+    async fn test_boot_schedule() {
         let temp_root = TempDir::new().unwrap();
         unsafe {
+            std::env::set_var("BUCKY_LOG", "debug");
             std::env::set_var("BUCKYOS_ROOT", temp_root.path().to_string_lossy().to_string());
         }
 
-        write_start_config(temp_root.path());
+        buckyos_kit::init_logging("scheduler-test", false);
+
         write_boot_template(temp_root.path());
         init_static_name_client().await;
 
-        let zone_boot_config = build_zone_boot_config();
-        let init_map = create_init_list_by_template(&zone_boot_config)
+        let zone_boot_config = prepare_scheduler_test_configs(temp_root.path()).await;
+        let mut init_map = create_init_list_by_template(&zone_boot_config)
             .await
             .expect("init list generation should succeed");
+        ensure_device_info_entry(
+            &mut init_map,
+            zone_boot_config.owner_key.as_ref().expect("owner key missing"),
+        )
+        .expect("device info generation failed");
 
         assert!(init_map.contains_key("boot/config"));
         assert!(init_map.contains_key("services/verify-hub/spec"));
@@ -285,23 +298,18 @@ mod test {
             println!("#{} ==> {}", key, value);
         }
 
+        println!("start test boot scheduler...");
+        let (mut scheduler_ctx, device_list) = create_scheduler_by_system_config(&init_map).unwrap();
+        let action_list = scheduler_ctx.schedule().expect("schedule should succeed");
+        println!("boot scheduler success!");
+        for action in action_list {
+            println!("action: {:?}", action);
+        }
+
         unsafe {
             std::env::remove_var("BUCKYOS_ROOT");
         }
         drop(temp_root);
-    }
-
-    fn write_start_config(root: &Path) {
-        let etc_dir = root.join("etc");
-        fs::create_dir_all(&etc_dir).unwrap();
-        let start_config = json!({
-            "user_name": "tester",
-            "admin_password_hash": "hash",
-            "public_key": test_public_key_value(),
-            "ood_jwt": "dummy-jwt"
-        });
-        let config_path = etc_dir.join("start_config.json");
-        fs::write(config_path, serde_json::to_string_pretty(&start_config).unwrap()).unwrap();
     }
 
     fn write_boot_template(root: &Path) {
@@ -310,37 +318,176 @@ mod test {
         let template = r#"
 "system/install_settings" = """
 {
-    "pre_install_apps": {}
+    "pre_install_apps": {
+        "buckyos_filebrowser": {
+            "data_mount_point": {
+                "root": "/root"
+            },
+            "cache_mount_point": [
+            ],
+            "local_cache_mount_point": [
+            ],
+            "bind_address": "0.0.0.0",
+            "service_ports": {
+                "http": 80
+            },
+            "res_pool_id": "default"
+        }
+    }
 }
+"""
+"system/rbac/base_policy" = """
+p, kernel, kv://*, read|write,allow
+p, kernel, dfs://*, read|write,allow
+p, kernel, ndn://*, read|write,allow
+
+p, root, kv://*, read|write,allow
+p, root, dfs://*, read|write,allow
+p, root, ndn://*, read|write,allow
+
+p, ood,kv://*,read,allow
+p, ood,kv://users/*/apps/*,read|write,allow
+p, ood,kv://nodes/{device}/*,read|write,allow
+p, ood,kv://services/*,read|write,allow
+p, ood,kv://system/rbac/policy,read|write,allow
+
+p, client, kv://boot/*, read,allow
+p, client,kv://devices/{device}/*,read,allow
+p, client,kv://devices/{device}/info,read|write,allow
+
+p, service, kv://boot/*, read,allow
+p, service,kv://services/{service}/*,read|write,allow
+p, service,kv://services/*/info,read,allow
+p, service,kv://users*,read,allow
+p, service,kv://users/*/*,read,allow
+p, service,kv://system/*,read,allow
+p, service,dfs://system/data/{service}/*,read|write,allow
+p, service,dfs://system/cache/{service}/*,read|write,allow
+
+p, app, kv://boot/*, read,allow
+p, app, kv://users/*/apps/{app}/settings,read|write,allow
+p, app, kv://users/*/apps/{app}/config,read,allow
+p, app, kv://users/*/apps/{app}/info,read,allow
+p, app, dfs://users/*/appdata/{app}/*, read|write,allow
+p, app, dfs://users/*/cache/{app}/*, read|write,allow
+p, admin, kv://boot/*, read,allow
+p, admin,kv://users/{user}/*,read|write,allow
+p, admin,dfs://users/{user}/*,read|write,allow
+p, admin,kv://services/*,read|write,allow
+p, admin,dfs://library/*,read|write,allow
+p, user, kv://boot/*, read,allow
+p, user,kv://users/{user}/*,read,allow
+p, user,kv://users/{user}/apps/*/*,read|write,allow
+p, user,dfs://users/{user}/*,read|write,allow
+p, user,dfs://users/{user}/home/*,read|write,allow
+p, user,dfs://library/*,read,allow
+
+g, node-daemon, kernel
+g, scheduler, kernel
+g, system-config, kernel
+g, verify-hub, kernel
+g, control-panel, kernel
+g, buckycli, kernel
+g, cyfs-gateway, kernel
 """
 "#;
         fs::write(scheduler_dir.join("boot.template.toml"), template).unwrap();
     }
 
-    fn build_zone_boot_config() -> ZoneBootConfig {
-        ZoneBootConfig {
-            id: Some(DID::new("bns", "test-zone")),
-            oods: vec!["ood1".parse::<OODDescriptionString>().unwrap()],
-            sn: None,
-            exp: DEFAULT_EXPIRE_TIME + 10,
-            owner: Some(DID::new("bns", "tester")),
-            extra_info: HashMap::new(),
-            owner_key: Some(test_public_key_jwk()),
-            gateway_devs: vec![],
-            devices: HashMap::new(),
-        }
+    async fn prepare_scheduler_test_configs(root: &Path) -> ZoneBootConfig {
+        let output_dir = root.join("dev_env");
+        fs::create_dir_all(&output_dir).unwrap();
+        let output_dir_str = output_dir.to_string_lossy().to_string();
+
+        test_config::cmd_create_user_env(
+            TEST_USERNAME,
+            TEST_HOSTNAME,
+            TEST_NET_ID,
+            Some(output_dir_str.as_str()),
+        )
+        .await
+        .expect("failed to create user env");
+
+        test_config::cmd_create_node_configs(
+            TEST_USERNAME,
+            TEST_DEVICE_NAME,
+            TEST_ZONE_NAME,
+            Some(output_dir_str.as_str()),
+            Some(TEST_NET_ID),
+        )
+        .await
+        .expect("failed to create node config");
+
+        let etc_dir = root.join("etc");
+        fs::create_dir_all(&etc_dir).unwrap();
+        let start_config_src = output_dir
+            .join(TEST_USERNAME)
+            .join(TEST_DEVICE_NAME)
+            .join("start_config.json");
+        fs::copy(
+            start_config_src,
+            etc_dir.join("start_config.json"),
+        )
+        .expect("failed to copy start_config");
+
+        let zone_config_file = format!("{}.zone.json", TEST_HOSTNAME);
+        let zone_boot_path = output_dir
+            .join(TEST_USERNAME)
+            .join(zone_config_file);
+        let mut zone_boot_config: ZoneBootConfig = serde_json::from_str(
+            &fs::read_to_string(zone_boot_path).expect("failed to read zone boot config"),
+        )
+        .expect("failed to parse zone boot config");
+
+        let owner_config_path = output_dir
+            .join(TEST_USERNAME)
+            .join("user_config.json");
+        let owner_config_value: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(owner_config_path).expect("failed to read owner config"),
+        )
+        .expect("failed to parse owner config");
+        let owner_key_value = owner_config_value["verificationMethod"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|vm| vm.get("publicKeyJwk"))
+            .cloned()
+            .expect("owner public key not found");
+        let owner_key: Jwk = serde_json::from_value(owner_key_value).expect("invalid owner jwk");
+
+        zone_boot_config.owner_key = Some(owner_key);
+        zone_boot_config.owner = Some(DID::new("bns", TEST_USERNAME));
+        zone_boot_config.id = Some(DID::new("web", TEST_HOSTNAME));
+
+        zone_boot_config
     }
 
-    fn test_public_key_value() -> Value {
-        json!({
-            "kty": "OKP",
-            "crv": "Ed25519",
-            "x": TEST_PUBLIC_KEY_X
-        })
-    }
+    fn ensure_device_info_entry(
+        init_map: &mut HashMap<String, String>,
+        owner_key: &Jwk,
+    ) -> Result<(), String> {
+        let doc_key = format!("devices/{}/doc", TEST_DEVICE_NAME);
+        let doc_value = init_map
+            .get(&doc_key)
+            .ok_or_else(|| format!("{} not found in init map", doc_key))?
+            .clone();
 
-    fn test_public_key_jwk() -> Jwk {
-        serde_json::from_value(test_public_key_value()).unwrap()
+        let encoded_doc =
+            EncodedDocument::from_str(doc_value).map_err(|e| format!("invalid encoded doc: {:?}", e))?;
+        let decoding_key =
+            DecodingKey::from_jwk(owner_key).map_err(|e| format!("invalid owner jwk: {}", e))?;
+        let device_config =
+            DeviceConfig::decode(&encoded_doc, Some(&decoding_key)).map_err(|e| {
+                format!("failed to decode device document: {}", e)
+            })?;
+        let device_info = DeviceInfo::from_device_doc(&device_config);
+        let device_info_json =
+            serde_json::to_string(&device_info).map_err(|e| format!("serialize device info: {}", e))?;
+
+        init_map.insert(
+            format!("devices/{}/info", TEST_DEVICE_NAME),
+            device_info_json,
+        );
+        Ok(())
     }
 
     async fn init_static_name_client() {
@@ -348,10 +495,71 @@ mod test {
             return;
         }
         let client = NameClient::new(NameClientConfig::default());
+
+        let mut docs = kernel_service_docs();
+        docs.insert(PackageId::unique_name_to_did("buckyos_filebrowser").to_raw_host_name(), get_filebrowser_doc());
         client
-            .add_provider(Box::new(StaticProvider::new(kernel_service_docs())))
+            .add_provider(Box::new(StaticProvider::new(docs)))
             .await;
         let _ = GLOBAL_NAME_CLIENT.set(client);
+    }
+
+    fn get_filebrowser_doc() -> EncodedDocument {
+        let doc_str = r#"{
+  "pkg_name": "buckyos_filebrowser",
+  "version": "0.4.1",
+  "description": {
+    "detail": "BuckyOS File Browser"
+  },
+  "pub_time": 1743008063,
+  "exp": 1837616063,
+  "deps": {
+    "nightly-apple-amd64.buckyos_filebrowser-bin": "0.4.1",
+    "nightly-linux-aarch64.buckyos_filebrowser-img": "0.4.1",
+    "nightly-linux-amd64.buckyos_filebrowser-img": "0.4.1",
+    "nightly-windows-amd64.buckyos_filebrowser-bin": "0.4.1",
+    "nightly-apple-aarch64.buckyos_filebrowser-bin": "0.4.1"
+  },
+  "tag": "latest",
+  "author": "did:web:buckyos.ai",
+  "owner": "did:web:buckyos.ai",
+  "show_name": "BuckyOS File Browser",
+  "selector_type": "single",
+  "install_config_tips": {
+    "data_mount_point": [
+      "/srv/",
+      "/database/",
+      "/config/"
+    ],
+    "local_cache_mount_point": [],
+    "service_ports": {
+      "www": 80
+    }
+  },
+  "pkg_list": {
+    "amd64_docker_image": {
+      "pkg_id": "nightly-linux-amd64.buckyos_filebrowser-img#0.4.1",
+      "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-amd64"
+    },
+    "aarch64_docker_image": {
+      "pkg_id": "nightly-linux-aarch64.buckyos_filebrowser-img#0.4.1",
+      "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-aarch64"
+    },
+    "amd64_win_app": {
+      "pkg_id": "nightly-windows-amd64.buckyos_filebrowser-bin#0.4.1"
+    },
+    "aarch64_apple_app": {
+      "pkg_id": "nightly-apple-aarch64.buckyos_filebrowser-bin#0.4.1"
+    },
+    "web": null,
+    "amd64_apple_app": {
+      "pkg_id": "nightly-apple-amd64.buckyos_filebrowser-bin#0.4.1"
+    }
+  }
+}        
+        "#;
+        let doc: EncodedDocument = EncodedDocument::from_str(doc_str.to_string()).unwrap();
+        doc
     }
 
     fn kernel_service_docs() -> HashMap<String, EncodedDocument> {
