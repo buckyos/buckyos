@@ -25,6 +25,7 @@ uuid = { workspace = true }
 buckyos-kit = { workspace = true }
 name-lib = { workspace = true }
 name-client = { workspace = true }
+package-lib = { workspace = true }
 rbac = { workspace = true }
 kRPC = { workspace = true }
 buckyos-api = { path = "../buckyos-api" }
@@ -33,3 +34,6 @@ cyfs-gateway-lib = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

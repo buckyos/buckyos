@@ -12,6 +12,7 @@ mod scheduler_test;
 use jsonwebtoken::jwk::Jwk;
 use log::*;
 use serde_json::Value;
+use serde_json::json;
 use std::collections::HashMap;
 use std::process::exit;
 //use upon::Engine;
@@ -30,6 +31,7 @@ use server_runner::*;
 use std::sync::Arc;
 use anyhow::Result;
 
+
 async fn create_init_list_by_template(zone_boot_config: &ZoneBootConfig) -> Result<HashMap<String, String>> {
     //load start_parms from active_service.
     let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
@@ -38,39 +40,61 @@ async fn create_init_list_by_template(zone_boot_config: &ZoneBootConfig) -> Resu
         start_params_file_path.to_string_lossy()
     );
     let start_params_str = tokio::fs::read_to_string(start_params_file_path).await?;
-    let start_params: serde_json::Value = serde_json::from_str(&start_params_str)?;
+    let mut start_params: serde_json::Value = serde_json::from_str(&start_params_str)?;
+    // 将Windows路径中的反斜杠转换为正斜杠，避免TOML转义问题
+    let buckyos_root = get_buckyos_root_dir().to_string_lossy().to_string().replace('\\', "/");
+    start_params["BUCKYOS_ROOT"] = json!(buckyos_root);
     let start_config = StartConfigSummary::from_value(&start_params)?;
 
     //generate dynamic params
     let (private_key_pem, public_key_jwk) = generate_ed25519_key_pair();
     let verify_hub_public_key: Jwk = serde_json::from_value(public_key_jwk).map_err(|e| anyhow::anyhow!("invalid jwk: {}", e))?;
 
-    // let verify_hub_public_key: Value = serde_json::from_str(&public_key_jwk.to_string()).map_err(|err| {
-    //     anyhow::anyhow!("parse verify hub public key failed: {:?}", err)
-    // })?;
 
-    let mut builder = SystemConfigBuilder::new();
+
+    //load boot.template
+    let template_type_str = "boot".to_string();
+    let template_file_path = get_buckyos_system_etc_dir()
+        .join("scheduler")
+        .join(format!("{}.template.toml", template_type_str));
+    let template_str = tokio::fs::read_to_string(template_file_path).await?;
+
+    let mut engine = upon::Engine::new();
+    engine.add_template("config", &template_str)?;
+    let result = engine
+        .template("config")
+        .render(&start_params)
+        .to_string()?;
+
+    if result.find("{{").is_some() {
+        return Err(anyhow::anyhow!(
+            "template contains unescaped double curly braces"
+        ));
+    }
+    let mut boot_config: HashMap<String, String> = toml::from_str(&result)?;
+    if !boot_config.contains_key("system/rbac/base_policy") {
+        boot_config.insert("system/rbac/base_policy".to_string(), rbac::DEFAULT_POLICY.to_string());
+    }
+    if !boot_config.contains_key("system/rbac/model") {
+        boot_config.insert("system/rbac/model".to_string(), rbac::DEFAULT_MODEL.to_string());
+    }
+
+    let ood_name = zone_boot_config.oods.first().unwrap().name.as_str();
+    let mut builder = SystemConfigBuilder::new(boot_config);
     builder
-        .add_default_accounts(&start_config)?
+        .add_boot_config(&start_config, &verify_hub_public_key, zone_boot_config)?
         .add_user_doc(&start_config)?
-        .add_default_apps(&start_config)?
-        .add_device_doc(&start_config)?
+        .add_default_accounts(&start_config)?
+        .add_device_doc(ood_name,&start_config)?
         .add_system_defaults()?
-        .add_verify_hub_entries(&private_key_pem)?
-        .add_scheduler_service()?
+        .add_verify_hub(&private_key_pem).await?
+        .add_scheduler().await?
+        .add_repo_service().await?
+        .add_smb_service().await?
+        .add_default_apps(&start_config).await?
         .add_gateway_settings(&start_config)?
-        .add_repo_service_entries()?
-        .add_smb_service()?
-        .add_node_defaults()?
-        .add_boot_config(&start_config, &verify_hub_public_key, zone_boot_config)?;
-
+        .add_node(ood_name)?;
     let mut config = builder.build();
-    if !config.contains_key("system/rbac/base_policy") {
-        config.insert("system/rbac/base_policy".to_string(), rbac::DEFAULT_POLICY.to_string());
-    }
-    if !config.contains_key("system/rbac/model") {
-        config.insert("system/rbac/model".to_string(), rbac::DEFAULT_MODEL.to_string());
-    }
 
     Ok(config)
 }
@@ -130,16 +154,16 @@ async fn do_boot_scheduler() -> Result<()> {
         system_config_client.create(key, value).await?;
     }
 
-    info!("do first schedule!");
+    info!("start boot schedule...");
     let boot_result = schedule_loop(true).await;
     if boot_result.is_err() {
         error!("boot schedule_loop failed: {:?}", boot_result.err().unwrap());
         return Err(anyhow::anyhow!("schedule_loop failed"));
     }
     system_config_client.refresh_trust_keys().await?;
-    info!("system_config_service refresh trust keys success");
+    info!("system_config_service refresh trust keys success.");
     
-    info!("boot scheduler success");
+    info!("do boot scheduler success!");
     return Ok(());
 }
 
@@ -218,31 +242,186 @@ async fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use tokio::test;
+    use async_trait::async_trait;
+    use jsonwebtoken::jwk::Jwk;
+    use name_client::{
+        NameClient, NameClientConfig, NameInfo, NsProvider, RecordType, GLOBAL_NAME_CLIENT,
+    };
+    use name_lib::{EncodedDocument, NSError, OODDescriptionString, DEFAULT_EXPIRE_TIME};
+    use package_lib::PackageId;
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+    use std::fs;
+    use std::net::IpAddr;
+    use std::path::Path;
+    use std::sync::Arc;
+    use tempfile::TempDir;
 
-    //#[tokio::test]
-    async fn test_template() {
-        let zone_boot_config = ZoneBootConfig {
-            id: Some(DID::new("bns", "test")),
-            oods: vec!["ood1".to_string().parse().unwrap()],
+    const TEST_PUBLIC_KEY_X: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    #[tokio::test]
+    async fn create_init_list_by_template_generates_service_specs() {
+        let temp_root = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("BUCKYOS_ROOT", temp_root.path().to_string_lossy().to_string());
+        }
+
+        write_start_config(temp_root.path());
+        write_boot_template(temp_root.path());
+        init_static_name_client().await;
+
+        let zone_boot_config = build_zone_boot_config();
+        let init_map = create_init_list_by_template(&zone_boot_config)
+            .await
+            .expect("init list generation should succeed");
+
+        assert!(init_map.contains_key("boot/config"));
+        assert!(init_map.contains_key("services/verify-hub/spec"));
+        assert!(init_map.contains_key("services/scheduler/spec"));
+        assert!(init_map.contains_key("services/repo-service/spec"));
+        assert!(init_map.contains_key("services/smb-service/spec"));
+
+        for (key, value) in init_map.iter() {
+            println!("#{} ==> {}", key, value);
+        }
+
+        unsafe {
+            std::env::remove_var("BUCKYOS_ROOT");
+        }
+        drop(temp_root);
+    }
+
+    fn write_start_config(root: &Path) {
+        let etc_dir = root.join("etc");
+        fs::create_dir_all(&etc_dir).unwrap();
+        let start_config = json!({
+            "user_name": "tester",
+            "admin_password_hash": "hash",
+            "public_key": test_public_key_value(),
+            "ood_jwt": "dummy-jwt"
+        });
+        let config_path = etc_dir.join("start_config.json");
+        fs::write(config_path, serde_json::to_string_pretty(&start_config).unwrap()).unwrap();
+    }
+
+    fn write_boot_template(root: &Path) {
+        let scheduler_dir = root.join("etc").join("scheduler");
+        fs::create_dir_all(&scheduler_dir).unwrap();
+        let template = r#"
+"system/install_settings" = """
+{
+    "pre_install_apps": {}
+}
+"""
+"#;
+        fs::write(scheduler_dir.join("boot.template.toml"), template).unwrap();
+    }
+
+    fn build_zone_boot_config() -> ZoneBootConfig {
+        ZoneBootConfig {
+            id: Some(DID::new("bns", "test-zone")),
+            oods: vec!["ood1".parse::<OODDescriptionString>().unwrap()],
             sn: None,
-            exp: 0,
-            owner: None,
+            exp: DEFAULT_EXPIRE_TIME + 10,
+            owner: Some(DID::new("bns", "tester")),
             extra_info: HashMap::new(),
-            owner_key: None,
+            owner_key: Some(test_public_key_jwk()),
             gateway_devs: vec![],
             devices: HashMap::new(),
-        };
-        let start_params = create_init_list_by_template(&zone_boot_config).await.unwrap();
-        for (key, value) in start_params.iter() {
-            let json_value = serde_json::from_str(value);
-            if json_value.is_ok() {
-                let json_value: serde_json::Value = json_value.unwrap();
-                println!("{}:\t{:?}", key, json_value);
-            } else {
-                println!("{}:\t{}", key, value);
+        }
+    }
+
+    fn test_public_key_value() -> Value {
+        json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": TEST_PUBLIC_KEY_X
+        })
+    }
+
+    fn test_public_key_jwk() -> Jwk {
+        serde_json::from_value(test_public_key_value()).unwrap()
+    }
+
+    async fn init_static_name_client() {
+        if GLOBAL_NAME_CLIENT.get().is_some() {
+            return;
+        }
+        let client = NameClient::new(NameClientConfig::default());
+        client
+            .add_provider(Box::new(StaticProvider::new(kernel_service_docs())))
+            .await;
+        let _ = GLOBAL_NAME_CLIENT.set(client);
+    }
+
+    fn kernel_service_docs() -> HashMap<String, EncodedDocument> {
+        let mut docs = HashMap::new();
+        for pkg in [
+            VERIFY_HUB_UNIQUE_ID,
+            SCHEDULER_SERVICE_UNIQUE_ID,
+            REPO_SERVICE_UNIQUE_ID,
+            SMB_SERVICE_UNIQUE_ID,
+        ] {
+            let did = PackageId::unique_name_to_did(pkg);
+            docs.insert(did.to_host_name(), kernel_service_doc(pkg));
+        }
+        docs
+    }
+
+    fn kernel_service_doc(pkg_name: &str) -> EncodedDocument {
+        EncodedDocument::JsonLd(json!({
+            "pkg_name": pkg_name,
+            "version": "0.1.0",
+            "description": {},
+            "pub_time": 0,
+            "exp": DEFAULT_EXPIRE_TIME * 2,
+            "deps": {},
+            "author": "tester",
+            "owner": "did:bns:tester",
+            "show_name": pkg_name,
+            "selector_type": "random"
+        }))
+    }
+
+    #[derive(Clone)]
+    struct StaticProvider {
+        docs: Arc<HashMap<String, EncodedDocument>>,
+    }
+
+    impl StaticProvider {
+        fn new(docs: HashMap<String, EncodedDocument>) -> Self {
+            Self {
+                docs: Arc::new(docs),
             }
         }
-        //println!("start_params:{}",serde_json::to_string(&start_params).unwrap());
+    }
+
+    #[async_trait]
+    impl NsProvider for StaticProvider {
+        fn get_id(&self) -> String {
+            "static-provider".to_string()
+        }
+
+        async fn query(
+            &self,
+            name: &str,
+            _record_type: Option<RecordType>,
+            _from_ip: Option<IpAddr>,
+        ) -> name_lib::NSResult<NameInfo> {
+            Err(NSError::NotFound(name.to_string()))
+        }
+
+        async fn query_did(
+            &self,
+            did: &DID,
+            _fragment: Option<&str>,
+            _from_ip: Option<IpAddr>,
+        ) -> name_lib::NSResult<EncodedDocument> {
+            let host = did.to_host_name();
+            self.docs
+                .get(&host)
+                .cloned()
+                .ok_or_else(|| NSError::NotFound(host))
+        }
     }
 }

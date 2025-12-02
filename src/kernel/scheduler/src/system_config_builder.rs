@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Result};
 use buckyos_api::{
-    AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceDoc, KernelServiceSpec,
-    NodeConfig, NodeState, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo,
-    ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType,
+    AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceDoc, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID
 };
+use buckyos_api::{SMB_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID};
 use jsonwebtoken::jwk::Jwk;
+use name_client::resolve_did;
 use name_lib::{DID, OwnerConfig, VerifyHubInfo, ZoneBootConfig, ZoneConfig};
+use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -23,14 +24,20 @@ pub struct StartConfigSummary {
 }
 
 
+
+#[derive(Serialize, Deserialize)]
+pub struct SystemInstallSettings {
+    pub pre_install_apps: HashMap<String, ServiceInstallConfig>,
+}
+
 pub struct SystemConfigBuilder {
     entries: HashMap<String, String>,
 }
 
 impl SystemConfigBuilder {
-    pub fn new() -> Self {
+    pub fn new(init_map: HashMap<String, String>) -> Self {
         Self {
-            entries: HashMap::new(),
+            entries: init_map,
         }
     }
 
@@ -53,6 +60,7 @@ impl SystemConfigBuilder {
             res_pool_id: "default".to_string(),
         };
         self.insert_json(&admin_key, &admin_settings)?;
+        self.append_policy(&format!("g, {}, admin", config.user_name));
         Ok(self)
     }
 
@@ -72,44 +80,48 @@ impl SystemConfigBuilder {
         Ok(self)
     }
 
-    pub fn add_default_apps(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
-        let app_key = format!(
-            "users/{}/apps/buckyos-filebrowser/config",
-            config.user_name
-        );
-        let app_doc = build_filebrowser_app_doc()
-            .map_err(|err| anyhow!("failed to build default app doc: {err}"))?;
+    pub async fn build_app_doc(&self, app_id: &str) -> Result<AppDoc> {
+        let app_did = PackageId::unique_name_to_did(app_id);
+        let app_doc = resolve_did(&app_did, None).await?;
+        let doc_value = app_doc.to_json_value()?;
+        let app_doc = serde_json::from_value(doc_value)?;
+        Ok(app_doc)
+    }
 
-        let mut install_config = ServiceInstallConfig::default();
-        install_config.data_mount_point = HashMap::from([
-            ("/srv/".to_string(), "home/".to_string()),
-            (
-                "/database/".to_string(),
-                "buckyos-filebrowser/database/".to_string(),
-            ),
-            (
-                "/config/".to_string(),
-                "buckyos-filebrowser/config/".to_string(),
-            ),
-        ]);
-        install_config.service_ports = HashMap::from([("www".to_string(), 80)]);
+    pub async fn add_default_apps(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
+        let install_settings = self.entries.get("system/install_settings");
+        if install_settings.is_none() {
+            return Err(anyhow!("system/install_settings not found"));
+        }
+        let install_settings : SystemInstallSettings = serde_json::from_str(install_settings.unwrap())?;
+        let mut app_index = 10;
+        for (app_id, app_install_config) in install_settings.pre_install_apps.iter() {
+            let app_doc = self.build_app_doc(app_id).await?;
+            let app_key = format!(
+                "users/{}/apps/{}/spec",
+                config.user_name, app_id
+            );
+      
+            let app_spec = AppServiceSpec {
+                app_doc,
+                app_index: app_index,
+                user_id: config.user_name.clone(),
+                enable: true,
+                expected_instance_count: 1,
+                state: ServiceState::Running,
+                install_config: app_install_config.clone(),
+            };
 
-        let app_config = AppServiceSpec {
-            app_doc,
-            app_index: 1,
-            user_id: config.user_name.clone(),
-            enable: true,
-            expected_instance_count: 1,
-            state: ServiceState::Stopped,
-            install_config,
-        };
+            self.insert_json(&app_key, &app_spec)?;
+            app_index += 10;
+        }
 
-        self.insert_json(&app_key, &app_config)?;
         Ok(self)
     }
 
     pub fn add_device_doc(
         &mut self,
+        ood_name: &str,
         config: &StartConfigSummary,
     ) -> Result<&mut Self> {
         let ood_jwt = config
@@ -117,7 +129,7 @@ impl SystemConfigBuilder {
             .as_ref()
             .ok_or_else(|| anyhow!("start_config.json missing ood_jwt"))?;
         self.entries
-            .insert(format!("devices/{}/doc", DEFAULT_OOD_ID), ood_jwt.clone());
+            .insert(format!("devices/{}/doc", ood_name), ood_jwt.clone());
         Ok(self)
     }
 
@@ -126,7 +138,7 @@ impl SystemConfigBuilder {
         Ok(self)
     }
 
-    pub fn add_verify_hub_entries(
+    pub async fn add_verify_hub(
         &mut self,
         verify_hub_private_key: &str,
     ) -> Result<&mut Self> {
@@ -134,62 +146,27 @@ impl SystemConfigBuilder {
             .insert("system/verify-hub/key".into(), verify_hub_private_key.to_string());
 
         let config = build_kernel_service_spec(
-            "verify_hub",
-            "Verify Hub",
-            "verify hub is SSO service of buckyos",
-            "kernel_service",
-            "single",
+            VERIFY_HUB_UNIQUE_ID,
             3300,
-            1,
-            ServiceState::Running,
-        )?;
-        self.insert_json("services/verify-hub/config", &config)?;
+            1
+        ).await?;
+        self.insert_json("services/verify-hub/spec", &config)?;
 
         let settings = VerifyHubSettings {
             trust_keys: vec![],
         };
         self.insert_json("services/verify-hub/settings", &settings)?;
-
-        let info = ServiceInfo {
-            selector_type: "random".to_string(),
-            node_list: HashMap::from([(
-                DEFAULT_OOD_ID.to_string(),
-                ServiceNode {
-                    node_did: "".to_string(),
-                    node_net_id: None,
-                    state: ServiceInstanceState::Started,
-                    weight: 100,
-                    service_port: HashMap::from([("main".to_string(), 3300)]),
-                },
-            )]),
-        };
-        self.insert_json("services/verify-hub/info", &info)?;
-
-        let instance = ServiceInstanceReportInfo {
-            instance_id: format!("verify-hub-{}", DEFAULT_OOD_ID),
-            state: ServiceInstanceState::Started,
-            service_ports: HashMap::from([("main".to_string(), 3300)]),
-            last_update_time: 0,
-            start_time: 0,
-            pid: 0,
-        };
-        self.insert_json(&format!("services/verify-hub/instances/{}", DEFAULT_OOD_ID), &instance)?;
-        
+     
         Ok(self)
     }
 
-    pub fn add_scheduler_service(&mut self) -> Result<&mut Self> {
+    pub async fn add_scheduler(&mut self) -> Result<&mut Self> {
         let config = build_kernel_service_spec(
-            "scheduler",
-            "Scheduler",
-            "scheduler is the core service of buckyos",
-            "kernel_service",
-            "single",
+            SCHEDULER_SERVICE_UNIQUE_ID,
             3400,
-            1,
-            ServiceState::Running,
-        )?;
-        self.insert_json("services/scheduler/config", &config)?;
+            1
+        ).await?;
+        self.insert_json("services/scheduler/spec", &config)?;
         Ok(self)
     }
 
@@ -229,22 +206,17 @@ impl SystemConfigBuilder {
         Ok(self)
     }
 
-    pub fn add_repo_service_entries(&mut self) -> Result<&mut Self> {
+    pub async fn add_repo_service(&mut self) -> Result<&mut Self> {
         let config = build_kernel_service_spec(
-            "repo_service",
-            "Repo Service",
-            "repo service is the repo service of buckyos",
-            "frame_service",
-            "single",
+            REPO_SERVICE_UNIQUE_ID,
             4000,
-            1,
-            ServiceState::Running,
-        )?;
-        self.insert_json("services/repo-service/config", &config)?;
+            1
+        ).await?;
+        self.insert_json("services/repo-service/spec", &config)?;
 
         let settings = RepoServiceSettings {
             remote_source: HashMap::from([
-                ("root".to_string(), "https://buckyos.ai/ndn/repo/meta_index.db".to_string())
+                ("default".to_string(), "https://buckyos.ai/ndn/repo/meta_index.db".to_string())
             ]),
             enable_dev_mode: true,
         };
@@ -266,29 +238,36 @@ impl SystemConfigBuilder {
         Ok(self)
     }
 
-    pub fn add_smb_service(&mut self) -> Result<&mut Self> {
+    pub async fn add_smb_service(&mut self) -> Result<&mut Self> {
         let config = build_kernel_service_spec(
-            "smb_service",
-            "SMB Service",
-            "smb-service is the samba service of buckyos",
-            "frame_service",
-            "single",
+            SMB_SERVICE_UNIQUE_ID,
             4100,
-            1,
-            ServiceState::Running,
-        )?;
-        self.insert_json("services/smb-service/config", &config)?;
+            1
+        ).await?;
+        self.insert_json("services/smb-service/spec", &config)?;
         Ok(self)
     }
 
-    pub fn add_node_defaults(&mut self) -> Result<&mut Self> {
+    pub fn append_policy(&mut self, policy: &str) -> Result<&mut Self> {
+        let policy_str = self.entries.get("system/rbac/base_policy");
+        if policy_str.is_none() {
+            self.entries.insert("system/rbac/base_policy".to_string(), policy.to_string());
+            return Ok(self);
+        }
+        let policy_str = policy_str.unwrap();
+        let new_policy_str = format!("{}\n{}", policy_str, policy);
+        self.entries.insert("system/rbac/base_policy".to_string(), new_policy_str);
+        Ok(self)
+    }
+
+    pub fn add_node(&mut self,ood_name: &str) -> Result<&mut Self> {
         let config = NodeConfig {
             kernel: HashMap::new(),
             apps: HashMap::new(),
             frame_services: HashMap::new(),
             state: NodeState::Running,
         };
-        self.insert_json(&format!("nodes/{}/config", DEFAULT_OOD_ID), &config)?;
+        self.insert_json(&format!("nodes/{}/config", ood_name), &config)?;
 
         let gateway_config = json!({
             "servers": {
@@ -311,7 +290,9 @@ impl SystemConfigBuilder {
             },
             "inner_services": {}
         });
-        self.insert_json(&format!("nodes/{}/gateway_config", DEFAULT_OOD_ID), &gateway_config)?;
+        self.insert_json(&format!("nodes/{}/gateway_config", ood_name), &gateway_config)?;
+
+        self.append_policy(&format!("g, {ood_name}, ood"))?;
         Ok(self)
     }
 
@@ -351,103 +332,27 @@ impl SystemConfigBuilder {
     }
 }
 
-fn build_filebrowser_app_doc() -> Result<AppDoc> {
-    let doc_value = json!({
-        "pkg_name": "buckyos-filebrowser",
-        "version": "0.4.0",
-        "tag": "latest",
-        "app_name": "BuckyOS File Browser",
-        "description": {
-            "detail": "BuckyOS File Browser"
-        },
-        "author": "did:web:buckyos.ai",
-        "pub_time": 1743008063u64,
-        "exp": 1837616063u64,
-        "selector_type": "single",
-        "install_config_tips": {
-            "data_mount_point": ["/srv/", "/database/", "/config/"],
-            "local_cache_mount_point": [],
-            "service_ports": {
-                "www": 80
-            },
-            "container_param": serde_json::Value::Null
-        },
-        "pkg_list": {
-            "amd64_docker_image": {
-                "pkg_id": "nightly-linux-amd64.buckyos-filebrowser-img#0.4.1",
-                "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-amd64"
-            },
-            "aarch64_docker_image": {
-                "pkg_id": "nightly-linux-aarch64.buckyos-filebrowser-img#0.4.1",
-                "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-aarch64"
-            },
-            "amd64_win_app": {
-                "pkg_id": "nightly-windows-amd64.buckyos-filebrowser-bin#0.4.1"
-            },
-            "aarch64_apple_app": {
-                "pkg_id": "nightly-apple-aarch64.buckyos-filebrowser-bin#0.4.1"
-            },
-            "amd64_apple_app": {
-                "pkg_id": "nightly-apple-amd64.buckyos-filebrowser-bin#0.4.1"
-            }
-        },
-        "deps": {
-            "nightly-linux-amd64.buckyos-filebrowser-img": "0.4.1",
-            "nightly-linux-aarch64.buckyos-filebrowser-img": "0.4.1",
-            "nightly-windows-amd64.buckyos-filebrowser-bin": "0.4.1",
-            "nightly-apple-amd64.buckyos-filebrowser-bin": "0.4.1",
-            "nightly-apple-aarch64.buckyos-filebrowser-bin": "0.4.1"
-        }
-    });
-    serde_json::from_value(doc_value)
-        .map_err(|err| anyhow!("failed to deserialize default filebrowser AppDoc: {err}"))
-}
 
-fn build_kernel_service_doc(
+async fn build_kernel_service_spec(
     pkg_name: &str,
-    display_name: &str,
-    description: &str,
-    category: &str,
-    selector_type: &str,
-) -> Result<KernelServiceDoc> {
-    let doc_value = json!({
-        "pkg_name": pkg_name,
-        "version": "0.4.0",
-        "tag": "latest",
-        "author": "did:bns:buckyos",
-        "description": {
-            "detail": description
-        },
-        "category": category,
-        "pub_time": 1743008063u64,
-        "name": display_name,
-        "selector_type": selector_type
-    });
-    serde_json::from_value(doc_value)
-        .map_err(|err| anyhow!("failed to deserialize kernel service doc for {pkg_name}: {err}"))
-}
-
-fn build_kernel_service_spec(
-    pkg_name: &str,
-    display_name: &str,
-    description: &str,
-    category: &str,
-    selector_type: &str,
     port: u16,
     expected_instance_count: u32,
-    state: ServiceState,
 ) -> Result<KernelServiceSpec> {
-    let service_doc =
-        build_kernel_service_doc(pkg_name, display_name, description, category, selector_type)?;
+    let service_did = PackageId::unique_name_to_did(pkg_name);
+    //实际上，读取的是保存在 get_buckyos_service_local_data_dir("name-client", None).join("did_docs")/ 写的配置
+    // 这种设计相比直接调用generate_kernel_service_doc的好处是，可以更好的支持安装包制作正确的service doc
+    let service_doc = resolve_did(&service_did, None).await?;
+    let doc_value = service_doc.to_json_value()?;
+    let service_doc = serde_json::from_value(doc_value)?;
 
     let mut install_config = ServiceInstallConfig::default();
-    install_config.service_ports = HashMap::from([("main".to_string(), port)]);
+    install_config.service_ports = HashMap::from([("http".to_string(), port)]);
 
     Ok(KernelServiceSpec {
         service_doc,
         enable: true,
         expected_instance_count,
-        state,
+        state: ServiceState::Running,
         install_config,
     })
 }

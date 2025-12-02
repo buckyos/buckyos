@@ -140,7 +140,7 @@ fn create_scheduler_by_system_config(
 
         //add app service_spec
         if key.starts_with("users/") {
-            if key.ends_with("/config") {
+            if key.ends_with("/spec") {
                 let parts: Vec<&str> = key.split('/').collect();
                 if parts.len() >= 4 && parts[2] == "apps" {
                     let user_id = parts[1];
@@ -178,7 +178,7 @@ fn create_scheduler_by_system_config(
         }
 
         //add service service_spec
-        if key.starts_with("services/") && key.ends_with("/config") {
+        if key.starts_with("services/") && key.ends_with("/spec") {
             let service_name = key.split('/').nth(1).unwrap();
             let service_config: KernelServiceSpec =
                 serde_json::from_str(value.as_str()).map_err(|e| {
@@ -324,7 +324,7 @@ fn schedule_action_to_tx_actions(
                 }
                 ServiceSpecType::Service | ServiceSpecType::Kernel => {
                     let service_config = input_config
-                        .get(format!("services/{}/config", service_spec.id.as_str()).as_str());
+                        .get(format!("services/{}/spec", service_spec.id.as_str()).as_str());
                     if service_config.is_none() {
                         return Err(anyhow::anyhow!(
                             "service_config {} not found",

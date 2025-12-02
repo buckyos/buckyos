@@ -80,6 +80,7 @@ pub struct ServiceInstallConfigTips {
     //   此时基于app1.service_info可以通过 node_gateway:2189访问到app1的smb服务
     //service_name(like,http , smb, dns, etc...) -> real port
     pub service_ports: HashMap<String,u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub container_param:Option<String>,
     #[serde(flatten)]
     pub custom_config:HashMap<String,serde_json::Value>,
@@ -233,7 +234,7 @@ impl TryFrom<String> for SelectorType {
 pub struct AppDoc {
     #[serde(flatten)]    
     pub meta: PackageMeta,
-    pub app_name: String, // just for display, app_id is meta.pkg_name (like "buckyos-filebrowser")
+    pub show_name: String, // just for display, app_id is meta.pkg_name (like "buckyos-filebrowser")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_icon_url: Option<String>,
     pub selector_type:SelectorType,
@@ -277,6 +278,7 @@ pub struct ServiceInstallConfig {
     pub bind_address: Option<String>,//为None绑定到127.0.0.1，只能通过rtcp转发访问
     //network resource, name:docker_inner_port
     pub service_ports: HashMap<String,u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub container_param:Option<String>,
 
     pub res_pool_id:String,
@@ -365,7 +367,7 @@ impl AppServiceInstanceConfig {
 pub struct KernelServiceDoc {
     #[serde(flatten)]    
     pub meta: PackageMeta,
-    pub name: String,//just for display
+    pub show_name: String,//just for display
     pub selector_type:SelectorType,
 }
 
@@ -443,13 +445,14 @@ mod tests {
     async fn test_get_parse_app_doc() {
         let app_doc = json!({
             "pkg_name": "buckyos-filebrowser",
-            "version": "0.4.0",
+            "version": "0.4.1",
             "tag": "latest",
-            "app_name": "BuckyOS File Browser",
+            "show_name": "BuckyOS File Browser",
             "description": {
                 "detail": "BuckyOS File Browser"
             },
             "author": "did:web:buckyos.ai",
+            "owner": "did:web:buckyos.ai",
             "pub_time": 1743008063u64,
             "exp": 1837616063u64,
             "selector_type": "single",

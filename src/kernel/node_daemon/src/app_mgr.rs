@@ -52,7 +52,7 @@ impl AppRunItem {
             if is_strict {
                 return Ok(full_pkg_id);
             } else {
-                return Ok(PackageId::get_pkg_id_simple_name(full_pkg_id.as_str()));
+                return Ok(PackageId::get_pkg_id_unique_name(full_pkg_id.as_str()));
             }
         }
         let app_pkg_id = self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id();
@@ -61,7 +61,7 @@ impl AppRunItem {
             if is_strict {
                 return Ok(full_app_pkg_id);
             } else {
-                return Ok(PackageId::get_pkg_id_simple_name(full_app_pkg_id.as_str()));
+                return Ok(PackageId::get_pkg_id_unique_name(full_app_pkg_id.as_str()));
             }
         } 
 
