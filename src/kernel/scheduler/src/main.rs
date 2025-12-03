@@ -25,7 +25,9 @@ use name_client::*;
 use name_lib::*;
 use scheduler_server::*;
 use service::*;
-use system_config_agent::schedule_loop;
+use system_config_agent::{
+    schedule_action_to_tx_actions, schedule_loop, update_gateway_node_list,
+};
 use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
 use server_runner::*;
 use std::sync::Arc;
@@ -240,7 +242,7 @@ async fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use system_config_agent::create_scheduler_by_system_config;
+    use system_config_agent::*;
     use async_trait::async_trait;
     use jsonwebtoken::{jwk::Jwk, DecodingKey};
     use name_client::{
@@ -251,7 +253,7 @@ mod test {
     };
     use package_lib::PackageId;
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::net::IpAddr;
     use std::path::Path;
@@ -307,6 +309,31 @@ mod test {
         let this_snapshot = serde_json::to_string_pretty(&scheduler_ctx).unwrap();
         println!("this_snapshot: {}", this_snapshot);
     
+        let mut tx_actions = HashMap::new();
+        let mut need_update_gateway_node_list:HashSet<String> = HashSet::new();
+        let mut need_update_rbac = false;
+        for action in action_list {
+            let new_tx_actions = schedule_action_to_tx_actions(
+                &action,
+                &scheduler_ctx,
+                &device_list,
+                &init_map,
+                &mut need_update_gateway_node_list,
+                &mut need_update_rbac,
+            ).unwrap();
+            extend_kv_action_map(&mut tx_actions, &new_tx_actions);
+        }
+        
+ 
+        need_update_rbac = true;
+        need_update_gateway_node_list = scheduler_ctx.nodes.keys().cloned().collect();
+       
+
+        if need_update_gateway_node_list.len() > 0 {
+            // 重新生成node_gateway_config
+            let update_gateway_node_list_actions = update_gateway_node_list(&need_update_gateway_node_list, &scheduler_ctx).await.unwrap();
+            extend_kv_action_map(&mut tx_actions, &update_gateway_node_list_actions);
+        }
         unsafe {
             std::env::remove_var("BUCKYOS_ROOT");
         }

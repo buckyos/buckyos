@@ -13,6 +13,7 @@
 定义用户
 定义树状的资源组
 定义调度任务(OPTask),实现一些必要的Node和ReplicaInstance的维护工作
+通过对上诉对象的修改，定义运维可以执行的”改变系统的操作“
 
 系统级管理
     重启系统
@@ -122,7 +123,6 @@ ServiceInfo:
 - 用户反复的添加/删除 同一个id ,单有不同配置的ServiceSpec:
 在下一个调度器触发时，调度器只会按其触发的那一瞬间的状态 结合上一次调度时的状态 来进行处理，而无视中间状态
 UI在做操作后，可以看到的状态是“New”（等待部署） 和 “Deleted”（已删除）        
-
 
 */
 #[warn(unused, unused_mut, dead_code)]
@@ -276,7 +276,7 @@ impl From<String> for UserType {
     }
 }
 
-#[derive(Clone, Debug,Serialize, Deserialize)]
+#[derive(Clone, Debug,Serialize, Deserialize, PartialEq)]
 pub struct UserItem {
     pub userid: String,
     pub user_type: UserType,
@@ -285,7 +285,7 @@ pub struct UserItem {
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct ServiceSpec {
-    pub id: String,
+    pub id: String,//format!("{}@{}", app_id, owner_id)
     pub app_id:String,
     pub owner_id:String,//kernel service的owner_id是root
     pub spec_type: ServiceSpecType,
@@ -302,30 +302,32 @@ pub struct ServiceSpec {
     pub network_affinity: Option<String>,
     pub default_service_port: u16,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum OPTaskBody {
     NodeInitBaseService,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum OPTaskState {
     New,
     Running,
     Done,
     Failed,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct OPTask {
     pub id: String,
-    pub creator_id: Option<String>, //为None说明创建者是Scheduler
-    pub owner_id: String,           
-    pub status: OPTaskState,
+    pub creator_id: Option<String>, //为None说明创建者是Scheduler          
+    pub body: OPTaskBody,
     pub create_time: u64,
     pub create_step_id: u64,
-    pub body: OPTaskBody,
+    pub max_timeout_sec: u64,
+    pub status: OPTaskState,
+    pub start_time: u64,
+
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct NodeResource {
     pub total_capacity: u64,
     pub used_capacity: u64,
@@ -356,7 +358,7 @@ impl From<String> for NodeType {
     }
 }
 
-#[derive(Clone, Debug,Serialize, Deserialize)]
+#[derive(Clone, Debug,Serialize, Deserialize, PartialEq)]
 pub struct NodeItem {
     pub id: String,
     pub node_type: NodeType,
@@ -429,15 +431,21 @@ pub struct ReplicaInstance {
     pub node_id: String,
     pub spec_id: String,//service_name or app_id
     pub res_limits: HashMap<String, f64>,
-    pub instance_id: String,//format!("{}-{}", service_name, instance_node_id
+    pub instance_id: String,
     pub last_update_time: u64,
     pub state : InstanceState,
     pub service_port: u16,
 }
 
+impl ReplicaInstance {
+    pub fn is_app_instance(&self) -> bool {
+        self.spec_id.contains("@")
+    }
+}
+
 #[derive(Clone,PartialEq,Debug, Serialize, Deserialize)]
 pub enum ServiceInfo {
-    //instance_id: format!("{}_{}", service_spec.id, instance_id_uuid) => (weight,Instance)
+    SingleInstance(ReplicaInstance),
     RandomCluster(HashMap<String,(u32,ReplicaInstance)>),
 }
 
@@ -454,13 +462,13 @@ pub enum SchedulerAction {
 //spec_id@owner_id@node_id
 pub fn parse_instance_id(instance_id: &str) -> Result<(String,String, String)> {
     let parts: Vec<&str> = instance_id.split('@').collect();
-    if parts.len() != 3 {
-        return Err(anyhow::anyhow!(
-            "Invalid instance_id format: {}",
-            instance_id
-        ));
+    if parts.len() ==  3 {
+        return Ok((parts[0].to_string(), parts[1].to_string(), parts[2].to_string()))
     }
-    Ok((parts[0].to_string(), parts[1].to_string(), parts[2].to_string()))
+    if parts.len() == 2 {
+        return Ok((parts[0].to_string(), "root".to_string(), parts[1].to_string()))
+    }
+    Err(anyhow::anyhow!("Invalid instance_id format: {}", instance_id))
 }
 
 // app_id@user_id
@@ -473,18 +481,19 @@ pub fn parse_instance_id(instance_id: &str) -> Result<(String,String, String)> {
 // }
 
 pub fn create_replica_instance_id(spec: &ServiceSpec, node_id: &str) -> String {
-    format!("{}@{}@{}", spec.id, spec.owner_id, node_id)
+    format!("{}@{}", spec.id, node_id)
 }
 
 #[derive(Clone, Debug,Serialize, Deserialize)]
 pub struct NodeScheduler {
     schedule_step_id: u64,
     pub users: HashMap<String, UserItem>,
+    pub default_user_id: String,
     pub nodes: HashMap<String, NodeItem>,
     pub specs: HashMap<String, ServiceSpec>,
 
-    replica_instances: HashMap<String, ReplicaInstance>,
-    service_infos: HashMap<String, ServiceInfo>,
+    pub replica_instances: HashMap<String, ReplicaInstance>,
+    pub service_infos: HashMap<String, ServiceInfo>,
     pub schedule_time:u64,
 
 }
@@ -494,6 +503,7 @@ impl NodeScheduler {
         Self {
             schedule_step_id: step_id,
             users: HashMap::new(),
+            default_user_id: "".to_string(),
             nodes: HashMap::new(),
             specs: HashMap::new(),
             replica_instances: HashMap::new(),
@@ -513,6 +523,7 @@ impl NodeScheduler {
         let now = buckyos_get_unix_timestamp();
         Self {
             schedule_step_id: step_id,
+            default_user_id: "".to_string(),
             users,
             nodes,
             specs,
@@ -523,6 +534,9 @@ impl NodeScheduler {
     }
 
     pub fn add_user(&mut self, user: UserItem) {
+        if self.default_user_id.is_empty() {
+            self.default_user_id = user.userid.clone();
+        }
         self.users.insert(user.userid.clone(), user);
     }
 
@@ -573,11 +587,6 @@ impl NodeScheduler {
         if self.nodes.is_empty() {
             return Err(anyhow::anyhow!("No nodes found"));
         }
-
-        // Step0. 根据运行中的instance，更新service_info
-  
-        
-
         // Step1. review node (资源池)
         let is_small_system = self.nodes.len() <= SMALL_SYSTEM_NODE_COUNT;
         let node_actions = self.resort_nodes()?;
@@ -596,6 +605,8 @@ impl NodeScheduler {
             actions.extend(spec_actions);
         }
         // Step3. 优化instance的资源使用
+
+        // Step4. 计算service_info
         let service_spec_actions =  self.calc_service_infos(last_snapshot)?;
         actions.extend(service_spec_actions);
         info!("-------------RESULT ACTIONS--------------");
@@ -611,10 +622,10 @@ impl NodeScheduler {
         let last_service_infos = last_snapshot.map(|snapshot| &snapshot.service_infos);
         for (spec_id, spec) in self.specs.iter() {
             let mut info_map = HashMap::new();
-            if spec.spec_type == ServiceSpecType::App {
-                self.service_infos.remove(spec_id);
-                continue;
-            }
+            // if spec.spec_type == ServiceSpecType::App {
+            //     self.service_infos.remove(spec_id);
+            //     continue;
+            // }
 
             for instance in self.replica_instances.values() {
                 //info!("spec_id:{} instance:{:?}", spec_id, instance);
@@ -632,7 +643,13 @@ impl NodeScheduler {
                 warn!("spec_id:{} NO running instance", spec_id);
             }
 
-            let new_info = ServiceInfo::RandomCluster(info_map);
+            let new_info = if info_map.len() == 1 {
+                let (_, instance) = info_map.values().next().unwrap();
+                ServiceInfo::SingleInstance(instance.clone())
+            } else {
+                ServiceInfo::RandomCluster(info_map)
+            };
+
             let old_info = last_service_infos
                 .and_then(|infos| infos.get(spec_id));
             let is_need_update = match old_info {
@@ -641,7 +658,7 @@ impl NodeScheduler {
             };
             if is_need_update {
                 actions.push(SchedulerAction::UpdateServiceInfo(spec_id.clone(), new_info.clone()));
-                info!("spec_id:{} calc new service info", spec_id);
+                info!("spec_id:{} calc new service info: {:?}", spec_id, new_info);
             }
             self.service_infos.insert(spec_id.clone(), new_info);
             
@@ -855,7 +872,7 @@ impl NodeScheduler {
                 spec_id: service_spec.id.clone(),
                 res_limits: HashMap::new(),
                 instance_id: create_replica_instance_id(service_spec, node.id.as_str()),
-                last_update_time: 0,
+                last_update_time: buckyos_get_unix_timestamp(),
                 state: InstanceState::Running,
                 service_port: service_spec.default_service_port,
             });

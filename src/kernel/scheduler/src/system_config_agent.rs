@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
 
 use anyhow::Result;
 use log::*;
@@ -15,6 +17,34 @@ use buckyos_api::{
 use buckyos_kit::*;
 use name_client::*;
 use name_lib::{DeviceInfo, ZoneConfig};
+
+const NODE_GATEWAY_CONFIG_TEMPLATE: &str = r#"
+servers:
+    - id: node_gateway
+      type: http
+      hook_point:
+        - id: main 
+          prioity: 1
+          blocks:
+            - id: default
+              block: |
+              {}
+                
+
+stacks: 
+    - id : node_gateway_tcp
+      protocol: tcp
+      bind: 0.0.0.0:3180
+      hook_point:
+        - id: main 
+          prioity: 1
+          blocks:
+            - id : default
+              block: |
+                return "server node_gateway"
+
+"#;
+
 
 fn map_api_user_type(user_type: &ApiUserType) -> UserType {
     match user_type {
@@ -76,7 +106,7 @@ fn create_service_spec_by_app_config(
         app_id: app_config.app_id().to_string(),
         owner_id: owner_user_id.to_string(),
         spec_type: ServiceSpecType::App,
-        default_service_port: 0,
+        default_service_port: 10000 + app_config.app_index * 10,
         state: spec_state,
         need_container,
         best_instance_count: app_config.expected_instance_count,
@@ -102,7 +132,7 @@ fn create_service_spec_by_service_config(
         .or_else(|| service_config.install_config.service_ports.values().next().copied())
         .unwrap_or(0);
     ServiceSpec {
-        id: service_name.to_string(),
+        id:service_name.to_string(),
         app_id: service_name.to_string(),
         owner_id: "root".to_string(),
         spec_type: ServiceSpecType::Kernel,
@@ -173,6 +203,9 @@ pub fn create_scheduler_by_system_config(
                         user_type: map_api_user_type(&user_settings.user_type),
                     };
                     scheduler_ctx.add_user(user_item);
+                    if user_id == "root" {
+                        scheduler_ctx.default_user_id = user_settings.username.clone();
+                    }
                 }
             }
         }
@@ -262,11 +295,13 @@ pub fn create_scheduler_by_system_config(
     Ok((scheduler_ctx, device_list))
 }
 
-fn schedule_action_to_tx_actions(
+pub(crate) fn schedule_action_to_tx_actions(
     action: &SchedulerAction,
     scheduler_ctx: &NodeScheduler,
     device_list: &HashMap<String, DeviceInfo>,
     input_config: &HashMap<String, String>,
+    need_update_gateway_node_list: &mut HashSet<String>,
+    need_update_rbac: &mut bool,
 ) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
     let zone_config = input_config.get("boot/config");
@@ -315,6 +350,7 @@ fn schedule_action_to_tx_actions(
                 return Err(anyhow::anyhow!("service_spec not found"));
             }
             let service_spec = service_spec.unwrap();
+            need_update_gateway_node_list.insert(new_instance.node_id.clone());
             match service_spec.spec_type {
                 ServiceSpecType::App => {
                     let instance_action =
@@ -342,12 +378,13 @@ fn schedule_action_to_tx_actions(
                 }
             }
         }
-        SchedulerAction::RemoveInstance(spec_id, instance_id, _node_id) => {
+        SchedulerAction::RemoveInstance(spec_id, instance_id, node_id) => {
             let service_spec = scheduler_ctx.get_service_spec(spec_id.as_str());
             if service_spec.is_none() {
                 return Err(anyhow::anyhow!("service_spec not found"));
             }
             let service_spec = service_spec.unwrap();
+            need_update_gateway_node_list.insert(node_id.clone());
             let instance = scheduler_ctx.get_replica_instance(instance_id.as_str());
             if instance.is_none() {
                 return Err(anyhow::anyhow!("instance not found"));
@@ -394,6 +431,116 @@ fn schedule_action_to_tx_actions(
         }
     }
     Ok(result)
+}
+
+pub(crate) async fn update_gateway_node_list(
+    need_update_gateway_node_list: &HashSet<String>,
+    scheduler_ctx: &NodeScheduler,
+) -> Result<HashMap<String, KVAction>> {
+    let mut result = HashMap::new();
+    for node_id in need_update_gateway_node_list.iter() {
+        let mut process_chain_lines:VecDeque<String> = VecDeque::new();
+        //遍历所有的Service_info,创建访问规则
+        // 生成规则：
+        // Service匹配url， app匹配host前缀
+        // 单实例，且在本机,直接forward，否则调用bukcyos select来得到 forwarding地址
+        for (spec_id, service_info) in scheduler_ctx.service_infos.iter() {
+            let mut target_str = String::new();
+
+            match service_info {
+                ServiceInfo::SingleInstance(instance) => {
+                    if instance.node_id == *node_id {
+                        target_str = format!(" forward \"tcp://127.0.0.1/:{}\"", instance.service_port);
+                    } else {
+                        target_str = format!(" buckyos-select && forward \"$ANSWER.target/:{}\"", instance.service_port);
+                    }
+                }
+                ServiceInfo::RandomCluster(cluster) => {
+                    if cluster.len() > 0 {      
+                        let (_, instance) = cluster.values().next().unwrap();               
+                        target_str = format!(" buckyos-select && forward \"$ANSWER.target/:{}\"", instance.service_port);
+                    } else {
+                        info!("service {} has no instance no gateway rule need to be updated", spec_id);
+                        continue;
+                    }
+                }
+                //TODO:增加对static_web_service的支持
+            }
+
+            let is_app = spec_id.contains("@");
+            if is_app {
+                let parts  = spec_id.split("@").collect::<Vec<&str>>();
+                let app_id = parts[0];
+                let user_id = parts[1];
+                if user_id == scheduler_ctx.default_user_id {
+                    let line_rule = format!("match $REQ_HEADER.host \"{}*\" && {}", app_id, target_str);
+                    process_chain_lines.push_back(line_rule);
+                }
+                let line_rule = format!("match $REQ_HEADER.host \"{}-{}*\" && {}", app_id, user_id, target_str);
+                process_chain_lines.push_back(line_rule);
+                //TODO：处理zone-gateway中的快捷方式
+
+            } else {
+                let line_rule = format!("match $REQ_HEADER.url \"/kapi/{}/*\" && {}", spec_id, target_str);
+                process_chain_lines.push_front(line_rule);
+            }
+        }
+        let process_chain_lines_str = process_chain_lines
+            .iter()
+            .cloned()
+            .collect::<Vec<String>>()
+            .join("\n");
+
+        let node_gateway_json = json!({
+            "servers": [
+              {
+                "id": "node_gateway",
+                "type": "http",
+                "hook_point": [
+                  {
+                    "id": "main",
+                    "prioity": 1,
+                    "blocks": [
+                      {
+                        "id": "default",
+                        "block": process_chain_lines_str
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "stacks": [
+              {
+                "id": "node_gateway_tcp",
+                "protocol": "tcp",
+                "bind": "0.0.0.0:3180",
+                "hook_point": [
+                  {
+                    "id": "main",
+                    "prioity": 1,
+                    "blocks": [
+                      {
+                        "id": "default",
+                        "block": "return \"server node_gateway\""
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+        });
+
+        let node_gatway_config_str = serde_json::to_string_pretty(&node_gateway_json)?;
+        info!(
+            "will update node {} gateway config: {}",
+            node_id, node_gatway_config_str
+        );
+        let key = format!("nodes/{}/gateway_config", node_id);
+        result.insert(key, KVAction::Update(node_gatway_config_str));
+    }
+
+    return Ok(result);
 }
 
 async fn update_rbac(
@@ -479,16 +626,14 @@ async fn update_rbac(
 pub async fn schedule_loop(is_boot: bool) -> Result<()> {
     let mut loop_step = 0;
     let is_running = true;
-    let mut need_update_rbac = false;
+
     //info!("schedule loop start...");
     loop {
         if !is_running {
             break;
         }
-        need_update_rbac = false;
-        if is_boot || loop_step % 10 == 0 {
-            need_update_rbac = true;
-        }
+
+
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         loop_step += 1;
         info!("schedule loop step:{}.", loop_step);
@@ -538,22 +683,57 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
             );
             return Err(anyhow::anyhow!("scheduler.schedule failed"));
         }
+        
+
 
         let action_list = action_list.unwrap();
         let mut tx_actions = HashMap::new();
+        let mut need_update_gateway_node_list:HashSet<String> = HashSet::new();
+        let mut need_update_rbac = false;
         for action in action_list {
             let new_tx_actions = schedule_action_to_tx_actions(
                 &action,
                 &scheduler_ctx,
                 &device_list,
                 &input_config,
+                &mut need_update_gateway_node_list,
+                &mut need_update_rbac,
             )?;
             extend_kv_action_map(&mut tx_actions, &new_tx_actions);
+        }
+        
+        if is_boot || last_schedule_snapshot.is_none() {
+            need_update_rbac = true;
+        }
+       
+        while last_schedule_snapshot.is_some() {
+            if scheduler_ctx.nodes != last_schedule_snapshot.as_ref().unwrap().nodes {
+                need_update_rbac = true;
+                need_update_gateway_node_list = scheduler_ctx.nodes.keys().cloned().collect();
+                break;
+            }
+
+            if scheduler_ctx.specs != last_schedule_snapshot.as_ref().unwrap().specs {
+                need_update_rbac = true;
+                break;
+            }
+
+            if scheduler_ctx.users != last_schedule_snapshot.as_ref().unwrap().users {
+                need_update_rbac = true;
+                break;
+            }
+            break;
         }
 
         if need_update_rbac {
             let rbac_actions = update_rbac(&input_config, &scheduler_ctx).await?;
             extend_kv_action_map(&mut tx_actions, &rbac_actions);
+        }
+
+        if need_update_gateway_node_list.len() > 0 {
+            // 重新生成node_gateway_config
+            let update_gateway_node_list_actions = update_gateway_node_list(&need_update_gateway_node_list, &scheduler_ctx).await?;
+            extend_kv_action_map(&mut tx_actions, &update_gateway_node_list_actions);
         }
 
         //执行调度动作

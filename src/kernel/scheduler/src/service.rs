@@ -36,6 +36,13 @@ pub fn instance_service(
     let key_path = format!("nodes/{}/gateway_config",new_instance.node_id.as_str());
     let mut set_actions = HashMap::new();
     //TODO: cyfs-gateway need support router-cluster or router-buckyos_service_selector
+    //instance的逻辑
+    //确保新的Instance可以被访问
+    //  被全局访问：zone-gateway配置修改
+    //  被Zone内访问: 有权限访问该service的NodeGateway修改
+    // 
+
+
     if is_zone_gateway {
         let json_path = format!("servers/zone_gateway/hosts/*/routes/\"/kapi/{}\"",new_instance.spec_id.as_str());
         let set_value = json!({
@@ -90,7 +97,7 @@ pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,de
     let key = format!("services/{}/info",spec_id);
     let mut info_map:HashMap<String, ServiceNode> = HashMap::new();
     match service_info {
-        SchedulerServiceInfo::RandomCluster(cluster) => {
+        &SchedulerServiceInfo::RandomCluster(ref cluster) => {
             for (node_id, (weight,instance)) in cluster.iter() {
                 let device_info = device_list.get(node_id.as_str());
                 if device_info.is_some() {
@@ -110,6 +117,24 @@ pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,de
                 } else {
                     warn!("device info not found for node: {}",node_id);
                 }
+            }
+        }
+        &SchedulerServiceInfo::SingleInstance(ref instance) => {
+            let device_info = device_list.get(instance.node_id.as_str());
+            if let Some(device_info) = device_info {
+                let node_net_id = device_info.device_doc.net_id.clone();
+                info_map.insert(instance.node_id.clone(), ServiceNode {
+                    node_did: instance.node_id.clone(),
+                    node_net_id,
+                    state: ServiceInstanceState::Started,
+                    weight: 100,
+                    service_port: HashMap::from([(
+                        "main".to_string(),
+                        instance.service_port,
+                    )]),
+                });
+            } else {
+                warn!("device info not found for node: {}",instance.node_id);
             }
         }
     }

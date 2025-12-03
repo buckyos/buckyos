@@ -50,8 +50,9 @@ fn build_app_service_config(node_id:&str,app_config:&AppServiceSpec,node_info:&D
 pub fn instance_app_service(new_instance:&ReplicaInstance,device_list:&HashMap<String,DeviceInfo>,input_config:&HashMap<String,String>)->Result<HashMap<String,KVAction>> {
     let mut result = HashMap::new();
     
-    let (app_id,user_id,node_id) = parse_instance_id(new_instance.spec_id.as_str())?;
-    let app_config_path = format!("users/{}/apps/{}/config",user_id,app_id);
+    let (app_id,user_id,node_id) = parse_instance_id(new_instance.instance_id.as_str())?;
+    let app_config_path = format!("users/{}/apps/{}/spec",user_id,app_id);
+    info!("instance_app_service app_config_path: {}",app_config_path);
     let app_config = input_config.get(&app_config_path);
     if app_config.is_none() {
         warn!("app_config: {} not found",app_config_path);
