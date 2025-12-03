@@ -269,7 +269,7 @@ mod test {
     async fn test_boot_schedule() {
         let temp_root = TempDir::new().unwrap();
         unsafe {
-            std::env::set_var("BUCKY_LOG", "debug");
+            //std::env::set_var("BUCKY_LOG", "debug");
             std::env::set_var("BUCKYOS_ROOT", temp_root.path().to_string_lossy().to_string());
         }
 
@@ -300,12 +300,13 @@ mod test {
 
         println!("start test boot scheduler...");
         let (mut scheduler_ctx, device_list) = create_scheduler_by_system_config(&init_map).unwrap();
-        let action_list = scheduler_ctx.schedule().expect("schedule should succeed");
-        println!("boot scheduler success!");
-        for action in action_list {
-            println!("action: {:?}", action);
-        }
+        let action_list = scheduler_ctx
+            .schedule(None)
+            .expect("schedule should succeed");
 
+        let this_snapshot = serde_json::to_string_pretty(&scheduler_ctx).unwrap();
+        println!("this_snapshot: {}", this_snapshot);
+    
         unsafe {
             std::env::remove_var("BUCKYOS_ROOT");
         }

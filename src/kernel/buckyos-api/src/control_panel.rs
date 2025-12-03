@@ -88,6 +88,8 @@ pub enum NodeState {
 #[derive(Serialize, Deserialize)]
 pub struct NodeConfig {
     //pub pure_version: u64,
+    pub node_id:String,
+    pub node_did:String,
     pub kernel: HashMap<String, KernelServiceInstanceConfig>,
     pub apps: HashMap<String, AppServiceInstanceConfig>,
     pub frame_services: HashMap<String, FrameServiceInstanceConfig>,

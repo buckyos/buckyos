@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use ::kRPC::*;
 use package_lib::PackageMeta;
+use name_lib::DID;
 
 pub const SERVICE_INSTANCE_INFO_UPDATE_INTERVAL: u64 = 30;
 
@@ -14,10 +15,10 @@ pub enum ServiceState {
     New,
     Running,
     Stopped,
-    Starting,
     Stopping,
     Restarting,
     Updating,
+    Deleted,
 }
 
 impl Default for ServiceState {
@@ -29,9 +30,8 @@ impl Default for ServiceState {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq,Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceInstanceState {
-    //InstllDeps,
+    //InstllDeps,Updating... any maintanence state
     Deploying,
-    //DeployFailed(String,u32), //error message,failed count
     NotExist,
     Started,
     Stopped,
@@ -42,6 +42,8 @@ pub enum ServiceInstanceState {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ServiceInstanceReportInfo {
     pub instance_id:String,
+    pub node_id:String,
+    pub node_did:DID,
     pub state: ServiceInstanceState,
     pub service_ports:  HashMap<String,u16>,
     pub last_update_time: u64,
@@ -51,7 +53,7 @@ pub struct ServiceInstanceReportInfo {
 
 #[derive(Serialize, Deserialize,Clone)]
 pub struct ServiceNode {
-    pub node_did:String,
+    pub node_did:String,//device id of node,
     pub node_net_id:Option<String>,
     pub state: ServiceInstanceState,
     pub weight: u32,
@@ -202,6 +204,7 @@ pub enum SelectorType {
     Single,
     StaticWeb,//no instance, only one static web page
     Random,
+    ByEvent, //由特定的时间触发运行
     Custom(String),//custom selector type, like "round_robin"
 }
 
@@ -217,6 +220,7 @@ impl From<SelectorType> for String {
             SelectorType::Single => "single".into(),
             SelectorType::StaticWeb => "static_web".into(),
             SelectorType::Random => "random".into(),
+            SelectorType::ByEvent => "by_event".into(),
             SelectorType::Custom(s) => s,
         }
     }
@@ -230,6 +234,7 @@ impl TryFrom<String> for SelectorType {
             "single" => SelectorType::Single,
             "static_web" => SelectorType::StaticWeb,
             "random" => SelectorType::Random,
+            "by_event" => SelectorType::ByEvent,
             other => SelectorType::Custom(other.to_owned()),
         })
     }

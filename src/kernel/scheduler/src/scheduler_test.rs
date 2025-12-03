@@ -1,4 +1,3 @@
-use buckyos_kit::buckyos_get_unix_timestamp;
 use std::collections::HashMap;
 
 use crate::scheduler::*;
@@ -36,7 +35,7 @@ fn create_test_node(
 // Removing -> Deleted
 #[test]
 fn test_node_state_change() {
-    let mut scheduler = NodeScheduler::new_empty(1, buckyos_get_unix_timestamp());
+    let mut scheduler = NodeScheduler::new_empty(1);
 
     let node1 = create_test_node(
         "node1",
@@ -86,8 +85,7 @@ fn test_node_state_change() {
 // test create service_spec instance
 #[test]
 fn test_create_pod_instance() {
-    let now = buckyos_get_unix_timestamp();
-    let mut scheduler = NodeScheduler::new_empty(1, now);
+    let mut scheduler = NodeScheduler::new_empty(1);
 
     let pod = ServiceSpec {
         id: "pod1".to_string(),
@@ -151,8 +149,7 @@ fn test_create_pod_instance() {
 // test service_spec state change: New -> Deployed, Removing -> Deleted
 #[test]
 fn test_pod_state_change() {
-    let now = buckyos_get_unix_timestamp();
-    let mut scheduler = NodeScheduler::new_empty(1, now);
+    let mut scheduler = NodeScheduler::new_empty(1);
 
     let pod1 = ServiceSpec {
         id: "pod1".to_string(),
@@ -175,7 +172,7 @@ fn test_pod_state_change() {
         app_id: "pod2".to_string(),
         owner_id: "user1".to_string(),
         spec_type: ServiceSpecType::App,
-        state: ServiceSpecState::Removing,
+        state: ServiceSpecState::Deleted,
         best_instance_count: 1,
         need_container: false,
         required_cpu_mhz: 200,
@@ -230,7 +227,7 @@ fn test_pod_state_change() {
     /*
     改变pod1的状态为Removing
     */
-    scheduler.update_service_spec_state("pod1", ServiceSpecState::Removing);
+    scheduler.update_service_spec_state("pod1", ServiceSpecState::Deleted);
     let actions = scheduler.schedule_spec_change().unwrap();
     println!("test_pod_state_change actions: {:?}", actions);
     assert_eq!(actions.len(), 2);
@@ -250,8 +247,7 @@ fn test_pod_state_change() {
 // test create service_spec instance with no suitable node
 #[test]
 fn test_create_pod_instance_no_suitable_node() {
-    let now = buckyos_get_unix_timestamp();
-    let mut scheduler = NodeScheduler::new_empty(1, now);
+    let mut scheduler = NodeScheduler::new_empty(1);
 
     let pod = ServiceSpec {
         id: "pod1".to_string(),
@@ -291,8 +287,7 @@ fn test_create_pod_instance_no_suitable_node() {
 // test node_affinity and network_affinity
 #[test]
 fn test_node_and_network_affinity() {
-    let now = buckyos_get_unix_timestamp();
-    let mut scheduler = NodeScheduler::new_empty(1, now);
+    let mut scheduler = NodeScheduler::new_empty(1);
 
     let pod = ServiceSpec {
         id: "pod1".to_string(),

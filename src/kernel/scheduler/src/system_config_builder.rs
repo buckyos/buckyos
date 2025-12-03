@@ -262,6 +262,8 @@ impl SystemConfigBuilder {
 
     pub fn add_node(&mut self,ood_name: &str) -> Result<&mut Self> {
         let config = NodeConfig {
+            node_id: ood_name.to_string(),
+            node_did: format!("did:bns:{ood_name}"),
             kernel: HashMap::new(),
             apps: HashMap::new(),
             frame_services: HashMap::new(),

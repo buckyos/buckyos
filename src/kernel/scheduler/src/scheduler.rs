@@ -83,12 +83,53 @@ Instance管理 （自动负载均衡）
 - 确定性（Determinism）：给定 Input (Snapshot)，必然得到 Output (Actions)。排查 Bug 只需要 Input 数据。
 - 极高的测试覆盖率：不需要 Mock ETCD，不需要 Mock 网络，只需要构造内存 Struct。
 - 开发解耦：调度器团队只关心逻辑，执行器团队只关心“如何把动作落地”。    
+
+schedule loops:
+收集系统信息可以得到 系统当前状态（当前快照）
+执行一次调度（上一次调度成功的系统状态，当前系统状态，得到 Action + OPTaskList
+    Action是对系统状态的立刻改变（构造Action时，通常也会立刻修改调度器的内部状态）：在一个正常的系统里，这个改变会立刻成功
+        `完成后调度器的状态` 等于 `SystemConfig Apply Action后->重新构造调度的状态`
+    OPTask是一个需要时间的，可跟踪的Task,在调度器看来，其状态也是系统当前状态的一部分
+调度完成后，系统需要立刻用事务执行Action，并保存执行完成后的系统快照
+
+调度器的工作核心基本是围绕Instance来的
+    - 按优先级ReviewInstance的资源占用
+    - 确保所有的，运行中的ServiceSpec都有合适的Instance在运行（至少1个）
+    - 及时发现Instance的负载变高，并反应到ServiceInfo的权重上去：是系统计算权重，还是给出原始信息让应用有机会自己算？
+    - 及时发现Instance的故障，并反应到ServiceInfo上去
+
+一些工作原则：
+    - 最小改动原则，尽量不改动已有的Instance（可以增加，少删除或修改)
+
+
+基于上述设计，对系统做控制的方法
+    - 绝对不要修改Instance和ServiceInfo,这个都是调度器来修改的
+    - 修改ServiceSpec: 在系统中调整服务的“目标状态“（注意不删除原则，只是修改状态）
+    - 修改Node：在系统中调整Node的“目标状态“（注意不删除原则，只是修改状态）
+        - 增加/减少 Node
+        - 调整Node和逻辑Device的关系
+        - 调整Node的目标状态
+
+
+ServiceInfo:
+- 大型系统中的流量控制，通常都是由运维手工操作完成的，因此调度器不会去尝试构造流量控制的逻辑
+- 系统使用最短路径进行访问，因此调度器只需要说明“服务的EndPoint”在哪，非调度器逻辑就会为所有的访问者，按固定规则创建访问路径
+    - 调度器专注于基于 Instance(with Report Info) 来构造ServiceInfo
+    - 外部逻辑根据ServiceInfo来完成确定的访问控制
+
+
+基于调度器状态机的一些复杂场景思考
+- 用户反复的添加/删除 同一个id ,单有不同配置的ServiceSpec:
+在下一个调度器触发时，调度器只会按其触发的那一瞬间的状态 结合上一次调度时的状态 来进行处理，而无视中间状态
+UI在做操作后，可以看到的状态是“New”（等待部署） 和 “Deleted”（已删除）        
+
+
 */
 #[warn(unused, unused_mut, dead_code)]
 use anyhow::Result;
 use buckyos_api::{ServiceInstanceState, ServiceState};
 use buckyos_kit::buckyos_get_unix_timestamp;
-
+use serde::{Deserialize, Serialize};
 use log::*;
 use std::collections::HashMap;
 use std::fmt;
@@ -97,7 +138,7 @@ use std::hash::Hash;
 const SMALL_SYSTEM_NODE_COUNT: usize = 7;
 const INSTANCE_ALIVE_TIME: u64 = 90;
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum ServiceSpecType {
     Kernel, //kernel service 无owner_user_id
     Service, //系统服务
@@ -116,16 +157,15 @@ impl From<String> for ServiceSpecType {
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum ServiceSpecState {
-    New,
-    Deploying,
-    Deployed,
-    DeployFailed,
-    Abnormal,
-    Unavailable,
-    Removing,
-    Deleted,
+    New, //刚刚添加是这个状态， 调度器会试图将这个状态的Spec，变成Deployed
+    Deployed,// 调度器会努力保持有足够多的Instance
+    DeployFailed, //调度器标记为部署失败，所有的Instance都会被删除
+    Abnormal,//调度器标记为异常，不会构造ServiceInfo,也不会主动回收Instance
+    Disable,//运维手工Disable,所有的Instance都会被Disable（不会回收）
+    //Removing,// 调度器处理Deleted时，发根据某些逻辑需要做一些长时间的处理
+    Deleted,//运维手工调用删除，调度器会尝试回收所有相关的Instance
 }
 
 impl Default for ServiceSpecState {
@@ -134,19 +174,38 @@ impl Default for ServiceSpecState {
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
+impl fmt::Display for ServiceSpecState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            ServiceSpecState::New => "New",
+            ServiceSpecState::Deployed => "Deployed",
+            ServiceSpecState::DeployFailed => "DeployFailed",
+            ServiceSpecState::Abnormal => "Abnormal",
+            ServiceSpecState::Disable => "Disable",
+            ServiceSpecState::Deleted => "Deleted",
+        };
+        write!(f, "{value}")
+    }
+}
+
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum InstanceState {
-    New,
+    Prepare,
     Running,
+    Suspended,
+    Deleted,
 }
 
 impl From<String> for InstanceState {
     fn from(s: String) -> Self {
         let s = s.to_lowercase();
         match s.as_str() {
-            "new" => InstanceState::New,
+            "prepare" => InstanceState::Prepare,
             "running" => InstanceState::Running,
-            _ => InstanceState::New,
+            "suspended" => InstanceState::Suspended,
+            "deleted" => InstanceState::Deleted,
+            _ => InstanceState::Prepare,
         }
     }
 }
@@ -155,7 +214,7 @@ impl From<ServiceInstanceState> for InstanceState {
     fn from(state: ServiceInstanceState) -> Self {
         match state {
             ServiceInstanceState::Started => InstanceState::Running,
-            _ => InstanceState::New,
+            _ => InstanceState::Suspended,
         }
     }
 }
@@ -163,25 +222,11 @@ impl From<ServiceInstanceState> for InstanceState {
 impl ToString for InstanceState {
     fn to_string(&self) -> String {
         match self {
-            InstanceState::New => "new".to_string(),
+            InstanceState::Prepare => "prepare".to_string(),
             InstanceState::Running => "running".to_string(),
+            InstanceState::Suspended => "suspended".to_string(),
+            InstanceState::Deleted => "deleted".to_string(),
         }
-    }
-}
-
-impl fmt::Display for ServiceSpecState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let status_str = match self {
-            ServiceSpecState::New => "New",
-            ServiceSpecState::Deploying => "Deploying",
-            ServiceSpecState::Deployed => "Deployed",
-            ServiceSpecState::DeployFailed => "DeployFailed",
-            ServiceSpecState::Abnormal => "Abnormal",
-            ServiceSpecState::Unavailable => "Unavailable",
-            ServiceSpecState::Removing => "Removing",
-            ServiceSpecState::Deleted => "Deleted",
-        };
-        write!(f, "{}", status_str)
     }
 }
 
@@ -189,14 +234,12 @@ impl From<String> for ServiceSpecState {
     fn from(s: String) -> Self {
         match s.as_str() {
             "New" => ServiceSpecState::New,
-            "Deploying" => ServiceSpecState::Deploying,
             "Deployed" => ServiceSpecState::Deployed,
             "DeployFailed" => ServiceSpecState::DeployFailed,
             "Abnormal" => ServiceSpecState::Abnormal,
-            "Unavailable" => ServiceSpecState::Unavailable,
-            "Removing" => ServiceSpecState::Removing,
+            "Unavailable" => ServiceSpecState::Disable,
             "Deleted" => ServiceSpecState::Deleted,
-            _ => ServiceSpecState::Unavailable,
+            _ => ServiceSpecState::Disable,
         }
     }
 }
@@ -206,15 +249,16 @@ impl From<ServiceState> for ServiceSpecState {
         match state {
             ServiceState::New => ServiceSpecState::New,
             ServiceState::Running => ServiceSpecState::Deployed,
-            ServiceState::Starting | ServiceState::Restarting | ServiceState::Updating => {
-                ServiceSpecState::Deploying
-            }
-            ServiceState::Stopping | ServiceState::Stopped => ServiceSpecState::Unavailable,
+            ServiceState::Stopped => ServiceSpecState::Disable,
+            ServiceState::Stopping => ServiceSpecState::Disable,
+            ServiceState::Restarting => ServiceSpecState::Abnormal,
+            ServiceState::Updating => ServiceSpecState::Abnormal,
+            ServiceState::Deleted => ServiceSpecState::Deleted,
         }
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug,Serialize, Deserialize)]
 pub enum UserType {
     Admin,
     User,
@@ -232,13 +276,14 @@ impl From<String> for UserType {
     }
 }
 
+#[derive(Clone, Debug,Serialize, Deserialize)]
 pub struct UserItem {
     pub userid: String,
     pub user_type: UserType,
     pub res_pool_id: Option<String>, //资源池id，为None时表示未指定资源池
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct ServiceSpec {
     pub id: String,
     pub app_id:String,
@@ -257,19 +302,19 @@ pub struct ServiceSpec {
     pub network_affinity: Option<String>,
     pub default_service_port: u16,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum OPTaskBody {
     NodeInitBaseService,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum OPTaskState {
     New,
     Running,
     Done,
     Failed,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OPTask {
     pub id: String,
     pub creator_id: Option<String>, //为None说明创建者是Scheduler
@@ -280,13 +325,13 @@ pub struct OPTask {
     pub body: OPTaskBody,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeResource {
     pub total_capacity: u64,
     pub used_capacity: u64,
 }
 
-#[derive(Clone, Debug,PartialEq)]
+#[derive(Clone, Debug,PartialEq, Serialize, Deserialize)]
 pub enum NodeType {
     OOD,
     Server,
@@ -311,7 +356,7 @@ impl From<String> for NodeType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug,Serialize, Deserialize)]
 pub struct NodeItem {
     pub id: String,
     pub node_type: NodeType,
@@ -336,7 +381,7 @@ pub struct NodeItem {
     pub op_tasks: Vec<OPTask>,
 }
 
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum NodeState {
     New,
     Prepare,     //new->ready的准备阶段
@@ -379,7 +424,7 @@ impl From<String> for NodeState {
 
 
 
-#[derive(Clone,PartialEq,Debug)]
+#[derive(Clone,PartialEq,Debug, Serialize, Deserialize)]
 pub struct ReplicaInstance {
     pub node_id: String,
     pub spec_id: String,//service_name or app_id
@@ -390,7 +435,7 @@ pub struct ReplicaInstance {
     pub service_port: u16,
 }
 
-#[derive(Clone,PartialEq,Debug)]
+#[derive(Clone,PartialEq,Debug, Serialize, Deserialize)]
 pub enum ServiceInfo {
     //instance_id: format!("{}_{}", service_spec.id, instance_id_uuid) => (weight,Instance)
     RandomCluster(HashMap<String,(u32,ReplicaInstance)>),
@@ -431,52 +476,49 @@ pub fn create_replica_instance_id(spec: &ServiceSpec, node_id: &str) -> String {
     format!("{}@{}@{}", spec.id, spec.owner_id, node_id)
 }
 
+#[derive(Clone, Debug,Serialize, Deserialize)]
 pub struct NodeScheduler {
     schedule_step_id: u64,
-    last_schedule_time: u64,
     pub users: HashMap<String, UserItem>,
     pub nodes: HashMap<String, NodeItem>,
     pub specs: HashMap<String, ServiceSpec>,
 
     replica_instances: HashMap<String, ReplicaInstance>,
     service_infos: HashMap<String, ServiceInfo>,
+    pub schedule_time:u64,
 
-    last_specs: HashMap<String, ServiceSpec>,
 }
 
 impl NodeScheduler {
-    pub fn new_empty(step_id: u64, last_schedule_time: u64) -> Self {
+    pub fn new_empty(step_id: u64) -> Self {
         Self {
             schedule_step_id: step_id,
-            last_schedule_time,
             users: HashMap::new(),
             nodes: HashMap::new(),
             specs: HashMap::new(),
             replica_instances: HashMap::new(),
             service_infos: HashMap::new(),
-            last_specs: HashMap::new(),
+            schedule_time: buckyos_get_unix_timestamp(),
         }
     }
 
     pub fn new(
         step_id: u64,
-        last_schedule_time: u64,
         users: HashMap<String, UserItem>,
         nodes: HashMap<String, NodeItem>,
         specs: HashMap<String, ServiceSpec>,
         replica_instances: HashMap<String, ReplicaInstance>,
-        last_specs: HashMap<String, ServiceSpec>,
         service_infos: HashMap<String, ServiceInfo>,
     ) -> Self {
+        let now = buckyos_get_unix_timestamp();
         Self {
             schedule_step_id: step_id,
-            last_schedule_time,
             users,
             nodes,
             specs,
             replica_instances,
             service_infos,
-            last_specs,
+            schedule_time: now,
         }
     }
 
@@ -517,7 +559,7 @@ impl NodeScheduler {
         }
     }
 
-    pub fn schedule(&mut self) -> Result<Vec<SchedulerAction>> {
+    pub fn schedule(&mut self, last_snapshot: Option<&NodeScheduler>) -> Result<Vec<SchedulerAction>> {
         let mut actions = Vec::new();
         info!("-------------NODE--------------");
         for (node_id, node) in self.nodes.iter() {
@@ -548,24 +590,29 @@ impl NodeScheduler {
         }
 
         // Step2. 处理service_spec的实例化与反实例化
-        if self.is_spec_changed() {
+        if self.is_spec_changed(last_snapshot) {
             debug!("spec changed, schedule spec change");
             let spec_actions = self.schedule_spec_change()?;
             actions.extend(spec_actions);
         }
         // Step3. 优化instance的资源使用
-
-        let service_spec_actions =  self.calc_service_infos()?;
+        let service_spec_actions =  self.calc_service_infos(last_snapshot)?;
         actions.extend(service_spec_actions);
+        info!("-------------RESULT ACTIONS--------------");
+        for action in actions.iter() {
+            info!("- {:?}", action);
+        }
         Ok(actions)
     }
 
-    fn calc_service_infos(&mut self) -> Result<Vec<SchedulerAction>> {
+    fn calc_service_infos(&mut self, last_snapshot: Option<&NodeScheduler>) -> Result<Vec<SchedulerAction>> {
         let now = buckyos_get_unix_timestamp();
         let mut actions = Vec::new();
+        let last_service_infos = last_snapshot.map(|snapshot| &snapshot.service_infos);
         for (spec_id, spec) in self.specs.iter() {
             let mut info_map = HashMap::new();
             if spec.spec_type == ServiceSpecType::App {
+                self.service_infos.remove(spec_id);
                 continue;
             }
 
@@ -586,20 +633,17 @@ impl NodeScheduler {
             }
 
             let new_info = ServiceInfo::RandomCluster(info_map);
-            let old_info = self.service_infos.get(spec_id);
-            let mut is_need_update = false;
-            if old_info.is_none() {
-                is_need_update = true;
-            } else {
-                let old_info = old_info.unwrap();
-                if old_info != &new_info {
-                    is_need_update = true;
-                }
-            }
+            let old_info = last_service_infos
+                .and_then(|infos| infos.get(spec_id));
+            let is_need_update = match old_info {
+                Some(old) => old != &new_info,
+                None => true,
+            };
             if is_need_update {
-                actions.push(SchedulerAction::UpdateServiceInfo(spec_id.clone(), new_info));
+                actions.push(SchedulerAction::UpdateServiceInfo(spec_id.clone(), new_info.clone()));
                 info!("spec_id:{} calc new service info", spec_id);
             }
+            self.service_infos.insert(spec_id.clone(), new_info);
             
         }
         Ok(actions)
@@ -608,28 +652,34 @@ impl NodeScheduler {
     pub fn resort_nodes(&mut self) -> Result<Vec<SchedulerAction>> {
         let mut node_actions = Vec::new();
         // TOD: 根据Node的status进行排序
-        for node in self.nodes.values() {
-            // 1. 检查已有op tasks的完成情况，该部分可能会对可用Node进行一些标记
-            self.check_node_op_tasks(node, &mut node_actions)?;
+        let node_ids: Vec<String> = self.nodes.keys().cloned().collect();
+        for node_id in node_ids {
+            if let Some(node) = self.nodes.get(&node_id) {
+                // 1. 检查已有op tasks的完成情况，该部分可能会对可用Node进行一些标记
+                self.check_node_op_tasks(node, &mut node_actions)?;
+            }
 
-            // 2. 处理新node的初始化
-            match node.state {
-                NodeState::New => {
-                    // 由调度器控制node进入初始化准备状态
-                    node_actions.push(SchedulerAction::ChangeNodeStatus(
-                        node.id.clone(),
-                        NodeState::Prepare,
-                    ));
+            if let Some(node_mut) = self.nodes.get_mut(&node_id) {
+                // 2. 处理新node的初始化
+                match node_mut.state {
+                    NodeState::New => {
+                        // 由调度器控制node进入初始化准备状态
+                        node_mut.state = NodeState::Prepare;
+                        node_actions.push(SchedulerAction::ChangeNodeStatus(
+                            node_mut.id.clone(),
+                            NodeState::Prepare,
+                        ));
+                    }
+                    NodeState::Removing => {
+                        // TODO:由调度器控制node 处理移除任务
+                        node_mut.state = NodeState::Deleted;
+                        node_actions.push(SchedulerAction::ChangeNodeStatus(
+                            node_mut.id.clone(),
+                            NodeState::Deleted,
+                        ));
+                    }
+                    _ => {}
                 }
-                NodeState::Removing => {
-                    // TODO:由调度器控制node 处理移除任务
-                    //
-                    node_actions.push(SchedulerAction::ChangeNodeStatus(
-                        node.id.clone(),
-                        NodeState::Deleted,
-                    ));
-                }
-                _ => {}
             }
         }
 
@@ -638,32 +688,53 @@ impl NodeScheduler {
 
     pub fn schedule_spec_change(&mut self) -> Result<Vec<SchedulerAction>> {
         let mut scheduler_actions = Vec::new();
-        let valid_nodes: Vec<NodeItem> = self.nodes.values().cloned().collect();
-        let valid_nodes: Vec<NodeItem> = valid_nodes
-            .iter()
+        let valid_nodes: Vec<NodeItem> = self
+            .nodes
+            .values()
             .filter(|node| node.state == NodeState::Ready)
             .cloned()
             .collect();
 
-        for (spec_id, spec) in &self.specs {
-            match spec.state {
+        let spec_ids: Vec<String> = self.specs.keys().cloned().collect();
+
+        for spec_id in spec_ids {
+            let spec_snapshot = match self.specs.get(&spec_id) {
+                Some(spec) => spec.clone(),
+                None => continue,
+            };
+            match spec_snapshot.state {
                 ServiceSpecState::New => {
-                    let new_instances = self.create_replica_instance(spec, &valid_nodes)?;
+                    let new_instances = self.create_replica_instance(&spec_snapshot, &valid_nodes)?;
                     for instance in new_instances {
+                        self.replica_instances
+                            .insert(instance.instance_id.clone(), instance.clone());
                         scheduler_actions.push(SchedulerAction::InstanceReplica(instance));
                     }
                     //TODO:现在没有部署中的状态
+                    if let Some(spec_mut) = self.specs.get_mut(&spec_id) {
+                        spec_mut.state = ServiceSpecState::Deployed;
+                    }
                     scheduler_actions.push(SchedulerAction::ChangeServiceStatus(
                         spec_id.clone(),
                         ServiceSpecState::Deployed,
                     ));
                 }
-                ServiceSpecState::Removing => {
-                    let mut is_moved = false;
-                    for instance in self.replica_instances.values() {
-                        if instance.spec_id == *spec_id {
-                            info!("will remove instance: {} @ node: {}, spec_id:{}", instance.instance_id, &instance.node_id, &instance.spec_id);
-                            is_moved = true;
+                ServiceSpecState::Deleted => {
+                    let instance_ids: Vec<String> = self
+                        .replica_instances
+                        .iter()
+                        .filter(|(_, instance)| instance.spec_id == spec_id)
+                        .map(|(instance_id, _)| instance_id.clone())
+                        .collect();
+                    if instance_ids.is_empty() {
+                        warn!("spec_id:{} instance not found,no instance uninstance", spec_id);
+                    }
+                    for instance_id in instance_ids {
+                        if let Some(instance) = self.replica_instances.remove(&instance_id) {
+                            info!(
+                                "will remove instance: {} @ node: {}, spec_id:{}",
+                                instance.instance_id, &instance.node_id, &instance.spec_id
+                            );
                             scheduler_actions.push(SchedulerAction::RemoveInstance(
                                 instance.spec_id.clone(),
                                 instance.instance_id.clone(),
@@ -671,10 +742,10 @@ impl NodeScheduler {
                             ));
                         }
                     }
-                    if !is_moved {
-                        warn!("spec_id:{} instance not found,no instance uninstance", spec_id);
-                    }
                     //TODO:现在没有删除中的状态
+                    if let Some(spec_mut) = self.specs.get_mut(&spec_id) {
+                        spec_mut.state = ServiceSpecState::Deleted;
+                    }
                     scheduler_actions.push(SchedulerAction::ChangeServiceStatus(
                         spec_id.clone(),
                         ServiceSpecState::Deleted,
@@ -686,13 +757,17 @@ impl NodeScheduler {
         Ok(scheduler_actions)
     }
 
-    fn is_spec_changed(&self) -> bool {
-        if self.specs.len() != self.last_specs.len() {
+    fn is_spec_changed(&self, last_snapshot: Option<&NodeScheduler>) -> bool {
+        let Some(last) = last_snapshot else {
+            return true;
+        };
+
+        if self.specs.len() != last.specs.len() {
             return true;
         }
 
         for (spec_id, spec) in &self.specs {
-            match self.last_specs.get(spec_id) {
+            match last.specs.get(spec_id) {
                 None => return true,
                 Some(last_spec) => {
                     if spec.state != last_spec.state

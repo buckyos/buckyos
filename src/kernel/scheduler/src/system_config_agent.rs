@@ -122,7 +122,7 @@ fn create_service_spec_by_service_config(
 pub fn create_scheduler_by_system_config(
     input_config: &HashMap<String, String>,
 ) -> Result<(NodeScheduler, HashMap<String, DeviceInfo>)> {
-    let mut scheduler_ctx = NodeScheduler::new_empty(1, buckyos_get_unix_timestamp());
+    let mut scheduler_ctx = NodeScheduler::new_empty(1);
     let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
     for (key, value) in input_config.iter() {
         //add node
@@ -522,9 +522,15 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
 
         //init scheduler
         let (mut scheduler_ctx, device_list) = create_scheduler_by_system_config(&input_config)?;
+        //load last schedule snapshot from system_config
+        let last_schedule_snapshot = if let Some(snapshot_str) = input_config.get("system/scheduler/snapshot") {
+            Some(serde_json::from_str::<NodeScheduler>(snapshot_str.as_str())?)
+        } else {
+            None
+        };
 
         //schedule
-        let action_list = scheduler_ctx.schedule();
+        let action_list = scheduler_ctx.schedule(last_schedule_snapshot.as_ref());
         if action_list.is_err() {
             error!(
                 "scheduler.schedule failed: {:?}",
@@ -555,6 +561,10 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
         if ret.is_err() {
             error!("exec_tx failed: {:?}", ret.err().unwrap());
         }
+        //save schedule snapshot to system_config
+        let schedule_snapshot = scheduler_ctx.clone();
+        let schedule_snapshot_str = serde_json::to_string(&schedule_snapshot)?;
+        system_config_client.create("system/scheduler/snapshot", &schedule_snapshot_str).await?;
         if is_boot {
             break;
         }

@@ -387,7 +387,8 @@ impl BuckyOSRuntime {
         *last_update_service_info_time = now;
         drop(last_update_service_info_time);
 
-        let device_name = self.device_config.as_ref().unwrap().name.clone();
+        let node_did = self.device_config.as_ref().unwrap().id.clone();
+        let node_id = self.device_config.as_ref().unwrap().name.clone();
         let instance_id = format!(
             "{}-{}",
             self.app_id,
@@ -403,6 +404,8 @@ impl BuckyOSRuntime {
         }
         let service_instance_info = ServiceInstanceReportInfo {
             instance_id,
+            node_id:node_id.clone(),
+            node_did,
             state: ServiceInstanceState::Started,
             service_ports,
             last_update_time: buckyos_get_unix_timestamp(),
@@ -411,7 +414,7 @@ impl BuckyOSRuntime {
         };
 
         let control_panel_client = self.get_control_panel_client().await?;
-        let _ = control_panel_client.update_service_instance_info(&self.app_id,&device_name,
+        let _ = control_panel_client.update_service_instance_info(&self.app_id,&node_id,
             &service_instance_info).await?;
         info!("update service instance info,app_id:{}",self.app_id);
         Ok(())
