@@ -53,7 +53,7 @@ pub struct ServiceInstanceReportInfo {
 
 #[derive(Serialize, Deserialize,Clone)]
 pub struct ServiceNode {
-    pub node_did:String,//device id of node,
+    pub node_did:DID,//device id of node,
     pub node_net_id:Option<String>,
     pub state: ServiceInstanceState,
     pub weight: u32,

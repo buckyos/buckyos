@@ -52,19 +52,19 @@ type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
 fn get_system_pkgs() -> Vec<String> {
     vec![
-        "app_loader".to_string(),
+        "app-loader".to_string(),
         "buckycli".to_string(),
-        "control_panel".to_string(),
-        "repo_service".to_string(),
-        "cyfs_gateway".to_string(),
-        "node_active".to_string(),
-        "node_daemon".to_string(),
-        "repo_service".to_string(),
+        "control-panel".to_string(),
+        "repo-service".to_string(),
+        "cyfs-gateway".to_string(),
+        "node-active".to_string(),
+        "node-daemon".to_string(),
+        "repo-service".to_string(),
         "scheduler".to_string(),
-        "smb_service".to_string(),
-        "sys_test".to_string(),
-        "system_config".to_string(),
-        "verify_hub".to_string(),
+        "smb-service".to_string(),
+        "sys-test".to_string(),
+        "system-config".to_string(),
+        "verify-hub".to_string(),
     ]
 }
 

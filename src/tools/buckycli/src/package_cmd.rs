@@ -473,7 +473,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::Path;
-    use name_lib::load_private_key;
+    use name_lib::{DID, load_private_key};
     use tempfile::tempdir;
     use std::mem;
     use serde_json::json;
@@ -516,6 +516,7 @@ mod tests {
             tag: None,
             category: Some("pkg".to_string()),
             author: author.to_string(),
+            owner: DID::from_str("did:bns:buckyos").unwrap(),
             chunk_id: None,
             chunk_url: None,
             chunk_size: None,
@@ -596,6 +597,7 @@ mod tests {
             tag: None,
             category: Some("pkg".to_string()),
             author: author.to_string(),
+            owner: DID::from_str("did:bns:buckyos").unwrap(),
             chunk_id: None,
             chunk_url: None,
             chunk_size: None,

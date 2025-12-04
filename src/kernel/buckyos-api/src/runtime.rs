@@ -1057,7 +1057,7 @@ impl BuckyOSRuntime {
             .get(self.device_config.as_ref().unwrap().name.as_str());
         if local_node.is_some() {
             let local_node = local_node.unwrap();
-            if local_node.node_did == self.device_config.as_ref().unwrap().id.to_string() {
+            if local_node.node_did == self.device_config.as_ref().unwrap().id {
                 if local_node.state == ServiceInstanceState::Started {
                     if let Some(port) =
                         Self::resolve_service_port(local_node, service_name)

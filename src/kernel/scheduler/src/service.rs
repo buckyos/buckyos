@@ -105,7 +105,7 @@ pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,de
                     let node_net_id = device_info.device_doc.net_id.clone();
 
                     info_map.insert(node_id.clone(), ServiceNode {
-                        node_did: instance.node_id.clone(),
+                        node_did: device_info.id.clone(),
                         node_net_id,
                         state: ServiceInstanceState::Started,
                         weight: *weight,
@@ -124,7 +124,7 @@ pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,de
             if let Some(device_info) = device_info {
                 let node_net_id = device_info.device_doc.net_id.clone();
                 info_map.insert(instance.node_id.clone(), ServiceNode {
-                    node_did: instance.node_id.clone(),
+                    node_did: device_info.id.clone(),
                     node_net_id,
                     state: ServiceInstanceState::Started,
                     weight: 100,
