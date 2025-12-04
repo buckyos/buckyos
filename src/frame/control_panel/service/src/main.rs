@@ -236,7 +236,7 @@ pub async fn start_node_active_service() {
     const PORT: u16 = 3180;
     let runner = Runner::new(PORT);
     // 添加 RPC 服务
-    runner.add_http_server(
+    let _ = runner.add_http_server(
         "/kapi/control-panel".to_string(),
         Arc::new(control_panel_server),
     );
