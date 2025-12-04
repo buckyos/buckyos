@@ -471,7 +471,7 @@ pub(crate) async fn update_gateway_node_list(
                 "hook_point": [
                   {
                     "id": "main",
-                    "prioity": 1,
+                    "priority": 1,
                     "blocks": [
                       {
                         "id": "default",
@@ -490,7 +490,7 @@ pub(crate) async fn update_gateway_node_list(
                 "hook_point": [
                   {
                     "id": "main",
-                    "prioity": 1,
+                    "priority": 1,
                     "blocks": [
                       {
                         "id": "default",
