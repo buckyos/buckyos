@@ -7,7 +7,7 @@
             "hook_point": [
                 {
                     "id": "main",
-                    "priority": 1,
+                    "prioity": 1,
                     "blocks": [
                         {
                             "id": "default",

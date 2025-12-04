@@ -28,14 +28,20 @@ def kill_process(name):
         print(f"{name} killed")
 
 def kill_all():
+    kill_process("node-daemon")
     kill_process("node_daemon")
     kill_process("scheduler")
+    kill_process("verify-hub")
     kill_process("verify_hub")
+    kill_process("system-config")
     kill_process("system_config")
+    kill_process("cyfs-gateway")
     kill_process("cyfs_gateway")
     kill_process("filebrowser")
     stop_app_container("filebrowser")
+    kill_process("smb-service")
     kill_process("smb_service")
+    kill_process("repo-service")
     kill_process("repo_service")
 
 kill_all()

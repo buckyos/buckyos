@@ -265,14 +265,14 @@ async fn check_and_update_system_pkgs(pkg_list: &Vec<String>) -> std::result::Re
 
 async fn make_sure_system_pkgs_ready(meta_db_path: &PathBuf,prefix: &str,session_token: Option<String>) -> std::result::Result<(), String> {
     let system_pkgs = vec![
-        "app_loader".to_string(),
-        "node_active".to_string(),
+        "app-loader".to_string(),
+        "node-active".to_string(),
         "buckycli".to_string(),
-        "control_panel".to_string(),
-        "repo_service".to_string(),
-        "cyfs_gateway".to_string(),
-        "system_config".to_string(),
-        "verify_hub".to_string(),
+        "control-panel".to_string(),
+        "repo-service".to_string(),
+        "cyfs-gateway".to_string(),
+        "system-config".to_string(),
+        "verify-hub".to_string(),
     ];
     let mut miss_chunk_list = vec![];
     for pkg_id in system_pkgs {
@@ -420,12 +420,12 @@ async fn wait_sysmte_config_sync() -> std::result::Result<(),String> {
 }
 
 async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, device_private_key: &EncodingKey,is_restart:bool) -> std::result::Result<(),String> {
-    let mut system_config_service_pkg = ServicePkg::new("system_config".to_string(),get_buckyos_system_bin_dir());
+    let mut system_config_service_pkg = ServicePkg::new("system-config".to_string(),get_buckyos_system_bin_dir());
 
     if !system_config_service_pkg.try_load().await {
         error!("load system_config_service pkg failed!");
         let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let result = env.install_pkg("system_config", false,false).await;
+        let result = env.install_pkg("system-config", false,false).await;
         if result.is_err() {
             error!("install system_config_service pkg failed! {}", result.err().unwrap());
             return Err(String::from("install system_config_service pkg failed!"));
@@ -462,7 +462,7 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
 
 async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node_private_key: &EncodingKey,sn: Option<String>,is_restart:bool) -> std::result::Result<(),String> {
     //TODO: 需要区分boot模式和正常模式
-    let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs_gateway".to_string(),get_buckyos_system_bin_dir());
+    let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs-gateway".to_string(),get_buckyos_system_bin_dir());
  
     let mut running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
         error!("check cyfs_gateway running failed! {}", err);
@@ -474,7 +474,7 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
         //当版本更新后,上述检查会返回NotExist, 并触发更新操作
         warn!("cyfs_gateway service pkg not exist, try install it...");
         let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
-        let result = env.install_pkg("cyfs_gateway", false,false).await;
+        let result = env.install_pkg("cyfs-gateway", false,false).await;
         if result.is_err() {
             error!("install cyfs_gateway service pkg failed! {}", result.err().unwrap());
             return Err(String::from("install cyfs_gateway service pkg failed!"));
@@ -670,7 +670,9 @@ async fn node_daemon_main_loop(
             }
             let device_info_str = serde_json::to_string(&device_info).unwrap();
             debug!("update device info: {:?}", device_info);
-            std::env::set_var("BUCKYOS_THIS_DEVICE_INFO", device_info_str);
+            unsafe {
+                std::env::set_var("BUCKYOS_THIS_DEVICE_INFO", device_info_str);
+            }
             update_device_info(&device_info, &system_config_client).await;
             //TODO：SN的上报频率不用那么快
             let device_session_token_jwt = buckyos_runtime.get_session_token().await;
@@ -874,9 +876,11 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         info!("Booting Node {} ...",device_doc.name.as_str());
     }
 
-    std::env::set_var("BUCKY_ZONE_OWNER", serde_json::to_string(&node_identity.owner_public_key).unwrap());
-    std::env::set_var("BUCKYOS_ZONE_BOOT_CONFIG", serde_json::to_string(&zone_boot_config).unwrap());
-    std::env::set_var("BUCKYOS_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
+    unsafe {
+        std::env::set_var("BUCKY_ZONE_OWNER", serde_json::to_string(&node_identity.owner_public_key).unwrap());
+        std::env::set_var("BUCKYOS_ZONE_BOOT_CONFIG", serde_json::to_string(&zone_boot_config).unwrap());
+        std::env::set_var("BUCKYOS_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
+    }
 
     info!("set env var BUCKY_ZONE_OWNER,BUCKYOS_ZONE_BOOT_CONFIG,BUCKYOS_THIS_DEVICE OK!");
 
@@ -927,7 +931,9 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                     do_boot_upgreade().await?;
 
                     warn!("Do boot schedule to generate all system configs...");
-                    std::env::set_var("SCHEDULER_SESSION_TOKEN", device_session_token_jwt.clone());
+                    unsafe {
+                        std::env::set_var("SCHEDULER_SESSION_TOKEN", device_session_token_jwt.clone());
+                    }
                     debug!("set var SCHEDULER_SESSION_TOKEN {}", device_session_token_jwt);
                     let boot_result = do_boot_schedule().await;
                     if boot_result.is_ok() {
@@ -953,7 +959,9 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             error!("parse zone config from boot/config failed! {}", err);
             return String::from("parse zone config from boot/config failed!");
         })?;
-        std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
+        unsafe {
+            std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
+        }
         info!("--------------------------------");
 
         let mut runtime = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::Kernel);

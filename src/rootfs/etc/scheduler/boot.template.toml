@@ -54,7 +54,7 @@ p, service,dfs://system/cache/{service}/*,read|write,allow
 
 p, app, kv://boot/*, read,allow
 p, app, kv://users/*/apps/{app}/settings,read|write,allow
-p, app, kv://users/*/apps/{app}/config,read,allow
+p, app, kv://users/*/apps/{app}/spec,read,allow
 p, app, kv://users/*/apps/{app}/info,read,allow
 p, app, dfs://users/*/appdata/{app}/*, read|write,allow
 p, app, dfs://users/*/cache/{app}/*, read|write,allow

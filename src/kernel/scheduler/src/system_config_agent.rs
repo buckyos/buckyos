@@ -568,14 +568,11 @@ async fn update_rbac(
                 rbac_policy.push_str(&format!("\ng, {}, app", service_spec.app_id));
             }
             ServiceSpecType::Service => {
-                rbac_policy.push_str(&format!("\ng, {}, service", spec_id));
+                rbac_policy.push_str(&format!("\ng, {}, service", service_spec.app_id));
             }
-            // ServiceSpecType::Kernel => {
-            //     kernel service already set in basic_policy
-            //     rbac_policy.push_str(&format!("\ng, {}, kernel", pod_id));
-            // }
-            _ => {
-                continue;
+            ServiceSpecType::Kernel => {
+                //kernel service already set in basic_policy
+                rbac_policy.push_str(&format!("\ng, {}, kernel", service_spec.app_id));
             }
         }
     }
@@ -656,8 +653,6 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
             return Err(anyhow::anyhow!("scheduler.schedule failed"));
         }
         
-
-
         let action_list = action_list.unwrap();
         let mut tx_actions = HashMap::new();
         let mut need_update_gateway_node_list:HashSet<String> = HashSet::new();

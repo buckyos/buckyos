@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{KernelServiceDoc, SelectorType};
 
-pub const REPO_SERVICE_UNIQUE_ID: &str = "repo";
-pub const REPO_SERVICE_SERVICE_NAME: &str = "repo";
+pub const REPO_SERVICE_UNIQUE_ID: &str = "repo-service";
+pub const REPO_SERVICE_SERVICE_NAME: &str = "repo-service";
+pub const REPO_SERVICE_SERVICE_PORT: u16 = 4000;
 
 
 #[derive(Serialize, Deserialize)]

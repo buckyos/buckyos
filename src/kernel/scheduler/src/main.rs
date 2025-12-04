@@ -243,7 +243,7 @@ async fn main() {
     }
 
     unsafe {
-        std::env::set_var("BUCKY_LOG", "debug");
+        //std::env::set_var("BUCKY_LOG", "debug");
     }
 
     let ret = service_main(is_boot).await;

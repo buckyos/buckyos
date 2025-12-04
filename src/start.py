@@ -71,7 +71,7 @@ def start_system():
         print(f"Using BUCKYOS_ROOT: {buckyos_root}")
     
     # Start node_daemon
-    node_daemon_path = os.path.join(buckyos_root, "bin", "node_daemon", "node_daemon")
+    node_daemon_path = os.path.join(buckyos_root, "bin", "node-daemon", "node_daemon")
     
     if platform.system() == "Windows":
         node_daemon_path += ".exe"
