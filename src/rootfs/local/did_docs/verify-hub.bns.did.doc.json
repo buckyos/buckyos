@@ -1,0 +1,1 @@
+{"author":"did:bns:buckyos","description":"Verify Hub is a service that verifies the authenticity of the user's identity.","exp":1767402731,"owner":"did:bns:buckyos","pkg_name":"verify-hub","pub_time":1764810731,"selector_type":"random","show_name":"Verify Hub","version":"0.5.1"}

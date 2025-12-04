@@ -51,6 +51,7 @@ pub fn instance_app_service(new_instance:&ReplicaInstance,device_list:&HashMap<S
     let mut result = HashMap::new();
     
     let (app_id,user_id,node_id) = parse_instance_id(new_instance.instance_id.as_str())?;
+    //debug!("instance_app_service app_id: {}, user_id: {}, node_id: {},instance_id: {}", app_id, user_id, node_id,new_instance.instance_id);
     let app_config_path = format!("users/{}/apps/{}/spec",user_id,app_id);
     info!("instance_app_service app_config_path: {}",app_config_path);
     let app_config = input_config.get(&app_config_path);
@@ -81,73 +82,73 @@ pub fn instance_app_service(new_instance:&ReplicaInstance,device_list:&HashMap<S
     let app_service_config_set_action =  KVAction::SetByJsonPath(set_action);
     result.insert(format!("nodes/{}/config",new_instance.node_id),app_service_config_set_action);
 
-    //write to gateway_config
-    let http_port = app_service_config.get_host_service_port("www");
-    if let Some(http_port) = http_port {
-        let app_prefix;
-        let mut user_owner_domain:Option<String> = None;
-        //if user_id is owner,then use app_id as prefix
-        if user_id == "root" {
-            app_prefix = format!("{}*",app_id);
-        } else {
-            if user_owner_domain.is_none() {
-                app_prefix = format!("{}-{}*",app_id,user_id);
-            } else {
-                app_prefix = format!("{}.{}",app_id,user_owner_domain.as_ref().unwrap());
-            }
-        }
+    // //write to gateway_config
+    // let http_port = app_service_config.get_host_service_port("www");
+    // if let Some(http_port) = http_port {
+    //     let app_prefix;
+    //     let mut user_owner_domain:Option<String> = None;
+    //     //if user_id is owner,then use app_id as prefix
+    //     if user_id == "root" {
+    //         app_prefix = format!("{}*",app_id);
+    //     } else {
+    //         if user_owner_domain.is_none() {
+    //             app_prefix = format!("{}-{}*",app_id,user_id);
+    //         } else {
+    //             app_prefix = format!("{}.{}",app_id,user_owner_domain.as_ref().unwrap());
+    //         }
+    //     }
         
-        //创建默认的appid-userid的短域名给node-gateway.json
-        let gateway_path = format!("/servers/zone_gateway/hosts/{}",app_prefix);
-        let app_gateway_config = json!(
-            {
-                "routes":{
-                    "/":{
-                        "upstream":format!("http://127.0.0.1:{}",http_port)
-                    }
-                }  
-            }
-        );    
-        let mut set_action = HashMap::new();
-        set_action.insert(gateway_path,Some(app_gateway_config));
+    //     //创建默认的appid-userid的短域名给node-gateway.json
+    //     let gateway_path = format!("/servers/zone_gateway/hosts/{}",app_prefix);
+    //     let app_gateway_config = json!(
+    //         {
+    //             "routes":{
+    //                 "/":{
+    //                     "upstream":format!("http://127.0.0.1:{}",http_port)
+    //                 }
+    //             }  
+    //         }
+    //     );    
+    //     let mut set_action = HashMap::new();
+    //     set_action.insert(gateway_path,Some(app_gateway_config));
 
-        if let Some(gateway_settings) = input_config.get("services/gateway/settings") {
-            let gateway_settings: GatewaySettings = serde_json::from_str(gateway_settings)?;
-            for (key,node) in gateway_settings.shortcuts.iter() {
-                if node.target_type != "app" {
-                    continue;
-                }
-                if node.user_id.is_none() {
-                    continue;
-                }
-                let target_user_id = node.user_id.as_ref().unwrap();
-                if target_user_id != &user_id {
-                    continue;
-                }
-                let target_app_id = node.app_id.clone();
-                if target_app_id != app_id {
-                    continue;
-                }
+    //     if let Some(gateway_settings) = input_config.get("services/gateway/settings") {
+    //         let gateway_settings: GatewaySettings = serde_json::from_str(gateway_settings)?;
+    //         for (key,node) in gateway_settings.shortcuts.iter() {
+    //             if node.target_type != "app" {
+    //                 continue;
+    //             }
+    //             if node.user_id.is_none() {
+    //                 continue;
+    //             }
+    //             let target_user_id = node.user_id.as_ref().unwrap();
+    //             if target_user_id != &user_id {
+    //                 continue;
+    //             }
+    //             let target_app_id = node.app_id.clone();
+    //             if target_app_id != app_id {
+    //                 continue;
+    //             }
 
-                info!("will create gatewayshortcut: {} -> {}",key,app_prefix);
-                // 如果用户设置了独立的域名,则使用 app_id.独立域名
-                // 使用系统快捷方式会让 appid前缀失效（我们不希望有两个不同的URL都可以访问APP），注意谨慎选择
-                let short_prefix = match key.as_str() {
-                    "www" => "*".to_string(),
-                    _ => format!("{}*",key.as_str()),
-                };
-                let gateway_path = format!("/servers/zone_gateway/hosts/{}/routes/\"/\"",short_prefix);
-                set_action.insert(gateway_path,Some(json!({
-                    "upstream":format!("http://127.0.0.1:{}",http_port)
-                })));
+    //             info!("will create gatewayshortcut: {} -> {}",key,app_prefix);
+    //             // 如果用户设置了独立的域名,则使用 app_id.独立域名
+    //             // 使用系统快捷方式会让 appid前缀失效（我们不希望有两个不同的URL都可以访问APP），注意谨慎选择
+    //             let short_prefix = match key.as_str() {
+    //                 "www" => "*".to_string(),
+    //                 _ => format!("{}*",key.as_str()),
+    //             };
+    //             let gateway_path = format!("/servers/zone_gateway/hosts/{}/routes/\"/\"",short_prefix);
+    //             set_action.insert(gateway_path,Some(json!({
+    //                 "upstream":format!("http://127.0.0.1:{}",http_port)
+    //             })));
 
-            }
-        }
-        info!("instance_app_service set gateway_config: {:?}",set_action);
-        result.insert(format!("nodes/{}/gateway_config",new_instance.node_id.as_str()),
-            KVAction::SetByJsonPath(set_action));  
+    //         }
+    //     }
+    //     info!("instance_app_service set gateway_config: {:?}",set_action);
+    //     result.insert(format!("nodes/{}/gateway_config",new_instance.node_id.as_str()),
+    //         KVAction::SetByJsonPath(set_action));  
     
-    }
+    // }
 
 
 
@@ -164,16 +165,16 @@ pub fn uninstance_app_service(instance:&ReplicaInstance)->Result<HashMap<String,
     set_action.insert(format!("/apps/{}/target_state",instance.instance_id.as_str()), Some(json!("Stopped")));
     result.insert(key_path,KVAction::SetByJsonPath(set_action));
 
-    let key_path = format!("nodes/{}/gateway_config",instance.node_id.as_str());
-    let mut set_action = HashMap::new();
-    let app_prefix;
-    if user_id == "root" {
-        app_prefix = format!("{}.*",app_id);
-    } else {
-        app_prefix = format!("{}_{}.*",app_id,user_id);
-    }
-    set_action.insert(format!("/servers/zone_gateway/hosts/{}",app_prefix.as_str()), None);
-    result.insert(key_path,KVAction::SetByJsonPath(set_action));
+    // let key_path = format!("nodes/{}/gateway_config",instance.node_id.as_str());
+    // let mut set_action = HashMap::new();
+    // let app_prefix;
+    // if user_id == "root" {
+    //     app_prefix = format!("{}.*",app_id);
+    // } else {
+    //     app_prefix = format!("{}_{}.*",app_id,user_id);
+    // }
+    // set_action.insert(format!("/servers/zone_gateway/hosts/{}",app_prefix.as_str()), None);
+    //result.insert(key_path,KVAction::SetByJsonPath(set_action));
     Ok(result)
 }
 
@@ -183,8 +184,9 @@ pub fn update_app_service_instance(instance:&ReplicaInstance)->Result<HashMap<St
 
 pub fn set_app_service_state(spec_id:&str,state:&ServiceSpecState)->Result<HashMap<String,KVAction>> {
     //spec_id 是app_id@user_id
-    let (app_id,user_id,node_id) = parse_instance_id(spec_id)?;
-    let key = format!("users/{}/apps/{}/config",user_id,app_id);
+    let (app_id,user_id) = parse_spec_id(spec_id)?;
+    let key = format!("users/{}/apps/{}/spec",user_id,app_id);
+    debug!("update_app_service sepc key: {}", key);
     let mut set_paths = HashMap::new();
     set_paths.insert("state".to_string(),Some(json!(state.to_string())));
     let mut result = HashMap::new();

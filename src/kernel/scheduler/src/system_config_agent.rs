@@ -18,34 +18,6 @@ use buckyos_kit::*;
 use name_client::*;
 use name_lib::{DeviceInfo, ZoneConfig};
 
-const NODE_GATEWAY_CONFIG_TEMPLATE: &str = r#"
-servers:
-    - id: node_gateway
-      type: http
-      hook_point:
-        - id: main 
-          prioity: 1
-          blocks:
-            - id: default
-              block: |
-              {}
-                
-
-stacks: 
-    - id : node_gateway_tcp
-      protocol: tcp
-      bind: 0.0.0.0:3180
-      hook_point:
-        - id: main 
-          prioity: 1
-          blocks:
-            - id : default
-              block: |
-                return "server node_gateway"
-
-"#;
-
-
 fn map_api_user_type(user_type: &ApiUserType) -> UserType {
     match user_type {
         ApiUserType::Admin | ApiUserType::Root => UserType::Admin,
@@ -450,7 +422,7 @@ pub(crate) async fn update_gateway_node_list(
             match service_info {
                 ServiceInfo::SingleInstance(instance) => {
                     if instance.node_id == *node_id {
-                        target_str = format!(" forward \"tcp://127.0.0.1/:{}\"", instance.service_port);
+                        target_str = format!(" forward \"tcp:///127.0.0.1:{}\"", instance.service_port);
                     } else {
                         target_str = format!(" buckyos-select && forward \"$ANSWER.target/:{}\"", instance.service_port);
                     }
@@ -473,15 +445,15 @@ pub(crate) async fn update_gateway_node_list(
                 let app_id = parts[0];
                 let user_id = parts[1];
                 if user_id == scheduler_ctx.default_user_id {
-                    let line_rule = format!("match $REQ_HEADER.host \"{}*\" && {}", app_id, target_str);
+                    let line_rule = format!("match $REQ.host \"{}*\" && {}", app_id, target_str);
                     process_chain_lines.push_back(line_rule);
                 }
-                let line_rule = format!("match $REQ_HEADER.host \"{}-{}*\" && {}", app_id, user_id, target_str);
+                let line_rule = format!("match $REQ.host \"{}-{}*\" && {}", app_id, user_id, target_str);
                 process_chain_lines.push_back(line_rule);
                 //TODO：处理zone-gateway中的快捷方式
 
             } else {
-                let line_rule = format!("match $REQ_HEADER.url \"/kapi/{}/*\" && {}", spec_id, target_str);
+                let line_rule = format!("match $REQ.url \"/kapi/{}/*\" && {}", spec_id, target_str);
                 process_chain_lines.push_front(line_rule);
             }
         }

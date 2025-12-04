@@ -37,8 +37,8 @@ use name_lib::DID;
 use package_lib::PackageMeta;
 use serde_json::json;
 
-pub const SMB_SERVICE_UNIQUE_ID: &str = "smb_service";
-pub const SMB_SERVICE_SERVICE_NAME: &str = "smb_service";
+pub const SMB_SERVICE_UNIQUE_ID: &str = "smb-service";
+pub const SMB_SERVICE_SERVICE_NAME: &str = "smb-service";
 
 
 static CURRENT_BUCKYOS_RUNTIME:OnceCell<BuckyOSRuntime> = OnceCell::new();

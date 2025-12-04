@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use log::debug;
 use buckyos_api::{
     AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceDoc, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID
 };
@@ -101,6 +102,7 @@ impl SystemConfigBuilder {
                 "users/{}/apps/{}/spec",
                 config.user_name, app_id
             );
+            debug!("app_key: {}", app_key);
       
             let app_spec = AppServiceSpec {
                 app_doc,
@@ -314,7 +316,7 @@ impl SystemConfigBuilder {
         };
         zone_config.init_by_boot_config(zone_boot_config);
         zone_config.verify_hub_info = Some(verify_hub_info);
-
+        debug!("zone_config: {:?}", &zone_config);
         self.insert_json("boot/config", &zone_config)?;
         Ok(self)
     }

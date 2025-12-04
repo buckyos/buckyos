@@ -1,127 +1,21 @@
 {
-    "dispatcher": {
-        "tcp://0.0.0.0:443": {
-            "id": "zone_gateway",
-            "type": "server"
-        },
-        "tcp://0.0.0.0:80": {
-            "id": "zone_gateway",
-            "type": "server"
-        },
-        "tcp://0.0.0.0:3180": {
-            "id": "node_gateway",
-            "type": "server"
-        }
-    },
-    "inner_services": {
-        "zone_provider": {
-            "type": "zone-provider"
-        }
-    },
-    "servers":{
-        "node_gateway":{
-            "type":"cyfs-warp",
-            "bind":"127.0.0.1",
-            "http_port":3180,
-            "hosts":{
-                "*":{
-                    "enable_cors":true,
-                    "routes": {
-                        "/kapi/system_config":{
-                            "upstream":"http://127.0.0.1:3200"
-                        },
-                        "/ndn/": {
-                            "named_mgr": {
-                                "named_data_mgr_id":"default",
-                                "read_only":false,
-                                "guest_access":true,
-                                "is_chunk_id_in_path":true,
-                                "enable_mgr_file_path":true
-                            }
-                        },
-                        "/1.0/identifiers/":{
-                            "inner_service":"zone_provider"
-                        },
-                        "/did-query":{
-                            "inner_service":"zone_provider"
+    "stacks": [
+        {
+            "id": "zone_gateway_http",
+            "protocol": "tcp",
+            "bind": "0.0.0.0:80",
+            "hook_point": [
+                {
+                    "id": "main",
+                    "priority": 1,
+                    "blocks": [
+                        {
+                            "id": "default",
+                            "block": "http-probe && match $(REQ.uri) \"/kapi/system_config/*\" && return \"forward http://127.0.0.1:3200\" \n call-server \"node_gateway\""
                         }
-                    }
+                    ]
                 }
-            }
-        },
-        "zone_gateway":{
-            "type":"cyfs-warp",
-            "bind":"0.0.0.0",
-            "http_port":80,
-            "hosts": {
-                "*":{
-                    "enable_cors":true,
-                    "routes": {
-                        "/kapi/system_config":{
-                            "upstream":"http://127.0.0.1:3200"
-                        },
-                        "/ndn/": {
-                            "named_mgr": {
-                                "named_data_mgr_id":"default",
-                                "read_only":false,
-                                "guest_access":true,
-                                "is_chunk_id_in_path":true,
-                                "enable_mgr_file_path":true
-                            }
-                        },
-                        "/1.0/identifiers/":{
-                            "inner_service":"zone_provider"
-                        },
-                        "/did-query": {
-                            "inner_service":"zone_provider"
-                        }
-                    }
-                },
-                "sys*": {
-                    "enable_cors":true,
-                    "routes": {
-                        "/":{
-                            "local_dir":"{BUCKYOS_ROOT}/bin/control_panel"
-                        },
-                        "/kapi/system_config": {
-                            "upstream":"http://127.0.0.1:3200"
-                        }
-                    }
-                },
-                "sys.*": {
-                    "enable_cors":true,
-                    "routes": {
-                        "/":{
-                            "local_dir":"{BUCKYOS_ROOT}/bin/control_panel"
-                        },
-                        "/kapi/system_config":{
-                            "upstream":"http://127.0.0.1:3200"
-                        }
-                    }
-                },
-                "sys-test*": {
-                    "enable_cors":true,
-                    "routes": {
-                        "/":{
-                            "local_dir":"{BUCKYOS_ROOT}/bin/sys_test"
-                        },
-                        "/kapi/system_config":{
-                            "upstream":"http://127.0.0.1:3200"
-                        }
-                    }
-                },
-                "sys-test.*": {
-                    "enable_cors":true,
-                    "routes": {
-                        "/":{
-                            "local_dir":"{BUCKYOS_ROOT}/bin/sys_test"
-                        },
-                        "/kapi/system_config":{
-                            "upstream":"http://127.0.0.1:3200"
-                        }
-                    }
-                }
-            }
+            ]
         }
-    }
+    ]
 }

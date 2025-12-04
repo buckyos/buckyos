@@ -1,0 +1,1 @@
+{"author":"did:bns:buckyos","description":"Scheduler is the core service of buckyos, controlling the scheduling of tasks and services","exp":1767402731,"owner":"did:bns:buckyos","pkg_name":"scheduler","pub_time":1764810731,"selector_type":"single","show_name":"Scheduler","version":"0.5.1"}

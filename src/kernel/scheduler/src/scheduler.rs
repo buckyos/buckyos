@@ -471,6 +471,14 @@ pub fn parse_instance_id(instance_id: &str) -> Result<(String,String, String)> {
     Err(anyhow::anyhow!("Invalid instance_id format: {}", instance_id))
 }
 
+pub fn parse_spec_id(spec_id: &str) -> Result<(String, String)> {
+    let parts: Vec<&str> = spec_id.split('@').collect();
+    if parts.len() == 2 {
+        return Ok((parts[0].to_string(), parts[1].to_string()))
+    }
+    return Ok((spec_id.to_string(), "root".to_string()));
+}
+
 // app_id@user_id
 // pub fn parse_app_instance_id(spec_id: &str) -> Result<(String, String)> {
 //     let parts: Vec<&str> = spec_id.split('@').collect();
