@@ -2,13 +2,15 @@ use ::kRPC::*;
 use anyhow::Result;
 use async_trait::async_trait;
 use buckyos_kit::*;
-use cyfs_gateway_lib::WarpServerConfig;
-use cyfs_warp::*;
-use log::*;
-// use name_client::*;
+use bytes::Bytes;
+use cyfs_gateway_lib::*;
+use http::{Method, Version};
+use http_body_util::combinators::BoxBody;
 use serde_json::*;
+use server_runner::*;
+use std::sync::Arc;
 use std::{net::IpAddr, time::Duration};
-use sysinfo::{Disks, DiskRefreshKind, System};
+use sysinfo::{DiskRefreshKind, Disks, System};
 
 fn bytes_to_gb(bytes: u64) -> f64 {
     (bytes as f64) / 1024.0 / 1024.0 / 1024.0
@@ -185,7 +187,7 @@ impl ControlPanelServer {
 }
 
 #[async_trait]
-impl InnerServiceHandler for ControlPanelServer {
+impl RPCHandler for ControlPanelServer {
     async fn handle_rpc_call(
         &self,
         req: RPCRequest,
@@ -198,44 +200,53 @@ impl InnerServiceHandler for ControlPanelServer {
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         }
     }
+}
 
-    async fn handle_http_get(&self, req_path: &str, _ip_from: IpAddr) -> Result<String, RPCErrors> {
-        return Err(RPCErrors::UnknownMethod(req_path.to_string()));
+#[async_trait]
+impl HttpServer for ControlPanelServer {
+    async fn serve_request(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        info: StreamInfo,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if *req.method() == Method::POST {
+            return serve_http_by_rpc_handler(req, info, self).await;
+        }
+        return Err(server_err!(
+            ServerErrorCode::BadRequest,
+            "Method not allowed"
+        ));
     }
+
+    fn id(&self) -> String {
+        "active-server".to_string()
+    }
+
+    fn http_version(&self) -> Version {
+        Version::HTTP_11
+    }
+
+    fn http3_port(&self) -> Option<u16> {
+        None
+    }
+}
+
+pub async fn start_node_active_service() {
+    let control_panel_server = ControlPanelServer::new();
+    const PORT: u16 = 3180;
+    let runner = Runner::new(PORT);
+    // 添加 RPC 服务
+    runner.add_http_server(
+        "/kapi/control-panel".to_string(),
+        Arc::new(control_panel_server),
+    );
+
+    let _ = runner.run().await;
 }
 
 async fn service_main() {
     init_logging("control_server", true);
-
-    let control_server = ControlPanelServer::new();
-    // .map_err(|e| {
-    //     error!("control_server init error! err:{}", e);
-    //     anyhow::anyhow!("control_server init error! err:{}", e)
-    // })?;
-
-    // control_server.init().await?;
-    info!("control_server init check OK.");
-
-    register_inner_service_builder("control_server", move || Box::new(control_server.clone()))
-        .await;
-
-    let service_config = json!({
-      "http_port":3180,
-      "tls_port":0,
-      "hosts": {
-        "*": {
-          "enable_cors":true,
-          "routes": {
-            "/kapi/control-panel" : {
-                "inner_service":"control_server"
-            }
-          }
-        }
-      }
-    });
-
-    let service_config: WarpServerConfig = serde_json::from_value(service_config).unwrap();
-    let _ = start_cyfs_warp_server(service_config).await;
+    let _ = start_node_active_service().await;
     let _ = tokio::signal::ctrl_c().await;
 }
 

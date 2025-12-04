@@ -7,33 +7,35 @@ authors = ["BuckyOS DAO","@sun"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-toml = "*"
-clap = "*"
-serde = { version = "*", features = ["derive"] }
-serde_json = "*"
-log = "*"
-simplelog = "*"
-thiserror = "*"
-tokio = { version = "*", features = ["full"] }
-async-trait = "*"
-futures = "*"
-lazy_static = "*"
-jsonwebtoken = { version = "*", features = ["aws_lc_rs"] }
-num_cpus = "*"
-reqwest = "*"
-url = "*"
-time = { version = "^0.3", features = ["formatting"] }
-sysinfo = "*"
-chrono = { version = "*", features = ["serde"] }
-if-addrs = "*"
-anyhow="*"
-cyfs-warp = { path = "../../../cyfs_gateway/cyfs-warp" }
-cyfs-gateway-lib = { path = "../../../cyfs_gateway/cyfs-gateway-lib" }
-buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit" }
-name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib" }
-name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client" }
-package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib" }
-ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib" }
-#package-installer = { path = "../../components/package-installer" }
+toml = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log ={ workspace = true }
+simplelog = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+lazy_static = { workspace = true }
+jsonwebtoken ={ workspace = true }
+num_cpus = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+time = { workspace = true }
+sysinfo ={ workspace = true }
+chrono = { workspace = true }
+if-addrs ={ workspace = true }
+anyhow={ workspace = true }
+server-runner = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
+buckyos-kit = { workspace = true }
+name-lib = { workspace = true }
+name-client = { workspace = true }
+package-lib = { workspace = true }
+ndn-lib = { workspace = true }
 kRPC = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
 buckyos-api = { path = "../../../kernel/buckyos-api" }
