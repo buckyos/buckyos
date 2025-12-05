@@ -6,7 +6,7 @@ mod app;
 mod ndn;
 
 
-use std::path::Path;
+use std::{fs, path::Path};
 use buckyos_api::*;
 use buckyos_api::test_config;
 use clap::{Arg, Command};
@@ -24,7 +24,8 @@ fn is_local_cmd(cmd_name: &str) -> bool {
         "create_user_env",
         "create_node_configs",
         "create_sn_configs",
-        "register_device"
+        "register_device_to_sn",
+        "build_did_docs",
     ];
     LOCAL_COMMANDS.contains(&cmd_name)
 }
@@ -278,7 +279,7 @@ oods look like this 'ood1,ood2'.")
         )
         .subcommand(
             Command::new("create_user_env")
-                .about("create user environment configs")
+                .about("create user environment configs(include user_config & zone_boot_config & zone TXT record)")
                 .arg(
                     Arg::new("username")
                         .long("username")
@@ -294,10 +295,17 @@ oods look like this 'ood1,ood2'.")
                         .required(true)
                 )
                 .arg(
-                    Arg::new("netid")
-                        .long("netid")
-                        .value_name("netid")
-                        .help("zone network id")
+                    Arg::new("ood_name")
+                        .long("ood_name")
+                        .value_name("ood_name")
+                        .help("default ood device name, e.g. ood1")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("sn_base_host")
+                        .long("sn_base_host")
+                        .value_name("sn_base_host")
+                        .help("base host name for SN, e.g. test.buckyos.io")
                         .required(true)
                 )
                 .arg(
@@ -312,13 +320,6 @@ oods look like this 'ood1,ood2'.")
             Command::new("create_node_configs")
                 .about("create node configs")
                 .arg(
-                    Arg::new("username")
-                        .long("username")
-                        .value_name("username")
-                        .help("username for the node")
-                        .required(true)
-                )
-                .arg(
                     Arg::new("device_name")
                         .long("device_name")
                         .value_name("device_name")
@@ -326,10 +327,10 @@ oods look like this 'ood1,ood2'.")
                         .required(true)
                 )
                 .arg(
-                    Arg::new("zone_name")
-                        .long("zone_name")
-                        .value_name("zone_name")
-                        .help("zone name")
+                    Arg::new("env_dir")
+                        .long("env_dir")
+                        .value_name("env_dir")
+                        .help("user env dir created by create_user_env")
                         .required(true)
                 )
                 .arg(
@@ -359,7 +360,18 @@ oods look like this 'ood1,ood2'.")
                 )
         )
         .subcommand(
-            Command::new("register_device")
+            Command::new("build_did_docs")
+                .about("generate kernel service did docs into target dir")
+                .arg(
+                    Arg::new("output_dir")
+                        .long("output_dir")
+                        .value_name("output_dir")
+                        .help("directory to write *.doc.json")
+                        .required(true)
+                )
+        )
+        .subcommand(
+            Command::new("register_device_to_sn")
                 .about("register device to SN database")
                 .arg(
                     Arg::new("username")
@@ -642,13 +654,15 @@ oods look like this 'ood1,ood2'.")
         Some(("create_user_env", matches)) => {
             let username = matches.get_one::<String>("username").unwrap();
             let hostname = matches.get_one::<String>("hostname").unwrap();
-            let netid = matches.get_one::<String>("netid").unwrap();
+            let ood_name = matches.get_one::<String>("ood_name").unwrap();
+            let sn_base_host = matches.get_one::<String>("sn_base_host").unwrap();
             let output_dir = matches.get_one::<String>("output_dir");
             
             match test_config::cmd_create_user_env(
                 username,
                 hostname,
-                netid,
+                ood_name,
+                sn_base_host,
                 output_dir.map(|s| s.as_str()),
             ).await {
                 Ok(_) => {
@@ -661,21 +675,19 @@ oods look like this 'ood1,ood2'.")
             }
         }
         Some(("create_node_configs", matches)) => {
-            let username = matches.get_one::<String>("username").unwrap();
             let device_name = matches.get_one::<String>("device_name").unwrap();
-            let zone_name = matches.get_one::<String>("zone_name").unwrap();
+            let env_dir = matches.get_one::<String>("env_dir").unwrap();
             let output_dir = matches.get_one::<String>("output_dir");
             let net_id = matches.get_one::<String>("net_id");
             
             match test_config::cmd_create_node_configs(
-                username,
                 device_name,
-                zone_name,
+                Path::new(env_dir),
                 output_dir.map(|s| s.as_str()),
                 net_id.map(|s| s.as_str()),
             ).await {
                 Ok(_) => {
-                    println!("成功创建节点配置");
+                    println!("成功创建节点配置 {}", device_name);
                 }
                 Err(e) => {
                     println!("创建节点配置失败: {}", e);
@@ -698,7 +710,25 @@ oods look like this 'ood1,ood2'.")
                 }
             }
         }
-        Some(("register_device", matches)) => {
+        Some(("build_did_docs", matches)) => {
+            let output_dir = matches.get_one::<String>("output_dir").unwrap();
+            let out_path = Path::new(output_dir);
+            if let Err(e) = fs::create_dir_all(out_path) {
+                return Err(format!("create output_dir {} failed: {}", out_path.display(), e));
+            }
+            let docs = test_config::gen_kernel_service_docs();
+            for (did, doc) in docs.iter() {
+                let filename = format!("{}.doc.json", did.to_raw_host_name());
+                let file_path = out_path.join(filename);
+                let json_value = doc.clone().to_json_value().unwrap();
+                let json_str = serde_json::to_string_pretty(&json_value).unwrap();
+                if let Err(e) = fs::write(&file_path, json_str) {
+                    return Err(format!("write {} failed: {}", file_path.display(), e));
+                }
+            }
+            println!("did_docs generated at {}", out_path.display());
+        }
+        Some(("register_device_to_sn", matches)) => {
             let username = matches.get_one::<String>("username").unwrap();
             let device_name = matches.get_one::<String>("device_name").unwrap();
             let sn_db_path = matches.get_one::<String>("sn_db_path").unwrap();

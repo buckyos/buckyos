@@ -71,7 +71,7 @@ fn get_system_pkgs() -> Vec<String> {
 async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<ZoneBootConfig> {
     //If local files exist, priority loads local files
     let etc_dir = get_buckyos_system_etc_dir();
-    let json_config_path = etc_dir.join(format!("{}.zone.json",node_identity.zone_did.to_host_name()));
+    let json_config_path = etc_dir.join(format!("{}.zone.json",node_identity.zone_did.to_raw_host_name()));
     info!("check  {} is exist for debug ...", json_config_path.display());
     let mut zone_boot_config: ZoneBootConfig;;
     //在离线环境中，可以利用下面机制来绕开DNS查询

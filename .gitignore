@@ -45,3 +45,4 @@ src/Cargo.lock
 .pnpm-store
 src/scripts/remote/dev_configs.bak
 src/rootfs/bin/control-panel/i18n.d.ts
+src/rootfs/_buckycli_tmp/

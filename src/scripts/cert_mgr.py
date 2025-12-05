@@ -104,7 +104,8 @@ class CertManager:
         self,
         ca_dir: str,
         hostname: str,
-        target_dir: str
+        target_dir: str,
+        hostnames=None,
     ):
         """
         Generate server certificate from CA
@@ -139,14 +140,14 @@ class CertManager:
             raise FileNotFoundError(f"CA key not found: {ca_key_path} (expected based on certificate {ca_cert_path.name})")
         
         # Auto-construct parameters
-        common_name = hostname
-        dns_names = [hostname]  # Add hostname to DNS names
+        dns_names = hostnames or [hostname]
+        common_name = dns_names[0]
         ip_addresses = None
         validity_days = 365  # 1 year
         key_size = 2048  # 2048-bit key
         
-        # Auto-generate output filenames (based on hostname, replace special characters)
-        safe_hostname = hostname.replace("*", "wildcard").replace(".", "_")
+        # Auto-generate output filenames (based on primary hostname, replace special characters)
+        safe_hostname = common_name.replace("*", "wildcard").replace(".", "_")
         output_dir = Path(target_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         output_cert = output_dir / f"{safe_hostname}.crt"

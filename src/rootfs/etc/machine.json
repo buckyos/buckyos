@@ -1,11 +1,11 @@
 {
-    "web3_bridge": {
-        "bns": "web3.buckyos.ai"
-    },
-    "force_https": false,
-    "trust_did": [
-        "did:web:buckyos.org",
-        "did:web:buckyos.ai",
-        "did:web:buckyos.io"
-    ]
+  "web3_bridge": {
+    "bns": "web3.devtests.org"
+  },
+  "force_https": false,
+  "trust_did": [
+    "did:web:buckyos.org",
+    "did:web:buckyos.ai",
+    "did:web:buckyos.io"
+  ]
 }

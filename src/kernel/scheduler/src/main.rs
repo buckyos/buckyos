@@ -284,10 +284,10 @@ mod test {
 
     #[tokio::test]
     async fn test_gen_service_doc() -> Result<()> {
-        let mut docs = kernel_service_docs();
+        let mut docs = test_config::gen_kernel_service_docs();
         for (did, doc) in docs.iter() {
             
-            let doc_path = format!("/tmp/{}.doc.json", did.as_str());
+            let doc_path = format!("/tmp/{}.doc.json", did.to_raw_host_name());
             fs::write(doc_path.clone(), doc.to_string()).unwrap();
             println!("path: {}, doc: {}", doc_path, doc.to_string());
         }
@@ -617,29 +617,7 @@ g, cyfs-gateway, kernel
         doc
     }
 
-    fn kernel_service_docs() -> HashMap<String, EncodedDocument> {
-        let mut docs = HashMap::new();
-        let verify_hub_doc = buckyos_api::generate_verify_hub_service_doc();
-        let verify_hub_json = serde_json::to_string(&verify_hub_doc).unwrap();
-        let verify_hub_did = PackageId::unique_name_to_did(VERIFY_HUB_UNIQUE_ID);
 
-        let scheduler_doc = buckyos_api::generate_scheduler_service_doc();
-        let scheduler_json = serde_json::to_string(&scheduler_doc).unwrap();
-        let scheduler_did = PackageId::unique_name_to_did(SCHEDULER_SERVICE_UNIQUE_ID);
-
-        let repo_doc = buckyos_api::generate_repo_service_doc();
-        let repo_did = PackageId::unique_name_to_did(REPO_SERVICE_UNIQUE_ID);
-        let repo_json = serde_json::to_string(&repo_doc).unwrap();
-
-        let smb_doc = buckyos_api::generate_smb_service_doc();
-        let smb_json = serde_json::to_string(&smb_doc).unwrap();
-        let smb_did = PackageId::unique_name_to_did(SMB_SERVICE_UNIQUE_ID);
-        docs.insert(verify_hub_did.to_raw_host_name(), EncodedDocument::from_str(verify_hub_json).unwrap());
-        docs.insert(scheduler_did.to_raw_host_name(), EncodedDocument::from_str(scheduler_json).unwrap());
-        docs.insert(repo_did.to_raw_host_name(), EncodedDocument::from_str(repo_json).unwrap());
-        docs.insert(smb_did.to_raw_host_name(), EncodedDocument::from_str(smb_json).unwrap());
-        docs
-    }
 
 
     #[derive(Clone)]

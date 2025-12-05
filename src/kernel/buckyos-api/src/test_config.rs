@@ -1,15 +1,19 @@
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use name_lib::{
-    DID, DIDDocumentTrait, DeviceConfig, NodeIdentityConfig, OODDescriptionString, OwnerConfig, ZoneBootConfig, get_x_from_jwk, DeviceInfo, EncodedDocument
+    DID, DIDDocumentTrait, DeviceConfig, DeviceInfo, DeviceMiniConfig, EncodedDocument, NodeIdentityConfig, OODDescriptionString, OwnerConfig, ZoneBootConfig, ZoneConfig, get_x_from_jwk
 };
+use package_lib::PackageId;
 use serde::Serialize;
-use serde_json::{json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::fs;
 use ed25519_dalek::pkcs8::DecodePrivateKey;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use cyfs_sn::SnDB;
+
+use crate::{REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID};
 
 // ============================================================================
 // 常量定义
@@ -200,6 +204,30 @@ fn get_jwk(x: &str) -> jsonwebtoken::jwk::Jwk {
     })).unwrap()
 }
 
+pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
+    let mut docs = HashMap::new();
+    let verify_hub_doc = crate::generate_verify_hub_service_doc();
+    let verify_hub_json = serde_json::to_string(&verify_hub_doc).unwrap();
+    let verify_hub_did = PackageId::unique_name_to_did(VERIFY_HUB_UNIQUE_ID);
+
+    let scheduler_doc = crate::generate_scheduler_service_doc();
+    let scheduler_json = serde_json::to_string(&scheduler_doc).unwrap();
+    let scheduler_did = PackageId::unique_name_to_did(SCHEDULER_SERVICE_UNIQUE_ID);
+
+    let repo_doc = crate::generate_repo_service_doc();
+    let repo_did = PackageId::unique_name_to_did(REPO_SERVICE_UNIQUE_ID);
+    let repo_json = serde_json::to_string(&repo_doc).unwrap();
+
+    let smb_doc = crate::generate_smb_service_doc();
+    let smb_json = serde_json::to_string(&smb_doc).unwrap();
+    let smb_did = PackageId::unique_name_to_did(SMB_SERVICE_UNIQUE_ID);
+    docs.insert(verify_hub_did, EncodedDocument::from_str(verify_hub_json).unwrap());
+    docs.insert(scheduler_did, EncodedDocument::from_str(scheduler_json).unwrap());
+    docs.insert(repo_did, EncodedDocument::from_str(repo_json).unwrap());
+    docs.insert(smb_did, EncodedDocument::from_str(smb_json).unwrap());
+    docs
+}
+
 // ============================================================================
 // 配置构建器
 // ============================================================================
@@ -267,7 +295,7 @@ impl DevEnvBuilder {
             did: DID::new("bns", username),
             zone_did,
             key_pair,
-            user_dir: self.root_dir.join(username),
+            user_dir: self.root_dir.clone(),
         }
     }
 }
@@ -302,10 +330,12 @@ impl<'a> UserEnvScope<'a> {
     /// 创建 Zone 配置 
     /// return zone_boot_config_jwt, TXT Records
     pub fn create_zone_boot_config_jwt(&self, sn_host: Option<String>, ood:OODDescriptionString) -> (String,Vec<String>) {
-        
-        let zone_boot = ZoneBootConfig {
+        let device_full_id = format!("{}.{}", self.username, ood.name.as_str());
+        let device_key_pair = TestKeys::get_key_pair_by_id(&device_full_id).unwrap();
+
+        let mut zone_boot = ZoneBootConfig {
             id: None,
-            oods: vec![ood],
+            oods: vec![ood.clone()],
             sn: sn_host,
             exp: self.builder.exp,
             devices:HashMap::new(),
@@ -314,22 +344,39 @@ impl<'a> UserEnvScope<'a> {
             gateway_devs: vec![],
             extra_info:HashMap::new(),
         };
-        let zone_host_name = self.zone_did.to_host_name();
+        let zone_host_name = self.zone_did.to_raw_host_name();
         write_json(
             &self.user_dir.join(format!("{}.zone.json", zone_host_name)),
             &zone_boot,
+        );
+        zone_boot.id = Some(self.zone_did.clone());
+        let mut zone_config = ZoneConfig::new(self.zone_did.clone(), self.did.clone(), get_jwk(&self.key_pair.public_key_x));
+        zone_config.init_by_boot_config(&zone_boot);
+        write_json(
+            &self.user_dir.join("zone_config.json"),
+            &zone_config,
         );
 
         let owner_key = get_encoding_key(self.key_pair.private_key_pem);
         let jwt = zone_boot.encode(Some(&owner_key)).unwrap();
 
-
         println!("=> {} TXT Record: DID={};", zone_host_name, jwt.to_string());
         println!("=> {} TXT Record: PKX=0:{};", zone_host_name, get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap());
+        //ood1 mini config jwt
+        let mini_config = DeviceMiniConfig {
+            name: ood.name.clone(),
+            x: device_key_pair.public_key_x.clone(),
+            rtcp_port: None,
+            exp: self.builder.exp,
+            extra_info: HashMap::new(),
+        };   
+        let mini_jwt = mini_config.to_jwt(&owner_key).unwrap();
+        println!("=> {} TXT Record: DEV={};", zone_host_name, mini_jwt.to_string());
 
         let txt_records = vec![
             format!("DID={};", jwt.to_string()),
             format!("PKX=0:{};", get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap()),
+            format!("DEV={};", mini_jwt.to_string()),
         ];
 
 
@@ -597,7 +644,8 @@ pub async fn register_device_to_sn(
 pub async fn cmd_create_user_env(
     username: &str,
     hostname: &str,
-    netid: &str,
+    ood_name: &str,
+    sn_base_host: &str,
     output_dir: Option<&str>,
 ) -> Result<(), String> {
     let root_dir = if let Some(dir) = output_dir {
@@ -621,7 +669,13 @@ pub async fn cmd_create_user_env(
         })?;
 
     // 从 hostname 创建 zone DID（使用 "web" scheme）
-    let zone_did = DID::new("web", hostname);
+    let mut zone_did = DID::new("web", hostname);
+    let mut sn_host = None;
+    if sn_base_host.contains(".") {
+        let web3_bns = format!("web3.{}", sn_base_host);
+        zone_did = DID::from_host_name_by_bridge(hostname,"bns",&web3_bns).unwrap();
+        sn_host = Some(format!("sn.{}", sn_base_host));
+    }
 
     let scope = builder.user_scope(username, zone_did.clone(), &key_pair);
     
@@ -629,44 +683,61 @@ pub async fn cmd_create_user_env(
     scope.create_owner_config();
     
     // 创建 zone_boot_config（目前仅生成一个简单的 OOD 描述，SN 为空）
-    let ood: OODDescriptionString = "ood1".to_string().parse().unwrap();
-    let (_zone_boot_jwt, _txt_records) = scope.create_zone_boot_config_jwt(None, ood);
+    let ood: OODDescriptionString = ood_name.to_string().parse().unwrap();
+    let (_zone_boot_jwt, _txt_records) = scope.create_zone_boot_config_jwt(sn_host, ood);
 
     println!("成功创建用户环境配置: {}", username);
     println!("Zone hostname: {}", hostname);
-    println!("Zone netid: {}", netid);
+    println!("Zone netid: {}", ood_name);
     Ok(())
 }
 
 /// 创建节点配置（命令行接口）
+///
+/// env_dir 应为已通过 cmd_create_user_env 生成的用户环境目录。
 pub async fn cmd_create_node_configs(
-    username: &str,
     device_name: &str,
-    zone_name: &str,
+    env_dir: &Path,
     output_dir: Option<&str>,
     net_id: Option<&str>,
 ) -> Result<(), String> {
-    let root_dir = if let Some(dir) = output_dir {
-        PathBuf::from(dir)
-    } else {
-        std::env::current_dir().map_err(|e| format!("获取当前目录失败: {}", e))?
-    };
+    let _ = output_dir;
+    // 使用已有用户环境目录
+    let root_dir = env_dir.to_path_buf();
+    let builder = DevEnvBuilder::from_path(root_dir.clone());
 
-    let builder = DevEnvBuilder::from_path(root_dir);
-    
-    // 获取用户密钥对
+    // 解析 username
+    let user_config_path = root_dir.join("user_config.json");
+    let user_config_content = fs::read_to_string(&user_config_path)
+        .map_err(|e| format!("读取 user_config.json 失败: {}", e))?;
+    let user_config: Value = serde_json::from_str(&user_config_content)
+        .map_err(|e| format!("解析 user_config.json 失败: {}", e))?;
+    let username = user_config
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("user_config.json 缺少 name 字段")?;
+
+    // 解析 zone 配置
+    let zone_config_file = root_dir.join("zone_config.json");
+    let zone_config: ZoneConfig = serde_json::from_str(
+            &fs::read_to_string(&zone_config_file)
+                .map_err(|e| format!("读取 {:?} 失败: {}", zone_config_file, e))?,
+        )
+        .map_err(|e| format!("解析 {:?} 失败: {}", zone_config_file, e))?;
+    let zone_did = zone_config.id.clone();
+
+    // 获取用户密钥对z
     let key_pair = TestKeys::get_key_pair_by_id(username)
         .or_else(|_| {
             println!("警告: 未找到用户 {} 的密钥对，使用 devtest 密钥对", username);
             TestKeys::get_key_pair_by_id("devtest")
         })?;
 
-    let zone_did = DID::new("bns", zone_name);
     let scope = builder.user_scope(username, zone_did.clone(), &key_pair);
-    
+
     // 确保用户配置已存在
     if !scope.user_dir.join("user_config.json").exists() {
-        scope.create_owner_config();
+        return Err(format!("用户配置不存在: {}", scope.user_dir.join("user_config.json").display()));
     }
 
     scope.create_node_config(device_name, net_id.map(|s| s.to_string()));
@@ -798,7 +869,6 @@ pub async fn create_test_env_configs() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use name_lib::*;
 
     /// 为测试统一创建 DevEnvBuilder，根目录按测试名区分
     fn new_test_builder(test_name: &str) -> DevEnvBuilder {
