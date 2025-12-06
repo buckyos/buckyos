@@ -457,17 +457,17 @@ g, cyfs-gateway, kernel
         test_config::cmd_create_user_env(
             TEST_USERNAME,
             TEST_HOSTNAME,
-            TEST_NET_ID,
+            "ood1",
+            "",
             Some(output_dir_str.as_str()),
         )
         .await
         .expect("failed to create user env");
 
         test_config::cmd_create_node_configs(
-            TEST_USERNAME,
             TEST_DEVICE_NAME,
-            TEST_ZONE_NAME,
-            Some(output_dir_str.as_str()),
+            output_dir.as_path(),
+            None,
             Some(TEST_NET_ID),
         )
         .await
@@ -475,8 +475,7 @@ g, cyfs-gateway, kernel
 
         let etc_dir = root.join("etc");
         fs::create_dir_all(&etc_dir).unwrap();
-        let start_config_src = output_dir
-            .join(TEST_USERNAME)
+        let start_config_src: std::path::PathBuf = output_dir
             .join(TEST_DEVICE_NAME)
             .join("start_config.json");
         fs::copy(
@@ -487,7 +486,6 @@ g, cyfs-gateway, kernel
 
         let zone_config_file = format!("{}.zone.json", TEST_HOSTNAME);
         let zone_boot_path = output_dir
-            .join(TEST_USERNAME)
             .join(zone_config_file);
         let mut zone_boot_config: ZoneBootConfig = serde_json::from_str(
             &fs::read_to_string(zone_boot_path).expect("failed to read zone boot config"),
@@ -495,7 +493,6 @@ g, cyfs-gateway, kernel
         .expect("failed to parse zone boot config");
 
         let owner_config_path = output_dir
-            .join(TEST_USERNAME)
             .join("user_config.json");
         let owner_config_value: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(owner_config_path).expect("failed to read owner config"),
@@ -551,8 +548,9 @@ g, cyfs-gateway, kernel
         }
         let client = NameClient::new(NameClientConfig::default());
 
-        let mut docs = kernel_service_docs();
-        docs.insert(PackageId::unique_name_to_did("buckyos_filebrowser").to_raw_host_name(), get_filebrowser_doc());
+        let mut docs = buckyos_api::test_config::gen_kernel_service_docs();
+        docs.insert(PackageId::unique_name_to_did("buckyos_filebrowser"), get_filebrowser_doc());
+        let docs = docs.into_iter().map(|(did, doc)| (did.to_raw_host_name(), doc)).collect();
         client
             .add_provider(Box::new(StaticProvider::new(docs)))
             .await;
