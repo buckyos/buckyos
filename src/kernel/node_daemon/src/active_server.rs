@@ -260,21 +260,28 @@ pub async fn start_node_active_service() {
     let active_server = ActiveServer::new();
     
     //active server config
-    let active_server_dir = get_buckyos_system_bin_dir().join("node_active");
+    let active_server_dir = get_buckyos_system_bin_dir().join("node-active");
     
     //start!
     info!("start node active service...");
     
     const ACTIVE_SERVICE_MAIN_PORT: u16 = 3180;
     let runner = Runner::new(ACTIVE_SERVICE_MAIN_PORT);
-    
-    // 添加静态文件服务
-    if active_server_dir.exists() {
-        runner.add_dir_handler("/".to_string(), active_server_dir);
+
+    // 添加 RPC 服务
+    let add_result = runner.add_http_server("/kapi/active".to_string(), Arc::new(active_server));
+    if add_result.is_err() {
+        error!("Failed to add http server: {}", add_result.err().unwrap());
+        return;
     }
     
-    // 添加 RPC 服务
-    runner.add_http_server("/kapi/active".to_string(), Arc::new(active_server));
+    // 添加静态文件服务
+    info!("active server dir: {}", active_server_dir.display());
+    let add_result = runner.add_dir_handler("/".to_string(), active_server_dir).await;
+    if add_result.is_err() {
+        error!("Failed to add dir handler: {}", add_result.err().unwrap());
+        return;
+    }
     
     runner.run().await;
 }

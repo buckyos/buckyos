@@ -1,21 +1,21 @@
 {
-    "stacks": [
-        {
+    "stacks": {
+        "zone_gateway_http": {
             "id": "zone_gateway_http",
             "protocol": "tcp",
             "bind": "0.0.0.0:80",
-            "hook_point": [
-                {
+            "hook_point": {
+                "main": {
                     "id": "main",
                     "priority": 1,
-                    "blocks": [
-                        {
+                    "blocks": {
+                        "default": {
                             "id": "default",
-                            "block": "http-probe && match $(REQ.uri) \"/kapi/system_config/*\" && return \"forward http://127.0.0.1:3200\" \n call-server \"node_gateway\""
+                            "block": "call http-probe;\nmatch ${REQ.uri} \"/kapi/system_config/*\" && return \"forward http://127.0.0.1:3200\";\ncall-server \"node_gateway\""
                         }
-                    ]
+                    }
                 }
-            ]
+            }
         }
-    ]
+    }
 }
