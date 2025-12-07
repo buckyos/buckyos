@@ -8,10 +8,12 @@ import abc
 import os
 import sys
 import json
+import re
+
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
-import util
+
 
 
 class VMConfig:
@@ -23,7 +25,12 @@ class VMConfig:
         self.network : dict = None
         #app_name -> app_instance params
         self.apps : dict [str,dict]= None
-        self.init_commands : list[str] = None # init_comands会在所有的instance创建完成后执行,因此可以在命令行中引用一些vm instance的属性
+        self.init_commands : list[str] = None # init_comands会在创建vm后立刻执行
+        self.instance_commands : list[str] = None # instance_commands会在所有的instance创建完成后，按instance_order顺序执行，因此可以在命令行中引用已创建的vm instance的属性
+
+    def get_dir(self, dir_name: str) -> str:
+        return self.directories.get(dir_name, None)
+
 
 class VMNodeList:
     def __init__(self):
@@ -34,6 +41,9 @@ class VMNodeList:
     
     def get_all_node_ids(self) -> list[str]:
         return list(self.nodes.keys())
+
+    def get_node_id_by_init_orders(self) -> list[str]:
+        return self.instance_order
 
     def load_from_file(self, file_path: Path):
         with open(file_path, "r") as f:
@@ -49,6 +59,8 @@ class VMNodeList:
             vm_cfg.network = cfg.get("network", {})
             vm_cfg.apps = cfg.get("apps", {})
             vm_cfg.init_commands = cfg.get("init_commands", [])
+            vm_cfg.instance_commands = cfg.get("instance_commands", [])
+            vm_cfg.directories = cfg.get("directories", {})
             self.nodes[node_id] = vm_cfg
 
         return self
@@ -129,6 +141,20 @@ class VMBackend(abc.ABC):
             bool: 是否成功
         """
         pass
+
+    @abc.abstractmethod
+    def push_dir(self, vm_name: str, local_dir: str, remote_dir: str) -> bool:
+        """
+        将本地目录递归推送到虚拟机目录
+        """
+        pass
+
+    @abc.abstractmethod
+    def pull_dir(self, vm_name: str, remote_dir: str, local_dir: str) -> bool:
+        """
+        将虚拟机目录递归拉取到本地目录
+        """
+        pass
     
     @abc.abstractmethod
     def get_vm_ip(self, vm_name: str) -> list:
@@ -175,7 +201,6 @@ class MultipassVMBackend(VMBackend):
     """Multipass 虚拟机后端实现"""
     
     def __init__(self):
-        self.id_rsa_path = util.id_rsa_path
         self.remote_username = "root"
         self.template_base_dir: Path = None
     
@@ -192,6 +217,7 @@ class MultipassVMBackend(VMBackend):
         if template_name:
             init_yaml = os.path.join(self.template_base_dir, f'{template_name}.yaml')
             cmd += f" --cloud-init {init_yaml}"
+        print(f"create vm {vm_name} with config {config}")
         print(cmd)
         try:
             result = subprocess.run(
@@ -207,6 +233,8 @@ class MultipassVMBackend(VMBackend):
             stdout, stderr = self.exec_command(vm_name, f"sudo hostnamectl set-hostname {vm_name}")
             if stderr:
                 print(f"Warning: Failed to set hostname: {stderr}")
+
+            print(f"create vm {vm_name} success")    
             return True
         except subprocess.CalledProcessError as e:
             print(f"Failed to create VM {vm_name}: {e.stderr}")
@@ -214,6 +242,7 @@ class MultipassVMBackend(VMBackend):
     
     def delete_vm(self, vm_name: str) -> bool:
         """使用 multipass 删除虚拟机"""
+        print(f"delete vm {vm_name} ...")
         try:
             result = subprocess.run(
                 ["multipass", "delete", vm_name],
@@ -230,6 +259,7 @@ class MultipassVMBackend(VMBackend):
                 stderr=subprocess.PIPE,
                 text=True
             )
+            print(f"delete vm {vm_name} success")
             return True
         except subprocess.CalledProcessError as e:
             print(f"Failed to delete VM {vm_name}: {e.stderr}")
@@ -237,7 +267,7 @@ class MultipassVMBackend(VMBackend):
     
     def exec_command(self, vm_name: str, command: str) -> tuple:
         """使用 multipass exec 执行命令"""
-
+        print(f"exec [ {command} ] on vm {vm_name} ...")
         try:
             result = subprocess.run(
                 ["multipass", "exec", vm_name, "--", "bash", "-c", command],
@@ -254,6 +284,7 @@ class MultipassVMBackend(VMBackend):
     def push_file(self, vm_name: str, local_path: str, remote_path: str, recursive: bool = False) -> bool:
         """使用 multipass transfer 推送文件"""
         try:
+            print(f"push file {local_path} to {vm_name}:{remote_path} ...")
             cmd = ["multipass", "transfer"]
             if recursive:
                 cmd.append("-r")
@@ -274,6 +305,7 @@ class MultipassVMBackend(VMBackend):
     def pull_file(self, vm_name: str, remote_path: str, local_path: str, recursive: bool = False) -> bool:
         """使用 multipass transfer 拉取文件"""
         try:
+            print(f"pull file {vm_name}:{remote_path} to {local_path} ...")
             cmd = ["multipass", "transfer"]
             if recursive:
                 cmd.append("-r")
@@ -291,9 +323,30 @@ class MultipassVMBackend(VMBackend):
             print(f"Failed to pull file from {vm_name}: {e.stderr}")
             return False
     
-    def get_vm_ip(self, vm_name: str) -> list:
+    def get_vm_ip(self, vm_name: str) -> list[str]:
         """获取虚拟机的IP地址"""
-        return util.get_multipass_ip(vm_name)
+        try:
+            result = subprocess.run(
+                ["multipass", "info", vm_name],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            # 匹配 IPv4 列表，兼容多行
+            ip_pattern = r"IPv4:\s+((?:\d+\.\d+\.\d+\.\d+\s*)+)"
+            match = re.search(ip_pattern, result.stdout)
+            if match:
+                ips = [ip.strip() for ip in match.group(1).split()]
+                if ips:
+                    return ips
+            raise RuntimeError(f"No IPv4 address found for VM {vm_name}")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to get IP for VM {vm_name}: {e.stderr}")
+            raise
+        except Exception as e:
+            print(f"Unknown error getting IP for VM {vm_name}: {e}")
+            raise
+
     
     def is_vm_exists(self, vm_name: str) -> bool:
         """检查虚拟机是否存在"""
@@ -311,6 +364,7 @@ class MultipassVMBackend(VMBackend):
     def snapshot(self, node_id: str, snapshot_name: str) -> bool:
         """创建快照"""
         try:
+            print(f"create snapshot {snapshot_name} on vm {node_id} ...")
             subprocess.run(
                 ["multipass", "snapshot", node_id, snapshot_name],
                 check=True,
@@ -318,6 +372,7 @@ class MultipassVMBackend(VMBackend):
                 stderr=subprocess.PIPE,
                 text=True,
             )
+            print(f"create snapshot {snapshot_name} on vm {node_id} success")
             return True
         except subprocess.CalledProcessError as e:
             print(f"Failed to snapshot VM {node_id}: {e.stderr}")
@@ -326,6 +381,7 @@ class MultipassVMBackend(VMBackend):
     def restore(self, node_id: str, snapshot_name: str) -> bool:
         """恢复快照"""
         try:
+            print(f"restore vm {node_id} to snapshot {snapshot_name} ...")
             subprocess.run(
                 ["multipass", "restore", node_id, snapshot_name],
                 check=True,
@@ -333,6 +389,7 @@ class MultipassVMBackend(VMBackend):
                 stderr=subprocess.PIPE,
                 text=True,
             )
+            print(f"restore vm {node_id} to snapshot  {snapshot_name} success")
             return True
         except subprocess.CalledProcessError as e:
             print(f"Failed to restore VM {node_id} snapshot {snapshot_name}: {e.stderr}")
@@ -342,6 +399,26 @@ class MultipassVMBackend(VMBackend):
         """设置模板基础目录"""
         self.template_base_dir = template_base_dir
         return True
+    
+    def push_dir(self, vm_name: str, local_dir: str, remote_dir: str) -> bool:
+        """递归推送目录（multipass transfer -r）"""
+        try:
+            # 确保远端目标目录存在
+            self.exec_command(vm_name, f"mkdir -p {remote_dir}")
+            return self.push_file(vm_name, local_dir, remote_dir, recursive=True)
+        except Exception as e:
+            print(f"Failed to push dir to {vm_name}: {e}")
+            return False
+
+    def pull_dir(self, vm_name: str, remote_dir: str, local_dir: str) -> bool:
+        """递归拉取目录（multipass transfer -r）"""
+        try:
+            # 确保本地目标目录存在
+            os.makedirs(local_dir, exist_ok=True)
+            return self.pull_file(vm_name, remote_dir, local_dir, recursive=True)
+        except Exception as e:
+            print(f"Failed to pull dir from {vm_name}: {e}")
+            return False
     
 class VMManager:
     """虚拟机管理器，根据配置选择后端（单例）"""
@@ -419,6 +496,14 @@ class VMManager:
     def pull_file(self, vm_name: str, remote_path: str, local_path: str, recursive: bool = False) -> bool:
         """从虚拟机拉取文件"""
         return self.backend.pull_file(vm_name, remote_path, local_path, recursive)
+
+    def push_dir(self, vm_name: str, local_dir: str, remote_dir: str) -> bool:
+        """递归推送目录"""
+        return self.backend.push_dir(vm_name, local_dir, remote_dir)
+
+    def pull_dir(self, vm_name: str, remote_dir: str, local_dir: str) -> bool:
+        """递归拉取目录"""
+        return self.backend.pull_dir(vm_name, remote_dir, local_dir)
     
     def get_vm_ip(self, vm_name: str) -> list:
         """获取虚拟机IP"""

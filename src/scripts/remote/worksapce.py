@@ -1,26 +1,35 @@
 """
 配置管理器：读取和解析配置文件
 """
-import json
+import re
 import os
+import tempfile
 from pathlib import Path
 import sys
+import time
+import platform
+from typing import Optional
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 from app_list import AppConfig, AppList
 from remote_device import RemoteDeviceInterface, VMInstanceRemoteDevice
 from vm_mgr import VMManager, VMNodeList
-import util
+
+
+def get_temp_dir() -> Path:
+    """Return a temporary directory path as Path."""
+    return Path(tempfile.gettempdir())
+
 
 class Workspace:
+    _VARIABLE_PATTERN = re.compile(r'\{\{(\w+)\.(\w+)\}\}')
     def __init__(self, workspace_dir: Path):
         vm_mgr = VMManager.get_instance()
         vm_mgr.set_template_base_dir(workspace_dir / "templates")
         self.workspace_dir: Path = workspace_dir
 
         self.nodes: VMNodeList= None
-
         self.remote_devices: dict [str, RemoteDeviceInterface]= None
         self.app_list : AppList= None
 
@@ -36,8 +45,19 @@ class Workspace:
 
         self._create_remote_devices_by_vm_instances()
 
-    def build_env_params_for_node(self, node_id: str,app_params: dict) -> dict:
-        return app_params
+    def build_env_params(self,parent_env_params: Optional[dict] = None) -> dict:
+        env_params = {}
+        if parent_env_params is not None:
+            env_params.update(parent_env_params)
+        # 获得所有的环境变量
+        system_env_params = os.environ.copy()
+        env_params["system"] = system_env_params
+        # 根据self.nodes中的配置，构建env_params
+        for node_id in self.nodes.get_all_node_ids():
+            device_info = self.remote_devices[node_id].get_device_info()
+            env_params[node_id] = device_info
+
+        return env_params
 
 
     def _create_remote_devices_by_vm_instances(self):
@@ -58,7 +78,21 @@ class Workspace:
         vm_mgr = VMManager.get_instance()
         for node_id,node_config in self.nodes.nodes.items():
             vm_mgr.create_vm(node_id, node_config)
-        
+        # 所有的vm创建完成，按顺序调用init_commands
+        print(f"all nodes created, call instance_commands after 10 seconds...")
+        time.sleep(10)
+        env_params = self.build_env_params()
+        print(f"env_params: {env_params}")
+        instance_order = self.nodes.get_node_id_by_init_orders()
+
+        for node_id in instance_order:
+            node_config = self.nodes.get_node(node_id)
+            if node_config is None:
+                continue
+            if node_config.instance_commands is None:
+                continue
+            for command in node_config.instance_commands:
+                self.run(node_id, [command], env_params)
 
     def snapshot(self, snapshot_name: str):
         # 根据workspace中的nodes中的配置，创建快照
@@ -79,8 +113,11 @@ class Workspace:
         for node_id,node_config in self.nodes.nodes.items():
             vm_mgr = VMManager.get_instance()
             vm_status = {}
-            vm_status["ip_v4"] = vm_mgr.get_ip_v4(node_id)
+            vm_status["ip_v4"] = vm_mgr.get_vm_ip(node_id)
             info[node_id] = vm_status
+
+        env_params = self.build_env_params()
+        print(f"env_params: {env_params}")
         
         return info
 
@@ -139,37 +176,87 @@ class Workspace:
         app_param = self.nodes.get_app_params(device_id, app_name)
         if app_param is None:
             raise ValueError(f"App '{app_name}' not found")
-        env_params = self.build_env_params_for_node(device_id, app_param)
+        app_env_params = {
+            app_name: app_param
+        }
+        env_params = self.build_env_params(app_env_params)
         app_config = self.app_list.get_app(app_name)
         if app_config is None:
             raise ValueError(f"App '{app_name}' not found")
         
-        command_config = app_config.get_command(cmd_name,env_params)
+        command_config = app_config.get_command(cmd_name)
         if command_config is None:
             raise ValueError(f"Command '{cmd_name}' not found")
         
-        self.run(device_id, command_config)
+        self.run(device_id, command_config, env_params)
 
-    def run(self, device_id: str, cmds: list[str]):
-        if device_id is None:
-            for command in cmds:
-                os.system(command)
-            return
+    def resolve_string(self, text: str,env_params: dict) -> str:
+        """
+        解析字符串中的所有变量引用
+        
+        Args:
+            text: 包含变量引用的字符串
+            env_params: 环境参数
+        
+        Returns:
+            str: 解析后的字符串
+        """
+        def replace_var(match):
+            obj_id = match.group(1)
+            attr = match.group(2)
+            sub_obj = env_params.get(obj_id)
+            if sub_obj is None:
+                raise ValueError(f"Object '{obj_id}' not found in env_params")
+            value = sub_obj.get(attr)
+            if value is None:
+                raise ValueError(f"Attribute '{attr}' not found in object '{obj_id}'")
+            return value
+        
+        return self._VARIABLE_PATTERN.sub(replace_var, text)
 
-        # 根据workspace中的remote_devices中的配置，向remote_device执行命令
-        remote_device = self.remote_devices[device_id]
-        if remote_device is None:
-            raise ValueError(f"Remote device '{device_id}' not found")
+    def run(self, device_id: Optional[str], cmds: list[str], env_params: dict):
+        remote_device = None
+        if device_id is not None:
+            remote_device = self.remote_devices[device_id]
+            if remote_device is None:
+                raise ValueError(f"Remote device '{device_id}' not found")
+        else:
+            device_id = "localhost"
+
         for command in cmds:
-            remote_device.run_command(command)
+            new_command = self.resolve_string(command, env_params)
+            print(f"run resolved command: {new_command} on device {device_id}")
+            if remote_device is None:
+                os.system(new_command)
+            else:
+                remote_device.run_command(new_command)
 
     def state(self,device_id: str):
         # 根据workspace中的app_list中的配置，查看remote_devices上的app状态（其实是通过执行action来查看）
         pass
 
-    def clog(self):
+    def clog(self,target_dir: Optional[Path] = None):
         # 根据workspace中的remote_devices中的配置，收集remote_devices上的日志到本地
-        pass
+        # 收集node里定义的系统日志目录，到本地
+        if target_dir is None:
+            if platform.system() == "Windows":
+                target_dir = get_temp_dir().joinpath("clogs")
+            else:
+                target_dir = Path("/tmp/clogs")
+            
+        for node_id in self.nodes.get_all_node_ids():
+            node_config = self.nodes.get_node(node_id)
+            if node_config is None:
+                continue
+            logs_dir = node_config.get_dir("logs")
+            if logs_dir is None:
+                continue
+            real_target_dir = target_dir.joinpath(node_id)
+            real_target_dir.mkdir(parents=True, exist_ok=True)
+            print(f"collect logs from {node_id}:{logs_dir} to {real_target_dir} ...")
+            self.remote_devices[node_id].pull(logs_dir, real_target_dir, True)
+            print(f"collect logs from {node_id}:{logs_dir} to {real_target_dir} done")
+        
 
 
 

@@ -15,7 +15,10 @@
       },
       "init_commands": [
         "hostnamectl set-hostname sn"
-      ]
+      ],
+      "directories": {
+        "logs": "/opt/buckyos/logs"
+      }
     },
     "nodeA2": {
       "node_id": "nodeA2",
@@ -32,6 +35,9 @@
       },
       "init_commands": [
         "hostnamectl set-hostname nodeA2",
+        "echo '{{sn.ip}} sn' >> /etc/hosts"
+      ],
+      "instance_commands": [
         "echo '{{sn.ip}} sn' >> /etc/hosts"
       ]
     },
@@ -50,6 +56,9 @@
       },
       "init_commands": [
         "hostnamectl set-hostname nodeB1"
+      ],
+      "instance_commands": [
+        "echo '{{sn.ip}} sn' >> /etc/hosts"
       ]
     }
   },

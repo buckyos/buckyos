@@ -17,12 +17,12 @@ class AppConfig:
             raise ValueError(f"App name not found in {file_path}")
         if self.app_name != app_name:
             raise ValueError(f"App name mismatch in {file_path}")
-            
+
         self.version = app_config.get("version")
         self.commands = app_config.get("commands")
         self.directories = app_config.get("directories")
 
-    def get_command(self, cmd_name: str,env_params: dict) -> list[str]:
+    def get_command(self, cmd_name: str) -> list[str]:
         return self.commands.get(cmd_name)
 
     def get_dir(self, dir_name: str) -> str:

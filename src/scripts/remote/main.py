@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sys
 
-from py_src.worksapce import Workspace
+from worksapce import Workspace
 
 
 def build_parser() -> argparse.ArgumentParser:

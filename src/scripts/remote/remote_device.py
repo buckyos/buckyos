@@ -6,12 +6,10 @@ from typing import Protocol, runtime_checkable, Tuple
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
-import util
+
 from vm_mgr import VMManager
 
-id_rsa_path = util.id_rsa_path
-ENV_CONFIG = util.ENV_CONFIG
-VM_DEVICE_CONFIG = util.VM_DEVICE_CONFIG
+
 
 
 @runtime_checkable
@@ -59,7 +57,7 @@ class RemoteDevice(RemoteDeviceInterface):
             # 根据 vm 配置选择后端类型，默认为 multipass
             vm_config = config.get('vm', {})
             backend_type = vm_config.get('backend', 'multipass')
-            self.vm_manager = vm_mgr.VMManager(backend_type=backend_type)
+            self.vm_manager = VMManager(backend_type=backend_type)
         else:
             self.vm_manager = None
 
@@ -279,8 +277,6 @@ class RemoteDevice(RemoteDeviceInterface):
         return {
             'device_id': self.device_id,
             'ip': self.remote_ip,
-            'port': self.remote_port,
-            'username': self.remote_username
         }
 
 
@@ -295,48 +291,67 @@ class VMRemoteDevice(RemoteDeviceInterface):
         self.device_id = vm_name
         self.remote_username = "root"
         self.remote_port = 22
-        self.vm_manager = VMManager.get_instance()
-        self.remote_ip = self._resolve_ip()
+        # 通过单例管理器，但仍校验 backend_type 一致
+        self.vm_manager = VMManager(backend_type)
+
 
     def _resolve_ip(self) -> str:
-        try:
-            ips = self.vm_manager.get_vm_ip(self.device_id)
-            if isinstance(ips, list) and len(ips) > 0:
-                return ips[0]
-            if isinstance(ips, str) and ips:
-                return ips
-        except Exception:
-            pass
-        return "127.0.0.1"
+        ips = self.vm_manager.get_vm_ip(self.device_id)
+        for ip in ips:
+            if ip.startswith("10.") or  ip.startswith("192."):
+                return ip
+
+        if ips.length > 0:
+            return ips[0]
+
+
 
     def run_command(self, command: str):
         """Execute command inside the VM."""
         return self.vm_manager.exec_command(self.device_id, command)
 
     def push(self, local_path, remote_path, recursive: bool = False):
-        """Push file or directory into the VM."""
-        success = self.vm_manager.push_file(
-            self.device_id, local_path, remote_path, recursive
-        )
+        """
+        Push file or directory into the VM.
+        优先根据本地类型选择 push_dir / push_file；recursive 参数仅保留向后兼容。
+        """
+        if os.path.isdir(local_path):
+            success = self.vm_manager.push_dir(self.device_id, local_path, remote_path)
+        else:
+            success = self.vm_manager.push_file(
+                self.device_id, local_path, remote_path, recursive
+            )
         if not success:
-            raise Exception(f"Failed to push file to VM {self.device_id}")
+            raise Exception(f"Failed to push {local_path} to VM {self.device_id}")
 
     def pull(self, remote_path, local_path, recursive: bool = False):
-        """Pull file or directory from the VM."""
-        success = self.vm_manager.pull_file(
-            self.device_id, remote_path, local_path, recursive
-        )
+        """
+        Pull file or directory from the VM.
+        通过远端类型选择 pull_dir / pull_file；recursive 参数仅保留向后兼容。
+        """
+        if self._remote_is_dir(remote_path):
+            success = self.vm_manager.pull_dir(self.device_id, remote_path, local_path)
+        else:
+            success = self.vm_manager.pull_file(
+                self.device_id, remote_path, local_path, recursive
+            )
         if not success:
-            raise Exception(f"Failed to pull file from VM {self.device_id}")
+            raise Exception(f"Failed to pull {remote_path} from VM {self.device_id}")
 
     def get_device_info(self):
         """Return basic VM info."""
         return {
             'device_id': self.device_id,
-            'ip': self.remote_ip,
-            'port': self.remote_port,
-            'username': self.remote_username
+            'ip': self._resolve_ip()
         }
+
+    def _remote_is_dir(self, remote_path: str) -> bool:
+        """Best-effort check if remote path is a directory."""
+        cmd = f"if [ -d '{remote_path}' ]; then echo DIR; else echo FILE; fi"
+        stdout, stderr = self.vm_manager.exec_command(self.device_id, cmd)
+        if stdout and "DIR" in stdout:
+            return True
+        return False
 
 
 # Backward compatibility alias
