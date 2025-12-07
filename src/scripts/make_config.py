@@ -1,9 +1,10 @@
 # rootfs的构建
 # 1. git clone 后,rootfs里只有 “必要的代码文件”，（相关配置文件也是以代码的形式存在的）
 # 2. build 后，rootfs里的bin目录会填充正确的编译产物
+# ------- start.py里的内容
 # 3. 基于该rootfs(主要是buckycli工具)调用make_config.py $config_group_name 会在rootfs里完成所有的配置文件
-# 4. 基于完成构建的rootfs,可以制作安装包，或则复制到开发环境运行调试（本机调试或虚拟机调试
-# 5. 对于有多个node的虚拟机环境，是在完成了Linux版本的构建后，基于不同环境的需要make_config.py $node_name 来构造不同的rootfs,并复制到对应的虚拟机里
+# 4. 基于完成构建的rootfs,可以制作安装包，或则复制到开发环境运行调试（本机调试或虚拟机调试) --> 总是可以通过观察rootfs里的配置文件来了解上一次运行的配置
+# 5. 对于有多个node的虚拟机环境，是在完成了Linux版本的构建后，基于不同环境的需要make_config.py $node_group_name 来构造不同的rootfs,并复制到对应的虚拟机里
 #
 # 需要构造的配置文件列表
 # - rootfs/local/did_docs/ 放入必要的doc缓存
@@ -33,7 +34,6 @@ from typing import Dict, Iterable, List, Optional, Tuple
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOTFS_DIR = SCRIPT_DIR.parent / "rootfs"
 BUCKYCLI_BIN = ROOTFS_DIR / "bin" / "buckycli" / "buckycli"
-WEB3_BRIDGE = "web3.devtests.org"
 
 try:
     from cert_mgr import CertManager  # type: ignore
@@ -92,7 +92,7 @@ def make_global_env_config(
     etc_dir = ensure_dir(target_dir / "etc")
 
     machine = {
-        "web3_bridge": {"bns": WEB3_BRIDGE},
+        "web3_bridge": {"bns": web3_bns},
         "force_https": force_https,
         "trust_did": list(trust_did),
     }
@@ -270,6 +270,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "node_name": "ood1",
             "netid": "",
             "sn_base_host": "",
+            "web3_bridge": "web3.devtests.org",
             "trust_did": [
                 "did:web:buckyos.org",
                 "did:web:buckyos.ai",
@@ -279,6 +280,38 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "ca_name": "buckyos_local",
         }
     raise ValueError(f"invalid group name: {group_name}")
+
+def make_config_by_group_name(group_name: str, target_root: Path, ca_dir: Optional[Path]) -> None:
+    params = get_params_from_group_name(group_name)
+    print(f"############ make config for group name: {group_name} #########################")
+    print(f"rootfs dir : {target_root}")
+    print(f"group      : {group_name}")
+    print(f"username   : {params['username']}")
+    print(f"zone       : {params['zone_id']}")
+    print(f"node       : {params['node_name']}")
+    print(f"web3_bridge: {params['web3_bridge']}")
+
+    make_global_env_config(
+        target_root,
+        params["web3_bridge"],
+        params["trust_did"],
+        params["force_https"],
+    )
+
+    make_cache_did_docs(target_root)
+    make_identity_files(
+        target_root,
+        params["username"],
+        params["zone_id"],
+        params["node_name"],
+        params["sn_base_host"],
+        params["ca_name"],
+        ca_dir,
+    )
+    make_repo_cache_file(target_root)
+    # SN 构造暂不启用
+    print(f"config {group_name} generation finished.")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -299,40 +332,7 @@ def main() -> None:
         help="使用已有 CA 目录（含 *_ca_cert.pem 与对应 key），否则自动生成",
     )
     args = parser.parse_args()
-
-    params = get_params_from_group_name(args.group)
-    target_root = args.rootfs.resolve()
-    ca_dir = args.ca.resolve() if args.ca else None
-
-    print(f"rootfs dir : {target_root}")
-    print(f"group      : {args.group}")
-    print(f"username   : {params['username']}")
-    print(f"zone       : {params['zone_id']}")
-    print(f"node       : {params['node_name']}")
-    print(f"sn_base_host : {params['sn_base_host']}")
-
-    web3_bridge = "web3." + params["sn_base_host"]
-
-    make_global_env_config(
-        target_root,
-        web3_bridge,
-        params["trust_did"],
-        params["force_https"],
-    )
-    make_cache_did_docs(target_root)
-    make_identity_files(
-        target_root,
-        params["username"],
-        params["zone_id"],
-        params["node_name"],
-        params["sn_base_host"],
-        params["ca_name"],
-        ca_dir,
-    )
-    make_repo_cache_file(target_root)
-    # SN 构造暂不启用
-    print("config generation finished.")
-
+    make_config_by_group_name(args.group, args.rootfs, args.ca)
 
 if __name__ == "__main__":
     sys.exit(main())

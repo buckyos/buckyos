@@ -51,7 +51,7 @@ def copy_files(rust_target_dir):
 
     strip_and_copy_rust_file(rust_target_dir, "cyfs_gateway", os.path.join(src_dir, "./web3_bridge"))
 
-    shutil.copy(os.path.join(src_dir, "killall.py"), root_bin_dir)
+    shutil.copy(os.path.join(src_dir, "stop.py"), root_bin_dir)
 
     copy_web_apps("kernel/node_active", os.path.join(root_bin_dir, "node-active"))
     copy_web_apps("apps/control_panel/src", os.path.join(root_bin_dir, "control-panel"))

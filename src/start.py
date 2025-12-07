@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import platform
+from pathlib import Path
 
 build_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(build_dir, "scripts"))
@@ -18,9 +19,9 @@ def kill_all_processes():
     
     # Import and execute killall.py functions directly
     try:
-        import killall
+        import stop
         # Execute the main logic of killall.py
-        killall.kill_all()
+        stop.kill_all()
         print("All processes stopped")
     except ImportError as e:
         print(f"Failed to import killall module: {e}")
@@ -37,9 +38,11 @@ def update_files(install_all=False,config_group_name=None):
 
     try:
         import install
+        import make_config
         install.install(install_all)
         if config_group_name:
-            install.copy_configs(config_group_name)
+            target_root : Path = Path(install.get_install_root_dir())
+            make_config.make_config_by_group_name(config_group_name, target_root, None)
         print("Files updated successfully")
     except ImportError as e:
         print(f"Failed to import install module: {e}")

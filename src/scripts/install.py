@@ -19,6 +19,9 @@ if install_root_dir == "":
     else:
         install_root_dir = "/opt/buckyos"
 
+def get_install_root_dir():
+    return install_root_dir
+
 def set_data_dir_permissions():
     if platform.system() != "Windows":  # Windows doesn't need permission setting
         import pwd
@@ -104,18 +107,18 @@ def download_file(url, filepath):
         
         return False
 
-def copy_configs(config_group_name):
-    etc_dir = os.path.join(install_root_dir, "etc")
-    configs_dir = os.path.join(src_dir, "scripts","configs_group",config_group_name)
-    print(f"Copying configs from {configs_dir} to {etc_dir}")
-    for config_file in os.listdir(configs_dir):
-        config_path = os.path.join(configs_dir, config_file)
-        if os.path.isfile(config_path):
-            shutil.copy(config_path, etc_dir)
-            print(f"Copied file {config_path} to {etc_dir}")
-        #elif os.path.isdir(config_path):
-        #    shutil.copytree(config_path, os.path.join(etc_dir, config_file))
-        #    print(f"Copied directory {config_path} to {etc_dir}")
+# def copy_configs(config_group_name):
+#     etc_dir = os.path.join(install_root_dir, "etc")
+#     configs_dir = os.path.join(src_dir, "scripts","configs_group",config_group_name)
+#     print(f"Copying configs from {configs_dir} to {etc_dir}")
+#     for config_file in os.listdir(configs_dir):
+#         config_path = os.path.join(configs_dir, config_file)
+#         if os.path.isfile(config_path):
+#             shutil.copy(config_path, etc_dir)
+#             print(f"Copied file {config_path} to {etc_dir}")
+#         #elif os.path.isdir(config_path):
+#         #    shutil.copytree(config_path, os.path.join(etc_dir, config_file))
+#         #    print(f"Copied directory {config_path} to {etc_dir}")
 
 def install_apps():
     temp_dir = os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp'

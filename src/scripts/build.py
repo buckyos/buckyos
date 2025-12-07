@@ -9,6 +9,7 @@ import build_rust
 import prepare_rootfs
 import install
 import build_tray_controller
+import make_config
 
 if platform.system() == "Windows":
     temp_dir = tempfile.gettempdir()
@@ -30,6 +31,9 @@ def build(skip_web_app, skip_install, target, with_tray_controller, auto_win_sdk
         build_tray_controller.build(target)
         tray_controller_target_dir = os.path.join(temp_dir, "rust_build", "tray_controller")
         prepare_rootfs.strip_and_copy_rust_file(os.path.join(tray_controller_target_dir, target), "tray-controller", prepare_rootfs.root_bin_dir)
+
+    #make config
+
 
     if not skip_install:
         install.install()
