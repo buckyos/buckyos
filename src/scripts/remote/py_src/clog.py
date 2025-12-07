@@ -4,7 +4,7 @@ import sys
 import os
 import json
 import subprocess
-from remote_device import remote_device
+from remote_device import RemoteDevice
 
 def print_usage():
     print("Usage: clog.py [device_id]")
@@ -22,7 +22,7 @@ def ensure_local_dir(device_id: str) -> str:
         os.makedirs(log_dir)
     return log_dir
 
-def get_device_log(device: remote_device) -> bool:
+def get_device_log(device: RemoteDevice) -> bool:
     """获取单个设备的日志"""
     try:
         device_id = device.device_id

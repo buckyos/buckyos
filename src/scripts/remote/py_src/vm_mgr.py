@@ -2,21 +2,63 @@
 虚拟机管理层抽象
 支持多种后端实现（multipass、docker、kvm等）
 """
+from pathlib import Path
 import subprocess
 import abc
 import os
 import sys
+import json
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 import util
 
 
+class VMConfig:
+    """虚拟机配置"""
+    def __init__(self, node_id: str):
+        self.node_id : str = node_id
+        self.vm_template : str = None
+        self.vm_params : dict = None
+        self.network : dict = None
+        #app_name -> app_instance params
+        self.apps : dict [str,dict]= None
+        self.init_commands : list[str] = None # init_comands会在所有的instance创建完成后执行,因此可以在命令行中引用一些vm instance的属性
+
+class VMNodeList:
+    def __init__(self):
+        self.nodes : dict [str, VMConfig]= None
+        self.instance_order : list[str] = None
+    def get_node(self, node_id: str) -> VMConfig:
+        return self.nodes.get(node_id)
+    
+    def get_all_node_ids(self) -> list[str]:
+        return list(self.nodes.keys())
+
+    def load_from_file(self, file_path: Path):
+        with open(file_path, "r") as f:
+            data = json.load(f)
+
+        self.nodes = {}
+        self.instance_order = data.get("instance_order", [])
+
+        for node_id, cfg in data.get("nodes", {}).items():
+            vm_cfg = VMConfig(node_id=cfg.get("node_id", node_id))
+            vm_cfg.vm_template = cfg.get("vm_template")
+            vm_cfg.vm_params = cfg.get("vm_params", {})
+            vm_cfg.network = cfg.get("network", {})
+            vm_cfg.apps = cfg.get("apps", {})
+            vm_cfg.init_commands = cfg.get("init_commands", [])
+            self.nodes[node_id] = vm_cfg
+
+        return self
+
+
 class VMBackend(abc.ABC):
     """虚拟机后端抽象基类"""
     
     @abc.abstractmethod
-    def create_vm(self, vm_name: str, config: dict) -> bool:
+    def create_vm(self, vm_name: str, config: VMConfig) -> bool:
         """
         创建虚拟机
         
@@ -114,6 +156,20 @@ class VMBackend(abc.ABC):
         """
         pass
 
+    @abc.abstractmethod
+    def snapshot(self, node_id: str, snapshot_name: str) -> bool:
+        """创建快照"""
+        pass
+    
+    @abc.abstractmethod
+    def restore(self, node_id: str, snapshot_name: str) -> bool:
+        """恢复快照"""
+        pass
+
+    @abc.abstractmethod
+    def set_template_base_dir(self, template_base_dir: Path) -> bool:
+        """设置模板基础目录"""
+        pass
 
 class MultipassVMBackend(VMBackend):
     """Multipass 虚拟机后端实现"""
@@ -121,22 +177,22 @@ class MultipassVMBackend(VMBackend):
     def __init__(self):
         self.id_rsa_path = util.id_rsa_path
         self.remote_username = "root"
+        self.template_base_dir: Path = None
     
-    def create_vm(self, vm_name: str, config: dict) -> bool:
+    def create_vm(self, vm_name: str, config: VMConfig) -> bool:
         """使用 multipass 创建虚拟机"""
-        cpu = config.get('cpu', 1)
-        memory = config.get('memory', '1G')
-        disk = config.get('disk', '5G')
-        config_base = config.get('config_base', '')
+        cpu = config.vm_params.get('cpu', 1)
+        memory = config.vm_params.get('memory', '1G')
+        disk = config.vm_params.get('disk', '5G')
+        template_name = config.vm_template
         
         cmd = f"multipass launch --name {vm_name} --cpus {cpu} --memory {memory} --disk {disk}"
         
         # 如果提供了 config_base，添加 cloud-init 配置
-        if config_base:
-            init_yaml = os.path.join(config_base, 'vm_init.yaml')
-            if os.path.exists(init_yaml):
-                cmd += f" --cloud-init {init_yaml}"
-        
+        if template_name:
+            init_yaml = os.path.join(self.template_base_dir, f'{template_name}.yaml')
+            cmd += f" --cloud-init {init_yaml}"
+        print(cmd)
         try:
             result = subprocess.run(
                 cmd, shell=True, check=True,
@@ -252,23 +308,99 @@ class MultipassVMBackend(VMBackend):
         except subprocess.CalledProcessError:
             return False
 
-
-class VMManager:
-    """虚拟机管理器，根据配置选择后端"""
+    def snapshot(self, node_id: str, snapshot_name: str) -> bool:
+        """创建快照"""
+        try:
+            subprocess.run(
+                ["multipass", "snapshot", node_id, snapshot_name],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to snapshot VM {node_id}: {e.stderr}")
+            return False
     
+    def restore(self, node_id: str, snapshot_name: str) -> bool:
+        """恢复快照"""
+        try:
+            subprocess.run(
+                ["multipass", "restore", node_id, snapshot_name],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to restore VM {node_id} snapshot {snapshot_name}: {e.stderr}")
+            return False
+    
+    def set_template_base_dir(self, template_base_dir: Path) -> bool:
+        """设置模板基础目录"""
+        self.template_base_dir = template_base_dir
+        return True
+    
+class VMManager:
+    """虚拟机管理器，根据配置选择后端（单例）"""
+
+    _instance = None
+    _backend_type = None
+
+    def __new__(cls, backend_type: str = "multipass"):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self, backend_type: str = "multipass"):
         """
-        初始化虚拟机管理器
+        初始化虚拟机管理器（单例），后端类型首次创建时确定
         
         Args:
             backend_type: 后端类型，目前支持 "multipass"
         """
+        if getattr(self, "_initialized", False):
+            # 后续初始化保持后端一致
+            if backend_type != self._backend_type:
+                raise ValueError(
+                    f"VMManager is singleton with backend '{self._backend_type}', "
+                    f"got '{backend_type}'"
+                )
+            return
+
         if backend_type == "multipass":
             self.backend = MultipassVMBackend()
         else:
             raise ValueError(f"Unsupported backend type: {backend_type}")
+
+        VMManager._backend_type = backend_type
+        self._initialized = True
+
+    @classmethod
+    def get_instance(cls):
+        """获取单例实例"""
+        return cls("multipass")
+
+    @classmethod
+    def get_backend_type(cls):
+        """获取当前单例后端类型"""
+        return cls._backend_type or "multipass"
+
+    def set_template_base_dir(self, template_base_dir: Path):
+        """设置模板基础目录"""
+        self.backend.set_template_base_dir(template_base_dir)
     
-    def create_vm(self, vm_name: str, config: dict) -> bool:
+    def snapshot(self, node_id: str, snapshot_name: str) -> bool:
+        """创建快照"""
+        return self.backend.snapshot(node_id, snapshot_name)
+    
+    def restore(self, node_id: str, snapshot_name: str) -> bool:
+        """恢复快照"""
+        return self.backend.restore(node_id, snapshot_name)
+    
+    def create_vm(self, vm_name: str, config: VMConfig) -> bool:
         """创建虚拟机"""
         return self.backend.create_vm(vm_name, config)
     

@@ -1,156 +1,172 @@
-import subprocess
-import sys
-import os
-import yaml  # 新增导入 yaml 模块
+import argparse
 import json
+import os
+from pathlib import Path
+import sys
 
-import py_src.create_vm as create_vm
-import py_src.get_device_info as get_device_info
-import py_src.install as install
-import py_src.start as start
-import py_src.stop as stop
-import py_src.remote_device as remote_device
-import py_src.util as util
-import py_src.clog as clog
-import py_src.clean as clean
-import py_src.sn as sn
-import py_src.state as state
-import py_src.run as run
-import py_src.active as active
-import py_src.instance as instance
+from py_src.worksapce import Workspace
 
 
-def print_usage():
-    print("Usage:")
-    print("  ./main.py clean                    # 清除所有的Multipass实例")
-    print("  ./main.py clean --force            # 跳过询问，清除所有的Multipass实例")
-    print("  ./main.py init                     # 初始化环境")
-    print("  ./main.py network                  # 检查是否存在sn-br，并输入ip，如果不存在会创建一个")
-    print("  ./main.py create                   # 创建虚拟机")
-    print("  ./main.py install <device_id>      # 安装buckyos")
-    print("  ./main.py install --all            # 全部vm，安装buckyos")
-    print("  ./main.py active                   # 激活测试身份")
-    print("  ./main.py active_sn                # 激活测试sn配置信息")
-    print("  ./main.py purge <device_id>        # 清除设备（用户）配置信息")
-    print("  ./main.py start_sn                 # 启动sn")
-    print("  ./main.py start <device_id>        # 启动buckyos")
-    print("  ./main.py start --all              # 全部vm，启动buckyos, 但是不会启动sn")
-    print("  ./main.py stop <device_id>         # 停止buckyos")
-    print("  ./main.py stop --all               # 全部vm，停止buckyos")
-    print("  ./main.py all_in_one               # 一键快速启动配置内的所有vm，包括安装激活启动步骤")
-    print("  ./main.py clog                     # 收集node日志")
-    print("  ./main.py info                     # list vm device info")
-    print("  ./main.py instance <node_id>       # 实例化单个节点（新配置系统）")
-    print("  ./main.py instance --all           # 实例化所有节点（新配置系统）")
+def build_parser() -> argparse.ArgumentParser:
+    """Build an argparse parser with modular subcommands."""
+    parser = argparse.ArgumentParser(
+        description="Manage remote VMs and apps for a workspace group."
+    )
+    parser.add_argument("group_name", help="Workspace group name.")
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    clean_parser = subparsers.add_parser(
+        "clean_vms", help="Remove all Multipass instances for this group."
+    )
+    clean_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip confirmation prompts (behavior depends on implementation).",
+    )
+    clean_parser.set_defaults(handler=handle_clean_vms)
+
+    create_parser = subparsers.add_parser(
+        "create_vms", help="Create VMs from workspace configuration."
+    )
+    create_parser.set_defaults(handler=handle_create_vms)
+
+    snapshot_parser = subparsers.add_parser(
+        "snapshot", help="Create snapshots for all VMs."
+    )
+    snapshot_parser.add_argument("snapshot_name", help="Snapshot name.")
+    snapshot_parser.set_defaults(handler=handle_snapshot)
+
+    restore_parser = subparsers.add_parser(
+        "restore", help="Restore snapshots for all VMs."
+    )
+    restore_parser.add_argument("snapshot_name", help="Snapshot name.")
+    restore_parser.set_defaults(handler=handle_restore)
+
+    info_parser = subparsers.add_parser(
+        "info_vms", help="Show VM status information."
+    )
+    info_parser.set_defaults(handler=handle_info_vms)
+
+    install_parser = subparsers.add_parser(
+        "install", help="Install apps to a device based on configuration."
+    )
+    install_parser.add_argument("device_id", help="Target device id.")
+    install_parser.add_argument(
+        "--apps",
+        nargs="+",
+        help="Specify app names to install; defaults to all configured apps.",
+    )
+    install_parser.set_defaults(handler=handle_install)
+
+    update_parser = subparsers.add_parser(
+        "update", help="Update apps on a device based on configuration."
+    )
+    update_parser.add_argument("device_id", help="Target device id.")
+    update_parser.add_argument(
+        "--apps",
+        nargs="+",
+        help="Specify app names to update; defaults to all configured apps.",
+    )
+    update_parser.set_defaults(handler=handle_update)
+
+    start_parser = subparsers.add_parser(
+        "start", help="Start buckyos on all VMs (SN not started)."
+    )
+    start_parser.set_defaults(handler=handle_start)
+
+    stop_parser = subparsers.add_parser(
+        "stop", help="Stop buckyos on all VMs."
+    )
+    stop_parser.set_defaults(handler=handle_stop)
+
+    clog_parser = subparsers.add_parser(
+        "clog", help="Collect logs from nodes."
+    )
+    clog_parser.set_defaults(handler=handle_clog)
+
+    run_parser = subparsers.add_parser(
+        "run", help="Execute commands on a specific node."
+    )
+    run_parser.add_argument("node_id", help="Target node id.")
+    run_parser.add_argument(
+        "cmds",
+        nargs="+",
+        help="Command(s) to execute; provide multiple to run sequentially.",
+    )
+    run_parser.set_defaults(handler=handle_run)
+
+    return parser
 
 
-# chekc network bridge
-# 检查是否存在 br-sn 网络桥接
-def network():
-    try:
-        # 调用 ip 命令检查网络桥接      
-        result = subprocess.run(['ip', 'link', 'show', 'br-sn'], capture_output=True, text=True)
-        if result.returncode == 0:
-            # ip = subprocess.run("ip -4 addr show dev br-sn | grep -oP 'inet \K[\d.]+'", shell=True, capture_output=True, text=True)
-            print(f"网络桥接 br-sn 已存在")
-        else:
-            print("网络桥接 br-sn 不存在。")
-            print("正在创建网络桥接 br-sn...")
-            # sudo ip link add br-sn type bridge
-            # sudo ip link set br-sn up
-            # sudo ip addr add 10.10.10.1/24 dev br-sn'
-            subprocess.run(["sudo", "ip", "link", "add", "br-sn", "type", "bridge"])
-            subprocess.run(["sudo", "ip", "link", "set", "br-sn", "up"])
-            subprocess.run(["sudo", "ip", "addr", "add", "10.10.10.1/24", "dev", "br-sn"])
-            print("网络桥接 br-sn 创建完成。")
-    except FileNotFoundError:
-        print("未找到 ip 命令，请检查是否已安装。")
+def build_workspace(group_name: str) -> Workspace:
+    """Create and load a workspace instance."""
+    workspace_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dev_configs", group_name)
+    print(f"{group_name} workspace_dir: {workspace_dir}")
+    workspace = Workspace(Path(workspace_dir))
+    workspace.load()
+    return workspace
 
 
-
-def purge():
-    if len(sys.argv) < 3:
-        print("Usage: main.py purge <device_id>")
-        return
-    device_id = sys.argv[2]
-    if device_id == "sn":
-        print("sn no support purge")
-        return
-    device = remote_device.remote_device("nodeA2")
-    device.run_command("sudo rm /opt/buckyos/etc/node_identity.json")
-    device.run_command("sudo rm /opt/buckyos/etc/node_private_key.pem")
-    device.run_command("sudo rm /opt/buckyos/etc/start_config.json")
-    print("purge config ok")
+def handle_clean_vms(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.clean_vms()
 
 
+def handle_create_vms(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.create_vms()
 
-def init(): 
-    # check config file
-    if not os.path.exists(util.ENV_CONFIG):
-        print(f"Config file not found: {util.ENV_CONFIG}")
-        sys.exit(1)
-    print(f"VM Using config file: {util.ENV_CONFIG}")
-  
 
-def main():
-    # argv[1] 是命令行参数
-    if len(sys.argv) < 2:
-        print_usage()
-        sys.exit(0)
+def handle_snapshot(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.snapshot(args.snapshot_name)
 
-    # parse command
-    match sys.argv[1]:
-        case "clean":
-            clean.cleanInstances()
-        case "init":
-            init()
-        case "network":
-            network()
-        case "create":
-            create_vm.create()
-            # 创建完成后，会生成generate deviceinfo
-            get_device_info.get_device_info()
-        case "deviceinfo":
-            get_device_info.get_device_info()
-        case "info":
-            state.info_device()
-        case "install":
-            install.main()
-        case "active_sn":
-            sn.active_sn()
-        case "active":
-            # active 非sn的ood和node
-            active.active()
-        case "purge":
-            purge()
-        case "start_sn":
-            sn.start_sn()
-        case "start":
-            start.main()
-        case "stop":
-            stop.main()
-        case "clog": # 收集日志
-            if len(sys.argv) >= 3:
-                device_id = sys.argv[2]
-                print("Collecting log for device_id: ", device_id)
-                device = remote_device.remote_device(device_id)
-                clog.get_device_log(device)
-                return
-            all_devices = get_device_info.read_from_config(info_path=util.VM_DEVICE_CONFIG)
-            for device_id in all_devices:
-                device = remote_device.remote_device(device_id)
-                clog.get_device_log(device)
-        case "all_in_one":
-            run.run()
-        case "instance":
-            instance.main()
-        case _:
-            print("unknown command")
-            print("")
-            print_usage()
-            
 
+def handle_restore(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.restore(args.snapshot_name)
+
+
+def handle_info_vms(workspace: Workspace, args: argparse.Namespace) -> None:
+    info = workspace.info_vms()
+    if info is not None:
+        print(json.dumps(info, indent=2, ensure_ascii=False))
+
+
+def handle_install(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.install(args.device_id, args.apps)
+
+
+def handle_update(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.update(args.device_id, args.apps)
+
+
+def handle_start(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.start()
+
+
+def handle_stop(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.stop()
+
+
+def handle_clog(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.clog()
+
+
+def handle_run(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.run(args.node_id, args.cmds)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    workspace = build_workspace(args.group_name)
+    handler = getattr(args, "handler", None)
+    if handler is None:
+        parser.print_help()
+        return 1
+
+    handler(workspace, args)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

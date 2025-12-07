@@ -1,0 +1,24 @@
+{
+    "name": "buckyos",
+    "version": "latest",
+    "directories": {
+        "source": "rootfs",
+        "target": "/opt/buckyos",
+        "source_bin": "bin",
+        "target_bin": "/opt/buckyos/bin"
+    },
+    "commands": {
+      "build": [
+        "cd /opt/buckyos && tar xzf /tmp/buckyos.tar.gz"
+      ],
+      "build_all": [
+        "cd /opt/buckyos && tar xzf /tmp/buckyos.tar.gz"
+      ],
+      "install": [
+        "mkdir -p /opt/buckyos",
+        "cd /opt/buckyos && tar xzf /tmp/buckyos.tar.gz"
+      ],
+      "start": ["nohup /opt/buckyos/bin/node_daemon/node_daemon --enable_active > /dev/null 2>&1 &"],
+      "stop": ["python3 /opt/buckyos/bin/killall.py"]
+    }
+  }

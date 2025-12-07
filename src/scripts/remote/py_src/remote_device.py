@@ -2,18 +2,39 @@ import json
 import os
 import subprocess
 import sys
+from typing import Protocol, runtime_checkable, Tuple
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 import util
-import vm_mgr
+from vm_mgr import VMManager
 
 id_rsa_path = util.id_rsa_path
 ENV_CONFIG = util.ENV_CONFIG
 VM_DEVICE_CONFIG = util.VM_DEVICE_CONFIG
 
 
-class remote_device:
+@runtime_checkable
+class RemoteDeviceInterface(Protocol):
+    """
+    Minimal remote device operations.
+    Implementations can be SSH-based or VM-backend based.
+    """
+
+    def run_command(self, command: str) -> Tuple[str | None, str | None]:
+        ...
+
+    def push(self, local_path: str, remote_path: str, recursive: bool = False) -> None:
+        ...
+
+    def pull(self, remote_path: str, local_path: str, recursive: bool = False) -> None:
+        ...
+
+    def get_device_info(self) -> dict:
+        ...
+
+
+class RemoteDevice(RemoteDeviceInterface):
     def __init__(self, device_id: str):
         self.device_id = device_id
         self.remote_port = 22
@@ -261,3 +282,62 @@ class remote_device:
             'port': self.remote_port,
             'username': self.remote_username
         }
+
+
+class VMRemoteDevice(RemoteDeviceInterface):
+    """
+    RemoteDevice implementation backed by VMManager (VMInstance-like backend).
+    Use this when you already know the VM name and want to operate via the
+    VM backend instead of SSH.
+    """
+
+    def __init__(self, vm_name: str, backend_type: str = "multipass"):
+        self.device_id = vm_name
+        self.remote_username = "root"
+        self.remote_port = 22
+        self.vm_manager = VMManager.get_instance()
+        self.remote_ip = self._resolve_ip()
+
+    def _resolve_ip(self) -> str:
+        try:
+            ips = self.vm_manager.get_vm_ip(self.device_id)
+            if isinstance(ips, list) and len(ips) > 0:
+                return ips[0]
+            if isinstance(ips, str) and ips:
+                return ips
+        except Exception:
+            pass
+        return "127.0.0.1"
+
+    def run_command(self, command: str):
+        """Execute command inside the VM."""
+        return self.vm_manager.exec_command(self.device_id, command)
+
+    def push(self, local_path, remote_path, recursive: bool = False):
+        """Push file or directory into the VM."""
+        success = self.vm_manager.push_file(
+            self.device_id, local_path, remote_path, recursive
+        )
+        if not success:
+            raise Exception(f"Failed to push file to VM {self.device_id}")
+
+    def pull(self, remote_path, local_path, recursive: bool = False):
+        """Pull file or directory from the VM."""
+        success = self.vm_manager.pull_file(
+            self.device_id, remote_path, local_path, recursive
+        )
+        if not success:
+            raise Exception(f"Failed to pull file from VM {self.device_id}")
+
+    def get_device_info(self):
+        """Return basic VM info."""
+        return {
+            'device_id': self.device_id,
+            'ip': self.remote_ip,
+            'port': self.remote_port,
+            'username': self.remote_username
+        }
+
+
+# Backward compatibility alias
+VMInstanceRemoteDevice = VMRemoteDevice
