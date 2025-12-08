@@ -46,7 +46,17 @@ class VMNodeList:
         return self.instance_order
 
     def get_app_params(self, node_id: str, app_name: str) -> dict:
-        return self.nodes.get(node_id).apps.get(app_name, None)
+        node_config = self.get_node(node_id)
+        if node_config is None:
+            return None
+        return node_config.apps.get(app_name, None)
+
+    def have_app(self, node_id: str, app_name: str) -> bool:
+        node_config = self.get_node(node_id)
+        if node_config is None:
+            return False
+        return node_config.apps.get(app_name, None) is not None
+
 
     def load_from_file(self, file_path: Path):
         with open(file_path, "r") as f:
@@ -229,15 +239,14 @@ class MultipassVMBackend(VMBackend):
                 stderr=subprocess.PIPE,
                 text=True
             )
-            # 等待 VM 启动
-            import time
-            time.sleep(3)
-            # 设置 hostname
-            stdout, stderr = self.exec_command(vm_name, f"sudo hostnamectl set-hostname {vm_name}")
-            if stderr:
-                print(f"Warning: Failed to set hostname: {stderr}")
 
-            print(f"create vm {vm_name} success")    
+
+            print(f"create vm {vm_name} success,will execute init commands...")    
+
+            init_cmds = config.init_commands
+            if init_cmds is not None:
+                for cmd in init_cmds:
+                    self.exec_command(vm_name, cmd)
             return True
         except subprocess.CalledProcessError as e:
             print(f"Failed to create VM {vm_name}: {e.stderr}")
@@ -437,7 +446,9 @@ class MultipassVMBackend(VMBackend):
         try:
             # 确保远端目标目录存在
             self.exec_command(vm_name, f"mkdir -p {remote_dir}")
-            return self.push_file(vm_name, local_dir, remote_dir, recursive=True)
+            # 使用 "<local_dir>/." 只拷贝目录内容，避免远端出现额外的顶层目录
+            src_dir = os.path.join(local_dir, ".")
+            return self.push_file(vm_name, src_dir, remote_dir, recursive=True)
         except Exception as e:
             print(f"Failed to push dir to {vm_name}: {e}")
             return False

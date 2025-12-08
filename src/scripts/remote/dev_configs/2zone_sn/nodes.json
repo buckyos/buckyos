@@ -13,7 +13,8 @@
         }
       },
       "init_commands": [
-        "sudo hostnamectl set-hostname sn"
+        "sudo hostnamectl set-hostname sn",
+        "sudo chmod 777 /opt/"
       ],
       "directories": {
         "logs": "/opt/buckyos/logs"
@@ -32,7 +33,8 @@
         }
       },
       "init_commands": [
-        "hostnamectl set-hostname alice-ood1"
+        "hostnamectl set-hostname alice-ood1",
+        "sudo chmod 777 /opt/"
       ],
       "instance_commands": [
         "echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts"
@@ -54,7 +56,8 @@
         }
       },
       "init_commands": [
-        "sudo hostnamectl set-hostname bob-ood1"
+        "sudo hostnamectl set-hostname bob-ood1",
+        "sudo chmod 777 /opt/"
       ],
       "instance_commands": [
         "sudo echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts"

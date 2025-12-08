@@ -2,8 +2,8 @@
     "name": "buckyos",
     "version": "0.5.1",
     "directories": {
-        "source": "/opt/buckyos/",
-        "target": "/opt/buckyos/",
+        "source": "/opt/buckyos",
+        "target": "/opt/buckyos",
         "source_bin": "./rootfs/bin",
         "target_bin": "/opt/buckyos/bin"
     },

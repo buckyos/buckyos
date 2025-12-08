@@ -3,6 +3,7 @@
 """
 import re
 import os
+import shutil
 import tempfile
 from pathlib import Path
 import sys
@@ -72,14 +73,14 @@ class Workspace:
             remote_device = VMInstanceRemoteDevice(node_id)
             self.remote_devices[node_id] = remote_device
         
-
-    def clean_vms(self):
+    
+    def clean_vms(self):#ok
         # 根据workspace中的nodes中的配置，删除vm
         vm_mgr = VMManager.get_instance()
         for node_id,node_config in self.nodes.nodes.items():
             vm_mgr.delete_vm(node_id)
 
-    def create_vms(self):
+    def create_vms(self):#ok
         # 根据workspace中的nodes中的配置，创建vm
         vm_mgr = VMManager.get_instance()
         for node_id,node_config in self.nodes.nodes.items():
@@ -100,7 +101,7 @@ class Workspace:
             for command in node_config.instance_commands:
                 self.run(node_id, [command], env_params)
 
-    def snapshot(self, snapshot_name: str):
+    def snapshot(self, snapshot_name: str):#ok
         # 根据workspace中的nodes中的配置，创建快照
         vm_mgr = VMManager.get_instance()
         for node_id,node_config in self.nodes.nodes.items():
@@ -108,13 +109,13 @@ class Workspace:
             vm_mgr.snapshot(node_id, snapshot_name)
         
 
-    def restore(self, snapshot_name: str):
+    def restore(self, snapshot_name: str):#ok
         # 根据workspace中的nodes中的配置，恢复快照
         vm_mgr = VMManager.get_instance()
         for node_id,node_config in self.nodes.nodes.items():
             vm_mgr.restore(node_id, snapshot_name)
 
-    def info_vms(self):
+    def info_vms(self):#ok
         # 根据workspace中的nodes中的配置，查看vm状态
         info = {}
         for node_id,node_config in self.nodes.nodes.items():
@@ -138,6 +139,10 @@ class Workspace:
             raise ValueError(f"Remote device '{device_id}' not found")
 
         for app_name in app_list:
+            if not self.nodes.have_app(device_id, app_name):
+                print(f"App '{app_name}' not found in node: {device_id}, SKIP")
+                continue
+
             app_config = self.app_list.get_app(app_name)
             if app_config is None:
                 raise ValueError(f"App '{app_name}' not found")
@@ -183,7 +188,7 @@ class Workspace:
             remote_device.push(source_bin_dir, target_bin_dir)
             self.execute_app_command(device_id, app_name, "update")
 
-    def execute_app_command(self, device_id: Optional[str],app_name: str,cmd_name: str ,run_in_host: bool = False):
+    def execute_app_command(self, device_id: Optional[str],app_name: str,cmd_name: str ,run_in_host: bool = False):#ok
         # 根据workspace中的app_list中的配置，向remote_device执行action，执行的内部会调用run
         vm_config = self.nodes.get_node(device_id)
         if vm_config is None:
@@ -208,7 +213,7 @@ class Workspace:
         else:
             self.run(device_id, command_config, env_params)
 
-    def resolve_string(self, text: str,env_params: dict) -> str:
+    def resolve_string(self, text: str,env_params: dict) -> str:#ok
         """
         解析字符串中的所有变量引用
         
@@ -253,7 +258,7 @@ class Workspace:
         # 根据workspace中的app_list中的配置，查看remote_devices上的app状态（其实是通过执行action来查看）
         pass
 
-    def clog(self,target_dir: Optional[Path] = None):
+    def clog(self,target_dir: Optional[Path] = None):#ok
         # 根据workspace中的remote_devices中的配置，收集remote_devices上的日志到本地
         # 收集node里定义的系统日志目录，到本地
         if target_dir is None:
@@ -261,6 +266,10 @@ class Workspace:
                 target_dir = get_temp_dir().joinpath("clogs")
             else:
                 target_dir = Path("/tmp/clogs")
+        
+        #remove target dir
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
             
         for node_id in self.nodes.get_all_node_ids():
             node_config = self.nodes.get_node(node_id)

@@ -51,7 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser = subparsers.add_parser(
         "install", help="Install apps to a device based on configuration."
     )
-    install_parser.add_argument("device_id", help="Target device id.")
+    install_parser.add_argument(
+        "device_id",
+        nargs="?",
+        default=None,
+        help="Target device id; omit to install to all devices.",
+    )
     install_parser.add_argument(
         "--apps",
         nargs="+",
@@ -62,7 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser = subparsers.add_parser(
         "update", help="Update apps on a device based on configuration."
     )
-    update_parser.add_argument("device_id", help="Target device id.")
+    update_parser.add_argument(
+        "device_id",
+        nargs="?",
+        default=None,
+        help="Target device id; omit to update all devices.",
+    )
     update_parser.add_argument(
         "--apps",
         nargs="+",
@@ -132,10 +142,20 @@ def handle_info_vms(workspace: Workspace, args: argparse.Namespace) -> None:
 
 def handle_install(workspace: Workspace, args: argparse.Namespace) -> None:
     print(f"install apps to device: {args.device_id} with apps: {args.apps}")
-    workspace.install(args.device_id, args.apps)
+    if args.device_id is None:
+        for device_id in workspace.remote_devices.keys():
+            workspace.install(device_id, args.apps)
+        return
+    else:
+        workspace.install(args.device_id, args.apps)
 
 
 def handle_update(workspace: Workspace, args: argparse.Namespace) -> None:
+    print(f"update apps on device: {args.device_id} with apps: {args.apps}")
+    if args.device_id is None:
+        for device_id in workspace.remote_devices.keys():
+            workspace.update(device_id, args.apps)
+        return
     workspace.update(args.device_id, args.apps)
 
 
@@ -160,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     workspace = build_workspace(args.group_name)
+    #workspace.execute_app_command("bob-ood1", "buckyos", "build_all",True)
     handler = getattr(args, "handler", None)
     if handler is None:
         parser.print_help()
