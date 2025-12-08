@@ -101,6 +101,18 @@ class Workspace:
             for command in node_config.instance_commands:
                 self.run(node_id, [command], env_params)
 
+    def stop_vms(self):#ok
+        # 根据workspace中的nodes中的配置，停止vm
+        vm_mgr = VMManager.get_instance()
+        for node_id,node_config in self.nodes.nodes.items():
+            vm_mgr.stop_vm(node_id)
+
+    def start_vms(self):#ok
+        # 根据workspace中的nodes中的配置，启动vm
+        vm_mgr = VMManager.get_instance()
+        for node_id,node_config in self.nodes.nodes.items():
+            vm_mgr.start_vm(node_id)
+
     def snapshot(self, snapshot_name: str):#ok
         # 根据workspace中的nodes中的配置，创建快照
         vm_mgr = VMManager.get_instance()

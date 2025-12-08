@@ -48,6 +48,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     info_parser.set_defaults(handler=handle_info_vms)
 
+    start_vms_parser = subparsers.add_parser(
+        "start_vms", help="Start all Multipass instances for this group."
+    )
+    start_vms_parser.set_defaults(handler=handle_start_vms)
+
+    stop_vms_parser = subparsers.add_parser(
+        "stop_vms", help="Stop all Multipass instances for this group."
+    )
+    stop_vms_parser.set_defaults(handler=handle_stop_vms)
+
     install_parser = subparsers.add_parser(
         "install", help="Install apps to a device based on configuration."
     )
@@ -138,6 +148,14 @@ def handle_info_vms(workspace: Workspace, args: argparse.Namespace) -> None:
     info = workspace.info_vms()
     if info is not None:
         print(json.dumps(info, indent=2, ensure_ascii=False))
+
+
+def handle_start_vms(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.start_vms()
+
+
+def handle_stop_vms(workspace: Workspace, args: argparse.Namespace) -> None:
+    workspace.stop_vms()
 
 
 def handle_install(workspace: Workspace, args: argparse.Namespace) -> None:

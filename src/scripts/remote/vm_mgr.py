@@ -10,11 +10,8 @@ import sys
 import json
 import re
 
-
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
-
-
 
 class VMConfig:
     """虚拟机配置"""
@@ -203,6 +200,16 @@ class VMBackend(abc.ABC):
     @abc.abstractmethod
     def restore(self, node_id: str, snapshot_name: str) -> bool:
         """恢复快照"""
+        pass
+
+    @abc.abstractmethod
+    def stop_vm(self, node_id: str) -> bool:
+        """停止虚拟机"""
+        pass
+    
+    @abc.abstractmethod
+    def start_vm(self, node_id: str) -> bool:
+        """启动虚拟机"""
         pass
 
     @abc.abstractmethod
@@ -436,6 +443,40 @@ class MultipassVMBackend(VMBackend):
             print(f"Failed to restore VM {node_id} snapshot {snapshot_name}: {e.stderr}")
             return False
     
+    def stop_vm(self, node_id: str) -> bool:
+        """停止虚拟机"""
+        try:
+            print(f"stop vm {node_id} ...")
+            subprocess.run(
+                ["multipass", "stop", node_id],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            print(f"stop vm {node_id} success")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to stop VM {node_id}: {e.stderr}")
+            return False
+    
+    def start_vm(self, node_id: str) -> bool:
+        """启动虚拟机"""
+        try:
+            print(f"start vm {node_id} ...")
+            subprocess.run(
+                ["multipass", "start", node_id],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            print(f"start vm {node_id} success")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to start VM {node_id}: {e.stderr}")
+            return False
+
     def set_template_base_dir(self, template_base_dir: Path) -> bool:
         """设置模板基础目录"""
         self.template_base_dir = template_base_dir
@@ -527,6 +568,13 @@ class VMManager:
     def delete_vm(self, vm_name: str) -> bool:
         """删除虚拟机"""
         return self.backend.delete_vm(vm_name)
+    def stop_vm(self, node_id: str) -> bool:
+        """停止虚拟机"""
+        return self.backend.stop_vm(node_id)
+    
+    def start_vm(self, node_id: str) -> bool:
+        """启动虚拟机"""
+        return self.backend.start_vm(node_id)
     
     def exec_command(self, vm_name: str, command: str) -> tuple:
         """在虚拟机中执行命令"""
