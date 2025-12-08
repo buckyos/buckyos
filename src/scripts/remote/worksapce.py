@@ -24,10 +24,15 @@ def get_temp_dir() -> Path:
 
 class Workspace:
     _VARIABLE_PATTERN = re.compile(r'\{\{(\w+)\.(\w+)\}\}')
-    def __init__(self, workspace_dir: Path):
+    def __init__(self, workspace_dir: Path,base_dir:Optional[Path] = None):
         vm_mgr = VMManager.get_instance()
         vm_mgr.set_template_base_dir(workspace_dir / "templates")
         self.workspace_dir: Path = workspace_dir
+        self.base_dir: Path = base_dir
+        if self.base_dir is None:
+            self.base_dir = Path(current_dir).parent.parent
+
+        print(f"base_dir: {self.base_dir}")
 
         self.nodes: VMNodeList= None
         self.remote_devices: dict [str, RemoteDeviceInterface]= None
@@ -51,6 +56,7 @@ class Workspace:
             env_params.update(parent_env_params)
         # 获得所有的环境变量
         system_env_params = os.environ.copy()
+        system_env_params["base_dir"] = str(self.base_dir)
         env_params["system"] = system_env_params
         # 根据self.nodes中的配置，构建env_params
         for node_id in self.nodes.get_all_node_ids():
@@ -98,6 +104,7 @@ class Workspace:
         # 根据workspace中的nodes中的配置，创建快照
         vm_mgr = VMManager.get_instance()
         for node_id,node_config in self.nodes.nodes.items():
+            print(f"create snapshot {snapshot_name} for node: {node_id}")
             vm_mgr.snapshot(node_id, snapshot_name)
         
 
@@ -125,7 +132,7 @@ class Workspace:
         # 根据workspace中的app_list中的配置，向remote_device安装app
         if app_list is None:
             app_list = self.app_list.get_all_app_names()
-
+        print(f"install apps to device: {device_id} with apps: {app_list}")
         remote_device = self.remote_devices[device_id]
         if remote_device is None:
             raise ValueError(f"Remote device '{device_id}' not found")
@@ -135,11 +142,15 @@ class Workspace:
             if app_config is None:
                 raise ValueError(f"App '{app_name}' not found")
             source_dir = app_config.get_dir("source")
+            source_dir_path = Path(source_dir);
+            if not source_dir_path.is_absolute():
+                source_dir_path = self.base_dir / source_dir_path
             target_dir = app_config.get_dir("target")
-            self.execute_app_command(None, app_name, "build_all")
+            self.execute_app_command(device_id, app_name, "build_all",True)
             
             ## 根据目录设置，将Host上的Source目录的文件推送到remote_device的target目录
             remote_device.push(source_dir, target_dir)
+            self.execute_app_command(device_id, app_name, "install")
         
 
     def update(self, device_id: str,app_list:list[str] = None):
@@ -162,13 +173,17 @@ class Workspace:
             if source_bin_dir is None:
                 print(f"App '{app_name}' not found source_bin_dir, SKIP update")
                 continue
+            source_bin_dir_path = Path(source_bin_dir);
+            if not source_bin_dir_path.is_absolute():
+                source_bin_dir_path = self.base_dir / source_bin_dir_path
             target_bin_dir = app_config.get_dir("target_bin")
-            self.execute_app_command(None, app_name, "build")
+            self.execute_app_command(device_id, app_name, "build",True)
             
             ## 根据目录设置，将Host上的Source目录的文件推送到remote_device的target目录
             remote_device.push(source_bin_dir, target_bin_dir)
+            self.execute_app_command(device_id, app_name, "update")
 
-    def exec_app_command(self, device_id: str,app_name: str,cmd_name: str ):
+    def execute_app_command(self, device_id: Optional[str],app_name: str,cmd_name: str ,run_in_host: bool = False):
         # 根据workspace中的app_list中的配置，向remote_device执行action，执行的内部会调用run
         vm_config = self.nodes.get_node(device_id)
         if vm_config is None:
@@ -188,7 +203,10 @@ class Workspace:
         if command_config is None:
             raise ValueError(f"Command '{cmd_name}' not found")
         
-        self.run(device_id, command_config, env_params)
+        if run_in_host:
+            self.run(None, command_config, env_params)
+        else:
+            self.run(device_id, command_config, env_params)
 
     def resolve_string(self, text: str,env_params: dict) -> str:
         """
@@ -225,7 +243,7 @@ class Workspace:
 
         for command in cmds:
             new_command = self.resolve_string(command, env_params)
-            print(f"run resolved command: {new_command} on device {device_id}")
+            print(f"run resolved command: [ {new_command} ] on {device_id}")
             if remote_device is None:
                 os.system(new_command)
             else:

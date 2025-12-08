@@ -39,6 +39,7 @@ class AppList:
         for file in self.app_dir.glob('*.json'):
             app_config = AppConfig(file.stem)
             app_config.load_from_file(file)
+            self.app_list[app_config.app_name] = app_config
 
     def get_app(self, app_name: str) -> AppConfig:
         return self.app_list.get(app_name)

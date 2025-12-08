@@ -56,14 +56,14 @@ impl TestKeys {
     fn verify_all_key_pairs() -> Result<(), String> {
         let key_ids = vec![
             "devtest",
-            "devtest.ood1",
-            "devtest.node1",
+            "devtest_ood1",
+            "devtest_node1",
+            "sn_owner",
             "sn",
-            "sn_server",
             "bob",
-            "bob.ood1",
+            "bob_ood1",
             "alice",
-            "alice.ood1",
+            "alice_ood1",
         ];
         for key_id in key_ids {
             TestKeys::get_key_pair_by_id(key_id)?;
@@ -74,13 +74,18 @@ impl TestKeys {
     fn get_key_pair_by_id(id: &str) -> Result<TestKeyPair, String> {
         let key_pair = match id {
             "devtest" => TestKeys::devtest_owner(),
+            "devtest_ood1" => TestKeys::devtest_ood1(),
             "devtest.ood1" => TestKeys::devtest_ood1(),
+            "devtest_node1" => TestKeys::devtest_node1(),
             "devtest.node1" => TestKeys::devtest_node1(),
-            "sn" => TestKeys::sn_owner(),
+            "sn_owner" => TestKeys::sn_owner(),
+            "sn" => TestKeys::sn_device(),
             "sn_server" => TestKeys::sn_device(),
             "bob" => TestKeys::bob_owner(),
+            "bob_ood1" => TestKeys::bob_ood1(),
             "bob.ood1" => TestKeys::bob_ood1(),
             "alice" => TestKeys::alice_owner(),
+            "alice_ood1" => TestKeys::alice_ood1(),
             "alice.ood1" => TestKeys::alice_ood1(),
             _ => return Err(format!("unknown key pair id: {}", id)),
         };
@@ -874,6 +879,11 @@ mod tests {
     fn new_test_builder(test_name: &str) -> DevEnvBuilder {
         let root_dir = format!(".buckycli_{}", test_name);
         DevEnvBuilder::new(&root_dir)
+    }
+    
+    #[tokio::test]
+    pub async fn test_verify_all_key_pairs() {
+        TestKeys::verify_all_key_pairs().unwrap();
     }
 
     #[tokio::test]

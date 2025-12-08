@@ -1,24 +1,23 @@
 {
     "name": "buckyos",
-    "version": "latest",
+    "version": "0.5.1",
     "directories": {
-        "source": "rootfs",
-        "target": "/opt/buckyos",
-        "source_bin": "bin",
+        "source": "/opt/buckyos/",
+        "target": "/opt/buckyos/",
+        "source_bin": "./rootfs/bin",
         "target_bin": "/opt/buckyos/bin"
     },
     "commands": {
       "build": [
-        "cd /opt/buckyos && tar xzf /tmp/buckyos.tar.gz"
+        "echo 'MAKE sure you already build the linux version of buckyos (result store in rootfs/bin)'"
       ],
       "build_all": [
-        "cd /opt/buckyos && tar xzf /tmp/buckyos.tar.gz"
+        "python3 {{system.base_dir}}/scripts/make_config.py {{buckyos.node_group}} --rootfs /opt/buckyos"
       ],
       "install": [
-        "mkdir -p /opt/buckyos",
-        "cd /opt/buckyos && tar xzf /tmp/buckyos.tar.gz"
+        "sudo chmod 777 /opt/buckyos"
       ],
-      "start": ["nohup /opt/buckyos/bin/node_daemon/node_daemon --enable_active > /dev/null 2>&1 &"],
-      "stop": ["python3 /opt/buckyos/bin/killall.py"]
+      "start": ["sudo nohup /opt/buckyos/bin/node-daemon/node_daemon --enable_active > /dev/null 2>&1 &"],
+      "stop": ["sudo python3 /opt/buckyos/bin/stop.py"]
     }
   }

@@ -131,6 +131,7 @@ def handle_info_vms(workspace: Workspace, args: argparse.Namespace) -> None:
 
 
 def handle_install(workspace: Workspace, args: argparse.Namespace) -> None:
+    print(f"install apps to device: {args.device_id} with apps: {args.apps}")
     workspace.install(args.device_id, args.apps)
 
 

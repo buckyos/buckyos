@@ -45,6 +45,9 @@ class VMNodeList:
     def get_node_id_by_init_orders(self) -> list[str]:
         return self.instance_order
 
+    def get_app_params(self, node_id: str, app_name: str) -> dict:
+        return self.nodes.get(node_id).apps.get(app_name, None)
+
     def load_from_file(self, file_path: Path):
         with open(file_path, "r") as f:
             data = json.load(f)
@@ -366,7 +369,21 @@ class MultipassVMBackend(VMBackend):
         try:
             print(f"create snapshot {snapshot_name} on vm {node_id} ...")
             subprocess.run(
-                ["multipass", "snapshot", node_id, snapshot_name],
+                ["multipass", "stop", node_id],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            subprocess.run(
+                ["multipass", "snapshot", node_id, "--name", snapshot_name],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            subprocess.run(
+                ["multipass", "start", node_id],
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -383,7 +400,22 @@ class MultipassVMBackend(VMBackend):
         try:
             print(f"restore vm {node_id} to snapshot {snapshot_name} ...")
             subprocess.run(
-                ["multipass", "restore", node_id, snapshot_name],
+                ["multipass", "stop", node_id],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            subprocess.run(
+                # multipass restore 需要 "<instance>.<snapshot>" 作为单一参数
+                ["multipass", "restore", f"{node_id}.{snapshot_name}","-d"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            subprocess.run(
+                ["multipass", "start", node_id],
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

@@ -279,6 +279,38 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "force_https": False,
             "ca_name": "buckyos_local",
         }
+    if group_name == "alice.ood1":
+        return {
+            "username": "alice",
+            "zone_id": "alice.web3.devtests.org",
+            "node_name": "ood1",
+            "netid": "",
+            "sn_base_host": "devtests.org",
+            "web3_bridge": "web3.devtests.org",
+            "trust_did": [
+                "did:web:buckyos.org",
+                "did:web:buckyos.ai",
+                "did:web:buckyos.io",
+            ],
+            "force_https": False,
+            "ca_name": "buckyos_local",
+        }
+    if group_name == "bob.ood1":
+        return {
+            "username": "bob",
+            "zone_id": "bob.web3.devtests.org",
+            "node_name": "ood1",
+            "netid": "",
+            "sn_base_host": "devtests.org",
+            "web3_bridge": "web3.devtests.org",
+            "trust_did": [
+                "did:web:buckyos.org",
+                "did:web:buckyos.ai",
+                "did:web:buckyos.io",
+            ],
+            "force_https": False,
+            "ca_name": "buckyos_local",
+        }
     raise ValueError(f"invalid group name: {group_name}")
 
 def make_config_by_group_name(group_name: str, target_root: Path, ca_dir: Optional[Path]) -> None:
