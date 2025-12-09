@@ -40,6 +40,9 @@ use serde_json::json;
 pub const SMB_SERVICE_UNIQUE_ID: &str = "smb-service";
 pub const SMB_SERVICE_SERVICE_NAME: &str = "smb-service";
 
+pub const BASE_APP_PORT: u16 = 10000;
+pub const MAX_APP_INDEX: u16 = 2048;
+
 
 static CURRENT_BUCKYOS_RUNTIME:OnceCell<BuckyOSRuntime> = OnceCell::new();
 pub fn get_buckyos_api_runtime() -> Result<&'static BuckyOSRuntime> {

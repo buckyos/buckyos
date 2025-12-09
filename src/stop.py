@@ -13,7 +13,7 @@ def stop_app_container(name):
     # TODO 现在只处理了filebrowser，可能还需要处理后续其他app
     # stop and remove 'devtest-buckyos-filebrowser' container
     if name == 'filebrowser' and system != "Windows":
-        result_stop = subprocess.run(['docker', 'stop', 'devtest-buckyos-filebrowser'], capture_output=True, text=True)
+        result_stop = subprocess.run(['docker', 'stop', 'devtest-buckyos_filebrowser'], capture_output=True, text=True)
         if result_stop.returncode != 0:
             print(f"Failed to stop {name} container: {result_stop.stderr}")
         else:

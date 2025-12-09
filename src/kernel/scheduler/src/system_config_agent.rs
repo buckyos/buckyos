@@ -10,7 +10,7 @@ use serde_json::json;
 use crate::app::*;
 use crate::scheduler::*;
 use crate::service::*;
-use buckyos_api::{
+use buckyos_api::{BASE_APP_PORT, MAX_APP_INDEX,
     get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
     ServiceInstanceReportInfo, UserSettings, UserType as ApiUserType,
 };
@@ -73,12 +73,14 @@ fn create_service_spec_by_app_config(
         need_container = false;
     }
 
+
+    let default_service_port = app_config.app_index * 16 + BASE_APP_PORT;
     ServiceSpec {
         id: full_app_id.to_string(),
         app_id: app_config.app_id().to_string(),
         owner_id: owner_user_id.to_string(),
         spec_type: ServiceSpecType::App,
-        default_service_port: 10000 + app_config.app_index * 10,
+        default_service_port: default_service_port,
         state: spec_state,
         need_container,
         best_instance_count: app_config.expected_instance_count,
@@ -209,28 +211,26 @@ pub fn create_scheduler_by_system_config(
                     format!("{} @ {}", app_instance_id, node_id),
                     app_config_str.as_str()
                 );
-                let instance = ReplicaInstance {
-                    spec_id: format!(
-                        "{}@{}",
-                        app_config.app_spec.app_id(),
-                        app_config.app_spec.user_id.clone()
-                    ),
-                    node_id: node_id.to_string(),
-                    res_limits: HashMap::new(),
-                    instance_id: app_instance_id.to_string(),
-                    last_update_time: 0,
-                    state: InstanceState::from(app_config.target_state.clone()),
-                    service_port: app_config
-                        .get_host_service_port("www")
-                        .or_else(|| {
-                            app_config
-                                .node_install_config
-                                .as_ref()
-                                .and_then(|cfg| cfg.service_ports.values().next().copied())
-                        })
-                        .unwrap_or(0),
-                };
-                scheduler_ctx.add_replica_instance(instance);
+                if app_config.node_install_config.is_some() {
+                    let node_install_config = app_config.node_install_config.as_ref().unwrap();
+                
+                    let service_port = node_install_config.service_ports.get("www").unwrap_or(&80);
+                    info!("app_id: {}, service_port: {}", app_config.app_spec.app_id(), service_port);
+                    let instance = ReplicaInstance {
+                        spec_id: format!(
+                            "{}@{}",
+                            app_config.app_spec.app_id(),
+                            app_config.app_spec.user_id.clone()
+                        ),
+                        node_id: node_id.to_string(),
+                        res_limits: HashMap::new(),
+                        instance_id: app_instance_id.to_string(),
+                        last_update_time: 0,
+                        state: InstanceState::from(app_config.target_state.clone()),
+                        service_port: service_port.clone()
+                    };
+                    scheduler_ctx.add_replica_instance(instance);
+                }
             }
         }
         //add instance
@@ -453,7 +453,7 @@ pub(crate) async fn update_gateway_node_list(
                 //TODO：处理zone-gateway中的快捷方式
 
             } else {
-                let line_rule = format!("match ${{REQ.uri}} \"/kapi/{}/*\" && {}", spec_id, target_str);
+                let line_rule = format!("match ${{REQ.path}} \"/kapi/{}/*\" && {}", spec_id, target_str);
                 process_chain_lines.push_front(line_rule);
             }
         }

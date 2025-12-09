@@ -115,7 +115,7 @@ impl SystemConfigBuilder {
             };
 
             self.insert_json(&app_key, &app_spec)?;
-            app_index += 10;
+            app_index += 1;
         }
 
         Ok(self)

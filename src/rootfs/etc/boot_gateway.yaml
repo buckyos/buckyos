@@ -12,12 +12,10 @@ stacks:
             id: default
             priority: 1
             block: |
-              call http-probe;
-              match ${REQ.uri} "/kapi/system_config/*" && return "forward http://127.0.0.1:3200";
               return "server node_gateway";
 
-  node_gateway:
-    id: node_gateway
+  node_gateway_http:
+    id: node_gateway_http
     protocol: tcp
     bind: 0.0.0.0:3180
     hook_point:

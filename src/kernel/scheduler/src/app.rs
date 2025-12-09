@@ -8,9 +8,7 @@ use crate::*;
 use crate::scheduler::*;
 
 use anyhow::Result;
-
-const MAX_APP_INDEX:u16 = 2048;
-const BASE_APP_PORT:u16 = 10000;
+use buckyos_api::{BASE_APP_PORT, MAX_APP_INDEX};
 
 fn build_app_service_config(node_id:&str,app_config:&AppServiceSpec,node_info:&DeviceInfo) -> Result<AppServiceInstanceConfig> {
     let mut result_config = AppServiceInstanceConfig::new(node_id,app_config);
@@ -28,22 +26,23 @@ fn build_app_service_config(node_id:&str,app_config:&AppServiceSpec,node_info:&D
         }
     }
 
-    if  app_config.app_index  > MAX_APP_INDEX {
-        warn!("app_index: {} is too large,skip",app_config.app_index);
-        return Err(anyhow::anyhow!("app_index: {} is too large",app_config.app_index));
-    }
+    let mut node_install_config = app_config.install_config.clone();
+    result_config.node_install_config = Some(node_install_config);
 
-    let mut real_port:u16 = BASE_APP_PORT + app_config.app_index * 16;
-    let mut host_ports = HashMap::new();
-    for (service_name, _inner_port) in app_config.install_config.service_ports.iter() {
-        host_ports.insert(service_name.clone(), real_port);
-        real_port += 1;
-    }
-    if !host_ports.is_empty() {
-        let mut node_install_config = app_config.install_config.clone();
-        node_install_config.service_ports = host_ports;
-        result_config.node_install_config = Some(node_install_config);
-    }
+    //check app_config.install_config is valid?
+    // let mut real_port:u16 = BASE_APP_PORT + app_config.app_index * 16;
+    // let mut host_ports = HashMap::new();
+    // for (service_name, _inner_port) in app_config.install_config.service_ports.iter() {
+    //     host_ports.insert(service_name.clone(), real_port);
+    //     real_port += 1;
+    // }
+    // if !host_ports.is_empty() {
+    //     let mut node_install_config = app_config.install_config.clone();
+    //     node_install_config.service_ports = host_ports;
+    //     result_config.node_install_config = Some(node_install_config);
+    // }
+
+
     return Ok(result_config)
 }
 
@@ -66,9 +65,23 @@ pub fn instance_app_service(new_instance:&ReplicaInstance,device_list:&HashMap<S
         warn!("app_config: {} is not a valid json",app_config_path);
         return Err(anyhow::anyhow!("app_config: {} is not a valid json",app_config_path));
     }
-    let app_config : AppServiceSpec = app_config.unwrap();
 
-    //check app_config.install_config is valid?
+    let mut app_config : AppServiceSpec = app_config.unwrap();
+    if  app_config.app_index  > MAX_APP_INDEX {
+        warn!("app_index: {} is too large,skip",app_config.app_index);
+        return Err(anyhow::anyhow!("app_index: {} is too large",app_config.app_index));
+    }
+
+    let mut service_ports = app_config.install_config.service_ports.clone();
+    let mut base_port = app_config.app_index * 16 + BASE_APP_PORT;
+
+    for (service_name,host_port) in app_config.app_doc.install_config_tips.service_ports.iter() {
+        if !service_ports.contains_key(service_name) {
+            service_ports.insert(service_name.clone(),base_port);
+            base_port += 1;
+        }
+    }
+    app_config.install_config.service_ports = service_ports;
 
     let node_info = device_list.get(&new_instance.node_id);
     if node_info.is_none() {

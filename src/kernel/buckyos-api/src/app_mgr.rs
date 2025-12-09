@@ -289,6 +289,7 @@ pub struct ServiceInstallConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bind_address: Option<String>,//为None绑定到127.0.0.1，只能通过rtcp转发访问
     //network resource, name:docker_inner_port
+    #[serde(default)]
     pub service_ports: HashMap<String,u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_param:Option<String>,
@@ -345,7 +346,7 @@ pub struct AppServiceInstanceConfig {
     pub node_id: String,
     pub app_spec : AppServiceSpec,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_install_config: Option<ServiceInstallConfig>,
+    pub node_install_config: Option<ServiceInstallConfig>,//当存在的时候，覆盖app_spec.install_config,目前只是占位，并未使用
 }
 impl AppServiceInstanceConfig {
     pub fn new(node_id:&str,app_config:&AppServiceSpec) -> AppServiceInstanceConfig {

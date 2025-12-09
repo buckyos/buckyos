@@ -33,15 +33,15 @@ pub struct AppRunItem {
 
 impl AppRunItem {
     pub fn new(
-        app_id: &String,
+        app_instance_id: &String, // app_id@username@nodeid
         app_service_config: AppServiceInstanceConfig,
         app_loader: ServicePkg
     ) -> Self {
+        let app_id = app_instance_id.split("@").nth(0).unwrap().to_string();
         AppRunItem {
-            app_id: app_id.clone(),
+            app_id: app_id,
             app_instance_config: app_service_config,
             app_loader: app_loader,
-
         }
     }
 
@@ -84,12 +84,12 @@ impl AppRunItem {
                     "full_path": app_pkg.full_path.to_string_lossy(),
                 });
                 let media_info_json_str = media_info_json.to_string();
-                    std::env::set_var("app_media_info", media_info_json_str);
+                unsafe { std::env::set_var("app_media_info", media_info_json_str); }
             }
         }
 
         let app_config_str = serde_json::to_string(&self.app_instance_config).unwrap();
-        std::env::set_var("app_instance_config",app_config_str);
+        unsafe { std::env::set_var("app_instance_config",app_config_str); }
         
         let timestamp = buckyos_get_unix_timestamp();
         let runtime = get_buckyos_api_runtime().unwrap();
@@ -117,7 +117,7 @@ impl AppRunItem {
             })?;
         let full_appid = get_full_appid(&self.app_id, &self.app_instance_config.app_spec.user_id);
         let env_key = get_session_token_env_key(&full_appid,true);
-        std::env::set_var(env_key.as_str(), app_service_session_token_jwt);
+        unsafe { std::env::set_var(env_key.as_str(), app_service_session_token_jwt); }
         Ok(())
     }
 }

@@ -15,13 +15,7 @@ pub fn instance_service(
     let mut result = HashMap::new();
     //目前所有的service都是kernel service (no docker) ,有标准的frame service也是应该运行在docker中的.
     //add instance to node config
-    let service_port = server_config
-        .install_config
-        .service_ports
-        .get("main")
-        .copied()
-        .or_else(|| server_config.install_config.service_ports.values().next().copied())
-        .unwrap_or(0);
+
     let kernel_service_config =
         KernelServiceInstanceConfig::new(server_config.clone(), new_instance.node_id.clone());
     let key_path = format!("nodes/{}/config",new_instance.node_id.as_str());
