@@ -67,8 +67,13 @@ def start_app_with_docker():
     os.system(docker_command)
 
     # 得到镜像名
-    image_name = app_instance_config.get("docker_image_name")
-    image_pkg_id = app_instance_config.get("docker_image_pkg_id")
+    if platform.machine() == "x86_64": 
+        image_name = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("amd64_docker_image").get("docker_image_name")
+        image_pkg_id = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("amd64_docker_image").get("pkg_id")
+    else:
+        image_name = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("aarch64_docker_image").get("docker_image_name")
+        image_pkg_id = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("aarch64_docker_image").get("pkg_id")
+
     if not image_name:
         print("Image name not found in the configuration")
         exit(1)
@@ -105,40 +110,37 @@ def start_app_with_docker():
                 exit(1)
 
     volume_mapping = ""
-    data_mount_point = app_instance_config.get("data_mount_point",{})
+    install_config = app_instance_config.get("node_install_config")
+    data_mount_point = install_config.get("data_mount_point",{})
     if data_mount_point:
-        base_dir = util.get_user_data_dir(username)
         for (folder_in_docker,real_folder_in_host) in data_mount_point.items():
-            real_folder_in_host = os.path.join(base_dir,real_folder_in_host)
+            real_folder_in_host = util.get_buckyos_root() + real_folder_in_host
+            #print(f"mount {folder_in_docker} -> {real_folder_in_host}")
             ensure_directory_accessible(real_folder_in_host)
             volume_mapping += f" -v {real_folder_in_host}:{folder_in_docker}"
 
-    cache_mount_point = app_instance_config.get("cache_mount_point", [])
+    cache_mount_point = install_config.get("cache_mount_point", [])
     if cache_mount_point:
         base_cache_dir = util.get_app_cache_dir(appid,username)
         base_cache_dir = ensure_directory_accessible(base_cache_dir)
         for mount_point in cache_mount_point:
             volume_mapping += f" -v {base_cache_dir}/{mount_point}:{mount_point}"
 
-    local_cache_mount_point = app_instance_config.get("local_cache_mount_point", [])
+    local_cache_mount_point = install_config.get("local_cache_mount_point", [])
     if local_cache_mount_point:
         base_cache_dir = util.get_app_local_cache_dir(appid,username)
         base_cache_dir = ensure_directory_accessible(base_cache_dir)
         for mount_point in local_cache_mount_point:
             volume_mapping += f" -v {base_cache_dir}/{mount_point}:{mount_point}"
 
-
-    #network_settings = config.get("network_settings", "")
-    cpu_quota = app_instance_config.get("cpu_quota", "")
-    memory_quota = app_instance_config.get("memory_quota", "")
-
     # 端口映射
     port_cmd = ""
-    tcp_ports = app_instance_config.get("tcp_ports", "")
-    for (k,v) in tcp_ports.items():
-        port = f"-p {k}:{v} "
-        port_cmd += port
-
+    service_ports = install_config.get("service_ports", {})
+    service_install_tips = app_instance_config.get("app_spec").get("app_doc").get("install_config_tips")
+    for (service_name,host_port) in service_ports.items():
+        docker_port = service_install_tips.get("service_ports").get(service_name,0)
+        #print(f"{service_name}: {host_port} -> {docker_port}")
+        port_cmd += f" -p {host_port}:{docker_port} "
 
     # 构造docker命令
     docker_command = f"docker run --rm {port_cmd} --name {container_id} -e BUCKYOS_ZONE_CONFIG -e {full_appid}_token -d "
@@ -152,10 +154,8 @@ def start_app_with_docker():
     #if cpu_quota:
     #    docker_command += f"--cpu-quota={cpu_quota} "
 
-    if memory_quota:
-        docker_command += f" --memory={memory_quota} "
 
-    container_param = app_instance_config.get("container_param")
+    container_param = install_config.get("container_param")
     if container_param:
         docker_command += f" {container_param}"
 

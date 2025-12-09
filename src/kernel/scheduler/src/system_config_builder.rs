@@ -274,25 +274,7 @@ impl SystemConfigBuilder {
         self.insert_json(&format!("nodes/{}/config", ood_name), &config)?;
 
         let gateway_config = json!({
-            "servers": {
-                "zone_gateway": {
-                    "type": "cyfs_warp",
-                    "bind": "0.0.0.0",
-                    "http_port": 80,
-                    "hosts": {}
-                }
-            },
-            "dispatcher": {
-                "tcp://0.0.0.0:80": {
-                    "type": "server",
-                    "id": "zone_gateway"
-                },
-                "tcp://0.0.0.0:443": {
-                    "type": "server",
-                    "id": "zone_gateway"
-                }
-            },
-            "inner_services": {}
+          
         });
         self.insert_json(&format!("nodes/{}/gateway_config", ood_name), &gateway_config)?;
 

@@ -460,7 +460,7 @@ async fn keep_system_config_service(node_id: &str,device_doc: &DeviceConfig, dev
 }
 
 
-async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node_private_key: &EncodingKey,sn: Option<String>,is_restart:bool) -> std::result::Result<(),String> {
+async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node_private_key: &EncodingKey,sn: Option<String>,is_reload:bool) -> std::result::Result<(),String> {
     //TODO: 需要区分boot模式和正常模式
     let mut cyfs_gateway_service_pkg = ServicePkg::new("cyfs-gateway".to_string(),get_buckyos_system_bin_dir());
  
@@ -483,14 +483,16 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
         }      
     }
     
-    if is_restart {
-        info!("cyfs_gateway service pkg loaded, will do restart ...");
-        cyfs_gateway_service_pkg.stop(None).await.map_err(|err| {
-            error!("stop cyfs_gateway service failed! {}", err);
-            return String::from("stop cyfs_gateway service failed!");
+    if is_reload {
+        info!("cyfs_gateway service pkg loaded, will do reload ...");
+        let params = vec!["--reload".to_string()];
+        cyfs_gateway_service_pkg.start(Some(&params)).await.map_err(|err| {
+            error!("start cyfs_gateway service failed! {}", err);
+            return String::from("start cyfs_gateway service failed!");
         })?;
+        info!("call cyfs_gateway reload success!");
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        running_state = ServiceInstanceState::Stopped;
+        running_state = ServiceInstanceState::Started;
     }
 
     if running_state == ServiceInstanceState::Stopped {
@@ -603,7 +605,7 @@ async fn node_main(node_host_name: &str,
     //app services is "userA-appB-service", run in docker container
     let app_stream = stream::iter(node_config.apps);
     let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
-        let app_loader = ServicePkg::new("app_loader".to_string(),get_buckyos_system_bin_dir());
+        let app_loader = ServicePkg::new("app-loader".to_string(),get_buckyos_system_bin_dir());
   
         let app_run_item = AppRunItem::new(&app_id_with_name,app_cfg.clone(),app_loader);
 
@@ -701,30 +703,30 @@ async fn node_daemon_main_loop(
 
             let new_node_gateway_config = load_node_gateway_config(node_host_name, &system_config_client).await;
             if new_node_gateway_config.is_ok() {
-                let mut need_restart = false;
+                let mut need_reload = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
                 let (new_node_gateway_config_id,new_node_gateway_config_str)= build_named_object_by_json("nodeconfig",&new_node_gateway_config);
                 if node_gateway_config_id.is_none() {
-                    need_restart = true;
+                    need_reload = true;
                     node_gateway_config_id = Some(new_node_gateway_config_id);
                 } else {
                     if node_gateway_config_id.as_ref().unwrap() == &new_node_gateway_config_id {
-                        need_restart = false;                        
+                        need_reload = false;                        
                     } else {
-                        need_restart = true;
+                        need_reload = true;
                         node_gateway_config_id = Some(new_node_gateway_config_id);
                     }
                 }
 
-                if need_restart {
-                    info!("node gateway_config changed, will write to node_gateway.json and restart cyfs_gateway service");
+                if need_reload {
+                    info!("node gateway_config changed, will write to node_gateway.json and reload");
                     let gateway_config_path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
                     std::fs::write(gateway_config_path, new_node_gateway_config_str.as_bytes()).unwrap();
                 }
             
                 let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();
                 keep_cyfs_gateway_service(node_id,device_doc, device_private_key, sn,
-                need_restart).await.map_err(|err| {
+                need_reload).await.map_err(|err| {
                     error!("keep cyfs_gateway service failed! {}", err);
                 });
             

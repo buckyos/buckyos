@@ -68,6 +68,8 @@ pub fn instance_app_service(new_instance:&ReplicaInstance,device_list:&HashMap<S
     }
     let app_config : AppServiceSpec = app_config.unwrap();
 
+    //check app_config.install_config is valid?
+
     let node_info = device_list.get(&new_instance.node_id);
     if node_info.is_none() {
         return Err(anyhow::anyhow!("node_info: {} not found",new_instance.node_id));

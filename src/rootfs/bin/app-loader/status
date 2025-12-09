@@ -69,8 +69,12 @@ if __name__ == "__main__":
 
     if is_support_docker:
         # check docker container status
-        #docker_image_hash = app_instance_config.get("docker_image_hash")
-        docker_image_name = app_instance_config.get("docker_image_name")
+
+        if platform.machine() == "x86_64": 
+            docker_image_name = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("amd64_docker_image").get("docker_image_name")
+        else:
+            docker_image_name = app_instance_config.get("app_spec").get("app_doc").get("pkg_list").get("aarch64_docker_image").get("docker_image_name")
+ 
         if is_container_running(container_id,docker_image_name):
             exit(0)
 

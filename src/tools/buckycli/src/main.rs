@@ -4,6 +4,7 @@ mod sys_config;
 mod did;
 mod app;
 mod ndn;
+mod loader;
 
 
 use std::{fs, path::Path};
@@ -11,6 +12,7 @@ use buckyos_api::*;
 use buckyos_api::test_config;
 use clap::{Arg, Command};
 use package_cmd::*;
+use loader::*;
 
 fn is_local_cmd(cmd_name: &str) -> bool {
     const LOCAL_COMMANDS: &[&str] = &[
@@ -26,6 +28,7 @@ fn is_local_cmd(cmd_name: &str) -> bool {
         "create_sn_configs",
         "register_device_to_sn",
         "build_did_docs",
+        "load",
     ];
     LOCAL_COMMANDS.contains(&cmd_name)
 }
@@ -119,6 +122,22 @@ async fn main() -> Result<(), String> {
                         .long("env")
                         .help("target env path, default is current dir")
                         .required(false),
+                )
+        )
+        .subcommand(
+            Command::new("load")
+                .about("test loader: load app service locally")
+                .arg(
+                    Arg::new("appid")
+                        .long("appid")
+                        .help("target app id")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("app_service_path")
+                        .index(1)
+                        .help("app service package path")
+                        .required(true),
                 )
         )
         .subcommand(
@@ -560,6 +579,15 @@ oods look like this 'ood1,ood2'.")
             let load_result = load_pkg(pkg_id, real_target_env.as_str()).await;
             if load_result.is_err() {
                 println!("Load package failed! {}", load_result.err().unwrap());
+            }
+        }
+        Some(("load", matches)) => {
+            let app_id = matches.get_one::<String>("appid").unwrap();
+            let app_service_path = matches.get_one::<String>("app_service_path").unwrap();
+            let load_result = load_app_service(app_id, app_service_path).await;
+            if load_result.is_err() {
+                println!("Load app service failed! {}", load_result.err().unwrap());
+                return Err("load app service failed!".to_string());
             }
         }
         Some(("pub_index", _matches)) => {

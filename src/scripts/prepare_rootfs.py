@@ -44,7 +44,7 @@ def copy_files(rust_target_dir):
     strip_and_copy_rust_file(rust_target_dir, "system_config", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "verify_hub", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "scheduler", root_bin_dir, True)
-    strip_and_copy_rust_file(rust_target_dir, "cyfs_gateway", root_bin_dir, True)
+    #strip_and_copy_rust_file(rust_target_dir, "cyfs_gateway", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "smb_service", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "repo_service", root_bin_dir, True)
     strip_and_copy_rust_file(rust_target_dir, "buckycli", root_bin_dir, True)

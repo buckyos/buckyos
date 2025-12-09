@@ -1,0 +1,5 @@
+includes:
+- path: user_gateway.yaml
+- path: boot_gateway.yaml
+- path: node_gateway.json
+- path: post_gateway.yaml

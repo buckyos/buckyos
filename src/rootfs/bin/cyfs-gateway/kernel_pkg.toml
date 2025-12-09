@@ -1,2 +1,2 @@
-service_name = "cyfs_gateway"
+service_name = "cyfs-gateway"
 service_type = "kernel"

@@ -422,15 +422,15 @@ pub(crate) async fn update_gateway_node_list(
             match service_info {
                 ServiceInfo::SingleInstance(instance) => {
                     if instance.node_id == *node_id {
-                        target_str = format!(" forward \"tcp:///127.0.0.1:{}\"", instance.service_port);
+                        target_str = format!("return \"forward http://127.0.0.1:{}\"", instance.service_port);
                     } else {
-                        target_str = format!(" buckyos-select && forward \"$ANSWER.target/:{}\"", instance.service_port);
+                        target_str = format!("buckyos-select && forward \"$${{ANSWER.target}}/:{}\"", instance.service_port);
                     }
                 }
                 ServiceInfo::RandomCluster(cluster) => {
                     if cluster.len() > 0 {      
                         let (_, instance) = cluster.values().next().unwrap();               
-                        target_str = format!(" buckyos-select && forward \"$ANSWER.target/:{}\"", instance.service_port);
+                        target_str = format!("buckyos-select && forward \"$${{ANSWER.target}}/:{}\"", instance.service_port);
                     } else {
                         info!("service {} has no instance no gateway rule need to be updated", spec_id);
                         continue;
@@ -445,15 +445,15 @@ pub(crate) async fn update_gateway_node_list(
                 let app_id = parts[0];
                 let user_id = parts[1];
                 if user_id == scheduler_ctx.default_user_id {
-                    let line_rule = format!("match $REQ.host \"{}*\" && {}", app_id, target_str);
+                    let line_rule = format!("match ${{REQ.host}} \"{}*\" && {}", app_id, target_str);
                     process_chain_lines.push_back(line_rule);
                 }
-                let line_rule = format!("match $REQ.host \"{}-{}*\" && {}", app_id, user_id, target_str);
+                let line_rule = format!("match ${{REQ.host}} \"{}-{}*\" && {}", app_id, user_id, target_str);
                 process_chain_lines.push_back(line_rule);
                 //TODO：处理zone-gateway中的快捷方式
 
             } else {
-                let line_rule = format!("match $REQ.url \"/kapi/{}/*\" && {}", spec_id, target_str);
+                let line_rule = format!("match ${{REQ.uri}} \"/kapi/{}/*\" && {}", spec_id, target_str);
                 process_chain_lines.push_front(line_rule);
             }
         }
@@ -464,43 +464,19 @@ pub(crate) async fn update_gateway_node_list(
             .join("\n");
 
         let node_gateway_json = json!({
-            "servers": [
-              {
-                "id": "node_gateway",
-                "type": "http",
-                "hook_point": [
-                  {
-                    "id": "main",
-                    "priority": 1,
-                    "blocks": [
-                      {
-                        "id": "default",
-                        "block": process_chain_lines_str
-                      }
-                    ]
-                  }
-                ]
-              }
-            ],
-            "stacks": [
-              {
-                "id": "node_gateway_tcp",
-                "protocol": "tcp",
-                "bind": "0.0.0.0:3180",
-                "hook_point": [
-                  {
-                    "id": "main",
-                    "priority": 1,
-                    "blocks": [
-                      {
-                        "id": "default",
-                        "block": "return \"server node_gateway\""
-                      }
-                    ]
-                  }
-                ]
-              }
-            ]
+        "servers": {
+            "node_gateway": {
+                "hook_point": {
+                    "main": {
+                        "blocks": {
+                            "default": {
+                                "block": process_chain_lines_str
+                            }
+                        }
+                    }
+                }
+            }
+        }
         });
 
         let node_gatway_config_str = serde_json::to_string_pretty(&node_gateway_json)?;
