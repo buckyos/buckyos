@@ -17,13 +17,25 @@ use server_runner::*;
 use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full};
+
+const ACTIVE_SERVICE_MAIN_PORT: u16 = 3182;
+
 #[derive(Clone)]
 struct ActiveServer {
+    device_mini_info:DeviceMiniInfo,
 }
 
 impl ActiveServer {
     pub fn new() -> Self {
-        ActiveServer {}
+        ActiveServer {
+            device_mini_info:DeviceMiniInfo::default(),
+        }
+    }
+
+    pub async fn auto_fill_device_mini_info(&mut self) {
+        self.device_mini_info.auto_fill_by_system_info().await.unwrap();
+        self.device_mini_info.active_url = Some("./index.html".to_string());
     }
 
     async fn handel_do_active(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
@@ -215,6 +227,19 @@ impl ActiveServer {
             "zone_boot_config_jwt":zone_boot_config_jwt.to_string()
         })),req.id));
     }
+
+    async fn handle_get_mini_device_info(&self,req:http::Request<BoxBody<Bytes, ServerError>>) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let device_info_json = serde_json::to_string(&self.device_mini_info).unwrap();
+        Ok(http::Response::builder()
+            .body(BoxBody::new(
+                Full::new(Bytes::from(device_info_json))
+                    .map_err(|never: std::convert::Infallible| -> ServerError {
+                        match never {}
+                    })
+                    .boxed(),
+            ))
+            .map_err(|e| server_err!(ServerErrorCode::InvalidData, "Failed to build response: {}", e))?)
+    }
 }
 
 #[async_trait]
@@ -239,6 +264,11 @@ impl HttpServer for ActiveServer {
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         if *req.method() == Method::POST {
             return serve_http_by_rpc_handler(req, info, self).await;
+        }
+        if *req.method() == Method::GET {
+            if req.uri().path() == "/device" {
+                return self.handle_get_mini_device_info(req).await;
+            }
         }
         return Err(server_err!(ServerErrorCode::BadRequest, "Method not allowed"));
     }
@@ -265,11 +295,21 @@ pub async fn start_node_active_service() {
     //start!
     info!("start node active service...");
     
-    const ACTIVE_SERVICE_MAIN_PORT: u16 = 3180;
+
     let runner = Runner::new(ACTIVE_SERVICE_MAIN_PORT);
 
     // 添加 RPC 服务
-    let add_result = runner.add_http_server("/kapi/active".to_string(), Arc::new(active_server));
+    let mut active_server =ActiveServer::new();
+    active_server.auto_fill_device_mini_info().await;
+
+    let active_server = Arc::new(active_server);
+    let add_result = runner.add_http_server("/kapi/active".to_string(), active_server.clone());
+    if add_result.is_err() {
+        error!("Failed to add http server: {}", add_result.err().unwrap());
+        return;
+    }
+
+    let add_result = runner.add_http_server("/device".to_string(), active_server.clone());
     if add_result.is_err() {
         error!("Failed to add http server: {}", add_result.err().unwrap());
         return;
