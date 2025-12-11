@@ -6,6 +6,7 @@ use package_lib::PackageId;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::fs;
 use ed25519_dalek::pkcs8::DecodePrivateKey;
@@ -457,18 +458,45 @@ impl<'a> UserEnvScope<'a> {
 // ============================================================================
 
 /// 创建 SN 服务器配置
-pub async fn create_sn_config(builder: &DevEnvBuilder) {
+pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:String) {
     let sn_dir = builder.root_dir().join("sn_server");
-    let owner_keys = TestKeys::get_key_pair_by_id("sn").unwrap();
+    let owner_keys = TestKeys::get_key_pair_by_id("sn_owner").unwrap();
     let device_keys = TestKeys::get_key_pair_by_id("sn_server").unwrap();
 
+    //保存owner_config到sn_dir目录
+    write_file(&builder.root_dir().join("sn_server").join(".buckycli").join("user_private_key.pem"), owner_keys.private_key_pem);
+
+    let owner_jwk = get_jwk(owner_keys.public_key_x.as_str());
+    let owner_config = OwnerConfig::new(
+        DID::new("bns", "sn"),
+        "root".to_string(),
+        "sn admin".to_string(),
+        owner_jwk,
+    );
+
+    write_json(&builder.root_dir().join("sn_server").join(".buckycli").join("user_config.json"), &owner_config);
+    println!("- Created owner config for sn admin");
+
+    //创建设备的jwt
+    let device_mini_config = DeviceMiniConfig {
+        name: "sn".to_string(),
+        x: device_keys.public_key_x.clone(),
+        rtcp_port: None,
+        exp: builder.exp(),
+        extra_info: HashMap::new(),
+    };
+    let device_mini_jwt = device_mini_config.to_jwt(&get_encoding_key(owner_keys.private_key_pem)).unwrap();
+    write_file(&sn_dir.join("sn_device_config.jwt"), &device_mini_jwt);
+    let mut device_config = DeviceConfig::new_by_mini_config(device_mini_config, DID::new("web", "sn.devtests.org"), DID::new("bns", "sn"));
+    device_config.net_id = Some("wlan".to_string());
+    write_json(&sn_dir.join("sn_device_config.json"), &device_config);
     // 写入设备密钥
-    write_file(&sn_dir.join("sn_server_private_key.pem"), device_keys.private_key_pem);
+    write_file(&sn_dir.join("sn_private_key.pem"), device_keys.private_key_pem);
 
     // 创建 ZoneBootConfig
     let zone_boot = ZoneBootConfig {
         id: None,
-        oods: vec!["ood1".parse().unwrap()],
+        oods: vec!["sn".parse().unwrap()],
         sn: None,
         exp: builder.exp(),
         owner: None,
@@ -479,73 +507,23 @@ pub async fn create_sn_config(builder: &DevEnvBuilder) {
     };
 
     let owner_key = get_encoding_key(owner_keys.private_key_pem);
-    let _zone_boot_jwt = zone_boot.encode(Some(&owner_key)).unwrap();
-    let _x_str = owner_keys.public_key_x;
+    let zone_boot_jwt = zone_boot.encode(Some(&owner_key)).unwrap().to_string();
+    write_file(&sn_dir.join("sn_boot_config.jwt"), &zone_boot_jwt);
+    let x_str = owner_keys.public_key_x;
+   
+    //create dns_zone_file
+    let sn_ip = sn_ip.to_string();
+    let zone_zone_content = format!(r#"
+["sn.{}"]
+ttl = 300
+A = ["{}"]
+TXT=["DID={};","PKX=0:{};","DEV={};"]
 
-    // let sn_host = "buckyos.io";
-    // let sn_ip = "192.168.1.188";
-
-    // let config = json!({
-    //     "device_name": "web3_gateway",
-    //     "device_key_path": "/opt/web3_bridge/device_key.pem",
-    //     "inner_services": {
-    //         "main_sn": {
-    //             "type": "cyfs-sn",
-    //             "host": format!("web3.{}", sn_host),
-    //             "aliases": vec![format!("sn.{}", sn_host)],
-    //             "ip": sn_ip,
-    //             "zone_config_jwt": zone_boot_jwt.to_string(),
-    //             "zone_config_pkx": x_str
-    //         },
-    //         "zone_provider": {
-    //             "type": "zone-provider"
-    //         }
-    //     },
-    //     "servers": {
-    //         "main_http_server": {
-    //             "type": "cyfs-warp",
-    //             "bind": "0.0.0.0",
-    //             "http_port": 80,
-    //             "tls_port": 443,
-    //             "default_tls_host": format!("*.{}", sn_host),
-    //             "hosts": {
-    //                 format!("web3.{}", sn_host): {
-    //                     "tls": { "disable_tls": true, "enable_acme": false },
-    //                     "enable_cors": true,
-    //                     "routes": { "/kapi/sn": { "inner_service": "main_sn" } }
-    //                 },
-    //                 format!("*.web3.{}", sn_host): {
-    //                     "tls": { "disable_tls": true },
-    //                     "routes": { "/": { "tunnel_selector": "main_sn" } }
-    //                 },
-    //                 "*": {
-    //                     "routes": {
-    //                         "/": { "tunnel_selector": "main_sn" },
-    //                         "/resolve": { "inner_service": "zone_provider" }
-    //                     }
-    //                 }
-    //             }
-    //         },
-    //         "main_dns_server": {
-    //             "type": "cyfs-dns",
-    //             "bind": "0.0.0.0",
-    //             "port": 53,
-    //             "this_name": format!("sn.{}", sn_host),
-    //             "resolver_chain": [
-    //                 { "type": "SN", "server_id": "main_sn" },
-    //                 { "type": "dns", "cache": true }
-    //             ],
-    //             "fallback": ["8.8.8.8", "6.6.6.6"]
-    //         }
-    //     },
-    //     "dispatcher": {
-    //         "udp://0.0.0.0:53": { "type": "server", "id": "main_dns_server" },
-    //         "tcp://0.0.0.0:80": { "type": "server", "id": "main_http_server" },
-    //         "tcp://0.0.0.0:443": { "type": "server", "id": "main_http_server" }
-    //     }
-    // });
-
-    // write_json(&sn_dir.join("web3_gateway.json"), &config);
+["web3.{}"]
+NS="sn.{}"
+    "#, sn_base_host, sn_ip, zone_boot_jwt, x_str, device_mini_jwt, sn_base_host, sn_base_host);
+    write_file(&sn_dir.join("zone_zone.toml"), &zone_zone_content);
+   
 }
 
 /// Register device to SN database
@@ -752,7 +730,7 @@ pub async fn cmd_create_node_configs(
 }
 
 /// 创建 SN 配置（命令行接口）
-pub async fn cmd_create_sn_configs(output_dir: Option<&str>) -> Result<(), String> {
+pub async fn cmd_create_sn_configs(output_dir: Option<&str>,sn_ip:IpAddr,sn_base_host:String) -> Result<(), String> {
     let root_dir = if let Some(dir) = output_dir {
         PathBuf::from(dir)
     } else {
@@ -760,7 +738,7 @@ pub async fn cmd_create_sn_configs(output_dir: Option<&str>) -> Result<(), Strin
     };
 
     let builder = DevEnvBuilder::from_path(root_dir);
-    create_sn_config(&builder).await;
+    create_sn_config(&builder,sn_ip,sn_base_host).await;
     
     println!("成功创建 SN 配置");
     Ok(())
@@ -827,7 +805,7 @@ pub async fn create_test_env_configs() {
     bob_scope.create_node_config("ood1", Some("lan2".to_string()));
 
     // 3. 创建 SN 配置
-    create_sn_config(&builder).await;
+    create_sn_config(&builder, "127.0.0.1".parse().unwrap(), "buckyos.io".to_string()).await;
 
     // 4. 初始化 SN 数据库（如果 SnDB 可用）
     // let sn_db_path = builder.root_dir().join("sn_db.sqlite3");

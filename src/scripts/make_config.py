@@ -29,12 +29,18 @@ import sys
 from pathlib import Path
 import time
 from typing import Dict, Iterable, List, Optional, Tuple
+from util import get_buckyos_root
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOTFS_DIR = SCRIPT_DIR.parent / "rootfs"
 BUCKYCLI_BIN = ROOTFS_DIR / "bin" / "buckycli" / "buckycli"
+if not BUCKYCLI_BIN.exists():
+    BUCKYCLI_BIN = Path(get_buckyos_root()) / "bin" / "buckycli" / "buckycli"
+    if not BUCKYCLI_BIN.exists():
+        raise FileNotFoundError(f"buckycli binary missing at {BUCKYCLI_BIN}")
 
+print(f"* buckycli at {BUCKYCLI_BIN}")
 try:
     from cert_mgr import CertManager  # type: ignore
 except Exception as e:  # pragma: no cover - 仅在缺依赖时打印提示
@@ -251,9 +257,146 @@ def make_repo_cache_file(target_dir: Path) -> None:
         print(f"create default meta_index cache at {meta_dst}")
 
 
-def make_sn_configs(target_dir: Path) -> None:
-    """保留占位，当前不处理 SN 配置。"""
-    print("skip sn configs (not implemented)")
+def make_sn_configs(
+    target_dir: Path,
+    sn_base_host: str,
+    sn_ip: str,
+    sn_device_name: str = "sn_server",
+    ca_name: str = "buckyos_sn",
+    ca_dir: Optional[Path] = None,
+) -> None:
+    """生成 SN（Super Node）服务器配置文件。
+    
+    所有配置文件直接平铺在 target_dir 目录下，包括：
+    - sn_server_private_key.pem - rtcp 协议栈用到的设备私钥文件
+    - fullchain.cert, fullchain.pem - 包含 sn.$sn_base, *.web3.$sn_base 的证书和密钥
+    - ca/buckyos_sn_ca_cert.pem, ca/buckyos_sn_ca_key.pem - 测试环境自签名 CA 证书
+    - zone_zone - 自动生成的，包含 buckyos 定制的 DNS TXT 记录模板
+    
+    注意：以下文件需要用户手动创建，不由本脚本生成：
+    - dns_zone - 手工配置的 DNS Zone 文件
+    - website.yaml - 被 web3_gateway 引用的网站配置文件
+    
+    Args:
+        target_dir: 输出目录，所有文件直接平铺在此目录下
+        sn_base_host: SN 基础域名（例如 buckyos.io 或 devtests.org）
+        sn_ip: SN 服务器 IP 地址
+        sn_device_name: SN 设备名称，默认 "sn_server"
+        ca_name: CA 证书名称
+        ca_dir: 使用已有 CA 目录，否则自动生成
+    """
+    if not BUCKYCLI_BIN.exists():
+        raise FileNotFoundError(f"buckycli binary missing at {BUCKYCLI_BIN}")
+    
+    print(f"生成 SN 配置文件到 {target_dir} ...")
+    print(f"  SN 基础域名: {sn_base_host}")
+    print(f"  SN IP 地址: {sn_ip}")
+    print(f"  SN 设备名称: {sn_device_name}")
+    
+    # SN 配置文件直接平铺在 target_dir 下，不创建 etc 子目录
+    ensure_dir(target_dir)
+    
+    # 1. 使用 buckycli 创建 SN 配置
+    # 注意：SN 使用特殊的身份，这里使用 buckycli 的 create_sn_configs 命令
+    print("# 步骤 1: 创建 SN 设备身份配置...")
+    run_buckycli(
+        [
+            "create_sn_configs",
+            "--output_dir",
+            str(target_dir),
+            "--sn_ip",
+            sn_ip,
+            "--sn_base_host",
+            sn_base_host,
+        ]
+    )
+    
+    # buckycli 会在 target_dir/sn_server/ 下生成文件，需要移动到 target_dir
+    buckycli_sn_dir = target_dir / "sn_server"
+    if buckycli_sn_dir.exists():
+        # 移动生成的文件到 target_dir 根目录
+        for file in buckycli_sn_dir.glob("*"):
+            if file.is_file():
+                dest_file = target_dir / file.name
+                shutil.move(str(file), str(dest_file))
+                print(f"移动文件: {file.name} -> {target_dir}/")
+        # 删除空的 sn_server 目录
+        if buckycli_sn_dir.exists() and not list(buckycli_sn_dir.iterdir()):
+            buckycli_sn_dir.rmdir()
+
+    
+    # 2. 生成 TLS 证书
+    print("# 步骤 2: 生成 TLS 证书...")
+    if CertManager is None:
+        print("warning: cert_mgr 不可用，跳过 TLS 证书生成")
+        # 创建占位文件
+        (target_dir / "fullchain.cert").write_text("# TODO: 生成 TLS 证书")
+        (target_dir / "fullchain.pem").write_text("# TODO: 生成 TLS 私钥")
+    else:
+        cm = CertManager()
+        
+        # 生成或使用已有 CA
+        if ca_dir and ca_dir.exists():
+            ca_dir_path = ca_dir.resolve()
+            print(f"使用已有 CA: {ca_dir_path}")
+            ca_cert_candidates = list(ca_dir_path.glob("*_ca_cert.pem"))
+            if not ca_cert_candidates:
+                raise FileNotFoundError(f"在 {ca_dir_path} 中未找到 *_ca_cert.pem")
+            ca_cert_path = ca_cert_candidates[0]
+            ca_key_path = ca_dir_path / ca_cert_path.name.replace("_ca_cert.pem", "_ca_key.pem")
+            if not ca_key_path.exists():
+                raise FileNotFoundError(f"CA 私钥未找到: {ca_key_path}")
+        else:
+            # 生成新的 CA
+            ca_output_dir = ensure_dir(target_dir / "ca")
+            ca_cert, ca_key = cm.create_ca(str(ca_output_dir), name=ca_name)
+            ca_cert_path, ca_key_path = Path(ca_cert), Path(ca_key)
+            print(f"已生成 CA 证书: {ca_cert_path}")
+        
+        # 生成服务器证书（包含 sn.$sn_base 和 *.web3.$sn_base）
+        sn_hostname = f"sn.{sn_base_host}"
+        web3_wildcard = f"*.web3.{sn_base_host}"
+        
+        cert_path, key_path = cm.create_cert_from_ca(
+            str(ca_cert_path.parent),
+            hostname=sn_hostname,
+            target_dir=str(target_dir),
+            hostnames=[sn_hostname, web3_wildcard, f"web3.{sn_base_host}"],
+        )
+        
+        # 复制/重命名为标准文件名
+        cert_file = Path(cert_path)
+        key_file = Path(key_path)
+        
+        shutil.copy2(cert_file, target_dir / "fullchain.cert")
+        shutil.copy2(key_file, target_dir / "fullchain.pem")
+        
+        # 复制 CA 证书到 ca 目录（用于客户端信任）
+        if ca_dir:
+            ca_output_dir = ensure_dir(target_dir / "ca")
+            shutil.copy2(ca_cert_path, ca_output_dir / ca_cert_path.name)
+            shutil.copy2(ca_key_path, ca_output_dir / ca_key_path.name)
+        
+        print(f"TLS 证书已生成:")
+        print(f"  - {target_dir / 'fullchain.cert'}")
+        print(f"  - {target_dir / 'fullchain.pem'}")
+        print(f"  - {target_dir / 'ca' / ca_cert_path.name}")
+    
+
+    
+    print(f"\n✓ SN 配置文件生成完成!")
+    print(f"  输出目录: {target_dir}")
+    print(f"\n生成的文件:")
+    print(f"  - {target_dir / 'sn_private_key.pem'} (设备私钥)")
+    print(f"  - {target_dir / 'fullchain.cert'} (服务器证书)")
+    print(f"  - {target_dir / 'fullchain.pem'} (服务器私钥)")
+    print(f"  - {target_dir / 'zone_zone.toml'} (BuckyOS DNS TXT 记录，会动态更新)")
+    print(f"  - {target_dir / 'ca' / 'buckyos_sn_ca_cert.pem'} (CA 证书)")
+    print(f"\n需要手动创建的文件:")
+    print(f"  - {target_dir / 'dns_zone'} (DNS Zone 配置)")
+    print(f"  - {target_dir / 'website.yaml'} (网站配置)")
+    print(f"\n其他注意事项:")
+    print(f"  - 测试环境需要将 CA 证书安装到客户端信任列表")
 
 
 def make_sn_db(target_dir: Path, user_list: List[str]) -> None:
@@ -278,6 +421,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             ],
             "force_https": False,
             "ca_name": "buckyos_local",
+            "is_sn": False,
         }
     if group_name == "alice.ood1":
         return {
@@ -294,6 +438,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             ],
             "force_https": False,
             "ca_name": "buckyos_local",
+            "is_sn": False,
         }
     if group_name == "bob.ood1":
         return {
@@ -310,6 +455,22 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             ],
             "force_https": False,
             "ca_name": "buckyos_local",
+            "is_sn": False,
+        }
+    if group_name == "sn_server":
+        return {
+            "sn_base_host": "devtests.org",
+            "sn_ip": "127.0.0.1",
+            "sn_device_name": "sn_server",
+            "web3_bridge": "web3.devtests.org",
+            "trust_did": [
+                "did:web:buckyos.org",
+                "did:web:buckyos.ai",
+                "did:web:buckyos.io",
+            ],
+            "force_https": False,
+            "ca_name": "buckyos_sn",
+            "is_sn": True,
         }
     raise ValueError(f"invalid group name: {group_name}")
 
@@ -318,30 +479,51 @@ def make_config_by_group_name(group_name: str, target_root: Path, ca_dir: Option
     print(f"############ make config for group name: {group_name} #########################")
     print(f"rootfs dir : {target_root}")
     print(f"group      : {group_name}")
-    print(f"username   : {params['username']}")
-    print(f"zone       : {params['zone_id']}")
-    print(f"node       : {params['node_name']}")
-    print(f"web3_bridge: {params['web3_bridge']}")
-
-    make_global_env_config(
-        target_root,
-        params["web3_bridge"],
-        params["trust_did"],
-        params["force_https"],
-    )
-
-    make_cache_did_docs(target_root)
-    make_identity_files(
-        target_root,
-        params["username"],
-        params["zone_id"],
-        params["node_name"],
-        params["sn_base_host"],
-        params["ca_name"],
-        ca_dir,
-    )
-    make_repo_cache_file(target_root)
-    # SN 构造暂不启用
+    
+    is_sn = params.get("is_sn", False)
+    
+    if is_sn:
+        # SN 配置生成
+        print(f"sn_base_host: {params['sn_base_host']}")
+        print(f"sn_ip       : {params['sn_ip']}")
+        print(f"device_name : {params['sn_device_name']}")
+        print(f"web3_bridge : {params['web3_bridge']}")
+        
+        # SN 不需要 machine.json、did_docs 缓存和 meta_index 缓存
+        make_sn_configs(
+            target_root,
+            params["sn_base_host"],
+            params["sn_ip"],
+            params["sn_device_name"],
+            params["ca_name"],
+            ca_dir,
+        )
+    else:
+        # 普通 OOD 节点配置生成
+        print(f"username   : {params['username']}")
+        print(f"zone       : {params['zone_id']}")
+        print(f"node       : {params['node_name']}")
+        print(f"web3_bridge: {params['web3_bridge']}")
+        
+        make_global_env_config(
+            target_root,
+            params["web3_bridge"],
+            params["trust_did"],
+            params["force_https"],
+        )
+        
+        make_cache_did_docs(target_root)
+        make_identity_files(
+            target_root,
+            params["username"],
+            params["zone_id"],
+            params["node_name"],
+            params["sn_base_host"],
+            params["ca_name"],
+            ca_dir,
+        )
+        make_repo_cache_file(target_root)
+    
     print(f"config {group_name} generation finished.")
 
 

@@ -377,6 +377,20 @@ oods look like this 'ood1,ood2'.")
                         .help("output directory (optional, defaults to current directory)")
                         .required(false)
                 )
+                .arg(
+                    Arg::new("sn_ip")
+                        .long("sn_ip")
+                        .value_name("sn_ip")
+                        .help("SN server IP address")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new("sn_base_host")
+                        .long("sn_base_host")
+                        .value_name("sn_base_host")
+                        .help("SN base host name (e.g., buckyos.io or devtests.org)")
+                        .required(true)
+                )
         )
         .subcommand(
             Command::new("build_did_docs")
@@ -724,10 +738,19 @@ oods look like this 'ood1,ood2'.")
             }
         }
         Some(("create_sn_configs", matches)) => {
+            //create rtcp config files for sn server
             let output_dir = matches.get_one::<String>("output_dir");
+            let sn_ip_str = matches.get_one::<String>("sn_ip").unwrap();
+            let sn_base_host = matches.get_one::<String>("sn_base_host").unwrap();
+            
+            // Parse IP address
+            let sn_ip = sn_ip_str.parse::<std::net::IpAddr>()
+                .map_err(|e| format!("Invalid IP address '{}': {}", sn_ip_str, e))?;
             
             match test_config::cmd_create_sn_configs(
                 output_dir.map(|s| s.as_str()),
+                sn_ip,
+                sn_base_host.to_string(),
             ).await {
                 Ok(_) => {
                     println!("成功创建 SN 配置");

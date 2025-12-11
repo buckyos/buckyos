@@ -1,7 +1,15 @@
 use cyfs_gateway::cyfs_gateway_main;
 
-#[tokio::main]
-async fn main() {
+
+fn main() {
     println!("**** cyfs_gateway_main start!");
-    cyfs_gateway_main().await;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create tokio runtime");
+
+    rt.block_on(async {
+        cyfs_gateway_main().await;
+    });
 }
