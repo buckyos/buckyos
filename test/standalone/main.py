@@ -8,6 +8,10 @@ import shutil
 import subprocess
 import tempfile
 import traceback
+import datetime
+
+buckyosci_root = os.environ.get('BUCKYOS_BUILD_ROOT', "/opt/buckyosci")
+print(f"Using BUCKYOS_BUILD_ROOT: {buckyosci_root}")
 
 temp_root_dir = tempfile.mkdtemp(prefix="buckyos_standalone_test_")
 print(f"Perpareing temporary root directory: {temp_root_dir}")
@@ -32,6 +36,13 @@ else:
 
 print(f"Detected OS: {system_os}, Architecture: {architecture}, executable extension: '{ext}', using config group: {group_name}")
 
+version = None
+if len(sys.argv) >= 2:
+    version = sys.argv[1]
+
+testcases_output_dir = os.path.join(buckyosci_root, "test_output", f"buckyos-{system_os}-{architecture}-{version or "rootfs"}-{datetime.datetime.now().strftime("%Y%m%d_%H%M")}")
+print(f"Test cases output directory: {testcases_output_dir}")
+
 def main():
     root_dir = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
     rootfs_dir = os.path.join(root_dir, "src", "rootfs")
@@ -39,16 +50,12 @@ def main():
 
     
     config_dir = os.path.join(root_dir, "src", "scripts", "configs_group", group_name)
-    version = None
-    if len(sys.argv) >= 2:
-        version = sys.argv[1]
-
     if version:
         # 如果传入了版本号，调用download.py下载特定版本
         print(f"Downloading version: {version}")
         subprocess.run([sys.executable, download_path, version, system_os, architecture], check=True)
 
-        rootfs_dir = f"/opt/buckyosci/rootfs/{version}/buckyos-{system_os}-{architecture}"
+        rootfs_dir = os.path.join(buckyosci_root, "rootfs", version, f"buckyos-{system_os}-{architecture}")
     else:
         # 如果没有传入版本号，认为rootfs下有已经编译好的版本
         print("No version specified, using existing rootfs.")
@@ -77,11 +84,10 @@ def main():
                         stdout=subprocess.DEVNULL, 
                         stderr=subprocess.DEVNULL)
 
-    testcases_output_dir = os.path.join(root_dir, "test_output")
-    if os.path.exists(testcases_output_dir):
-        shutil.rmtree(testcases_output_dir, ignore_errors=True)
+    # format datetime as YYYYMMDD_HHMMSS
+    
 
-    os.makedirs(testcases_output_dir, exist_ok=True)
+    os.makedirs(testcases_output_dir, exist_ok=False)
 
     # wait 30 secs for node-daemon to start
     print("Waiting 30 seconds for node-daemon to start...")
@@ -123,5 +129,8 @@ finally:
     killall_script = os.path.join(temp_root_dir, "bin", "killall.py")
     if os.path.exists(killall_script):
         subprocess.run([sys.executable, killall_script], cwd=os.path.join(temp_root_dir, "bin"))
+        print("Collecting buckyos logs...")
+        shutil.make_archive(os.path.join(testcases_output_dir, "buckyos_logs"), "zip", temp_root_dir, os.path.join(temp_root_dir, "logs"))
+        # subprocess.run(["zip", "-r", os.path.join(testcases_output_dir, "buckos_logs.zip"), os.path.join(temp_root_dir, "logs")])
     print("Cleaning up temporary files...")
     #shutil.rmtree(temp_root_dir, ignore_errors=True)
