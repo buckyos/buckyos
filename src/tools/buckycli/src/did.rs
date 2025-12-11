@@ -258,7 +258,6 @@ fn did_create_zoneboot(oods: Vec<String>, sn_host: Option<String>) {
         devices:HashMap::new(),
         owner: None,
         owner_key: None,
-        gateway_devs: vec![],
         extra_info: std::collections::HashMap::new(),
 
     };

@@ -347,7 +347,6 @@ impl<'a> UserEnvScope<'a> {
             devices:HashMap::new(),
             owner: None,
             owner_key: None,
-            gateway_devs: vec![],
             extra_info:HashMap::new(),
         };
         let zone_host_name = self.zone_did.to_raw_host_name();
@@ -501,7 +500,6 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
         exp: builder.exp(),
         owner: None,
         owner_key: None,
-        gateway_devs: vec![],
         extra_info: HashMap::new(),
         devices: HashMap::new(),
     };
