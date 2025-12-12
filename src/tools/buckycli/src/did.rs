@@ -2,8 +2,7 @@ use buckyos_kit::get_buckyos_system_etc_dir;
 use clap::ArgMatches;
 use jsonwebtoken::EncodingKey;
 use name_lib::{
-    generate_ed25519_key_pair, DIDDocumentTrait, DeviceConfig, NodeIdentityConfig, OwnerConfig,
-    ZoneBootConfig, DID,
+    DID, DIDDocumentTrait, DeviceConfig, DeviceMiniConfig, NodeIdentityConfig, OwnerConfig, ZoneBootConfig, generate_ed25519_key_pair
 };
 use ndn_lib::named_obj_to_jwt;
 use std::fs::File;
@@ -220,13 +219,15 @@ fn did_create_device_config(
     println!("user_private_key: {}", user_private_key);
     let encode_key = EncodingKey::from_ed_pem(user_private_key.as_bytes()).unwrap();
     let device_jwt = device_config.encode(Some(&encode_key)).unwrap();
-
+    let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
+    let device_mini_doc_jwt = device_mini_config.to_jwt(&encode_key).unwrap();
     // 创建节点身份配置
     let node_identity_config = NodeIdentityConfig {
         zone_did: zone_did,
         owner_public_key: owner_jwk.clone(),
         owner_did: user_did,
         device_doc_jwt: device_jwt.to_string(),
+        device_mini_doc_jwt: device_mini_doc_jwt.to_string(),
         zone_iat: now as u32,
     };
     // 将节点身份配置序列化并保存

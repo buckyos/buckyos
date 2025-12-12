@@ -153,13 +153,15 @@ impl ActiveServer {
         let zone_did = DID::from_str(zone_name)
             .map_err(|_|RPCErrors::ReasonError("Invalid zone name".to_string()))?;
 
-
+        let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
+        let device_mini_doc_jwt = device_mini_config.to_jwt(&owner_private_key_pem).unwrap();
         let node_identity = NodeIdentityConfig {
             zone_did:zone_did,
             owner_public_key:owner_public_key,
             owner_did:DID::new("bns",user_name),
             device_doc_jwt:device_doc_jwt.to_string(),
             zone_iat:(buckyos_get_unix_timestamp() as u32 - 3600),
+            device_mini_doc_jwt:device_mini_doc_jwt.to_string(),
         };
 
 

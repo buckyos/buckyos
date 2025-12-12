@@ -417,6 +417,12 @@ impl<'a> UserEnvScope<'a> {
         let device_jwt = device_config.encode(Some(&owner_key)).unwrap();
         println!("{} device jwt: {}", device_name, device_jwt.to_string());
 
+        //创建device_mini_config_jwt
+        let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
+        let device_mini_jwt = device_mini_config.to_jwt(&owner_key).unwrap();
+        println!("{} device mini config jwt: {}", device_name, device_mini_jwt.to_string());
+        write_file(&node_dir.join("device_mini_config.jwt"), device_mini_jwt.to_string().as_str());
+
         // 3. 创建节点身份配置
         let identity_config = NodeIdentityConfig {
             zone_did: self.zone_did.clone(),
@@ -424,6 +430,7 @@ impl<'a> UserEnvScope<'a> {
             owner_did: self.did.clone(),
             device_doc_jwt: device_jwt.to_string(),
             zone_iat: self.builder.now as u32,
+            device_mini_doc_jwt: device_mini_jwt.to_string(),
         };
         write_json(&node_dir.join("node_identity.json"), &identity_config);
 
@@ -486,7 +493,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
     };
     let device_mini_jwt = device_mini_config.to_jwt(&get_encoding_key(owner_keys.private_key_pem)).unwrap();
 
-    let mut device_config = DeviceConfig::new_by_mini_config(device_mini_config, DID::new("web", "sn.devtests.org"), DID::new("bns", "sn"));
+    let mut device_config = DeviceConfig::new_by_mini_config(&device_mini_config, DID::new("web", "sn.devtests.org"), DID::new("bns", "sn"));
     device_config.net_id = Some("wlan".to_string());
     write_json(&sn_dir.join("sn_device_config.json"), &device_config);
     write_file(&sn_dir.join("sn_private_key.pem"), device_keys.private_key_pem);
