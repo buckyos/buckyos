@@ -565,7 +565,7 @@ pub async fn register_device_to_sn(
 
     // Extract device DID from device_doc_jwt
     let device_doc_jwt = node_identity.device_doc_jwt.clone();
-    let encoded_doc = EncodedDocument::from_str(device_doc_jwt)
+    let encoded_doc = EncodedDocument::from_str(device_doc_jwt.clone())
         .map_err(|e| format!("Failed to create EncodedDocument: {}", e))?;
     let device_doc = DeviceConfig::decode(
         &encoded_doc,
@@ -598,14 +598,15 @@ pub async fn register_device_to_sn(
     // Initialize database if needed
     db.initialize_database()
         .map_err(|e| format!("Failed to initialize SN database: {}", e))?;
-
     // Register device
+    //TODO: add mini_config_jwt
     db.register_device(
         username,
         device_name,
         &device_did.to_string(),
+        &device_doc_jwt,
         &device_ip,
-        &device_info_json,
+        &device_info_json
     )
     .map_err(|e| format!("Failed to register device: {}", e))?;
 

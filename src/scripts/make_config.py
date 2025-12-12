@@ -30,7 +30,7 @@ from pathlib import Path
 import time
 from typing import Dict, Iterable, List, Optional, Tuple
 from util import get_buckyos_root
-
+from cert_mgr import CertManager  # type: ignore
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOTFS_DIR = SCRIPT_DIR.parent / "rootfs"
@@ -41,11 +41,6 @@ if not BUCKYCLI_BIN.exists():
         raise FileNotFoundError(f"buckycli binary missing at {BUCKYCLI_BIN}")
 
 print(f"* buckycli at {BUCKYCLI_BIN}")
-try:
-    from cert_mgr import CertManager  # type: ignore
-except Exception as e:  # pragma: no cover - 仅在缺依赖时打印提示
-    CertManager = None
-    print(f"warning: cert_mgr import failed: {e}")
 
 
 def ensure_dir(path: Path) -> Path:
@@ -327,62 +322,66 @@ def make_sn_configs(
     
     # 2. 生成 TLS 证书
     print("# 步骤 2: 生成 TLS 证书...")
-    if CertManager is None:
-        print("warning: cert_mgr 不可用，跳过 TLS 证书生成")
-        # 创建占位文件
-        (target_dir / "fullchain.cert").write_text("# TODO: 生成 TLS 证书")
-        (target_dir / "fullchain.pem").write_text("# TODO: 生成 TLS 私钥")
-    else:
-        cm = CertManager()
-        
-        # 生成或使用已有 CA
-        if ca_dir and ca_dir.exists():
-            ca_dir_path = ca_dir.resolve()
-            print(f"使用已有 CA: {ca_dir_path}")
-            ca_cert_candidates = list(ca_dir_path.glob("*_ca_cert.pem"))
-            if not ca_cert_candidates:
-                raise FileNotFoundError(f"在 {ca_dir_path} 中未找到 *_ca_cert.pem")
-            ca_cert_path = ca_cert_candidates[0]
-            ca_key_path = ca_dir_path / ca_cert_path.name.replace("_ca_cert.pem", "_ca_key.pem")
-            if not ca_key_path.exists():
-                raise FileNotFoundError(f"CA 私钥未找到: {ca_key_path}")
-        else:
-            # 生成新的 CA
-            ca_output_dir = ensure_dir(target_dir / "ca")
-            ca_cert, ca_key = cm.create_ca(str(ca_output_dir), name=ca_name)
-            ca_cert_path, ca_key_path = Path(ca_cert), Path(ca_key)
-            print(f"已生成 CA 证书: {ca_cert_path}")
-        
-        # 生成服务器证书（包含 sn.$sn_base 和 *.web3.$sn_base）
-        sn_hostname = f"sn.{sn_base_host}"
-        web3_wildcard = f"*.web3.{sn_base_host}"
-        
-        cert_path, key_path = cm.create_cert_from_ca(
-            str(ca_cert_path.parent),
-            hostname=sn_hostname,
-            target_dir=str(target_dir),
-            hostnames=[sn_hostname, web3_wildcard, f"web3.{sn_base_host}"],
-        )
-        
-        # 复制/重命名为标准文件名
-        cert_file = Path(cert_path)
-        key_file = Path(key_path)
-        
-        shutil.copy2(cert_file, target_dir / "fullchain.cert")
-        shutil.copy2(key_file, target_dir / "fullchain.pem")
-        
-        # 复制 CA 证书到 ca 目录（用于客户端信任）
-        if ca_dir:
-            ca_output_dir = ensure_dir(target_dir / "ca")
-            shutil.copy2(ca_cert_path, ca_output_dir / ca_cert_path.name)
-            shutil.copy2(ca_key_path, ca_output_dir / ca_key_path.name)
-        
-        print(f"TLS 证书已生成:")
-        print(f"  - {target_dir / 'fullchain.cert'}")
-        print(f"  - {target_dir / 'fullchain.pem'}")
-        print(f"  - {target_dir / 'ca' / ca_cert_path.name}")
-    
 
+    cm = CertManager()
+    
+    # 生成或使用已有 CA
+    if ca_dir and ca_dir.exists():
+        ca_dir_path = ca_dir.resolve()
+        print(f"使用已有 CA: {ca_dir_path}")
+        ca_cert_candidates = list(ca_dir_path.glob("*_ca_cert.pem"))
+        if not ca_cert_candidates:
+            raise FileNotFoundError(f"在 {ca_dir_path} 中未找到 *_ca_cert.pem")
+        ca_cert_path = ca_cert_candidates[0]
+        ca_key_path = ca_dir_path / ca_cert_path.name.replace("_ca_cert.pem", "_ca_key.pem")
+        if not ca_key_path.exists():
+            raise FileNotFoundError(f"CA 私钥未找到: {ca_key_path}")
+    else:
+        # 生成新的 CA
+        ca_output_dir = ensure_dir(target_dir / "ca")
+        ca_cert, ca_key = cm.create_ca(str(ca_output_dir), name=ca_name)
+        ca_cert_path, ca_key_path = Path(ca_cert), Path(ca_key)
+        print(f"已生成 CA 证书: {ca_cert_path}")
+    
+    # 生成服务器证书（包含 sn.$sn_base 和 *.web3.$sn_base）
+    sn_hostname = f"sn.{sn_base_host}"
+    web3_wildcard = f"*.web3.{sn_base_host}"
+    
+    cert_path, key_path = cm.create_cert_from_ca(
+        str(ca_cert_path.parent),
+        hostname=sn_hostname,
+        target_dir=str(target_dir),
+        hostnames=[sn_hostname, web3_wildcard, f"web3.{sn_base_host}"],
+    )
+    
+    # 复制/重命名为标准文件名
+    cert_file = Path(cert_path)
+    key_file = Path(key_path)
+    
+    shutil.copy2(cert_file, target_dir / "fullchain.cert")
+    shutil.copy2(key_file, target_dir / "fullchain.pem")
+    
+    # 复制 CA 证书到 ca 目录（用于客户端信任）
+    if ca_dir:
+        ca_output_dir = ensure_dir(target_dir / "ca")
+        shutil.copy2(ca_cert_path, ca_output_dir / ca_cert_path.name)
+        shutil.copy2(ca_key_path, ca_output_dir / ca_key_path.name)
+    
+    print(f"TLS 证书已生成:")
+    print(f"  - {target_dir / 'fullchain.cert'}")
+    print(f"  - {target_dir / 'fullchain.pem'}")
+    print(f"  - {target_dir / 'ca' / ca_cert_path.name}")
+    
+    #3 修改params.json
+    params_json = {
+        "params": {
+            "sn_host": sn_base_host,
+            "sn_ip": sn_ip,
+            "sn_boot_jwt": "todo",
+            "sn_owner_pk": "todo",
+            "sn_device_jwt": "todo",
+        }
+    }
     
     print(f"\n✓ SN 配置文件生成完成!")
     print(f"  输出目录: {target_dir}")
@@ -392,6 +391,7 @@ def make_sn_configs(
     print(f"  - {target_dir / 'fullchain.pem'} (服务器私钥)")
     print(f"  - {target_dir / 'zone_zone.toml'} (BuckyOS DNS TXT 记录，会动态更新)")
     print(f"  - {target_dir / 'ca' / 'buckyos_sn_ca_cert.pem'} (CA 证书)")
+    print(f"  - {target_dir / 'params.json'} (SN 配置参数)")
     print(f"\n需要手动创建的文件:")
     print(f"  - {target_dir / 'dns_zone'} (DNS Zone 配置)")
     print(f"  - {target_dir / 'website.yaml'} (网站配置)")

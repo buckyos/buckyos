@@ -55,14 +55,15 @@ export async function register_sn_user(user_name:string,active_code:string,publi
 
 
 
-export async function register_sn_main_ood (user_name:string,device_name:string,device_did:string,device_ip:string,device_info:string) : Promise<boolean> {
+export async function register_sn_main_ood (user_name:string,device_name:string,device_did:string,mini_config_jwt:string,device_ip:string,device_info:string) : Promise<boolean> {
     let rpc_client = new buckyos.kRPCClient(SN_API_URL);
     let result = await rpc_client.call("register",{
         user_name:user_name,
         device_name:device_name,
         device_did:device_did,
         device_ip:device_ip,
-        device_info:device_info
+        device_info:device_info,
+        mini_config_jwt:mini_config_jwt
     });
     let code = result["code"];
     if (code == 0) {

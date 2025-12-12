@@ -135,9 +135,10 @@ impl ActiveServer {
             device_info.auto_fill_by_system_info().await.unwrap();
             let device_info_json = serde_json::to_string(&device_info).unwrap();
             let device_ip = device_info.ip.unwrap().to_string();
+            let mini_config_jwt = "todo".to_string();
             
             let sn_result = sn_register_device(sn_url.as_str(), Some(user_rpc_token), 
-                user_name, "ood1", &device_did.to_string(), &device_ip, device_info_json.as_str()).await;
+                user_name, "ood1", &device_did.to_string(), &device_ip, device_info_json.as_str(),&mini_config_jwt).await;
             if sn_result.is_err() {
                 return Err(RPCErrors::ReasonError(format!("Failed to register device to sn: {}",sn_result.err().unwrap())));
             }
