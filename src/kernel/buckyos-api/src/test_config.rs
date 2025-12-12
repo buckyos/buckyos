@@ -365,8 +365,8 @@ impl<'a> UserEnvScope<'a> {
         let owner_key = get_encoding_key(self.key_pair.private_key_pem);
         let jwt = zone_boot.encode(Some(&owner_key)).unwrap();
 
-        println!("=> {} TXT Record: DID={};", zone_host_name, jwt.to_string());
-        println!("=> {} TXT Record: PKX=0:{};", zone_host_name, get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap());
+        println!("=> {} TXT Record: BOOT={};", zone_host_name, jwt.to_string());
+        println!("=> {} TXT Record: PKX={};", zone_host_name, get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap());
         //ood1 mini config jwt
         let mini_config = DeviceMiniConfig {
             name: ood.name.clone(),
@@ -379,8 +379,8 @@ impl<'a> UserEnvScope<'a> {
         println!("=> {} TXT Record: DEV={};", zone_host_name, mini_jwt.to_string());
 
         let txt_records = vec![
-            format!("DID={};", jwt.to_string()),
-            format!("PKX=0:{};", get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap()),
+            format!("BOOT={};", jwt.to_string()),
+            format!("PKX={};", get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap()),
             format!("DEV={};", mini_jwt.to_string()),
         ];
 
@@ -474,7 +474,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
     );
 
     write_json(&builder.root_dir().join("sn_server").join(".buckycli").join("user_config.json"), &owner_config);
-    println!("- Created owner config for sn admin");
+    println!("- Created owner config for sn admin.");
 
     //创建设备的jwt
     let device_mini_config = DeviceMiniConfig {
@@ -485,12 +485,12 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
         extra_info: HashMap::new(),
     };
     let device_mini_jwt = device_mini_config.to_jwt(&get_encoding_key(owner_keys.private_key_pem)).unwrap();
-    write_file(&sn_dir.join("sn_device_config.jwt"), &device_mini_jwt);
+
     let mut device_config = DeviceConfig::new_by_mini_config(device_mini_config, DID::new("web", "sn.devtests.org"), DID::new("bns", "sn"));
     device_config.net_id = Some("wlan".to_string());
     write_json(&sn_dir.join("sn_device_config.json"), &device_config);
-    // 写入设备密钥
     write_file(&sn_dir.join("sn_private_key.pem"), device_keys.private_key_pem);
+    println!("- Created sn device config & private key.");
 
     // 创建 ZoneBootConfig
     let zone_boot = ZoneBootConfig {
@@ -506,21 +506,24 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
 
     let owner_key = get_encoding_key(owner_keys.private_key_pem);
     let zone_boot_jwt = zone_boot.encode(Some(&owner_key)).unwrap().to_string();
-    write_file(&sn_dir.join("sn_boot_config.jwt"), &zone_boot_jwt);
     let x_str = owner_keys.public_key_x;
-   
-    //create dns_zone_file
-    let sn_ip = sn_ip.to_string();
-    let zone_zone_content = format!(r#"
-["sn.{}"]
-ttl = 300
-A = ["{}"]
-TXT=["DID={};","PKX=0:{};","DEV={};"]
 
-["web3.{}"]
-NS="sn.{}"
-    "#, sn_base_host, sn_ip, zone_boot_jwt, x_str, device_mini_jwt, sn_base_host, sn_base_host);
-    write_file(&sn_dir.join("zone_zone.toml"), &zone_zone_content);
+    //create params.json
+    let params = json!({"params":{
+        "sn_boot_jwt": zone_boot_jwt,
+        "sn_owner_pk": x_str,
+        "sn_device_jwt": device_mini_jwt,
+        "sn_host": sn_base_host,
+        "sn_ip": sn_ip.to_string(),
+    }});
+    write_json(&sn_dir.join("params.json"), &params);
+    println!("- Created params.json.");
+
+    //创建初始数据库
+    let sn_db_path = builder.root_dir().join("sn_server").join("sn_db.sqlite3");
+    let db = SnDB::new_by_path(&sn_db_path.to_string_lossy()).unwrap();
+    db.initialize_database().unwrap();
+    println!("- Created SN database.");
    
 }
 
@@ -917,12 +920,9 @@ mod tests {
         write_json(&builder.root_dir().join("start_config.json"), &start_config);
 
         // 输出 DNS 记录
-        println!("# test.buckyos.io TXT Record: DID={};", zone_boot_jwt);
+        println!("# test.buckyos.io TXT Record: BOOT={};", zone_boot_jwt);
         if let Ok(owner_x) = get_x_from_jwk(&get_jwk(&owner_keys.public_key_x)) {
-            println!("# test.buckyos.io TXT Record: PKX=0:{};", owner_x);
-        }
-        if let Ok(ood_x) = get_x_from_jwk(&get_jwk(&device_keys.public_key_x)) {
-            println!("# test.buckyos.io TXT Record: PKX=1:{};", ood_x);
+            println!("# test.buckyos.io TXT Record: PKX={};", owner_x);
         }
     }
 
@@ -965,7 +965,6 @@ mod tests {
             devices: HashMap::new(),
             owner: None,
             owner_key: None,
-            gateway_devs: vec![],
             extra_info: HashMap::new(),
         };
 

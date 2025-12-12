@@ -351,15 +351,15 @@ def make_sn_configs(
         str(ca_cert_path.parent),
         hostname=sn_hostname,
         target_dir=str(target_dir),
-        hostnames=[sn_hostname, web3_wildcard, f"web3.{sn_base_host}"],
+        hostnames=[web3_wildcard, f"web3.{sn_base_host}"],
     )
     
     # 复制/重命名为标准文件名
     cert_file = Path(cert_path)
     key_file = Path(key_path)
     
-    shutil.copy2(cert_file, target_dir / "fullchain.cert")
-    shutil.copy2(key_file, target_dir / "fullchain.pem")
+    shutil.move(cert_file, target_dir / "fullchain.cert")
+    shutil.move(key_file, target_dir / "fullchain.pem")
     
     # 复制 CA 证书到 ca 目录（用于客户端信任）
     if ca_dir:
@@ -386,10 +386,10 @@ def make_sn_configs(
     print(f"\n✓ SN 配置文件生成完成!")
     print(f"  输出目录: {target_dir}")
     print(f"\n生成的文件:")
+    print(f"  - {target_dir / 'sn_device_config.json'} (SN server device config)")
     print(f"  - {target_dir / 'sn_private_key.pem'} (设备私钥)")
     print(f"  - {target_dir / 'fullchain.cert'} (服务器证书)")
     print(f"  - {target_dir / 'fullchain.pem'} (服务器私钥)")
-    print(f"  - {target_dir / 'zone_zone.toml'} (BuckyOS DNS TXT 记录，会动态更新)")
     print(f"  - {target_dir / 'ca' / 'buckyos_sn_ca_cert.pem'} (CA 证书)")
     print(f"  - {target_dir / 'params.json'} (SN 配置参数)")
     print(f"\n需要手动创建的文件:")
@@ -474,7 +474,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
         }
     raise ValueError(f"invalid group name: {group_name}")
 
-def make_config_by_group_name(group_name: str, target_root: Path, ca_dir: Optional[Path]) -> None:
+def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_dir: Optional[Path]) -> None:
     params = get_params_from_group_name(group_name)
     print(f"############ make config for group name: {group_name} #########################")
     print(f"rootfs dir : {target_root}")
@@ -483,6 +483,8 @@ def make_config_by_group_name(group_name: str, target_root: Path, ca_dir: Option
     is_sn = params.get("is_sn", False)
     
     if is_sn:
+        if target_root is None:
+            target_root = Path("/opt/web3-gateway")
         # SN 配置生成
         print(f"sn_base_host: {params['sn_base_host']}")
         print(f"sn_ip       : {params['sn_ip']}")
@@ -499,6 +501,8 @@ def make_config_by_group_name(group_name: str, target_root: Path, ca_dir: Option
             ca_dir,
         )
     else:
+        if target_root is None:
+            target_root = ROOTFS_DIR
         # 普通 OOD 节点配置生成
         print(f"username   : {params['username']}")
         print(f"zone       : {params['zone_id']}")
@@ -535,7 +539,7 @@ def main() -> None:
     parser.add_argument("group", help="配置分组名，例如 dev")
     parser.add_argument(
         "--rootfs",
-        default=ROOTFS_DIR,
+        default=None,
         type=Path,
         help="输出目录（包含 bin/buckycli 等工具）",
     )
