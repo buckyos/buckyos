@@ -3,6 +3,12 @@ import os
 import sys
 import subprocess
 
+try:
+    import buckyos_devkit
+except ImportError:
+    print("buckyos-devkit not found, please install it first")
+    print('pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"')
+    sys.exit(1)
 
 if __name__ == "__main__":
     # 调用 buckyos-build 命令，传递所有参数
