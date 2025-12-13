@@ -1,0 +1,97 @@
+{
+    "name": "buckyos",
+    "base_dir": ".",
+    "modules": {
+        "node_daemon": {
+            "type": "rust",
+            "name": "node_daemon"
+        },
+        "cyfs_gateway": {
+            "type": "rust",
+            "name": "cyfs_gateway"
+        },
+        "system_config": {
+            "type": "rust",
+            "name": "system_config"
+        },
+        "verify_hub": {
+            "type": "rust",
+            "name": "verify_hub"
+        },
+        "scheduler": {
+            "type": "rust",
+            "name": "scheduler"
+        },
+        "smb_service": {
+            "type": "rust",
+            "name": "smb_service"
+        },
+        "repo_service": {
+            "type": "rust",
+            "name": "repo_service"
+        },
+        "buckycli": {
+            "type": "rust",
+            "name": "buckycli"
+        },
+        "node_active": {
+            "type": "web",
+            "name": "node_active",
+            "src_dir": "kernel/node_active/"
+        },
+        "control_panel": {
+            "type": "web",
+            "name": "control_panel",
+            "src_dir": "apps/control_panel/src/"
+        },
+        "sys_test": {
+            "type": "web",
+            "name": "sys_test",
+            "src_dir": "apps/sys_test/"
+        }
+
+    },
+    "apps": {
+      "buckyos": {
+        "name": "buckyos",
+        "rootfs": "rootfs/",
+        "default_target_rootfs": "/opt/buckyos/",
+        "modules": {
+          "node_daemon": "bin/node-daemon/",
+          "system_config": "bin/system-config/",
+          "verify_hub": "bin/verify-hub/",
+          "scheduler": "bin/scheduler/",
+          "smb_service": "bin/smb-service/",
+          "repo_service": "bin/repo-service/",
+          "buckycli": "bin/buckycli/",
+          "node_active": "bin/node-active/",
+          "control_panel": "bin/control-panel/",
+          "sys_test": "bin/sys-test/",
+          "app-loader": "bin/app-loader/"
+        },
+        "data_paths": [
+            "etc/"
+        ],
+        "clean_paths": []
+      },
+      "web3-gateway": {
+        "name": "web3-gateway",
+        "rootfs": "web3-gateway/",
+        "default_target_rootfs": "/opt/web3-gateway/",
+        "modules": {
+          "cyfs_gateway": "web3_gateway"
+        },
+        "data_paths": [
+            "test.json"
+        ],
+        "clean_paths": [
+
+        ]
+      }
+    },
+    "rust_env": {
+      "OPENSSL_STATIC": "1"
+    }
+  }
+  
+  

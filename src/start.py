@@ -5,9 +5,11 @@ import subprocess
 import sys
 import platform
 from pathlib import Path
+import buckyos_devkit
+from make_config import make_config_by_group_name
 
 build_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(build_dir, "scripts"))
+
 # after run build.py ,use this script to restart the dev buckyos system
 # 1) killall process
 # 2) update files to /opt/buckyos (--all to update all files to /opt/buckyos)
@@ -37,12 +39,14 @@ def update_files(install_all=False,config_group_name=None):
     # Import and call install.py functions directly
 
     try:
-        import install
-        import make_config
-        install.install(install_all)
+        install_cmd = ["buckyos-update", "--app=buckyos"]
+        if install_all:
+            install_cmd.append("--all")
+        subprocess.run(install_cmd, env=os.environ.copy())
+
         if config_group_name:
-            target_root : Path = Path(install.get_install_root_dir())
-            make_config.make_config_by_group_name(config_group_name, target_root, None)
+           target_root : Path = Path("/opt/buckyos")
+           make_config_by_group_name(config_group_name, target_root, None)
         print("Files updated successfully")
     except ImportError as e:
         print(f"Failed to import install module: {e}")
@@ -113,6 +117,7 @@ def main():
     # Parse command line arguments
     config_group_name = None
     install_all = "--all" in sys.argv or "--reinstall" in sys.argv
+    need_update = "--skip-update" not in sys.argv
     if install_all:
         config_group_name = "dev"
     if "--reinstall" in sys.argv:
@@ -124,8 +129,9 @@ def main():
     # Step 1: Kill all processes
     kill_all_processes()
     
-    # Step 2: Update files
-    update_files(install_all,config_group_name)
+    if install_all or need_update:
+        # Step 2: Update files
+        update_files(install_all,config_group_name)
     
     # Step 3: Start system
     start_system()

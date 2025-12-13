@@ -29,8 +29,8 @@ import sys
 from pathlib import Path
 import time
 from typing import Dict, Iterable, List, Optional, Tuple
-from util import get_buckyos_root
-from cert_mgr import CertManager  # type: ignore
+from buckyos_devkit.buckyos_kit import get_buckyos_root
+from buckyos_devkit import CertManager  # type: ignore
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOTFS_DIR = SCRIPT_DIR.parent / "rootfs"
