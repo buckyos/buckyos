@@ -19,9 +19,7 @@ members = [
     "./frame/control_panel/service",
 
     "./tools/buckycli", 
-    "./test/test_rbac", 
-
-    "./apps/cyfs_gateway",
+    "./test/test_rbac"
 ]
 
 exclude = [

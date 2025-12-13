@@ -12,6 +12,7 @@ except ImportError:
 
 if __name__ == "__main__":
     # 调用 buckyos-build 命令，传递所有参数
+    print("!!! buckyos depend on cyfs-gateway, MAKE SURE YOU HAVE BUILD IT FIRST!")
     result = subprocess.run(
         ["buckyos-build"] + sys.argv[1:],
         env=os.environ.copy()

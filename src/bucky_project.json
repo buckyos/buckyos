@@ -6,10 +6,6 @@
             "type": "rust",
             "name": "node_daemon"
         },
-        "cyfs_gateway": {
-            "type": "rust",
-            "name": "cyfs_gateway"
-        },
         "system_config": {
             "type": "rust",
             "name": "system_config"
@@ -49,7 +45,6 @@
             "name": "sys_test",
             "src_dir": "apps/sys_test/"
         }
-
     },
     "apps": {
       "buckyos": {
@@ -73,20 +68,6 @@
             "etc/"
         ],
         "clean_paths": []
-      },
-      "web3-gateway": {
-        "name": "web3-gateway",
-        "rootfs": "web3-gateway/",
-        "default_target_rootfs": "/opt/web3-gateway/",
-        "modules": {
-          "cyfs_gateway": "web3_gateway"
-        },
-        "data_paths": [
-            "test.json"
-        ],
-        "clean_paths": [
-
-        ]
       }
     },
     "rust_env": {

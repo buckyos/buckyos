@@ -2,7 +2,7 @@
 # 1. git clone 后,rootfs里只有 “必要的代码文件”，（相关配置文件也是以代码的形式存在的）
 # 2. build 后，rootfs里的bin目录会填充正确的编译产物
 # ------- start.py里的内容
-# 3. 基于该rootfs(主要是buckycli工具)调用make_config.py $config_group_name 会在rootfs里完成所有的配置文件
+# 3. 基于该rootfs(主要是buckycli工具)调用make_config.py $config_group_name 会在target_rootfs里完成所有的配置文件
 # 4. 基于完成构建的rootfs,可以制作安装包，或则复制到开发环境运行调试（本机调试或虚拟机调试) --> 总是可以通过观察rootfs里的配置文件来了解上一次运行的配置
 # 5. 对于有多个node的虚拟机环境，是在完成了Linux版本的构建后，基于不同环境的需要make_config.py $node_group_name 来构造不同的rootfs,并复制到对应的虚拟机里
 #
