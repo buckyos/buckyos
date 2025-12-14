@@ -12,7 +12,7 @@
         "echo 'MAKE sure you already build the linux version of buckyos (result store in rootfs/bin)'"
       ],
       "build_all": [
-        "python3 {{system.base_dir}}/scripts/make_config.py {{buckyos.node_group}} --rootfs /opt/buckyos"
+        "python3 {{system.base_dir}}/make_config.py {{buckyos.node_group}} --rootfs /opt/buckyos"
       ],
       "install": [
         "sudo chmod 777 /opt/buckyos"

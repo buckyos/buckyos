@@ -3,7 +3,7 @@ use name_lib::{
     DID, DIDDocumentTrait, DeviceConfig, DeviceInfo, DeviceMiniConfig, EncodedDocument, NodeIdentityConfig, OODDescriptionString, OwnerConfig, ZoneBootConfig, ZoneConfig, get_x_from_jwk
 };
 use package_lib::PackageId;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -34,6 +34,13 @@ pub(crate) struct TestKeyPair {
     public_key_x: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ZoneTxtRecord {
+    pub boot_config_jwt: String,
+    pub device_mini_doc_jwt: String,
+    pub pkx: String,
+}
+
 struct TestKeys;
 
 impl TestKeys {
@@ -59,14 +66,19 @@ impl TestKeys {
             "devtest",
             "devtest_ood1",
             "devtest_node1",
+            "devtests",
+            "devtests_ood1",
             "sn_owner",
             "sn",
             "bob",
             "bob_ood1",
             "alice",
             "alice_ood1",
+            "charlie",
+            "charlie_ood1",
         ];
         for key_id in key_ids {
+            println!("Testing key pair: {}", key_id);
             TestKeys::get_key_pair_by_id(key_id)?;
         }
         Ok(())
@@ -74,22 +86,40 @@ impl TestKeys {
 
     fn get_key_pair_by_id(id: &str) -> Result<TestKeyPair, String> {
         let key_pair = match id {
+            //zone-id did:web:test.buckyos.io
             "devtest" => TestKeys::devtest_owner(),
             "devtest_ood1" => TestKeys::devtest_ood1(),
             "devtest.ood1" => TestKeys::devtest_ood1(),
             "devtest_node1" => TestKeys::devtest_node1(),
             "devtest.node1" => TestKeys::devtest_node1(),
+
             "sn_owner" => TestKeys::sn_owner(),
-            "sn" => TestKeys::sn_device(),
-            "sn_server" => TestKeys::sn_device(),
+            //zone-id did:web:devtests.org
+            "devtests" => TestKeys::sn_owner(),
+            //zone-id None (sn is not a zone)
+            "sn" => TestKeys::sn_server(),
+            "sn_server" => TestKeys::sn_server(),
+            "devtests_ood1" => TestKeys::devtests_ood1(),
+            "devtests.ood1" => TestKeys::devtests_ood1(),
+            "sn_web" => TestKeys::devtests_ood1(),
+
+            //zone-id did:bns:bob
             "bob" => TestKeys::bob_owner(),
             "bob_ood1" => TestKeys::bob_ood1(),
             "bob.ood1" => TestKeys::bob_ood1(),
+
+            //zone-id did:bns:alice
             "alice" => TestKeys::alice_owner(),
             "alice_ood1" => TestKeys::alice_ood1(),
             "alice.ood1" => TestKeys::alice_ood1(),
+
+            //zone-id did:web:charlie.me
+            "charlie" => TestKeys::charlie_owner(),
+            "charlie_ood1" => TestKeys::charlie_ood1(),
+            "charlie.ood1" => TestKeys::charlie_ood1(),
             _ => return Err(format!("unknown key pair id: {}", id)),
         };
+
         TestKeys::verify_key_pair(&key_pair)?;
         Ok(key_pair)
     }
@@ -139,17 +169,17 @@ MC4CAQAwBQYDK2VwBCIEIADmO0+u/gcmStDsHZOZCM5gxNYlQmP6jpMo279TQE75
         }
 
     }
-
+    //did:bns:devtests
     fn sn_owner() -> TestKeyPair {
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIH3hgzhuE0wuR+OEz0Bx6I+YrJDtS0OIajH1rNkEfxnl
+MC4CAQAwBQYDK2VwBCIEIMkwWZKUe7+z7NtfgbgxWwGjMddvxtrmeGJiJe8rq00M
 -----END PRIVATE KEY-----"#,
-            public_key_x: "qJdNEtscIYwTo-I0K7iPEt_UZdBDRd4r16jdBfNR0tM".to_string(),
+            public_key_x: "blzinUlTNGYcvCPFT1OfPKPbmjvteuXWMwQG55cTo7M".to_string(),
         }
     }
 
-    fn sn_device() -> TestKeyPair {
+    fn sn_server() -> TestKeyPair {
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIBvnIIa1Tx45SjRu9kBZuMgusP5q762SvojXZ4scFxVD
@@ -158,6 +188,16 @@ MC4CAQAwBQYDK2VwBCIEIBvnIIa1Tx45SjRu9kBZuMgusP5q762SvojXZ4scFxVD
         }
     }
 
+    fn devtests_ood1() -> TestKeyPair {
+        TestKeyPair {
+            private_key_pem: r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEICBO4nQL1yMcu4uu51Grea+VTaaS+sswioMRZXoltzZh
+-----END PRIVATE KEY-----"#,
+            public_key_x: "waupPnLqJRwjr3hJ_2i2J4qGLx-8t5ihX6LET0ZY828".to_string(),
+        }
+    }
+
+    //did:bns:alice
     fn alice_owner() -> TestKeyPair {
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
@@ -175,6 +215,25 @@ MC4CAQAwBQYDK2VwBCIEIGhyUJ3/YgIrLZxSGG7o1bgiWcyETZKjTBoGagNdpxVy
             public_key_x: "E1oQDYqzyX4ysrNgTJ5DAVaMgA3By8XpBa0e6r2gBqQ".to_string(),
         }
     }
+
+    fn charlie_owner() -> TestKeyPair {
+        TestKeyPair {
+            private_key_pem: r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEICLjVTK81RKQ1aPtSLKFx/Fl33+WbxgqCpPCBFlqlBQX
+-----END PRIVATE KEY-----"#,
+            public_key_x: "cuFY7qeU1q96O1K5RRbXo7GXGR78szB-gmmkBXDMscE".to_string(),
+        }
+    }
+
+    fn charlie_ood1() -> TestKeyPair {
+        TestKeyPair {
+            private_key_pem: r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIMe0Q/tl7DWbu3SIQE8vnDxO8YQMIivAlCgKiNUfjcWU
+-----END PRIVATE KEY-----"#,
+            public_key_x: "PY9uu16H74QYVRjstVxdWdAsgkoy10-74fvQhx4ddek".to_string(),
+        }
+    }
+
 }
 
 // ============================================================================
@@ -335,7 +394,7 @@ impl<'a> UserEnvScope<'a> {
 
     /// 创建 Zone 配置 
     /// return zone_boot_config_jwt, TXT Records
-    pub fn create_zone_boot_config_jwt(&self, sn_host: Option<String>, ood:OODDescriptionString) -> (String,Vec<String>) {
+    pub fn create_zone_boot_config_jwt(&self, sn_host: Option<String>, ood:OODDescriptionString) -> ZoneTxtRecord {
         let device_full_id = format!("{}.{}", self.username, ood.name.as_str());
         let device_key_pair = TestKeys::get_key_pair_by_id(&device_full_id).unwrap();
 
@@ -364,9 +423,9 @@ impl<'a> UserEnvScope<'a> {
 
         let owner_key = get_encoding_key(self.key_pair.private_key_pem);
         let jwt = zone_boot.encode(Some(&owner_key)).unwrap();
-
+        let pkx = get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap();
         println!("=> {} TXT Record: BOOT={};", zone_host_name, jwt.to_string());
-        println!("=> {} TXT Record: PKX={};", zone_host_name, get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap());
+        println!("=> {} TXT Record: PKX={};", zone_host_name, pkx.as_str());
         //ood1 mini config jwt
         let mini_config = DeviceMiniConfig {
             name: ood.name.clone(),
@@ -378,14 +437,14 @@ impl<'a> UserEnvScope<'a> {
         let mini_jwt = mini_config.to_jwt(&owner_key).unwrap();
         println!("=> {} TXT Record: DEV={};", zone_host_name, mini_jwt.to_string());
 
-        let txt_records = vec![
-            format!("BOOT={};", jwt.to_string()),
-            format!("PKX={};", get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap()),
-            format!("DEV={};", mini_jwt.to_string()),
-        ];
-
-
-        (jwt.to_string(), txt_records)
+        let zone_txt_record = ZoneTxtRecord {
+            boot_config_jwt: jwt.to_string(),
+            device_mini_doc_jwt: mini_jwt.to_string(),
+            pkx: pkx,
+        };
+        write_json(&self.user_dir.join("zone_txt_record.json"), &zone_txt_record);
+        println!("zone txt record write to file: {}", self.user_dir.join("zone_txt_record.json").to_string_lossy());
+        zone_txt_record
     }
 
     /// 创建节点配置
@@ -494,7 +553,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
     let device_mini_jwt = device_mini_config.to_jwt(&get_encoding_key(owner_keys.private_key_pem)).unwrap();
 
     let mut device_config = DeviceConfig::new_by_mini_config(&device_mini_config, DID::new("web", "sn.devtests.org"), DID::new("bns", "sn"));
-    device_config.net_id = Some("wlan".to_string());
+    device_config.net_id = Some("wan".to_string());
     write_json(&sn_dir.join("sn_device_config.json"), &device_config);
     write_file(&sn_dir.join("sn_private_key.pem"), device_keys.private_key_pem);
     println!("- Created sn device config & private key.");
@@ -534,6 +593,58 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
    
 }
 
+
+pub async fn register_user_to_sn(
+    builder: &DevEnvBuilder,
+    user_zone_id: &str,
+    sn_db_path: &str,
+) -> Result<(), String> {
+    // 解析 username
+    let user_config_path = builder.root_dir().join(user_zone_id).join("user_config.json");
+    println!("user_config_path: {}", user_config_path.display());
+    let user_config_content = fs::read_to_string(&user_config_path)
+        .map_err(|e| format!("读取 user_config.json 失败: {}", e))?;
+    let user_config: Value = serde_json::from_str(&user_config_content)
+        .map_err(|e| format!("解析 user_config.json 失败: {}", e))?;
+    let username = user_config
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("user_config.json 缺少 name 字段")?;
+
+    let zone_config_file = builder.root_dir().join(user_zone_id).join("zone_config.json");
+    let zone_config: ZoneConfig = serde_json::from_str(
+            &fs::read_to_string(&zone_config_file)
+                .map_err(|e| format!("读取 {:?} 失败: {}", zone_config_file, e))?,
+        )
+        .map_err(|e| format!("解析 {:?} 失败: {}", zone_config_file, e))?;
+
+    let zone_did = zone_config.id.clone();
+    let mut user_domain = None;
+    if zone_did.method != "bns" {
+        user_domain = Some(zone_did.to_host_name());
+    }
+
+    let zone_record_path = builder.root_dir().join(user_zone_id).join("zone_txt_record.json");
+    let zone_record: ZoneTxtRecord = serde_json::from_str(
+        &fs::read_to_string(&zone_record_path)
+            .map_err(|e| format!("读取 {:?} 失败: {}", zone_record_path, e))?,
+    )
+    .map_err(|e| format!("解析 {:?} 失败: {}", zone_record_path, e))?;
+
+    let db = SnDB::new_by_path(&sn_db_path).unwrap();
+    db.register_user_directly(
+        username,
+        zone_record.pkx.as_str(),
+        zone_record.boot_config_jwt.as_str(),
+        user_domain
+    ).map_err(|e| format!("Failed to register user: {}", e))?;
+    println!(
+        "Successfully registered user {}@{} to SN database at {}",
+        username, user_zone_id, sn_db_path
+    );
+    return Ok(());
+}
+
 /// Register device to SN database
 /// 
 /// Device registration types supported:
@@ -550,13 +661,13 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
 /// - WAN OOD with fixed IP, using own domain, using own NS server (no SN needed)
 pub async fn register_device_to_sn(
     builder: &DevEnvBuilder,
-    username: &str,
+    user_zone_id: &str,
     device_name: &str,
     sn_db_path: &str,
 ) -> Result<(), String> {
     // Find device config directory
     // Try to find device config in builder root: {username}/{device_name}/node_identity.json
-    let device_dir = builder.root_dir().join(username).join(device_name);
+    let device_dir = builder.root_dir().join(user_zone_id).join(device_name);
     let node_identity_path = device_dir.join("node_identity.json");
     
     if !node_identity_path.exists() {
@@ -573,8 +684,11 @@ pub async fn register_device_to_sn(
     )
     .map_err(|e| format!("Failed to parse node_identity.json: {}", e))?;
 
+    let username = node_identity.owner_did.id;
+
     // Extract device DID from device_doc_jwt
     let device_doc_jwt = node_identity.device_doc_jwt.clone();
+    let device_mini_doc_jwt = node_identity.device_mini_doc_jwt.clone();
     let encoded_doc = EncodedDocument::from_str(device_doc_jwt.clone())
         .map_err(|e| format!("Failed to create EncodedDocument: {}", e))?;
     let device_doc = DeviceConfig::decode(
@@ -605,26 +719,19 @@ pub async fn register_device_to_sn(
     let db = SnDB::new_by_path(sn_db_path)
         .map_err(|e| format!("Failed to open SN database: {}", e))?;
 
-    // Initialize database if needed
-    db.initialize_database()
-        .map_err(|e| format!("Failed to initialize SN database: {}", e))?;
-    // Register device
-    //TODO: add mini_config_jwt
     db.register_device(
-        username,
+        &username,
         device_name,
         &device_did.to_string(),
-        &device_doc_jwt,
+        &device_mini_doc_jwt,
         &device_ip,
         &device_info_json
     )
     .map_err(|e| format!("Failed to register device: {}", e))?;
-
     println!(
         "Successfully registered device {}.{} (DID: {:?}) to SN database at {}",
         username, device_name, device_did, sn_db_path
     );
-
     Ok(())
 }
 
@@ -676,7 +783,7 @@ pub async fn cmd_create_user_env(
     
     // 创建 zone_boot_config（目前仅生成一个简单的 OOD 描述，SN 为空）
     let ood: OODDescriptionString = ood_name.to_string().parse().unwrap();
-    let (_zone_boot_jwt, _txt_records) = scope.create_zone_boot_config_jwt(sn_host, ood);
+    let _zone_txt_record = scope.create_zone_boot_config_jwt(sn_host, ood);
 
     println!("成功创建用户环境配置: {}", username);
     println!("Zone hostname: {}", hostname);
@@ -753,8 +860,26 @@ pub async fn cmd_create_sn_configs(output_dir: Option<&str>,sn_ip:IpAddr,sn_base
     Ok(())
 }
 
+pub async fn cmd_register_user_to_sn(
+    username: &str,
+    sn_db_path: &str,
+    output_dir: Option<&str>,
+) -> Result<(), String> {
+    // 使用已有用户环境目录
+    let root_dir = if let Some(dir) = output_dir {
+        PathBuf::from(dir)
+    } else {
+        std::env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?
+    };
+
+    let builder = DevEnvBuilder::from_path(root_dir.clone());
+    register_user_to_sn(&builder, username, sn_db_path).await?;
+
+    Ok(())
+}
+
 /// Register device to SN database (command line interface)
-pub async fn cmd_register_device(
+pub async fn cmd_register_device_to_sn(
     username: &str,
     device_name: &str,
     sn_db_path: &str,
@@ -769,7 +894,6 @@ pub async fn cmd_register_device(
     let builder = DevEnvBuilder::from_path(root_dir);
     register_device_to_sn(&builder, username, device_name, sn_db_path).await?;
     
-    println!("Successfully registered device {}.{} to SN", username, device_name);
     Ok(())
 }
 
@@ -891,11 +1015,12 @@ mod tests {
 
         let owner_key = get_encoding_key(owner_keys.private_key_pem);
         let device_jwt = device_config.encode(Some(&owner_key)).unwrap();
-
+        let device_mini_doc = DeviceMiniConfig::new_by_device_config(&device_config);
+        let device_mini_doc_jwt = device_mini_doc.to_jwt(&owner_key).unwrap();
         // 创建 Zone 配置
         let zone_did = DID::new("web", "test.buckyos.io");
         let ood: OODDescriptionString = "ood1".to_string().parse().unwrap();
-        let (zone_boot_jwt, _txt_records) = scope.create_zone_boot_config_jwt(None, ood);
+        let zone_txt_record = scope.create_zone_boot_config_jwt(None, ood);
 
         // 创建节点身份配置
         let node_identity_config = NodeIdentityConfig {
@@ -903,6 +1028,7 @@ mod tests {
             owner_public_key: get_jwk(&owner_keys.public_key_x),
             owner_did: DID::new("bns", "devtest"),
             device_doc_jwt: device_jwt.to_string(),
+            device_mini_doc_jwt: device_mini_doc_jwt.to_string(),
             zone_iat: builder.now() as u32,
         };
         write_json(
@@ -927,7 +1053,7 @@ mod tests {
         write_json(&builder.root_dir().join("start_config.json"), &start_config);
 
         // 输出 DNS 记录
-        println!("# test.buckyos.io TXT Record: BOOT={};", zone_boot_jwt);
+        println!("# test.buckyos.io TXT Record: BOOT={};", zone_txt_record.boot_config_jwt);
         if let Ok(owner_x) = get_x_from_jwk(&get_jwk(&owner_keys.public_key_x)) {
             println!("# test.buckyos.io TXT Record: PKX={};", owner_x);
         }
@@ -950,15 +1076,14 @@ mod tests {
         let sn_host = Some("sn.buckyos.io".to_string());
 
         // 通过 create_zone_boot_config_jwt 生成 JWT
-        let (zone_boot_config_jwt, _txt_records) =
-            scope.create_zone_boot_config_jwt(sn_host.clone(), ood.clone());
+        let zone_txt_record = scope.create_zone_boot_config_jwt(sn_host.clone(), ood.clone());
 
         // 使用 owner 公钥对 JWT 进行解码
         let public_key_jwk = get_jwk(&owner_keys.public_key_x);
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         // 将 JWT 字符串封装为 EncodedDocument，再进行解码
-        let encoded_doc = EncodedDocument::from_str(zone_boot_config_jwt.clone()).unwrap();
+        let encoded_doc = EncodedDocument::from_str(zone_txt_record.boot_config_jwt.clone()).unwrap();
         let zone_boot_config_decoded =
             ZoneBootConfig::decode(&encoded_doc, Some(&public_key)).unwrap();
         println!("zone_boot_config_decoded: {:?}", zone_boot_config_decoded);

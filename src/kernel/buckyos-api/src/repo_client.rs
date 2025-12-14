@@ -76,10 +76,10 @@ pub fn generate_repo_service_doc() -> KernelServiceDoc {
 }
 
 mod tests {
-    use super::*;
 
     #[test]
     fn test_generate_repo_service_doc() {
+        use super::generate_repo_service_doc;
         let doc = generate_repo_service_doc();
         let json_str = serde_json::to_string_pretty(&doc).unwrap();
         println!("json: {}", json_str);

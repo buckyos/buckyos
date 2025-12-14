@@ -4,7 +4,7 @@
       "node_id": "sn",
       "vm_template": "ubuntu_basic",
       "network": {
-        "lan_id": "wlan",
+        "lan_id": "wan",
         "type": "bridge"
       },
       "apps": {

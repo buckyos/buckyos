@@ -33,7 +33,7 @@ from buckyos_devkit.buckyos_kit import get_buckyos_root
 from buckyos_devkit import CertManager  # type: ignore
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-ROOTFS_DIR = SCRIPT_DIR.parent / "rootfs"
+ROOTFS_DIR = Path(get_buckyos_root()) 
 BUCKYCLI_BIN = ROOTFS_DIR / "bin" / "buckycli" / "buckycli"
 if not BUCKYCLI_BIN.exists():
     BUCKYCLI_BIN = Path(get_buckyos_root()) / "bin" / "buckycli" / "buckycli"
@@ -251,6 +251,23 @@ def make_repo_cache_file(target_dir: Path) -> None:
         )
         print(f"create default meta_index cache at {meta_dst}")
 
+def add_user_to_sn(root_dir: Path, username: str, sn_db_path: Path) -> None:
+    """添加用户到 SN 数据库。"""
+    run_buckycli(
+        ["register_user_to_sn", "--username", username, "--sn_db_path", str(sn_db_path), "--output_dir", str(root_dir)]
+    )
+    print(f"root directory: {root_dir}")
+    print(f"added user {username} to SN database at {sn_db_path}")
+
+
+def add_device_to_sn(root_dir: Path, username: str, device_name: str, sn_db_path: Path) -> None:
+    """添加设备到 SN 数据库。"""
+    run_buckycli(
+        ["register_device_to_sn", "--username", username, "--device_name", device_name, "--sn_db_path", str(sn_db_path), "--output_dir", str(root_dir)]
+    )
+    print(f"root directory: {root_dir}")
+    print(f"added device {username}.{device_name} to SN database at {sn_db_path}")
+
 
 def make_sn_configs(
     target_dir: Path,
@@ -406,12 +423,12 @@ def make_sn_db(target_dir: Path, user_list: List[str]) -> None:
 
 def get_params_from_group_name(group_name: str) -> Dict[str, object]:
     """根据分组名获取所有生成参数。"""
-    if group_name == "dev":
+    if group_name == "dev" or group_name == "devtest_ood1":
         return {
             "username": "devtest",
             "zone_id": "test.buckyos.io",
             "node_name": "ood1",
-            "netid": "",
+            "netid": "wan",
             "sn_base_host": "",
             "web3_bridge": "web3.devtests.org",
             "trust_did": [
@@ -445,7 +462,25 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "username": "bob",
             "zone_id": "bob.web3.devtests.org",
             "node_name": "ood1",
-            "netid": "",
+            "netid": "wan",
+            "sn_base_host": "devtests.org", # netid是wan但又有SN，说明要用d-dns
+            "web3_bridge": "web3.devtests.org",
+            "trust_did": [
+                "did:web:buckyos.org",
+                "did:web:buckyos.ai",
+                "did:web:buckyos.io",
+            ],
+            "force_https": False,
+            "ca_name": "buckyos_local",
+            "is_sn": False,
+        }
+    if group_name == "ood1.charlie":
+        return {
+            "username": "charlie",
+            "zone_id": "charlie.me",
+            "node_name": "ood1",
+            "netid": "portmap", #portmap https走中转,rtcp可以直连
+            "rtcp_port": 2981, # 使用了自定义的rtcp端口
             "sn_base_host": "devtests.org",
             "web3_bridge": "web3.devtests.org",
             "trust_did": [
@@ -457,11 +492,11 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "ca_name": "buckyos_local",
             "is_sn": False,
         }
-    if group_name == "sn_server":
+    if group_name == "sn_server" or group_name == "sn":
         return {
             "sn_base_host": "devtests.org",
-            "sn_ip": "127.0.0.1",
-            "sn_device_name": "sn_server",
+            "sn_ip": "127.0.0.1", #TODO: 需要从外部获取（环境变量最简单?)
+            "sn_device_name": "sn_server", 
             "web3_bridge": "web3.devtests.org",
             "trust_did": [
                 "did:web:buckyos.org",
@@ -472,9 +507,26 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "ca_name": "buckyos_sn",
             "is_sn": True,
         }
+    if group_name == "devtests_ood1" or group_name == "sn_web":
+        return {
+            "username": "devtests",
+            "zone_id": "devtests.org",
+            "node_name": "ood1",
+            "netid": "wan", #portmap https走中转,rtcp可以直连
+            "sn_base_host": "",
+            "web3_bridge": "web3.devtests.org",
+            "trust_did": [
+                "did:web:buckyos.org",
+                "did:web:buckyos.ai",
+                "did:web:buckyos.io",
+            ],
+            "force_https": False,
+            "ca_name": "buckyos_local",
+            "is_sn": False,
+        }
     raise ValueError(f"invalid group name: {group_name}")
 
-def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_dir: Optional[Path]) -> None:
+def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_dir: Optional[Path],env_root: Optional[Path]) -> None:
     params = get_params_from_group_name(group_name)
     print(f"############ make config for group name: {group_name} #########################")
     print(f"rootfs dir : {target_root}")
@@ -485,6 +537,9 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
     if is_sn:
         if target_root is None:
             target_root = Path("/opt/web3-gateway")
+
+        if env_root is None:
+            env_root = ROOTFS_DIR.joinpath("_buckycli_tmp")
         # SN 配置生成
         print(f"sn_base_host: {params['sn_base_host']}")
         print(f"sn_ip       : {params['sn_ip']}")
@@ -500,6 +555,16 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
             params["ca_name"],
             ca_dir,
         )
+
+        #/添加默认用户和设备到SN数据库
+        db_path = target_root / "sn_db.sqlite3"
+        # alice.ood1
+        add_user_to_sn(env_root, "alice.web3.devtests.org", db_path)
+        add_device_to_sn(env_root, "alice.web3.devtests.org", "ood1", db_path)
+
+        # bob.ood1
+        add_user_to_sn(env_root, "bob.web3.devtests.org", db_path)
+        add_device_to_sn(env_root, "bob.web3.devtests.org", "ood1", db_path)
     else:
         if target_root is None:
             target_root = ROOTFS_DIR
@@ -541,7 +606,7 @@ def main() -> None:
         "--rootfs",
         default=None,
         type=Path,
-        help="输出目录（包含 bin/buckycli 等工具）",
+        help="输出目录",
     )
     parser.add_argument(
         "--ca",
@@ -550,7 +615,7 @@ def main() -> None:
         help="使用已有 CA 目录（含 *_ca_cert.pem 与对应 key），否则自动生成",
     )
     args = parser.parse_args()
-    make_config_by_group_name(args.group, args.rootfs, args.ca)
+    make_config_by_group_name(args.group, args.rootfs, args.ca, None)
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -65,10 +65,10 @@ pub fn generate_verify_hub_service_doc() -> KernelServiceDoc {
 }
 
 mod tests {
-    use super::*;
 
     #[test]
     fn test_generate_verify_hub_service_doc() {
+        use super::generate_verify_hub_service_doc;
         let doc = generate_verify_hub_service_doc();
         let pkg_id = doc.meta.get_package_id();
         let pkg_did = pkg_id.to_did();

@@ -33,10 +33,10 @@ pub fn generate_scheduler_service_doc() -> KernelServiceDoc {
 }
 
 mod tests {
-    use super::*;
 
     #[test]
     fn test_generate_scheduler_service_doc() {
+        use super::generate_scheduler_service_doc;
         let doc = generate_scheduler_service_doc();
         let json_str = serde_json::to_string_pretty(&doc).unwrap();
         println!("json: {}", json_str);
