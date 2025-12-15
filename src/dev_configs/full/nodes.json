@@ -1,0 +1,126 @@
+{
+    "nodes": {
+      "sn": {
+        "node_id": "sn",
+        "vm_template": "ubuntu_basic",
+        "network": {
+          "lan_id": "wan",
+          "type": "bridge"
+        },
+        "apps": {
+          "web3_bridge": {
+  
+          }
+        },
+        "init_commands": [
+          "sudo hostnamectl set-hostname sn",
+          "sudo chmod 777 /opt/"
+        ],
+        "directories": {
+          "logs": "/opt/buckyos/logs"
+        }
+      },
+      "sn-web": {
+        "node_id": "ood1_devtests",
+        "vm_template": "ubuntu_buckyos",
+        "network": {
+          "lan_id": "wan",
+          "type": "bridge"
+        },
+        "apps": {
+          "buckyos" : {
+            "node_group": "devtests_ood1"
+          }
+        },
+        "init_commands": [
+          "sudo hostnamectl set-hostname sn_web",
+          "sudo chmod 777 /opt/",
+          "sudo sh -c \"echo '127.0.0.1 sn.devtests.org' >> /etc/hosts\""
+        ],
+        "instance_commands": [
+          "sudo sh -c \"echo '{{sn-web.ip}} devtests.org' >> /etc/hosts\"",
+          "sudo sh -c \"echo '{{sn-web.ip}} www.devtests.org' >> /etc/hosts\""
+        ],
+        "directories": {
+          "logs": "/opt/buckyos/logs"
+        }
+      },
+      "alice-ood1": {
+        "node_id": "alice_ood1",
+        "vm_template": "ubuntu_buckyos",
+        "network": {
+          "lan_id": "lan",
+          "type": "nat"
+        },
+        "apps": {
+          "buckyos" : {
+            "node_group": "alice.ood1"
+          }
+        },
+        "init_commands": [
+          "hostnamectl set-hostname alice-ood1",
+          "sudo chmod 777 /opt/",
+          "sudo iptables -I INPUT 1 -i lo -j ACCEPT",
+          "sudo iptables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT"
+        ],
+        "instance_commands": [
+            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\""
+        ],
+        "directories": {
+          "logs": "/opt/buckyos/logs"
+        }
+      },
+      "bob-ood1": {
+        "node_id": "bob_ood1",
+        "vm_template": "ubuntu_buckyos",
+        "network": {
+          "lan_id": "lan",
+          "type": "nat"
+        },
+        "apps": {
+          "buckyos" : {
+            "node_group": "bob.ood1"
+          }
+        },
+        "init_commands": [
+          "sudo hostnamectl set-hostname bob-ood1",
+          "sudo chmod 777 /opt/"
+        ],
+        "instance_commands": [
+          "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\""
+        ],
+        "directories": {
+          "logs": "/opt/buckyos/logs"
+        }
+      },
+      "charlie-ood1": {
+        "node_id": "charlie_ood1",
+        "vm_template": "ubuntu_buckyos",
+        "network": {
+          "lan_id": "lan",
+          "type": "nat"
+        },
+        "apps": {
+          "buckyos" : {
+            "node_group": "charlie.ood1"
+          }
+        },
+        "init_commands": [
+          "sudo hostnamectl set-hostname bob-ood1",
+          "sudo chmod 777 /opt/",
+          "sudo iptables -I INPUT 1 -i lo -j ACCEPT",
+          "sudo iptables -I INPUT 1 -p tcp --dport 2981 -j ACCEPT",
+          "sudo iptables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT"
+        ],
+        "instance_commands": [
+          "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\""
+        ],
+        "directories": {
+          "logs": "/opt/buckyos/logs"
+        }
+      }
+    },
+    "instance_order": ["sn-web","sn", "alice-ood1", "bob-ood1", "charlie-ood1"]
+  }
+  
+  

@@ -1,0 +1,24 @@
+{
+    "name": "web3_gateway",
+    "version": "latest",
+    "directories": {
+        "source": "rootfs",
+        "target": "/opt/web3_gateway",
+        "source_bin": "bin",
+        "target_bin": "/opt/web3_gateway/bin"
+    },
+    "commands": {
+      "build": [
+        "cd /opt/web3_gateway && tar xzf /tmp/web3_gateway.tar.gz"
+      ],
+      "build_all": [
+        "cd /opt/web3_gateway && tar xzf /tmp/web3_gateway.tar.gz"
+      ],
+      "install": [
+        "mkdir -p /opt/web3_gateway",
+        "cd /opt/web3_gateway && tar xzf /tmp/web3_gateway.tar.gz"
+      ],
+      "start": ["nohup /opt/buckyos/bin/node_daemon/node_daemon --enable_active > /dev/null 2>&1 &"],
+      "stop": ["python3 /opt/buckyos/bin/killall.py"]
+    }
+  }

@@ -1,0 +1,11 @@
+package_update: true
+package_upgrade: true
+packages:
+- docker.io
+- curl
+- wget
+
+users:
+- name: ubuntu
+  sudo: ALL=(ALL) NOPASSWD:ALL
+

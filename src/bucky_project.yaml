@@ -1,0 +1,90 @@
+name: buckyos
+base_dir: "."
+
+modules:
+  node_daemon:
+    type: rust
+    name: node_daemon
+  system_config:
+    type: rust
+    name: system_config
+  verify_hub:
+    type: rust
+    name: verify_hub
+  scheduler:
+    type: rust
+    name: scheduler
+  smb_service:
+    type: rust
+    name: smb_service
+  repo_service:
+    type: rust
+    name: repo_service
+  buckycli:
+    type: rust
+    name: buckycli
+  node_active:
+    type: web
+    name: node_active
+    src_dir: kernel/node_active/
+  control_panel:
+    type: web
+    name: control_panel
+    src_dir: apps/control_panel/src/
+  sys_test:
+    type: web
+    name: sys_test
+    src_dir: apps/sys_test/
+
+apps:
+  buckyos:
+    name: buckyos
+    rootfs: rootfs/
+    default_target_rootfs: "/opt/buckyos/"
+    # 安装模式
+    # - update 覆盖安装，当目标目录不存在时，会触发重新安装(install_data,update)
+    # - install 全新安装，相当于先卸载后安装 (clean,install_data,update)
+    
+    # 模块指向的 文件/文件夹，每次update的时候都会覆盖更新 
+    modules:
+      node_daemon: bin/node-daemon/
+      system_config: bin/system-config/
+      verify_hub: bin/verify-hub/
+      scheduler: bin/scheduler/
+      smb_service: bin/smb-service/
+      repo_service: bin/repo-service/
+      buckycli: bin/buckycli/
+      node_active: bin/node-active/
+      control_panel: bin/control-panel/
+      sys_test: bin/sys-test/
+      app-loader: bin/app-loader/
+      scheduler-etc: etc/scheduler/
+      boot-gateway-config: etc/boot_gateway.yaml
+    # 数据路径，update的时候如果目标存在，则不会更新
+    data_paths: 
+    - etc/user_gateway.yaml
+    - etc/post_gateway.yaml
+    - etc/node_gateway.json
+    - etc/cyfs_gateway.yaml
+    - cache/
+    - logs/
+    - tmp/
+    - local/
+    # 清理路径，install的时候会删除
+    clean_paths: 
+    - cache/
+    - logs/
+    - tmp/
+    - local/
+    - etc/
+  buckycli:
+    name: buckycli
+    rootfs: rootfs/bin/buckycli/
+    default_target_rootfs: "~/buckycli/"
+    modules:
+      buckycli: buckycli
+    data_paths: []
+    clean_paths: []
+
+rust_env:
+  OPENSSL_STATIC: '1'

@@ -32,15 +32,16 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from buckyos_devkit.buckyos_kit import get_buckyos_root
 from buckyos_devkit import CertManager  # type: ignore
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-ROOTFS_DIR = Path(get_buckyos_root()) 
-BUCKYCLI_BIN = ROOTFS_DIR / "bin" / "buckycli" / "buckycli"
+PROJECT_DIR = Path(__file__).resolve().parent
+ROOTFS_DIR = Path(get_buckyos_root()) # rootfs is default target dir.
+BUCKYCLI_BIN = Path("~/buckycli/buckycli").expanduser()
 if not BUCKYCLI_BIN.exists():
     BUCKYCLI_BIN = Path(get_buckyos_root()) / "bin" / "buckycli" / "buckycli"
     if not BUCKYCLI_BIN.exists():
         raise FileNotFoundError(f"buckycli binary missing at {BUCKYCLI_BIN}")
 
-print(f"* buckycli at {BUCKYCLI_BIN}")
+BUCKYCLI_DIR = BUCKYCLI_BIN.parent
+print(f"* buckycli = {BUCKYCLI_BIN}")
 
 
 def ensure_dir(path: Path) -> Path:
@@ -81,6 +82,11 @@ def write_json(path: Path, data: dict) -> None:
     ensure_dir(path.parent)
     path.write_text(json.dumps(data, indent=2))
     print(f"write json {path}")
+
+def write_text(path: Path, content: str) -> None:
+    ensure_dir(path.parent)
+    path.write_text(content)
+    print(f"write content {path}")
 
 
 def make_global_env_config(
@@ -141,44 +147,70 @@ def _copy_identity_outputs(
         copy_if_exists(user_dir / name, buckycli_dir / name)
     copy_if_exists(user_dir / f"{zone_id}.zone.json", buckycli_dir / "zone_config.json")
 
+def _check_or_generate_ca(cm: CertManager, ca_name: str, ca_dir: Path) -> None:
+    # 生成或使用已有 CA
+    ca_dir_path = ca_dir.resolve()
+    ensure_dir(ca_dir_path)
+    print(f"Check CA at : {ca_dir_path}")
+    ca_cert_path = ca_dir_path / f"{ca_name}_ca_cert.pem"
+    ca_key_path = ca_dir_path / f"{ca_name}_ca_key.pem"
 
-def _generate_tls(zone_id: str, ca_name: str, etc_dir: Path, ca_dir: Optional[Path]) -> None:
+    if ca_cert_path.exists() and ca_key_path.exists():
+        print(f"Use existing CA at : {ca_cert_path}")
+        return ca_cert_path, ca_key_path
+    else:
+        print(f"Generate new CA at : {ca_dir_path}")
+        ca_cert, ca_key = cm.create_ca(str(ca_dir_path), name=ca_name)
+        ca_cert_path, ca_key_path = Path(ca_cert), Path(ca_key)
+
+    return ca_cert_path, ca_key_path
+
+def _generate_tls(zone_id: str, ca_name: str, etc_dir: Path, ca_dir: Path) -> None:
     if CertManager is None:
         print("warning: cert_mgr not available, skip TLS cert generation")
         return
 
     cm = CertManager()
-    # 优先使用用户提供的 CA 目录
-    if ca_dir:
-        ca_dir_path = ca_dir.resolve()
-        if not ca_dir_path.exists():
-            raise FileNotFoundError(f"CA dir not found: {ca_dir_path}")
-        ca_cert_candidates = list(ca_dir_path.glob("*_ca_cert.pem"))
-        if not ca_cert_candidates:
-            raise FileNotFoundError(f"no *_ca_cert.pem in {ca_dir_path}")
-        ca_cert_path = ca_cert_candidates[0]
-        ca_key_path = ca_dir_path / ca_cert_path.name.replace("_ca_cert.pem", "_ca_key.pem")
-        if not ca_key_path.exists():
-            raise FileNotFoundError(f"CA key not found: {ca_key_path}")
-    else:
-        cert_dir = ensure_dir(etc_dir / "certs")
-        ca_cert, ca_key = cm.create_ca(str(cert_dir), name=ca_name)
-        ca_cert_path, ca_key_path = Path(ca_cert), Path(ca_key)
-
+    ca_cert_path, ca_key_path = _check_or_generate_ca(cm, ca_name, ca_dir)
     cert_path, key_path = cm.create_cert_from_ca(
-        str(ca_dir_path if ca_dir else ca_cert_path.parent),
+        str(ca_dir),
         hostname=zone_id,
         hostnames=[zone_id, f"*.{zone_id}"],
         target_dir=str(etc_dir),
     )
 
-    # 兼容老命名，仅保留一套证书（包含 zone 与通配 SAN）
-    copy_if_exists(Path(cert_path), etc_dir / "tls_certificate.pem")
-    copy_if_exists(Path(key_path), etc_dir / "tls_key.pem")
+    shutil.move(cert_path, etc_dir / "zone_cert.cert")
+    shutil.move(key_path, etc_dir / "zone_cert_key.pem")
+
     # 保留 CA 以便信任
-    copy_if_exists(ca_cert_path, etc_dir / "ca_certificate.pem")
+    copy_if_exists(ca_cert_path, etc_dir / "ca.cert")
     copy_if_exists(ca_key_path, etc_dir / "ca_key.pem")
     print(f"tls certs generated under {etc_dir}")
+
+    post_gateway_config_str = f"""
+stacks:
+    zone_gateway_https:
+    bind: 0.0.0.0:443
+    protocol: tls
+    certs:
+      - domain: "{zone_id}"
+        cert_path: ./zone_cert.cert
+        key_path: ./zone_cert_key.pem
+      - domain: "*.{zone_id}"
+        cert_path: ./zone_cert.cert
+        key_path: ./zone_cert_key.pem
+    hook_point:
+      main:
+        id: main
+        priority: 1
+        blocks:
+          default:
+            id: default
+            priority: 1
+            block: |
+              return "server node_gateway"; 
+    """
+    write_text(etc_dir / "post_gateway.yaml", post_gateway_config_str)
 
 
 def make_identity_files(
@@ -194,7 +226,7 @@ def make_identity_files(
     if not BUCKYCLI_BIN.exists():
         raise FileNotFoundError(f"buckycli binary missing at {BUCKYCLI_BIN}")
 
-    tmp_root = ensure_dir(target_dir / "_buckycli_tmp")
+    tmp_root = ensure_dir(BUCKYCLI_DIR)
     user_tmp = ensure_dir(tmp_root / zone_id)
 
     # 1. 创建 user/zone
@@ -232,6 +264,8 @@ def make_identity_files(
 
     # 4. TLS 证书
     _generate_tls(zone_id, ca_name, ensure_dir(target_dir / "etc"), ca_dir)
+
+    
 
 
 def make_repo_cache_file(target_dir: Path) -> None:
@@ -274,8 +308,8 @@ def make_sn_configs(
     sn_base_host: str,
     sn_ip: str,
     sn_device_name: str = "sn_server",
-    ca_name: str = "buckyos_sn",
-    ca_dir: Optional[Path] = None,
+    ca_name: str = "buckyos_test_ca",
+    ca_dir: Path = None,
 ) -> None:
     """生成 SN（Super Node）服务器配置文件。
     
@@ -342,30 +376,14 @@ def make_sn_configs(
 
     cm = CertManager()
     
-    # 生成或使用已有 CA
-    if ca_dir and ca_dir.exists():
-        ca_dir_path = ca_dir.resolve()
-        print(f"使用已有 CA: {ca_dir_path}")
-        ca_cert_candidates = list(ca_dir_path.glob("*_ca_cert.pem"))
-        if not ca_cert_candidates:
-            raise FileNotFoundError(f"在 {ca_dir_path} 中未找到 *_ca_cert.pem")
-        ca_cert_path = ca_cert_candidates[0]
-        ca_key_path = ca_dir_path / ca_cert_path.name.replace("_ca_cert.pem", "_ca_key.pem")
-        if not ca_key_path.exists():
-            raise FileNotFoundError(f"CA 私钥未找到: {ca_key_path}")
-    else:
-        # 生成新的 CA
-        ca_output_dir = ensure_dir(target_dir / "ca")
-        ca_cert, ca_key = cm.create_ca(str(ca_output_dir), name=ca_name)
-        ca_cert_path, ca_key_path = Path(ca_cert), Path(ca_key)
-        print(f"已生成 CA 证书: {ca_cert_path}")
+    ca_cert_path, ca_key_path = _check_or_generate_ca(cm, ca_name, ca_dir)
     
     # 生成服务器证书（包含 sn.$sn_base 和 *.web3.$sn_base）
     sn_hostname = f"sn.{sn_base_host}"
     web3_wildcard = f"*.web3.{sn_base_host}"
     
     cert_path, key_path = cm.create_cert_from_ca(
-        str(ca_cert_path.parent),
+        str(ca_dir),
         hostname=sn_hostname,
         target_dir=str(target_dir),
         hostnames=[web3_wildcard, f"web3.{sn_base_host}"],
@@ -437,7 +455,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
                 "did:web:buckyos.io",
             ],
             "force_https": False,
-            "ca_name": "buckyos_local",
+            "ca_name": "buckyos_test_ca",
             "is_sn": False,
         }
     if group_name == "alice.ood1":
@@ -454,7 +472,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
                 "did:web:buckyos.io",
             ],
             "force_https": False,
-            "ca_name": "buckyos_local",
+            "ca_name": "buckyos_test_ca",
             "is_sn": False,
         }
     if group_name == "bob.ood1":
@@ -471,10 +489,10 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
                 "did:web:buckyos.io",
             ],
             "force_https": False,
-            "ca_name": "buckyos_local",
+            "ca_name": "buckyos_test_ca",
             "is_sn": False,
         }
-    if group_name == "ood1.charlie":
+    if group_name == "charlie.ood1":
         return {
             "username": "charlie",
             "zone_id": "charlie.me",
@@ -489,7 +507,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
                 "did:web:buckyos.io",
             ],
             "force_https": False,
-            "ca_name": "buckyos_local",
+            "ca_name": "buckyos_test_ca",
             "is_sn": False,
         }
     if group_name == "sn_server" or group_name == "sn":
@@ -504,7 +522,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
                 "did:web:buckyos.io",
             ],
             "force_https": False,
-            "ca_name": "buckyos_sn",
+            "ca_name": "buckyos_test_ca",
             "is_sn": True,
         }
     if group_name == "devtests_ood1" or group_name == "sn_web":
@@ -512,7 +530,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "username": "devtests",
             "zone_id": "devtests.org",
             "node_name": "ood1",
-            "netid": "wan", #portmap https走中转,rtcp可以直连
+            "netid": "wan", 
             "sn_base_host": "",
             "web3_bridge": "web3.devtests.org",
             "trust_did": [
@@ -521,13 +539,15 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
                 "did:web:buckyos.io",
             ],
             "force_https": False,
-            "ca_name": "buckyos_local",
+            "ca_name": "buckyos_test_ca",
             "is_sn": False,
         }
     raise ValueError(f"invalid group name: {group_name}")
 
 def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_dir: Optional[Path],env_root: Optional[Path]) -> None:
     params = get_params_from_group_name(group_name)
+    if ca_dir is None:
+        ca_dir = ensure_dir(BUCKYCLI_DIR / "ca")
     print(f"############ make config for group name: {group_name} #########################")
     print(f"rootfs dir : {target_root}")
     print(f"group      : {group_name}")
@@ -539,7 +559,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
             target_root = Path("/opt/web3-gateway")
 
         if env_root is None:
-            env_root = ROOTFS_DIR.joinpath("_buckycli_tmp")
+            env_root = BUCKYCLI_DIR
         # SN 配置生成
         print(f"sn_base_host: {params['sn_base_host']}")
         print(f"sn_ip       : {params['sn_ip']}")
@@ -565,6 +585,10 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
         # bob.ood1
         add_user_to_sn(env_root, "bob.web3.devtests.org", db_path)
         add_device_to_sn(env_root, "bob.web3.devtests.org", "ood1", db_path)
+
+        #charlie.ood1
+        add_user_to_sn(env_root, "charlie.me", db_path)
+        add_device_to_sn(env_root, "charlie.me", "ood1", db_path)
     else:
         if target_root is None:
             target_root = ROOTFS_DIR
