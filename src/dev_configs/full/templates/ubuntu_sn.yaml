@@ -6,6 +6,9 @@ packages:
 - wget
 - systemd-resolved
 
+# Disable cloud-init management of /etc/hosts
+manage_etc_hosts: false
+
 users:
 - name: ubuntu
   sudo: ALL=(ALL) NOPASSWD:ALL

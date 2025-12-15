@@ -472,7 +472,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "username": "alice",
             "zone_id": "alice.bns.did",
             "node_name": "ood1",
-            "netid": "",
+            "netid": "lan",
             "rtcp_port": 2980,
             "sn_base_host": "devtests.org",
             "web3_bridge": "web3.devtests.org",
@@ -557,7 +557,25 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
         }
     raise ValueError(f"invalid group name: {group_name}")
 
-def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_dir: Optional[Path],env_root: Optional[Path]) -> None:
+def get_local_ip() -> str:
+    """获取本机IP地址。"""
+    #获得本机ip
+    import socket
+    try:
+        # 通过连接外部地址获取本机IP（推荐方法）
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip_address = s.getsockname()[0]
+        s.close()
+    except Exception:
+        # 回退到hostname方法
+        hostname = socket.gethostname()
+        ip_address = socket.gethostbyname(hostname)
+            
+    print(f"ip_address: {ip_address}")
+    return ip_address
+
+def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_dir: Optional[Path],sn_ip: Optional[str],env_root: Optional[Path]) -> None:
     params = get_params_from_group_name(group_name)
     if ca_dir is None:
         ca_dir = ensure_dir(BUCKYCLI_DIR / "ca")
@@ -573,9 +591,15 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
 
         if env_root is None:
             env_root = BUCKYCLI_DIR
+
+        if sn_ip is None:
+            sn_ip = params.get("sn_ip", None)
+            if sn_ip is None:
+                sn_ip = get_local_ip()
+
         # SN 配置生成
         print(f"sn_base_host: {params['sn_base_host']}")
-        print(f"sn_ip       : {params['sn_ip']}")
+        print(f"sn_ip       : {sn_ip}")
         print(f"device_name : {params['sn_device_name']}")
         print(f"web3_bridge : {params['web3_bridge']}")
         
@@ -653,8 +677,14 @@ def main() -> None:
         type=Path,
         help="使用已有 CA 目录（含 *_ca_cert.pem 与对应 key），否则自动生成",
     )
+    parser.add_argument(
+        "--sn_ip",
+        default=None,
+        type=str,
+        help="SN IP 地址",
+    )
     args = parser.parse_args()
-    make_config_by_group_name(args.group, args.rootfs, args.ca, None)
+    make_config_by_group_name(args.group, args.rootfs, args.ca, args.sn_ip, None)
 
 if __name__ == "__main__":
     sys.exit(main())

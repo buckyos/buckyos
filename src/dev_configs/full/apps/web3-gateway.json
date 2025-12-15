@@ -12,12 +12,12 @@
       "echo 'MAKE sure you already build the linux version of cyfs-gateway (result store in web3-gateway/)'"
     ],
     "build_all": [
-        "python3 make_config.py sn_server"
+        "python3 make_config.py sn_server --sn_ip {{sn.ip}}"
     ],
     "install": [
       "sudo chmod +x /opt/web3-gateway/web3_gateway"
     ],
     "start": ["sudo python3 /opt/web3-gateway/start.py"],
-    "stop": ["sudopython3 /opt/web3-gateway/stop.py"]
+    "stop": ["sudo python3 /opt/web3-gateway/stop.py"]
   }
 }

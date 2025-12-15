@@ -725,6 +725,7 @@ async fn node_daemon_main_loop(
                 }
             
                 let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();
+                info!("*** sn: {:?}", sn);
                 keep_cyfs_gateway_service(node_id,device_doc, device_private_key, sn,
                 need_reload).await.map_err(|err| {
                     error!("keep cyfs_gateway service failed! {}", err);
