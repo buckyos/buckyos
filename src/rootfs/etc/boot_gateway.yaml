@@ -1,4 +1,21 @@
 stacks:
+  node_rtcp:
+    id: node_rtcp
+    protocol: rtcp
+    bind: 0.0.0.0:2980
+    key_path: ./node_private_key.pem
+    device_config_path: ./node_device_config.json
+    hook_point:
+      main:
+        id: main
+        priority: 1
+        blocks:
+          default:
+            id: default
+            priority: 1
+            block: |
+              return "forward ${REQ.protocol}:///${REQ.dest_host}:${REQ.dest_port}";
+              
   zone_gateway_http:
     id: zone_gateway_http
     protocol: tcp

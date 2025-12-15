@@ -139,7 +139,7 @@ def _copy_identity_outputs(
     etc_dir = ensure_dir(target_dir / "etc")
 
     copy_if_exists(user_dir / f"{zone_id}.zone.json", etc_dir / f"{zone_id}.zone.json")
-    for name in ("start_config.json", "node_identity.json", "node_private_key.pem"):
+    for name in ("start_config.json", "node_identity.json", "node_private_key.pem", "node_device_config.json"):
         copy_if_exists(node_dir / name, etc_dir / name)
 
     buckycli_dir = ensure_dir(etc_dir / ".buckycli")
@@ -189,7 +189,7 @@ def _generate_tls(zone_id: str, ca_name: str, etc_dir: Path, ca_dir: Path) -> No
 
     post_gateway_config_str = f"""
 stacks:
-    zone_gateway_https:
+  zone_gateway_https:
     bind: 0.0.0.0:443
     protocol: tls
     certs:
@@ -208,7 +208,7 @@ stacks:
             id: default
             priority: 1
             block: |
-              return "server node_gateway"; 
+              return "server node_gateway";
     """
     write_text(etc_dir / "post_gateway.yaml", post_gateway_config_str)
 
@@ -218,6 +218,8 @@ def make_identity_files(
     username: str,
     zone_id: str,
     node_name: str,
+    netid: str,
+    rtcp_port: int,
     sn_base_host: str,
     ca_name: str,
     ca_dir: Optional[Path],
@@ -228,6 +230,14 @@ def make_identity_files(
 
     tmp_root = ensure_dir(BUCKYCLI_DIR)
     user_tmp = ensure_dir(tmp_root / zone_id)
+    node_name_for_zone = node_name
+    if netid != "lan":
+        node_name_for_zone = f"{node_name}@{netid}"
+
+    # 种需要sn的情况   
+    # 有sn_base_host,node_name netid是lan: 标准的nat后节点
+    # 有sn_base_host,node_name netid是wan: 需要配置ddns_sn_url
+    # 有sn_base_host,node_name netid是portmap: 开了portmap后节点
 
     # 1. 创建 user/zone
     run_buckycli(
@@ -238,9 +248,11 @@ def make_identity_files(
             "--hostname",
             zone_id,
             "--ood_name",
-            node_name,
+            node_name_for_zone,
             "--sn_base_host",
             sn_base_host,
+            "--rtcp_port",
+            str(rtcp_port),
             "--output_dir",
             str(user_tmp),
         ]
@@ -252,6 +264,8 @@ def make_identity_files(
             "create_node_configs",
             "--device_name",
             node_name,
+            "--net_id",
+            netid,
             "--env_dir",
             str(user_tmp),
         ]
@@ -447,6 +461,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "zone_id": "test.buckyos.io",
             "node_name": "ood1",
             "netid": "wan",
+            "rtcp_port": 2980,
             "sn_base_host": "",
             "web3_bridge": "web3.devtests.org",
             "trust_did": [
@@ -461,9 +476,10 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
     if group_name == "alice.ood1":
         return {
             "username": "alice",
-            "zone_id": "alice.web3.devtests.org",
+            "zone_id": "alice.bns.did",
             "node_name": "ood1",
             "netid": "",
+            "rtcp_port": 2980,
             "sn_base_host": "devtests.org",
             "web3_bridge": "web3.devtests.org",
             "trust_did": [
@@ -478,11 +494,13 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
     if group_name == "bob.ood1":
         return {
             "username": "bob",
-            "zone_id": "bob.web3.devtests.org",
+            "zone_id": "bob.bns.did",
             "node_name": "ood1",
-            "netid": "wan",
+            "netid": "wan_dyn",
+            "rtcp_port": 2980,
             "sn_base_host": "devtests.org", # netid是wan但又有SN，说明要用d-dns
             "web3_bridge": "web3.devtests.org",
+            "ddns_sn_url": "sn.devtests.org",
             "trust_did": [
                 "did:web:buckyos.org",
                 "did:web:buckyos.ai",
@@ -531,6 +549,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "zone_id": "devtests.org",
             "node_name": "ood1",
             "netid": "wan", 
+            "rtcp_port": 2980,
             "sn_base_host": "",
             "web3_bridge": "web3.devtests.org",
             "trust_did": [
@@ -611,6 +630,8 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
             params["username"],
             params["zone_id"],
             params["node_name"],
+            params["netid"],
+            params["rtcp_port"],
             params["sn_base_host"],
             params["ca_name"],
             ca_dir,

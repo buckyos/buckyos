@@ -11,6 +11,7 @@ use std::{fs, path::Path};
 use buckyos_api::*;
 use buckyos_api::test_config;
 use clap::{Arg, Command};
+use log::info;
 use package_cmd::*;
 use loader::*;
 
@@ -327,6 +328,15 @@ oods look like this 'ood1,ood2'.")
                         .value_name("sn_base_host")
                         .help("base host name for SN, e.g. test.buckyos.io")
                         .required(true)
+                )
+                .arg(
+                    Arg::new("rtcp_port")
+                        .long("rtcp_port")
+                        .value_parser(clap::value_parser!(u16))
+                        .default_value("2980")
+                        .value_name("rtcp_port")
+                        .help("rtcp port for the gateway port (default is 2980)")
+                        .required(false)
                 )
                 .arg(
                     Arg::new("output_dir")
@@ -724,13 +734,15 @@ oods look like this 'ood1,ood2'.")
             let hostname = matches.get_one::<String>("hostname").unwrap();
             let ood_name = matches.get_one::<String>("ood_name").unwrap();
             let sn_base_host = matches.get_one::<String>("sn_base_host").unwrap();
+            let rtcp_port = matches.get_one::<u16>("rtcp_port").unwrap();
             let output_dir = matches.get_one::<String>("output_dir");
-            
+            info!("create user env: username: {}, hostname: {}, ood_name: {}, sn_base_host: {}, rtcp_port: {}", username, hostname, ood_name, sn_base_host, rtcp_port);
             match test_config::cmd_create_user_env(
                 username,
                 hostname,
                 ood_name,
                 sn_base_host,
+                *rtcp_port,
                 output_dir.map(|s| s.as_str()),
             ).await {
                 Ok(_) => {

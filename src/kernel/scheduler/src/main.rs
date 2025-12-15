@@ -459,6 +459,7 @@ g, cyfs-gateway, kernel
             TEST_HOSTNAME,
             "ood1",
             "",
+            2980,
             Some(output_dir_str.as_str()),
         )
         .await

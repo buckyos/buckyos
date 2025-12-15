@@ -394,14 +394,28 @@ impl<'a> UserEnvScope<'a> {
 
     /// 创建 Zone 配置 
     /// return zone_boot_config_jwt, TXT Records
-    pub fn create_zone_boot_config_jwt(&self, sn_host: Option<String>, ood:OODDescriptionString) -> ZoneTxtRecord {
+    pub fn create_zone_boot_config_jwt(&self, sn_host: Option<String>, ood:OODDescriptionString, rtcp_port: u16) -> ZoneTxtRecord {
         let device_full_id = format!("{}.{}", self.username, ood.name.as_str());
         let device_key_pair = TestKeys::get_key_pair_by_id(&device_full_id).unwrap();
+        let ood_net_id = ood.net_id.clone();
+        let mut ddns_sn_url = None;
+        let mut real_sn_host = sn_host.clone();
+        if ood_net_id.is_some() {
+            let ood_net_id = ood_net_id.unwrap();
+            if ood_net_id.starts_with("wan") {
+                real_sn_host = None;
+            }
+
+            if ood_net_id.starts_with("wan_dyn") {
+                ddns_sn_url = sn_host.clone();
+            }
+        }
+
 
         let mut zone_boot = ZoneBootConfig {
             id: None,
             oods: vec![ood.clone()],
-            sn: sn_host,
+            sn: real_sn_host,
             exp: self.builder.exp,
             devices:HashMap::new(),
             owner: None,
@@ -424,18 +438,37 @@ impl<'a> UserEnvScope<'a> {
         let owner_key = get_encoding_key(self.key_pair.private_key_pem);
         let jwt = zone_boot.encode(Some(&owner_key)).unwrap();
         let pkx = get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap();
-        println!("=> {} TXT Record: BOOT={};", zone_host_name, jwt.to_string());
-        println!("=> {} TXT Record: PKX={};", zone_host_name, pkx.as_str());
+        println!("=> {} TXT Record({}): BOOT={};", zone_host_name, jwt.to_string().len()+6, jwt.to_string());
+        println!("=> {} TXT Record({}): PKX={};", zone_host_name, pkx.len()+5, pkx.as_str());
+
+        let real_rtcp_port = if rtcp_port == 2980 { None } else { Some(rtcp_port as u32) };
         //ood1 mini config jwt
         let mini_config = DeviceMiniConfig {
             name: ood.name.clone(),
             x: device_key_pair.public_key_x.clone(),
-            rtcp_port: None,
+            rtcp_port: real_rtcp_port,
             exp: self.builder.exp,
             extra_info: HashMap::new(),
         };   
         let mini_jwt = mini_config.to_jwt(&owner_key).unwrap();
-        println!("=> {} TXT Record: DEV={};", zone_host_name, mini_jwt.to_string());
+        println!("=> {} TXT Record({}): DEV={};", zone_host_name, mini_jwt.len()+5, mini_jwt.to_string());
+
+        // 2. 创建设备配置和 JWT
+        let device_jwk = get_jwk(&device_key_pair.public_key_x);
+        let mut device_config = DeviceConfig::new_by_jwk(ood.name.as_str(), device_jwk.clone());
+        device_config.support_container = true;
+        device_config.net_id = ood.net_id.clone();
+        device_config.iss = self.did.to_string();
+        device_config.ddns_sn_url = ddns_sn_url;
+        let node_dir = self.user_dir.join(ood.name.as_str());
+        write_json(&node_dir.join("node_device_config.json"), &device_config);
+   
+
+        println!(
+            "{} device config: {}",
+            ood.name.as_str(),
+            serde_json::to_string_pretty(&device_config).unwrap()
+        );
 
         let zone_txt_record = ZoneTxtRecord {
             boot_config_jwt: jwt.to_string(),
@@ -461,17 +494,14 @@ impl<'a> UserEnvScope<'a> {
 
         // 2. 创建设备配置和 JWT
         let device_jwk = get_jwk(&device_key_pair.public_key_x);
-        let mut device_config = DeviceConfig::new_by_jwk(device_name, device_jwk.clone());
-        device_config.support_container = true;
-        device_config.net_id = net_id;
-        device_config.iss = self.did.to_string();
+        //load device_config from file
+        let device_config_path = node_dir.join("node_device_config.json");
+        let device_config: DeviceConfig = serde_json::from_str(
+            &fs::read_to_string(&device_config_path).unwrap()
+        ).unwrap();
 
-        println!(
-            "{} device config: {}",
-            device_name,
-            serde_json::to_string_pretty(&device_config).unwrap()
-        );
-
+        println!("input net_id: {:?},device_config.net_id: {:?}", net_id, device_config.net_id);
+  
         let owner_key = get_encoding_key(self.key_pair.private_key_pem);
         let device_jwt = device_config.encode(Some(&owner_key)).unwrap();
         println!("{} device jwt: {}", device_name, device_jwt.to_string());
@@ -744,7 +774,8 @@ pub async fn cmd_create_user_env(
     username: &str,
     hostname: &str,
     ood_name: &str,
-    sn_base_host: &str,
+    sn_base_host: &str, 
+    rtcp_port: u16,
     output_dir: Option<&str>,
 ) -> Result<(), String> {
     let root_dir = if let Some(dir) = output_dir {
@@ -783,7 +814,7 @@ pub async fn cmd_create_user_env(
     
     // 创建 zone_boot_config（目前仅生成一个简单的 OOD 描述，SN 为空）
     let ood: OODDescriptionString = ood_name.to_string().parse().unwrap();
-    let _zone_txt_record = scope.create_zone_boot_config_jwt(sn_host, ood);
+    let _zone_txt_record = scope.create_zone_boot_config_jwt(sn_host, ood, rtcp_port);
 
     println!("成功创建用户环境配置: {}", username);
     println!("Zone hostname: {}", hostname);
@@ -932,6 +963,7 @@ pub async fn create_test_env_configs() {
     let _bob_zone_jwt = bob_scope.create_zone_boot_config_jwt(
         Some("sn.buckyos.io".to_string()),
         "ood1".to_string().parse().unwrap(),
+        2980,
     );
 
     // Bob OOD1
@@ -1020,7 +1052,7 @@ mod tests {
         // 创建 Zone 配置
         let zone_did = DID::new("web", "test.buckyos.io");
         let ood: OODDescriptionString = "ood1".to_string().parse().unwrap();
-        let zone_txt_record = scope.create_zone_boot_config_jwt(None, ood);
+        let zone_txt_record = scope.create_zone_boot_config_jwt(None, ood, 2980);
 
         // 创建节点身份配置
         let node_identity_config = NodeIdentityConfig {
@@ -1076,7 +1108,7 @@ mod tests {
         let sn_host = Some("sn.buckyos.io".to_string());
 
         // 通过 create_zone_boot_config_jwt 生成 JWT
-        let zone_txt_record = scope.create_zone_boot_config_jwt(sn_host.clone(), ood.clone());
+        let zone_txt_record = scope.create_zone_boot_config_jwt(sn_host.clone(), ood.clone(), 2980);
 
         // 使用 owner 公钥对 JWT 进行解码
         let public_key_jwk = get_jwk(&owner_keys.public_key_x);

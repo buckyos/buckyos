@@ -90,13 +90,19 @@ main.py $group_name info
 
 ### ood1@alice.web3.devtests.org (owner did:bns:alice)
 - 标准的内网nat节点 （流量全转发）
+- 在zone_boot中配置sn : sn.devtests.org
 
 ### ood1@bob.web3.devtests.org (owner did:bns:bob)
 - 打开了443、80、2980 的标准端口映射 （D-DNS）
+- 在zone_boot中没有配置sn
+- 在ood1的device_doc中，配置了ddns_sn_url : sn.devtests.org
+- ood1的netid为wan_dyn
 
 ### ood1@charlie.me (owner did:bns:charlie)
 - 使用自有域名，使用自定义的2981端口映射 （D-DNS,rtcp流量不转发，其它转发）
-
+- 在zone_boot中配置了sn : sn.devtests.org
+- device_mini_config的rtcp_port位置为2981
+- ood1的netid为portmap
 
 ## 访问zone的逻辑
 ### 通过https访问
@@ -115,7 +121,7 @@ main.py $group_name info
 ```rust
 // node_daemon 判断是否需要和sn keep-tunnel
 let mut need_keep_tunnel_to_sn = false;
-if sn.is_some() {
+if sn.is_some() { //sn来自zone_config
     need_keep_tunnel_to_sn = true;
     if device_doc.net_id.is_some() {
         let net_id = device_doc.net_id.as_ref().unwrap();
