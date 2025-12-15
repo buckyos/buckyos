@@ -2,27 +2,32 @@
     "nodes": {
       "sn": {
         "node_id": "sn",
-        "vm_template": "ubuntu_basic",
+        "vm_template": "ubuntu_sn",
         "network": {
           "lan_id": "wan",
           "type": "bridge"
         },
         "apps": {
-          "web3_bridge": {
-  
+          "web3-gateway": {
+            "node_group_name": "sn_server"
           }
         },
         "init_commands": [
           "sudo hostnamectl set-hostname sn",
           "sudo chmod 777 /opt/"
         ],
+        "instance_commands": [
+            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
+            "sudo sh -c \"echo '{{sn-web.ip}} devtests.org' >> /etc/hosts\"",
+            "sudo sh -c \"echo '{{sn-web.ip}} www.devtests.org' >> /etc/hosts\""
+          ],
         "directories": {
           "logs": "/opt/buckyos/logs"
         }
       },
       "sn-web": {
         "node_id": "ood1_devtests",
-        "vm_template": "ubuntu_buckyos",
+        "vm_template": "ubuntu_basic",
         "network": {
           "lan_id": "wan",
           "type": "bridge"
@@ -34,10 +39,11 @@
         },
         "init_commands": [
           "sudo hostnamectl set-hostname sn_web",
-          "sudo chmod 777 /opt/",
-          "sudo sh -c \"echo '127.0.0.1 sn.devtests.org' >> /etc/hosts\""
+          "sudo chmod 777 /opt/"
+
         ],
         "instance_commands": [
+          "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
           "sudo sh -c \"echo '{{sn-web.ip}} devtests.org' >> /etc/hosts\"",
           "sudo sh -c \"echo '{{sn-web.ip}} www.devtests.org' >> /etc/hosts\""
         ],
@@ -47,7 +53,7 @@
       },
       "alice-ood1": {
         "node_id": "alice_ood1",
-        "vm_template": "ubuntu_buckyos",
+        "vm_template": "ubuntu_basic",
         "network": {
           "lan_id": "lan",
           "type": "nat"
@@ -64,7 +70,12 @@
           "sudo iptables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT"
         ],
         "instance_commands": [
-            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\""
+            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
+            "sudo sh -c \"echo '{{sn-web.ip}} devtests.org' >> /etc/hosts\"",
+            "sudo sh -c \"echo '{{sn-web.ip}} www.devtests.org' >> /etc/hosts\"",
+            "sudo mkdir -p /etc/systemd/resolved.conf.d",
+            "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nFallbackDNS=8.8.8.8 1.1.1.1\\nDomains=~devtests.org' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
+            "sudo systemctl restart systemd-resolved"
         ],
         "directories": {
           "logs": "/opt/buckyos/logs"
@@ -72,7 +83,7 @@
       },
       "bob-ood1": {
         "node_id": "bob_ood1",
-        "vm_template": "ubuntu_buckyos",
+        "vm_template": "ubuntu_basic",
         "network": {
           "lan_id": "lan",
           "type": "nat"
@@ -87,7 +98,12 @@
           "sudo chmod 777 /opt/"
         ],
         "instance_commands": [
-          "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\""
+          "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
+          "sudo sh -c \"echo '{{sn-web.ip}} devtests.org' >> /etc/hosts\"",
+          "sudo sh -c \"echo '{{sn-web.ip}} www.devtests.org' >> /etc/hosts\"",
+          "sudo mkdir -p /etc/systemd/resolved.conf.d",
+          "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nFallbackDNS=8.8.8.8 1.1.1.1\\nDomains=~devtests.org' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
+          "sudo systemctl restart systemd-resolved"
         ],
         "directories": {
           "logs": "/opt/buckyos/logs"
@@ -95,7 +111,7 @@
       },
       "charlie-ood1": {
         "node_id": "charlie_ood1",
-        "vm_template": "ubuntu_buckyos",
+        "vm_template": "ubuntu_basic",
         "network": {
           "lan_id": "lan",
           "type": "nat"
@@ -113,7 +129,12 @@
           "sudo iptables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT"
         ],
         "instance_commands": [
-          "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\""
+          "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
+          "sudo sh -c \"echo '{{sn-web.ip}} devtests.org' >> /etc/hosts\"",
+          "sudo sh -c \"echo '{{sn-web.ip}} www.devtests.org' >> /etc/hosts\"",
+          "sudo mkdir -p /etc/systemd/resolved.conf.d",
+          "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nFallbackDNS=8.8.8.8 1.1.1.1\\nDomains=~devtests.org' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
+          "sudo systemctl restart systemd-resolved"
         ],
         "directories": {
           "logs": "/opt/buckyos/logs"

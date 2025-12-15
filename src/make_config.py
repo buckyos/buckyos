@@ -400,7 +400,7 @@ def make_sn_configs(
         str(ca_dir),
         hostname=sn_hostname,
         target_dir=str(target_dir),
-        hostnames=[web3_wildcard, f"web3.{sn_base_host}"],
+        hostnames=[sn_hostname, web3_wildcard],
     )
     
     # 复制/重命名为标准文件名
@@ -422,15 +422,9 @@ def make_sn_configs(
     print(f"  - {target_dir / 'ca' / ca_cert_path.name}")
     
     #3 修改params.json
-    params_json = {
-        "params": {
-            "sn_host": sn_base_host,
-            "sn_ip": sn_ip,
-            "sn_boot_jwt": "todo",
-            "sn_owner_pk": "todo",
-            "sn_device_jwt": "todo",
-        }
-    }
+    params_json = json.load(open(target_dir / "params.json"))
+    params_json["params"]["sn_ip"] = sn_ip
+    write_json(target_dir / "params.json", params_json)
     
     print(f"\n✓ SN 配置文件生成完成!")
     print(f"  输出目录: {target_dir}")
@@ -531,7 +525,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
     if group_name == "sn_server" or group_name == "sn":
         return {
             "sn_base_host": "devtests.org",
-            "sn_ip": "127.0.0.1", #TODO: 需要从外部获取（环境变量最简单?)
+            "sn_ip": "192.168.64.84", #TODO: 需要从外部获取（环境变量最简单?)
             "sn_device_name": "sn_server", 
             "web3_bridge": "web3.devtests.org",
             "trust_did": [

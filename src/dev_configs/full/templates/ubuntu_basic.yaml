@@ -4,8 +4,8 @@ packages:
 - docker.io
 - curl
 - wget
+- systemd-resolved
 
 users:
 - name: ubuntu
   sudo: ALL=(ALL) NOPASSWD:ALL
-
