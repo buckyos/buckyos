@@ -616,7 +616,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
         make_sn_configs(
             target_root,
             params["sn_base_host"],
-            params["sn_ip"],
+            sn_ip,
             params["sn_device_name"],
             params["ca_name"],
             ca_dir,

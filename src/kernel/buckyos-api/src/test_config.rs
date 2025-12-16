@@ -615,6 +615,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
         "sn_host": sn_base_host,
         "sn_ip": sn_ip.to_string(),
     }});
+    println!("params: {:?}", params);
     write_json(&sn_dir.join("params.json"), &params);
     println!("- Created params.json.");
 
