@@ -221,6 +221,7 @@ def make_identity_files(
     netid: str,
     rtcp_port: int,
     sn_base_host: str,
+    web3_bridge: str,
     ca_name: str,
     ca_dir: Optional[Path],
 ) -> None:
@@ -277,7 +278,7 @@ def make_identity_files(
     _copy_identity_outputs(user_dir, node_dir, target_dir, zone_id)
 
     # 4. TLS 证书
-    _generate_tls(zone_id, ca_name, ensure_dir(target_dir / "etc"), ca_dir)
+    _generate_tls(did_host_to_real_host(zone_id, web3_bridge), ca_name, ensure_dir(target_dir / "etc"), ca_dir)
 
     
 
@@ -446,6 +447,14 @@ def make_sn_db(target_dir: Path, user_list: List[str]) -> None:
     """占位，按需求补充。"""
     print("skip sn_db generation (not implemented)")
 
+
+def did_host_to_real_host(did_host: str,web3_bridge: str) -> str:
+    """将 DID 主机名转换为真实主机名。"""
+    if did_host.endswith(".bns.did"):
+        result = did_host.split(".bns.did")[0] + "." + web3_bridge
+        print(f"did_host_to_real_host: {did_host} -> {result}")
+        return result
+    return did_host
 
 def get_params_from_group_name(group_name: str) -> Dict[str, object]:
     """根据分组名获取所有生成参数。"""
@@ -651,6 +660,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
             params["netid"],
             params["rtcp_port"],
             params["sn_base_host"],
+            params["web3_bridge"],
             params["ca_name"],
             ca_dir,
         )

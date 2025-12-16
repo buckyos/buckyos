@@ -16,7 +16,10 @@
       "python3 make_config.py {{buckyos.node_group}}"
     ],
     "install": [
-      "sudo chmod 777 -R /opt/buckyos/bin/"
+      "sudo chmod 777 -R /opt/buckyos/bin/",
+      "sudo cp /opt/buckyos/etc/ca.cert /usr/local/share/ca-certificates/buckyos_ca.crt",
+      "sudo chmod 644 /usr/local/share/ca-certificates/buckyos_ca.crt",
+      "sudo update-ca-certificates"
     ],
     "start": ["sudo nohup /opt/buckyos/bin/node-daemon/node_daemon --enable_active > /dev/null 2>&1 &"],
     "stop": ["sudo python3 /opt/buckyos/bin/stop.py"]
