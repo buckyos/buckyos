@@ -407,7 +407,10 @@ impl<'a> UserEnvScope<'a> {
             }
 
             if ood_net_id.starts_with("wan_dyn") {
-                ddns_sn_url = sn_host.clone();
+                if sn_host.is_some() {
+                    let sn_real_host = sn_host.clone().unwrap();
+                    ddns_sn_url = Some(format!("https://{}/kapi/sn", sn_real_host));
+                }
             }
         }
 

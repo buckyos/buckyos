@@ -14,6 +14,9 @@
     "build_all": [
         "python3 make_config.py sn_server --sn_ip {{sn.ip}}"
     ],
+    "update":[
+      "echo 'update web3-gateway'"
+    ],
     "install": [
       "sudo chmod +x /opt/web3-gateway/web3_gateway"
     ],

@@ -15,6 +15,9 @@
       "buckyos-install --all --app=buckyos",
       "python3 make_config.py {{buckyos.node_group}}"
     ],
+    "update":[
+      "echo 'update buckyos'"
+    ],
     "install": [
       "sudo chmod 777 -R /opt/buckyos/bin/",
       "sudo cp /opt/buckyos/etc/ca.cert /usr/local/share/ca-certificates/buckyos_ca.crt",

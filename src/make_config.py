@@ -503,7 +503,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "rtcp_port": 2980,
             "sn_base_host": "devtests.org", # netid是wan但又有SN，说明要用d-dns
             "web3_bridge": "web3.devtests.org",
-            "ddns_sn_url": "sn.devtests.org",
+            "ddns_sn_url": f"https://sn.devtests.org/kapi/sn",
             "trust_did": [
                 "did:web:buckyos.org",
                 "did:web:buckyos.ai",
