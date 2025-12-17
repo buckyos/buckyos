@@ -27,8 +27,8 @@
           "logs": "/opt/buckyos/logs"
         }
       },
-      "sn-web": {
-        "node_id": "ood1_devtests",
+      "web": {
+        "node_id": "web",
         "vm_template": "ubuntu_basic",
         "network": {
           "lan_id": "wan",
@@ -45,8 +45,8 @@
         ],
         "instance_commands": [
           "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
-          "sudo sh -c \"echo '{{sn-web.ip}} devtests.org' >> /etc/hosts\"",
-          "sudo sh -c \"echo '{{sn-web.ip}} www.devtests.org' >> /etc/hosts\""
+          "sudo sh -c \"echo '{{web.ip}} devtests.org' >> /etc/hosts\"",
+          "sudo sh -c \"echo '{{web.ip}} www.devtests.org' >> /etc/hosts\""
         ],
         "directories": {
           "logs": "/opt/buckyos/logs"
@@ -72,8 +72,8 @@
         ],
         "instance_commands": [
             "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
-            "sudo sh -c \"echo '{{sn-web.ip}} devtests.org' >> /etc/hosts\"",
-            "sudo sh -c \"echo '{{sn-web.ip}} www.devtests.org' >> /etc/hosts\"",
+            "sudo sh -c \"echo '{{web.ip}} devtests.org' >> /etc/hosts\"",
+            "sudo sh -c \"echo '{{web.ip}} www.devtests.org' >> /etc/hosts\"",
             "sudo mkdir -p /etc/systemd/resolved.conf.d",
             "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nFallbackDNS=8.8.8.8 1.1.1.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
             "sudo systemctl restart systemd-resolved"
@@ -100,8 +100,8 @@
         ],
         "instance_commands": [
           "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
-          "sudo sh -c \"echo '{{sn-web.ip}} devtests.org' >> /etc/hosts\"",
-          "sudo sh -c \"echo '{{sn-web.ip}} www.devtests.org' >> /etc/hosts\"",
+          "sudo sh -c \"echo '{{web.ip}} devtests.org' >> /etc/hosts\"",
+          "sudo sh -c \"echo '{{web.ip}} www.devtests.org' >> /etc/hosts\"",
           "sudo mkdir -p /etc/systemd/resolved.conf.d",
           "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nFallbackDNS=8.8.8.8 1.1.1.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
           "sudo systemctl restart systemd-resolved"
@@ -131,8 +131,8 @@
         ],
         "instance_commands": [
           "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
-          "sudo sh -c \"echo '{{sn-web.ip}} devtests.org' >> /etc/hosts\"",
-          "sudo sh -c \"echo '{{sn-web.ip}} www.devtests.org' >> /etc/hosts\"",
+          "sudo sh -c \"echo '{{web.ip}} devtests.org' >> /etc/hosts\"",
+          "sudo sh -c \"echo '{{web.ip}} www.devtests.org' >> /etc/hosts\"",
           "sudo mkdir -p /etc/systemd/resolved.conf.d",
           "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nFallbackDNS=8.8.8.8 1.1.1.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
           "sudo systemctl restart systemd-resolved"
