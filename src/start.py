@@ -46,7 +46,7 @@ def update_files(install_all=False,config_group_name=None):
 
         if config_group_name:
            target_root : Path = Path("/opt/buckyos")
-           make_config_by_group_name(config_group_name, target_root, None)
+           make_config_by_group_name(config_group_name, target_root, None, None, None)
         print("Files updated successfully")
     except ImportError as e:
         print(f"Failed to import install module: {e}")

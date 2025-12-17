@@ -1,25 +1,25 @@
-# rootfs的构建
-# 1. git clone 后,rootfs里只有 “必要的代码文件”，（相关配置文件也是以代码的形式存在的）
-# 2. build 后，rootfs里的bin目录会填充正确的编译产物
-# ------- start.py里的内容
-# 3. 基于该rootfs(主要是buckycli工具)调用make_config.py $config_group_name 会在target_rootfs里完成所有的配置文件
-# 4. 基于完成构建的rootfs,可以制作安装包，或则复制到开发环境运行调试（本机调试或虚拟机调试) --> 总是可以通过观察rootfs里的配置文件来了解上一次运行的配置
-# 5. 对于有多个node的虚拟机环境，是在完成了Linux版本的构建后，基于不同环境的需要make_config.py $node_group_name 来构造不同的rootfs,并复制到对应的虚拟机里
+# rootfs construction process
+# 1. After git clone, rootfs contains only "essential code files" (related config files also exist as code)
+# 2. After build, the rootfs/bin directory will be filled with correct build artifacts
+# ------- Content from start.py
+# 3. Based on this rootfs (mainly buckycli tool), calling make_config.py $config_group_name will complete all config files in target_rootfs
+# 4. Based on the completed rootfs, you can make installation packages or copy to development environment for debugging (local or VM debugging) --> You can always understand the last run configuration by observing the config files in rootfs
+# 5. For VM environments with multiple nodes, after completing the Linux version build, use make_config.py $node_group_name based on different environment needs to construct different rootfs and copy to corresponding VMs
 #
-# 需要构造的配置文件列表
-# - rootfs/local/did_docs/ 放入必要的doc缓存
-# - rootfs/node_daemon/root_pkg_env/pkgs/meta_index.db.fileobj 本机自动更新的“最后更新时间缓存”，该文件确保不会触发自动更新
-# - rootfs/etc/machine.json 根据目标环境的web3网桥配置和可信发行者，进行配置
-# - rootfs/etc/激活的身份文件组，(start_config.json,$zoneid.zone.json,node_identity.json,node_private_key.pem,tls证书文件，.buckycli目录下的ownerconfig)
+# List of configuration files to be constructed
+# - rootfs/local/did_docs/ - put necessary doc cache
+# - rootfs/node_daemon/root_pkg_env/pkgs/meta_index.db.fileobj - local auto-update "last update time cache", this file ensures no auto-update is triggered
+# - rootfs/etc/machine.json - configure according to target environment's web3 bridge and trusted issuers
+# - rootfs/etc/activated identity file group (start_config.json, $zoneid.zone.json, node_identity.json, node_private_key.pem, TLS certificate files, ownerconfig under .buckycli directory)
 #
-# SN的文件结构与标准的ood不同
-# - 有必要的身份文件组
-# - 必须支持DNS解析，需要特定的配置文件（为了防止混淆,sn使用web3_gateway作为配置文件的入口
-# - 需要根据需要构造sn_db（模拟用户注册）
-# - 提供source repo服务（另一个子域名）, 提供订阅用户的系统自动更新
+# SN file structure is different from standard OOD
+# - Has necessary identity file group
+# - Must support DNS resolution, needs specific config files (to prevent confusion, SN uses web3_gateway as config file entry point)
+# - Need to construct sn_db as needed (simulate user registration)
+# - Provide source repo service (another subdomain), provide system auto-update for subscribed users
 #
-# 直接使用 buckycli 与 cert_mgr 在 rootfs 内构造所有配置，不从现有目录复制。
-# SN 相关仍保留占位，sn_db 不做构造。
+# Use buckycli and cert_mgr directly to construct all configurations in rootfs, not copy from existing directory.
+# SN related still reserved as placeholder, sn_db not constructed.
 
 import argparse
 import json
@@ -95,7 +95,7 @@ def make_global_env_config(
     trust_did: Iterable[str],
     force_https: bool,
 ) -> None:
-    """写入机器级配置和默认 meta_index 缓存。"""
+    """Write machine-level configuration and default meta_index cache."""
     etc_dir = ensure_dir(target_dir / "etc")
 
     machine = {
@@ -123,7 +123,7 @@ def make_global_env_config(
 
 
 def make_cache_did_docs(target_dir: Path) -> None:
-    """通过 buckycli 构造 did_docs（依赖未来的 build_did_docs 实现）。"""
+    """Construct did_docs via buckycli (depends on future build_did_docs implementation)."""
     docs_dst = target_dir / "local" / "did_docs"
 
     ensure_dir(docs_dst)
@@ -148,7 +148,7 @@ def _copy_identity_outputs(
     copy_if_exists(user_dir / f"{zone_id}.zone.json", buckycli_dir / "zone_config.json")
 
 def _check_or_generate_ca(cm: CertManager, ca_name: str, ca_dir: Path) -> None:
-    # 生成或使用已有 CA
+    # Generate or use existing CA
     ca_dir_path = ca_dir.resolve()
     ensure_dir(ca_dir_path)
     print(f"Check CA at : {ca_dir_path}")
@@ -182,7 +182,7 @@ def _generate_tls(zone_id: str, ca_name: str, etc_dir: Path, ca_dir: Path) -> No
     shutil.move(cert_path, etc_dir / "zone_cert.cert")
     shutil.move(key_path, etc_dir / "zone_cert_key.pem")
 
-    # 保留 CA 以便信任
+    # Keep CA for trust
     copy_if_exists(ca_cert_path, etc_dir / "ca.cert")
     copy_if_exists(ca_key_path, etc_dir / "ca_key.pem")
     print(f"tls certs generated under {etc_dir}")
@@ -225,7 +225,7 @@ def make_identity_files(
     ca_name: str,
     ca_dir: Optional[Path],
 ) -> None:
-    """使用 buckycli 生成身份文件，并利用 cert_mgr 生成 TLS 证书。"""
+    """Use buckycli to generate identity files and use cert_mgr to generate TLS certificates."""
     if not BUCKYCLI_BIN.exists():
         raise FileNotFoundError(f"buckycli binary missing at {BUCKYCLI_BIN}")
 
@@ -235,12 +235,12 @@ def make_identity_files(
     if netid != "lan":
         node_name_for_zone = f"{node_name}@{netid}"
 
-    # 种需要sn的情况   
-    # 有sn_base_host,node_name netid是lan: 标准的nat后节点
-    # 有sn_base_host,node_name netid是wan: 需要配置ddns_sn_url
-    # 有sn_base_host,node_name netid是portmap: 开了portmap后节点
+    # Cases that need SN:
+    # Has sn_base_host, node_name, netid is lan: standard node behind NAT
+    # Has sn_base_host, node_name, netid is wan: need to configure ddns_sn_url
+    # Has sn_base_host, node_name, netid is portmap: node with portmap enabled
 
-    # 1. 创建 user/zone
+    # 1. Create user/zone
     run_buckycli(
         [
             "create_user_env",
@@ -259,7 +259,7 @@ def make_identity_files(
         ]
     )
 
-    # 2. 创建节点配置
+    # 2. Create node configuration
     run_buckycli(
         [
             "create_node_configs",
@@ -272,19 +272,19 @@ def make_identity_files(
         ]
     )
 
-    # 3. 拷贝身份文件
+    # 3. Copy identity files
     user_dir = user_tmp
     node_dir = user_dir / node_name
     _copy_identity_outputs(user_dir, node_dir, target_dir, zone_id)
 
-    # 4. TLS 证书
+    # 4. TLS certificates
     _generate_tls(did_host_to_real_host(zone_id, web3_bridge), ca_name, ensure_dir(target_dir / "etc"), ca_dir)
 
     
 
 
 def make_repo_cache_file(target_dir: Path) -> None:
-    """写入 meta_index 缓存文件（占位防止自动更新）。"""
+    """Write meta_index cache file (placeholder to prevent auto-update)."""
     meta_dst = (
         target_dir
         / "local"
@@ -301,7 +301,7 @@ def make_repo_cache_file(target_dir: Path) -> None:
         print(f"create default meta_index cache at {meta_dst}")
 
 def add_user_to_sn(root_dir: Path, username: str, sn_db_path: Path) -> None:
-    """添加用户到 SN 数据库。"""
+    """Add user to SN database."""
     run_buckycli(
         ["register_user_to_sn", "--username", username, "--sn_db_path", str(sn_db_path), "--output_dir", str(root_dir)]
     )
@@ -310,7 +310,7 @@ def add_user_to_sn(root_dir: Path, username: str, sn_db_path: Path) -> None:
 
 
 def add_device_to_sn(root_dir: Path, username: str, device_name: str, sn_db_path: Path) -> None:
-    """添加设备到 SN 数据库。"""
+    """Add device to SN database."""
     run_buckycli(
         ["register_device_to_sn", "--username", username, "--device_name", device_name, "--sn_db_path", str(sn_db_path), "--output_dir", str(root_dir)]
     )
@@ -326,40 +326,40 @@ def make_sn_configs(
     ca_name: str = "buckyos_test_ca",
     ca_dir: Path = None,
 ) -> None:
-    """生成 SN（Super Node）服务器配置文件。
+    """Generate SN (Super Node) server configuration files.
     
-    所有配置文件直接平铺在 target_dir 目录下，包括：
-    - sn_server_private_key.pem - rtcp 协议栈用到的设备私钥文件
-    - fullchain.cert, fullchain.pem - 包含 sn.$sn_base, *.web3.$sn_base 的证书和密钥
-    - ca/buckyos_sn_ca_cert.pem, ca/buckyos_sn_ca_key.pem - 测试环境自签名 CA 证书
-    - zone_zone - 自动生成的，包含 buckyos 定制的 DNS TXT 记录模板
+    All configuration files are placed directly in target_dir, including:
+    - sn_server_private_key.pem - device private key file used by rtcp protocol stack
+    - fullchain.cert, fullchain.pem - certificate and key containing sn.$sn_base, *.web3.$sn_base
+    - ca/buckyos_sn_ca_cert.pem, ca/buckyos_sn_ca_key.pem - self-signed CA certificate for test environment
+    - zone_zone - auto-generated, contains buckyos customized DNS TXT record template
     
-    注意：以下文件需要用户手动创建，不由本脚本生成：
-    - dns_zone - 手工配置的 DNS Zone 文件
-    - website.yaml - 被 web3_gateway 引用的网站配置文件
+    Note: The following files need to be manually created by users, not generated by this script:
+    - dns_zone - manually configured DNS Zone file
+    - website.yaml - website configuration file referenced by web3_gateway
     
     Args:
-        target_dir: 输出目录，所有文件直接平铺在此目录下
-        sn_base_host: SN 基础域名（例如 buckyos.io 或 devtests.org）
-        sn_ip: SN 服务器 IP 地址
-        sn_device_name: SN 设备名称，默认 "sn_server"
-        ca_name: CA 证书名称
-        ca_dir: 使用已有 CA 目录，否则自动生成
+        target_dir: output directory, all files are placed directly in this directory
+        sn_base_host: SN base domain (e.g. buckyos.io or devtests.org)
+        sn_ip: SN server IP address
+        sn_device_name: SN device name, default "sn_server"
+        ca_name: CA certificate name
+        ca_dir: use existing CA directory, otherwise auto-generate
     """
     if not BUCKYCLI_BIN.exists():
         raise FileNotFoundError(f"buckycli binary missing at {BUCKYCLI_BIN}")
     
-    print(f"生成 SN 配置文件到 {target_dir} ...")
-    print(f"  SN 基础域名: {sn_base_host}")
-    print(f"  SN IP 地址: {sn_ip}")
-    print(f"  SN 设备名称: {sn_device_name}")
+    print(f"Generating SN configuration files to {target_dir} ...")
+    print(f"  SN base domain: {sn_base_host}")
+    print(f"  SN IP address: {sn_ip}")
+    print(f"  SN device name: {sn_device_name}")
     
-    # SN 配置文件直接平铺在 target_dir 下，不创建 etc 子目录
+    # SN configuration files are placed directly in target_dir, no etc subdirectory created
     ensure_dir(target_dir)
     
-    # 1. 使用 buckycli 创建 SN 配置
-    # 注意：SN 使用特殊的身份，这里使用 buckycli 的 create_sn_configs 命令
-    print("# 步骤 1: 创建 SN 设备身份配置...")
+    # 1. Use buckycli to create SN configuration
+    # Note: SN uses special identity, using buckycli's create_sn_configs command here
+    print("# Step 1: Create SN device identity configuration...")
     run_buckycli(
         [
             "create_sn_configs",
@@ -372,28 +372,28 @@ def make_sn_configs(
         ]
     )
     
-    # buckycli 会在 target_dir/sn_server/ 下生成文件，需要移动到 target_dir
+    # buckycli generates files under target_dir/sn_server/, need to move to target_dir
     buckycli_sn_dir = target_dir / "sn_server"
     if buckycli_sn_dir.exists():
-        # 移动生成的文件到 target_dir 根目录
+        # Move generated files to target_dir root directory
         for file in buckycli_sn_dir.glob("*"):
             if file.is_file():
                 dest_file = target_dir / file.name
                 shutil.move(str(file), str(dest_file))
-                print(f"移动文件: {file.name} -> {target_dir}/")
-        # 删除空的 sn_server 目录
+                print(f"Move file: {file.name} -> {target_dir}/")
+        # Remove empty sn_server directory
         if buckycli_sn_dir.exists() and not list(buckycli_sn_dir.iterdir()):
             buckycli_sn_dir.rmdir()
 
     
-    # 2. 生成 TLS 证书
-    print("# 步骤 2: 生成 TLS 证书...")
+    # 2. Generate TLS certificates
+    print("# Step 2: Generate TLS certificates...")
 
     cm = CertManager()
     
     ca_cert_path, ca_key_path = _check_or_generate_ca(cm, ca_name, ca_dir)
     
-    # 生成服务器证书（包含 sn.$sn_base 和 *.web3.$sn_base）
+    # Generate server certificate (containing sn.$sn_base and *.web3.$sn_base)
     sn_hostname = f"sn.{sn_base_host}"
     web3_wildcard = f"*.web3.{sn_base_host}"
     
@@ -404,52 +404,52 @@ def make_sn_configs(
         hostnames=[sn_hostname, web3_wildcard],
     )
     
-    # 复制/重命名为标准文件名
+    # Copy/rename to standard filenames
     cert_file = Path(cert_path)
     key_file = Path(key_path)
     
     shutil.move(cert_file, target_dir / "fullchain.cert")
     shutil.move(key_file, target_dir / "fullchain.pem")
     
-    # 复制 CA 证书到 ca 目录（用于客户端信任）
+    # Copy CA certificate to ca directory (for client trust)
     if ca_dir:
         ca_output_dir = ensure_dir(target_dir / "ca")
         shutil.copy2(ca_cert_path, ca_output_dir / ca_cert_path.name)
         shutil.copy2(ca_key_path, ca_output_dir / ca_key_path.name)
     
-    print(f"TLS 证书已生成:")
+    print(f"TLS certificates generated:")
     print(f"  - {target_dir / 'fullchain.cert'}")
     print(f"  - {target_dir / 'fullchain.pem'}")
     print(f"  - {target_dir / 'ca' / ca_cert_path.name}")
     
-    #3 修改params.json
+    #3 Modify params.json
     params_json = json.load(open(target_dir / "params.json"))
     params_json["params"]["sn_ip"] = sn_ip
     write_json(target_dir / "params.json", params_json)
     
-    print(f"\n✓ SN 配置文件生成完成!")
-    print(f"  输出目录: {target_dir}")
-    print(f"\n生成的文件:")
+    print(f"\n[OK] SN configuration files generation completed!")
+    print(f"  Output directory: {target_dir}")
+    print(f"\nGenerated files:")
     print(f"  - {target_dir / 'sn_device_config.json'} (SN server device config)")
-    print(f"  - {target_dir / 'sn_private_key.pem'} (设备私钥)")
-    print(f"  - {target_dir / 'fullchain.cert'} (服务器证书)")
-    print(f"  - {target_dir / 'fullchain.pem'} (服务器私钥)")
-    print(f"  - {target_dir / 'ca' / 'buckyos_sn_ca_cert.pem'} (CA 证书)")
-    print(f"  - {target_dir / 'params.json'} (SN 配置参数)")
-    print(f"\n需要手动创建的文件:")
-    print(f"  - {target_dir / 'dns_zone'} (DNS Zone 配置)")
-    print(f"  - {target_dir / 'website.yaml'} (网站配置)")
-    print(f"\n其他注意事项:")
-    print(f"  - 测试环境需要将 CA 证书安装到客户端信任列表")
+    print(f"  - {target_dir / 'sn_private_key.pem'} (device private key)")
+    print(f"  - {target_dir / 'fullchain.cert'} (server certificate)")
+    print(f"  - {target_dir / 'fullchain.pem'} (server private key)")
+    print(f"  - {target_dir / 'ca' / 'buckyos_sn_ca_cert.pem'} (CA certificate)")
+    print(f"  - {target_dir / 'params.json'} (SN configuration parameters)")
+    print(f"\nFiles that need to be manually created:")
+    print(f"  - {target_dir / 'dns_zone'} (DNS Zone configuration)")
+    print(f"  - {target_dir / 'website.yaml'} (website configuration)")
+    print(f"\nOther notes:")
+    print(f"  - Test environment needs to install CA certificate to client trust list")
 
 
 def make_sn_db(target_dir: Path, user_list: List[str]) -> None:
-    """占位，按需求补充。"""
+    """Placeholder, to be supplemented as needed."""
     print("skip sn_db generation (not implemented)")
 
 
 def did_host_to_real_host(did_host: str,web3_bridge: str) -> str:
-    """将 DID 主机名转换为真实主机名。"""
+    """Convert DID hostname to real hostname."""
     if did_host.endswith(".bns.did"):
         result = did_host.split(".bns.did")[0] + "." + web3_bridge
         print(f"did_host_to_real_host: {did_host} -> {result}")
@@ -457,7 +457,7 @@ def did_host_to_real_host(did_host: str,web3_bridge: str) -> str:
     return did_host
 
 def get_params_from_group_name(group_name: str) -> Dict[str, object]:
-    """根据分组名获取所有生成参数。"""
+    """Get all generation parameters based on group name."""
     if group_name == "dev" or group_name == "devtest_ood1":
         return {
             "username": "devtest",
@@ -501,7 +501,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "node_name": "ood1",
             "netid": "wan_dyn",
             "rtcp_port": 2980,
-            "sn_base_host": "devtests.org", # netid是wan但又有SN，说明要用d-dns
+            "sn_base_host": "devtests.org", # netid is wan but has SN, means need to use d-dns
             "web3_bridge": "web3.devtests.org",
             "ddns_sn_url": f"https://sn.devtests.org/kapi/sn",
             "trust_did": [
@@ -518,8 +518,8 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "username": "charlie",
             "zone_id": "charlie.me",
             "node_name": "ood1",
-            "netid": "portmap", #portmap https走中转,rtcp可以直连
-            "rtcp_port": 2981, # 使用了自定义的rtcp端口
+            "netid": "portmap", #portmap https goes through relay, rtcp can connect directly
+            "rtcp_port": 2981, # using custom rtcp port
             "sn_base_host": "devtests.org",
             "web3_bridge": "web3.devtests.org",
             "trust_did": [
@@ -534,7 +534,7 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
     if group_name == "sn_server" or group_name == "sn":
         return {
             "sn_base_host": "devtests.org",
-            "sn_ip": "192.168.64.84", #TODO: 需要从外部获取（环境变量最简单?)
+            "sn_ip": "192.168.64.84", #TODO: need to get from external (environment variable is simplest?)
             "sn_device_name": "sn_server", 
             "web3_bridge": "web3.devtests.org",
             "trust_did": [
@@ -567,17 +567,17 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
     raise ValueError(f"invalid group name: {group_name}")
 
 def get_local_ip() -> str:
-    """获取本机IP地址。"""
-    #获得本机ip
+    """Get local machine IP address."""
+    # Get local IP
     import socket
     try:
-        # 通过连接外部地址获取本机IP（推荐方法）
+        # Get local IP by connecting to external address (recommended method)
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         ip_address = s.getsockname()[0]
         s.close()
     except Exception:
-        # 回退到hostname方法
+        # Fall back to hostname method
         hostname = socket.gethostname()
         ip_address = socket.gethostbyname(hostname)
             
@@ -606,13 +606,13 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
             if sn_ip is None:
                 sn_ip = get_local_ip()
 
-        # SN 配置生成
+        # SN configuration generation
         print(f"sn_base_host: {params['sn_base_host']}")
         print(f"sn_ip       : {sn_ip}")
         print(f"device_name : {params['sn_device_name']}")
         print(f"web3_bridge : {params['web3_bridge']}")
         
-        # SN 不需要 machine.json、did_docs 缓存和 meta_index 缓存
+        # SN doesn't need machine.json, did_docs cache and meta_index cache
         make_sn_configs(
             target_root,
             params["sn_base_host"],
@@ -622,7 +622,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
             ca_dir,
         )
 
-        #/添加默认用户和设备到SN数据库
+        # Add default users and devices to SN database
         db_path = target_root / "sn_db.sqlite3"
         # alice.ood1
         add_user_to_sn(env_root, "alice.web3.devtests.org", db_path)
@@ -638,7 +638,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
     else:
         if target_root is None:
             target_root = ROOTFS_DIR
-        # 普通 OOD 节点配置生成
+        # Normal OOD node configuration generation
         print(f"username   : {params['username']}")
         print(f"zone       : {params['zone_id']}")
         print(f"node       : {params['node_name']}")
@@ -671,27 +671,27 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="在 rootfs 下生成配置文件",
+        description="Generate configuration files under rootfs",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("group", help="配置分组名，例如 dev")
+    parser.add_argument("group", help="Configuration group name, e.g. dev")
     parser.add_argument(
         "--rootfs",
         default=None,
         type=Path,
-        help="输出目录",
+        help="Output directory",
     )
     parser.add_argument(
         "--ca",
         default=None,
         type=Path,
-        help="使用已有 CA 目录（含 *_ca_cert.pem 与对应 key），否则自动生成",
+        help="Use existing CA directory (with *_ca_cert.pem and corresponding key), otherwise auto-generate",
     )
     parser.add_argument(
         "--sn_ip",
         default=None,
         type=str,
-        help="SN IP 地址",
+        help="SN IP address",
     )
     args = parser.parse_args()
     make_config_by_group_name(args.group, args.rootfs, args.ca, args.sn_ip, None)
