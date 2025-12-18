@@ -190,7 +190,7 @@ async fn main() -> Result<(), String> {
                 .arg(
                     Arg::new("set")
                         .long("set")
-                        .value_names(&["key", "value"])  // 定义两个占位符名称
+                        .value_names(&["key", "value"])  // Define two placeholder names
                         .num_args(2)
                         .help("set system config,
     buckycli sys_config --set $key $value")
@@ -204,7 +204,7 @@ async fn main() -> Result<(), String> {
                 .arg(
                     Arg::new("set_file")
                         .long("set_file")
-                        .value_names(&["key", "$filename"])  // 定义两个占位符名称
+                        .value_names(&["key", "$filename"])  // Define two placeholder names
                         .num_args(2)
                         .help("set system config with file content. filename = file path.
     buckycli sys_config --set_file $key $filename")
@@ -212,7 +212,7 @@ async fn main() -> Result<(), String> {
                 .arg(
                     Arg::new("append")
                         .long("append")
-                        .value_names(&["key", "value"])  // 定义两个占位符名称
+                        .value_names(&["key", "value"])  // Define two placeholder names
                         .num_args(2)
                         .help("append system config,
     buckycli sys_config --append $key $value")
@@ -231,7 +231,7 @@ async fn main() -> Result<(), String> {
                 .arg(
                     Arg::new("create_user")
                       .long("create_user")
-                      .value_names(&["name", "owner_jwk"])  // 定义两个占位符名称
+                      .value_names(&["name", "owner_jwk"])  // Define two placeholder names
                       .num_args(2)
                       .help("Create the user_config.json file in current dir
 owner_jwk look like this '{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\"14pk3c3XO9_xro5S6vSr_Tvq5eTXbFY8Mop-Vj1D0z8\"}'")
@@ -499,7 +499,7 @@ oods look like this 'ood1,ood2'.")
         set_buckyos_api_runtime(runtime);
     }
 
-    // 处理子命令
+    // Handle subcommands
     match subcommand {
         Some(("version", _)) => {
             let version = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");
@@ -513,42 +513,42 @@ oods look like this 'ood1,ood2'.")
         }
         Some(("pub_pkg", matches)) => {
             let target_dir = matches.get_one::<String>("target_dir").unwrap();
-            //需要便利target_dir目录下的所有pkg，并发布
-            // 遍历target_dir目录下的所有pkg目录
+            // Need to iterate through all pkgs in target_dir directory and publish them
+            // Iterate through all pkg directories in target_dir
             let mut pkg_path_list = Vec::new();
             let target_path = Path::new(target_dir);
             
             if !target_path.exists() || !target_path.is_dir() {
-                return Err(format!("目标目录 {} 不存在或不是一个目录", target_dir));
+                return Err(format!("Target directory {} does not exist or is not a directory", target_dir));
             }
             
-            // 读取目录下的所有条目
+            // Read all entries in the directory
             let entries = std::fs::read_dir(target_path).map_err(|e| {
-                format!("读取目录 {} 失败: {}", target_dir, e.to_string())
+                format!("Failed to read directory {}: {}", target_dir, e.to_string())
             })?;
             
-            // 遍历所有条目，找出所有目录
+            // Iterate through all entries to find directories
             for entry in entries {
                 let entry = entry.map_err(|e| {
-                    format!("读取目录条目失败: {}", e.to_string())
+                    format!("Failed to read directory entry: {}", e.to_string())
                 })?;
                 
                 let path = entry.path();
                 if path.is_dir() {
-                    // 检查是否包含pkg_meta.jwt文件，这表明它是一个有效的包目录
+                    // Check if it contains pkg_meta.jwt file, which indicates it's a valid package directory
                     let pkg_meta_jwt_path = path.join("pkg_meta.jwt");
                     if pkg_meta_jwt_path.exists() {
-                        println!("找到有效的packed pkg目录: {}", path.display());
+                        println!("Found valid packed pkg directory: {}", path.display());
                         pkg_path_list.push(path);
                     }
                 }
             }
             
             if pkg_path_list.is_empty() {
-                return Err(format!("在目录 {} 中没有找到有效的包", target_dir));
+                return Err(format!("No valid packages found in directory {}", target_dir));
             }
             
-            println!("找到 {} 个包准备发布", pkg_path_list.len());
+            println!("Found {} packages ready to publish", pkg_path_list.len());
             let pub_result = publish_raw_pkg(&pkg_path_list).await;
             if pub_result.is_err() {
                 println!("Publish pkg failed! {}", pub_result.err().unwrap());
@@ -595,7 +595,7 @@ oods look like this 'ood1,ood2'.")
             let real_target_env:String = if target_env.is_some() {
                 target_env.unwrap().to_string()
             } else {
-                // 获取当前目录作为默认环境
+                // Get current directory as default environment
                 std::env::current_dir()
                     .map(|path| path.to_string_lossy().to_string())
                     .unwrap_or_else(|_| ".".to_string())
@@ -619,7 +619,7 @@ oods look like this 'ood1,ood2'.")
             let real_target_env:String = if target_env.is_some() {
                 target_env.unwrap().to_string()
             } else {
-                // 获取当前目录作为默认环境
+                // Get current directory as default environment
                 std::env::current_dir()
                     .map(|path| path.to_string_lossy().to_string())
                     .unwrap_or_else(|_| ".".to_string())
@@ -665,7 +665,7 @@ oods look like this 'ood1,ood2'.")
             if let Some(_key) = matches.get_one::<String>("set") {
                 let config_values: Vec<&String> = matches
                     .get_many::<String>("set")
-                    .expect("必须提供 key 和 value 参数")
+                    .expect("Must provide key and value parameters")
                     .collect();
                 let key = config_values[0];
                 let value = config_values[1];
@@ -681,7 +681,7 @@ oods look like this 'ood1,ood2'.")
             if let Some(_key) = matches.get_one::<String>("append") {
                 let config_values: Vec<&String> = matches
                     .get_many::<String>("append")
-                    .expect("必须提供 key 和 value 参数")
+                    .expect("Must provide key and value parameters")
                     .collect();
                 let key = config_values[0];
                 let value = config_values[1];
@@ -692,12 +692,12 @@ oods look like this 'ood1,ood2'.")
             if let Some(_key) = matches.get_one::<String>("set_file") {
                 let config_values: Vec<&String> = matches
                     .get_many::<String>("set_file")
-                    .expect("必须提供 key 和 file 参数")
+                    .expect("Must provide key and file parameters")
                     .collect();
                 let key = config_values[0];
                 let filepath = config_values[1];
                 let content = std::fs::read_to_string(filepath)
-                    .unwrap_or_else(|_| panic!("无法读取文件: {}", filepath));
+                    .unwrap_or_else(|_| panic!("Failed to read file: {}", filepath));
                 sys_config::set_config(key, &content).await;
                 return Ok(());
             }
@@ -746,10 +746,10 @@ oods look like this 'ood1,ood2'.")
                 output_dir.map(|s| s.as_str()),
             ).await {
                 Ok(_) => {
-                    println!("成功创建用户环境配置");
+                    println!("Successfully created user environment configuration");
                 }
                 Err(e) => {
-                    println!("创建用户环境配置失败: {}", e);
+                    println!("Failed to create user environment configuration: {}", e);
                     return Err(e);
                 }
             }
@@ -767,10 +767,10 @@ oods look like this 'ood1,ood2'.")
                 net_id.map(|s| s.as_str()),
             ).await {
                 Ok(_) => {
-                    println!("成功创建节点配置 {}", device_name);
+                    println!("Successfully created node configuration {}", device_name);
                 }
                 Err(e) => {
-                    println!("创建节点配置失败: {}", e);
+                    println!("Failed to create node configuration: {}", e);
                     return Err(e);
                 }
             }
@@ -791,10 +791,10 @@ oods look like this 'ood1,ood2'.")
                 sn_base_host.to_string(),
             ).await {
                 Ok(_) => {
-                    println!("成功创建 SN 配置");
+                    println!("Successfully created SN configuration");
                 }
                 Err(e) => {
-                    println!("创建 SN 配置失败: {}", e);
+                    println!("Failed to create SN configuration: {}", e);
                     return Err(e);
                 }
             }

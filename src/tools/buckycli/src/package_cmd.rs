@@ -37,7 +37,7 @@ pub struct PackagePubMeta {
     pub dependencies: HashMap<String, String>,
 }
 
-//index的chunkid需要在repo中计算
+//index's chunkid needs to be calculated in repo
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IndexPubMeta {
     pub version: String,
@@ -249,7 +249,7 @@ pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>) -> Result<(), St
         pkg_meta_jwt_map.insert(pkg_meta_obj_id.to_string(),pkg_meta_jwt_str);
     }
     // 2) Then call repo_server.pub_pkg
-    // TODO: 分离upload和pub_pkg
+    // TODO: Separate upload and pub_pkg
     let pkg_lens = pkg_meta_jwt_map.len();
     let runtime = get_buckyos_api_runtime().unwrap();
     let repo_client = runtime.get_repo_client().await.unwrap();
@@ -362,7 +362,7 @@ fn calculate_file_hash(file_path: &str) -> Result<FileInfo, String> {
     })?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 10 * 1024 * 1024]; // 10MB 缓冲区
+    let mut buffer = vec![0u8; 10 * 1024 * 1024]; // 10MB buffer
     let mut file_size = 0;
 
     loop {
@@ -480,36 +480,36 @@ mod tests {
     
     #[tokio::test]
     async fn test_pack_pkg() {
-        // 创建临时目录作为源目录
+        // Create temporary directory as source directory
         let src_dir = tempdir().unwrap();
         let src_path = src_dir.path().to_owned();
         mem::forget(src_dir);
-        // 创建临时目录作为目标目录
+        // Create temporary directory as target directory
         let dest_dir = tempdir().unwrap();
         let dest_path = dest_dir.path().to_str().unwrap().to_string();
-        // 阻止临时目录被删除
+        // Prevent temporary directory from being deleted
         mem::forget(dest_dir);
 
 
-        // 创建测试文件结构
+        // Create test file structure
         let pkg_name = "test_package";
         let version = "0.1.0";
         let author = "test_author";
         
-        // 创建测试文件
+        // Create test file
         fs::write(
             src_path.join("test_file.txt"),
             "This is a test file content",
         ).unwrap();
         
-        // 创建测试子目录和文件
+        // Create test subdirectory and file
         fs::create_dir(src_path.join("subdir")).unwrap();
         fs::write(
             src_path.join("subdir").join("subfile.txt"),
             "This is a subdir file content",
         ).unwrap();
         
-        // 创建 pkg_meta.json 文件
+        // Create pkg_meta.json file
         let meta = PackageMeta {
             pkg_name: pkg_name.to_string(),
             version: version.to_string(),
@@ -530,33 +530,33 @@ mod tests {
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
         fs::write(src_path.join("pkg_meta.json"), meta_json).unwrap();
         
-        // 执行打包函数
+        // Execute packaging function
         let result = pack_raw_pkg(
             src_path.to_str().unwrap(),
             &dest_path,
             None,
         ).await;
         
-        // 验证结果
-        assert!(result.is_ok(), "打包失败: {:?}", result.err());
+        // Verify result
+        assert!(result.is_ok(), "Packaging failed: {:?}", result.err());
         
-        // 验证文件是否存在
+        // Verify file exists
         let expected_tarball_path = Path::new(&dest_path)
             .join(pkg_name)
             .join(format!("{}#{}.tar.gz", pkg_name, version));
-        assert!(expected_tarball_path.exists(), "打包文件不存在");
-        //获取文件的sha256和大小
+        assert!(expected_tarball_path.exists(), "Packaged file does not exist");
+        // Get file's sha256 and size
         let file_info = calculate_file_hash(expected_tarball_path.to_str().unwrap()).unwrap();
         //println!("tar: {} : {:?}", expected_tarball_path.display(), &file_info);
         let chunk_id = ChunkId::from_mix256_result(file_info.size, &file_info.sha256);
         println!("pkg chunk_id: {}", chunk_id.to_string());
-        // 验证元数据文件是否存在
+        // Verify metadata file exists
         let expected_meta_path = Path::new(&dest_path)
             .join(pkg_name)
             .join("pkg_meta.json");
-        assert!(expected_meta_path.exists(), "元数据文件不存在");
+        assert!(expected_meta_path.exists(), "Metadata file does not exist");
         
-        // 验证元数据内容
+        // Verify metadata content
         let meta_content = fs::read_to_string(expected_meta_path).unwrap();
         let meta_data:PackageMeta = serde_json::from_str(&meta_content).unwrap();
         
@@ -569,28 +569,28 @@ mod tests {
     
     #[tokio::test]
     async fn test_pack_pkg_with_jwt() {
-        // 创建临时目录作为源目录
+        // Create temporary directory as source directory
         let src_dir = tempdir().unwrap();
         let src_path = src_dir.path().to_owned();
         mem::forget(src_dir);
-        // 创建临时目录作为目标目录
+        // Create temporary directory as target directory
         let dest_dir = tempdir().unwrap();
         let dest_path = dest_dir.path().to_str().unwrap().to_string();
-        // 阻止临时目录被删除
+        // Prevent temporary directory from being deleted
         mem::forget(dest_dir);
         
-        // 创建测试文件结构
+        // Create test file structure
         let pkg_name = "test_package_jwt";
         let version = "0.1.0";
         let author = "test_author";
         
-        // 创建测试文件
+        // Create test file
         fs::write(
             src_path.join("test_file.txt"),
             "This is a test file content",
         ).unwrap();
         
-        // 创建 pkg_meta.json 文件
+        // Create pkg_meta.json file
         let meta = PackageMeta {
             pkg_name: pkg_name.to_string(),
             version: version.to_string(),
@@ -611,7 +611,7 @@ mod tests {
         let meta_json = serde_json::to_string_pretty(&meta).unwrap();
         fs::write(src_path.join("pkg_meta.json"), meta_json).unwrap();
         
-        // 创建临时私钥文件（注意：这里只是为了测试，实际应该使用有效的私钥）
+        // Create temporary private key file (Note: This is only for testing, actual implementation should use a valid private key)
         let key_dir = tempdir().unwrap();
         let key_path = key_dir.path().join("test_key.pem");
         fs::write(&key_path, r#"
@@ -621,58 +621,58 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         "#).unwrap();
         let encoding_key = load_private_key(&key_path).unwrap();
         
-        // 执行打包函数
+        // Execute packaging function
         let result = pack_raw_pkg(
             src_path.to_str().unwrap(),
             &dest_path,
             Some(("did:bns:buckyos".to_string(),encoding_key)),
         ).await;
         
-        // 由于我们没有真正的私钥，这个测试可能会失败
-        // 在实际环境中，应该使用有效的私钥或者 mock generate_jwt 函数
+        // Since we don't have a real private key, this test may fail
+        // In actual environment, should use a valid private key or mock generate_jwt function
         if result.is_ok() {
             let _pack_result = result.unwrap();
             
-            // 验证 JWT 文件是否存在
+            // Verify JWT file exists
             let expected_jwt_path = Path::new(&dest_path)
                 .join(pkg_name)
                 .join("pkg_meta.jwt");
             
             if expected_jwt_path.exists() {
-                println!("JWT 文件成功创建");
+                println!("JWT file created successfully");
             } else {
-                println!("JWT 文件未创建，可能是由于测试环境中没有有效的私钥");
+                println!("JWT file not created, possibly due to no valid private key in test environment");
             }
         } else {
-            println!("JWT 测试失败，错误: {:?}", result.err());
-            println!("这可能是由于测试环境中没有有效的私钥");
+            println!("JWT test failed, error: {:?}", result.err());
+            println!("This may be due to no valid private key in test environment");
         }
     }
     
     #[tokio::test]
     async fn test_pack_pkg_missing_meta() {
-        // 创建临时目录作为源目录，但不创建 pkg_meta.json 文件
+        // Create temporary directory as source directory, but don't create pkg_meta.json file
         let src_dir = tempdir().unwrap();
         let src_path = src_dir.path();
         
-        // 创建临时目录作为目标目录
+        // Create temporary directory as target directory
         let dest_dir = tempdir().unwrap();
         let dest_path = dest_dir.path().to_str().unwrap().to_string();
         
-        // 创建测试文件
+        // Create test file
         fs::write(
             src_path.join("test_file.txt"),
             "This is a test file content",
         ).unwrap();
         
-        // 执行打包函数，应该失败
+        // Execute packaging function, should fail
         let result = pack_raw_pkg(
             src_path.to_str().unwrap(),
             &dest_path,
             None,
         ).await;
         
-        // 验证结果
-        assert!(result.is_err(), "应该因为缺少 kg_meta.json 文件而失败");
+        // Verify result
+        assert!(result.is_err(), "Should fail due to missing pkg_meta.json file");
     }
 }

@@ -1,8 +1,8 @@
 //HOW to use buckycli.loader to test app/kernel service
 //1. update boot.template.toml to add g,app_id,kernel.
 //2. start buckyos,and wait it ready.
-//3. use buckycli.loader to load app/kernel service for debug，app/kernel service会像被node_daemon启动一样正常启动
-//P.S buckycli.loader 只适合“不被其它服务依赖的服务”，如果你的服务要被其它服务依赖，还是需要用标准的node_daemon启动方式
+//3. use buckycli.loader to load app/kernel service for debug, app/kernel service will start normally like being started by node_daemon
+//P.S buckycli.loader is only suitable for "services that are not depended on by other services", if your service needs to be depended on by other services, you still need to use the standard node_daemon startup method
 
 use buckyos_api::{get_buckyos_api_runtime, get_session_token_env_key, VERIFY_HUB_TOKEN_EXPIRE_TIME};
 use buckyos_kit::buckyos_get_unix_timestamp;
@@ -47,7 +47,7 @@ pub async fn load_app_service(app_id: &str, app_service_path: &str) -> Result<()
         app_id, app_id
     );
 
-    // 启动 app/kernel service 进程
+    // Start app/kernel service process
     let mut command = Command::new(app_service_path);
     command.env(env_key.as_str(), device_session_token_jwt);
     let mut child = command.spawn().map_err(|err| {

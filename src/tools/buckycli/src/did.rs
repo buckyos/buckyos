@@ -23,7 +23,7 @@ pub(crate) async fn sign_json_data(
         })
         .unwrap();
 
-    // private_key的来源是 user_private_key.pem文件，这个文件可能为空
+    // private_key comes from user_private_key.pem file, which may be empty
     if let Some((kid, private_key)) = private_key {
         // check json data valid
         let result = named_obj_to_jwt(&json, &private_key, Some(kid.to_string()))
@@ -34,7 +34,7 @@ pub(crate) async fn sign_json_data(
             .unwrap();
         println!("named_obj_to_jwt {}", result);
     } else {
-        // 没有 user_private_key.pem文件，从start config里面读取
+        // No user_private_key.pem file, read from start config
         println!("empty user_private_key.pem file!");
         let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
         let start_params_str = tokio::fs::read_to_string(start_params_file_path)
@@ -76,7 +76,7 @@ pub(crate) fn did_matches(matches: &ArgMatches) {
         return did_open_file(file);
     }
 
-    // 创建一个userconfig
+    // Create a userconfig
     if let Some(_value) = matches.get_one::<String>("create_user") {
         let values: Vec<&String> = matches
             .get_many::<String>("create_user")
@@ -87,7 +87,7 @@ pub(crate) fn did_matches(matches: &ArgMatches) {
         return did_create_user_config(name, owner_jwk);
     }
 
-    // 创建一个deviceconfig
+    // Create a deviceconfig
     if let Some(_value) = matches.get_one::<String>("create_device") {
         let values: Vec<&String> = matches
             .get_many::<String>("create_device")
@@ -146,26 +146,26 @@ fn did_open_file(file: &str) {
 }
 
 //  buckycli did --create_user aa '{"crv":"Ed25519","kty":"OKP","x":"14pk3c3XO9_xro5S6vSr_Tvq5eTXbFY8Mop-Vj1D0z8"}'
-// 创建用户配置文件
+// Create user configuration file
 fn did_create_user_config(name: &str, owner_jwk: &str) {
-    // 根据用户名创建DID标识
+    // Create DID identifier based on username
     let user_did = DID::new("bns", name);
     let user_name = name.to_string();
 
-    // 将json字符串解析为serde_json::Value
+    // Parse json string into serde_json::Value
     let owner_jwk = serde_json::from_str::<serde_json::Value>(owner_jwk).unwrap();
     let owner_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(owner_jwk.clone()).unwrap();
 
-    // 创建用户配置对象
+    // Create user configuration object
     let owner_config = OwnerConfig::new(
         user_did.clone(),
         user_name.clone(),
         user_name.clone(),
         owner_jwk.clone(),
     );
-    // 将配置对象序列化为JSON字符串
+    // Serialize configuration object to JSON string
     let owner_config_json_str = serde_json::to_string_pretty(&owner_config).unwrap();
-    // 写入配置文件
+    // Write to configuration file
     let mut owner_config_file = std::fs::File::create("user_config.json").unwrap();
     owner_config_file
         .write_all(owner_config_json_str.as_bytes())
@@ -173,47 +173,47 @@ fn did_create_user_config(name: &str, owner_jwk: &str) {
     println!("create user OK! user_config.json in current dir");
 }
 
-// 创建设备配置文件
+// Create device configuration file
 fn did_create_device_config(
     user_name: &str,
     zone_name: &str,
     owner_jwk: &str,
     user_private_key: &str,
 ) {
-    // 创建zone和用户的DID标识
+    // Create DID identifiers for zone and user
     let zone_did = DID::new("bns", zone_name);
     let user_did = DID::new("bns", user_name);
-    // 将json字符串解析为serde_json::Value
+    // Parse json string into serde_json::Value
     let owner_jwk = serde_json::from_str::<serde_json::Value>(owner_jwk).unwrap();
     let owner_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(owner_jwk.clone()).unwrap();
 
-    // 获取当前时间戳
+    // Get current timestamp
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
     let device_name = "ood1";
 
-    // 创建device的公私钥
+    // Create device public/private key pair
     let (privete_key, public_key) = generate_ed25519_key_pair();
-    // 保存设备私钥
+    // Save device private key
     let private_file_name = format!("device_{}_private_key.pem", device_name);
     let mut device_private_key_file = File::create(private_file_name.clone()).unwrap();
     device_private_key_file
         .write_all(privete_key.as_bytes())
         .unwrap();
-    // 保存设备公钥
+    // Save device public key
     let public_file_name = format!("device_{}_public_key.pem", device_name);
     let mut device_public_key_file = File::create(public_file_name.clone()).unwrap();
     device_public_key_file
         .write_all(public_key.to_string().as_bytes())
         .unwrap();
 
-    // 创建设备配置
+    // Create device configuration
     let device_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(public_key.clone()).unwrap();
     let device_config = DeviceConfig::new_by_jwk(device_name, device_jwk);
 
-    // 读取用户私钥并创建编码密钥
+    // Read user private key and create encoding key
     let user_private_key = std::fs::read_to_string(user_private_key).unwrap();
     let user_private_key = user_private_key.trim();
     println!("user_private_key: {}", user_private_key);
@@ -221,7 +221,7 @@ fn did_create_device_config(
     let device_jwt = device_config.encode(Some(&encode_key)).unwrap();
     let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
     let device_mini_doc_jwt = device_mini_config.to_jwt(&encode_key).unwrap();
-    // 创建节点身份配置
+    // Create node identity configuration
     let node_identity_config = NodeIdentityConfig {
         zone_did: zone_did,
         owner_public_key: owner_jwk.clone(),
@@ -230,7 +230,7 @@ fn did_create_device_config(
         device_mini_doc_jwt: device_mini_doc_jwt.to_string(),
         zone_iat: now as u32,
     };
-    // 将节点身份配置序列化并保存
+    // Serialize and save node identity configuration
     let node_identity_config_json_str =
         serde_json::to_string_pretty(&node_identity_config).unwrap();
     let mut node_identity_file = std::fs::File::create("node_identity.json").unwrap();
@@ -244,7 +244,7 @@ fn did_create_device_config(
 }
 
 fn did_create_zoneboot(oods: Vec<String>, sn_host: Option<String>) {
-    // 获取当前时间戳
+    // Get current timestamp
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

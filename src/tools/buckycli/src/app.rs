@@ -28,7 +28,7 @@ pub async fn create_app(app_config: &str) {
         })
         .unwrap();
 
-    // 从文件读取app_config, 解析app_id, pkg_name, version, app_name, description等信息
+    // Read app_config from file, parse app_id, pkg_name, version, app_name, description, etc.
     let result = std::fs::File::open(app_config);
     let file = match result {
         Ok(file) => file,
@@ -250,7 +250,7 @@ pub async fn delete_app(app_id: &str) {
 }
 
 async fn build_app_service_config(app_config: &serde_json::Value) -> Result<String, String> {
-    // 检查app_config是否包含必要字段
+    // Check if app_config contains required fields
     if !app_config.is_object() {
         return Err("Invalid app config format, expected a JSON object.".into());
     }
@@ -314,7 +314,7 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
     }"#;
     */
 
-    //通过app_config, 填充full_app_config
+    // Fill full_app_config through app_config
     let app_id = app_config
         .get("app_id")
         .and_then(|v| v.as_str())
