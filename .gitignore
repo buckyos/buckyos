@@ -27,16 +27,7 @@ src/apps/sys_test/dist/
 
 src/web3_bridge/cyfs_gateway
 
-/src/scripts/remote/device_info.json
-/src/scripts/remote/dev_configs/device_info.json
-/src/scripts/remote/lib*
-/src/scripts/remote/bin*
-/src/scripts/remote/include
-/src/scripts/remote/network-cache
-/src/scripts/remote/dev_configs/sn_server/web3_gateway.json
-/src/scripts/remote/clog
 
-target/
 cargo.lock
 pnpm-lock.yaml
 
@@ -49,3 +40,6 @@ src/rootfs/_buckycli_tmp/
 src/_scripts/
 
 rootfs/_buckycli_tmp/
+src/rootfs/bin/control_panel/
+src/rootfs/bin/node_active/
+src/rootfs/bin/sys_test/

@@ -29,16 +29,18 @@ import sys
 from pathlib import Path
 import time
 from typing import Dict, Iterable, List, Optional, Tuple
-from buckyos_devkit.buckyos_kit import get_buckyos_root
+from buckyos_devkit.buckyos_kit import get_buckyos_root,get_execute_name
 from buckyos_devkit import CertManager  # type: ignore
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
 ROOTFS_DIR = Path(get_buckyos_root()) # rootfs is default target dir.
-BUCKYCLI_BIN = Path("~/buckycli/buckycli").expanduser()
+BUCKYCLI_BIN =Path(get_execute_name(Path("~/buckycli/buckycli").expanduser()))
+
 if not BUCKYCLI_BIN.exists():
-    BUCKYCLI_BIN = Path(get_buckyos_root()) / "bin" / "buckycli" / "buckycli"
-    if not BUCKYCLI_BIN.exists():
-        raise FileNotFoundError(f"buckycli binary missing at {BUCKYCLI_BIN}")
+    print(f"buckycli binary missing at {BUCKYCLI_BIN}")
+    print("use 'python3 build.py' to build and install buckycli to your home directory" )
+    raise FileNotFoundError(f"buckycli binary missing at {BUCKYCLI_BIN}")
 
 BUCKYCLI_DIR = BUCKYCLI_BIN.parent
 print(f"* buckycli = {BUCKYCLI_BIN}")

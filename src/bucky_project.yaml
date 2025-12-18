@@ -40,7 +40,7 @@ apps:
   buckyos:
     name: buckyos
     rootfs: rootfs/
-    default_target_rootfs: "/opt/buckyos/"
+    default_target_rootfs: "${BUCKYOS_ROOT}"
     # 安装模式
     # - update 覆盖安装，当目标目录不存在时，会触发重新安装(install_data,update)
     # - install 全新安装，相当于先卸载后安装 (clean,install_data,update)
