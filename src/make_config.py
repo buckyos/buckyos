@@ -23,6 +23,7 @@
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -598,7 +599,12 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
     
     if is_sn:
         if target_root is None:
-            target_root = Path("/opt/web3-gateway")
+            # Cross-platform default path: Windows uses AppData, Linux/Mac uses /opt
+            if os.name == 'nt':
+                appdata = os.environ.get('APPDATA', os.path.expanduser('~'))
+                target_root = Path(appdata) / "web3-gateway"
+            else:
+                target_root = Path("/opt/web3-gateway")
 
         if env_root is None:
             env_root = BUCKYCLI_DIR
