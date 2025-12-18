@@ -633,12 +633,12 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
         # Add default users and devices to SN database
         db_path = target_root / "sn_db.sqlite3"
         # alice.ood1
-        add_user_to_sn(env_root, "alice.web3.devtests.org", db_path)
-        add_device_to_sn(env_root, "alice.web3.devtests.org", "ood1", db_path)
+        add_user_to_sn(env_root, "alice.bns.did", db_path)
+        add_device_to_sn(env_root, "alice.bns.did", "ood1", db_path)
 
         # bob.ood1
-        add_user_to_sn(env_root, "bob.web3.devtests.org", db_path)
-        add_device_to_sn(env_root, "bob.web3.devtests.org", "ood1", db_path)
+        add_user_to_sn(env_root, "bob.bns.did", db_path)
+        add_device_to_sn(env_root, "bob.bns.did", "ood1", db_path)
 
         #charlie.ood1
         add_user_to_sn(env_root, "charlie.me", db_path)
