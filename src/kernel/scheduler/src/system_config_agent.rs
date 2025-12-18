@@ -12,7 +12,7 @@ use crate::scheduler::*;
 use crate::service::*;
 use buckyos_api::{BASE_APP_PORT, MAX_APP_INDEX,
     get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
-    ServiceInstanceReportInfo, UserSettings, UserType as ApiUserType,
+    ServiceInstanceReportInfo, UserSettings, UserType as ApiUserType, ZoneGatewaySettings,
 };
 use buckyos_kit::*;
 use name_client::*;
@@ -73,14 +73,13 @@ fn create_service_spec_by_app_config(
         need_container = false;
     }
 
-
-    let default_service_port = app_config.app_index * 16 + BASE_APP_PORT;
+    let service_ports_config = app_config.install_config.to_service_ports_config();
     ServiceSpec {
         id: full_app_id.to_string(),
+        app_index: app_config.app_index,
         app_id: app_config.app_id().to_string(),
         owner_id: owner_user_id.to_string(),
         spec_type: ServiceSpecType::App,
-        default_service_port: default_service_port,
         state: spec_state,
         need_container,
         best_instance_count: app_config.expected_instance_count,
@@ -90,6 +89,7 @@ fn create_service_spec_by_app_config(
         required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
+        service_ports_config: service_ports_config,
     }
 }
 
@@ -98,20 +98,14 @@ fn create_service_spec_by_service_config(
     service_config: &KernelServiceSpec,
 ) -> ServiceSpec {
     let spec_state = ServiceSpecState::from(service_config.state.clone());
-    let default_service_port = service_config
-        .install_config
-        .service_ports
-        .get("main")
-        .copied()
-        .or_else(|| service_config.install_config.service_ports.values().next().copied())
-        .unwrap_or(0);
+    let service_ports_config = service_config.install_config.to_service_ports_config();
     ServiceSpec {
         id:service_name.to_string(),
         app_id: service_name.to_string(),
+        app_index: 0,
         owner_id: "root".to_string(),
         spec_type: ServiceSpecType::Kernel,
         state: spec_state,
-        default_service_port,
         need_container: false,
         best_instance_count: service_config.expected_instance_count,
         required_cpu_mhz: 300,
@@ -120,6 +114,7 @@ fn create_service_spec_by_service_config(
         required_gpu_mem: 0,
         node_affinity: None,
         network_affinity: None,
+        service_ports_config: service_ports_config,
     }
 }
 
@@ -211,26 +206,26 @@ pub fn create_scheduler_by_system_config(
                     format!("{} @ {}", app_instance_id, node_id),
                     app_config_str.as_str()
                 );
-                if app_config.node_install_config.is_some() {
-                    let node_install_config = app_config.node_install_config.as_ref().unwrap();
+   
+                //let node_install_config = app_config.node_install_config.as_ref().unwrap();
+            
+                //let service_port = node_install_config.service_ports.get("www").unwrap_or(&80);
+                //info!("app_id: {}, service_port: {}", app_config.app_spec.app_id(), service_port);
+                let instance = ReplicaInstance {
+                    spec_id: format!(
+                        "{}@{}",
+                        app_config.app_spec.app_id(),
+                        app_config.app_spec.user_id.clone()
+                    ),
+                    node_id: node_id.to_string(),
+                    res_limits: HashMap::new(),
+                    instance_id: app_instance_id.to_string(),
+                    last_update_time: 0,
+                    state: InstanceState::from(app_config.target_state.clone()),
+                    service_ports:app_config.service_ports_config.clone()
+                };
+                scheduler_ctx.add_replica_instance(instance);
                 
-                    let service_port = node_install_config.service_ports.get("www").unwrap_or(&80);
-                    info!("app_id: {}, service_port: {}", app_config.app_spec.app_id(), service_port);
-                    let instance = ReplicaInstance {
-                        spec_id: format!(
-                            "{}@{}",
-                            app_config.app_spec.app_id(),
-                            app_config.app_spec.user_id.clone()
-                        ),
-                        node_id: node_id.to_string(),
-                        res_limits: HashMap::new(),
-                        instance_id: app_instance_id.to_string(),
-                        last_update_time: 0,
-                        state: InstanceState::from(app_config.target_state.clone()),
-                        service_port: service_port.clone()
-                    };
-                    scheduler_ctx.add_replica_instance(instance);
-                }
             }
         }
         //add instance
@@ -245,12 +240,7 @@ pub fn create_scheduler_by_system_config(
                     error!("ServiceInstanceInfo serde_json::from_str failed: {:?}", e);
                     e
                 })?;
-            let reported_port = instance_info
-                .service_ports
-                .get("main")
-                .copied()
-                .or_else(|| instance_info.service_ports.values().next().copied())
-                .unwrap_or(0);
+
             let instance = ReplicaInstance {
                 spec_id: service_name.to_string(),
                 node_id: instance_node_id.to_string(),
@@ -258,7 +248,7 @@ pub fn create_scheduler_by_system_config(
                 instance_id: instance_info.instance_id.clone(),
                 last_update_time: instance_info.last_update_time,
                 state: InstanceState::from(instance_info.state.clone()),
-                service_port: reported_port,
+                service_ports: instance_info.service_ports.clone(),
             };
             scheduler_ctx.add_replica_instance(instance);
         }
@@ -397,7 +387,7 @@ pub(crate) fn schedule_action_to_tx_actions(
             }
         }
         SchedulerAction::UpdateServiceInfo(spec_id, service_info) => {
-            let update_action = update_service_info(spec_id.as_str(), service_info, device_list)?;
+            let update_action = update_service_info(spec_id.as_str(), service_info, device_list, &input_config)?;
             info!("will update service info: {}", spec_id);
             result.extend(update_action);
         }
@@ -405,63 +395,163 @@ pub(crate) fn schedule_action_to_tx_actions(
     Ok(result)
 }
 
-pub(crate) async fn update_gateway_node_list(
+pub fn get_spec_id_from_service_info_id(service_info_id: &str) -> (String,String) {
+    let parts = service_info_id.split(":").collect::<Vec<&str>>();
+    if parts.len() < 2  {
+        return (service_info_id.to_string(),"www".to_string());
+    }
+    if parts.len() == 2 {
+        return (parts[0].to_string(), parts[1].to_string());
+    }
+    warn!("invalid service_info_id: {}", service_info_id);
+    return (parts[0].to_string(), parts[1].to_string());
+}
+
+pub fn get_service_spec_by_spec_id(spec_id: &str,input_system_config: &HashMap<String, String>) -> Result<ServiceSpec> {
+    let key = format!("services/{}/spec", spec_id);
+    let service_spec = input_system_config.get(&key);
+    if service_spec.is_none() {
+        return Err(anyhow::anyhow!("service_spec not found"));
+    }
+    let service_spec = service_spec.unwrap();
+    let service_spec: ServiceSpec = serde_json::from_str(service_spec.as_str())?;
+    Ok(service_spec)
+}
+
+pub fn get_appid_and_userid_from_spec_id(spec_id: &str) -> Result<(String,String)> {
+    let parts = spec_id.split("@").collect::<Vec<&str>>();
+    if parts.len() < 2  {
+        return Err(anyhow::anyhow!("invalid spec_id: {}", spec_id));
+    }
+    Ok((parts[0].to_string(), parts[1].to_string()))
+}
+
+pub fn get_app_spec_by_spec_id(spec_id: &str,input_system_config: &HashMap<String, String>) -> Result<AppServiceSpec> {
+    let (app_id, user_id) = get_appid_and_userid_from_spec_id(spec_id)?;
+    let key = format!("users/{}/apps/{}/spec", user_id, app_id);
+    let app_spec = input_system_config.get(&key);    
+    if app_spec.is_none() {
+        warn!("app_spec not found, try to get {}", key);
+        return Err(anyhow::anyhow!("app_spec not found"));
+    }
+    let app_spec = app_spec.unwrap();
+    let app_spec: AppServiceSpec = serde_json::from_str(app_spec.as_str())?;
+    Ok(app_spec)
+}
+
+pub fn get_zone_gateway_settings(input_system_config: &HashMap<String, String>) -> Result<ZoneGatewaySettings> {
+    let key = "services/gateway/settings";
+    let zone_gateway_settings = input_system_config.get(key);
+    if zone_gateway_settings.is_none() {
+        warn!("zone_gateway_settings not found, use default");
+        return Ok(ZoneGatewaySettings::default());
+    }
+    let zone_gateway_settings = zone_gateway_settings.unwrap();
+    info!("zone_gateway_settings: {}", zone_gateway_settings);
+    let zone_gateway_settings: ZoneGatewaySettings = serde_json::from_str(zone_gateway_settings.as_str()).map_err(|e| {
+        error!("serde_json::from_str failed: {:?}", e);
+        e
+    })?;
+    Ok(zone_gateway_settings)
+}
+
+pub(crate) async fn update_node_gateway_config(
     need_update_gateway_node_list: &HashSet<String>,
     scheduler_ctx: &NodeScheduler,
+    input_system_config: &HashMap<String, String>
 ) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
+    let zone_gateway_settings = get_zone_gateway_settings(input_system_config)?;
+
     for node_id in need_update_gateway_node_list.iter() {
+        let mut default_target:Option<String> = None;
         let mut process_chain_lines:VecDeque<String> = VecDeque::new();
         //遍历所有的Service_info,创建访问规则
         // 生成规则：
         // Service匹配url， app匹配host前缀
         // 单实例，且在本机,直接forward，否则调用bukcyos select来得到 forwarding地址
-        for (spec_id, service_info) in scheduler_ctx.service_infos.iter() {
+        for (servcie_info_id, service_info) in scheduler_ctx.service_infos.iter() {
+            let (spec_id,service_name) = get_spec_id_from_service_info_id(servcie_info_id.as_str());
             let mut target_str = String::new();
-
-            match service_info {
-                ServiceInfo::SingleInstance(instance) => {
-                    if instance.node_id == *node_id {
-                        target_str = format!("return \"forward http://127.0.0.1:{}\"", instance.service_port);
-                    } else {
-                        target_str = format!("buckyos-select && forward \"$${{ANSWER.target}}/:{}\"", instance.service_port);
+            if service_name == "www" {
+                match service_info {
+                    ServiceInfo::SingleInstance(instance) => {
+                        if instance.node_id == *node_id {
+                            let instance_service_port = instance.service_ports.get("www");
+                            if instance_service_port.is_none() {
+                                continue;
+                            }
+                            let instance_service_port = instance_service_port.unwrap();
+                            target_str = format!("return \"forward http://127.0.0.1:{}\"", instance_service_port);
+                        } else {
+                            target_str = format!("buckyos-select && forward \"$${{ANSWER.target}}/\"");
+                        }
                     }
-                }
-                ServiceInfo::RandomCluster(cluster) => {
-                    if cluster.len() > 0 {      
-                        let (_, instance) = cluster.values().next().unwrap();               
-                        target_str = format!("buckyos-select && forward \"$${{ANSWER.target}}/:{}\"", instance.service_port);
-                    } else {
-                        info!("service {} has no instance no gateway rule need to be updated", spec_id);
-                        continue;
+                    ServiceInfo::RandomCluster(cluster) => {
+                        if cluster.len() > 0 {      
+                            let (_, instance) = cluster.values().next().unwrap();               
+                            target_str = format!("buckyos-select && forward \"$${{ANSWER.target}}/\"");
+                        } else {
+                            info!("service {} has no instance no gateway rule need to be updated", spec_id);
+                            continue;
+                        }
                     }
-                }
-                //TODO:增加对static_web_service的支持
-            }
 
-            let is_app = spec_id.contains("@");
-            if is_app {
-                let parts  = spec_id.split("@").collect::<Vec<&str>>();
-                let app_id = parts[0];
-                let user_id = parts[1];
-                if user_id == scheduler_ctx.default_user_id {
-                    let line_rule = format!("match ${{REQ.host}} \"{}*\" && {}", app_id, target_str);
-                    process_chain_lines.push_back(line_rule);
                 }
-                let line_rule = format!("match ${{REQ.host}} \"{}-{}*\" && {}", app_id, user_id, target_str);
-                process_chain_lines.push_back(line_rule);
-                //TODO：处理zone-gateway中的快捷方式
 
-            } else {
-                let line_rule = format!("match ${{REQ.path}} \"/kapi/{}/*\" && {}", spec_id, target_str);
-                process_chain_lines.push_front(line_rule);
+                let is_app = spec_id.contains("@");
+                if is_app {
+                    let app_spec = get_app_spec_by_spec_id(spec_id.as_str(), input_system_config)?;
+                    let expose_config = app_spec.install_config.expose_config.get("www");
+                    if expose_config.is_some() {
+                        let shortcut_hosts = zone_gateway_settings.get_shortcut(spec_id.as_str());
+                        for shortcut_host in shortcut_hosts.iter() {
+                            let shortcut_host = shortcut_host;
+                            if shortcut_host.as_str() == "_" {
+                                default_target = Some(target_str.clone());
+                            } else {
+                                let line_rule = format!("match ${{REQ.host}} \"{}.*\" && {}", shortcut_host, target_str);
+                                process_chain_lines.push_back(line_rule);
+                            }
+                        }
+
+                        let expose_config = expose_config.unwrap();
+                        for sub_hostname in expose_config.sub_hostname.iter() {
+                            let line_rule = format!("match ${{REQ.host}} \"{}.*\" && {}", sub_hostname, target_str);
+                            process_chain_lines.push_back(line_rule);
+                        }
+                    }
+
+                    // if user_id == scheduler_ctx.default_user_id {
+                    //     let line_rule = format!("match ${{REQ.host}} \"{}*\" && {}", app_id, target_str);
+                    //     process_chain_lines.push_back(line_rule);
+                    // }
+                    // let line_rule = format!("match ${{REQ.host}} \"{}-{}*\" && {}", app_id, user_id, target_str);
+                    // process_chain_lines.push_back(line_rule);
+                    //TODO：处理zone-gateway中的快捷方式
+
+                } else {
+                    let line_rule = format!("match ${{REQ.path}} \"/kapi/{}/*\" && {}", spec_id, target_str);
+                    process_chain_lines.push_front(line_rule);
+                }
+            } else  {
+                //在node_gateway上设置必要的tcp/udp stack,并转发到对应的instance port
+
+  
             }
         }
+
+        if default_target.is_some() {
+            let default_target = default_target.unwrap();
+            process_chain_lines.push_back(default_target);
+        }
+
         let process_chain_lines_str = process_chain_lines
             .iter()
             .cloned()
             .collect::<Vec<String>>()
             .join("\n");
+
 
         let node_gateway_json = json!({
         "servers": {
@@ -486,6 +576,7 @@ pub(crate) async fn update_gateway_node_list(
         );
         let key = format!("nodes/{}/gateway_config", node_id);
         result.insert(key, KVAction::Update(node_gatway_config_str));
+        
     }
 
     return Ok(result);
@@ -590,30 +681,30 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
                 error!("get_system_config_client failed: {:?}", e);
                 e
             })?;
-        let input_config = system_config_client.dump_configs_for_scheduler().await;
-        if input_config.is_err() {
+        let input_system_config = system_config_client.dump_configs_for_scheduler().await;
+        if input_system_config.is_err() {
             error!(
                 "dump_configs_for_scheduler failed: {:?}",
-                input_config.err().unwrap()
+                input_system_config.err().unwrap()
             );
             continue;
         }
-        let input_config = input_config.unwrap();
+        let input_system_config = input_system_config.unwrap();
         //cover value to hashmap
-        let input_config = serde_json::from_value(input_config);
-        if input_config.is_err() {
+        let input_system_config = serde_json::from_value(input_system_config);
+        if input_system_config.is_err() {
             error!(
                 "serde_json::from_value failed: {:?}",
-                input_config.err().unwrap()
+                input_system_config.err().unwrap()
             );
             continue;
         }
-        let input_config = input_config.unwrap();
+        let input_system_config = input_system_config.unwrap();
 
         //init scheduler
-        let (mut scheduler_ctx, device_list) = create_scheduler_by_system_config(&input_config)?;
+        let (mut scheduler_ctx, device_list) = create_scheduler_by_system_config(&input_system_config)?;
         //load last schedule snapshot from system_config
-        let last_schedule_snapshot = if let Some(snapshot_str) = input_config.get("system/scheduler/snapshot") {
+        let last_schedule_snapshot = if let Some(snapshot_str) = input_system_config.get("system/scheduler/snapshot") {
             Some(serde_json::from_str::<NodeScheduler>(snapshot_str.as_str())?)
         } else {
             None
@@ -638,7 +729,7 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
                 &action,
                 &scheduler_ctx,
                 &device_list,
-                &input_config,
+                &input_system_config,
                 &mut need_update_gateway_node_list,
                 &mut need_update_rbac,
             )?;
@@ -669,13 +760,13 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
         }
 
         if need_update_rbac {
-            let rbac_actions = update_rbac(&input_config, &scheduler_ctx).await?;
+            let rbac_actions = update_rbac(&input_system_config, &scheduler_ctx).await?;
             extend_kv_action_map(&mut tx_actions, &rbac_actions);
         }
 
         if need_update_gateway_node_list.len() > 0 {
             // 重新生成node_gateway_config
-            let update_gateway_node_list_actions = update_gateway_node_list(&need_update_gateway_node_list, &scheduler_ctx).await?;
+            let update_gateway_node_list_actions = update_node_gateway_config(&need_update_gateway_node_list, &scheduler_ctx, &input_system_config).await?;
             extend_kv_action_map(&mut tx_actions, &update_gateway_node_list_actions);
         }
 

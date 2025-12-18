@@ -26,7 +26,7 @@ use name_lib::*;
 use scheduler_server::*;
 use service::*;
 use system_config_agent::{
-    schedule_action_to_tx_actions, schedule_loop, update_gateway_node_list,
+    schedule_action_to_tx_actions, schedule_loop, update_node_gateway_config,
 };
 use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
 use server_runner::*;
@@ -358,7 +358,7 @@ mod test {
 
         if need_update_gateway_node_list.len() > 0 {
             // 重新生成node_gateway_config
-            let update_gateway_node_list_actions = update_gateway_node_list(&need_update_gateway_node_list, &scheduler_ctx).await.unwrap();
+            let update_gateway_node_list_actions = update_node_gateway_config(&need_update_gateway_node_list, &scheduler_ctx).await.unwrap();
             extend_kv_action_map(&mut tx_actions, &update_gateway_node_list_actions);
         }
         unsafe {

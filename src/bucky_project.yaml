@@ -60,6 +60,8 @@ apps:
       app-loader: bin/app-loader/
       scheduler-etc: etc/scheduler/
       boot-gateway-config: etc/boot_gateway.yaml
+      util.py: bin/util.py
+      stop.py: bin/stop.py
     # 数据路径，update的时候如果目标存在，则不会更新
     data_paths: 
     - etc/user_gateway.yaml

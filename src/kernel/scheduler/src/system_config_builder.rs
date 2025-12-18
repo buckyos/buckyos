@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use log::debug;
 use buckyos_api::{
-    AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceDoc, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID
+    AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceDoc, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID
 };
 use buckyos_api::{SMB_SERVICE_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID};
 use jsonwebtoken::jwk::Jwk;
@@ -176,35 +176,27 @@ impl SystemConfigBuilder {
         &mut self,
         config: &StartConfigSummary,
     ) -> Result<&mut Self> {
-        let settings = GatewaySettings {
-            shortcuts: HashMap::from([
-                (
-                    "www".to_string(),
-                    GatewayShortcut {
-                        target_type: "app".to_string(),
-                        user_id: Some(config.user_name.clone()),
-                        app_id: "buckyos-filebrowser".to_string(),
-                    },
-                ),
-                (
-                    "sys".to_string(),
-                    GatewayShortcut {
-                        target_type: "app".to_string(),
-                        user_id: Some(config.user_name.clone()),
-                        app_id: "control-panel".to_string(),
-                    },
-                ),
-                (
-                    "sys_test".to_string(),
-                    GatewayShortcut {
-                        target_type: "app".to_string(),
-                        user_id: Some(config.user_name.clone()),
-                        app_id: "sys-test".to_string(),
-                    },
-                ),
-            ]),
-        };
-        self.insert_json("services/gateway/settings", &settings)?;
+        // let settings = GatewaySettings {
+        //     shortcuts: HashMap::from([
+        //         (
+        //             "www".to_string(),
+        //             GatewayShortcut {
+        //                 target_type: "app".to_string(),
+        //                 user_id: Some(config.user_name.clone()),
+        //                 app_id: "buckyos_filebrowser".to_string(),
+        //             },
+        //         ),
+        //         (
+        //             "_".to_string(),
+        //             GatewayShortcut {
+        //                 target_type: "app".to_string(),
+        //                 user_id: Some(config.user_name.clone()),
+        //                 app_id: "buckyos_filebrowser".to_string(),
+        //             },
+        //         )
+        //     ]),
+        // };
+        // self.insert_json("services/gateway/settings", &settings)?;
         Ok(self)
     }
 
@@ -332,10 +324,16 @@ async fn build_kernel_service_spec(
     let service_doc = serde_json::from_value(doc_value)?;
 
     let mut install_config = ServiceInstallConfig::default();
-    install_config.service_ports = HashMap::from([("http".to_string(), port)]);
+    let service_expose_config = ServiceExposeConfig {
+        sub_hostname: Vec::new(),
+        expose_uri: Some(format!("/kapi/{}", pkg_name)),
+        expose_port: Some(port),
+    };
+    install_config.expose_config.insert("www".to_string(), service_expose_config);
 
     Ok(KernelServiceSpec {
         service_doc,
+        app_index: 0,
         enable: true,
         expected_instance_count,
         state: ServiceState::default(),

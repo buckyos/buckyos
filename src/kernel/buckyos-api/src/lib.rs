@@ -24,7 +24,7 @@ pub use repo_client::*;
 pub use zone_provider::*;
 pub use runtime::*;
 pub use app_mgr::*;
-
+pub use gateway_control::*;
 
 
 use tokio::sync::RwLock;

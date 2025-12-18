@@ -18,12 +18,35 @@
             ],
             "local_cache_mount_point": [
             ],
+            "expose_config": {
+                "www": {
+                    "sub_hostname": ["filebrowser"]
+                }
+            },
             "bind_address": "0.0.0.0",
             "res_pool_id": "default"
         }
     }
 }
 """
+
+"services/gateway/settings" = """
+{
+    "shortcuts": {
+        "www": {
+            "type":"app",
+            "user_id":"{{user_name}}",
+            "app_id":"buckyos_filebrowser"
+        },
+        "_":{
+            "type":"app",
+            "user_id":"{{user_name}}",
+            "app_id":"buckyos_filebrowser"
+        }
+    }
+}
+"""
+
 "system/rbac/base_policy" = """
 p, kernel, kv://*, read|write,allow
 p, kernel, dfs://*, read|write,allow
@@ -78,3 +101,4 @@ g, control-panel, kernel
 g, buckycli, kernel
 g, cyfs-gateway, kernel
 """
+

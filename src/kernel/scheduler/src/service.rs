@@ -84,7 +84,7 @@ pub fn update_service_instance(instance:&ReplicaInstance)->Result<HashMap<String
     unimplemented!();
 }
 
-pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,device_list:&HashMap<String, DeviceInfo>) -> Result<HashMap<String, KVAction>> {
+pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,device_list:&HashMap<String, DeviceInfo>,input_config:&HashMap<String, String>) -> Result<HashMap<String, KVAction>> {
     //update service info
     let mut result = HashMap::new();
 
@@ -103,10 +103,6 @@ pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,de
                         node_net_id,
                         state: ServiceInstanceState::Started,
                         weight: *weight,
-                        service_port: HashMap::from([(
-                            "main".to_string(),
-                            instance.service_port,
-                        )]),
                     });
                 } else {
                     warn!("device info not found for node: {}",node_id);
@@ -122,15 +118,12 @@ pub fn update_service_info(spec_id: &str, service_info: &SchedulerServiceInfo,de
                     node_net_id,
                     state: ServiceInstanceState::Started,
                     weight: 100,
-                    service_port: HashMap::from([(
-                        "main".to_string(),
-                        instance.service_port,
-                    )]),
                 });
             } else {
                 warn!("device info not found for node: {}",instance.node_id);
             }
         }
+
     }
     let service_info = ServiceInfo {
         selector_type: "random".to_string(),

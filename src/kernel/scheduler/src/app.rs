@@ -10,7 +10,7 @@ use crate::scheduler::*;
 use anyhow::Result;
 use buckyos_api::{BASE_APP_PORT, MAX_APP_INDEX};
 
-fn build_app_service_config(node_id:&str,app_config:&AppServiceSpec,node_info:&DeviceInfo) -> Result<AppServiceInstanceConfig> {
+fn build_app_service_config(node_id:&str,app_config:&AppServiceSpec,node_info:&DeviceInfo,instance_service_ports:HashMap<String,u16>) -> Result<AppServiceInstanceConfig> {
     let mut result_config = AppServiceInstanceConfig::new(node_id,app_config);
     if node_info.support_container {
         let docker_pkg_name = format!("{}_docker_image",node_info.arch.as_str());
@@ -26,25 +26,23 @@ fn build_app_service_config(node_id:&str,app_config:&AppServiceSpec,node_info:&D
         }
     }
 
-    let mut node_install_config = app_config.install_config.clone();
-    result_config.node_install_config = Some(node_install_config);
-
-    //check app_config.install_config is valid?
-    // let mut real_port:u16 = BASE_APP_PORT + app_config.app_index * 16;
-    // let mut host_ports = HashMap::new();
-    // for (service_name, _inner_port) in app_config.install_config.service_ports.iter() {
-    //     host_ports.insert(service_name.clone(), real_port);
-    //     real_port += 1;
-    // }
-    // if !host_ports.is_empty() {
-    //     let mut node_install_config = app_config.install_config.clone();
-    //     node_install_config.service_ports = host_ports;
-    //     result_config.node_install_config = Some(node_install_config);
-    // }
-
+    result_config.service_ports_config = instance_service_ports;
 
     return Ok(result_config)
 }
+
+// pub fn alloc_app_service_port(app_index:u16,service_name:&str,expose_port:Option<u16>)->u16 {
+//     if service_name == "www" {
+//         return app_index * 16 + BASE_APP_PORT;
+//     }
+
+//     if expose_port.is_some() {
+//         //TODO:需要读取scheduler_ctx,防止expose_port冲突
+//         return expose_port.unwrap();
+//     }
+//     warn!("alloc_app_service_port: service_name: {} alloc instance port failed!",service_name);
+//     return 0;
+// }
 
 pub fn instance_app_service(new_instance:&ReplicaInstance,device_list:&HashMap<String,DeviceInfo>,input_config:&HashMap<String,String>)->Result<HashMap<String,KVAction>> {
     let mut result = HashMap::new();
@@ -66,22 +64,11 @@ pub fn instance_app_service(new_instance:&ReplicaInstance,device_list:&HashMap<S
         return Err(anyhow::anyhow!("app_config: {} is not a valid json",app_config_path));
     }
 
-    let mut app_config : AppServiceSpec = app_config.unwrap();
+    let app_config : AppServiceSpec = app_config.unwrap();
     if  app_config.app_index  > MAX_APP_INDEX {
         warn!("app_index: {} is too large,skip",app_config.app_index);
         return Err(anyhow::anyhow!("app_index: {} is too large",app_config.app_index));
     }
-
-    let mut service_ports = app_config.install_config.service_ports.clone();
-    let mut base_port = app_config.app_index * 16 + BASE_APP_PORT;
-
-    for (service_name,host_port) in app_config.app_doc.install_config_tips.service_ports.iter() {
-        if !service_ports.contains_key(service_name) {
-            service_ports.insert(service_name.clone(),base_port);
-            base_port += 1;
-        }
-    }
-    app_config.install_config.service_ports = service_ports;
 
     let node_info = device_list.get(&new_instance.node_id);
     if node_info.is_none() {
@@ -90,8 +77,16 @@ pub fn instance_app_service(new_instance:&ReplicaInstance,device_list:&HashMap<S
     let node_info = node_info.unwrap();
 
     //write to node_config
-    let app_service_config = build_app_service_config(new_instance.node_id.as_str(),&app_config,&node_info)?;
+    info!("will instance_app_service app_config: {},service_ports: {:?}",app_id,new_instance.service_ports);
+    let app_service_config = build_app_service_config(
+new_instance.node_id.as_str(),
+        &app_config,
+        &node_info,
+        new_instance.service_ports.clone())?;
+
     let mut set_action = HashMap::new();
+    let instance_config_str = serde_json::to_string(&app_service_config).unwrap();
+    info!("will instance_app_service app_service_config: {}",instance_config_str);
     set_action.insert(format!("/apps/{}",new_instance.instance_id.as_str()),
         Some(serde_json::to_value(&app_service_config).unwrap()));
     let app_service_config_set_action =  KVAction::SetByJsonPath(set_action);

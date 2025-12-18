@@ -1,6 +1,7 @@
 use std::ops::Deref;
 //system control panel client
 
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use ::kRPC::*;
@@ -57,7 +58,7 @@ pub struct ServiceNode {
     pub node_net_id:Option<String>,
     pub state: ServiceInstanceState,
     pub weight: u32,
-    pub service_port:  HashMap<String,u16>,
+    //pub service_port:  HashMap<String,u16>,
 }
 
 //有调度器定期更新的ServiceInfo, 是selector的输入信息
@@ -75,20 +76,23 @@ pub struct ServiceInfo {
 // 调度器基于AppServiceSpec，部署在Node上的是 AppInstanceConfig (这个必然是自动构建的)
 //    为了减少多次获取信息的一致性问题，AppInstanceConfig中包含了所有信息（包含AppDoc,InstallConfig)
 
+
+//InstallConfigTips用来说明，该App有哪些在安装时需要配置的项目
 #[derive(Serialize, Deserialize,Clone)]
 pub struct ServiceInstallConfigTips {
-    pub data_mount_point: Vec<String>,
-    pub local_cache_mount_point: Vec<String>,
 
-
-    //通过tcp_ports和udp_ports,可以知道该Service实现了哪些服务
     //系统允许多个不同的app实现同一个服务，但有不同的“路由方法”
     //比如 如果系统里app1 有配置 {"smb":445},app2有配置 {"smb":445}，此时系统选择使用app2作为smb服务提供者，则最终按如下流程完成访问
     //   client->zone_gateway:445 --rtcp-> node_gateway:rtcp_stack -> docker_port 127:0.0.1:2190(调度器随机分配给app2) -> app2:445
     //                                                                docker_port 127.0.0.1:2189 -> app1:445
     //   此时基于app1.service_info可以通过 node_gateway:2189访问到app1的smb服务
-    //service_name(like,http , smb, dns, etc...) -> real port
+
+    //service_name(like,web ,smb, dns, etc...) -> inner port
     pub service_ports: HashMap<String,u16>,
+
+    pub data_mount_point: Vec<String>,
+    pub local_cache_mount_point: Vec<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_param:Option<String>,
     #[serde(flatten)]
@@ -279,6 +283,27 @@ impl Deref for AppDoc {
 }
 
 #[derive(Serialize, Deserialize,Clone)]
+pub struct ServiceExposeConfig {
+    #[serde(default)]
+    pub sub_hostname: Vec<String>,//for app's www service
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expose_uri: Option<String>,//for service's www service, not used now
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expose_port: Option<u16>,//for other service's port,
+}
+
+impl Default for ServiceExposeConfig {
+    fn default() -> Self {
+        Self {
+            sub_hostname: Vec::new(),
+            expose_uri: None,
+            expose_port: None,
+        }
+    }
+}
+
+
+#[derive(Serialize, Deserialize,Clone)]
 pub struct ServiceInstallConfig {
     //mount pint
     // folder in docker -> real folder in host
@@ -288,9 +313,9 @@ pub struct ServiceInstallConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bind_address: Option<String>,//为None绑定到127.0.0.1，只能通过rtcp转发访问
-    //network resource, name:docker_inner_port
+
     #[serde(default)]
-    pub service_ports: HashMap<String,u16>,
+    pub expose_config: HashMap<String,ServiceExposeConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_param:Option<String>,
 
@@ -304,10 +329,27 @@ impl Default for ServiceInstallConfig {
             cache_mount_point: Vec::new(),
             local_cache_mount_point: Vec::new(),
             bind_address: None,
-            service_ports: HashMap::new(),
+            expose_config: HashMap::new(),
             container_param: None,
             res_pool_id: "default".to_string(),
         }
+    }
+}
+
+impl ServiceInstallConfig {
+    pub fn to_service_ports_config(&self) -> HashMap<String,u16> {
+        let mut service_ports_config = HashMap::new();
+        for (service_name, expose_config) in self.expose_config.iter() {
+            if expose_config.expose_port.is_some() {
+                service_ports_config.insert(service_name.clone(), expose_config.expose_port.unwrap());
+            } else {
+                if service_name == "www" {
+                    service_ports_config.insert(service_name.clone(), 80);
+                } 
+                warn!("service_name: {} is not exposed", service_name);
+            }
+        }
+        service_ports_config
     }
 }
 
@@ -333,10 +375,6 @@ impl AppServiceSpec {
     pub fn app_id(&self) -> &str {
         self.app_doc.pkg_name.as_str()
     }
-
-    pub fn container_service_port(&self, service_name: &str) -> Option<u16> {
-        self.install_config.service_ports.get(service_name).copied()
-    }
 }
 
 
@@ -345,8 +383,10 @@ pub struct AppServiceInstanceConfig {
     pub target_state: ServiceInstanceState,
     pub node_id: String,
     pub app_spec : AppServiceSpec,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_install_config: Option<ServiceInstallConfig>,//当存在的时候，覆盖app_spec.install_config,目前只是占位，并未使用
+    //service_name -> service instance port ,use instance port can access the service
+    pub service_ports_config : HashMap<String,u16>,
+    //#[serde(skip_serializing_if = "Option::is_none")]
+    //pub node_install_config: Option<ServiceInstallConfig>,//当存在的时候，覆盖app_spec.install_config,目前只是占位，并未使用
 }
 impl AppServiceInstanceConfig {
     pub fn new(node_id:&str,app_config:&AppServiceSpec) -> AppServiceInstanceConfig {
@@ -354,25 +394,12 @@ impl AppServiceInstanceConfig {
             target_state: ServiceInstanceState::Started,
             node_id: node_id.to_string(),
             app_spec: app_config.clone(),
-            node_install_config: None,
+            service_ports_config: HashMap::new(),
         }
     }
 
     pub fn to_string(&self) -> String {
         serde_json::to_string(self).unwrap()
-    }
-
-    pub fn get_host_service_port(&self, service_name: &str) -> Option<u16> {
-        if let Some(node_install_config) = &self.node_install_config {
-            if let Some(port) = node_install_config.service_ports.get(service_name) {
-                return Some(*port);
-            }
-        }
-        self.app_spec
-            .install_config
-            .service_ports
-            .get(service_name)
-            .copied()
     }
 }  
 
@@ -411,6 +438,7 @@ impl KernelServiceDoc {
 pub struct KernelServiceSpec {
     pub service_doc:KernelServiceDoc,
     pub enable: bool,
+    pub app_index: u16,
     pub expected_instance_count: u32, 
     pub state: ServiceState,
     pub install_config:ServiceInstallConfig,

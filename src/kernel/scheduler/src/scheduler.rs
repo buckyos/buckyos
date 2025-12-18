@@ -127,7 +127,7 @@ UI在做操作后，可以看到的状态是“New”（等待部署） 和 “D
 */
 #[warn(unused, unused_mut, dead_code)]
 use anyhow::Result;
-use buckyos_api::{ServiceInstanceState, ServiceState};
+use buckyos_api::{BASE_APP_PORT, ServiceInstanceState, ServiceState};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use serde::{Deserialize, Serialize};
 use log::*;
@@ -287,6 +287,7 @@ pub struct UserItem {
 pub struct ServiceSpec {
     pub id: String,//format!("{}@{}", app_id, owner_id)
     pub app_id:String,
+    pub app_index: u16,
     pub owner_id:String,//kernel service的owner_id是root
     pub spec_type: ServiceSpecType,
     pub state: ServiceSpecState,
@@ -300,7 +301,8 @@ pub struct ServiceSpec {
     // 亲和性规则
     pub node_affinity: Option<String>,
     pub network_affinity: Option<String>,
-    pub default_service_port: u16,
+
+    pub service_ports_config: HashMap<String,u16>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum OPTaskBody {
@@ -434,7 +436,7 @@ pub struct ReplicaInstance {
     pub instance_id: String,
     pub last_update_time: u64,
     pub state : InstanceState,
-    pub service_port: u16,
+    pub service_ports: HashMap<String,u16>,
 }
 
 impl ReplicaInstance {
@@ -839,6 +841,25 @@ impl NodeScheduler {
         Ok(vec![])
     }
 
+    fn alloc_replica_instance_port(&self, app_index: u16,service_name:&str,expose_port:Option<u16>) -> u16 {
+        //TODO：调度器应该记录所有instance使用过的port,并保证不会返回已经使用过的port
+        if service_name == "www" {
+            if app_index == 0 {
+                if expose_port.is_some() {
+                    return expose_port.unwrap();
+                }
+                warn!("alloc_replica_instance_port: service_name: {} alloc instance port failed!",service_name);
+                return 0;
+            }
+            return app_index * 16 + BASE_APP_PORT;
+        }
+        if expose_port.is_some() {
+            return expose_port.unwrap();
+        }
+        warn!("alloc_replica_instance_port: service_name: {} alloc instance port failed!",service_name);
+        return 0;
+    }
+
     fn create_replica_instance(
         &self,
         service_spec: &ServiceSpec,
@@ -874,6 +895,14 @@ impl NodeScheduler {
 
         let mut instances = Vec::new();
         let instance_id_uuid = uuid::Uuid::new_v4();
+
+        //alloc instance service ports
+        let mut service_ports = HashMap::new();
+        for (service_name, expose_port) in service_spec.service_ports_config.iter() {
+            let service_port = self.alloc_replica_instance_port(service_spec.app_index,service_name, Some(*expose_port));
+            service_ports.insert(service_name.clone(), service_port);
+        }
+        //TODO: 将port alloc的逻辑，放到调度器内部?
         for (_, node) in selected_nodes.iter() {
             instances.push(ReplicaInstance {
                 node_id: node.id.clone(),
@@ -882,7 +911,7 @@ impl NodeScheduler {
                 instance_id: create_replica_instance_id(service_spec, node.id.as_str()),
                 last_update_time: buckyos_get_unix_timestamp(),
                 state: InstanceState::Running,
-                service_port: service_spec.default_service_port,
+                service_ports: service_ports.clone(),
             });
         }
         Ok(instances)

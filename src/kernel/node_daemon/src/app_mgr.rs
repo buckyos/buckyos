@@ -131,7 +131,8 @@ impl RunItemControl for AppRunItem {
     }
 
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
-        let is_system_app = self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id().is_some();
+        //let is_system_app = self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id().is_some();
+        let is_system_app = false;
 
         let mut env = PackageEnv::new(get_buckyos_system_bin_dir());
         let instance_pkg_id = self.get_instance_pkg_id(env.is_strict())?;
@@ -175,8 +176,9 @@ impl RunItemControl for AppRunItem {
     }
 
     async fn start(&self, params: Option<&Vec<String>>) -> Result<()> {
-        //TODO
-        if self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id().is_some() {
+        //let is_system_app = self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id().is_some();
+        let is_system_app = false;
+        if is_system_app {
             self.set_env_var(true).await?;
         } else {
             self.set_env_var(false).await?;
@@ -205,7 +207,9 @@ impl RunItemControl for AppRunItem {
 
     
     async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
-        if self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id().is_some() {
+        //let is_system_app = self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id().is_some();
+        let is_system_app = false;
+        if is_system_app {
             self.set_env_var(true).await?;
         } else {
             self.set_env_var(false).await?;
@@ -231,20 +235,20 @@ impl RunItemControl for AppRunItem {
     }
 
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
-        let is_system_app;
-        if self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id().is_some() {
-            let env = PackageEnv::new(get_buckyos_system_bin_dir());
-            let instance_pkg_id = self.get_instance_pkg_id(env.is_strict())?;
-            info!("state system app,will load dapp's app_pkg {}",instance_pkg_id.as_str());
-            let app_pkg = env.load(instance_pkg_id.as_str()).await;
-            if app_pkg.is_err() {
-                return Ok(ServiceInstanceState::NotExist);
-            }
-            is_system_app = true;
-        } else {
+        let is_system_app = false;
+        // if self.app_instance_config.app_spec.app_doc.pkg_list.get_app_pkg_id().is_some() {
+        //     let env = PackageEnv::new(get_buckyos_system_bin_dir());
+        //     let instance_pkg_id = self.get_instance_pkg_id(env.is_strict())?;
+        //     info!("state system app,will load dapp's app_pkg {}",instance_pkg_id.as_str());
+        //     let app_pkg = env.load(instance_pkg_id.as_str()).await;
+        //     if app_pkg.is_err() {
+        //         return Ok(ServiceInstanceState::NotExist);
+        //     }
+        //     is_system_app = true;
+        // } else {
 
-            is_system_app = false;
-        }  
+        //     is_system_app = false;
+        // }  
         
         self.set_env_var(is_system_app).await?;
         let real_param = vec![self.app_id.clone(), self.app_instance_config.app_spec.user_id.clone()];

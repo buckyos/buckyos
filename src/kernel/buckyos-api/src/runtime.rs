@@ -400,14 +400,14 @@ impl BuckyOSRuntime {
         let main_port = *self.main_service_port.read().await;
         let mut service_ports = HashMap::new();
         if main_port > 0 {
-            service_ports.insert("main".to_string(), main_port);
+            service_ports.insert("www".to_string(), main_port);
         }
         let service_instance_info = ServiceInstanceReportInfo {
             instance_id,
             node_id:node_id.clone(),
             node_did,
             state: ServiceInstanceState::Started,
-            service_ports,
+            service_ports: service_ports,
             last_update_time: buckyos_get_unix_timestamp(),
             start_time: 0,
             pid: std::process::id(),
@@ -1123,15 +1123,8 @@ impl BuckyOSRuntime {
         return Err(RPCErrors::ReasonError("no running instance found".to_string()));
     }
 
-    fn resolve_service_port(node_info: &ServiceNode, service_name: &str) -> Option<u16> {
-        node_info
-            .service_port
-            .get(service_name)
-            .copied()
-            .or_else(|| node_info.service_port.get("main").copied())
-            .or_else(|| node_info.service_port.get("http").copied())
-            .or_else(|| node_info.service_port.get("https").copied())
-            .or_else(|| node_info.service_port.values().next().copied())
+    fn resolve_service_port(_node_info: &ServiceNode, _service_name: &str) -> Option<u16> {
+        unimplemented!()
     }
 
     //if http_only is false, return the url with tunnel protocol
