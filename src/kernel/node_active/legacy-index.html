@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="active_title">active_title</title>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Outlined" rel="stylesheet">
+    <script src="index.ts" type="module"></script>
+    <style>
+        body {
+            background-image: url('bkg.png');
+            background-repeat: repeat;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+        }
+        
+        .language-switcher-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="language-switcher-container">
+        <language-switcher></language-switcher>
+    </div>
+
+    <div id="background">
+        <bucky-wizzard-dlg id="active-wizzard">
+            
+        </bucky-wizzard-dlg>
+    </div>    
+    
+</body>
+</html>

@@ -1,33 +1,34 @@
-import {buckyos} from 'buckyos';
+import { buckyos } from 'buckyos';
 
 export enum GatewayType {
     BuckyForward = "BuckyForward",
     PortForward = "PortForward",
 }
 
-type JsonValue = Record<string, any>;
+export type JsonValue = Record<string, any>;
 
 export type ActiveWizzardData = {
-    gatewy_type : GatewayType;
-    is_direct_connect : boolean;
+    gatewy_type: GatewayType;
+    is_direct_connect: boolean;
 
-    sn_active_code : string;
-    sn_user_name : string;
-    sn_url :string;
-    web3_base_host : string;
+    sn_active_code: string;
+    sn_user_name: string;
+    sn_url: string;
+    web3_base_host: string;
 
-    use_self_domain : boolean;
-    self_domain : string;
+    use_self_domain: boolean;
+    self_domain: string;
 
-    admin_password_hash : string;
-    friend_passcode:string;
-    enable_guest_access : boolean;
+    admin_password_hash: string;
+    friend_passcode: string;
+    enable_guest_access: boolean;
 
-    owner_public_key : string;
-    owner_private_key : string;
-    zone_config_jwt : string;
+    owner_public_key: JsonValue | string;
+    owner_private_key: string;
+    zone_config_jwt: string;
 
-
+    port_mapping_mode?: "full" | "rtcp_only";
+    rtcp_port?: number;
 }
 
 export let SN_API_URL:string = "https://sn.buckyos.ai/kapi/sn";
@@ -332,4 +333,3 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
 
     return true;
 }
-

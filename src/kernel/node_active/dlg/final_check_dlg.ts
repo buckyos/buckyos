@@ -11,6 +11,7 @@ class FinalCheckDlg extends HTMLElement {
     }
 
     async do_active(wizzard_data:ActiveWizzardData):Promise<boolean> {
+        
         return await do_active(wizzard_data);
     }
 
