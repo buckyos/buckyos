@@ -19,7 +19,7 @@ import {
 } from "@mui/icons-material";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { GatewayType, WizardData } from "../../types";
+import { GatewayType, WalletUser, WizardData } from "../../types";
 import {
   check_bucky_username,
   generate_key_pair,
@@ -32,14 +32,16 @@ type Props = {
   onUpdate: (data: Partial<WizardData>) => void;
   onNext: () => void;
   onBack: () => void;
+  isWalletRuntime: boolean;
+  walletUser?: WalletUser;
 };
 
 type NameStatus = "idle" | "checking" | "ok" | "taken" | "tooShort";
 
-const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
+const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, walletUser }: Props) => {
   const { t } = useTranslation();
   const [mode, setMode] = useState<"bucky" | "self">(wizardData.use_self_domain ? "self" : "bucky");
-  const [username, setUsername] = useState(wizardData.sn_user_name || "");
+  const [username, setUsername] = useState(wizardData.sn_user_name || walletUser?.user_name || "");
   const [domain, setDomain] = useState(wizardData.self_domain || "");
   const [snCode, setSnCode] = useState(wizardData.sn_active_code || "");
   const [nameStatus, setNameStatus] = useState<NameStatus>("idle");
@@ -51,6 +53,12 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
   });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+
+  useEffect(() => {
+    if (isWalletRuntime && walletUser?.user_name) {
+      setUsername(walletUser.user_name);
+    }
+  }, [isWalletRuntime, walletUser]);
 
   useEffect(() => {
     if (wizardData.owner_private_key) {
@@ -65,6 +73,10 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
   }, [onUpdate, wizardData.owner_private_key]);
 
   useEffect(() => {
+    if (isWalletRuntime) {
+      setNameStatus("ok");
+      return;
+    }
     if (mode !== "bucky" || username.trim().length <= 4) {
       setNameStatus(username.trim().length > 0 && username.trim().length <= 4 ? "tooShort" : "idle");
       return;
@@ -157,11 +169,11 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
         setFormError(t("error_name_too_short") || "");
         return;
       }
-      if (nameStatus === "taken") {
+      if (!isWalletRuntime && nameStatus === "taken") {
         setFormError(t("error_name_taken") || "");
         return;
       }
-      if (wizardData.gatewy_type === GatewayType.BuckyForward && (!snCode || snCode.length < 8)) {
+      if (!isWalletRuntime && wizardData.gatewy_type === GatewayType.BuckyForward && (!snCode || snCode.length < 8)) {
         setFormError(t("error_invite_code_too_short") || "");
         return;
       }
@@ -169,7 +181,7 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
         use_self_domain: false,
         sn_user_name: username.trim(),
         self_domain: "",
-        sn_active_code: snCode,
+        sn_active_code: isWalletRuntime ? "" : snCode,
       });
       onNext();
       return;
@@ -303,21 +315,24 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
         <Stack spacing={2}>
           <TextField
             label={t("username_placeholder")}
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          helperText={previewDomain}
-          required
-          InputProps={{
-            endAdornment: renderStatusChip() ? <Box sx={{ pr: 1 }}>{renderStatusChip()}</Box> : undefined,
-          }}
-        />
-          <TextField
-            label={t("invite_code_placeholder")}
-            value={snCode}
-            onChange={(e) => setSnCode(e.target.value)}
-            helperText={t("invite_code_required")}
-            required={wizardData.gatewy_type === GatewayType.BuckyForward}
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            helperText={isWalletRuntime ? t("wallet_bound_username", { defaultValue: "Wallet 已绑定用户名" }) || previewDomain : previewDomain}
+            required
+            InputProps={{
+              readOnly: isWalletRuntime,
+              endAdornment: renderStatusChip() ? <Box sx={{ pr: 1 }}>{renderStatusChip()}</Box> : undefined,
+            }}
           />
+          {!isWalletRuntime && (
+            <TextField
+              label={t("invite_code_placeholder")}
+              value={snCode}
+              onChange={(e) => setSnCode(e.target.value)}
+              helperText={t("invite_code_required")}
+              required={wizardData.gatewy_type === GatewayType.BuckyForward}
+            />
+          )}
           {generatingKeys && (
             <Alert icon={<CircularProgress size={16} />} severity="info">
               {t("generate_keys_progress")}

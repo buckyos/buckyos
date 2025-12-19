@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Box, LinearProgress, Stack, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
-import { StepKey, WizardData, createInitialWizardData } from "../types";
+import { StepKey, WalletUser, WizardData, createInitialWizardData } from "../types";
 import GatewayStep from "./steps/GatewayStep";
 import DomainStep from "./steps/DomainStep";
 import SecurityStep from "./steps/SecurityStep";
@@ -11,11 +11,39 @@ import SuccessStep from "./steps/SuccessStep";
 const stepOrder: StepKey[] = ["gateway", "domain", "security", "review", "success"];
 const visibleSteps: StepKey[] = ["gateway", "domain", "security", "review"];
 
-const ActiveWizard = () => {
+type Props = {
+  isWalletRuntime: boolean;
+  walletUser?: WalletUser;
+};
+
+const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   const { t } = useTranslation();
-  const [wizardData, setWizardData] = useState<WizardData>(() => createInitialWizardData());
+  const [wizardData, setWizardData] = useState<WizardData>(() =>
+    createInitialWizardData({
+      is_wallet_runtime: isWalletRuntime,
+      wallet_user_name: walletUser?.user_name,
+      wallet_user_pubkey: walletUser?.public_key,
+      wallet_user_id: walletUser?.user_id,
+      sn_user_name: walletUser?.user_name || "",
+    })
+  );
   const [activeStep, setActiveStep] = useState(0);
   const [completedUrl, setCompletedUrl] = useState("");
+
+  useEffect(() => {
+    if (!isWalletRuntime || !walletUser) {
+      setWizardData((prev) => ({ ...prev, is_wallet_runtime: false }));
+      return;
+    }
+    setWizardData((prev) => ({
+      ...prev,
+      is_wallet_runtime: true,
+      wallet_user_name: walletUser.user_name,
+      wallet_user_pubkey: walletUser.public_key,
+      wallet_user_id: walletUser.user_id,
+      sn_user_name: walletUser.user_name || prev.sn_user_name,
+    }));
+  }, [isWalletRuntime, walletUser]);
 
   const stepTitles = useMemo(
     () => ({
@@ -51,9 +79,25 @@ const ActiveWizard = () => {
   const renderStep = () => {
     switch (currentStepKey) {
       case "gateway":
-        return <GatewayStep wizardData={wizardData} onUpdate={handleUpdate} onNext={goNext} />;
+        return (
+          <GatewayStep
+            wizardData={wizardData}
+            onUpdate={handleUpdate}
+            onNext={goNext}
+            isWalletRuntime={isWalletRuntime}
+          />
+        );
       case "domain":
-        return <DomainStep wizardData={wizardData} onUpdate={handleUpdate} onNext={goNext} onBack={goBack} />;
+        return (
+          <DomainStep
+            wizardData={wizardData}
+            onUpdate={handleUpdate}
+            onNext={goNext}
+            onBack={goBack}
+            isWalletRuntime={isWalletRuntime}
+            walletUser={walletUser}
+          />
+        );
       case "security":
         return <SecurityStep wizardData={wizardData} onUpdate={handleUpdate} onNext={goNext} onBack={goBack} />;
       case "review":
@@ -63,6 +107,7 @@ const ActiveWizard = () => {
             onUpdate={handleUpdate}
             onBack={goBack}
             onActivated={handleActivationDone}
+            isWalletRuntime={isWalletRuntime}
           />
         );
       case "success":

@@ -6,20 +6,25 @@ import {
   PaletteMode,
   Paper,
   Stack,
+  Chip,
   ThemeProvider,
   Typography,
   createTheme,
   useMediaQuery,
 } from "@mui/material";
 import { useTranslation } from "react-i18next";
+import { buckyos, RuntimeType } from "buckyos";
 import ActiveWizard from "./components/ActiveWizard";
 import LanguageSwitch from "./components/LanguageSwitch";
 import ThemeToggle from "./components/ThemeToggle";
+import { WalletUser } from "./types";
 
 const App = () => {
   const { t, i18n } = useTranslation();
   const prefersDark = useMediaQuery("(prefers-color-scheme: dark)");
   const [mode, setMode] = useState<PaletteMode>(prefersDark ? "dark" : "light");
+  const [isWalletRuntime, setIsWalletRuntime] = useState(false);
+  const [walletUser, setWalletUser] = useState<WalletUser | null>(null);
 
   useEffect(() => {
     setMode(prefersDark ? "dark" : "light");
@@ -32,6 +37,37 @@ const App = () => {
   useEffect(() => {
     document.title = t("active_title");
   }, [t, i18n.language]);
+
+  useEffect(() => {
+    try {
+      const runtime = buckyos.getRuntimeType?.();
+      if (runtime === RuntimeType.AppRuntime) {
+        setIsWalletRuntime(true);
+        buckyos.getCurrentWalletUser?.()
+          .then((user) => {
+            if (user) {
+              setWalletUser({
+                user_name: user.user_name || user.username || "",
+                user_id: user.user_id,
+                public_key: user.public_key || user.owner_public_key,
+              });
+            }
+          })
+          .catch((err: any) => {
+            console.warn("Failed to load wallet user", err);
+          });
+      }
+    } catch (err) {
+      console.warn("Detect runtime failed", err);
+    }
+  }, []);
+
+  const walletPubKeyDisplay = (() => {
+    const pk = walletUser?.public_key;
+    if (!pk) return "";
+    const text = typeof pk === "string" ? pk : JSON.stringify(pk);
+    return text.length > 22 ? `${text.slice(0, 10)}...${text.slice(-8)}` : text;
+  })();
 
   const theme = useMemo(
     () =>
@@ -93,13 +129,21 @@ const App = () => {
             >
               <Box>
                 <Typography variant="h4">{t("active_title")}</Typography>
+                {isWalletRuntime && walletUser?.user_name && (
+                  <Stack direction="row" spacing={1} alignItems="center" mt={0.5} flexWrap="wrap">
+                    <Chip size="small" label={walletUser.user_name} />
+                    {walletPubKeyDisplay && (
+                      <Chip size="small" color="primary" label={walletPubKeyDisplay} />
+                    )}
+                  </Stack>
+                )}
               </Box>
               <Stack direction="row" spacing={1.25}>
                 <LanguageSwitch />
                 <ThemeToggle mode={mode} onToggle={() => setMode((prev) => (prev === "light" ? "dark" : "light"))} />
               </Stack>
             </Stack>
-            <ActiveWizard />
+            <ActiveWizard isWalletRuntime={isWalletRuntime} walletUser={walletUser || undefined} />
           </Paper>
         </Container>
       </Box>

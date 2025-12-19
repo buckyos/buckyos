@@ -29,6 +29,10 @@ export type ActiveWizzardData = {
 
     port_mapping_mode?: "full" | "rtcp_only";
     rtcp_port?: number;
+    is_wallet_runtime?: boolean;
+    wallet_user_name?: string;
+    wallet_user_pubkey?: string | JsonValue;
+    wallet_user_id?: string;
 }
 
 export let SN_API_URL:string = "https://sn.buckyos.ai/kapi/sn";
@@ -178,7 +182,7 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
     }
 
     // Register SN user if needed
-    if (need_sn) {
+    if (need_sn && !data.is_wallet_runtime) {
         let user_domain = null;
         if(data.use_self_domain) {
             user_domain = data.self_domain;

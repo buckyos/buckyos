@@ -13,16 +13,17 @@ import { CheckCircleRounded, ContentCopyRounded, LaunchRounded } from "@mui/icon
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { WizardData } from "../../types";
-import { do_active } from "@legacy/active_lib";
+import { do_active, do_active_by_wallet } from "@legacy/active_lib";
 
 type Props = {
   wizardData: WizardData;
   onUpdate: (data: Partial<WizardData>) => void;
   onActivated: (targetUrl: string) => void;
   onBack: () => void;
+  isWalletRuntime: boolean;
 };
 
-const ReviewStep = ({ wizardData, onActivated, onBack }: Props) => {
+const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props) => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -45,7 +46,7 @@ const ReviewStep = ({ wizardData, onActivated, onBack }: Props) => {
     setError("");
     setLoading(true);
     try {
-      const ok = await do_active(wizardData);
+      const ok = isWalletRuntime ? await do_active_by_wallet(wizardData) : await do_active(wizardData);
       if (ok) {
         onActivated(targetUrl);
       } else {

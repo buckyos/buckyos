@@ -22,9 +22,10 @@ type Props = {
   wizardData: WizardData;
   onUpdate: (data: Partial<WizardData>) => void;
   onNext: () => void;
+  isWalletRuntime: boolean;
 };
 
-const GatewayStep = ({ wizardData, onUpdate, onNext }: Props) => {
+const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) => {
   const { t } = useTranslation();
   const [mode, setMode] = useState<GatewayType>(wizardData.gatewy_type || GatewayType.BuckyForward);
   const [inviteCode, setInviteCode] = useState(wizardData.sn_active_code || "");
@@ -37,6 +38,10 @@ const GatewayStep = ({ wizardData, onUpdate, onNext }: Props) => {
   const [formError, setFormError] = useState("");
 
   useEffect(() => {
+    if (isWalletRuntime) {
+      setInviteValid(true);
+      return;
+    }
     if (mode !== GatewayType.BuckyForward || inviteCode.length < 7) {
       setInviteValid(null);
       return;
@@ -67,7 +72,7 @@ const GatewayStep = ({ wizardData, onUpdate, onNext }: Props) => {
   const handleNext = () => {
     setFormError("");
 
-    if (mode === GatewayType.BuckyForward) {
+    if (mode === GatewayType.BuckyForward && !isWalletRuntime) {
       if (!inviteCode || inviteCode.length < 8) {
         setFormError(t("error_invite_code_too_short") || "Invitation code is required");
         return;
@@ -88,11 +93,12 @@ const GatewayStep = ({ wizardData, onUpdate, onNext }: Props) => {
     const nextData: Partial<WizardData> = {
       gatewy_type: mode,
       is_direct_connect: mode === GatewayType.PortForward,
-      sn_active_code: inviteCode,
+      sn_active_code: isWalletRuntime ? "" : inviteCode,
       sn_url: SN_API_URL,
       web3_base_host: WEB3_BASE_HOST,
       port_mapping_mode: portMappingMode,
       rtcp_port: Number.isNaN(port) ? 2980 : port,
+      is_wallet_runtime: isWalletRuntime,
     };
 
     set_sn_api_url(SN_API_URL);
@@ -176,23 +182,25 @@ const GatewayStep = ({ wizardData, onUpdate, onNext }: Props) => {
           <Typography variant="subtitle1" fontWeight={600}>
             {t("use_buckyos_sn")}
           </Typography>
-          <TextField
-            label={t("invite_code_placeholder")}
-            value={inviteCode}
-            onChange={(e) => setInviteCode(e.target.value)}
-            error={inviteValid === false}
-            helperText={
-              checkingInvite
-                ? t("invite_checking")
-                : inviteValid === false
-                ? t("error_invite_code_invalid")
-                : inviteValid === true
-                ? t("invite_valid")
-                : t("bucky_forward_desc")
-            }
-            fullWidth
-            required
-          />
+          {!isWalletRuntime && (
+            <TextField
+              label={t("invite_code_placeholder")}
+              value={inviteCode}
+              onChange={(e) => setInviteCode(e.target.value)}
+              error={inviteValid === false}
+              helperText={
+                checkingInvite
+                  ? t("invite_checking")
+                  : inviteValid === false
+                  ? t("error_invite_code_invalid")
+                  : inviteValid === true
+                  ? t("invite_valid")
+                  : t("bucky_forward_desc")
+              }
+              fullWidth
+              required
+            />
+          )}
         </Stack>
       ) : (
         <Stack spacing={2}>
