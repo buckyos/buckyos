@@ -30,10 +30,6 @@ const GatewayStep = ({ wizardData, onUpdate, onNext }: Props) => {
   const [inviteCode, setInviteCode] = useState(wizardData.sn_active_code || "");
   const [checkingInvite, setCheckingInvite] = useState(false);
   const [inviteValid, setInviteValid] = useState<boolean | null>(null);
-  const [customSnUrl, setCustomSnUrl] = useState(
-    wizardData.sn_url && wizardData.sn_url !== SN_API_URL ? wizardData.sn_url : ""
-  );
-  const [snUrlError, setSnUrlError] = useState("");
   const [portMappingMode, setPortMappingMode] = useState<WizardData["port_mapping_mode"]>(
     wizardData.port_mapping_mode || "full"
   );
@@ -68,28 +64,8 @@ const GatewayStep = ({ wizardData, onUpdate, onNext }: Props) => {
     };
   }, [inviteCode, mode]);
 
-  const validateSnUrl = (value: string) => {
-    if (!value.trim()) {
-      setSnUrlError("");
-      return { snUrl: SN_API_URL, host: WEB3_BASE_HOST };
-    }
-    try {
-      const parsed = new URL(value.trim());
-      setSnUrlError("");
-      return { snUrl: parsed.toString(), host: parsed.host };
-    } catch (_err) {
-      setSnUrlError(t("error_invalid_url") || "Invalid SN URL");
-      return null;
-    }
-  };
-
   const handleNext = () => {
     setFormError("");
-    const urlResult = validateSnUrl(customSnUrl);
-    if (!urlResult) {
-      setFormError(t("error_invalid_url") || "Please enter a valid SN endpoint");
-      return;
-    }
 
     if (mode === GatewayType.BuckyForward) {
       if (!inviteCode || inviteCode.length < 8) {
@@ -113,13 +89,13 @@ const GatewayStep = ({ wizardData, onUpdate, onNext }: Props) => {
       gatewy_type: mode,
       is_direct_connect: mode === GatewayType.PortForward,
       sn_active_code: inviteCode,
-      sn_url: urlResult.snUrl,
-      web3_base_host: urlResult.host,
+      sn_url: SN_API_URL,
+      web3_base_host: WEB3_BASE_HOST,
       port_mapping_mode: portMappingMode,
       rtcp_port: Number.isNaN(port) ? 2980 : port,
     };
 
-    set_sn_api_url(urlResult.snUrl);
+    set_sn_api_url(SN_API_URL);
     onUpdate(nextData);
     onNext();
   };
@@ -216,15 +192,6 @@ const GatewayStep = ({ wizardData, onUpdate, onNext }: Props) => {
             }
             fullWidth
             required
-          />
-          <TextField
-            label={t("custom_sn_label")}
-            placeholder={t("custom_sn_placeholder") || "https://sn.example.com/kapi/sn"}
-            value={customSnUrl}
-            onChange={(e) => setCustomSnUrl(e.target.value)}
-            error={!!snUrlError}
-            helperText={snUrlError || t("custom_sn_helper")}
-            fullWidth
           />
         </Stack>
       ) : (
