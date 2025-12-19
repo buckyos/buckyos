@@ -16,7 +16,6 @@
         width: 100%;
     }
 </style>
-</style>
 <div class="frame">
     <h3 data-i18n="title_step_2">2. 设置访问Personal Server使用的域名</h3>
     <p data-i18n="your_name">您的名字:</p>
@@ -33,18 +32,39 @@
     <div class="container">
         <bucky-checkbox id="chk_use_self_name" lable="{{t "use_own_domain"}}"></bucky-checkbox>
         <md-outlined-text-field id="txt_domain" data-i18n-placeholder="domain_placeholder" placeholder="输入将使用的域名" style="width: 200px;margin-left: 28px;"></md-outlined-text-field>
-        <div style="margin-top: 0px; margin-left: 28px;">
+        <div id="self_domain_setup" style="margin-top: 0px; margin-left: 28px; display: none;">
         <p data-i18n="domain_provider_setup">您需要通过域名提供商进行以下设置:</p>
         <ul>
-        <li id="txt_dns_tip" data-i18n="dns_a_record">设置A记录: 设置为您的Personal Server的公网IP</li>
-        <li data-i18n="dns_txt_record">设置TXT记录: 为您的域名添加TXT记录,值为:<a id="copyButton" href="#" data-i18n="copy_button">(复制)</a></li>
+        <li id="txt_dns_ns_tip" data-i18n="dns_ns_record">设置NS记录为 sn.{sn_host_base}</li>
         </ul>
-        <md-filled-text-field id="txt_zone_id_value" type="textarea" data-i18n-label="txt_record_label" label="TXT Record" disabled="true"
-        data-i18n-value="txt_record_placeholder"
-        value="(请先输入用户名)"
-        rows="5">
-        </md-filled-text-field>
-        </div
+        <p style="margin-top: 8px; margin-bottom: 8px;" data-i18n="dns_ns_record_desc">SN会正确处理A记录解析，并根据Personal Server的接入情况返回正确的IP地址</p>
+        <p style="margin-top: 12px; margin-bottom: 8px; font-weight: 500;" data-i18n="dns_txt_records_title">SN会自动为你的域名兼容buckyos zone标准，创建下面3条TXT记录:</p>
+        <div style="margin-top: 12px; margin-bottom: 12px;">
+            <md-filled-button id="btn_generate_txt_records" style="width: 180px;" data-i18n="generate_txt_records_button">生成TXT记录</md-filled-button>
+        </div>
+        <div id="txt_records_container" style="display: none;">
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+            <div>
+                <label style="display: block; margin-bottom: 4px; font-weight: 500;" data-i18n="dns_txt_record_boot">BOOT</label>
+                <md-filled-text-field id="txt_boot_record" type="textarea" disabled="true" readonly="true" 
+                    value="" rows="3" style="width: 100%;">
+                </md-filled-text-field>
+            </div>
+            <div>
+                <label style="display: block; margin-bottom: 4px; font-weight: 500;" data-i18n="dns_txt_record_pkx">PKX</label>
+                <md-filled-text-field id="txt_pkx_record" type="textarea" disabled="true" readonly="true" 
+                    value="" rows="3" style="width: 100%;">
+                </md-filled-text-field>
+            </div>
+            <div>
+                <label style="display: block; margin-bottom: 4px; font-weight: 500;" data-i18n="dns_txt_record_dev">DEV</label>
+                <md-filled-text-field id="txt_dev_record" type="textarea" disabled="true" readonly="true" 
+                    value="" rows="3" style="width: 100%;">
+                </md-filled-text-field>
+            </div>
+        </div>
+        </div>
+        </div>
     </div>
     <p></p>
     <p></p>

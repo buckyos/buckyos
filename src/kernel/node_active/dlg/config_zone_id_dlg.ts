@@ -86,6 +86,13 @@ class ConfigZoneIdDlg extends HTMLElement {
         const txt_name = shadow.getElementById('txt_name') as MdOutlinedTextField;
         const txt_domain = shadow.getElementById('txt_domain') as MdOutlinedTextField;
         const btn_next = shadow.getElementById('btn_next') as MdFilledButton;
+        const self_domain_setup = shadow.getElementById('self_domain_setup') as HTMLElement;
+        const txt_dns_ns_tip = shadow.getElementById('txt_dns_ns_tip') as HTMLElement;
+        const txt_boot_record = shadow.getElementById('txt_boot_record') as MdFilledTextField;
+        const txt_pkx_record = shadow.getElementById('txt_pkx_record') as MdFilledTextField;
+        const txt_dev_record = shadow.getElementById('txt_dev_record') as MdFilledTextField;
+        const txt_records_container = shadow.getElementById('txt_records_container') as HTMLElement;
+        const btn_generate_txt_records = shadow.getElementById('btn_generate_txt_records') as MdFilledButton;
 
         if (wizzard_data.sn_active_code) {
             if(wizzard_data.sn_active_code.length > 0){
@@ -134,35 +141,119 @@ class ConfigZoneIdDlg extends HTMLElement {
         txt_domain.addEventListener('change', (event) => {
             txt_domain.error = false;
             txt_domain.errorText = "";
+            // 当域名改变时，隐藏已生成的TXT记录，需要重新生成
+            if (chk_use_self_domain.checked) {
+                txt_records_container.style.display = 'none';
+                // 清空TXT记录内容
+                txt_boot_record.value = '';
+                txt_pkx_record.value = '';
+                txt_dev_record.value = '';
+            }
         });
 
 
+        // 更新自有域名设置的显示/隐藏
+        const updateSelfDomainSetupVisibility = () => {
+            if (chk_use_self_domain.checked) {
+                self_domain_setup.style.display = 'block';
+                // 更新NS记录提示文本
+                const sn_host_base = wizzard_data.web3_base_host || 'web3.buckyos.ai';
+                txt_dns_ns_tip.textContent = i18next.t('dns_ns_record', { sn_host_base: sn_host_base }) || `设置NS记录为 sn.${sn_host_base}`;
+                // 隐藏TXT记录容器，等待用户点击按钮生成
+                txt_records_container.style.display = 'none';
+            } else {
+                self_domain_setup.style.display = 'none';
+                txt_records_container.style.display = 'none';
+            }
+        };
+
+        // 更新TXT记录
+        const updateTxtRecords = async () => {
+            if (!wizzard_data.owner_private_key || wizzard_data.owner_private_key === '') {
+                alert(i18next.t('error_private_key_not_ready') || '私钥尚未生成，请稍候再试');
+                return;
+            }
+
+            // 检查域名是否已输入
+            if (!txt_domain.value || txt_domain.value.trim() === '') {
+                txt_domain.error = true;
+                txt_domain.errorText = i18next.t('error_domain_required') || '请先输入域名';
+                return;
+            }
+
+            // 禁用按钮，显示加载状态
+            btn_generate_txt_records.disabled = true;
+            btn_generate_txt_records.textContent = i18next.t('generating_txt_records') || '正在生成...';
+
+            try {
+                // 生成BOOT记录
+                const sn_url = new URL(wizzard_data.sn_url || 'https://sn.buckyos.ai');
+                const boot_jwt = await generate_zone_boot_config_jwt(sn_url.hostname, wizzard_data.owner_private_key);
+                txt_boot_record.value = `DID=${boot_jwt};`;
+                wizzard_data.zone_config_jwt = boot_jwt;
+
+                // PKX和DEV记录暂时显示占位符，等待SN生成
+                // 这些记录应该由SN自动生成，这里先显示提示信息
+                txt_pkx_record.value = i18next.t('txt_record_placeholder') || '(请等待SN生成)';
+                txt_dev_record.value = i18next.t('txt_record_placeholder') || '(请等待SN生成)';
+
+                // 显示TXT记录容器
+                txt_records_container.style.display = 'block';
+            } catch (err) {
+                console.error('Failed to generate TXT records:', err);
+                alert(i18next.t('error_generate_txt_records_failed') || '生成TXT记录失败，请重试');
+                txt_boot_record.value = i18next.t('txt_record_placeholder') || '(生成失败)';
+                txt_pkx_record.value = i18next.t('txt_record_placeholder') || '(生成失败)';
+                txt_dev_record.value = i18next.t('txt_record_placeholder') || '(生成失败)';
+            } finally {
+                // 恢复按钮状态
+                btn_generate_txt_records.disabled = false;
+                btn_generate_txt_records.textContent = i18next.t('generate_txt_records_button') || '生成TXT记录';
+            }
+        };
+
+        // 添加生成TXT记录按钮的点击事件
+        btn_generate_txt_records.addEventListener('click', async (event) => {
+            await updateTxtRecords();
+        });
+
         chk_use_buckyos_name.addEventListener('click', (event) => {
             chk_use_self_domain.checked = !chk_use_buckyos_name.checked;
+            updateSelfDomainSetupVisibility();
         });
 
         chk_use_self_domain.addEventListener('click', (event) => {
             chk_use_buckyos_name.checked = !chk_use_self_domain.checked;
+            updateSelfDomainSetupVisibility();
         });
 
-        let copyButton = shadow.getElementById('copyButton') as HTMLAnchorElement;
-        copyButton.addEventListener('click', (event) => {
-            // 创建临时输入框
-            const tempInput = document.createElement('textarea');
-            let txt_zone_config = shadow.getElementById('txt_zone_id_value') as MdFilledTextField;
-            const textToCopy = txt_zone_config.value;
-            tempInput.value = textToCopy;
-            document.body.appendChild(tempInput);
-            
-            // 选择并复制
-            tempInput.select();
-            document.execCommand('copy');
-            
-            // 移除临时元素
-            document.body.removeChild(tempInput);
-            
-            alert(i18next.t("success_copied"));
-        });
+        // 初始化显示状态
+        updateSelfDomainSetupVisibility();
+
+        // 为TXT记录添加复制功能
+        const addCopyFunction = (element: MdFilledTextField, label: string) => {
+            element.addEventListener('click', (event) => {
+                if (element.value && element.value !== i18next.t('txt_record_placeholder')) {
+                    // 创建临时输入框
+                    const tempInput = document.createElement('textarea');
+                    tempInput.value = element.value;
+                    document.body.appendChild(tempInput);
+                    
+                    // 选择并复制
+                    tempInput.select();
+                    document.execCommand('copy');
+                    
+                    // 移除临时元素
+                    document.body.removeChild(tempInput);
+                    
+                    alert(i18next.t("success_copied"));
+                }
+            });
+        };
+
+        addCopyFunction(txt_boot_record, 'BOOT');
+        addCopyFunction(txt_pkx_record, 'PKX');
+        addCopyFunction(txt_dev_record, 'DEV');
 
 
         btn_next.addEventListener('click', (event) => {

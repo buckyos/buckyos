@@ -32,13 +32,26 @@
     <p></p>
     <div class="container">
         <bucky-checkbox id="chk_enable_port_forward" lable="{{t "direct_connect_label"}}"></bucky-checkbox>
-        <div style="margin-top: 0px; margin-left: 28px;"><span data-i18n="direct_connect_desc">* 选择后公网访问将不经过任何中转到达 Personal Server</span></div>
-        <div style="margin-top: 0px; margin-left: 28px;"><span data-i18n="direct_connect_warning">&nbsp;&nbsp;请再次确认您的网络环境是否满足以下条件:(如您不能完全理解下面选项的含义请不要选择此项):</span>
-            <ul style="margin-top: 12px;">
-                <li data-i18n="direct_connect_condition1">我的路由器拨号后拥有一个公网IPv4地址</li>
-                <li data-i18n="direct_connect_condition2">我已经将路由器的80,443 端口映射到Personal Server的80,443 端口</li>
-                <li data-i18n="direct_connect_condition3">Personal Server运行在有固定IP的VPS上,无需设置路由器</li>
-            </ul>
+        <div id="direct_connect_options" style="margin-top: 0px; margin-left: 28px; display: none;">
+            <label for="port_mapping_mode" style="display: block; margin-bottom: 8px; font-weight: 500;" data-i18n="port_mapping_mode_label">端口映射模式:</label>
+            <select id="port_mapping_mode" style="width: 100%; max-width: 400px; padding: 8px; border-radius: 4px; border: 1px solid #ccc; font-size: 14px; background-color: #fff;">
+                <option value="full" data-i18n="port_mapping_full">我能映射443，2980端口到该设备</option>
+                <option value="rtcp_only" data-i18n="port_mapping_rtcp_only">我能映射 2980（或其它）端口到该设备</option>
+            </select>
+            <div id="port_mapping_hint" style="margin-top: 12px; padding: 12px; background-color: #f5f5f5; border-radius: 4px; border-left: 4px solid #1976d2;">
+                <span id="port_mapping_hint_text" data-i18n="port_mapping_full_hint">所有的流量都不会通过SN中转并直接到达该设备</span>
+            </div>
+            <div id="rtcp_port_container" style="margin-top: 12px; display: none;">
+                <label for="txt_rtcp_port" style="display: block; margin-bottom: 8px; font-weight: 500;" data-i18n="rtcp_port_label">RTCP端口:</label>
+                <md-outlined-text-field id="txt_rtcp_port" type="number" data-i18n-placeholder="rtcp_port_placeholder" placeholder="{{rtcp_port_placeholder}}" style="width: 200px;" value="2980"></md-outlined-text-field>
+            </div>
+        </div>
+    </div>
+    <p></p>
+    <div class="container">
+        <bucky-checkbox id="chk_enable_vps_mode" lable="{{t "vps_mode_label"}}" disabled="true"></bucky-checkbox>
+        <div style="margin-top: 0px; margin-left: 28px; opacity: 0.5;">
+            <span data-i18n="vps_mode_desc">Personal Server运行在有固定IP的VPS上,无需设置路由器（暂不支持）</span>
         </div>
     </div>
     <div class="container">

@@ -161,6 +161,123 @@ export async function end_active():Promise<boolean> {
     return true;
 }
 
+export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolean> {
+    // Generate device key pair
+    let [device_public_key,device_private_key] = await generate_key_pair();
+    let device_did = "did:dev:"+ device_public_key["x"];
+    console.log("ood device_did",device_did);
+
+    let need_sn = false;
+    if (data.gatewy_type == GatewayType.BuckyForward) {
+        need_sn = true;
+    }
+
+    if (!data.use_self_domain) {
+        need_sn = true;
+    }
+
+    // Register SN user if needed
+    if (need_sn) {
+        let user_domain = null;
+        if(data.use_self_domain) {
+            user_domain = data.self_domain;
+        }
+        let register_sn_user_result = await register_sn_user(
+            data.sn_user_name,
+            data.sn_active_code,
+            JSON.stringify(data.owner_public_key),
+            data.zone_config_jwt,
+            user_domain);
+
+        if (!register_sn_user_result) {
+            return false;
+        }
+    }
+
+    let zone_name = "";
+    if (data.use_self_domain) {
+        zone_name = data.self_domain;
+    } else {
+        zone_name = data.sn_user_name + "." + data.web3_base_host;
+    }
+
+    // Step 1: Call prepare_params_for_active_by_wallet to get unsigned data
+    let rpc_client = new buckyos.kRPCClient("/kapi/active");
+    let prepare_params:JsonValue = {
+        user_name: data.sn_user_name,
+        zone_name: zone_name,
+        gateway_type: data.gatewy_type,
+        public_key: data.owner_public_key,
+        device_public_key: device_public_key,
+        device_private_key: device_private_key,
+        support_container: "true",
+        sn_url: data.sn_url || ""
+    };
+
+    let prepare_result = await rpc_client.call("prepare_params_for_active_by_wallet", prepare_params);
+    if (prepare_result["code"] != undefined && prepare_result["code"] != 0) {
+        console.error("Failed to prepare params for wallet activation");
+        return false;
+    }
+
+    let device_config_json = prepare_result["device_config"];
+    let device_mini_config_json = prepare_result["device_mini_config"];
+    let rpc_token_json = prepare_result["rpc_token"];
+    let device_info_json = prepare_result["device_info"];
+    let device_did_from_server = prepare_result["device_did"];
+
+    // Step 2: Sign the data using wallet's signWithActiveDid
+    // Note: signWithActiveDid should accept a JSON object and return a JWT string
+    // TODO: This method needs to be implemented in the wallet/buckyos API
+    // For now, we'll use a type assertion to indicate this is expected to exist
+    let device_doc_jwt: string;
+    let device_mini_doc_jwt: string;
+    let user_rpc_token: string | null = null;
+
+    try {
+        // Sign device_config
+        // @ts-ignore - signWithActiveDid will be implemented in wallet
+        device_doc_jwt = await buckyos.signWithActiveDid(device_config_json);
+        
+        // Sign device_mini_config
+        // @ts-ignore - signWithActiveDid will be implemented in wallet
+        device_mini_doc_jwt = await buckyos.signWithActiveDid(device_mini_config_json);
+        
+        // Sign rpc_token if needed
+        if (rpc_token_json != null && need_sn) {
+            // @ts-ignore - signWithActiveDid will be implemented in wallet
+            user_rpc_token = await buckyos.signWithActiveDid(rpc_token_json);
+        }
+    } catch (error) {
+        console.error("Failed to sign data with wallet:", error);
+        return false;
+    }
+
+    // Step 3: Call do_active_by_wallet with signed JWTs
+    // Only pass essential parameters - other info will be extracted from JWTs
+    let active_params:JsonValue = {
+        device_doc_jwt: device_doc_jwt,
+        device_mini_doc_jwt: device_mini_doc_jwt,
+        device_private_key: device_private_key,
+        zone_name: zone_name,
+        owner_public_key: data.owner_public_key, // Still needed for JWT verification
+        sn_url: data.sn_url || ""
+    };
+
+    // Optional parameters for SN registration
+    if (user_rpc_token != null && need_sn) {
+        active_params["user_rpc_token"] = user_rpc_token;
+    }
+    
+    if (need_sn && device_info_json != null) {
+        active_params["device_info"] = device_info_json;
+    }
+
+    let active_result = await rpc_client.call("do_active_by_wallet", active_params);
+    let code = active_result["code"];
+    return code == 0;
+}
+
 export async function do_active(data:ActiveWizzardData):Promise<boolean> {
     //generate device key pair
     let [device_public_key,device_private_key] = await generate_key_pair();
