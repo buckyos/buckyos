@@ -89,13 +89,18 @@ pub struct ServiceInstallConfigTips {
     //   此时基于app1.service_info可以通过 node_gateway:2189访问到app1的smb服务
 
     //service_name(like,web ,smb, dns, etc...) -> inner port
+    #[serde(default)]
     pub service_ports: HashMap<String,u16>,
 
+    #[serde(default)]
     pub data_mount_point: Vec<String>,
+    #[serde(default)]
     pub local_cache_mount_point: Vec<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_param:Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_param:Option<String>,
     #[serde(flatten)]
     pub custom_config:HashMap<String,serde_json::Value>,
 } 
@@ -107,6 +112,7 @@ impl Default for ServiceInstallConfigTips {
             local_cache_mount_point: vec![],
             service_ports: HashMap::new(),
             container_param: None,
+            start_param: None,
             custom_config: HashMap::new(),
         }
     }
@@ -128,10 +134,19 @@ pub struct SubPkgDesc {
 
 #[derive(Serialize, Deserialize,Clone)]
 pub struct SubPkgList {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub amd64_docker_image: Option<SubPkgDesc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub aarch64_docker_image: Option<SubPkgDesc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub amd64_win_app: Option<SubPkgDesc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aarch64_win_app: Option<SubPkgDesc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub aarch64_apple_app: Option<SubPkgDesc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amd64_apple_app: Option<SubPkgDesc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub web: Option<SubPkgDesc>,
     #[serde(flatten)]
     pub others: HashMap<String, SubPkgDesc>,
@@ -255,6 +270,8 @@ pub struct AppDoc {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_icon_url: Option<String>,
     pub selector_type:SelectorType,
+    //UI 应该根据install_config_tips的提示，来构造UI，得到最终的InstallConfig
+    #[serde(default)]
     pub install_config_tips:ServiceInstallConfigTips,
     pub pkg_list: SubPkgList,
 }
@@ -319,7 +336,8 @@ pub struct ServiceInstallConfig {
     pub expose_config: HashMap<String,ServiceExposeConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_param:Option<String>,
-
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_param:Option<String>,
     pub res_pool_id:String,
 }
 
@@ -332,6 +350,7 @@ impl Default for ServiceInstallConfig {
             bind_address: None,
             expose_config: HashMap::new(),
             container_param: None,
+            start_param: None,
             res_pool_id: "default".to_string(),
         }
     }
@@ -404,6 +423,8 @@ impl AppServiceInstanceConfig {
     }
 }  
 
+
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct KernelServiceDoc {
     #[serde(flatten)]    
@@ -460,6 +481,17 @@ impl KernelServiceInstanceConfig {
             service_sepc,
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct LocalAppInstanceConfig {
+    pub target_state: ServiceInstanceState,
+    pub enable: bool,
+
+    pub app_doc: AppDoc,
+    pub user_id: String,
+
+    pub install_config:ServiceInstallConfig,
 }
 
 

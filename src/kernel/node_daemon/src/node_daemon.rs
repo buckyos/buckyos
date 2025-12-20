@@ -551,7 +551,7 @@ async fn desktop_daemon_main(skip_app_ids: &Vec<String>) -> Result<()> {
         error!("parse app list failed! {}", app_list.err().unwrap());
         return Err(NodeDaemonErrors::ParserConfigError(String::from("parse local app list failed!")));
     }
-    let app_list : HashMap<String,AppServiceInstanceConfig> = app_list.unwrap();
+    let app_list : HashMap<String,LocalAppInstanceConfig> = app_list.unwrap();
     
     let app_stream = stream::iter(app_list);
     let app_task = app_stream.for_each_concurrent(2, |(app_id_with_name, app_cfg)| async move {

@@ -18,6 +18,8 @@ pub enum ControlRuntItemErrors {
     NetworkError(String),
     #[error("Pkg not exist: {0}")]
     PkgNotExist(String),
+    #[error("Not support: {0}")]
+    NotSupport(String),
 }
 
 pub type Result<T> = std::result::Result<T, ControlRuntItemErrors>;

@@ -14,7 +14,7 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use cyfs_sn::SnDB;
 
-use crate::{AppServiceInstanceConfig, REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID};
+use crate::{AppDoc, LocalAppInstanceConfig, REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, ServiceInstallConfig, ServiceInstanceState, SubPkgDesc, VERIFY_HUB_UNIQUE_ID};
 
 // ============================================================================
 // Constant Definitions
@@ -895,9 +895,45 @@ pub async fn cmd_create_sn_configs(output_dir: Option<&str>,sn_ip:IpAddr,sn_base
     Ok(())
 }
 
-pub fn create_applist() -> Result<HashMap<String,AppServiceInstanceConfig>, String> {
-    unimplemented!()
+pub fn create_applist() -> Result<HashMap<String,LocalAppInstanceConfig>, String> {
+    let mut app_list = HashMap::new();
 
+    let cyfs_gateway_doc_json = json!({
+        "pkg_name": "cyfs-gateway",
+        "show_name": "CYFS Gateway",
+        "app_icon_url": "https://cyfs-gateway.buckyos.ai/meta/icon.png",
+        "selector_type": "single",
+        "version": "0.5.1",
+        "author": "buckyos.ai",
+        "owner": "did:web:buckyos.ai",
+        "description": {
+            "detail": "CYFS Gateway Service"
+        },
+        "category": "sys_module,local_app",
+        "pub_time": buckyos_kit::buckyos_get_unix_timestamp(),
+        "exp": buckyos_kit::buckyos_get_unix_timestamp() + 3600 * 24 * 30,
+        "pkg_list": {
+            "amd64_win_app": {
+                "pkg_id": "nightly-windows-amd64.cyfs-gateway#0.5.1",
+            },
+            "aarch64_apple_app": {
+                "pkg_id": "nightly-apple-aarch64.cyfs-gateway#0.5.1"
+            }
+        }
+    });
+
+    let cyfs_gateway_doc : AppDoc = serde_json::from_value(cyfs_gateway_doc_json).unwrap();
+
+    let cyfs_gateway_cfg = LocalAppInstanceConfig {
+        target_state: ServiceInstanceState::Started,
+        enable: true,
+        app_doc: cyfs_gateway_doc,
+        user_id: "devtest".to_string(),
+        install_config: ServiceInstallConfig::default(),
+    };
+    app_list.insert("cyfs-gateway".to_string(), cyfs_gateway_cfg);  
+
+    Ok(app_list)
 }
 
 pub fn cmd_create_applist(output_dir: Option<&str>) -> Result<(), String> {
@@ -1301,6 +1337,6 @@ mod tests {
     fn test_create_applist() {
         let app_list = create_applist().unwrap();
         let app_list_json = serde_json::to_string_pretty(&app_list).unwrap();
-        println!("app_list: {}", app_list_json);
+        println!("app_list:\n{}", app_list_json);
     }
 }

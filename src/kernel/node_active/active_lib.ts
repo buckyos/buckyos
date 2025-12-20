@@ -34,12 +34,13 @@ export type ActiveWizzardData = {
     wallet_user_pubkey?: string | JsonValue;
     wallet_user_id?: string;
 }
+export let SN_BASE_HOST:string = "buckyos.ai";
+export let SN_API_URL:string = "https://sn." + SN_BASE_HOST + "/kapi/sn";
+export let WEB3_BASE_HOST:string = "web3." + SN_BASE_HOST;
 
-export let SN_API_URL:string = "https://sn.buckyos.ai/kapi/sn";
-export let WEB3_BASE_HOST:string = "web3.buckyos.ai";
-
-export function set_sn_api_url(url:string) {
-    SN_API_URL = url;
+export function set_sn_base_host(host:string) {
+    SN_BASE_HOST = host;
+    SN_API_URL = "https://sn." + SN_BASE_HOST + "/kapi/sn";
 }
 
 export async function register_sn_user(user_name:string,active_code:string,public_key:string,zone_config_jwt:string,user_domain:string|null) : Promise<boolean> {
