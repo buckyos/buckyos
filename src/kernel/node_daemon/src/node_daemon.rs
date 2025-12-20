@@ -27,6 +27,7 @@ use name_lib::*;
 use buckyos_kit::*;
 use package_lib::*;
 
+use crate::local_app_mgr::LocalAppRunItem;
 use crate::run_item::*;
 use crate::frame_service_mgr::*;
 use crate::app_mgr::*;
@@ -537,8 +538,63 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
     Ok(())
 }   
 
+async fn desktop_daemon_main(skip_app_ids: &Vec<String>) -> Result<()> {
+    let app_list_path = get_buckyos_system_bin_dir().join("applist.json");
+    let app_list_str = std::fs::read_to_string(app_list_path.clone());
+    if app_list_str.is_err() {
+        error!("read app list failed! {}", app_list_str.err().unwrap());
+        return Err(NodeDaemonErrors::ReadConfigError(String::from("read local app list failed!")));
+    }
+    let app_list_str = app_list_str.unwrap();
+    let app_list = serde_json::from_str(app_list_str.as_str());
+    if app_list.is_err() {
+        error!("parse app list failed! {}", app_list.err().unwrap());
+        return Err(NodeDaemonErrors::ParserConfigError(String::from("parse local app list failed!")));
+    }
+    let app_list : HashMap<String,AppServiceInstanceConfig> = app_list.unwrap();
+    
+    let app_stream = stream::iter(app_list);
+    let app_task = app_stream.for_each_concurrent(2, |(app_id_with_name, app_cfg)| async move {
+        if skip_app_ids.contains(&app_id_with_name) {
+            info!("skip app {} because it is in skip_app_ids", app_id_with_name.clone());
+            return;
+        }
+        let app_loader = ServicePkg::new("app-loader".to_string(),get_buckyos_system_bin_dir());
+    
+        let local_app_run_item = LocalAppRunItem::new(&app_id_with_name,app_cfg.clone(),app_loader);
+
+        let target_state = RunItemTargetState::from_instance_state(&app_cfg.target_state);
+        let _ = ensure_run_item_state(&local_app_run_item, target_state)
+            .await
+            .map_err(|_err| {
+                error!("ensure app {} to target state failed!",app_id_with_name.clone());
+            });
+    });
+    return Ok(());
+}
+
+async fn desktop_daemon() -> Result<()> {
+    //为了防止desktop_daemon和node_daemon用不同的参数启动同一个app,使用node_daemon优先原则:
+    //即使优先执行node_daemon的检查，让node_daemon有机会先启动app
+    //read local app config frorm bin/app_list.json
+    let app_list_path = get_buckyos_system_bin_dir().join("applist.json");
+    let mut loop_step = 0;
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        loop_step += 1;
+        info!("desktop_daemon step:{},app_list_path:{}", loop_step,app_list_path.display());
+        let _ = desktop_daemon_main(&Vec::new()).await.map_err(|err| {
+            warn!("desktop_daemon failed! {}", err);
+            return NodeDaemonErrors::SystemConfigError("desktop_daemon failed!".to_string());
+        });
+    }
+
+    Ok(())
+}
+
 async fn node_main(node_host_name: &str,
                    is_ood: bool,
+                   is_desktop: bool,
                    buckyos_api_client: &SystemConfigClient,
                    device_doc:&DeviceConfig) -> Result<bool> {
 
@@ -603,6 +659,8 @@ async fn node_main(node_host_name: &str,
     
 
     //app services is "userA-appB-service", run in docker container
+    let  app_ids = node_config.apps.keys().cloned().collect::<Vec<String>>();
+
     let app_stream = stream::iter(node_config.apps);
     let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
         let app_loader = ServicePkg::new("app-loader".to_string(),get_buckyos_system_bin_dir());
@@ -617,6 +675,14 @@ async fn node_main(node_host_name: &str,
                 return NodeDaemonErrors::SystemConfigError(app_id_with_name.clone());
             });
     });
+
+    if is_desktop {
+        let mut skip_app_ids = app_ids;
+        skip_app_ids.push("cyfs-gateway".to_string());
+        let _ = desktop_daemon_main(&skip_app_ids).await.map_err(|err| {
+            warn!("desktop_daemon failed! {}", err);
+        });
+    }
 
     tokio::join!(kernel_task,app_task);
     Ok(true)
@@ -635,7 +701,8 @@ async fn get_system_config_client(is_ood:bool,session_token:String)->std::result
 async fn node_daemon_main_loop(
     node_id:&str,
     node_host_name:&str,
-    is_ood: bool
+    is_ood: bool,
+    is_desktop: bool
 ) -> Result<()> {
     let mut loop_step = 0;
     let mut is_running = true;
@@ -690,7 +757,7 @@ async fn node_daemon_main_loop(
             })?;
         }
 
-        let main_result = node_main(node_host_name,is_ood, &system_config_client, device_doc).await;
+        let main_result = node_main(node_host_name,is_ood,is_desktop, &system_config_client, device_doc).await;
         
         if main_result.is_err() {
             error!("node_main failed! {}", main_result.err().unwrap());
@@ -773,6 +840,7 @@ async fn generate_device_session_token(device_doc: &DeviceConfig, device_private
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = matches.get_one::<String>("id");
     let enable_active = matches.get_flag("enable_active");
+    let is_desktop = matches.get_flag("desktop_daemon");
     let default_node_id = "node".to_string();
     let node_id = node_id.unwrap_or(&default_node_id);
 
@@ -790,7 +858,6 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     })?;
     info!("init default name client OK!");
 
-
     let initial_pkgs = get_system_pkgs();
     check_and_update_system_pkgs(&initial_pkgs).await;
 
@@ -798,16 +865,30 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_identity_file = get_buckyos_system_etc_dir().join("node_identity.json");
     let mut node_identity = NodeIdentityConfig::load_node_identity_config(&node_identity_file);
     if node_identity.is_err() {
+        let desktop_task = if is_desktop {
+            info!("start desktop daemon...");
+            let task_handle = tokio::task::spawn(desktop_daemon());
+            Some(task_handle)
+        } else {
+            None
+        };
+
         if enable_active {
             //befor start node_active_service ,try check and upgrade self
             info!("node_identity.json load error or not found, start node active service...");
             start_node_active_service().await;
             info!("node active service returned,restart node_daemon ...");
             exit(0);
-            //restart_program();
         } else {
             error!("load node identity config failed! {}", node_identity.err().unwrap());
             warn!("Would you like to enable activation mode? (Use `--enable_active` to proceed)");
+        }
+
+        if desktop_task.is_some() {
+            desktop_task.unwrap().await.unwrap();
+            info!("desktop daemon returned,exit node_daemon...");
+            exit(0);
+        } else {
             return Err(String::from("load node identity config failed!"));
         }
     }
@@ -1009,7 +1090,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     }
     
     info!("{}@{} boot OK, enter node daemon main loop.", &device_name, node_identity.zone_did.to_host_name());
-    node_daemon_main_loop(node_id,&device_name, is_ood)
+    node_daemon_main_loop(node_id,&device_name, is_ood, is_desktop)
         .await
         .map_err(|err| {
             error!("node daemon main loop failed! {}", err);

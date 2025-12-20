@@ -14,7 +14,7 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use cyfs_sn::SnDB;
 
-use crate::{REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID};
+use crate::{AppServiceInstanceConfig, REPO_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID};
 
 // ============================================================================
 // Constant Definitions
@@ -895,6 +895,23 @@ pub async fn cmd_create_sn_configs(output_dir: Option<&str>,sn_ip:IpAddr,sn_base
     Ok(())
 }
 
+pub fn create_applist() -> Result<HashMap<String,AppServiceInstanceConfig>, String> {
+    unimplemented!()
+
+}
+
+pub fn cmd_create_applist(output_dir: Option<&str>) -> Result<(), String> {
+    let root_dir = if let Some(dir) = output_dir {
+        PathBuf::from(dir)
+    } else {
+        std::env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?
+    };
+    
+    let app_list = create_applist()?;
+    write_json(&root_dir.join("applist.json"), &app_list);
+    Ok(())
+}
+
 pub async fn cmd_register_user_to_sn(
     username: &str,
     sn_db_path: &str,
@@ -1278,5 +1295,12 @@ mod tests {
 
         assert_eq!(owner_config, decoded);
         assert_eq!(encoded, token2);
+    }
+
+    #[test]
+    fn test_create_applist() {
+        let app_list = create_applist().unwrap();
+        let app_list_json = serde_json::to_string_pretty(&app_list).unwrap();
+        println!("app_list: {}", app_list_json);
     }
 }

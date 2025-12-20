@@ -5,11 +5,13 @@
 mod run_item;
 mod kernel_mgr; // support manager kernel service (run in native, run for system)
 mod frame_service_mgr; // support manager frame service (run in docker,run for all users)
+mod local_app_mgr;
 mod app_mgr; // support manager app service (run in docker,run for one user)
 mod active_server;
 mod service_pkg;
 mod node_daemon;
 mod finder;
+
 
 #[cfg(target_os = "windows")]
 mod win_srv;
@@ -31,6 +33,13 @@ fn main() {
             Arg::new("enable_active")
                 .long("enable_active")
                 .help("Enable node active service")
+                .action(clap::ArgAction::SetTrue)
+                .required(false),
+        )
+        .arg(
+            Arg::new("desktop_daemon")
+                .long("desktop_daemon")
+                .help("Run as a desktop daemon")
                 .action(clap::ArgAction::SetTrue)
                 .required(false),
         )

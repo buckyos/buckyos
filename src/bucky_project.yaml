@@ -64,6 +64,7 @@ apps:
       stop.py: bin/stop.py
     # 数据路径，update的时候如果目标存在，则不会更新
     data_paths: 
+    - bin/applist.json
     - etc/user_gateway.yaml
     - etc/post_gateway.yaml
     - etc/node_gateway.json

@@ -34,6 +34,7 @@ pub enum ServiceInstanceState {
     //InstllDeps,Updating... any maintanence state
     Deploying,
     NotExist,
+    Exited,
     Started,
     Stopped,
 }

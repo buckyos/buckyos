@@ -26,12 +26,14 @@ pub type Result<T> = std::result::Result<T, ControlRuntItemErrors>;
 pub enum RunItemTargetState {
     Running, 
     Stopped, 
+    Exited,
 }
 
 impl RunItemTargetState {
     pub fn from_instance_state(state: &ServiceInstanceState) -> Self {
         match state {
             ServiceInstanceState::Started => RunItemTargetState::Running,
+            ServiceInstanceState::Exited => RunItemTargetState::Exited,
             _ => RunItemTargetState::Stopped,
         }
     }
@@ -80,8 +82,23 @@ pub async fn ensure_run_item_state(
                 item.start(None).await?;
                 Ok(())
             }
+            ServiceInstanceState::Exited => {
+                warn!("{} stopped,start it!", item_name);
+                item.start(None).await?;
+                Ok(())
+            }
             ServiceInstanceState::Deploying => {
                 warn!("{} is deploying,wait for it!", item_name);
+                Ok(())
+            }
+        },
+        RunItemTargetState::Exited => match item.get_state(None).await? {
+            ServiceInstanceState::NotExist => {
+                warn!("{} not exist,deploy a it!", item_name);
+                item.deploy(None).await?;
+                Ok(())
+            }
+            _ => {
                 Ok(())
             }
         },
@@ -95,6 +112,10 @@ pub async fn ensure_run_item_state(
                 //warn!("{} not exist,deploy it!", item_name);
                 //item.deploy(None).await?;
                 debug!("{} not exist,do nothing!", item_name);
+                Ok(())
+            }
+            ServiceInstanceState::Exited => {
+                warn!("{} exited,do nothing!", item_name);
                 Ok(())
             }
             ServiceInstanceState::Stopped => {
