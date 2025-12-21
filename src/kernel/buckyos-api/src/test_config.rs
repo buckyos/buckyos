@@ -623,6 +623,12 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
     let sn_db_path = builder.root_dir().join("sn_server").join("sn_db.sqlite3");
     let db = SnDB::new_by_path(&sn_db_path.to_string_lossy()).unwrap();
     db.initialize_database().unwrap();
+    for i in 0..9 {
+        let code = format!("sndevtest{}", i);
+        println!("insert activation code: {}", code);
+        db.insert_activation_code(&code).unwrap();
+    }
+
     println!("- Created SN database.");
    
 }

@@ -7,6 +7,10 @@ export enum GatewayType {
 
 export type JsonValue = Record<string, any>;
 
+export type ActiveConfig = {
+  sn_base_host: string;
+};
+
 export type ActiveWizzardData = {
     gatewy_type: GatewayType;
     is_direct_connect: boolean;
@@ -38,9 +42,10 @@ export let SN_BASE_HOST:string = "buckyos.ai";
 export let SN_API_URL:string = "https://sn." + SN_BASE_HOST + "/kapi/sn";
 export let WEB3_BASE_HOST:string = "web3." + SN_BASE_HOST;
 
-export function set_sn_base_host(host:string) {
-    SN_BASE_HOST = host;
+export function init_active_lib(config: ActiveConfig) {
+    SN_BASE_HOST = config.sn_base_host
     SN_API_URL = "https://sn." + SN_BASE_HOST + "/kapi/sn";
+    WEB3_BASE_HOST = "web3." + SN_BASE_HOST;
 }
 
 export async function register_sn_user(user_name:string,active_code:string,public_key:string,zone_config_jwt:string,user_domain:string|null) : Promise<boolean> {

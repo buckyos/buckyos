@@ -35,8 +35,7 @@
     "paths": {
       "@/*": ["src/*"],
       "@/components/*": ["components/*"],
-      "@/utils/*": ["utils/*"],
-      "@legacy/*": ["./*"]
+      "@/utils/*": ["utils/*"]
     }
   }
 }

@@ -21,7 +21,6 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": resolve(__dirname, "src"),
-      "@legacy": __dirname
     }
   },
   plugins: [react(), dts()]

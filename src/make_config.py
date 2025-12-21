@@ -83,13 +83,28 @@ def copy_if_exists(src: Path, dst: Path) -> None:
 
 def write_json(path: Path, data: dict) -> None:
     ensure_dir(path.parent)
-    path.write_text(json.dumps(data, indent=2))
+    path.write_text(json.dumps(data, indent=2) + "\n")
     print(f"write json {path}")
 
 def write_text(path: Path, content: str) -> None:
     ensure_dir(path.parent)
     path.write_text(content)
     print(f"write content {path}")
+
+
+def extract_base_host(web3_bns: str) -> str:
+    """
+    Extract the base domain from web3_bns.
+    For example: web3.devtests.org -> devtests.org
+    """
+    if web3_bns.startswith("web3."):
+        return web3_bns[5:]  # Remove "web3." prefix
+    # If it doesn't start with "web3.", try to get the domain after the first dot
+    parts = web3_bns.split(".", 1)
+    if len(parts) > 1:
+        return parts[1]
+    # If no dot found, return as is
+    return web3_bns
 
 
 def make_global_env_config(
@@ -107,6 +122,15 @@ def make_global_env_config(
         "trust_did": list(trust_did),
     }
     write_json(etc_dir / "machine.json", machine)
+
+    #sn_base_host is the base domain of web3_bns
+    sn_base_host = extract_base_host(web3_bns)
+    
+    active_config = {
+        "sn_base_host": sn_base_host,
+    }
+    write_json(target_dir / "bin" / "node-active" / "active_config.json", active_config)
+    print(f"create active config at {target_dir / 'bin' / 'node-active' / 'active_config.json'}")
 
     meta_dst = (
         target_dir

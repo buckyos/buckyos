@@ -6,17 +6,16 @@ import {
   Grid,
   InputLabel,
   MenuItem,
-  Paper,
   Select,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
-import { CloudSyncRounded, LanRounded, WifiRounded } from "@mui/icons-material";
+import { CloudOutlined, CloudSyncRounded, LanRounded, WifiRounded } from "@mui/icons-material";
 import { ReactNode, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GatewayType, WizardData } from "../../types";
-import { SN_API_URL, WEB3_BASE_HOST, check_sn_active_code, set_sn_api_url } from "@legacy/active_lib";
+import { SN_API_URL, WEB3_BASE_HOST, check_sn_active_code } from "../../../active_lib";
 
 type Props = {
   wizardData: WizardData;
@@ -28,6 +27,7 @@ type Props = {
 const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) => {
   const { t } = useTranslation();
   const [mode, setMode] = useState<GatewayType>(wizardData.gatewy_type || GatewayType.BuckyForward);
+  const [vpsMode, setVpsMode] = useState(false);
   const [inviteCode, setInviteCode] = useState(wizardData.sn_active_code || "");
   const [checkingInvite, setCheckingInvite] = useState(false);
   const [inviteValid, setInviteValid] = useState<boolean | null>(null);
@@ -81,7 +81,7 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
         setFormError(t("error_invite_code_invalid") || "Invitation code is invalid");
         return;
       }
-    } else if (portMappingMode === "rtcp_only") {
+    } else if (!vpsMode && portMappingMode === "rtcp_only") {
       const port = parseInt(rtcpPort, 10);
       if (Number.isNaN(port) || port < 1 || port > 65535) {
         setFormError(t("error_invalid_port") || "Invalid port");
@@ -90,25 +90,38 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
     }
 
     const port = parseInt(rtcpPort, 10);
+    const finalPortMode = vpsMode ? "full" : portMappingMode;
     const nextData: Partial<WizardData> = {
       gatewy_type: mode,
       is_direct_connect: mode === GatewayType.PortForward,
       sn_active_code: isWalletRuntime ? "" : inviteCode,
       sn_url: SN_API_URL,
       web3_base_host: WEB3_BASE_HOST,
-      port_mapping_mode: portMappingMode,
+      port_mapping_mode: finalPortMode,
       rtcp_port: Number.isNaN(port) ? 2980 : port,
       is_wallet_runtime: isWalletRuntime,
     };
 
-    set_sn_api_url(SN_API_URL);
+    //set_sn_api_url(SN_API_URL);
     onUpdate(nextData);
     onNext();
   };
 
-  const renderCard = (title: string, description: string, selected: boolean, icon: ReactNode) => (
-    <Paper
-      onClick={() => setMode(title === "bucky" ? GatewayType.BuckyForward : GatewayType.PortForward)}
+  const renderCard = (title: "bucky" | "direct" | "vps", description: string, selected: boolean, icon: ReactNode) => (
+    <Box
+      onClick={() => {
+        if (title === "bucky") {
+          setMode(GatewayType.BuckyForward);
+          setVpsMode(false);
+        } else if (title === "direct") {
+          setMode(GatewayType.PortForward);
+          setVpsMode(false);
+        } else {
+          setMode(GatewayType.PortForward);
+          setVpsMode(true);
+          setPortMappingMode("full");
+        }
+      }}
       sx={{
         p: 2,
         borderRadius: 3,
@@ -146,20 +159,25 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
           <Typography variant="body2" color="text.secondary">
             {title === "bucky"
               ? t("bucky_forward_benefit1")
+              : title === "vps"
+              ? t("public_ip_desc")
               : t("direct_connect_desc") || "Direct routes leverage your own NAT/port mapping setup."}
           </Typography>
         </Box>
       </Stack>
-    </Paper>
+    </Box>
   );
 
-  const portHint =
-    portMappingMode === "rtcp_only" ? t("port_mapping_rtcp_only_hint") : t("port_mapping_full_hint");
+  const portHint = vpsMode
+    ? t("public_ip_hint")
+    : portMappingMode === "rtcp_only"
+    ? t("port_mapping_rtcp_only_hint")
+    : t("port_mapping_full_hint");
 
   return (
     <Stack spacing={3}>
       <Grid container spacing={2}>
-        <Grid item xs={12} md={6}>
+        <Grid item xs={12} md={4}>
           {renderCard(
             "bucky",
             t("use_buckyos_sn"),
@@ -167,12 +185,20 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
             <CloudSyncRounded />
           )}
         </Grid>
-        <Grid item xs={12} md={6}>
+        <Grid item xs={12} md={4}>
           {renderCard(
             "direct",
             t("direct_connect_label"),
-            mode === GatewayType.PortForward,
+            mode === GatewayType.PortForward && !vpsMode,
             <LanRounded />
+          )}
+        </Grid>
+        <Grid item xs={12} md={4}>
+          {renderCard(
+            "vps",
+            t("public_ip_option"),
+            mode === GatewayType.PortForward && vpsMode,
+            <CloudOutlined />
           )}
         </Grid>
       </Grid>
@@ -205,29 +231,33 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
       ) : (
         <Stack spacing={2}>
           <Typography variant="subtitle1" fontWeight={600}>
-            {t("direct_connect_desc")}
+            {vpsMode ? t("public_ip_desc") : t("direct_connect_desc")}
           </Typography>
-          <FormControl fullWidth>
-            <InputLabel id="port-mode-label">{t("port_mapping_mode_label")}</InputLabel>
-            <Select
-              labelId="port-mode-label"
-              value={portMappingMode}
-              label={t("port_mapping_mode_label")}
-              onChange={(e) => setPortMappingMode(e.target.value as WizardData["port_mapping_mode"])}
-            >
-              <MenuItem value="full">{t("port_mapping_full")}</MenuItem>
-              <MenuItem value="rtcp_only">{t("port_mapping_rtcp_only")}</MenuItem>
-            </Select>
-          </FormControl>
-          {portMappingMode === "rtcp_only" && (
-            <TextField
-              type="number"
-              label={t("rtcp_port_label")}
-              value={rtcpPort}
-              onChange={(e) => setRtcpPort(e.target.value)}
-              helperText={t("rtcp_port_placeholder")}
-              fullWidth
-            />
+          {!vpsMode && (
+            <>
+              <FormControl fullWidth>
+                <InputLabel id="port-mode-label">{t("port_mapping_mode_label")}</InputLabel>
+                <Select
+                  labelId="port-mode-label"
+                  value={portMappingMode}
+                  label={t("port_mapping_mode_label")}
+                  onChange={(e) => setPortMappingMode(e.target.value as WizardData["port_mapping_mode"])}
+                >
+                  <MenuItem value="full">{t("port_mapping_full")}</MenuItem>
+                  <MenuItem value="rtcp_only">{t("port_mapping_rtcp_only")}</MenuItem>
+                </Select>
+              </FormControl>
+              {portMappingMode === "rtcp_only" && (
+                <TextField
+                  type="number"
+                  label={t("rtcp_port_label")}
+                  value={rtcpPort}
+                  onChange={(e) => setRtcpPort(e.target.value)}
+                  helperText={t("rtcp_port_placeholder")}
+                  fullWidth
+                />
+              )}
+            </>
           )}
           <Alert icon={<WifiRounded fontSize="small" />} severity="info">
             {portHint}

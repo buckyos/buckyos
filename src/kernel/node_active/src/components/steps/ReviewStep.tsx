@@ -13,7 +13,7 @@ import { CheckCircleRounded, ContentCopyRounded, LaunchRounded } from "@mui/icon
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { WizardData } from "../../types";
-import { do_active, do_active_by_wallet } from "@legacy/active_lib";
+import { do_active, do_active_by_wallet } from "../../../active_lib";
 
 type Props = {
   wizardData: WizardData;

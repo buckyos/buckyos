@@ -25,7 +25,7 @@ import {
   generate_key_pair,
   generate_zone_boot_config_jwt,
   isValidDomain,
-} from "@legacy/active_lib";
+} from "../../../active_lib";
 
 type Props = {
   wizardData: WizardData;

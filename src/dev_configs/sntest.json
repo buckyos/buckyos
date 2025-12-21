@@ -1,0 +1,61 @@
+{
+    "nodes": {
+      "sn": {
+        "node_id": "sn",
+        "vm_template": "ubuntu_sn",
+        "network": {
+          "lan_id": "wan",
+          "type": "bridge"
+        },
+        "apps": {
+          "web3-gateway": {
+            "node_group_name": "sn_server"
+          }
+        },
+        "init_commands": [
+          "sudo hostnamectl set-hostname sn",
+          "sudo chmod 777 /opt/",
+          "sudo iptables -I INPUT -p udp --dport 53 -j ACCEPT",
+          "sudo iptables -I INPUT -p tcp --dport 53 -j ACCEPT"
+        ],
+        "instance_commands": [
+            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\""
+          ],
+        "directories": {
+          "logs": "/opt/buckyos/logs"
+        }
+      },
+    
+      "alice-ood1": {
+        "node_id": "alice_ood1",
+        "vm_template": "ubuntu_basic",
+        "network": {
+          "lan_id": "lan",
+          "type": "nat"
+        },
+        "apps": {
+          "buckyos" : {
+            "node_group": "alice.ood1"
+          }
+        },
+        "init_commands": [
+          "hostnamectl set-hostname alice-ood1",
+          "sudo chmod 777 /opt/",
+          "sudo iptables -I INPUT 1 -i lo -j ACCEPT",
+          "sudo iptables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT"
+        ],
+        "instance_commands": [
+            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
+            "sudo mkdir -p /etc/systemd/resolved.conf.d",
+            "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nFallbackDNS=8.8.8.8 1.1.1.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
+            "sudo systemctl restart systemd-resolved"
+        ],
+        "directories": {
+          "logs": "/opt/buckyos/logs"
+        }
+      }
+    },
+    "instance_order": ["sn", "alice-ood1"]
+  }
+  
+  

@@ -6,7 +6,7 @@ import {
   getCurrentLanguage,
   getLanguageDisplayName,
   getSupportedLanguages,
-} from "@legacy/i18n";
+} from "../../i18n";
 
 const LanguageSwitch = () => {
   const { i18n } = useTranslation();
