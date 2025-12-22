@@ -690,6 +690,10 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
         "sn_device_jwt": device_mini_jwt,
         "sn_host": sn_base_host,
         "sn_ip": sn_ip.to_string(),
+        "sn_cer": "fullchain.cert",
+        "sn_pem": "fullchain.pem",
+        "web3_cer": "fullchain.cert",
+        "web3_pem": "fullchain.pem"
     }});
     println!("params: {:?}", params);
     write_json(&sn_dir.join("params.json"), &params);
