@@ -1,6 +1,7 @@
+use buckyos_kit::buckyos_get_unix_timestamp;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use name_lib::{
-    DID, DIDDocumentTrait, DeviceConfig, DeviceInfo, DeviceMiniConfig, EncodedDocument, NodeIdentityConfig, OODDescriptionString, OwnerConfig, ZoneBootConfig, ZoneConfig, get_x_from_jwk
+    DID, DIDDocumentTrait, DeviceConfig, DeviceInfo, DeviceMiniConfig, EncodedDocument, NodeIdentityConfig, OODDescriptionString, OwnerConfig, ZoneBootConfig, ZoneConfig, generate_ed25519_key_pair, get_x_from_jwk
 };
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
@@ -30,7 +31,7 @@ const ADMIN_PASSWORD_HASH: &str = "o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4="
 
 /// Test key pair collection
 pub(crate) struct TestKeyPair {
-    private_key_pem: &'static str,
+    private_key_pem: String,
     public_key_x: String,
 }
 
@@ -45,7 +46,7 @@ struct TestKeys;
 
 impl TestKeys {
     fn verify_key_pair(key_pair: &TestKeyPair) -> Result<(), String> {
-        let signing_key = SigningKey::from_pkcs8_pem(key_pair.private_key_pem)
+        let signing_key = SigningKey::from_pkcs8_pem(key_pair.private_key_pem.as_str())
             .expect("Failed to parse private key PEM");
         
         let verifying_key: VerifyingKey = signing_key.verifying_key();
@@ -99,6 +100,8 @@ impl TestKeys {
             //zone-id None (sn is not a zone)
             "sn" => TestKeys::sn_server(),
             "sn_server" => TestKeys::sn_server(),
+            "buckyos" => TestKeys::buckyos(),
+            "sn.buckyos" => TestKeys::sn_buckyos(),
             "devtests_ood1" => TestKeys::devtests_ood1(),
             "devtests.ood1" => TestKeys::devtests_ood1(),
             "sn_web" => TestKeys::devtests_ood1(),
@@ -128,7 +131,7 @@ impl TestKeys {
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8".to_string(),
         }
     }
@@ -137,7 +140,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
         }
     }
@@ -146,7 +149,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "Bb325f2ed0XSxrPS5sKQaX7ylY9Jh9rfevXiidKA1zc".to_string(),
         }
     }
@@ -155,7 +158,7 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEILQLoUZt2okCht0UVhsf4UlGAV9h3BoliwZQN5zBO1G+
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "y-kuJcQ0doFpdNXf4HI8E814lK8MB3-t4XjDRcR_QCU".to_string(),
         }
     }
@@ -164,7 +167,7 @@ MC4CAQAwBQYDK2VwBCIEILQLoUZt2okCht0UVhsf4UlGAV9h3BoliwZQN5zBO1G+
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIADmO0+u/gcmStDsHZOZCM5gxNYlQmP6jpMo279TQE75
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "iSMKakFEGzGAxLTlaB5TkqZ6d4wurObr-BpaQleoE2M".to_string(),
         }
 
@@ -174,7 +177,7 @@ MC4CAQAwBQYDK2VwBCIEIADmO0+u/gcmStDsHZOZCM5gxNYlQmP6jpMo279TQE75
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMkwWZKUe7+z7NtfgbgxWwGjMddvxtrmeGJiJe8rq00M
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "blzinUlTNGYcvCPFT1OfPKPbmjvteuXWMwQG55cTo7M".to_string(),
         }
     }
@@ -183,7 +186,7 @@ MC4CAQAwBQYDK2VwBCIEIMkwWZKUe7+z7NtfgbgxWwGjMddvxtrmeGJiJe8rq00M
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIBvnIIa1Tx45SjRu9kBZuMgusP5q762SvojXZ4scFxVD
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "FPvY3WXPxuWPYFuwOY0Qbh0O7-hhKr6ta1jTcX9ORPI".to_string(),
         }
     }
@@ -192,7 +195,7 @@ MC4CAQAwBQYDK2VwBCIEIBvnIIa1Tx45SjRu9kBZuMgusP5q762SvojXZ4scFxVD
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEICBO4nQL1yMcu4uu51Grea+VTaaS+sswioMRZXoltzZh
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "waupPnLqJRwjr3hJ_2i2J4qGLx-8t5ihX6LET0ZY828".to_string(),
         }
     }
@@ -202,7 +205,7 @@ MC4CAQAwBQYDK2VwBCIEICBO4nQL1yMcu4uu51Grea+VTaaS+sswioMRZXoltzZh
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIKH6oJdebg+xxICY7Z1vm84qMkSzm6Wk0ic88DGR90aq
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "uh7RD37tflN65CrcJSUQ3vGnyU4vmC7_M8IkEEOHnds".to_string(),
         }
     }
@@ -211,7 +214,7 @@ MC4CAQAwBQYDK2VwBCIEIKH6oJdebg+xxICY7Z1vm84qMkSzm6Wk0ic88DGR90aq
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIGhyUJ3/YgIrLZxSGG7o1bgiWcyETZKjTBoGagNdpxVy
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "E1oQDYqzyX4ysrNgTJ5DAVaMgA3By8XpBa0e6r2gBqQ".to_string(),
         }
     }
@@ -220,7 +223,7 @@ MC4CAQAwBQYDK2VwBCIEIGhyUJ3/YgIrLZxSGG7o1bgiWcyETZKjTBoGagNdpxVy
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEICLjVTK81RKQ1aPtSLKFx/Fl33+WbxgqCpPCBFlqlBQX
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "cuFY7qeU1q96O1K5RRbXo7GXGR78szB-gmmkBXDMscE".to_string(),
         }
     }
@@ -229,8 +232,28 @@ MC4CAQAwBQYDK2VwBCIEICLjVTK81RKQ1aPtSLKFx/Fl33+WbxgqCpPCBFlqlBQX
         TestKeyPair {
             private_key_pem: r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMe0Q/tl7DWbu3SIQE8vnDxO8YQMIivAlCgKiNUfjcWU
------END PRIVATE KEY-----"#,
+-----END PRIVATE KEY-----"#.to_string(),
             public_key_x: "PY9uu16H74QYVRjstVxdWdAsgkoy10-74fvQhx4ddek".to_string(),
+        }
+    }
+
+    fn buckyos() -> TestKeyPair {
+        TestKeyPair {
+            private_key_pem: r#"-----BEGIN PRIVATE KEY-----
+TODOTODO
+-----END PRIVATE KEY-----"#.to_string(),
+            public_key_x: "qmtOLLWpZeBMzt97lpfj2MxZGWn3QfuDB7Q4uaP3Eok".to_string(),
+        }
+    }
+
+    fn sn_buckyos() -> TestKeyPair {
+        let (private_key, public_key) = generate_ed25519_key_pair();
+        let x = public_key
+            .get("x").unwrap().as_str().unwrap().to_string();
+
+        TestKeyPair {
+            private_key_pem: private_key,
+            public_key_x: x,
         }
     }
 
@@ -378,7 +401,7 @@ pub struct UserEnvScope<'a> {
 impl<'a> UserEnvScope<'a> {
     /// Create Owner configuration
     pub fn create_owner_config(&self) {
-        write_file(&self.user_dir.join("user_private_key.pem"), self.key_pair.private_key_pem);
+        write_file(&self.user_dir.join("user_private_key.pem"), self.key_pair.private_key_pem.as_str());
 
         let owner_jwk = get_jwk(&self.key_pair.public_key_x);
         let owner_config = OwnerConfig::new(
@@ -438,7 +461,7 @@ impl<'a> UserEnvScope<'a> {
             &zone_config,
         );
 
-        let owner_key = get_encoding_key(self.key_pair.private_key_pem);
+        let owner_key = get_encoding_key(self.key_pair.private_key_pem.as_str());
         let jwt = zone_boot.encode(Some(&owner_key)).unwrap();
         let pkx = get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap();
         println!("=> {} TXT Record({}): BOOT={};", zone_host_name, jwt.to_string().len()+6, jwt.to_string());
@@ -493,7 +516,7 @@ impl<'a> UserEnvScope<'a> {
         let device_key_pair = TestKeys::get_key_pair_by_id(&full_device_name).unwrap();
         let node_dir = self.user_dir.join(device_name);
         // 1. Write device private key
-        write_file(&node_dir.join("node_private_key.pem"), device_key_pair.private_key_pem);
+        write_file(&node_dir.join("node_private_key.pem"), device_key_pair.private_key_pem.as_str());
 
         // 2. Create device configuration and JWT
         let device_jwk = get_jwk(&device_key_pair.public_key_x);
@@ -505,7 +528,7 @@ impl<'a> UserEnvScope<'a> {
 
         println!("input net_id: {:?},device_config.net_id: {:?}", net_id, device_config.net_id);
   
-        let owner_key = get_encoding_key(self.key_pair.private_key_pem);
+        let owner_key = get_encoding_key(self.key_pair.private_key_pem.as_str());
         let device_jwt = device_config.encode(Some(&owner_key)).unwrap();
         println!("{} device jwt: {}", device_name, device_jwt.to_string());
 
@@ -546,7 +569,7 @@ impl<'a> UserEnvScope<'a> {
         }
 
         // Return device self-signed JWT (for verification)
-        let device_key = get_encoding_key(device_key_pair.private_key_pem);
+        let device_key = get_encoding_key(device_key_pair.private_key_pem.as_str());
         device_config.encode(Some(&device_key)).unwrap().to_string()
     }
 }
@@ -554,6 +577,59 @@ impl<'a> UserEnvScope<'a> {
 // ============================================================================
 // SN Configuration Generation
 // ============================================================================
+pub async fn create_formula_sn_config() {
+    let sn_dir = PathBuf::from("/opt/sn.buckyos.ai/");
+    let owner_keys = TestKeys::get_key_pair_by_id("buckyos").unwrap();
+    let device_keys = TestKeys::get_key_pair_by_id("sn.buckyos").unwrap();
+    let device_mini_config = DeviceMiniConfig {
+        name: "sn".to_string(),
+        x: device_keys.public_key_x.clone(),
+        rtcp_port: None,
+        exp: buckyos_get_unix_timestamp() + 3600 * 24 * 365 * DEFAULT_EXP_YEARS,
+        extra_info: HashMap::new(),
+    };
+    let device_mini_jwt = device_mini_config.to_jwt(&get_encoding_key(owner_keys.private_key_pem.as_str())).unwrap();  
+    let mut device_config = DeviceConfig::new_by_mini_config(&device_mini_config, DID::new("web", "sn.buckyos.ai"), DID::new("bns", "buckyos"));
+    device_config.net_id = Some("wan".to_string());
+    write_json(&sn_dir.join("sn_device_config.json"), &device_config);
+    write_file(&sn_dir.join("sn_private_key.pem"), device_keys.private_key_pem.as_str());
+    println!("- Created sn device config & private key.");
+
+
+    // Create ZoneBootConfig
+    let zone_boot = ZoneBootConfig {
+        id: None,
+        oods: vec!["sn".parse().unwrap()],
+        sn: None,
+        exp: buckyos_get_unix_timestamp() + 3600 * 24 * 365 * DEFAULT_EXP_YEARS,
+        owner: None,
+        owner_key: None,
+        extra_info: HashMap::new(),
+        devices: HashMap::new(),
+    };
+
+    let owner_key = get_encoding_key(owner_keys.private_key_pem.as_str());
+    let zone_boot_jwt = zone_boot.encode(Some(&owner_key)).unwrap().to_string();
+    let x_str = owner_keys.public_key_x;
+
+    //create params.json
+    let params = json!({"params":{
+        "sn_boot_jwt": zone_boot_jwt,
+        "sn_owner_pk": x_str,
+        "sn_device_jwt": device_mini_jwt,
+        "sn_host": "buckyos.ai",
+        "sn_ip": "127.0.0.1".to_string(),
+    }});
+    println!("params: {:?}", params);
+    write_json(&sn_dir.join("params.json"), &params);
+    println!("- Created params.json.");
+
+    // Create initial database
+    let sn_db_path = sn_dir.join("sn_db.sqlite3");
+    let db = SnDB::new_by_path(&sn_db_path.to_string_lossy()).unwrap();
+    db.initialize_database().unwrap();
+    println!("- Created SN database.");
+}
 
 /// Create SN server configuration
 pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:String) {
@@ -562,7 +638,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
     let device_keys = TestKeys::get_key_pair_by_id("sn_server").unwrap();
 
     // Save owner_config to sn_dir directory
-    write_file(&builder.root_dir().join("sn_server").join(".buckycli").join("user_private_key.pem"), owner_keys.private_key_pem);
+    write_file(&builder.root_dir().join("sn_server").join(".buckycli").join("user_private_key.pem"), owner_keys.private_key_pem.as_str());
 
     let owner_jwk = get_jwk(owner_keys.public_key_x.as_str());
     let owner_config = OwnerConfig::new(
@@ -583,12 +659,12 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
         exp: builder.exp(),
         extra_info: HashMap::new(),
     };
-    let device_mini_jwt = device_mini_config.to_jwt(&get_encoding_key(owner_keys.private_key_pem)).unwrap();
+    let device_mini_jwt = device_mini_config.to_jwt(&get_encoding_key(owner_keys.private_key_pem.as_str())).unwrap();
 
     let mut device_config = DeviceConfig::new_by_mini_config(&device_mini_config, DID::new("web", "sn.devtests.org"), DID::new("bns", "sn"));
     device_config.net_id = Some("wan".to_string());
     write_json(&sn_dir.join("sn_device_config.json"), &device_config);
-    write_file(&sn_dir.join("sn_private_key.pem"), device_keys.private_key_pem);
+    write_file(&sn_dir.join("sn_private_key.pem"), device_keys.private_key_pem.as_str());
     println!("- Created sn device config & private key.");
 
     // Create ZoneBootConfig
@@ -603,7 +679,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder,sn_ip:IpAddr,sn_base_host:
         devices: HashMap::new(),
     };
 
-    let owner_key = get_encoding_key(owner_keys.private_key_pem);
+    let owner_key = get_encoding_key(owner_keys.private_key_pem.as_str());
     let zone_boot_jwt = zone_boot.encode(Some(&owner_key)).unwrap().to_string();
     let x_str = owner_keys.public_key_x;
 
@@ -1108,7 +1184,7 @@ mod tests {
         device_config.support_container = true;
         device_config.iss = "did:bns:devtest".to_string();
 
-        let owner_key = get_encoding_key(owner_keys.private_key_pem);
+        let owner_key = get_encoding_key(owner_keys.private_key_pem.as_str());
         let device_jwt = device_config.encode(Some(&owner_key)).unwrap();
         let device_mini_doc = DeviceMiniConfig::new_by_device_config(&device_config);
         let device_mini_doc_jwt = device_mini_doc.to_jwt(&owner_key).unwrap();
@@ -1199,13 +1275,17 @@ mod tests {
     }
 
 
+    #[tokio::test]
+    async fn test_create_formula_sn_config() {
+        create_formula_sn_config().await;
+    }
 
     #[tokio::test]
     async fn test_device_config() {
         // Use TestKeys + helper functions to construct owner key
         let owner_keys = TestKeys::devtest_owner();
         let public_key_jwk = get_jwk(&owner_keys.public_key_x);
-        let owner_private_key = get_encoding_key(owner_keys.private_key_pem);
+        let owner_private_key = get_encoding_key(owner_keys.private_key_pem.as_str());
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         // OOD1 device
@@ -1310,7 +1390,7 @@ mod tests {
         // Use TestKeys + helper functions to construct keys required for owner configuration
         let owner_keys = TestKeys::devtest_owner();
         let public_key_jwk = get_jwk(&owner_keys.public_key_x);
-        let private_key = get_encoding_key(owner_keys.private_key_pem);
+        let private_key = get_encoding_key(owner_keys.private_key_pem.as_str());
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         let mut owner_config = OwnerConfig::new(
