@@ -128,6 +128,7 @@ def make_global_env_config(
     
     active_config = {
         "sn_base_host": sn_base_host,
+        "http_schema": "http" 
     }
     write_json(target_dir / "bin" / "node-active" / "active_config.json", active_config)
     print(f"create active config at {target_dir / 'bin' / 'node-active' / 'active_config.json'}")

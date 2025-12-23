@@ -28,7 +28,7 @@ export type ActiveWizzardData = {
     friend_passcode: string;
     enable_guest_access: boolean;
 
-    owner_public_key: JsonValue | string;
+    owner_public_key: JsonValue;
     owner_private_key: string;
     zone_config_jwt: string;
 
@@ -60,6 +60,7 @@ export async function register_sn_user(user_name:string,active_code:string,publi
     if (user_domain != null) {
         params["user_domain"] = user_domain;
     }
+    console.log("register_sn_user params",params);
     let result = await rpc_client.call("register_user",params);
     let code = result["code"];
     return code == 0;
@@ -148,7 +149,7 @@ export async function get_thisdevice_info():Promise<JsonValue> {
 }
 
 export async function active_ood(wizzard_data:ActiveWizzardData,zone_name:string,
-    owner_public_key:string,owner_private_key:string,device_public_key:JsonValue,device_private_key:string,
+    owner_public_key:JsonValue,owner_private_key:string,device_public_key:JsonValue,device_private_key:string,
  ):Promise<boolean> {
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
     let result = await rpc_client.call("do_active",{

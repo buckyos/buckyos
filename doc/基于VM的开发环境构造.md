@@ -1,20 +1,13 @@
 # 基于虚拟机的分布式开发环境基础设施
 
-本文档介绍位于 `src/scripts/remote/` 下的开发环境基础设施。这套工具基于 Multipass 虚拟机，旨在快速构建、部署和测试 BuckyOS 的分布式环境（如 2zone + SN）。
+本文档介绍位于 `buckyos-devkit` 下的开发环境基础设施。这套工具基于 Multipass 虚拟机，旨在快速构建、部署和测试 BuckyOS 的分布式环境（如 2zone + SN）。
+
+**注意：由于multipass无法固定ip,所以现在暂时不用快照机制（免得ip dance)**
 
 ## 1. 核心概念与目录结构
 
-整个基础设施围绕 **Workspace Group**（工作区组）的概念组织。每个 Group 代表一种典型的分布式网络拓扑（例如 `2zone_sn`），包含一组虚拟机定义和应用配置。
+整个基础设施围绕 **Workspace Group**（工作区组）的概念组织。每个 Group 代表一种典型的分布式网络拓扑（例如 `full`），包含一组虚拟机定义和应用配置。
 
-### 关键文件与目录
-- **`src/scripts/remote/main.py`**：CLI 入口工具，用于执行所有管理命令。
-- **`src/scripts/remote/dev_configs/<group_name>/`**：环境配置目录。
-    - **`nodes.json`**：定义该环境包含的虚拟机节点。
-        - 格式：`vm_name -> vm_config`。
-        - 支持引用 `templates/` 下的 Multipass YAML 模板。
-    - **`apps/`**：定义应用及其部署行为。
-        - **`$appname.json`**：定义应用的构建命令、源目录、目标目录、安装/更新脚本等。
-    - **`templates/`**：Multipass Cloud-init 模板（如 `ubuntu_basic.yaml`）。
 
 ### 典型环境：2zone_sn
 这是目前最常用的开发环境，模拟了一个包含 3 个节点的最小化 BuckyOS 网络：
@@ -26,8 +19,9 @@
 ## 2. 前置准备
 
 1. **安装 Multipass**：确保系统已安装 Multipass 且有权限创建/启动虚拟机。
-2. **Python 环境**：需要 Python 3。
-3. **工作目录**：建议在项目根目录下执行命令。
+2. **Python 环境**：需要 Python 3,最好安装venv
+3. **buckyos-devkit**: 使用 `pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"` 安装
+3. **工作目录**：建议在项目src目录下执行命令。
 
 ## 3. 标准开发工作流
 
@@ -38,65 +32,65 @@
 
 ```bash
 # 1. 清理旧环境（可选）
-python src/scripts/remote/main.py 2zone_sn clean_vms
+buckyos-devtest 2zone_sn clean_vms
 
 # 2. 创建虚拟机
 # 这会根据 nodes.json 创建 VM，并在启动后执行初始化脚本（如设置 iptables、安装 CA 证书）
-python src/scripts/remote/main.py 2zone_sn create_vms
+buckyos-devtest 2zone_sn create_vms
 
 # 3. 创建纯净快照 'init'
-python src/scripts/remote/main.py 2zone_sn snapshot init
+buckyos-devtest 2zone_sn snapshot init
 ```
 
 ### 阶段二：软件部署 (Install)
 将当前代码库中的 BuckyOS 组件构建并部署到虚拟机。
 
 ```bash
+# 0. 本地Build,Install
+buckyos-build 
+buckyos-install
+
 # 1. 编译并安装所有配置的 App
 # 脚本会自动执行 build -> push -> install 流程
-python src/scripts/remote/main.py 2zone_sn install
+buckyos-devtest 2zone_sn install
 
 # 2. 创建已安装快照 'installed'
-python src/scripts/remote/main.py 2zone_sn snapshot installed
+buckyos-devtest 2zone_sn snapshot installed
 ```
 
 ### 阶段三：运行与测试 (Runtime)
 启动服务并运行测试用例。
 
 ```bash
-# 1. 启动 BuckyOS 服务
-python src/scripts/remote/main.py 2zone_sn start
+# 1. 启动 (为了方便观察，也可以登录vm的ssh启动)
+buckyos-devtest 2zone_sn start app=$appname
 
 # 2. 创建运行态快照 'started'（可选，用于快速恢复服务运行状态）
-python src/scripts/remote/main.py 2zone_sn snapshot started
+buckyos-devtest snapshot started
 
 # 3. 执行测试用例
 # 在指定节点（如 alice）上运行测试脚本
-python src/scripts/remote/main.py 2zone_sn run alice "python3 /opt/testcases/test_demo.py"
+buckyos-devtest  2zone_sn run alice "python3 /opt/testcases/test_demo.py"
 ```
 
 ### 阶段四：快速迭代循环
 在开发过程中，通常不需要从头构建环境，而是利用快照快速回滚。
 
-**场景 A：测试用例失败，需要重置环境重新跑**
+**场景 A：修改了代码，需要更新软件**
 ```bash
-python src/scripts/remote/main.py 2zone_sn restore started
-python src/scripts/remote/main.py 2zone_sn run alice "..."
-```
-
-**场景 B：修改了代码，需要更新软件**
-```bash
+buckyos-build
+buckyos-update
 # 增量更新（执行 update 流程，通常比完整 install 快）
-python src/scripts/remote/main.py 2zone_sn update
+buckyos-devtest 2zone_sn update
 
 # 或者回滚到 init 状态全新安装（更干净）
-python src/scripts/remote/main.py 2zone_sn restore init
-python src/scripts/remote/main.py 2zone_sn install
+buckyos-devtest restore init
+buckyos-devtest install
 ```
 
 ## 4. 命令参考手册
 
-通用语法：`python src/scripts/remote/main.py <group_name> <command> [args]`
+通用语法：`buckyos-devtest  <group_name> <command> [args]`
 
 ### 虚拟机管理
 - **`create_vms`**：创建所有虚拟机。
@@ -127,7 +121,7 @@ python src/scripts/remote/main.py 2zone_sn install
 
 ## 5. 高级配置说明
 
-### 5.1 nodes.json 配置
+### 5.1 {group_name}.json 配置
 该文件定义了环境中的虚拟机节点及其属性。
 
 ```json
@@ -201,29 +195,15 @@ python src/scripts/remote/main.py 2zone_sn install
      ```
 
 #### 5.2.1 构造 `build_all` 与 `make_config.py`
-BuckyOS 的构建流程依赖 `src/scripts/make_config.py` 脚本来生成特定于节点的配置文件。
+BuckyOS 的构建流程依赖 `src/make_config.py` 脚本来生成特定于节点的配置文件。
 
 **核心逻辑：**
 1. **编译 (Compile)**：构建所有二进制可执行文件。
 2. **布局 (Layout)**：将二进制文件和基础资源复制到 `source` 目录。
 3. **配置 (Config)**：调用 `make_config.py`，根据传入的 `group_name`（如 `alice.ood1`）在 `source` 目录中生成专属配置文件（身份文件、证书、网络配置等）。
 
-这解释了为什么 `nodes.json` 中需要配置 `node_group` 参数：它被传递给 `build_all` 脚本，进而传给 `make_config.py` 来决定生成哪台机器的配置。
+这解释了为什么 `full.json` 中需要配置 `node_group` 参数：它被传递给 `build_all` 脚本，进而传给 `make_config.py` 来决定生成哪台机器的配置。
 
-**build_all 脚本示例 (pseudo-code)：**
-```bash
-# 1. 编译代码
-cargo build --release
-
-# 2. 准备 source 目录
-mkdir -p dist/bin
-cp target/release/bucky-daemon dist/bin/
-
-# 3. 生成节点专属配置
-# {{buckyos.node_group}} 来自 nodes.json 的配置 (例如 "alice.ood1")
-# 这会在 dist 目录下生成 etc/machine.json, identiy 等文件
-python3 ../../scripts/make_config.py --group {{buckyos.node_group}} --rootfs dist
-```
 
 #### 完整应用配置示例
 ```json
@@ -236,7 +216,7 @@ python3 ../../scripts/make_config.py --group {{buckyos.node_group}} --rootfs dis
   
   "commands": {
     // Install 流程：编译 -> 组装文件 -> 生成专属配置
-    "build_all": "cd src/apps/my_service && make build && python3 ../../scripts/make_config.py --group {{buckyos.node_group}} --rootfs dist",
+    "build_all": "cd src/apps/my_service && make build && python3 ./make_config.py --group {{buckyos.node_group}} --rootfs dist",
     
     // Update 流程：仅重新编译二进制
     "build": "cargo build --release --bin my_service",
