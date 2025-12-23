@@ -1,6 +1,7 @@
 ## sn虚拟机测试环境使用
 - 环境名为sntest
 - 需要经常在buckyos (ood) + cyfs-gateway(sn) 两个工程中切换
+- 测试的时候，开发机要设置一下sn的host到虚拟机的sn节点。我有一个快速设置脚本src/set_host.py $sn_ip
 
 ## 构建
 
