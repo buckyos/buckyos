@@ -9,6 +9,7 @@ export type JsonValue = Record<string, any>;
 
 export type ActiveConfig = {
   sn_base_host: string;
+  http_schema: "http" | "https";
 };
 
 export type ActiveWizzardData = {
@@ -44,7 +45,7 @@ export let WEB3_BASE_HOST:string = "web3." + SN_BASE_HOST;
 
 export function init_active_lib(config: ActiveConfig) {
     SN_BASE_HOST = config.sn_base_host
-    SN_API_URL = "https://sn." + SN_BASE_HOST + "/kapi/sn";
+    SN_API_URL = config.http_schema + "://sn." + SN_BASE_HOST + "/kapi/sn";
     WEB3_BASE_HOST = "web3." + SN_BASE_HOST;
 }
 

@@ -68,7 +68,7 @@ anyhow = "*"
 anyerror = { version = "*", features = ["anyhow"] }
 
 # HTTP and web
-reqwest = "*"
+reqwest = { version = "*", features = ["json","rustls-tls-native-roots"] }
 url = "*"
 http = "1"
 http-body-util = "0.1"

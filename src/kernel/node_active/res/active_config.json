@@ -1,3 +1,4 @@
 {
-    "sn_base_host": "devtests.org"
+    "sn_base_host": "devtests.org",
+    "http_schema": "http"
 }
