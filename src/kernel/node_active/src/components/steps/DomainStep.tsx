@@ -103,6 +103,11 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
     if (mode !== "bucky" || !wizardData.owner_private_key || username.trim().length <= 4) {
       return;
     }
+    // Skip if zone_config_jwt already exists and is valid
+    if (wizardData.zone_config_jwt) {
+      return;
+    }
+    let cancelled = false;
     const snHost = (() => {
       try {
         return new URL(wizardData.sn_url || "").hostname;
@@ -112,13 +117,18 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
     })();
     generate_zone_boot_config_jwt(snHost, wizardData.owner_private_key)
       .then((jwt) => {
-        onUpdate({ zone_config_jwt: jwt });
-        setTxtRecords((prev) => ({ ...prev, boot: `DID=${jwt};` }));
+        if (!cancelled) {
+          onUpdate({ zone_config_jwt: jwt });
+          setTxtRecords((prev) => ({ ...prev, boot: `DID=${jwt};` }));
+        }
       })
       .catch(() => {
         // ignore background errors, surface during explicit actions
       });
-  }, [mode, onUpdate, username, wizardData.owner_private_key, wizardData.sn_url]);
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, username, wizardData.owner_private_key, wizardData.sn_url, wizardData.zone_config_jwt]);
 
   const copy = (text: string) => {
     if (!text) return;

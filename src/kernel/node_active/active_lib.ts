@@ -106,6 +106,7 @@ export async function generate_key_pair():Promise<[JsonValue,string]> {
 }
 
 export async function generate_zone_boot_config_jwt(sn:string,owner_private_key:string):Promise<string> {
+    console.log("generate_zone_boot_config_jwt ...");
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
     const now = Math.floor(Date.now() / 1000);
     let zone_boot_config:JsonValue;

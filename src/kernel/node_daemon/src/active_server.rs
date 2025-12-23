@@ -374,6 +374,8 @@ impl ActiveServer {
         let device_doc_jwt = device_config.encode(Some(&owner_private_key_pem))
             .map_err(|_|RPCErrors::ReasonError("Failed to encode device config".to_string()))?;
         
+        let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
+        let device_mini_config_jwt = device_mini_config.to_jwt(&owner_private_key_pem).unwrap();
         if sn_url.is_some() {
             if sn_url.as_ref().unwrap().len() > 5 {
                 need_sn = true;
@@ -382,7 +384,7 @@ impl ActiveServer {
         
         if need_sn {
             let sn_url = sn_url.unwrap();
-            info!("Register OOD1(zone-gateway) to sn: {}",sn_url);
+            
             let rpc_token = ::kRPC::RPCSessionToken {
                 token_type : ::kRPC::RPCSessionTokenType::JWT,
                 nonce : None,
@@ -393,6 +395,7 @@ impl ActiveServer {
                 iss:Some(user_name.to_string()),
                 token:None,
             };
+            
             let user_rpc_token = rpc_token.generate_jwt(None,&owner_private_key_pem)
                 .map_err(|_| {
                     warn!("Failed to generate user rpc token");
@@ -402,12 +405,12 @@ impl ActiveServer {
             device_info.auto_fill_by_system_info().await.unwrap();
             let device_info_json = serde_json::to_string(&device_info).unwrap();
             let device_ip = device_info.ip.unwrap().to_string();
-            let mini_config_jwt = "todo".to_string();
-            
+            info!("Register OOD1(zone-gateway) to sn: {}",sn_url);
             let sn_result = sn_register_device(sn_url.as_str(), Some(user_rpc_token), 
-                user_name, "ood1", &device_did.to_string(), &device_ip, device_info_json.as_str(),&mini_config_jwt).await;
+                user_name, "ood1", &device_did.to_string(), &device_ip, device_info_json.as_str(),&device_mini_config_jwt).await;
             if sn_result.is_err() {
-                return Err(RPCErrors::ReasonError(format!("Failed to register device to sn: {}",sn_result.err().unwrap())));
+                warn!("Failed to register device to sn: {}",sn_result.as_ref().err().unwrap());
+                return Err(RPCErrors::ReasonError(format!("Failed to register device to sn: {}",sn_result.as_ref().err().unwrap().to_string())));
             }
         }
 
