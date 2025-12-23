@@ -752,9 +752,15 @@ pub async fn register_user_to_sn(
     .map_err(|e| format!("Failed to parse {:?}: {}", zone_record_path, e))?;
 
     let db = SnDB::new_by_path(&sn_db_path).unwrap();
+    let public_key_json = json!({
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": zone_record.pkx,
+    });
+    println!("public_key_json: {:?}", public_key_json);
     db.register_user_directly(
         username,
-        zone_record.pkx.as_str(),
+        public_key_json.to_string().as_str(),
         zone_record.boot_config_jwt.as_str(),
         user_domain
     ).map_err(|e| format!("Failed to register user: {}", e))?;
