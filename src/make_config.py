@@ -628,7 +628,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
             target_root,
             "web3.buckyos.ai",
             ["did:web:buckyos.org", "did:web:buckyos.ai", "did:web:buckyos.io"],
-            False,
+            True,
         )
         
         make_cache_did_docs(target_root)

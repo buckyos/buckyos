@@ -539,6 +539,7 @@ async fn keep_cyfs_gateway_service(node_id: &str,device_doc: &DeviceConfig, node
 }   
 
 async fn desktop_daemon_main(skip_app_ids: &Vec<String>) -> Result<()> {
+    info!("desktop_daemon_main skip_app_ids: {:?}", skip_app_ids);
     let app_list_path = get_buckyos_system_bin_dir().join("applist.json");
     let app_list_str = std::fs::read_to_string(app_list_path.clone());
     if app_list_str.is_err() {
@@ -767,7 +768,7 @@ async fn node_daemon_main_loop(
             if !is_running {
                 break;
             }
-
+            info!("node_main OK, load node gateway config ...");
             let new_node_gateway_config = load_node_gateway_config(node_host_name, &system_config_client).await;
             if new_node_gateway_config.is_ok() {
                 let mut need_reload = false;
@@ -792,7 +793,7 @@ async fn node_daemon_main_loop(
                 }
             
                 let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();
-                info!("*** sn: {:?}", sn);
+                info!("*** keep cyfs-gateway service with sn: {:?}", sn);
                 keep_cyfs_gateway_service(node_id,device_doc, device_private_key, sn,
                 need_reload).await.map_err(|err| {
                     error!("keep cyfs_gateway service failed! {}", err);
