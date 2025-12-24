@@ -125,11 +125,16 @@ def make_global_env_config(
 
     #sn_base_host is the base domain of web3_bns
     sn_base_host = extract_base_host(web3_bns)
-    
-    active_config = {
-        "sn_base_host": sn_base_host,
-        "http_schema": "http" 
-    }
+    if force_https:
+        active_config = {
+            "sn_base_host": sn_base_host,
+            "http_schema": "https" 
+        }
+    else:
+        active_config = {
+            "sn_base_host": sn_base_host,
+            "http_schema": "http" 
+        }
     write_json(target_dir / "bin" / "node-active" / "active_config.json", active_config)
     print(f"create active config at {target_dir / 'bin' / 'node-active' / 'active_config.json'}")
 
@@ -157,6 +162,7 @@ def make_cache_did_docs(target_dir: Path) -> None:
     ensure_dir(docs_dst)
     try:
         run_buckycli(["build_did_docs", "--output_dir", str(docs_dst)])
+        print(f"built did_docs at {docs_dst}")
     except RuntimeError as e:
         print(f"warning: build_did_docs not available yet: {e}")
 
@@ -486,6 +492,7 @@ def did_host_to_real_host(did_host: str,web3_bridge: str) -> str:
 
 def get_params_from_group_name(group_name: str) -> Dict[str, object]:
     """Get all generation parameters based on group name."""
+
     if group_name == "dev" or group_name == "devtest_ood1":
         return {
             "username": "devtest",
@@ -613,6 +620,20 @@ def get_local_ip() -> str:
     return ip_address
 
 def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_dir: Optional[Path],sn_ip: Optional[str],env_root: Optional[Path]) -> None:
+    if group_name == "release":
+        if target_root is None:
+            target_root = ROOTFS_DIR
+        print(f"release mode, write basic configs to {target_root}")
+        make_global_env_config(
+            target_root,
+            "web3.buckyos.ai",
+            ["did:web:buckyos.org", "did:web:buckyos.ai", "did:web:buckyos.io"],
+            False,
+        )
+        
+        make_cache_did_docs(target_root)
+        return
+    
     params = get_params_from_group_name(group_name)
     if ca_dir is None:
         ca_dir = ensure_dir(BUCKYCLI_DIR / "ca")

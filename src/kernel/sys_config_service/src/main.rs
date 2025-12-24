@@ -75,7 +75,7 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
     let appid = session_token.appid.as_deref().unwrap_or("kernel");
 
     let (full_res_path,real_key_path) = get_full_res_path(key)?;
-    info!("full_res_path:{},real_key_path:{:?},appid:{},userid:{},session_token:{:?}",full_res_path,real_key_path,appid,userid,session_token);
+    info!("GET: full_res_path:{},real_key_path:{:?},appid:{},userid:{},session_token:{:?}",full_res_path,real_key_path,appid,userid,session_token);
     let is_allowed = enforce(userid, Some(appid), full_res_path.as_str(), "read").await;
     if !is_allowed {
         warn!("No read permission");

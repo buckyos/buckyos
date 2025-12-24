@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use log::debug;
+use log::{debug, info};
 use buckyos_api::{
     AppDoc, AppServiceSpec, GatewaySettings, GatewayShortcut, KernelServiceDoc, KernelServiceSpec, NodeConfig, NodeState, SCHEDULER_SERVICE_UNIQUE_ID, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, UserSettings, UserState, UserType, VERIFY_HUB_UNIQUE_ID
 };
@@ -290,7 +290,7 @@ impl SystemConfigBuilder {
         };
         zone_config.init_by_boot_config(zone_boot_config);
         zone_config.verify_hub_info = Some(verify_hub_info);
-        debug!("zone_config: {:?}", &zone_config);
+        info!("add_boot_config: zone_config: {}", serde_json::to_string_pretty(&zone_config)?);
         self.insert_json("boot/config", &zone_config)?;
         Ok(self)
     }
