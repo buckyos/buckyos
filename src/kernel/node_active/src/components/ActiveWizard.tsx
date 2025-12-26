@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Box, LinearProgress, Stack, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
-import { StepKey, WalletUser, WizardData, createInitialWizardData } from "../types";
+import { StepKey, WalletUser, WizardData, ActiveWizzardData } from "../types";
+import { createInitialWizardData } from "../../active_lib";
 import GatewayStep from "./steps/GatewayStep";
 import DomainStep from "./steps/DomainStep";
 import SecurityStep from "./steps/SecurityStep";
@@ -18,31 +19,38 @@ type Props = {
 
 const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   const { t } = useTranslation();
-  const [wizardData, setWizardData] = useState<WizardData>(() =>
-    createInitialWizardData({
-      is_wallet_runtime: isWalletRuntime,
-      wallet_user_name: walletUser?.user_name,
-      wallet_user_pubkey: walletUser?.public_key,
-      wallet_user_id: walletUser?.user_id,
-      sn_user_name: walletUser?.user_name || "",
-    })
-  );
+  const [wizardData, setWizardData] = useState<ActiveWizzardData | null>(null);
   const [activeStep, setActiveStep] = useState(0);
   const [completedUrl, setCompletedUrl] = useState("");
 
+  // 异步初始化 wizardData
   useEffect(() => {
+    createInitialWizardData({
+      is_wallet_runtime: isWalletRuntime,
+      wallet_user_name: walletUser?.user_name,
+      owner_public_key: walletUser?.public_key,
+      sn_user_name: walletUser?.sn_username || "",
+    }).then((data) => {
+      setWizardData(data);
+    });
+  }, []); // 只在组件挂载时执行一次
+
+  // 更新 wallet 相关信息
+  useEffect(() => {
+    if (!wizardData) return;
+    
     if (!isWalletRuntime || !walletUser) {
-      setWizardData((prev) => ({ ...prev, is_wallet_runtime: false }));
+      setWizardData((prev) => prev ? { ...prev, is_wallet_runtime: false } : null);
       return;
     }
-    setWizardData((prev) => ({
+    setWizardData((prev) => prev ? {
       ...prev,
       is_wallet_runtime: true,
       wallet_user_name: walletUser.user_name,
-      wallet_user_pubkey: walletUser.public_key,
-      wallet_user_id: walletUser.user_id,
-      sn_user_name: walletUser.user_name || prev.sn_user_name,
-    }));
+      owner_public_key: walletUser.public_key || {},
+      sn_user_name: walletUser.sn_username || null,
+    } : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isWalletRuntime, walletUser]);
 
   const stepTitles = useMemo(
@@ -56,7 +64,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
     [t]
   );
 
-  const handleUpdate = (partial: Partial<WizardData>) => setWizardData((prev) => ({ ...prev, ...partial }));
+  const handleUpdate = (partial: Partial<WizardData>) => setWizardData((prev) => prev ? ({ ...prev, ...partial }) : null);
 
   const goNext = () => setActiveStep((prev) => Math.min(prev + 1, stepOrder.length - 1));
   const goBack = () => setActiveStep((prev) => Math.max(prev - 1, 0));
@@ -67,16 +75,20 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   };
 
   const currentStepKey = stepOrder[activeStep];
-  const fallbackUrl = wizardData.use_self_domain
+  const fallbackUrl = wizardData?.use_self_domain
     ? wizardData.self_domain
       ? `https://${wizardData.self_domain}`
       : ""
-    : wizardData.sn_user_name && wizardData.web3_base_host
+    : wizardData?.sn_user_name && wizardData?.web3_base_host
     ? `https://${wizardData.sn_user_name}.${wizardData.web3_base_host}`
     : "";
   const successUrl = completedUrl || fallbackUrl;
 
   const renderStep = () => {
+    if (!wizardData) {
+      return <Box>Loading...</Box>;
+    }
+    
     switch (currentStepKey) {
       case "gateway":
         return (

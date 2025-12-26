@@ -86,28 +86,29 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
           }
         />
       </Stack>
-
-      <Stack spacing={1}>
-        <Typography fontWeight={700}>{t("owner_private_key")}</Typography>
-        <TextField
-          value={wizardData.owner_private_key as string}
-          multiline
-          minRows={4}
-          InputProps={{
-            readOnly: true,
-            endAdornment: (
-              <IconButton onClick={copyKey} aria-label="copy private key">
-                <ContentCopyRounded />
-              </IconButton>
-            ),
-          }}
-        />
-        <Alert severity="warning">
-          <Typography variant="body2">{t("private_key_warning1")}</Typography>
-          <Typography variant="body2">{t("private_key_warning2")}</Typography>
-          <Typography variant="body2">{t("private_key_warning3")}</Typography>
-        </Alert>
-      </Stack>
+      {!wizardData.is_wallet_runtime && (
+        <Stack spacing={1}>
+          <Typography fontWeight={700}>{t("owner_private_key")}</Typography>
+          <TextField
+            value={wizardData.owner_private_key as string}
+            multiline
+            minRows={4}
+            InputProps={{
+              readOnly: true,
+              endAdornment: (
+                <IconButton onClick={copyKey} aria-label="copy private key">
+                  <ContentCopyRounded />
+                </IconButton>
+              ),
+            }}
+          />
+          <Alert severity="warning">
+            <Typography variant="body2">{t("private_key_warning1")}</Typography>
+            <Typography variant="body2">{t("private_key_warning2")}</Typography>
+            <Typography variant="body2">{t("private_key_warning3")}</Typography>
+          </Alert>
+        </Stack>
+      )}
 
       {error && <Alert severity="error">{error}</Alert>}
 
@@ -127,11 +128,6 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
         </Button>
       </Stack>
 
-      {targetUrl && (
-        <Alert severity="success" icon={<CheckCircleRounded />}>
-          {t("click_to_access")} <strong>{targetUrl}</strong>
-        </Alert>
-      )}
     </Stack>
   );
 };

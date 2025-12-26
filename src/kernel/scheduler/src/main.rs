@@ -139,7 +139,7 @@ async fn do_boot_scheduler() -> Result<()> {
         return Err(anyhow::anyhow!("boot/config not found in init list"));
     }
     let boot_config_str = boot_config_str.unwrap();
-    debug!("boot_config_str: {}", boot_config_str);
+    info!("after boot_config_str: {}", boot_config_str);
     let mut zone_config: ZoneConfig = serde_json::from_str(boot_config_str.as_str()).map_err(|e| {
         error!("load ZoneConfig from boot/config failed: {:?}", e);
         e

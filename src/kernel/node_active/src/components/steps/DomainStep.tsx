@@ -23,7 +23,7 @@ import { GatewayType, WalletUser, WizardData } from "../../types";
 import {
   check_bucky_username,
   generate_key_pair,
-  generate_zone_boot_config_jwt,
+  generate_zone_txt_records,
   isValidDomain,
 } from "../../../active_lib";
 
@@ -61,6 +61,9 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
   }, [isWalletRuntime, walletUser]);
 
   useEffect(() => {
+    if (isWalletRuntime) {
+      return;
+    }
     if (wizardData.owner_private_key) {
       return;
     }
@@ -115,16 +118,16 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
         return "sn.buckyos.ai";
       }
     })();
-    generate_zone_boot_config_jwt(snHost, wizardData.owner_private_key)
-      .then((jwt) => {
-        if (!cancelled) {
-          onUpdate({ zone_config_jwt: jwt });
-          setTxtRecords((prev) => ({ ...prev, boot: `DID=${jwt};` }));
-        }
-      })
-      .catch(() => {
-        // ignore background errors, surface during explicit actions
-      });
+    // generate_zone_txt_records(snHost,wizardData.owner_public_key, wizardData.owner_private_key, wizardData.device_public_key, wizardData.rtcp_port, wizardData.is_wallet_runtime)
+    //   .then((jwt) => {
+    //     if (!cancelled) {
+    //       onUpdate({ zone_config_jwt: jwt });
+    //       setTxtRecords((prev) => ({ ...prev, boot: `DID=${jwt};` }));
+    //     }
+    //   })
+    //   .catch(() => {
+    //     // ignore background errors, surface during explicit actions
+    //   });
     return () => {
       cancelled = true;
     };
@@ -156,13 +159,15 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
           return "sn.buckyos.ai";
         }
       })();
-      const jwt = await generate_zone_boot_config_jwt(snHost, wizardData.owner_private_key);
-      onUpdate({ zone_config_jwt: jwt });
-      setTxtRecords({
-        boot: `DID=${jwt};`,
-        pkx: t("txt_record_placeholder") || "(pending from SN)",
-        dev: t("txt_record_placeholder") || "(pending from SN)",
-      });
+
+      // const jwt = await generate_zone_txt_records(snHost, wizardData.owner_private_key);
+      // onUpdate({ zone_config_jwt: jwt });
+      // setTxtRecords({
+      //   boot: `DID=${jwt};`,
+      //   pkx: t("txt_record_placeholder") || "(pending from SN)",
+      //   dev: t("txt_record_placeholder") || "(pending from SN)",
+      // });
+
       return true;
     } catch (_err) {
       setFormError(t("error_generate_txt_records_failed") || "Failed to generate TXT records");

@@ -490,12 +490,15 @@ impl ActiveServer {
         })),req.id))
     }
 
-    async fn handle_generate_zone_boot_config_jwt(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
+    async fn handle_generate_zone_txt_records(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
         let zone_boot_config_str = req.params.get("zone_boot_config");
+        let device_mini_config_str = req.params.get("device_mini_config");
         let private_key = req.params.get("private_key");
-        if zone_boot_config_str.is_none() || private_key.is_none() {
-            return Err(RPCErrors::ParseRequestError("Invalid params, zone_config or private_key is none".to_string()));
+
+        if zone_boot_config_str.is_none() || private_key.is_none() || device_mini_config_str.is_none() {
+            return Err(RPCErrors::ParseRequestError("Invalid params, zone_boot_config, device_mini_config or private_key is none".to_string()));
         }
+
         let zone_config = zone_boot_config_str.unwrap().as_str().unwrap();
         let private_key = private_key.unwrap().as_str().unwrap();
 
@@ -506,9 +509,19 @@ impl ActiveServer {
             .map_err(|e|RPCErrors::ParseRequestError(format!("Invalid private key: {}",e.to_string())))?;
         let zone_boot_config_jwt = zone_boot_config.encode(Some(&private_key_pem))
             .map_err(|e|RPCErrors::ParseRequestError(format!("Failed to encode zone config: {}",e.to_string())))?;
-        
+        info!("zone config jwt: {}",zone_boot_config_jwt.to_string());
+
+        let device_mini_config_str = device_mini_config_str.unwrap().as_str().unwrap();
+        info!("will sign device mini config: {}",device_mini_config_str.to_string());
+        let device_mini_config:DeviceMiniConfig = serde_json::from_str(device_mini_config_str)
+            .map_err(|e|RPCErrors::ParseRequestError(format!("Invalid device mini config: {}",e.to_string())))?;
+        let device_mini_config_jwt = device_mini_config.to_jwt(&private_key_pem)
+            .map_err(|e|RPCErrors::ParseRequestError(format!("Failed to encode device mini config: {}",e.to_string())))?;
+        info!("device mini config jwt: {}",device_mini_config_jwt);
+
         return Ok(RPCResponse::new(RPCResult::Success(json!({
-            "zone_boot_config_jwt":zone_boot_config_jwt.to_string()
+            "BOOT":zone_boot_config_jwt.to_string(),
+            "DEV":device_mini_config_jwt,
         })),req.id));
     }
 
@@ -532,7 +545,7 @@ impl RPCHandler for ActiveServer {
         match req.method.as_str() {
             "generate_key_pair" => self.handle_generate_key_pair(req).await,
             "get_device_info" => self.handle_get_device_info(req).await,
-            "generate_zone_boot_config" => self.handle_generate_zone_boot_config_jwt(req).await,
+            "generate_zone_txt_records" => self.handle_generate_zone_txt_records(req).await,
             "do_active" => self.handle_do_active(req).await,
             "prepare_params_for_active_by_wallet" => self.handle_prepare_params_for_active_by_wallet(req).await,
             "do_active_by_wallet" => self.handle_active_by_wallet(req).await,

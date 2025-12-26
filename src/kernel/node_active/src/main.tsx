@@ -3,7 +3,8 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "../i18n";
 import "./styles.css";
-import { SN_API_URL,ActiveConfig, init_active_lib } from "../active_lib";
+import { SN_API_URL, init_active_lib } from "../active_lib";
+import { ActiveConfig } from "./types";
 
 const rootElement = document.getElementById("root");
 
@@ -13,7 +14,7 @@ async function bootstrap() {
     const resp = await fetch("/active_config.json", { cache: "no-cache" });
     if (resp.ok) {
       const config = (await resp.json()) as ActiveConfig;
-      init_active_lib(config)
+      await init_active_lib(config)
     } else {
       console.warn("active_config.json not found, using defaults");
     }

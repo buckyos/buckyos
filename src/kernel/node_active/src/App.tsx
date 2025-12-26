@@ -48,8 +48,9 @@ const App = () => {
             if (user) {
               setWalletUser({
                 user_name: user.user_name || user.username || "",
-                user_id: user.user_id,
+                user_id: user.did,
                 public_key: user.public_key || user.owner_public_key,
+                sn_username: user.sn_username,
               });
             }
           })
@@ -65,8 +66,8 @@ const App = () => {
   const walletPubKeyDisplay = (() => {
     const pk = walletUser?.public_key;
     if (!pk) return "";
-    const text = typeof pk === "string" ? pk : JSON.stringify(pk);
-    return text.length > 22 ? `${text.slice(0, 10)}...${text.slice(-8)}` : text;
+    const text = typeof pk === "string" ? pk : pk.get("x");
+    return text;
   })();
 
   const theme = useMemo(
@@ -131,10 +132,7 @@ const App = () => {
                 <Typography variant="h4">{t("active_title")}</Typography>
                 {isWalletRuntime && walletUser?.user_name && (
                   <Stack direction="row" spacing={1} alignItems="center" mt={0.5} flexWrap="wrap">
-                    <Chip size="small" label={walletUser.user_name} />
-                    {walletPubKeyDisplay && (
-                      <Chip size="small" color="primary" label={walletPubKeyDisplay} />
-                    )}
+                    <Chip size="small" label={t("wallet_device_owner", { user_name: walletUser.user_name, public_key: walletPubKeyDisplay })} />
                   </Stack>
                 )}
               </Box>

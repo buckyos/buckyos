@@ -1,12 +1,12 @@
 {
-    "active_title": "Active Personal Server",
+    "active_title": "Active Your PI",
     "active_subtitle": "通过分步向导快速激活 Personal Server，支持中转或直连访问。",
     "step_indicator": "步骤 {{current}} / {{total}} · {{title}}",
     "greeting": "Hello, {{name}}!",
     "welcome": "Welcome",
     "description": "This is an example page",
     "title_step_1": "1. 设置Personal Server的访问链路",
-    "use_buckyos_sn": "使用buckyos.ai提供的中转服务",
+    "use_buckyos_sn": "所有的流量都将通过SN转发.",
     "bucky_forward_desc": "通过buckyos的Web3网桥中转流量到 Personal Server.",
     "bucky_forward_benefit1": "简单配置即可让您的Personal Server拥有稳定的公网可访问性。",
     "bucky_forward_benefit2": "Personal Server的公网访问性能会受到中转服务器可用带宽的影响。",
@@ -100,10 +100,11 @@
     "error_invite_code_invalid": "邀请码有误",
     "error_invite_code_too_short": "邀请码长度必须大于8位",
     "error_activation_failed": "激活失败:",
-    "error_invalid_port": "端口号无效，请输入1-65535之间的数字",
+    "error_invalid_port": "端口号无效, 请输入1-65535之间的数字",
     "error_private_key_not_ready": "私钥尚未生成，请稍候再试",
     "error_domain_required": "请先输入域名",
-    "error_generate_txt_records_failed": "生成TXT记录失败，请重试",
+    "error_generate_txt_records_failed": "生成TXT记录失败,请重试",
     "generating_txt_records": "正在生成...",
-    "success_copied": "内容已复制到剪贴板"
+    "success_copied": "内容已复制到剪贴板",
+    "wallet_device_owner": "设备将属于: {{user_name}} {{public_key}}"
 }

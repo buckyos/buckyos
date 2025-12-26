@@ -1,54 +1,66 @@
 import { buckyos } from 'buckyos';
 
-export enum GatewayType {
-    BuckyForward = "BuckyForward",
-    PortForward = "PortForward",
-}
+import { ActiveConfig, ActiveWizzardData, GatewayType, JsonValue } from "./src/types";
 
-export type JsonValue = Record<string, any>;
-
-export type ActiveConfig = {
-  sn_base_host: string;
-  http_schema: "http" | "https";
-};
-
-export type ActiveWizzardData = {
-    gatewy_type: GatewayType;
-    is_direct_connect: boolean;
-
-    sn_active_code: string;
-    sn_user_name: string;
-    sn_url: string;
-    web3_base_host: string;
-
-    use_self_domain: boolean;
-    self_domain: string;
-
-    admin_password_hash: string;
-    friend_passcode: string;
-    enable_guest_access: boolean;
-
-    owner_public_key: JsonValue;
-    owner_private_key: string;
-    zone_config_jwt: string;
-
-    port_mapping_mode?: "full" | "rtcp_only";
-    rtcp_port?: number;
-    is_wallet_runtime?: boolean;
-    wallet_user_name?: string;
-    wallet_user_pubkey?: string | JsonValue;
-    wallet_user_id?: string;
-}
 export let SN_BASE_HOST:string = "buckyos.ai";
 export let SN_API_URL:string = "https://sn." + SN_BASE_HOST + "/kapi/sn";
 export let WEB3_BASE_HOST:string = "web3." + SN_BASE_HOST;
 
-export function init_active_lib(config: ActiveConfig) {
+/*
+激活的流程说明
+## 尽可能的不依赖krpc/active? 但是又想依赖krpc/active提供的类型安全
+
+## 构造设备信息 （一次性构造)
+
+## 构造zone信息 
+
+## 进行签名
+
+## SN注册用户 + Zone
+
+## SN 用户绑定Zone
+
+## SN 注册设备
+
+*/
+
+export async function init_active_lib(config: ActiveConfig) {
     SN_BASE_HOST = config.sn_base_host
     SN_API_URL = config.http_schema + "://sn." + SN_BASE_HOST + "/kapi/sn";
     WEB3_BASE_HOST = "web3." + SN_BASE_HOST;
 }
 
+export async function createInitialWizardData (initial?: Partial<ActiveWizzardData>): Promise<ActiveWizzardData> {
+    let [device_public_key,device_private_key] = await generate_key_pair();
+    let device_did = "did:dev:"+ device_public_key["x"];
+    console.log("device_did",device_did);
+    let result:ActiveWizzardData = {
+        gatewy_type: GatewayType.BuckyForward,
+        is_direct_connect: false,
+        device_public_key: device_public_key,
+        device_private_key: device_private_key,
+        sn_active_code: "",
+        sn_user_name: "",
+        sn_url: SN_API_URL,
+        web3_base_host: WEB3_BASE_HOST,
+        use_self_domain: false,
+        self_domain: "",
+        admin_password_hash: "",
+        friend_passcode: "",
+        enable_guest_access: false,
+        owner_public_key: {},
+        owner_private_key: "",
+        zone_config_jwt: "",
+        port_mapping_mode: "full",
+        rtcp_port: 2980,
+        is_wallet_runtime: false,
+        wallet_user_name: "",
+        ...initial,
+    };
+
+    return result;
+}
+  
 export async function register_sn_user(user_name:string,active_code:string,public_key:string,zone_config_jwt:string,user_domain:string|null) : Promise<boolean> {
     let rpc_client = new buckyos.kRPCClient(SN_API_URL);
     let params:JsonValue = {
@@ -107,11 +119,10 @@ export async function generate_key_pair():Promise<[JsonValue,string]> {
     return [public_key,private_key];
 }
 
-export async function generate_zone_boot_config_jwt(sn:string,owner_private_key:string):Promise<string> {
-    console.log("generate_zone_boot_config_jwt ...");
-    let rpc_client = new buckyos.kRPCClient("/kapi/active");
-    const now = Math.floor(Date.now() / 1000);
+//这个函数在调用的时候，其实在执行激活操作了，用户只有在不使用SN的情况下，才需要调用该函数
+export async function generate_zone_txt_records(sn:string,owner_public_key:JsonValue,owner_private_key:string|null,device_public_key:JsonValue,rtcp_port:number,is_by_wallet:boolean):Promise<JsonValue|null> {
     let zone_boot_config:JsonValue;
+    const now = Math.floor(Date.now() / 1000);
     if (sn == "") {
         zone_boot_config = {
             oods: ["ood1"],
@@ -126,14 +137,44 @@ export async function generate_zone_boot_config_jwt(sn:string,owner_private_key:
             iat:now,
         };
     }
+    let zone_boot_config_str =  JSON.stringify(zone_boot_config);
 
-    let zoen_boot_config_str =  JSON.stringify(zone_boot_config);
-    let result = await rpc_client.call("generate_zone_boot_config",{
-        zone_boot_config:zoen_boot_config_str,
-        private_key:owner_private_key   
-    });
-    let zone_boot_config_jwt = result["zone_boot_config_jwt"];
-    return zone_boot_config_jwt;
+    let device_mini_config:JsonValue = {
+        "n": "ood1",
+        "x": device_public_key["x"],
+        "exp": now + 3600*24*365*10, 
+    }
+    if (rtcp_port != 2980) {
+        device_mini_config["p"] = rtcp_port;
+    }
+    let device_mini_config_str =  JSON.stringify(device_mini_config);
+
+    if (is_by_wallet) {
+        let will_sign_str:string[] = [
+            zone_boot_config_str,
+            device_mini_config_str
+        ]
+        let signed_results:string[]|null = await buckyos.walletSignWithActiveDid(will_sign_str);
+        if (signed_results == null) {
+            console.error("Failed to sign zone txt records");
+            return null;
+        }
+        return {
+            "BOOT": signed_results[0],
+            "DEV": signed_results[1],
+            "PKX": owner_public_key["x"],
+        }
+    } else {
+        let rpc_client = new buckyos.kRPCClient("/kapi/active");
+        let result = await rpc_client.call("generate_zone_txt_records",{
+            zone_boot_config:zone_boot_config_str,
+            device_mini_config:device_mini_config_str,
+            private_key:owner_private_key   
+        });
+        result["PKX"] = owner_public_key["x"];
+
+        return result;
+    }
 }
 
 export function isValidDomain(domain: string): boolean {
@@ -190,23 +231,23 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         need_sn = true;
     }
 
-    // Register SN user if needed
-    if (need_sn && !data.is_wallet_runtime) {
-        let user_domain = null;
-        if(data.use_self_domain) {
-            user_domain = data.self_domain;
-        }
-        let register_sn_user_result = await register_sn_user(
-            data.sn_user_name,
-            data.sn_active_code,
-            JSON.stringify(data.owner_public_key),
-            data.zone_config_jwt,
-            user_domain);
+    // // Register SN user if needed
+    // if (need_sn && !data.is_wallet_runtime) {
+    //     let user_domain = null;
+    //     if(data.use_self_domain) {
+    //         user_domain = data.self_domain;
+    //     }
+    //     let register_sn_user_result = await register_sn_user(
+    //         data.sn_user_name,
+    //         data.sn_active_code,
+    //         JSON.stringify(data.owner_public_key),
+    //         data.zone_config_jwt,
+    //         user_domain);
 
-        if (!register_sn_user_result) {
-            return false;
-        }
-    }
+    //     if (!register_sn_user_result) {
+    //         return false;
+    //     }
+    // }
 
     let zone_name = "";
     if (data.use_self_domain) {
@@ -309,6 +350,9 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
     // register sn user
     if (need_sn) {
         let user_domain = null;
+        if (data.sn_user_name == null || data.sn_user_name == "" || data.sn_active_code == null || data.sn_active_code == "") {
+            return false;
+        }
         if(data.use_self_domain) {
             user_domain = data.self_domain;
         }
@@ -327,9 +371,15 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
     if (data.use_self_domain) {
         zone_name = data.self_domain;
     } else {
+        if (data.sn_user_name == null) {
+            return false;
+        }
         zone_name = data.sn_user_name + "." + data.web3_base_host;
     }
 
+    if (data.owner_private_key == null) {
+        return false;
+    }
 
     let active_ood_result = await active_ood(
         data,

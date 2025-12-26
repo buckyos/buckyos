@@ -1,12 +1,12 @@
 {
-    "active_title": "Active Personal Server",
+    "active_title": "Active Your PI",
     "active_subtitle": "Step-by-step activation for your Personal Server with SN relay or direct access.",
     "step_indicator": "Step {{current}} / {{total}} · {{title}}",
     "greeting": "Hello, {{name}}!",
     "welcome": "Welcome",
     "description": "This is an example page",
     "title_step_1": "1. Setup Gateway for your Personal Server",
-    "use_buckyos_sn": "Use buckyos.ai's relay service",
+    "use_buckyos_sn": "All traffic will go through SN relay service",
     "bucky_forward_desc": "Route traffic to Personal Server through buckyos's Web3 bridge.",
     "bucky_forward_benefit1": "Simple configuration gives your Personal Server stable public network accessibility.",
     "bucky_forward_benefit2": "Public network access performance will be affected by the relay server's available bandwidth.",
@@ -105,5 +105,6 @@
     "error_domain_required": "Please enter domain first",
     "error_generate_txt_records_failed": "Failed to generate TXT records, please try again",
     "generating_txt_records": "Generating...",
-    "success_copied": "Content copied to clipboard"
+    "success_copied": "Content copied to clipboard",
+    "wallet_device_owner": "Device will belong to: {{user_name}} {{public_key}}"
 }
