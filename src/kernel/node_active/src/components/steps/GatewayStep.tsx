@@ -27,7 +27,6 @@ type Props = {
 const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) => {
   const { t } = useTranslation();
   const [mode, setMode] = useState<GatewayType>(wizardData.gatewy_type || GatewayType.BuckyForward);
-  const [vpsMode, setVpsMode] = useState(false);
   const [inviteCode, setInviteCode] = useState(wizardData.sn_active_code || "");
   const [checkingInvite, setCheckingInvite] = useState(false);
   const [inviteValid, setInviteValid] = useState<boolean | null>(null);
@@ -42,7 +41,7 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
       setInviteValid(true);
       return;
     }
-    if (mode !== GatewayType.BuckyForward || inviteCode.length < 7) {
+    if (mode !== GatewayType.WAN || inviteCode.length < 7) {
       setInviteValid(null);
       return;
     }
@@ -81,7 +80,7 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
         setFormError(t("error_invite_code_invalid") || "Invitation code is invalid");
         return;
       }
-    } else if (!vpsMode && portMappingMode === "rtcp_only") {
+    } else if (mode !== GatewayType.WAN && portMappingMode === "rtcp_only") {
       const port = parseInt(rtcpPort, 10);
       if (Number.isNaN(port) || port < 1 || port > 65535) {
         setFormError(t("error_invalid_port") || "Invalid port");
@@ -90,10 +89,9 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
     }
 
     const port = parseInt(rtcpPort, 10);
-    const finalPortMode = vpsMode ? "full" : portMappingMode;
+    const finalPortMode = mode === GatewayType.WAN ? "full" : portMappingMode;
     const nextData: Partial<WizardData> = {
       gatewy_type: mode,
-      is_direct_connect: mode === GatewayType.PortForward,
       sn_active_code: isWalletRuntime ? "" : inviteCode,
       sn_url: SN_API_URL,
       web3_base_host: WEB3_BASE_HOST,
@@ -112,14 +110,11 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
       onClick={() => {
         if (title === "bucky") {
           setMode(GatewayType.BuckyForward);
-          setVpsMode(false);
         } else if (title === "direct") {
           setMode(GatewayType.PortForward);
-          setVpsMode(false);
-        } else {
-          setMode(GatewayType.PortForward);
-          setVpsMode(true);
           setPortMappingMode("full");
+        } else {
+          setMode(GatewayType.WAN);
         }
       }}
       sx={{
@@ -168,7 +163,8 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
     </Box>
   );
 
-  const portHint = vpsMode
+
+  const portHint = mode === GatewayType.WAN
     ? t("public_ip_hint")
     : portMappingMode === "rtcp_only"
     ? t("port_mapping_rtcp_only_hint")
@@ -189,7 +185,7 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
           {renderCard(
             "direct",
             t("direct_connect_label"),
-            mode === GatewayType.PortForward && !vpsMode,
+            mode === GatewayType.PortForward,
             <LanRounded />
           )}
         </Grid>
@@ -197,7 +193,7 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
           {renderCard(
             "vps",
             t("public_ip_option"),
-            mode === GatewayType.PortForward && vpsMode,
+            mode === GatewayType.WAN,
             <CloudOutlined />
           )}
         </Grid>
@@ -231,9 +227,9 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
       ) : (
         <Stack spacing={2}>
           <Typography variant="subtitle1" fontWeight={600}>
-            {vpsMode ? t("public_ip_desc") : t("direct_connect_desc")}
+            {mode === GatewayType.WAN ? t("public_ip_desc") : t("direct_connect_desc")}
           </Typography>
-          {!vpsMode && (
+          {mode !== GatewayType.WAN && (
             <>
               <FormControl fullWidth>
                 <InputLabel id="port-mode-label">{t("port_mapping_mode_label")}</InputLabel>

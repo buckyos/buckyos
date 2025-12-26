@@ -13,7 +13,7 @@ export type StepKey = "gateway" | "domain" | "security" | "review" | "success";
 export enum GatewayType {
   BuckyForward = "BuckyForward",//nat  (none)
   PortForward = "PortForward",//port forward (portmap)
-  WANDynamic = "WANDynamic",//dynamic wan (wan_dyn)
+  //WANDynamic = "WANDynamic",//dynamic wan (wan_dyn)
   WAN = "WAN",//static wan (wan)
 }
 
@@ -26,8 +26,8 @@ http_schema: "http" | "https";
 
 export type ActiveWizzardData = {
   gatewy_type: GatewayType;
-  is_direct_connect: boolean;
-  port_mapping_mode?: "full" | "rtcp_only";
+  // is_direct_connect: boolean;
+  port_mapping_mode: "full" | "rtcp_only";
   rtcp_port: number;
 
   use_self_domain: boolean;
@@ -50,7 +50,7 @@ export type ActiveWizzardData = {
   device_private_key: string;
 
   is_wallet_runtime: boolean;
-  wallet_user_name: string;
+  owner_user_name: string;//did:bns:$owner_user_name
 
 }
 

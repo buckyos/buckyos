@@ -76,6 +76,7 @@ main.py $group_name info
 ### ood1@test.buckyos.io (owner did:bns:devtest) 
 - 开发机（不会被部署在虚拟机中)
 - 公网节点，完全不依赖SN
+- netid: wan
 
 ### sn_server@sn.devtests.org (owner did:bns:devtests)
 - SN 服务，并不运行完整的buckyos
@@ -86,23 +87,31 @@ main.py $group_name info
 
 ### node1@test.buckyos.io (owner did:bns:devtest)
 - 非OOD节点
-- 在NAT后
+- 在NAT后 (netid:nat)
+- 需要SN
 
 ### ood1@alice.web3.devtests.org (owner did:bns:alice)
-- 标准的内网nat节点 （流量全转发）
+- 标准的内网nat节点 （流量全转发）,netid:nat
 - 在zone_boot中配置sn : sn.devtests.org
+- 需要SN
 
 ### ood1@bob.web3.devtests.org (owner did:bns:bob)
 - 打开了443、80、2980 的标准端口映射 （D-DNS）
 - 在zone_boot中没有配置sn
 - 在ood1的device_doc中，配置了ddns_sn_url : sn.devtests.org
 - ood1的netid为wan_dyn
+- 需要SN
 
 ### ood1@charlie.me (owner did:bns:charlie)
 - 使用自有域名，使用自定义的2981端口映射 （D-DNS,rtcp流量不转发，其它转发）
 - 在zone_boot中配置了sn : sn.devtests.org
 - device_mini_config的rtcp_port位置为2981
 - ood1的netid为portmap
+- 需要SN
+
+### 缺少的一种情况：
+OOD的netid是WAN，但是使用sn的二级域名 （这种是极端情况，有vps的人没域名 ...)
+在合适的时候调用register_device_to_sn / update_device_info_to_sn 即可
 
 ## 访问zone的逻辑
 ### 通过https访问

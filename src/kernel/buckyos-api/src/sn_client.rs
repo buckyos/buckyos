@@ -4,7 +4,7 @@ use serde_json::{json,Value};
 use log::*;
 
 
-pub async fn sn_bind_zone_config()->Result<(),RPCErrors> {
+pub async fn sn_bind_zone_config(sn_url: &str, session_token: Option<String>, zone_config_jwt: &str)->Result<(),RPCErrors> {
     unimplemented!()
 }
 

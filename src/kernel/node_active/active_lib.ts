@@ -3,6 +3,7 @@ import { buckyos } from 'buckyos';
 import { ActiveConfig, ActiveWizzardData, GatewayType, JsonValue } from "./src/types";
 
 export let SN_BASE_HOST:string = "buckyos.ai";
+export let SN_HOST:string = "sn." + SN_BASE_HOST;
 export let SN_API_URL:string = "https://sn." + SN_BASE_HOST + "/kapi/sn";
 export let WEB3_BASE_HOST:string = "web3." + SN_BASE_HOST;
 
@@ -25,7 +26,8 @@ export let WEB3_BASE_HOST:string = "web3." + SN_BASE_HOST;
 */
 
 export async function init_active_lib(config: ActiveConfig) {
-    SN_BASE_HOST = config.sn_base_host
+    SN_BASE_HOST = config.sn_base_host;
+    SN_HOST = "sn." + SN_BASE_HOST;
     SN_API_URL = config.http_schema + "://sn." + SN_BASE_HOST + "/kapi/sn";
     WEB3_BASE_HOST = "web3." + SN_BASE_HOST;
 }
@@ -36,7 +38,7 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
     console.log("device_did",device_did);
     let result:ActiveWizzardData = {
         gatewy_type: GatewayType.BuckyForward,
-        is_direct_connect: false,
+        //is_direct_connect: false,
         device_public_key: device_public_key,
         device_private_key: device_private_key,
         sn_active_code: "",
@@ -54,13 +56,74 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
         port_mapping_mode: "full",
         rtcp_port: 2980,
         is_wallet_runtime: false,
-        wallet_user_name: "",
+        owner_user_name: "",
         ...initial,
     };
 
     return result;
 }
-  
+
+function is_need_sn(wizzard_data:ActiveWizzardData):boolean {
+    if (wizzard_data.gatewy_type != GatewayType.WAN) {
+        return true;
+    }
+    if (!wizzard_data.use_self_domain) {
+        return true;
+    }
+    return false;
+}
+
+function get_net_id_by_gateway_type(gateway_type:GatewayType,port_mapping_mode:string):string {
+    if (gateway_type == GatewayType.WAN) {
+        return "wan";
+    }
+    if (gateway_type == GatewayType.PortForward) {
+        if (port_mapping_mode == "full") {
+            return "wan_dyn";
+        }
+        if (port_mapping_mode == "rtcp_only") {
+            return "portmap";
+        }
+    }
+
+    return "nat";
+}
+
+// 参考 test_config.rs create_zone_boot_config_jwt
+// 实现create zone boot config和create_device_mini_config
+// 注意ood的net_id影响zone_boot_config,但不影响device_mini_config
+function create_zone_boot_config(sn:string|null,ood_net_id:string|null):JsonValue {
+    const now = Math.floor(Date.now() / 1000);
+    let ood = "ood1";
+    if (ood_net_id != null) {
+        ood = ood + "@" + ood_net_id;
+    }
+    let zone_boot_config:JsonValue = {
+        "oods": [ood],
+        "exp": now + 3600*24*365*10
+    }
+    if (sn != null) {
+        zone_boot_config["sn"] = sn;
+    }
+    return zone_boot_config;
+}
+
+// create device mini config
+//test_config.rs create_device_mini_config_jwt
+function create_device_mini_config(device_public_key:JsonValue,rtcp_port:number):JsonValue {
+    const now = Math.floor(Date.now() / 1000);
+    let device_mini_config:JsonValue = {
+        "n": "ood1",
+        "x": device_public_key["x"],
+        "exp": now + 3600*24*365*10, 
+    }
+    if (rtcp_port != 2980) {
+        device_mini_config["p"] = rtcp_port;
+    }
+    return device_mini_config;
+}
+
+
 export async function register_sn_user(user_name:string,active_code:string,public_key:string,zone_config_jwt:string,user_domain:string|null) : Promise<boolean> {
     let rpc_client = new buckyos.kRPCClient(SN_API_URL);
     let params:JsonValue = {
@@ -120,33 +183,17 @@ export async function generate_key_pair():Promise<[JsonValue,string]> {
 }
 
 //这个函数在调用的时候，其实在执行激活操作了，用户只有在不使用SN的情况下，才需要调用该函数
-export async function generate_zone_txt_records(sn:string,owner_public_key:JsonValue,owner_private_key:string|null,device_public_key:JsonValue,rtcp_port:number,is_by_wallet:boolean):Promise<JsonValue|null> {
-    let zone_boot_config:JsonValue;
-    const now = Math.floor(Date.now() / 1000);
-    if (sn == "") {
-        zone_boot_config = {
-            oods: ["ood1"],
-            exp: now + 3600*24*365*10, 
-            iat:now,
-        };
-    } else {
-        zone_boot_config = {
-            oods: ["ood1"],
-            sn: sn,
-            exp: now + 3600*24*365*10, 
-            iat:now,
-        };
-    }
+export async function generate_zone_txt_records(sn:string,
+    owner_public_key:JsonValue,
+    owner_private_key:string|null,
+    device_public_key:JsonValue,
+    net_id:string|null,
+    rtcp_port:number,
+    is_by_wallet:boolean):Promise<JsonValue|null> {
+    let zone_boot_config = create_zone_boot_config(sn,net_id);
     let zone_boot_config_str =  JSON.stringify(zone_boot_config);
 
-    let device_mini_config:JsonValue = {
-        "n": "ood1",
-        "x": device_public_key["x"],
-        "exp": now + 3600*24*365*10, 
-    }
-    if (rtcp_port != 2980) {
-        device_mini_config["p"] = rtcp_port;
-    }
+    let device_mini_config = create_device_mini_config(device_public_key,rtcp_port);
     let device_mini_config_str =  JSON.stringify(device_mini_config);
 
     if (is_by_wallet) {
@@ -194,9 +241,9 @@ export async function active_ood(wizzard_data:ActiveWizzardData,zone_name:string
  ):Promise<boolean> {
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
     let result = await rpc_client.call("do_active",{
-        user_name:wizzard_data.sn_user_name,
+        user_name:wizzard_data.owner_user_name,
         zone_name:zone_name,
-        gateway_type:wizzard_data.gatewy_type,
+        net_id:get_net_id_by_gateway_type(wizzard_data.gatewy_type,wizzard_data.port_mapping_mode),
         public_key:owner_public_key,
         private_key:owner_private_key,
         device_public_key:device_public_key,
@@ -210,25 +257,19 @@ export async function active_ood(wizzard_data:ActiveWizzardData,zone_name:string
     return result["code"] == 0;
 }
 
-export async function end_active():Promise<boolean> {
-    let rpc_client = new buckyos.kRPCClient("/kapi/active");
-    let result = await rpc_client.call("end_active",{});
-    return true;
-}
 
 export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolean> {
-    // Generate device key pair
-    let [device_public_key,device_private_key] = await generate_key_pair();
-    let device_did = "did:dev:"+ device_public_key["x"];
-    console.log("ood device_did",device_did);
 
+    let real_sn_host = "";
     let need_sn = false;
     if (data.gatewy_type == GatewayType.BuckyForward) {
+        real_sn_host = SN_HOST;
         need_sn = true;
     }
 
     if (!data.use_self_domain) {
         need_sn = true;
+        real_sn_host = SN_HOST;
     }
 
     // // Register SN user if needed
@@ -259,13 +300,14 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
     // Step 1: Call prepare_params_for_active_by_wallet to get unsigned data
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
     let prepare_params:JsonValue = {
-        user_name: data.sn_user_name,
+        user_name: data.owner_user_name,
         zone_name: zone_name,
-        gateway_type: data.gatewy_type,
+        net_id:get_net_id_by_gateway_type(data.gatewy_type,data.port_mapping_mode),
         public_key: data.owner_public_key,
-        device_public_key: device_public_key,
-        device_private_key: device_private_key,
+        device_public_key: data.device_public_key,
+        device_private_key: data.device_private_key,
         support_container: "true",
+        sn_username: data.sn_user_name,
         sn_url: data.sn_url || ""
     };
 
@@ -274,59 +316,65 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         console.error("Failed to prepare params for wallet activation");
         return false;
     }
-
-    let device_config_json = prepare_result["device_config"];
-    let device_mini_config_json = prepare_result["device_mini_config"];
+    let boot_config_json = create_zone_boot_config(real_sn_host,null);
+    let boot_config_json_str =  JSON.stringify(boot_config_json);
+    let mini_device_config_json = create_device_mini_config(data.device_public_key,data.rtcp_port);
+    let mini_device_config_json_str =  JSON.stringify(mini_device_config_json);
+    let device_config_json:String = prepare_result["device_config"];
+    let device_config_json_str =  JSON.stringify(device_config_json);
     let rpc_token_json = prepare_result["rpc_token"];
+    let rpc_token_json_str =  JSON.stringify(rpc_token_json);
     let device_info_json = prepare_result["device_info"];
-    let device_did_from_server = prepare_result["device_did"];
+
 
     // Step 2: Sign the data using wallet's signWithActiveDid
-    // Note: signWithActiveDid should accept a JSON object and return a JWT string
-    // TODO: This method needs to be implemented in the wallet/buckyos API
-    // For now, we'll use a type assertion to indicate this is expected to exist
-    let device_doc_jwt: string;
-    let device_mini_doc_jwt: string;
-    let user_rpc_token: string | null = null;
-
+    let signed_results:string[]|null = null;
     try {
-        // Sign device_config
-        // @ts-ignore - signWithActiveDid will be implemented in wallet
-        device_doc_jwt = await buckyos.signWithActiveDid(device_config_json);
-        
-        // Sign device_mini_config
-        // @ts-ignore - signWithActiveDid will be implemented in wallet
-        device_mini_doc_jwt = await buckyos.signWithActiveDid(device_mini_config_json);
-        
-        // Sign rpc_token if needed
-        if (rpc_token_json != null && need_sn) {
-            // @ts-ignore - signWithActiveDid will be implemented in wallet
-            user_rpc_token = await buckyos.signWithActiveDid(rpc_token_json);
+        let will_sign_strs:string[] = [
+            boot_config_json_str,
+            mini_device_config_json_str,
+            device_config_json_str,
+            rpc_token_json_str,
+        ]
+        signed_results = await buckyos.walletSignWithActiveDid(will_sign_strs);
+        if (signed_results == null) {
+            console.error("Failed to sign zone txt records");
+            return false;
         }
     } catch (error) {
         console.error("Failed to sign data with wallet:", error);
         return false;
     }
+    //console.log("signed_results",signed_results);
+    let boot_config_jwt = signed_results[0];
+    console.log("boot_config_jwt",boot_config_jwt);
+    let mini_device_config_jwt = signed_results[1];
+    console.log("mini_device_config_jwt",mini_device_config_jwt);
+    let device_config_jwt = signed_results[2];
+    console.log("device_config_jwt",device_config_jwt);
+    let rpc_token_jwt = signed_results[3];
+    console.log("rpc_token_jwt",rpc_token_jwt);
 
     // Step 3: Call do_active_by_wallet with signed JWTs
     // Only pass essential parameters - other info will be extracted from JWTs
     let active_params:JsonValue = {
-        device_doc_jwt: device_doc_jwt,
-        device_mini_doc_jwt: device_mini_doc_jwt,
-        device_private_key: device_private_key,
-        zone_name: zone_name,
-        owner_public_key: data.owner_public_key, // Still needed for JWT verification
-        sn_url: data.sn_url || ""
-    };
+        boot_config_jwt: boot_config_jwt,
+        device_doc_jwt: device_config_jwt,
+        device_mini_doc_jwt: mini_device_config_jwt,
+        device_private_key: data.device_private_key,
+        device_info: device_info_json,
 
-    // Optional parameters for SN registration
-    if (user_rpc_token != null && need_sn) {
-        active_params["user_rpc_token"] = user_rpc_token;
-    }
-    
-    if (need_sn && device_info_json != null) {
-        active_params["device_info"] = device_info_json;
-    }
+        user_name:data.owner_user_name,
+        zone_name: zone_name,
+        public_key: data.owner_public_key, // Still needed for JWT verification
+        admin_password_hash: data.admin_password_hash,
+        guest_access: data.enable_guest_access,
+        friend_passcode: data.friend_passcode,
+        sn_url: data.sn_url || "",
+        sn_username: data.sn_user_name,
+
+        sn_rpc_token: rpc_token_jwt,
+    };
 
     let active_result = await rpc_client.call("do_active_by_wallet", active_params);
     let code = active_result["code"];
@@ -335,18 +383,11 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
 
 export async function do_active(data:ActiveWizzardData):Promise<boolean> {
     //generate device key pair
-    let [device_public_key,device_private_key] = await generate_key_pair();
-    let device_did = "did:dev:"+ device_public_key["x"];
-    console.log("ood device_did",device_did);
+    // let [device_public_key,device_private_key] = await generate_key_pair();
+    // let device_did = "did:dev:"+ device_public_key["x"];
+    // console.log("ood device_did",device_did);
 
-    let need_sn = false;
-    if (data.gatewy_type == GatewayType.BuckyForward) {
-        need_sn = true;
-    }
-
-    if (!data.use_self_domain) {
-        need_sn = true;
-    }
+    let need_sn = is_need_sn(data);
     // register sn user
     if (need_sn) {
         let user_domain = null;
@@ -386,8 +427,8 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
         zone_name,
         data.owner_public_key,
         data.owner_private_key,
-        device_public_key,
-        device_private_key,
+        data.device_public_key,
+        data.device_private_key,
     );
 
     if (!active_ood_result) {

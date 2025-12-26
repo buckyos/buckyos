@@ -27,7 +27,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   useEffect(() => {
     createInitialWizardData({
       is_wallet_runtime: isWalletRuntime,
-      wallet_user_name: walletUser?.user_name,
+      owner_user_name: walletUser?.user_name,
       owner_public_key: walletUser?.public_key,
       sn_user_name: walletUser?.sn_username || "",
     }).then((data) => {
@@ -46,7 +46,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
     setWizardData((prev) => prev ? {
       ...prev,
       is_wallet_runtime: true,
-      wallet_user_name: walletUser.user_name,
+      owner_user_name: walletUser.user_name,
       owner_public_key: walletUser.public_key || {},
       sn_user_name: walletUser.sn_username || null,
     } : null);

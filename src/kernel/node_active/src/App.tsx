@@ -66,7 +66,7 @@ const App = () => {
   const walletPubKeyDisplay = (() => {
     const pk = walletUser?.public_key;
     if (!pk) return "";
-    const text = typeof pk === "string" ? pk : pk.get("x");
+    const text = typeof pk === "string" ? pk : pk.x;
     return text;
   })();
 
